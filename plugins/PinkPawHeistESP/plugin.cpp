@@ -34,8 +34,12 @@ constexpr std::uint32_t kMaximumEntityCount = 32768;
 constexpr std::size_t kMaximumNameBytes = 1024;
 constexpr std::size_t kLootRowsPerPage = 6;
 constexpr std::uint32_t kTableSizingFixedFit = 1U << 13U;
-// BankBoxes are stationary; scan until stable, then restart only for explicit refreshes.
+// BankBoxes are stationary; full discovery stops after convergence. Cached identities are
+// checked in small batches so manual pickups do not restart the entity-frame scan.
 constexpr auto kLootRefreshInterval = std::chrono::seconds(2);
+constexpr auto kKnownLootValidationInterval = std::chrono::milliseconds(50);
+constexpr auto kRobBankPreparationRetryInterval = std::chrono::seconds(1);
+constexpr std::size_t kKnownLootValidationBatch = 8;
 constexpr float kFixedBoxThickness = 1.5F;
 constexpr auto kCacheFailureGracePeriod =
     kLootRefreshInterval + std::chrono::milliseconds(750);
@@ -57,6 +61,7 @@ struct LootEntity final {
     std::string label;
     const catalog::ItemDefinition* item{};
     pink_paw_heist_esp::RobBankInspection rob_bank;
+    std::uint8_t missing_observations{};
 };
 
 struct LootCache final {
@@ -130,7 +135,6 @@ struct PickupState final {
     std::uint32_t result_code{ANOMALY_STATUS_V1_UNAVAILABLE};
     char result_message[192]{};
     std::atomic_bool developer_mode{};
-    std::atomic_bool refresh_requested{};
 };
 
 struct Context final {
@@ -153,6 +157,9 @@ struct Context final {
 
     bool settings_dirty{};
     Clock::time_point last_valid_refresh{};
+    Clock::time_point next_known_loot_validation{};
+    Clock::time_point next_rob_bank_preparation{};
+    std::size_t known_loot_validation_cursor{};
 };
 
 Context g_context;
@@ -891,6 +898,9 @@ void ClearCache() noexcept {
     g_context.loot_refresh.Reset();
     g_context.current_page = 0;
     g_context.last_valid_refresh = {};
+    g_context.next_known_loot_validation = {};
+    g_context.next_rob_bank_preparation = {};
+    g_context.known_loot_validation_cursor = 0;
 }
 
 std::string BuildLootLabel(const LootEntity& entry);
@@ -922,7 +932,11 @@ void RefreshCacheIfDue() {
     const auto current = g_loot_cache.load(std::memory_order_acquire);
     AnomalyNteEntityFrameV1 frame{sizeof(frame)};
     std::vector<LootEntity> loot;
-    static_cast<void>(g_rob_bank.Refresh());
+    const bool rob_bank_refreshed = g_rob_bank.Refresh();
+    g_context.next_rob_bank_preparation = now +
+        (rob_bank_refreshed && g_rob_bank.DiscoveryPending()
+             ? kKnownLootValidationInterval
+             : kRobBankPreparationRetryInterval);
     if (g_context.host != nullptr && CollectLoot(frame, loot)) {
         std::sort(loot.begin(), loot.end(), [](const LootEntity& left, const LootEntity& right) {
             if (left.snapshot.entity_id != right.snapshot.entity_id) {
@@ -939,6 +953,8 @@ void RefreshCacheIfDue() {
         cache->available = true;
         g_loot_cache.store(std::move(cache), std::memory_order_release);
         g_context.last_valid_refresh = now;
+        g_context.next_known_loot_validation = now + kKnownLootValidationInterval;
+        g_context.known_loot_validation_cursor = 0;
         g_context.loot_refresh.Complete(now, unchanged);
     } else {
         // Whole-collection retries reject partial data. Keep the last complete frame briefly
@@ -949,6 +965,87 @@ void RefreshCacheIfDue() {
             g_context.last_valid_refresh = {};
         }
         g_context.loot_refresh.Fail(now);
+    }
+}
+
+struct KnownLootValidationChange final {
+    std::size_t index{};
+    pink_paw_heist_esp::KnownLootValidationAction action{
+        pink_paw_heist_esp::KnownLootValidationAction::unchanged};
+    pink_paw_heist_esp::KnownLootValidationState state;
+};
+
+void RefreshKnownLootIfDue() {
+    const Clock::time_point now = Clock::now();
+    if (g_rob_bank.Available() && g_rob_bank.DiscoveryPending() &&
+        now >= g_context.next_rob_bank_preparation) {
+        const bool refreshed = g_rob_bank.Refresh();
+        g_context.next_rob_bank_preparation = now +
+            (refreshed && g_rob_bank.DiscoveryPending()
+                 ? kKnownLootValidationInterval
+                 : kRobBankPreparationRetryInterval);
+    }
+
+    if (now < g_context.next_known_loot_validation) return;
+    g_context.next_known_loot_validation = now + kKnownLootValidationInterval;
+
+    const auto current = g_loot_cache.load(std::memory_order_acquire);
+    if (!current || !current->available || current->loot.empty() ||
+        !g_rob_bank.CanInspect()) {
+        return;
+    }
+
+    const std::size_t start =
+        g_context.known_loot_validation_cursor % current->loot.size();
+    const std::size_t count =
+        (std::min)(kKnownLootValidationBatch, current->loot.size());
+    std::vector<KnownLootValidationChange> changes;
+    changes.reserve(count);
+    for (std::size_t offset{}; offset < count; ++offset) {
+        const std::size_t index = (start + offset) % current->loot.size();
+        const LootEntity& entry = current->loot[index];
+        pink_paw_heist_esp::KnownLootValidationState state{
+            entry.rob_bank, entry.missing_observations};
+        const auto observation =
+            g_rob_bank.Inspect(entry.snapshot.entity_id, entry.class_name);
+        const auto action =
+            pink_paw_heist_esp::ApplyKnownLootObservation(state, observation);
+        if (action != pink_paw_heist_esp::KnownLootValidationAction::unchanged) {
+            changes.push_back({index, action, state});
+        }
+    }
+    g_context.known_loot_validation_cursor =
+        (start + count) % current->loot.size();
+    if (changes.empty()) return;
+
+    auto next = std::make_shared<LootCache>(*current);
+    std::sort(changes.begin(), changes.end(), [](const auto& left, const auto& right) {
+        return left.index > right.index;
+    });
+    for (const KnownLootValidationChange& change : changes) {
+        if (change.action == pink_paw_heist_esp::KnownLootValidationAction::remove) {
+            next->loot.erase(next->loot.begin() + static_cast<std::ptrdiff_t>(change.index));
+            continue;
+        }
+        next->loot[change.index].rob_bank = change.state.inspection;
+        next->loot[change.index].missing_observations =
+            change.state.missing_observations;
+    }
+    g_loot_cache.store(std::move(next), std::memory_order_release);
+}
+
+void RemoveCachedLoot(const pink_paw_heist_esp::RobBankEntity entity) {
+    if (!entity.Valid()) return;
+    const auto current = g_loot_cache.load(std::memory_order_acquire);
+    if (!current || !current->available) return;
+
+    auto next = std::make_shared<LootCache>(*current);
+    const std::size_t removed = std::erase_if(next->loot, [&](const LootEntity& entry) {
+        return entry.rob_bank.entity.object_index == entity.object_index &&
+            entry.rob_bank.entity.object_serial == entity.object_serial;
+    });
+    if (removed != 0) {
+        g_loot_cache.store(std::move(next), std::memory_order_release);
     }
 }
 
@@ -964,7 +1061,8 @@ bool IsPickable(const LootEntity& entry) noexcept {
 
 bool IsVisibleLoot(const LootEntity& entry) noexcept {
     return PassesItemFilters(entry) &&
-        (g_context.show_pickable_only == 0 || IsPickable(entry));
+        pink_paw_heist_esp::PassesPickabilityFilter(
+            entry.rob_bank.pickability, g_context.show_pickable_only != 0);
 }
 
 std::string FormatValue(const std::uint32_t value) {
@@ -1941,7 +2039,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_pickup.result_message[0] = '\0';
     }
     g_pickup.developer_mode.store(false, std::memory_order_release);
-    g_pickup.refresh_requested.store(false, std::memory_order_release);
     *context = &g_context;
     return anomaly::sdk::Ok();
 }
@@ -1959,7 +2056,6 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
         g_pickup.has_result = false;
         g_pickup.result_message[0] = '\0';
     }
-    g_pickup.refresh_requested.store(false, std::memory_order_release);
     static_cast<void>(g_rob_bank.Start(g_context.host));
     g_world_gate.Reset();
     g_in_pink_paw_world = false;
@@ -1973,7 +2069,6 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     const bool saved = SaveSettings();
     SetDeveloperMode(false);
-    g_pickup.refresh_requested.store(false, std::memory_order_release);
     g_world_gate.Reset();
     g_in_pink_paw_world = false;
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
@@ -2005,7 +2100,6 @@ void ANOMALY_CALL Unload(void*) {
         g_pickup.result_code = ANOMALY_STATUS_V1_UNAVAILABLE;
         g_pickup.result_message[0] = '\0';
     }
-    g_pickup.refresh_requested.store(false, std::memory_order_release);
     ReleaseUiResources();
     ClearExtractionCache();
     g_context = {};
@@ -2106,14 +2200,11 @@ void ProcessPendingPickup() {
     const AnomalyStatusV1 status = g_rob_bank.Pickup(pending.entity);
     RecordPickupResult(status);
     if (status.code == ANOMALY_STATUS_V1_OK) {
-        g_pickup.refresh_requested.store(true, std::memory_order_release);
+        RemoveCachedLoot(pending.entity);
     }
 }
 
 void ANOMALY_CALL Update(void*, double) {
-    if (g_pickup.refresh_requested.exchange(false, std::memory_order_acq_rel)) {
-        g_loot_refresh_requested.store(true, std::memory_order_release);
-    }
     if (g_context.enabled != 0) {
         if (g_world_gate_refresh_requested.exchange(false, std::memory_order_acq_rel)) {
             g_world_gate.Invalidate();
@@ -2127,6 +2218,7 @@ void ANOMALY_CALL Update(void*, double) {
             }
             RefreshExtractionCacheIfDue();
             RefreshCacheIfDue();
+            RefreshKnownLootIfDue();
         } else if (g_in_pink_paw_world) {
             ClearCache();
             ClearExtractionCache();

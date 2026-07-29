@@ -79,6 +79,9 @@ public:
 
     [[nodiscard]] AnomalyStatusV1 Pickup(RobBankEntity entity) noexcept;
     [[nodiscard]] bool Available() const noexcept;
+    [[nodiscard]] bool CanInspect() const noexcept;
+    [[nodiscard]] bool DiscoveryPending() const noexcept;
+    [[nodiscard]] bool PickabilityReady() const noexcept;
 
 private:
     struct Impl;

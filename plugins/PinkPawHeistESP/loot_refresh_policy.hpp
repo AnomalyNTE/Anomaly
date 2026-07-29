@@ -1,6 +1,9 @@
 #pragma once
 
+#include "rob_bank_runtime.hpp"
+
 #include <chrono>
+#include <cstdint>
 
 namespace pink_paw_heist_esp {
 
@@ -40,5 +43,63 @@ private:
     Clock::time_point next_refresh_{};
     bool stable_{};
 };
+
+[[nodiscard]] constexpr bool PassesPickabilityFilter(
+    const RobBankPickability pickability,
+    const bool pickable_only) noexcept {
+    return !pickable_only || pickability != RobBankPickability::blocked;
+}
+
+enum class KnownLootValidationAction {
+    unchanged,
+    updated,
+    remove,
+};
+
+struct KnownLootValidationState final {
+    RobBankInspection inspection;
+    std::uint8_t missing_observations{};
+};
+
+[[nodiscard]] inline KnownLootValidationAction ApplyKnownLootObservation(
+    KnownLootValidationState& state,
+    const RobBankInspection observation) noexcept {
+    constexpr std::uint8_t kMissingObservationLimit = 2;
+
+    if (!observation.entity.Valid()) {
+        if (state.missing_observations < kMissingObservationLimit) {
+            ++state.missing_observations;
+        }
+        return state.missing_observations >= kMissingObservationLimit
+            ? KnownLootValidationAction::remove
+            : KnownLootValidationAction::updated;
+    }
+
+    if (state.inspection.entity.Valid() &&
+        (state.inspection.entity.object_index != observation.entity.object_index ||
+         state.inspection.entity.object_serial != observation.entity.object_serial)) {
+        return KnownLootValidationAction::remove;
+    }
+
+    if (state.inspection.pickability == RobBankPickability::candidate &&
+        observation.pickability == RobBankPickability::blocked) {
+        return KnownLootValidationAction::remove;
+    }
+
+    RobBankInspection next = state.inspection;
+    next.entity = observation.entity;
+    if (observation.pickability != RobBankPickability::unavailable) {
+        next.pickability = observation.pickability;
+    }
+    const bool changed = state.missing_observations != 0 ||
+        next.entity.object_index != state.inspection.entity.object_index ||
+        next.entity.object_serial != state.inspection.entity.object_serial ||
+        next.pickability != state.inspection.pickability;
+    state.inspection = next;
+    state.missing_observations = 0;
+    return changed
+        ? KnownLootValidationAction::updated
+        : KnownLootValidationAction::unchanged;
+}
 
 }  // namespace pink_paw_heist_esp

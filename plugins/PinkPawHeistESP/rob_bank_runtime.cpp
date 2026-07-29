@@ -76,7 +76,7 @@ constexpr std::int32_t kMaximumDataTableRows = 4096;
 
 constexpr std::uint32_t kMaximumObjects = 16U * 1024U * 1024U;
 constexpr std::uint32_t kMaximumObjectChunks = 4096;
-constexpr std::uint32_t kPointTableDiscoveryBatch = 4096;
+constexpr std::uint32_t kPointTableDiscoveryBatch = 256;
 constexpr std::size_t kMaximumResolvedNameBytes = 1024;
 constexpr std::uint32_t kMaximumMarkerEntityCount = 32768;
 constexpr std::size_t kMarkerPageCapacity = ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY;
@@ -1120,6 +1120,21 @@ AnomalyStatusV1 RobBankRuntime::Pickup(const RobBankEntity entity) noexcept {
 
 bool RobBankRuntime::Available() const noexcept {
     return impl_->started;
+}
+
+bool RobBankRuntime::CanInspect() const noexcept {
+    return impl_->started && impl_->refreshed;
+}
+
+bool RobBankRuntime::DiscoveryPending() const noexcept {
+    return impl_->started &&
+        (!impl_->refreshed ||
+         (!impl_->point_table.available && !impl_->point_table.discovery_complete));
+}
+
+bool RobBankRuntime::PickabilityReady() const noexcept {
+    return impl_->started && impl_->refreshed && impl_->point_table.available &&
+        impl_->key_door_context_available;
 }
 
 }  // namespace pink_paw_heist_esp

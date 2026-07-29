@@ -491,7 +491,10 @@ bool RuntimeOwnsRobBankValidationAndInvocation() {
     Fixture fixture;
     pink_paw_heist_esp::RobBankRuntime runtime;
     bool result = Check(runtime.Start(fixture.Host()), "Pink Paw runtime did not start");
-    result = Check(runtime.Refresh(), "Pink Paw runtime did not refresh") && result;
+    result = Check(
+        runtime.Refresh() && runtime.CanInspect() && runtime.PickabilityReady() &&
+            !runtime.DiscoveryPending(),
+        "Pink Paw runtime did not reach a ready inspection state") && result;
 
     const auto candidate = runtime.Inspect(1, "BankBox_Test_C");
     result = Check(
@@ -509,9 +512,14 @@ bool RuntimeOwnsRobBankValidationAndInvocation() {
     fixture.Put(kActor + 3064U, std::uint8_t{1});
 
     fixture.Put(kObjectChunk + 16U, std::uint32_t{kActorSerial + 1U});
+    pink_paw_heist_esp::KnownLootValidationState validation{candidate, 0};
+    const auto replaced = runtime.Inspect(1, "BankBox_Test_C");
     result = Check(
-        runtime.Pickup(candidate.entity).code == ANOMALY_STATUS_V1_NOT_FOUND,
-        "Pink Paw runtime accepted a stale UObject serial") && result;
+        replaced.entity.object_serial == kActorSerial + 1U &&
+            pink_paw_heist_esp::ApplyKnownLootObservation(validation, replaced) ==
+                pink_paw_heist_esp::KnownLootValidationAction::remove &&
+            runtime.Pickup(candidate.entity).code == ANOMALY_STATUS_V1_NOT_FOUND,
+        "Pink Paw runtime did not reject a manually replaced UObject identity") && result;
     fixture.Put(kObjectChunk + 16U, kActorSerial);
 
     fixture.Put(kInterfaceVtable + 24U, std::uintptr_t{0x1234});
@@ -532,6 +540,91 @@ bool RuntimeOwnsRobBankValidationAndInvocation() {
         "Pink Paw runtime did not invoke the validated native pickup") && result;
     runtime.Stop();
     return Check(!runtime.Available(), "Pink Paw runtime remained available after stop") && result;
+}
+
+bool PendingPickabilityRemainsVisible() {
+    using pink_paw_heist_esp::PassesPickabilityFilter;
+    using pink_paw_heist_esp::RobBankPickability;
+
+    bool result = Check(
+        PassesPickabilityFilter(RobBankPickability::unavailable, true) &&
+            PassesPickabilityFilter(RobBankPickability::candidate, true) &&
+            !PassesPickabilityFilter(RobBankPickability::blocked, true),
+        "Pink Paw pickability filter hid entries while the runtime was preparing");
+
+    Fixture fixture;
+    fixture.SetResolvedClassName(kPointTableNameId, "OtherTable");
+    pink_paw_heist_esp::RobBankRuntime runtime;
+    result = Check(runtime.Start(fixture.Host()) && runtime.Refresh(),
+        "Pink Paw runtime did not refresh without the point table") && result;
+    const auto pending = runtime.Inspect(1, "BankBox_Test_C");
+    result = Check(
+        runtime.CanInspect() && !runtime.DiscoveryPending() &&
+            !runtime.PickabilityReady() && pending.entity.Valid() &&
+            pending.pickability == RobBankPickability::unavailable,
+        "Pink Paw runtime did not separate pending pickability from entity identity") && result;
+    runtime.Stop();
+    return result;
+}
+
+bool PointTableDiscoveryAdvancesInSmallBatches() {
+    constexpr std::uint32_t kDelayedPointTableIndex = 257;
+    constexpr std::uintptr_t kObjectItemStride = 24;
+
+    Fixture fixture;
+    fixture.Put(kObjectRegistry + 36U, kDelayedPointTableIndex + 1U);
+    fixture.Put(kObjectChunk + kObjectItemStride, std::uintptr_t{});
+    const std::uintptr_t delayed_slot =
+        kObjectChunk + kDelayedPointTableIndex * kObjectItemStride;
+    fixture.Put(delayed_slot, kPointTable);
+    fixture.Put(delayed_slot + 16U, std::uint32_t{202});
+
+    pink_paw_heist_esp::RobBankRuntime runtime;
+    bool result = Check(runtime.Start(fixture.Host()) && runtime.Refresh(),
+        "Pink Paw runtime did not start delayed point-table discovery");
+    const auto pending = runtime.Inspect(1, "BankBox_Test_C");
+    result = Check(
+        runtime.DiscoveryPending() && !runtime.PickabilityReady() &&
+            pending.entity.Valid() &&
+            pending.pickability ==
+                pink_paw_heist_esp::RobBankPickability::unavailable &&
+            fixture.EntityPageCalls() == 0,
+        "Pink Paw runtime did not preserve loot during partial point-table discovery") && result;
+
+    result = Check(runtime.Refresh() && !runtime.DiscoveryPending() &&
+            runtime.PickabilityReady() &&
+            runtime.Inspect(1, "BankBox_Test_C").pickability ==
+                pink_paw_heist_esp::RobBankPickability::candidate &&
+            fixture.EntityPageCalls() == 0,
+        "Pink Paw runtime did not finish point-table discovery independently") && result;
+    runtime.Stop();
+    return result;
+}
+
+bool KnownLootValidationHandlesManualPickup() {
+    using pink_paw_heist_esp::ApplyKnownLootObservation;
+    using pink_paw_heist_esp::KnownLootValidationAction;
+    using pink_paw_heist_esp::KnownLootValidationState;
+    using pink_paw_heist_esp::RobBankEntity;
+    using pink_paw_heist_esp::RobBankInspection;
+    using pink_paw_heist_esp::RobBankPickability;
+
+    KnownLootValidationState missing{
+        RobBankInspection{RobBankEntity{7, 21}, RobBankPickability::candidate}, 0};
+    bool result = Check(
+        ApplyKnownLootObservation(missing, {}) == KnownLootValidationAction::updated &&
+            missing.missing_observations == 1 &&
+            ApplyKnownLootObservation(missing, {}) == KnownLootValidationAction::remove,
+        "Pink Paw known-loot validation did not remove a persistently missing pickup");
+
+    KnownLootValidationState blocked{
+        RobBankInspection{RobBankEntity{7, 21}, RobBankPickability::candidate}, 0};
+    return Check(
+        ApplyKnownLootObservation(
+            blocked,
+            RobBankInspection{RobBankEntity{7, 21}, RobBankPickability::blocked}) ==
+            KnownLootValidationAction::remove,
+        "Pink Paw known-loot validation retained a consumed candidate") && result;
 }
 
 bool WorldGateUsesOneCachedFNameMarker() {
@@ -629,11 +722,11 @@ bool LootRefreshStopsAfterStableObservation() {
         "Pink Paw loot refresh continued after the state stabilized") && result;
     result = Check(
         policy.Begin(start + 20s, true),
-        "Pink Paw loot refresh did not restart after a pickup request") && result;
+        "Pink Paw loot refresh did not honor a later explicit refresh") && result;
     policy.Complete(start + 20s, false);
     return Check(
         !policy.Begin(start + 21s, false) && policy.Begin(start + 22s, false),
-        "Pink Paw loot refresh did not reconverge after a pickup request") && result;
+        "Pink Paw loot refresh did not reconverge after an explicit refresh") && result;
 }
 
 }  // namespace
@@ -641,6 +734,9 @@ bool LootRefreshStopsAfterStableObservation() {
 int main() {
     bool result = RequiredSignatureServiceIsEnforced();
     result = RuntimeOwnsRobBankValidationAndInvocation() && result;
+    result = PendingPickabilityRemainsVisible() && result;
+    result = PointTableDiscoveryAdvancesInSmallBatches() && result;
+    result = KnownLootValidationHandlesManualPickup() && result;
     result = WorldGateUsesOneCachedFNameMarker() && result;
     result = LootClassMetadataIsResolvedOncePerClassIdentity() && result;
     result = LootRefreshStopsAfterStableObservation() && result;
