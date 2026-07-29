@@ -74,7 +74,6 @@ constexpr std::int32_t kMaximumDataTableRows = 4096;
 
 constexpr std::uint32_t kMaximumObjects = 16U * 1024U * 1024U;
 constexpr std::uint32_t kMaximumObjectChunks = 4096;
-constexpr std::uint32_t kPointTableDiscoveryBatch = 256;
 constexpr std::size_t kMaximumResolvedNameBytes = 1024;
 constexpr std::uint32_t kMaximumMarkerEntityCount = 32768;
 constexpr std::size_t kMarkerPageCapacity = ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY;
@@ -152,7 +151,6 @@ struct ObjectRegistry final {
 struct PointTable final {
     std::uintptr_t table{};
     std::uint64_t registry_generation{};
-    std::uint32_t discovery_cursor{};
     std::uint32_t observed_object_count{};
     std::unordered_map<std::uint64_t, std::uintptr_t> rows;
     std::unordered_map<std::string, std::uintptr_t> rows_by_name;
@@ -714,21 +712,15 @@ struct RobBankRuntime::Impl final {
                 point_table = {};
                 point_table.registry_generation = registry_generation;
             }
-            if (point_table.available) return;
-            if (point_table.observed_object_count != registry.count) {
-                point_table.observed_object_count = registry.count;
-                point_table.discovery_cursor = registry.count;
-                point_table.discovery_complete = false;
+            if (point_table.available ||
+                point_table.observed_object_count >= registry.count) {
+                point_table.discovery_complete = true;
+                return;
             }
-            if (point_table.discovery_complete) return;
 
-            const std::uint32_t begin = point_table.discovery_cursor >
-                    kPointTableDiscoveryBatch
-                ? point_table.discovery_cursor - kPointTableDiscoveryBatch
-                : 0;
-            for (std::uint32_t cursor = point_table.discovery_cursor;
-                 cursor > begin; --cursor) {
-                const std::uint32_t index = cursor - 1U;
+            const std::uint32_t begin = point_table.observed_object_count;
+            point_table.discovery_complete = false;
+            for (std::uint32_t index = begin; index < registry.count; ++index) {
                 std::uintptr_t object{};
                 if (!ReadObjectPointer(registry, index, object) || object == 0 ||
                     ResolveObjectName(object) != "DT_RobBankPoint") {
@@ -737,13 +729,12 @@ struct RobBankRuntime::Impl final {
                 PointTable candidate;
                 if (!BuildPointTable(object, candidate)) continue;
                 candidate.registry_generation = registry_generation;
-                candidate.discovery_cursor = index;
                 candidate.observed_object_count = registry.count;
                 point_table = std::move(candidate);
                 return;
             }
-            point_table.discovery_cursor = begin;
-            point_table.discovery_complete = begin == 0;
+            point_table.observed_object_count = registry.count;
+            point_table.discovery_complete = true;
         } catch (...) {
             point_table.discovery_complete = true;
         }
