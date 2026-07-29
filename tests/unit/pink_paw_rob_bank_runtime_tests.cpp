@@ -598,21 +598,38 @@ bool PendingPickabilityRemainsVisible() {
     return result;
 }
 
-bool PointTableDiscoveryAdvancesInSmallBatches() {
-    constexpr std::uint32_t kDelayedPointTableIndex = 257;
+bool PointTableDiscoveryPrioritizesRegistryTail() {
+    constexpr std::uint32_t kTailPointTableIndex = 4095;
     constexpr std::uintptr_t kObjectItemStride = 24;
 
     Fixture fixture;
-    fixture.Put(kObjectRegistry + 36U, kDelayedPointTableIndex + 1U);
+    fixture.Put(kObjectRegistry + 36U, kTailPointTableIndex + 1U);
     fixture.Put(kObjectChunk + kObjectItemStride, std::uintptr_t{});
-    const std::uintptr_t delayed_slot =
-        kObjectChunk + kDelayedPointTableIndex * kObjectItemStride;
-    fixture.Put(delayed_slot, kPointTable);
-    fixture.Put(delayed_slot + 16U, std::uint32_t{202});
+    const std::uintptr_t tail_slot =
+        kObjectChunk + kTailPointTableIndex * kObjectItemStride;
+    fixture.Put(tail_slot, kPointTable);
+
+    pink_paw_heist_esp::RobBankRuntime runtime;
+    const bool result = Check(
+        runtime.Start(fixture.Host()) && runtime.Refresh() &&
+            !runtime.DiscoveryPending() && runtime.PickabilityReady() &&
+            runtime.Inspect(1, "BankBox_Test_C").pickability ==
+                pink_paw_heist_esp::RobBankPickability::candidate &&
+            fixture.EntityPageCalls() == 0,
+        "Pink Paw runtime did not prioritize a newly loaded point table");
+    runtime.Stop();
+    return result;
+}
+
+bool PointTableDiscoveryAdvancesInReverseBatches() {
+    constexpr std::uint32_t kObjectCount = 258;
+
+    Fixture fixture;
+    fixture.Put(kObjectRegistry + 36U, kObjectCount);
 
     pink_paw_heist_esp::RobBankRuntime runtime;
     bool result = Check(runtime.Start(fixture.Host()) && runtime.Refresh(),
-        "Pink Paw runtime did not start delayed point-table discovery");
+        "Pink Paw runtime did not start reverse point-table discovery");
     const auto pending = runtime.Inspect(1, "BankBox_Test_C");
     result = Check(
         runtime.DiscoveryPending() && !runtime.PickabilityReady() &&
@@ -620,14 +637,40 @@ bool PointTableDiscoveryAdvancesInSmallBatches() {
             pending.pickability ==
                 pink_paw_heist_esp::RobBankPickability::unavailable &&
             fixture.EntityPageCalls() == 0,
-        "Pink Paw runtime did not preserve loot during partial point-table discovery") && result;
+        "Pink Paw runtime did not preserve loot during reverse point-table discovery") && result;
 
     result = Check(runtime.Refresh() && !runtime.DiscoveryPending() &&
             runtime.PickabilityReady() &&
             runtime.Inspect(1, "BankBox_Test_C").pickability ==
                 pink_paw_heist_esp::RobBankPickability::candidate &&
             fixture.EntityPageCalls() == 0,
-        "Pink Paw runtime did not finish point-table discovery independently") && result;
+        "Pink Paw runtime did not finish reverse point-table discovery independently") && result;
+    runtime.Stop();
+    return result;
+}
+
+bool PointTableDiscoveryResumesAfterRegistryGrowth() {
+    constexpr std::uintptr_t kObjectItemStride = 24;
+
+    Fixture fixture;
+    fixture.Put(kObjectRegistry + 36U, std::uint32_t{1});
+    fixture.Put(kObjectChunk + kObjectItemStride, std::uintptr_t{});
+
+    pink_paw_heist_esp::RobBankRuntime runtime;
+    bool result = Check(
+        runtime.Start(fixture.Host()) && runtime.Refresh() &&
+            !runtime.DiscoveryPending() && !runtime.PickabilityReady(),
+        "Pink Paw runtime did not complete the initial point-table search");
+
+    fixture.Put(kObjectRegistry + 36U, std::uint32_t{2});
+    fixture.Put(kObjectChunk + kObjectItemStride, kPointTable);
+    result = Check(
+        runtime.Refresh() && !runtime.DiscoveryPending() &&
+            runtime.PickabilityReady() &&
+            runtime.Inspect(1, "BankBox_Test_C").pickability ==
+                pink_paw_heist_esp::RobBankPickability::candidate &&
+            fixture.EntityPageCalls() == 0,
+        "Pink Paw runtime did not inspect newly registered point-table objects") && result;
     runtime.Stop();
     return result;
 }
@@ -809,7 +852,9 @@ int main() {
     result = RuntimeOwnsRobBankValidationAndInvocation() && result;
     result = PickabilityContextRefreshesDoorAccess() && result;
     result = PendingPickabilityRemainsVisible() && result;
-    result = PointTableDiscoveryAdvancesInSmallBatches() && result;
+    result = PointTableDiscoveryPrioritizesRegistryTail() && result;
+    result = PointTableDiscoveryAdvancesInReverseBatches() && result;
+    result = PointTableDiscoveryResumesAfterRegistryGrowth() && result;
     result = KnownLootValidationHandlesManualPickup() && result;
     result = WorldGateUsesOneCachedFNameMarker() && result;
     result = LootClassMetadataIsResolvedOncePerClassIdentity() && result;

@@ -152,7 +152,8 @@ struct ObjectRegistry final {
 struct PointTable final {
     std::uintptr_t table{};
     std::uint64_t registry_generation{};
-    std::uint32_t next_object_index{};
+    std::uint32_t discovery_cursor{};
+    std::uint32_t observed_object_count{};
     std::unordered_map<std::uint64_t, std::uintptr_t> rows;
     std::unordered_map<std::string, std::uintptr_t> rows_by_name;
     std::unordered_map<std::uintptr_t, FNameValue> key_doors;
@@ -553,6 +554,26 @@ struct RobBankRuntime::Impl final {
             Read(object_address, object) && Read(serial_address, serial);
     }
 
+    [[nodiscard]] bool ReadObjectPointer(
+        const ObjectRegistry& current,
+        const std::uint32_t index,
+        std::uintptr_t& object) const noexcept {
+        if (current.items == 0 || index >= current.count ||
+            current.count > current.max_count || current.num_chunks > current.max_chunks) {
+            return false;
+        }
+        const std::uint32_t page = index / kObjectChunkSize;
+        const std::uint32_t slot = index % kObjectChunkSize;
+        std::uintptr_t chunk{};
+        std::uintptr_t item{};
+        std::uintptr_t object_address{};
+        return ReadObjectChunk(current, page, chunk) &&
+            AddAddress(
+                chunk, static_cast<std::uint64_t>(slot) * kObjectItemStride, item) &&
+            AddAddress(item, kObjectPointerOffset, object_address) &&
+            Read(object_address, object);
+    }
+
     [[nodiscard]] bool LoadObjectRegistry(ObjectRegistry& next) const noexcept {
         ObjectRegistry candidate;
         if (!ReadPointerAt(object_registry_address, kObjectItemsOffset, candidate.items)) {
@@ -693,30 +714,36 @@ struct RobBankRuntime::Impl final {
                 point_table = {};
                 point_table.registry_generation = registry_generation;
             }
-            if (point_table.available ||
-                (point_table.discovery_complete &&
-                 point_table.next_object_index >= registry.count)) {
-                return;
+            if (point_table.available) return;
+            if (point_table.observed_object_count != registry.count) {
+                point_table.observed_object_count = registry.count;
+                point_table.discovery_cursor = registry.count;
+                point_table.discovery_complete = false;
             }
-            const std::uint32_t end = (std::min)(
-                registry.count,
-                point_table.next_object_index + kPointTableDiscoveryBatch);
-            for (std::uint32_t index = point_table.next_object_index; index < end; ++index) {
+            if (point_table.discovery_complete) return;
+
+            const std::uint32_t begin = point_table.discovery_cursor >
+                    kPointTableDiscoveryBatch
+                ? point_table.discovery_cursor - kPointTableDiscoveryBatch
+                : 0;
+            for (std::uint32_t cursor = point_table.discovery_cursor;
+                 cursor > begin; --cursor) {
+                const std::uint32_t index = cursor - 1U;
                 std::uintptr_t object{};
-                std::uint32_t serial{};
-                if (!ReadObjectSlot(registry, index, object, serial) || object == 0 ||
+                if (!ReadObjectPointer(registry, index, object) || object == 0 ||
                     ResolveObjectName(object) != "DT_RobBankPoint") {
                     continue;
                 }
                 PointTable candidate;
                 if (!BuildPointTable(object, candidate)) continue;
                 candidate.registry_generation = registry_generation;
-                candidate.next_object_index = index + 1U;
+                candidate.discovery_cursor = index;
+                candidate.observed_object_count = registry.count;
                 point_table = std::move(candidate);
                 return;
             }
-            point_table.next_object_index = end;
-            point_table.discovery_complete = end == registry.count;
+            point_table.discovery_cursor = begin;
+            point_table.discovery_complete = begin == 0;
         } catch (...) {
             point_table.discovery_complete = true;
         }
