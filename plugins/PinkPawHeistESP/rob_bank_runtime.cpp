@@ -60,10 +60,8 @@ constexpr std::uint32_t kObjectSerialOffset = 16;
 
 constexpr std::ptrdiff_t kRobBankCanInteractOffset = 3064;
 constexpr std::uint8_t kRobBankCanInteractMask = 1;
-constexpr std::ptrdiff_t kRobBankOutInteractEntriesOffset = 3112;
 constexpr std::ptrdiff_t kRobBankDelayInteractOffset = 3136;
 constexpr std::uint8_t kRobBankDelayInteractMask = 1;
-constexpr std::int32_t kMaximumInteractEntries = 4096;
 constexpr std::ptrdiff_t kRobBankPointUidOffset = 2944;
 constexpr std::ptrdiff_t kRobBankPointKeyDoorIdOffset = 196;
 constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 36928;
@@ -724,8 +722,8 @@ struct RobBankRuntime::Impl final {
         }
     }
 
-    [[nodiscard]] bool RefreshKeyDoorContext() {
-        unlocked_key_doors.clear();
+    [[nodiscard]] bool RefreshKeyDoorContext(bool* const changed = nullptr) {
+        std::unordered_set<std::uint64_t> next_unlocked_key_doors;
         std::uintptr_t player_state{};
         if (player_controller == 0 ||
             !ReadPointerAt(
@@ -740,16 +738,19 @@ struct RobBankRuntime::Impl final {
             (header.count != 0 && header.data == 0)) {
             return false;
         }
-        if (header.count == 0) return true;
-        std::vector<FNameValue> values(static_cast<std::size_t>(header.count));
-        if (!ReadBytes(
-                header.data, values.data(), values.size() * sizeof(FNameValue))) {
-            return false;
+        if (header.count != 0) {
+            std::vector<FNameValue> values(static_cast<std::size_t>(header.count));
+            if (!ReadBytes(
+                    header.data, values.data(), values.size() * sizeof(FNameValue))) {
+                return false;
+            }
+            next_unlocked_key_doors.reserve(values.size());
+            for (const FNameValue value : values) {
+                next_unlocked_key_doors.insert(EncodeFName(value));
+            }
         }
-        unlocked_key_doors.reserve(values.size());
-        for (const FNameValue value : values) {
-            unlocked_key_doors.insert(EncodeFName(value));
-        }
+        if (changed != nullptr) *changed = next_unlocked_key_doors != unlocked_key_doors;
+        unlocked_key_doors = std::move(next_unlocked_key_doors);
         return true;
     }
 
@@ -859,22 +860,10 @@ struct RobBankRuntime::Impl final {
         blocked = false;
         std::uintptr_t root_address{};
         std::uintptr_t root{};
-        ArrayHeader interact_entries;
-        std::uintptr_t interact_entries_address{};
         bool delay_interact{};
         bool can_interact{};
         if (!AddSignedAddress(actor, kActorRootComponentOffset, root_address) ||
             !Read(root_address, root) ||
-            !AddSignedAddress(
-                actor, kRobBankOutInteractEntriesOffset,
-                interact_entries_address) ||
-            !Read(interact_entries_address, interact_entries) ||
-            interact_entries.count < 0 ||
-            interact_entries.capacity < interact_entries.count ||
-            interact_entries.capacity > kMaximumInteractEntries ||
-            (interact_entries.count != 0 &&
-             (interact_entries.data == 0 ||
-              (interact_entries.data & (alignof(std::uintptr_t) - 1U)) != 0)) ||
             !ReadFlag(
                 actor, kRobBankDelayInteractOffset,
                 kRobBankDelayInteractMask, delay_interact) ||
@@ -883,8 +872,9 @@ struct RobBankRuntime::Impl final {
                 kRobBankCanInteractMask, can_interact)) {
             return false;
         }
-        blocked = root == 0 || interact_entries.count == 0 ||
-            !delay_interact || !can_interact;
+        // OutInteractEntries is populated by the player's nearby-interaction query. It cannot
+        // participate in map-wide pickability or distant BankBoxes remain falsely blocked.
+        blocked = root == 0 || !delay_interact || !can_interact;
         if (blocked) return true;
         if (!point_table.available || !key_door_context_available) return false;
 
@@ -1027,6 +1017,34 @@ bool RobBankRuntime::Refresh() noexcept {
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+RobBankContextRefresh RobBankRuntime::RefreshPickabilityContext() noexcept {
+    if (!impl_->started || !impl_->refreshed || !impl_->IsGameThread()) {
+        return RobBankContextRefresh::unavailable;
+    }
+    try {
+        const bool context_was_available = impl_->key_door_context_available;
+        std::uintptr_t live_world{};
+        std::uintptr_t live_controller{};
+        if (!impl_->ReadWorldAndController(live_world, live_controller) ||
+            live_world != impl_->world || live_controller != impl_->player_controller) {
+            impl_->key_door_context_available = false;
+            return RobBankContextRefresh::unavailable;
+        }
+        bool changed{};
+        if (!impl_->RefreshKeyDoorContext(&changed)) {
+            impl_->key_door_context_available = false;
+            return RobBankContextRefresh::unavailable;
+        }
+        impl_->key_door_context_available = true;
+        return changed || !context_was_available
+            ? RobBankContextRefresh::changed
+            : RobBankContextRefresh::unchanged;
+    } catch (...) {
+        impl_->key_door_context_available = false;
+        return RobBankContextRefresh::unavailable;
     }
 }
 

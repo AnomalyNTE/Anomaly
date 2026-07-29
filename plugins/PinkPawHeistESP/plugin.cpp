@@ -39,6 +39,7 @@ constexpr std::uint32_t kTableSizingFixedFit = 1U << 13U;
 // checked in small batches so manual pickups do not restart the entity-frame scan.
 constexpr auto kLootRefreshInterval = std::chrono::seconds(2);
 constexpr auto kKnownLootValidationInterval = std::chrono::milliseconds(50);
+constexpr auto kPickabilityContextRefreshInterval = std::chrono::milliseconds(250);
 constexpr auto kRobBankPreparationRetryInterval = std::chrono::seconds(1);
 constexpr std::size_t kKnownLootValidationBatch = 8;
 constexpr float kFixedBoxThickness = 1.5F;
@@ -162,6 +163,7 @@ struct Context final {
     bool settings_dirty{};
     Clock::time_point last_valid_refresh{};
     Clock::time_point next_known_loot_validation{};
+    Clock::time_point next_pickability_context_refresh{};
     Clock::time_point next_rob_bank_preparation{};
     std::size_t known_loot_validation_cursor{};
 };
@@ -928,6 +930,7 @@ void ClearCache() noexcept {
     g_context.current_page = 0;
     g_context.last_valid_refresh = {};
     g_context.next_known_loot_validation = {};
+    g_context.next_pickability_context_refresh = {};
     g_context.next_rob_bank_preparation = {};
     g_context.known_loot_validation_cursor = 0;
 }
@@ -966,6 +969,8 @@ void RefreshCacheIfDue() {
         (rob_bank_refreshed && g_rob_bank.DiscoveryPending()
              ? kKnownLootValidationInterval
              : kRobBankPreparationRetryInterval);
+    g_context.next_pickability_context_refresh =
+        now + kPickabilityContextRefreshInterval;
     if (g_context.host != nullptr && CollectLoot(frame, loot)) {
         std::sort(loot.begin(), loot.end(), [](const LootEntity& left, const LootEntity& right) {
             if (left.snapshot.entity_id != right.snapshot.entity_id) {
@@ -1007,16 +1012,26 @@ struct KnownLootValidationChange final {
 
 void RefreshKnownLootIfDue() {
     const Clock::time_point now = Clock::now();
+    bool validate_all{};
     if (g_rob_bank.Available() && g_rob_bank.DiscoveryPending() &&
         now >= g_context.next_rob_bank_preparation) {
         const bool refreshed = g_rob_bank.Refresh();
+        validate_all = refreshed && g_rob_bank.PickabilityReady();
         g_context.next_rob_bank_preparation = now +
             (refreshed && g_rob_bank.DiscoveryPending()
                  ? kKnownLootValidationInterval
                  : kRobBankPreparationRetryInterval);
     }
+    if (g_rob_bank.CanInspect() && !g_rob_bank.DiscoveryPending() &&
+        now >= g_context.next_pickability_context_refresh) {
+        validate_all = g_rob_bank.RefreshPickabilityContext() ==
+                pink_paw_heist_esp::RobBankContextRefresh::changed ||
+            validate_all;
+        g_context.next_pickability_context_refresh =
+            now + kPickabilityContextRefreshInterval;
+    }
 
-    if (now < g_context.next_known_loot_validation) return;
+    if (!validate_all && now < g_context.next_known_loot_validation) return;
     g_context.next_known_loot_validation = now + kKnownLootValidationInterval;
 
     const auto current = g_loot_cache.load(std::memory_order_acquire);
@@ -1027,8 +1042,9 @@ void RefreshKnownLootIfDue() {
 
     const std::size_t start =
         g_context.known_loot_validation_cursor % current->loot.size();
-    const std::size_t count =
-        (std::min)(kKnownLootValidationBatch, current->loot.size());
+    const std::size_t count = validate_all
+        ? current->loot.size()
+        : (std::min)(kKnownLootValidationBatch, current->loot.size());
     std::vector<KnownLootValidationChange> changes;
     changes.reserve(count);
     for (std::size_t offset{}; offset < count; ++offset) {

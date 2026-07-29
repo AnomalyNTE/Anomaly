@@ -51,6 +51,12 @@ enum class RobBankPickability {
     candidate,
 };
 
+enum class RobBankContextRefresh {
+    unavailable,
+    unchanged,
+    changed,
+};
+
 struct RobBankInspection final {
     RobBankEntity entity;
     RobBankPickability pickability{RobBankPickability::unavailable};
@@ -72,6 +78,9 @@ public:
     // Game-thread refresh of the object registry, local controller, and
     // RobBank point-table state used by Inspect and Pickup.
     [[nodiscard]] bool Refresh() noexcept;
+    // Refreshes only the player's key-door state and reports whether global
+    // pickability inputs changed; it does not scan the UObject registry.
+    [[nodiscard]] RobBankContextRefresh RefreshPickabilityContext() noexcept;
 
     [[nodiscard]] RobBankInspection Inspect(
         std::uint64_t entity_id,

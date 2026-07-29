@@ -35,12 +35,12 @@ constexpr std::uintptr_t kActorClass = 0x310000;
 constexpr std::uintptr_t kRobBankBaseClass = 0x311000;
 constexpr std::uintptr_t kRootComponent = 0x320000;
 constexpr std::uintptr_t kInterfaceVtable = 0x330000;
-constexpr std::uintptr_t kInteractEntries = 0x340000;
 constexpr std::uintptr_t kPointTable = 0x350000;
 constexpr std::uintptr_t kDataTableClass = 0x351000;
 constexpr std::uintptr_t kPointTableOuter = 0x352000;
 constexpr std::uintptr_t kPointRows = 0x353000;
 constexpr std::uintptr_t kPointRow = 0x354000;
+constexpr std::uintptr_t kKeyDoorEntries = 0x355000;
 
 constexpr std::uint32_t kActorSerial = 101;
 constexpr std::uint32_t kActorNameId = 1;
@@ -51,6 +51,7 @@ constexpr std::uint32_t kPointTableOuterNameId = 5;
 constexpr std::uint32_t kPointUidNameId = 6;
 constexpr std::uint32_t kWorldMarkerNameId = 7;
 constexpr std::uint32_t kOtherClassNameId = 8;
+constexpr std::uint32_t kKeyDoorNameId = 9;
 
 std::uintptr_t g_expected_interface{};
 std::uintptr_t g_expected_controller{};
@@ -432,7 +433,8 @@ private:
         Put(kActor + 456U, kRootComponent);
         Put(kActor + 2944U, FNameValue{kPointUidNameId, 0});
         Put(kActor + 3064U, std::uint8_t{1});
-        Put(kActor + 3112U, ArrayHeader{kInteractEntries, 1, 1});
+        // Distant BankBoxes have no nearby-interaction entries yet.
+        Put(kActor + 3112U, ArrayHeader{});
         Put(kActor + 3136U, std::uint8_t{1});
         Put(kActor + 864U, kInterfaceVtable);
         Put(kInterfaceVtable + 24U, reinterpret_cast<std::uintptr_t>(&PickupStub));
@@ -502,7 +504,7 @@ bool RuntimeOwnsRobBankValidationAndInvocation() {
         candidate.entity.object_index == 0 &&
             candidate.entity.object_serial == kActorSerial &&
             candidate.pickability == pink_paw_heist_esp::RobBankPickability::candidate,
-        "Pink Paw runtime did not identify a pickable BankBox") && result;
+        "Pink Paw runtime made distant pickability depend on nearby interaction entries") && result;
 
     fixture.Put(kActor + 3064U, std::uint8_t{0});
     const auto blocked = runtime.Inspect(1, "BankBox_Test_C");
@@ -541,6 +543,34 @@ bool RuntimeOwnsRobBankValidationAndInvocation() {
         "Pink Paw runtime did not invoke the validated native pickup") && result;
     runtime.Stop();
     return Check(!runtime.Available(), "Pink Paw runtime remained available after stop") && result;
+}
+
+bool PickabilityContextRefreshesDoorAccess() {
+    Fixture fixture;
+    fixture.Put(kPointRow + 196U, FNameValue{kKeyDoorNameId, 0});
+    pink_paw_heist_esp::RobBankRuntime runtime;
+    bool result = Check(runtime.Start(fixture.Host()) && runtime.Refresh(),
+        "Pink Paw runtime did not start door-access refresh");
+    result = Check(
+        runtime.Inspect(1, "BankBox_Test_C").pickability ==
+            pink_paw_heist_esp::RobBankPickability::blocked,
+        "Pink Paw runtime ignored a locked RobBank point") && result;
+
+    fixture.Put(
+        kPlayerState + 36928U,
+        ArrayHeader{kKeyDoorEntries, 1, 1});
+    fixture.Put(kKeyDoorEntries, FNameValue{kKeyDoorNameId, 0});
+    result = Check(
+        runtime.RefreshPickabilityContext() ==
+                pink_paw_heist_esp::RobBankContextRefresh::changed &&
+            runtime.Inspect(1, "BankBox_Test_C").pickability ==
+                pink_paw_heist_esp::RobBankPickability::candidate &&
+            runtime.RefreshPickabilityContext() ==
+                pink_paw_heist_esp::RobBankContextRefresh::unchanged &&
+            fixture.EntityPageCalls() == 0,
+        "Pink Paw runtime did not refresh global door access independently") && result;
+    runtime.Stop();
+    return result;
 }
 
 bool PendingPickabilityRemainsVisible() {
@@ -777,6 +807,7 @@ bool EmptyLootDoesNotStopRefresh() {
 int main() {
     bool result = RequiredSignatureServiceIsEnforced();
     result = RuntimeOwnsRobBankValidationAndInvocation() && result;
+    result = PickabilityContextRefreshesDoorAccess() && result;
     result = PendingPickabilityRemainsVisible() && result;
     result = PointTableDiscoveryAdvancesInSmallBatches() && result;
     result = KnownLootValidationHandlesManualPickup() && result;
