@@ -6,6 +6,8 @@
 
 **稳定、灵活、开放的《异环》插件平台**
 
+qq交流群: 1037114140
+
 <p align="center">
   <a href="docs/user-guide/README.md">用户文档</a> ·
   <a href="docs/user-guide/third-party-plugins.md">第三方插件</a> ·
