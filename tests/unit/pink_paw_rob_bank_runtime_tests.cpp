@@ -1,8 +1,10 @@
 #include "plugins/PinkPawHeistESP/loot_class_cache.hpp"
+#include "plugins/PinkPawHeistESP/loot_refresh_policy.hpp"
 #include "plugins/PinkPawHeistESP/rob_bank_runtime.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -608,6 +610,32 @@ bool LootClassMetadataIsResolvedOncePerClassIdentity() {
         "Pink Paw loot class cache did not invalidate a changed class identity") && result;
 }
 
+bool LootRefreshStopsAfterStableObservation() {
+    using namespace std::chrono_literals;
+    using Policy = pink_paw_heist_esp::LootRefreshPolicy;
+
+    Policy policy(2s);
+    const Policy::Clock::time_point start{};
+    bool result = Check(
+        policy.Begin(start, true),
+        "Pink Paw loot refresh did not honor an explicit request");
+    policy.Complete(start, false);
+    result = Check(
+        !policy.Begin(start + 1s, false) && policy.Begin(start + 2s, false),
+        "Pink Paw loot refresh did not wait for the convergence interval") && result;
+    policy.Complete(start + 2s, true);
+    result = Check(
+        !policy.Begin(start + 20s, false),
+        "Pink Paw loot refresh continued after the state stabilized") && result;
+    result = Check(
+        policy.Begin(start + 20s, true),
+        "Pink Paw loot refresh did not restart after a pickup request") && result;
+    policy.Complete(start + 20s, false);
+    return Check(
+        !policy.Begin(start + 21s, false) && policy.Begin(start + 22s, false),
+        "Pink Paw loot refresh did not reconverge after a pickup request") && result;
+}
+
 }  // namespace
 
 int main() {
@@ -615,5 +643,6 @@ int main() {
     result = RuntimeOwnsRobBankValidationAndInvocation() && result;
     result = WorldGateUsesOneCachedFNameMarker() && result;
     result = LootClassMetadataIsResolvedOncePerClassIdentity() && result;
+    result = LootRefreshStopsAfterStableObservation() && result;
     return result ? 0 : 1;
 }

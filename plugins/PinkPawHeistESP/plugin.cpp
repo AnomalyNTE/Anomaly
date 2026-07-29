@@ -3,6 +3,7 @@
 
 #include "loot_class_cache.hpp"
 #include "loot_catalog.generated.h"
+#include "loot_refresh_policy.hpp"
 #include "rob_bank_runtime.hpp"
 
 #include <algorithm>
@@ -33,7 +34,7 @@ constexpr std::uint32_t kMaximumEntityCount = 32768;
 constexpr std::size_t kMaximumNameBytes = 1024;
 constexpr std::size_t kLootRowsPerPage = 6;
 constexpr std::uint32_t kTableSizingFixedFit = 1U << 13U;
-// BankBoxes are stationary; pickup and manual actions still request an immediate refresh.
+// BankBoxes are stationary; scan until stable, then restart only for explicit refreshes.
 constexpr auto kLootRefreshInterval = std::chrono::seconds(2);
 constexpr float kFixedBoxThickness = 1.5F;
 constexpr auto kCacheFailureGracePeriod =
@@ -140,6 +141,7 @@ struct Context final {
     AnomalyGenerationHandleV1 settings_schema{};
     std::array<AnomalyGenerationHandleV1, catalog::kItemDefinitions.size()> item_icons{};
     pink_paw_heist_esp::LootClassCache loot_classes;
+    pink_paw_heist_esp::LootRefreshPolicy loot_refresh{kLootRefreshInterval};
 
     int menu_open{1};
     int enabled{1};
@@ -150,7 +152,6 @@ struct Context final {
     std::size_t current_page{};
 
     bool settings_dirty{};
-    Clock::time_point next_refresh{};
     Clock::time_point last_valid_refresh{};
 };
 
@@ -887,22 +888,50 @@ void ClearCache() noexcept {
     g_loot_cache.store({}, std::memory_order_release);
     g_loot_refresh_requested.store(true, std::memory_order_release);
     g_context.loot_classes.Clear();
+    g_context.loot_refresh.Reset();
     g_context.current_page = 0;
     g_context.last_valid_refresh = {};
 }
 
 std::string BuildLootLabel(const LootEntity& entry);
 
+bool SameLootState(
+    const LootCache& current,
+    const std::vector<LootEntity>& next) noexcept {
+    if (current.loot.size() != next.size()) return false;
+    for (std::size_t index = 0; index < next.size(); ++index) {
+        const LootEntity& left = current.loot[index];
+        const LootEntity& right = next[index];
+        if (left.snapshot.entity_id != right.snapshot.entity_id ||
+            left.snapshot.class_name_id != right.snapshot.class_name_id ||
+            left.class_name != right.class_name ||
+            left.rob_bank.entity.object_serial != right.rob_bank.entity.object_serial ||
+            left.rob_bank.pickability != right.rob_bank.pickability) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void RefreshCacheIfDue() {
     const Clock::time_point now = Clock::now();
     const bool forced =
         g_loot_refresh_requested.exchange(false, std::memory_order_acq_rel);
-    if (!forced && now < g_context.next_refresh) return;
+    if (!g_context.loot_refresh.Begin(now, forced)) return;
 
+    const auto current = g_loot_cache.load(std::memory_order_acquire);
     AnomalyNteEntityFrameV1 frame{sizeof(frame)};
     std::vector<LootEntity> loot;
     static_cast<void>(g_rob_bank.Refresh());
     if (g_context.host != nullptr && CollectLoot(frame, loot)) {
+        std::sort(loot.begin(), loot.end(), [](const LootEntity& left, const LootEntity& right) {
+            if (left.snapshot.entity_id != right.snapshot.entity_id) {
+                return left.snapshot.entity_id < right.snapshot.entity_id;
+            }
+            return left.class_name < right.class_name;
+        });
+        const bool unchanged =
+            !forced && current && current->available && SameLootState(*current, loot);
         for (LootEntity& entry : loot) entry.label = BuildLootLabel(entry);
         auto cache = std::make_shared<LootCache>();
         cache->frame = frame;
@@ -910,18 +939,17 @@ void RefreshCacheIfDue() {
         cache->available = true;
         g_loot_cache.store(std::move(cache), std::memory_order_release);
         g_context.last_valid_refresh = now;
+        g_context.loot_refresh.Complete(now, unchanged);
     } else {
         // Whole-collection retries reject partial data. Keep the last complete frame briefly
         // so a generation race does not make all ESP disappear for a single refresh.
-        const auto current = g_loot_cache.load(std::memory_order_acquire);
         if (!current || !current->available ||
             now - g_context.last_valid_refresh >= kCacheFailureGracePeriod) {
             g_loot_cache.store({}, std::memory_order_release);
             g_context.last_valid_refresh = {};
         }
+        g_context.loot_refresh.Fail(now);
     }
-
-    g_context.next_refresh = now + kLootRefreshInterval;
 }
 
 bool PassesItemFilters(const LootEntity& entry) noexcept {
