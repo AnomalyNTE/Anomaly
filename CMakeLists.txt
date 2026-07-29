@@ -816,6 +816,9 @@ target_link_libraries(
 add_dependencies(anomaly_core anomaly_stage_nte_profiles anomaly_crash_coordinator)
 add_custom_command(TARGET anomaly_core POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/CONTACT"
+            "$<TARGET_FILE_DIR:anomaly_core>/CONTACT"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_SOURCE_DIR}/config/anomaly.ini"
             "$<TARGET_FILE_DIR:anomaly_core>/anomaly.ini"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -1131,6 +1134,11 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_pink_paw_heist_esp PinkPaw
 anomaly_stage_platform_preview_plugin(anomaly_builtin_fake_uid FakeUID)
 
 add_custom_command(TARGET anomaly-platform-preview POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/CONTACT"
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/CONTACT"
     ${ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS}
     VERBATIM)
 
@@ -2335,7 +2343,7 @@ if(TARGET anomaly_builtin_fake_uid)
     install(DIRECTORY plugins/FakeUID/locales/
         DESTINATION Anomaly/plugins/FakeUID/locales COMPONENT GameRuntime)
 endif()
-install(FILES config/anomaly.ini config/repository.json config/plugin-repositories.json
+install(FILES CONTACT config/anomaly.ini config/repository.json config/plugin-repositories.json
     DESTINATION Anomaly COMPONENT GameRuntime)
 install(DIRECTORY locales/host
     DESTINATION Anomaly/locales COMPONENT GameRuntime)

@@ -311,6 +311,8 @@
     "settings.about.runtime": "Runtime",
     "settings.about.sdk_api": "SDK / API",
     "settings.about.repository": "仓库",
+    "settings.about.project_repository": "GitHub",
+    "settings.about.qq_group": "QQ 群",
     "settings.input.virtual_key": "按键 {0}",
     "settings.option.trace": "跟踪",
     "settings.option.debug": "调试",

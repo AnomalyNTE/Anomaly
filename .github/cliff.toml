@@ -61,7 +61,7 @@ body = """
 footer = """
 ## 国内下载源
 
-- [夸克云盘](https://pan.quark.cn/s/81a25f50de52?pwd=gGdV) 提取码: gGdV
+- [夸克网盘](https://pan.quark.cn/s/81a25f50de52?pwd=gGdV) 提取码: gGdV
 - [百度网盘](https://pan.baidu.com/s/1x5PpiYT8GM2z0_axmcAJ9w?pwd=hfs5) 提取码: hfs5
 """
 

@@ -26,6 +26,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     auto config = ue5mem::AnalyzerConfig::Load(root / L"anomaly.ini");
     const auto locale = anomaly::ResolveUserLocale(config.platform_language);
     ue5mem::PlatformDiagnostics diagnostics;
+    diagnostics.runtime_root = root;
     diagnostics.translator = anomaly::LoadHostCatalog(
         locale.locale, root / L"locales" / L"host").translator;
     config.platform_enabled = true;

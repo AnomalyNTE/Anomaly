@@ -13,11 +13,13 @@
 
 #include <Windows.h>
 #include <d3d11.h>
+#include <shellapi.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_win32.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -409,6 +411,35 @@ constexpr float kPlatformMinimumShellWidth = 760.0f;
 constexpr float kPlatformMinimumShellHeight = 500.0f;
 constexpr float kPlatformShellViewportMargin = 12.0f;
 
+struct ContactInformation final {
+    std::string repository_label;
+    std::string repository_url;
+    std::string qq_group;
+};
+
+[[nodiscard]] std::optional<ContactInformation> LoadContactInformation(
+    const std::filesystem::path& path) noexcept {
+    try {
+        std::ifstream input(path, std::ios::binary);
+        if (!input) return std::nullopt;
+        const nlohmann::json document = nlohmann::json::parse(input);
+        if (document.at("schemaVersion").get<int>() != 1) return std::nullopt;
+        const nlohmann::json& repository = document.at("repository");
+        ContactInformation contact{
+            repository.at("label").get<std::string>(),
+            repository.at("url").get<std::string>(),
+            document.at("qqGroup").get<std::string>(),
+        };
+        if (contact.repository_label.empty() || contact.repository_url.empty() ||
+            contact.qq_group.empty()) {
+            return std::nullopt;
+        }
+        return contact;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 [[nodiscard]] std::vector<std::uint8_t> LoadEmbeddedLogoBytes() noexcept {
     try {
         const auto module = reinterpret_cast<HMODULE>(&__ImageBase);
@@ -424,6 +455,27 @@ constexpr float kPlatformShellViewportMargin = 12.0f;
     } catch (...) {
         return {};
     }
+}
+
+[[nodiscard]] bool StartsWith(
+    const std::string_view value, const std::string_view prefix) noexcept {
+    return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
+}
+
+[[nodiscard]] bool OpenExternalUrl(const std::string& url) noexcept {
+    if (!StartsWith(url, "https://") && !StartsWith(url, "http://")) return false;
+    const int required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, url.c_str(), static_cast<int>(url.size()),
+        nullptr, 0);
+    if (required <= 0) return false;
+    std::wstring wide(static_cast<std::size_t>(required), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, url.c_str(), static_cast<int>(url.size()),
+            wide.data(), required) != required) {
+        return false;
+    }
+    return reinterpret_cast<INT_PTR>(ShellExecuteW(
+               nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
 }
 
 // The game path uploads this host-owned image through the D3D12 resource
@@ -503,7 +555,8 @@ public:
           management_window_scope_(std::make_shared<anomaly::PluginScope>(
               std::make_shared<anomaly::ResourceLedger>(),
               std::string(kPlatformUiWindowOwner), kPlatformUiWindowGeneration)),
-          diagnostics_(std::move(diagnostics)) {
+          diagnostics_(std::move(diagnostics)),
+          contact_(LoadContactInformation(diagnostics_.runtime_root / L"CONTACT")) {
         if (diagnostics_.translator == nullptr) {
             diagnostics_.translator =
                 anomaly::ParseHostCatalog(anomaly::Locale::EnUs).translator;
@@ -4384,7 +4437,7 @@ private:
         case SettingsSection::About:
             if (SettingMatches(Text(anomaly::MessageId::SettingsRuntimeIdentity),
                     Text(anomaly::MessageId::SettingsBuildVersions),
-                    "about version sdk profile")) {
+                    "about version sdk profile github contact qq")) {
                 heading();
                 if (ImGui::BeginTable("##about", 2,
                         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
@@ -4401,6 +4454,23 @@ private:
                         "V" + std::to_string(ANOMALY_PLUGIN_API_V1_MAJOR));
                     fact(Text(anomaly::MessageId::SettingsRepository),
                         DisplayRepositoryState(model_.Snapshot().repository.state));
+                    ImGui::TableNextRow(ImGuiTableRowFlags_None, 38.0f);
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled(
+                        "%s", Text(anomaly::MessageId::SettingsProjectRepository));
+                    ImGui::TableNextColumn();
+                    if (contact_ && ImGui::TextLink(contact_->repository_label.c_str())) {
+                        pending_external_url_ = contact_->repository_url;
+                    } else if (!contact_) {
+                        ImGui::TextUnformatted(Text(anomaly::MessageId::CommonUnavailable));
+                    }
+                    ImGui::TableNextRow(ImGuiTableRowFlags_None, 38.0f);
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled("%s", Text(anomaly::MessageId::SettingsQqGroup));
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(contact_
+                            ? contact_->qq_group.c_str()
+                            : Text(anomaly::MessageId::CommonUnavailable));
                     ImGui::EndTable();
                 }
             }
@@ -5334,11 +5404,13 @@ private:
         std::optional<anomaly::PlatformSettingsApplyRequest> apply;
         std::optional<anomaly::PluginRepositoryConfig> repository_configure;
         std::optional<std::string> route;
+        std::optional<std::string> external_url;
         {
             std::scoped_lock operation_lock(operation_mutex_);
             apply.swap(pending_settings_apply_);
             repository_configure.swap(pending_repository_configure_);
             route.swap(settings_route_to_record_);
+            external_url.swap(pending_external_url_);
         }
         const auto submit = diagnostics_.lifecycle_post
             ? diagnostics_.lifecycle_post
@@ -5398,6 +5470,13 @@ private:
             const auto provider = diagnostics_.settings_record_route;
             const auto operation = [provider, route = *route] {
                 static_cast<void>(provider(route));
+            };
+            if (submit) static_cast<void>(submit(operation));
+            else operation();
+        }
+        if (external_url) {
+            const auto operation = [url = std::move(*external_url)] {
+                static_cast<void>(OpenExternalUrl(url));
             };
             if (submit) static_cast<void>(submit(operation));
             else operation();
@@ -5827,6 +5906,7 @@ private:
     anomaly::UiResourceHandle management_window_;
     anomaly::UiResourceHandle logo_texture_;
     PlatformDiagnostics diagnostics_;
+    std::optional<ContactInformation> contact_;
     anomaly::PlatformUiModel model_;
     std::uint64_t revision_{};
     bool catalog_ready_{};
@@ -5896,6 +5976,7 @@ private:
     std::string settings_apply_error_;
     bool settings_save_pending_{};
     bool settings_route_restored_{};
+    std::optional<std::string> pending_external_url_;
     bool settings_hotkey_capture_{};
     std::array<bool, 256> settings_hotkey_down_{};
     bool settings_leave_popup_requested_{};
