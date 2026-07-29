@@ -8,3 +8,4 @@ snapshot-*.json
 /runtime/
 /output/
 /imgui.ini
+/.local/
