@@ -1,3 +1,4 @@
+#include "plugins/PinkPawHeistESP/loot_class_cache.hpp"
 #include "plugins/PinkPawHeistESP/rob_bank_runtime.hpp"
 
 #include <algorithm>
@@ -5,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -99,7 +101,7 @@ public:
             this, SessionSnapshot, nullptr, nullptr};
         entities_ = {
             sizeof(entities_), ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION,
-            this, EntityFrame, nullptr, nullptr, nullptr, EntityPage,
+            this, EntityFrame, nullptr, EntityClassName, nullptr, EntityPage,
             nullptr, nullptr, nullptr};
         host_ = {
             sizeof(host_), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
@@ -134,10 +136,19 @@ public:
         ++entity_generation_;
         ++entity_sequence_;
     }
+    void SetResolvedClassName(const std::uint32_t id, std::string name) {
+        names_by_id_[id] = std::move(name);
+    }
     [[nodiscard]] std::uint32_t EntityPageCalls() const noexcept {
         return entity_page_calls_;
     }
     [[nodiscard]] std::uint32_t NameCalls() const noexcept { return name_calls_; }
+    [[nodiscard]] std::uint32_t EntityClassNameCalls() const noexcept {
+        return entity_class_name_calls_;
+    }
+    [[nodiscard]] const AnomalyNteEntitiesServiceV1* Entities() const noexcept {
+        return &entities_;
+    }
 
 private:
     static std::string_view View(const AnomalyStringViewV1 value) noexcept {
@@ -298,6 +309,33 @@ private:
         return Status(ANOMALY_STATUS_V1_OK);
     }
 
+    static AnomalyStatusV1 ANOMALY_CALL EntityClassName(
+        void* user,
+        const std::uint64_t class_id,
+        char* destination,
+        std::size_t* size) noexcept {
+        if (user == nullptr || size == nullptr ||
+            class_id > (std::numeric_limits<std::uint32_t>::max)()) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& fixture = *static_cast<Fixture*>(user);
+        ++fixture.entity_class_name_calls_;
+        const auto found = fixture.names_by_id_.find(static_cast<std::uint32_t>(class_id));
+        if (found == fixture.names_by_id_.end()) return Status(ANOMALY_STATUS_V1_NOT_FOUND);
+        const std::size_t required = found->second.size() + 1U;
+        if (destination == nullptr) {
+            *size = required;
+            return Status(ANOMALY_STATUS_V1_OK);
+        }
+        if (*size < required) {
+            *size = required;
+            return Status(ANOMALY_STATUS_V1_BUFFER_TOO_SMALL);
+        }
+        std::memcpy(destination, found->second.c_str(), required);
+        *size = required;
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL EntityPage(
         void* user,
         const AnomalyNteEntityPageRequestV1* request,
@@ -432,6 +470,7 @@ private:
     std::uint64_t entity_generation_{70};
     std::uint64_t entity_sequence_{1};
     std::uint32_t entity_page_calls_{};
+    std::uint32_t entity_class_name_calls_{};
     std::uint32_t name_calls_{};
     bool game_thread_{true};
     bool provide_signatures_{true};
@@ -534,11 +573,47 @@ bool WorldGateUsesOneCachedFNameMarker() {
     return result;
 }
 
+bool LootClassMetadataIsResolvedOncePerClassIdentity() {
+    Fixture fixture;
+    pink_paw_heist_esp::LootClassCache cache;
+    const pink_paw_heist_esp::LootClassMetadata* metadata{};
+
+    const auto first = cache.Resolve(
+        fixture.Entities(), kActorNameId, kActorNameId, metadata);
+    bool result = Check(
+        first == pink_paw_heist_esp::LootClassResolution::resolved &&
+            metadata != nullptr && metadata->bank_box &&
+            metadata->name == "BankBox_Test_C" &&
+            fixture.EntityClassNameCalls() == 2,
+        "Pink Paw loot class cache did not resolve the initial class identity");
+
+    metadata = nullptr;
+    const auto cached = cache.Resolve(
+        fixture.Entities(), kActorNameId, kActorNameId, metadata);
+    result = Check(
+        cached == pink_paw_heist_esp::LootClassResolution::resolved &&
+            metadata != nullptr && metadata->bank_box &&
+            fixture.EntityClassNameCalls() == 2,
+        "Pink Paw loot class cache repeated a class-name service lookup") && result;
+
+    metadata = nullptr;
+    fixture.SetResolvedClassName(kActorNameId, "HTRobBankItemActor");
+    const auto replaced = cache.Resolve(
+        fixture.Entities(), kActorNameId, kRobBankBaseNameId, metadata);
+    return Check(
+        replaced == pink_paw_heist_esp::LootClassResolution::resolved &&
+            metadata != nullptr && !metadata->bank_box &&
+            metadata->name == "HTRobBankItemActor" &&
+            fixture.EntityClassNameCalls() == 4,
+        "Pink Paw loot class cache did not invalidate a changed class identity") && result;
+}
+
 }  // namespace
 
 int main() {
     bool result = RequiredSignatureServiceIsEnforced();
     result = RuntimeOwnsRobBankValidationAndInvocation() && result;
     result = WorldGateUsesOneCachedFNameMarker() && result;
+    result = LootClassMetadataIsResolvedOncePerClassIdentity() && result;
     return result ? 0 : 1;
 }

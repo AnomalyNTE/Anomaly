@@ -1,6 +1,7 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "plugins/common/localization.hpp"
 
+#include "loot_class_cache.hpp"
 #include "loot_catalog.generated.h"
 #include "rob_bank_runtime.hpp"
 
@@ -19,7 +20,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -33,9 +33,11 @@ constexpr std::uint32_t kMaximumEntityCount = 32768;
 constexpr std::size_t kMaximumNameBytes = 1024;
 constexpr std::size_t kLootRowsPerPage = 6;
 constexpr std::uint32_t kTableSizingFixedFit = 1U << 13U;
-constexpr auto kLootRefreshInterval = std::chrono::milliseconds(100);
+// BankBoxes are stationary; pickup and manual actions still request an immediate refresh.
+constexpr auto kLootRefreshInterval = std::chrono::seconds(2);
 constexpr float kFixedBoxThickness = 1.5F;
-constexpr auto kCacheFailureGracePeriod = std::chrono::milliseconds(750);
+constexpr auto kCacheFailureGracePeriod =
+    kLootRefreshInterval + std::chrono::milliseconds(750);
 constexpr std::size_t kCollectionAttempts = 3;
 constexpr std::size_t kMaximumSettingsDocumentBytes = 1024;
 constexpr auto kExtractionWorldPollInterval = std::chrono::seconds(1);
@@ -51,6 +53,7 @@ constexpr std::string_view kSettingsSchema = R"json(
 struct LootEntity final {
     AnomalyNteEntitySnapshotV1 snapshot{sizeof(snapshot)};
     std::string class_name;
+    std::string label;
     const catalog::ItemDefinition* item{};
     pink_paw_heist_esp::RobBankInspection rob_bank;
 };
@@ -136,6 +139,7 @@ struct Context final {
     const AnomalyTextureServiceV1* texture{};
     AnomalyGenerationHandleV1 settings_schema{};
     std::array<AnomalyGenerationHandleV1, catalog::kItemDefinitions.size()> item_icons{};
+    pink_paw_heist_esp::LootClassCache loot_classes;
 
     int menu_open{1};
     int enabled{1};
@@ -459,71 +463,25 @@ bool IsCurrentSnapshot(const std::uint32_t flags) noexcept {
         (flags & (ANOMALY_NTE_SNAPSHOT_V1_STALE | ANOMALY_NTE_SNAPSHOT_V1_PARTIAL)) == 0;
 }
 
-enum class ClassNameResolution {
-    resolved,
-    unresolved,
-    retry,
-};
-
-template <typename EntityService>
-ClassNameResolution ResolveClassName(
-    const EntityService* entities, const std::uint64_t class_id,
-    std::unordered_map<std::uint64_t, std::string>& names, std::string& class_name) {
-    const auto found = names.find(class_id);
-    if (found != names.end()) {
-        class_name = found->second;
-        return ClassNameResolution::resolved;
-    }
-    if (!HasField<EntityService, decltype(EntityService::class_name_utf8)>(
-            entities, offsetof(EntityService, class_name_utf8)) ||
-        entities->class_name_utf8 == nullptr) {
-        return ClassNameResolution::retry;
-    }
-    std::size_t size{};
-    const AnomalyStatusV1 size_status =
-        entities->class_name_utf8(entities->user, class_id, nullptr, &size);
-    if (size_status.code == ANOMALY_STATUS_V1_NOT_FOUND) return ClassNameResolution::unresolved;
-    if (size_status.code != ANOMALY_STATUS_V1_OK) return ClassNameResolution::retry;
-    if (size <= 1) return ClassNameResolution::unresolved;
-    if (size > kMaximumNameBytes) return ClassNameResolution::retry;
-    class_name.assign(size, '\0');
-    const AnomalyStatusV1 copy_status =
-        entities->class_name_utf8(entities->user, class_id, class_name.data(), &size);
-    if (copy_status.code == ANOMALY_STATUS_V1_NOT_FOUND) {
-        class_name.clear();
-        return ClassNameResolution::unresolved;
-    }
-    if (copy_status.code != ANOMALY_STATUS_V1_OK) return ClassNameResolution::retry;
-    if (const std::size_t end = class_name.find('\0'); end != std::string::npos) class_name.resize(end);
-    if (class_name.empty()) return ClassNameResolution::unresolved;
-    names.emplace(class_id, class_name);
-    return ClassNameResolution::resolved;
-}
-
-bool IsBankBoxClass(const std::string_view class_name) noexcept {
-    return catalog::FindAsciiInsensitive(class_name, "BankBox_") != std::string_view::npos;
-}
-
 bool AppendLootEntity(
     const AnomalyNteEntitySnapshotV1& snapshot, const std::uint64_t frame_generation,
     const AnomalyNteEntitiesServiceV1* entities,
-    std::unordered_map<std::uint64_t, std::string>& class_names,
     std::vector<LootEntity>& loot) {
     if (!IsCompleteSnapshot(snapshot.flags) || snapshot.handle.generation != frame_generation) {
         return false;
     }
 
-    std::string class_name;
-    const ClassNameResolution resolution =
-        ResolveClassName(entities, snapshot.class_id, class_names, class_name);
-    if (resolution == ClassNameResolution::retry) return false;
-    if (resolution == ClassNameResolution::unresolved) return true;
-    if (!IsBankBoxClass(class_name)) return true;
+    const pink_paw_heist_esp::LootClassMetadata* metadata{};
+    const auto resolution = g_context.loot_classes.Resolve(
+        entities, snapshot.class_id, snapshot.class_name_id, metadata);
+    if (resolution == pink_paw_heist_esp::LootClassResolution::retry) return false;
+    if (resolution == pink_paw_heist_esp::LootClassResolution::unresolved) return true;
+    if (metadata == nullptr || !metadata->bank_box) return true;
 
     LootEntity entry;
     entry.snapshot = snapshot;
-    entry.class_name = std::move(class_name);
-    entry.item = catalog::FindItemDefinition(entry.class_name);
+    entry.class_name = metadata->name;
+    entry.item = metadata->item;
     entry.rob_bank = g_rob_bank.Inspect(snapshot.entity_id, entry.class_name);
     loot.push_back(std::move(entry));
     return true;
@@ -550,10 +508,8 @@ bool CollectLootOnce(AnomalyNteEntityFrameV1& frame, std::vector<LootEntity>& lo
 
     loot.clear();
     loot.reserve(frame.entity_count);
-    std::unordered_map<std::uint64_t, std::string> class_names;
-    class_names.reserve(frame.entity_count);
     const auto append = [&](const AnomalyNteEntitySnapshotV1& snapshot) {
-        return AppendLootEntity(snapshot, frame.generation, service.get(), class_names, loot);
+        return AppendLootEntity(snapshot, frame.generation, service.get(), loot);
     };
 
     std::array<AnomalyNteEntitySnapshotV1, kEntityPageCapacity> page{};
@@ -662,7 +618,7 @@ bool CollectExtractionPoints(
 
     std::array<AnomalyNteEntitySnapshotV1, kEntityPageCapacity> page{};
     if (class_id == 0) {
-        std::unordered_map<std::uint64_t, std::string> class_names;
+        pink_paw_heist_esp::LootClassCache class_cache;
         std::uint32_t offset{};
         while (class_id == 0) {
             for (auto& snapshot : page) snapshot = AnomalyNteEntitySnapshotV1{sizeof(snapshot)};
@@ -684,12 +640,13 @@ bool CollectExtractionPoints(
                     snapshot.handle.generation != frame.generation) {
                     return false;
                 }
-                std::string class_name;
-                const auto resolution = ResolveClassName(
-                    actors.get(), snapshot.class_id, class_names, class_name);
-                if (resolution == ClassNameResolution::retry) return false;
-                if (resolution == ClassNameResolution::resolved &&
-                    class_name == pink_paw_heist_esp::kWorldMarkerClassName) {
+                const pink_paw_heist_esp::LootClassMetadata* metadata{};
+                const auto resolution = class_cache.Resolve(
+                    actors.get(), snapshot.class_id, snapshot.class_name_id, metadata);
+                if (resolution == pink_paw_heist_esp::LootClassResolution::retry) return false;
+                if (resolution == pink_paw_heist_esp::LootClassResolution::resolved &&
+                    metadata != nullptr &&
+                    metadata->name == pink_paw_heist_esp::kWorldMarkerClassName) {
                     class_id = snapshot.class_id;
                     break;
                 }
@@ -929,9 +886,12 @@ void ClearExtractionCache() noexcept {
 void ClearCache() noexcept {
     g_loot_cache.store({}, std::memory_order_release);
     g_loot_refresh_requested.store(true, std::memory_order_release);
+    g_context.loot_classes.Clear();
     g_context.current_page = 0;
     g_context.last_valid_refresh = {};
 }
+
+std::string BuildLootLabel(const LootEntity& entry);
 
 void RefreshCacheIfDue() {
     const Clock::time_point now = Clock::now();
@@ -941,7 +901,9 @@ void RefreshCacheIfDue() {
 
     AnomalyNteEntityFrameV1 frame{sizeof(frame)};
     std::vector<LootEntity> loot;
+    static_cast<void>(g_rob_bank.Refresh());
     if (g_context.host != nullptr && CollectLoot(frame, loot)) {
+        for (LootEntity& entry : loot) entry.label = BuildLootLabel(entry);
         auto cache = std::make_shared<LootCache>();
         cache->frame = frame;
         cache->loot = std::move(loot);
@@ -1865,13 +1827,13 @@ void DrawEsp(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         const AnomalyEspBoxStyleV1 style{
             sizeof(style), ANOMALY_ESP_BOX_V1_OUTLINE, color,
             ANOMALY_RGBA_V1(0, 0, 0, 220), kFixedBoxThickness, 1.0F};
+        bool visible = !supports_boxes;
         if (supports_boxes) {
-            static_cast<void>(ui->draw_entity_bbox(ui->user, &camera, &bounds, &style));
+            visible = ui->draw_entity_bbox(ui->user, &camera, &bounds, &style) != 0;
         }
-        if (supports_labels) {
-            const std::string label = BuildLootLabel(entry);
+        if (supports_labels && visible) {
             static_cast<void>(ui->draw_entity_label(
-                ui->user, &camera, &bounds, anomaly::sdk::StringView(label), color));
+                ui->user, &camera, &bounds, anomaly::sdk::StringView(entry.label), color));
         }
     }
 
@@ -1883,10 +1845,11 @@ void DrawEsp(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         const AnomalyEspBoxStyleV1 style{
             sizeof(style), ANOMALY_ESP_BOX_V1_OUTLINE, color,
             ANOMALY_RGBA_V1(0, 0, 0, 220), kFixedBoxThickness, 1.0F};
+        bool visible = !supports_boxes;
         if (supports_boxes) {
-            static_cast<void>(ui->draw_entity_bbox(ui->user, &camera, &bounds, &style));
+            visible = ui->draw_entity_bbox(ui->user, &camera, &bounds, &style) != 0;
         }
-        if (supports_labels) {
+        if (supports_labels && visible) {
             const std::string activation = ExtractionActivationText(point.activation);
             const std::string coordinates = BuildWorldCoordinates(point.snapshot);
             const std::array arguments{
@@ -2108,6 +2071,10 @@ void ProcessPendingPickup() {
         return;
     }
 
+    if (!g_rob_bank.Refresh()) {
+        RecordPickupResult(StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE));
+        return;
+    }
     const AnomalyStatusV1 status = g_rob_bank.Pickup(pending.entity);
     RecordPickupResult(status);
     if (status.code == ANOMALY_STATUS_V1_OK) {
@@ -2130,7 +2097,6 @@ void ANOMALY_CALL Update(void*, double) {
                 g_loot_refresh_requested.store(true, std::memory_order_release);
                 g_extractions.refresh_requested.store(true, std::memory_order_release);
             }
-            static_cast<void>(g_rob_bank.Refresh());
             RefreshExtractionCacheIfDue();
             RefreshCacheIfDue();
         } else if (g_in_pink_paw_world) {
