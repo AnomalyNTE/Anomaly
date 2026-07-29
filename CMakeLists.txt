@@ -1,6 +1,29 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(Anomaly VERSION 1.0.0 LANGUAGES C CXX)
+set(ANOMALY_RELEASE_VERSION "1.0.0" CACHE STRING
+    "Release version used to configure Anomaly")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/anomaly_version.cmake")
+anomaly_resolve_version("${ANOMALY_RELEASE_VERSION}"
+    ANOMALY_PROJECT_VERSION ANOMALY_VERSION_STRING)
+project(Anomaly VERSION "${ANOMALY_PROJECT_VERSION}" LANGUAGES C CXX)
+
+set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(ANOMALY_GENERATED_INCLUDE_DIR "${GENERATED_DIR}/sdk-build/include")
+set(ANOMALY_GENERATED_INSTALL_INCLUDE_DIR "${GENERATED_DIR}/sdk-install/include")
+file(MAKE_DIRECTORY "${ANOMALY_GENERATED_INCLUDE_DIR}/anomaly/sdk")
+file(MAKE_DIRECTORY "${ANOMALY_GENERATED_INSTALL_INCLUDE_DIR}/anomaly/sdk")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/version.h.in"
+    "${ANOMALY_GENERATED_INCLUDE_DIR}/anomaly/sdk/configured_version.h"
+    @ONLY)
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/version.h.in"
+    "${ANOMALY_GENERATED_INSTALL_INCLUDE_DIR}/anomaly/sdk/version.h"
+    @ONLY)
+# In-tree SDK consumers include headers through several internal targets; keep
+# the configured release data available to the source-tree version header.
+include_directories(BEFORE "${ANOMALY_GENERATED_INCLUDE_DIR}")
+add_compile_definitions(ANOMALY_USE_CONFIGURED_VERSION=1)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Anomaly currently targets Windows x64 only")
@@ -48,7 +71,10 @@ add_library(anomaly_sdk INTERFACE)
 add_library(Anomaly::sdk ALIAS anomaly_sdk)
 set_target_properties(anomaly_sdk PROPERTIES EXPORT_NAME sdk)
 target_compile_features(anomaly_sdk INTERFACE c_std_11 cxx_std_20)
+target_compile_definitions(anomaly_sdk INTERFACE
+    $<BUILD_INTERFACE:ANOMALY_USE_CONFIGURED_VERSION=1>)
 target_include_directories(anomaly_sdk INTERFACE
+    $<BUILD_INTERFACE:${ANOMALY_GENERATED_INCLUDE_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdk/AnomalyPlugin.cmake")
@@ -131,7 +157,6 @@ target_link_libraries(anomaly_imgui PUBLIC d3d11 d3d12 dxgi dxguid)
 add_executable(proxy_generator tools/proxy_generator.cpp)
 target_compile_definitions(proxy_generator PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(PROXY_DEF "${GENERATED_DIR}/dwmapi.def")
 set(PROXY_ASM "${GENERATED_DIR}/dwmapi.asm")
 set(PROXY_CPP "${GENERATED_DIR}/proxy_exports.cpp")
@@ -1186,6 +1211,11 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_test(
+        NAME project_version_resolution
+        COMMAND "${CMAKE_COMMAND}"
+            -P "${CMAKE_SOURCE_DIR}/tests/cmake/anomaly_version_tests.cmake")
+
     find_program(ANOMALY_POWERSHELL_EXECUTABLE NAMES pwsh.exe)
     if(NOT ANOMALY_POWERSHELL_EXECUTABLE)
         message(FATAL_ERROR "PowerShell 7+ (pwsh.exe) is required to run Anomaly test tools")
@@ -1389,7 +1419,9 @@ if(BUILD_TESTING)
     add_executable(scoped_platform_services_tests tests/unit/scoped_platform_services_tests.cpp)
     target_include_directories(scoped_platform_services_tests PRIVATE include)
     target_compile_definitions(
-        scoped_platform_services_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        scoped_platform_services_tests PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+        "ANOMALY_EXPECTED_RELEASE_VERSION=\"${ANOMALY_VERSION_STRING}\"")
     target_compile_options(scoped_platform_services_tests PRIVATE /W4 /permissive- /EHsc)
     target_link_libraries(scoped_platform_services_tests PRIVATE anomaly_scoped_platform)
     add_test(NAME scoped_platform_services_tests COMMAND scoped_platform_services_tests)
@@ -2324,6 +2356,9 @@ install(EXPORT AnomalySDKTargets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AnomalySDK
     COMPONENT SDK)
 install(DIRECTORY include/anomaly/sdk/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/anomaly/sdk COMPONENT SDK
+    PATTERN "version.h" EXCLUDE)
+install(FILES "${ANOMALY_GENERATED_INSTALL_INCLUDE_DIR}/anomaly/sdk/version.h"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/anomaly/sdk COMPONENT SDK)
 install(FILES schemas/plugin-manifest.schema.json schemas/build-profile.schema.json
     schemas/repository-config.schema.json

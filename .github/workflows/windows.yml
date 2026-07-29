@@ -20,10 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: >-
-          cmake --preset windows-vs2022
-          -DBUILD_TESTING=OFF
-          -DANOMALY_BUILD_PLUGIN_MANAGER_FIXTURE=OFF
+        shell: pwsh
+        run: |
+          $arguments = @(
+            '--preset', 'windows-vs2022',
+            '-DBUILD_TESTING=OFF',
+            '-DANOMALY_BUILD_PLUGIN_MANAGER_FIXTURE=OFF'
+          )
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $arguments += "-DANOMALY_RELEASE_VERSION=$env:GITHUB_REF_NAME"
+          }
+          cmake @arguments
       - name: Build
         run: cmake --build --preset windows-relwithdebinfo --parallel
       - name: Package runtime, SDK, tools and symbols
@@ -47,28 +54,8 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-      pull-requests: read
     runs-on: windows-2022
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Generate release notes
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: .github/cliff.toml
-          args: -vv --latest --strip header
-        env:
-          OUTPUT: CHANGES.md
-          GITHUB_REPO: ${{ github.repository }}
-      - name: Check release notes
-        shell: pwsh
-        run: |
-          if (!(Test-Path CHANGES.md) -or (Get-Item CHANGES.md).Length -eq 0) {
-            throw 'git-cliff did not generate release notes.'
-          }
-          Get-Content CHANGES.md
       - name: Download release archives
         uses: actions/download-artifact@v4
         with:
@@ -89,4 +76,3 @@ jobs:
             .build/release/Anomaly-*-sdk.zip
             .build/release/Anomaly-*-tools.zip
           fail_on_unmatched_files: true
-          body_path: CHANGES.md

@@ -6,7 +6,7 @@
 #include "anomaly/platform_ui_model.hpp"
 #include "anomaly/platform_settings.hpp"
 #include "anomaly/repository_coordinator.hpp"
-#include "anomaly/sdk/version.h"
+#include <anomaly/sdk/version.h>
 #include "anomaly/service_graph.hpp"
 #include "config.hpp"
 

@@ -2,6 +2,7 @@
 #include "anomaly/pattern_service.hpp"
 #include "anomaly/plugin_scope.hpp"
 #include "anomaly/scoped_platform_services.hpp"
+#include "anomaly/sdk/version.h"
 
 #include <Windows.h>
 
@@ -415,7 +416,11 @@ bool TestScopedPlatformServices() {
                      runtime_info.plugin_generation == 41 && runtime_info.process_id == GetCurrentProcessId() &&
                      services.RuntimeVersion(runtime_version.data(), &runtime_version_size).code ==
                          ANOMALY_STATUS_V1_OK &&
-                     runtime_version_size > 1,
+                     runtime_version_size == std::strlen(ANOMALY_EXPECTED_RELEASE_VERSION) + 1 &&
+                     std::string_view{runtime_version.data()} == ANOMALY_EXPECTED_RELEASE_VERSION &&
+                     runtime_info.runtime_version_major == ANOMALY_SDK_VERSION_MAJOR &&
+                     runtime_info.runtime_version_minor == ANOMALY_SDK_VERSION_MINOR &&
+                     runtime_info.runtime_version_patch == ANOMALY_SDK_VERSION_PATCH,
                  "runtime info service did not return the scoped runtime identity") && result;
 
     constexpr std::array<std::uint8_t, 3> kStorage{{1, 2, 3}};

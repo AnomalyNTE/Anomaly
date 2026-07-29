@@ -28,7 +28,7 @@
 
 | 常量 | 值 |
 | --- | --- |
-| `ANOMALY_SDK_VERSION_STRING` | `"1.0.0"` |
+| `ANOMALY_SDK_VERSION_STRING` | 配置的发行版本（正式 tag 构建与 tag 一致，例如 `"1.0.1"`） |
 | `ANOMALY_PLUGIN_API_V1_MAJOR` | `1` |
 | `ANOMALY_PLUGIN_API_V1_MINOR` | `0` |
 | `ANOMALY_PLUGIN_V1_ENTRY_NAME` | `"AnomalyPluginEntryV1"` |
