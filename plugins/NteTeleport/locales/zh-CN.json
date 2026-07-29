@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "传送",
+    "plugin.description": "将当前玩家传送到输入或保存的世界坐标。",
+    "action.apply": "传送",
+    "action.current": "填入当前坐标",
+    "current.unavailable": "当前坐标不可用",
+    "preset.title": "坐标预设",
+    "preset.name": "预设名称",
+    "preset.save": "保存预设",
+    "preset.empty": "暂无已保存的预设",
+    "preset.column.name": "名称",
+    "preset.column.position": "坐标",
+    "preset.column.load": "载入",
+    "preset.column.delete": "删除",
+    "preset.load": "载入",
+    "preset.delete": "删除",
+    "teleport.state.queued": "传送：已排队",
+    "teleport.state.idle": "传送：空闲",
+    "teleport.result": "传送：{0}",
+    "teleport.result.detail": "传送：{0} - {1}"
+  }
+}

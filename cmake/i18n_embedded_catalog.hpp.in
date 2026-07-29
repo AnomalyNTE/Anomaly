@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace anomaly::detail {
+
+inline constexpr std::string_view kEmbeddedEnglishHostCatalog =
+@ANOMALY_HOST_EN_US_CATALOG_LITERALS@;
+
+}  // namespace anomaly::detail

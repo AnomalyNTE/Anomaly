@@ -1,0 +1,167 @@
+#include "anomaly/plugin_file_watcher.hpp"
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <sstream>
+#include <thread>
+#include <utility>
+
+namespace anomaly {
+namespace {
+
+std::string Utf8(const std::filesystem::path& path) {
+    const std::u8string value = path.generic_u8string();
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+
+std::string PackageSignature(const std::filesystem::path& package) {
+    std::vector<std::string> records;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator iterator(package, error), end;
+         !error && iterator != end; iterator.increment(error)) {
+        const auto status = iterator->symlink_status(error);
+        if (error) break;
+        const std::filesystem::path relative = iterator->path().lexically_relative(package);
+        if (std::filesystem::is_symlink(status)) {
+            records.push_back(Utf8(relative) + ":reparse");
+        } else if (std::filesystem::is_regular_file(status)) {
+            const auto size = iterator->file_size(error);
+            if (error) break;
+            const auto write_time = iterator->last_write_time(error);
+            if (error) break;
+            records.push_back(
+                Utf8(relative) + ':' + std::to_string(size) + ':' +
+                std::to_string(write_time.time_since_epoch().count()));
+        }
+    }
+    if (error) return "error:" + std::to_string(error.value());
+    std::sort(records.begin(), records.end());
+    std::string result;
+    for (const std::string& record : records) {
+        result.append(record);
+        result.push_back('\n');
+    }
+    return result;
+}
+
+}  // namespace
+
+PluginFileWatcher::PluginFileWatcher(
+    std::filesystem::path plugin_root, PluginFileWatcherOptions options)
+    : plugin_root_(std::move(plugin_root)), options_(options) {}
+
+PluginFileWatcher::~PluginFileWatcher() { Stop(); }
+
+bool PluginFileWatcher::Start(Callback callback) {
+    std::scoped_lock lock(mutex_);
+    if (worker_.joinable() || !callback) return false;
+    callback_ = std::move(callback);
+    observations_.clear();
+    initialized_ = false;
+    worker_ = std::jthread([this](std::stop_token token) { Run(token); });
+    return true;
+}
+
+void PluginFileWatcher::Stop() noexcept {
+    std::jthread worker;
+    {
+        std::scoped_lock lock(mutex_);
+        if (!worker_.joinable()) return;
+        worker_.request_stop();
+        worker = std::move(worker_);
+    }
+    worker.join();
+    std::scoped_lock lock(mutex_);
+    callback_ = {};
+}
+
+bool PluginFileWatcher::Running() const noexcept {
+    std::scoped_lock lock(mutex_);
+    return worker_.joinable();
+}
+
+void PluginFileWatcher::ResetBaseline() noexcept {
+    std::scoped_lock lock(mutex_);
+    observations_.clear();
+    initialized_ = false;
+}
+
+std::unordered_map<std::string, std::string> PluginFileWatcher::Scan() const {
+    std::unordered_map<std::string, std::string> result;
+    std::error_code error;
+    for (std::filesystem::directory_iterator iterator(plugin_root_, error), end;
+         !error && iterator != end; iterator.increment(error)) {
+        if (iterator->path().filename() == L".cache") continue;
+        if (!iterator->is_directory(error) || iterator->is_symlink(error)) {
+            error.clear();
+            continue;
+        }
+        result.emplace(Utf8(iterator->path().filename()), PackageSignature(iterator->path()));
+    }
+    return result;
+}
+
+std::vector<std::string> PluginFileWatcher::PollLocked(Clock::time_point now) {
+    const auto current = Scan();
+    if (!initialized_) {
+        initialized_ = true;
+        for (const auto& [id, signature] : current) {
+            observations_.emplace(id, Observation{signature, now, false});
+        }
+        return {};
+    }
+    for (const auto& [id, signature] : current) {
+        auto [position, inserted] = observations_.try_emplace(
+            id, Observation{signature, now, true});
+        if (!inserted && position->second.signature != signature) {
+            position->second.signature = signature;
+            position->second.changed_at = now;
+            position->second.pending = true;
+        }
+    }
+    for (auto& [id, observation] : observations_) {
+        if (!current.contains(id) && observation.signature != "<removed>") {
+            observation.signature = "<removed>";
+            observation.changed_at = now;
+            observation.pending = true;
+        }
+    }
+    std::vector<std::string> changed;
+    for (auto iterator = observations_.begin(); iterator != observations_.end();) {
+        Observation& observation = iterator->second;
+        if (observation.pending && now - observation.changed_at >= options_.debounce) {
+            observation.pending = false;
+            changed.push_back(iterator->first);
+            if (observation.signature == "<removed>") {
+                iterator = observations_.erase(iterator);
+                continue;
+            }
+        }
+        ++iterator;
+    }
+    std::sort(changed.begin(), changed.end());
+    return changed;
+}
+
+std::vector<std::string> PluginFileWatcher::PollForTests(Clock::time_point now) {
+    std::scoped_lock lock(mutex_);
+    return PollLocked(now);
+}
+
+void PluginFileWatcher::Run(std::stop_token stop_token) {
+    while (!stop_token.stop_requested()) {
+        std::vector<std::string> changed;
+        Callback callback;
+        {
+            std::scoped_lock lock(mutex_);
+            changed = PollLocked(Clock::now());
+            callback = callback_;
+        }
+        if (!changed.empty() && callback) callback(std::move(changed));
+        const auto deadline = Clock::now() + options_.poll_interval;
+        while (!stop_token.stop_requested() && Clock::now() < deadline) Sleep(10);
+    }
+}
+
+}  // namespace anomaly

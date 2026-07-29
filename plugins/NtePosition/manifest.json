@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 2, "id": "anomaly.builtin.nte-position", "name": "Coordinate Display", "description": "Displays player and camera coordinates, session state, and snapshot metrics.", "author": "Anomaly", "license": "AGPL-3.0-only", "version": "1.1.0",
+  "entry": "plugin.dll", "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"], "builds": ["nte-*"], "loadPhase": "game-ready",
+  "services": [{"id": "anomaly.ui", "minVersion": 1}, {"id": "anomaly.nte.session", "minVersion": 1, "optional": true}, {"id": "anomaly.nte.player", "minVersion": 1, "optional": true}, {"id": "anomaly.nte.metrics", "minVersion": 1, "optional": true}],
+  "capabilities": ["ui", "nte-session-snapshot", "nte-player-snapshot", "nte-snapshot-metrics"]
+}

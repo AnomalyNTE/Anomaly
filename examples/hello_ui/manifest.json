@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2, "id": "anomaly.example.hello-ui", "name": "Hello UI", "author": "Anomaly", "license": "AGPL-3.0-only", "version": "1.0.0",
+  "entry": "plugin.dll", "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"], "builds": ["nte-*"], "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.window", "minVersion": 1},
+    {"id": "anomaly.font", "minVersion": 1},
+    {"id": "anomaly.texture", "minVersion": 1},
+    {"id": "anomaly.input", "minVersion": 1}
+  ],
+  "capabilities": ["ui", "ui-window", "ui-font", "ui-texture", "input"]
+}

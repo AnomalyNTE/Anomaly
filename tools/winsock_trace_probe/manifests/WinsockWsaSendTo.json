@@ -1,0 +1,8 @@
+{
+  "audience": "developer",
+  "schemaVersion": 2, "id": "anomaly.diagnostics.winsock.wsasendto", "name": "Winsock WSASendTo trace", "author": "Anomaly", "license": "AGPL-3.0-only", "version": "0.1.0",
+  "entry": "plugin.dll", "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"], "builds": ["nte-win64-5787dc83-10001000-7c6cfbdbe70626a0"], "loadPhase": "game-ready",
+  "services": [{"id": "anomaly.storage", "minVersion": 1}, {"id": "anomaly.scheduler", "minVersion": 1}, {"id": "anomaly.interop.hook", "minVersion": 1}],
+  "capabilities": ["storage", "scheduler", "interop-hook"]
+}

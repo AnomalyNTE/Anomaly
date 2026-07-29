@@ -1,0 +1,21 @@
+{
+  "audience": "developer",
+  "schemaVersion": 2,
+  "id": "anomaly.diagnostics.nte.bidking-object-catalog",
+  "name": "NTE BidKing object catalog",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-win64-771eea6e-10008000-8b337d38619b1264"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.storage", "minVersion": 1},
+    {"id": "anomaly.scheduler", "minVersion": 1},
+    {"id": "anomaly.ue5.names", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ue5.objects", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": ["storage", "scheduler", "ue5-names", "ue5-objects"]
+}

@@ -1,0 +1,9 @@
+#pragma once
+
+#include <string_view>
+
+namespace anomaly::detail {
+inline constexpr std::string_view kRepositoryCacheSchemaJson = R"ANOMALY_SCHEMA(
+@ANOMALY_REPOSITORY_CACHE_SCHEMA_JSON@
+)ANOMALY_SCHEMA";
+}  // namespace anomaly::detail

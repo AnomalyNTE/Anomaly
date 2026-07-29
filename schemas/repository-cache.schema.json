@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://anomaly.dev/schemas/repository-cache.schema.json",
+  "title": "Anomaly Repository Cache State v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sourceId",
+    "repositoryId",
+    "sequence",
+    "generatedAt",
+    "expiresAt",
+    "acceptedAt",
+    "payloadSha256",
+    "index"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "sourceId": { "$ref": "#/definitions/qualifiedId" },
+    "repositoryId": { "$ref": "#/definitions/qualifiedId" },
+    "sequence": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "generatedAt": { "$ref": "#/definitions/timestamp" },
+    "expiresAt": { "$ref": "#/definitions/timestamp" },
+    "acceptedAt": { "$ref": "#/definitions/timestamp" },
+    "payloadSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "index": { "type": "object" }
+  },
+  "definitions": {
+    "qualifiedId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+@PACKAGE_INIT@
+include("${CMAKE_CURRENT_LIST_DIR}/AnomalySDKTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/AnomalyPlugin.cmake")
+check_required_components(AnomalySDK)

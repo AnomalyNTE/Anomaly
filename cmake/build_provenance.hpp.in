@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace anomaly::generated {
+
+inline constexpr std::string_view kSourceCommit{"@ANOMALY_SOURCE_COMMIT@"};
+inline constexpr bool kSourceDirty = @ANOMALY_SOURCE_DIRTY@;
+
+}  // namespace anomaly::generated

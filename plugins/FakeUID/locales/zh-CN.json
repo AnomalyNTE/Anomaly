@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "自定义 UID",
+    "plugin.description": "自定义 NTE 客户端界面上显示的 UID，不修改账号数据。",
+    "current.detecting": "当前 UID：检测中",
+    "current.value": "当前 UID：{0}",
+    "field.display_uid": "显示 UID",
+    "display.value": "显示 UID：{0}",
+    "action.apply": "应用",
+    "action.revert": "恢复原始值",
+    "status.applied_saved": "已应用并保存",
+    "status.save_failed": "已应用；保存失败",
+    "status.applied_saving": "已应用；正在保存",
+    "status.invalid_uid": "UID 必须包含 1 到 256 位数字",
+    "status.save_schedule_failed": "已应用，但无法安排保存任务",
+    "status.apply_failed": "应用失败：内部错误",
+    "status.original_unknown": "尚未检测到原始 UID",
+    "status.original_restored": "已恢复原始 UID；正在保存",
+    "status.original_restore_failed": "恢复原始 UID 失败"
+  }
+}

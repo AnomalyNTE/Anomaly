@@ -1,0 +1,10 @@
+/.build/
+/build/
+/build-*/
+/out/
+*.log
+snapshot-*.json
+/data/
+/runtime/
+/output/
+/imgui.ini

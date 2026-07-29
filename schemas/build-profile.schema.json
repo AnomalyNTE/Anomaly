@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anomaly.local/schemas/build-profile.schema.json",
+  "title": "Anomaly build profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "game", "symbols", "features"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "game": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{0,63}$" },
+    "symbols": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["module", "section", "pattern", "resolve", "validators", "requiredBy"],
+        "properties": {
+          "module": { "type": "string", "minLength": 1, "maxLength": 260 },
+          "section": { "type": "string", "minLength": 1, "maxLength": 16 },
+          "pattern": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "resolve": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {
+              "kind": { "enum": ["direct", "rip-rel32"] },
+              "offset": { "type": "integer", "minimum": 0, "maximum": 64 },
+              "instructionSize": { "type": "integer", "minimum": 1, "maximum": 64 },
+              "addend": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
+            }
+          },
+          "validators": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+          },
+          "requiredBy": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 64,
+        "uniqueItems": true,
+        "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "optionalFeatures": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      }
+    },
+    "featureLayoutValidators": {
+      "type": "object",
+      "maxProperties": 128,
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 64,
+        "uniqueItems": true,
+        "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "featureDependencies": {
+      "type": "object",
+      "maxProperties": 128,
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 64,
+        "uniqueItems": true,
+        "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture", "header", "bunch", "limits", "schemas"],
+      "properties": {
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inbound", "outbound"],
+          "properties": {
+            "inbound": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["feature", "boundarySymbol", "abiValidator", "stage", "protection"],
+              "properties": {
+                "feature": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "boundarySymbol": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "abiValidator": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "stage": { "const": "post-packet-handler" },
+                "protection": { "const": "clear" }
+              }
+            },
+            "outbound": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["feature", "boundarySymbol", "abiValidator", "stage", "protection"],
+              "properties": {
+                "feature": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "boundarySymbol": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "abiValidator": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                },
+                "stage": { "const": "post-packet-handler" },
+                "protection": { "const": "clear" }
+              }
+            }
+          }
+        },
+        "header": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequenceBits", "ackMode", "ackSequenceBits", "ackHistoryBits", "bunchCountBits"],
+          "properties": {
+            "sequenceBits": { "type": "integer", "minimum": 1, "maximum": 64 },
+            "ackMode": { "enum": ["none", "always", "presence-bit"] },
+            "ackSequenceBits": { "type": "integer", "minimum": 0, "maximum": 64 },
+            "ackHistoryBits": { "type": "integer", "minimum": 0, "maximum": 64 },
+            "bunchCountBits": { "type": "integer", "minimum": 0, "maximum": 32 }
+          }
+        },
+        "bunch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximumChannels",
+            "maximumChannelTypes",
+            "maximumReliableSequence",
+            "maximumPartialId",
+            "maximumPayloadBits",
+            "closeHasDormancyBit",
+            "hasPackageMapExportFlags",
+            "partialIdMode"
+          ],
+          "properties": {
+            "maximumChannels": { "type": "integer", "minimum": 1, "maximum": 65536 },
+            "maximumChannelTypes": { "type": "integer", "minimum": 1, "maximum": 65536 },
+            "maximumReliableSequence": { "type": "integer", "minimum": 2, "maximum": 4294967294 },
+            "maximumPartialId": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+            "maximumPayloadBits": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+            "closeHasDormancyBit": { "type": "boolean" },
+            "hasPackageMapExportFlags": { "type": "boolean" },
+            "partialIdMode": { "enum": ["none", "explicit"] }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maximumPacketBits",
+            "maximumConnections",
+            "maximumPacketHistory",
+            "maximumBunchesPerPacket",
+            "maximumOpenPartialBunches",
+            "maximumPartialFragments",
+            "maximumPartialPacketAge",
+            "maximumPartialBunchBits",
+            "maximumPartialStateBits",
+            "maximumFieldsPerBunch",
+            "maximumFieldBytes"
+          ],
+          "properties": {
+            "maximumPacketBits": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+            "maximumConnections": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "maximumPacketHistory": { "type": "integer", "minimum": 1, "maximum": 65536 },
+            "maximumBunchesPerPacket": { "type": "integer", "minimum": 1, "maximum": 65536 },
+            "maximumOpenPartialBunches": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "maximumPartialFragments": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "maximumPartialPacketAge": { "type": "integer", "minimum": 1, "maximum": 65536 },
+            "maximumPartialBunchBits": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+            "maximumPartialStateBits": { "type": "integer", "minimum": 1, "maximum": 268435456 },
+            "maximumFieldsPerBunch": { "type": "integer", "minimum": 1, "maximum": 65536 },
+            "maximumFieldBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+          }
+        },
+        "schemas": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["channelType", "id", "family", "encoding", "fields"],
+            "properties": {
+              "channelType": { "type": "integer", "minimum": 0, "maximum": 65535 },
+              "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "family": { "enum": ["legacy-rep-layout", "iris"] },
+              "encoding": { "const": "verified-tagged-fields-v1" },
+              "fields": {
+                "type": "array",
+                "maxItems": 65536,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["handle", "name", "encoding", "bitWidth", "maximumLength"],
+                  "properties": {
+                    "handle": { "type": "integer", "minimum": 0, "maximum": 4294967294 },
+                    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "encoding": {
+                      "enum": [
+                        "boolean",
+                        "unsigned",
+                        "signed",
+                        "float32",
+                        "utf8",
+                        "bytes",
+                        "vector3-float32"
+                      ]
+                    },
+                    "bitWidth": { "type": "integer", "minimum": 0, "maximum": 64 },
+                    "maximumLength": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": -2147483648,
+        "maximum": 4294967295
+      }
+    }
+  }
+}

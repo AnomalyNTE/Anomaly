@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://anomaly.dev/schemas/plugin-enablement.schema.json",
+  "title": "Anomaly Plugin Enablement State v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "defaultEnabled", "plugins"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "defaultEnabled": { "type": "boolean" },
+    "plugins": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 255 },
+      "additionalProperties": { "type": "boolean" }
+    }
+  }
+}

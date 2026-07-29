@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "坐标显示",
+    "plugin.description": "显示玩家与相机坐标、会话状态和快照指标。",
+    "status.unavailable": "{0}：不可用",
+    "status.result": "{0}：{1}",
+    "status.result.detail": "{0}：{1} - {2}",
+    "session.snapshot": "会话快照",
+    "session.summary": "会话 {0} / 世界代次 {1} / 变更 {2}",
+    "session.service": "会话服务",
+    "session.event_stream": "会话事件流",
+    "session.event_resynchronization": "会话事件重新同步",
+    "session.event_resynchronized": "会话事件游标：STALE；已重新同步至 #{0}",
+    "session.event": "会话事件 #{0}：{1}，tick {2}",
+    "session.event.world_ready": "世界已就绪",
+    "session.event.world_changed": "世界已变更",
+    "session.event.world_unavailable": "世界不可用",
+    "session.event.unknown": "未知会话事件",
+    "player.service": "玩家服务",
+    "player.snapshot": "玩家快照",
+    "player.position": "位置 {0} {1}, {2}, {3} / 代次 {4} / 序列 {5}",
+    "camera.snapshot": "相机快照",
+    "camera.position": "相机 {0} {1}, {2}, {3} / 视野 {4} / 世界代次 {5} / 玩家代次 {6} / 序列 {7}",
+    "metrics.snapshot": "快照指标",
+    "metrics.summary": "快照指标：VALID / tick {0} / 最近 {1} us / 玩家刷新 {2} / 玩家缓存命中 {3} / 实体页 {4} / 页面缓存命中 {5}"
+  }
+}

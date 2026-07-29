@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "greeting": "来自纯 C Anomaly SDK 示例的问候。",
+    "window.title": "你好 UI"
+  }
+}

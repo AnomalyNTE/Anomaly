@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "allowInsecureSources": false,
+  "repositories": [
+    {
+      "url": "https://raw.githubusercontent.com/AnomalyNTE/Anomaly-Plugin-Template/main/pluginmaster.json",
+      "enabled": true
+    }
+  ]
+}

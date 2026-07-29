@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "allowFileSources": false,
+  "withdrawalPolicy": "block-new",
+  "freshness": {
+    "maximumClockSkewSeconds": 300,
+    "maximumIndexAgeSeconds": 86400,
+    "maximumOfflineAgeSeconds": 604800,
+    "downgradePolicy": "reject"
+  },
+  "sources": [],
+  "trustKeys": []
+}

@@ -1,0 +1,22 @@
+{
+  "audience": "developer",
+  "schemaVersion": 2,
+  "id": "anomaly.diagnostics.nte.bidking-round-pool-probe",
+  "name": "NTE BidKing round pool probe",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-win64-771eea6e-10008000-8b337d38619b1264"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.storage", "minVersion": 1},
+    {"id": "anomaly.scheduler", "minVersion": 1},
+    {"id": "anomaly.ue5.build", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.interop.hook", "minVersion": 1}
+  ],
+  "capabilities": ["storage", "scheduler", "memory-read", "ue5-build", "interop-signature", "interop-hook"]
+}
