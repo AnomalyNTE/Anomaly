@@ -22,6 +22,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -53,6 +54,8 @@ constexpr float kHeaderHeight = 56.0f;
 constexpr float kModeHeight = 48.0f;
 constexpr float kFooterHeight = 42.0f;
 constexpr float kProxyActionLeftPadding = 4.0f;
+constexpr float kLauncherFontScale = 15.0f / 13.0f;
+constexpr float kDefaultDpi = 96.0f;
 
 const ImVec4 kAccent{0.345f, 0.718f, 0.647f, 1.0f};
 const ImVec4 kAccentHover{0.415f, 0.773f, 0.706f, 1.0f};
@@ -205,9 +208,16 @@ std::string Ellipsize(std::string_view value, float width) {
         return std::string(value);
     }
     constexpr std::string_view suffix{"..."};
+    if (ImGui::CalcTextSize(suffix.data(), suffix.data() + suffix.size()).x > width) {
+        return {};
+    }
     std::size_t end = value.size();
     while (end > 0) {
         --end;
+        while (end > 0 &&
+               (static_cast<unsigned char>(value[end]) & 0xc0U) == 0x80U) {
+            --end;
+        }
         const auto candidate = std::string(value.substr(0, end)) + std::string(suffix);
         if (ImGui::CalcTextSize(candidate.c_str()).x <= width) return candidate;
     }
@@ -658,6 +668,32 @@ struct Graphics final {
 };
 
 Graphics* g_graphics{};
+float g_launcher_dpi_scale{1.0f};
+bool g_launcher_dpi_changed{};
+
+float DpiScale(UINT dpi) noexcept {
+    return dpi == 0 ? 1.0f : static_cast<float>(dpi) / kDefaultDpi;
+}
+
+float Scale(float value) noexcept {
+    return std::round(value * g_launcher_dpi_scale);
+}
+
+ImVec2 Scale(float x, float y) noexcept {
+    return ImVec2(Scale(x), Scale(y));
+}
+
+float ButtonHeight(float logical_height) noexcept {
+    return (std::max)(Scale(logical_height), ImGui::GetFrameHeight());
+}
+
+void ApplyLauncherDpiScale() noexcept {
+    ue5mem::ApplyPlatformUiStyle();
+    ImGui::GetStyle().ScaleAllSizes(g_launcher_dpi_scale);
+    static_cast<void>(ue5mem::ApplyPlatformUiFontScale(
+        g_launcher_dpi_scale * kLauncherFontScale));
+    g_launcher_dpi_changed = false;
+}
 
 bool CreateRenderTarget(Graphics& graphics) {
     ComPtr<ID3D11Texture2D> back_buffer;
@@ -728,9 +764,23 @@ LRESULT WINAPI WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpara
             }
         }
         return 0;
+    case WM_DPICHANGED: {
+        g_launcher_dpi_scale = DpiScale(HIWORD(wparam));
+        g_launcher_dpi_changed = true;
+        const auto* suggested = reinterpret_cast<const RECT*>(lparam);
+        if (suggested != nullptr) {
+            static_cast<void>(SetWindowPos(
+                window, nullptr, suggested->left, suggested->top,
+                suggested->right - suggested->left,
+                suggested->bottom - suggested->top,
+                SWP_NOACTIVATE | SWP_NOZORDER));
+        }
+        return 0;
+    }
     case WM_GETMINMAXINFO: {
         auto* limits = reinterpret_cast<MINMAXINFO*>(lparam);
-        limits->ptMinTrackSize = {720, 500};
+        limits->ptMinTrackSize = {
+            static_cast<LONG>(Scale(720.0f)), static_cast<LONG>(Scale(500.0f))};
         return 0;
     }
     case WM_SYSCOMMAND:
@@ -833,7 +883,8 @@ void Tooltip(const char* text) {
 bool IconButton(const char* id, char32_t glyph, const char* tooltip, bool enabled = true) {
     ImGui::PushID(id);
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::Button(Glyph(glyph), ImVec2(30.0f, 30.0f));
+    const float extent = ButtonHeight(30.0f);
+    const bool pressed = ImGui::Button(Glyph(glyph), ImVec2(extent, extent));
     ImGui::EndDisabled();
     Tooltip(tooltip);
     ImGui::PopID();
@@ -843,7 +894,14 @@ bool IconButton(const char* id, char32_t glyph, const char* tooltip, bool enable
 bool CommandButton(
     const char* id, char32_t glyph, const char* label,
     bool primary, bool enabled, ImVec2 size = {}) {
-    const std::string text = std::string(Glyph(glyph)) + "  " + label;
+    std::string text = std::string(Glyph(glyph)) + "  " + label;
+    ImVec2 scaled_size(
+        size.x > 0.0f ? Scale(size.x) : 0.0f,
+        ButtonHeight(size.y > 0.0f ? size.y : 30.0f));
+    if (scaled_size.x > 0.0f) {
+        text = Ellipsize(text,
+            (std::max)(0.0f, scaled_size.x - ImGui::GetStyle().FramePadding.x * 2.0f));
+    }
     ImGui::PushID(id);
     ImGui::PushStyleColor(ImGuiCol_Button, primary ? kAccent : kSurface);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, primary ? kAccentHover : kRaised);
@@ -855,7 +913,7 @@ bool CommandButton(
         ImGuiCol_Text,
         primary ? ImVec4(0.063f, 0.129f, 0.122f, 1.0f) : kMuted);
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::Button(text.c_str(), size.x > 0.0f ? size : ImVec2(0.0f, 30.0f));
+    const bool pressed = ImGui::Button(text.c_str(), scaled_size);
     ImGui::EndDisabled();
     ImGui::PopStyleColor(4);
     ImGui::PopID();
@@ -863,6 +921,9 @@ bool CommandButton(
 }
 
 bool ModeButton(const char* id, const char* label, bool selected, float width) {
+    const ImVec2 size(Scale(width), ButtonHeight(30.0f));
+    const std::string text = Ellipsize(label,
+        (std::max)(0.0f, size.x - ImGui::GetStyle().FramePadding.x * 2.0f));
     ImGui::PushID(id);
     ImGui::PushStyleColor(
         ImGuiCol_Button,
@@ -870,7 +931,7 @@ bool ModeButton(const char* id, const char* label, bool selected, float width) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
         selected ? ImVec4(0.345f, 0.718f, 0.647f, 0.26f) : kRaised);
     ImGui::PushStyleColor(ImGuiCol_Text, selected ? kAccent : kMuted);
-    const bool pressed = ImGui::Button(label, ImVec2(width, 30.0f));
+    const bool pressed = ImGui::Button(text.c_str(), size);
     ImGui::PopStyleColor(3);
     ImGui::PopID();
     return pressed;
@@ -925,31 +986,33 @@ void DrawHeader(
     Graphics& graphics, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.086f, 0.102f, 0.118f, 1.0f));
-    ImGui::BeginChild("LauncherHeader", ImVec2(0.0f, kHeaderHeight), ImGuiChildFlags_None);
-    ImGui::SetCursorPos(ImVec2(16.0f, 13.0f));
+    ImGui::BeginChild(
+        "LauncherHeader", ImVec2(0.0f, Scale(kHeaderHeight)), ImGuiChildFlags_None);
+    ImGui::SetCursorPos(Scale(16.0f, 13.0f));
     if (graphics.logo != nullptr) {
         ImGui::Image(
             static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(graphics.logo.Get())),
-            ImVec2(30.0f, 30.0f));
-        ImGui::SameLine(0.0f, 10.0f);
+            Scale(30.0f, 30.0f));
+        ImGui::SameLine(0.0f, Scale(10.0f));
     }
-    ImGui::SetCursorPosY(18.0f);
+    ImGui::SetCursorPosY(Scale(18.0f));
     ImGui::TextUnformatted("AnomalyLauncher");
     const char* state = Text(translator, snapshot.busy
         ? anomaly::MessageId::LauncherStateWorking
         : anomaly::MessageId::LauncherStateReady);
     const ImVec2 state_size = ImGui::CalcTextSize(state);
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - state_size.x - 18.0f, 19.0f));
+    ImGui::SetCursorPos(ImVec2(
+        ImGui::GetWindowWidth() - state_size.x - Scale(18.0f), Scale(19.0f)));
     ImGui::TextColored(snapshot.busy ? kWarning : kSuccess, "%s", state);
     ImGui::EndChild();
     ImGui::PopStyleColor();
 }
 
 void DrawModes(LauncherMode& mode, const anomaly::Translator& translator) {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 9.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 9.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f, 0.090f, 0.102f, 1.0f));
     ImGui::BeginChild(
-        "LauncherModes", ImVec2(0.0f, kModeHeight),
+        "LauncherModes", ImVec2(0.0f, Scale(kModeHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding);
     if (ModeButton("proxy-install", Text(translator,
             anomaly::MessageId::LauncherModeProxyInstall),
@@ -973,7 +1036,8 @@ void DrawReadOnlyPath(
     std::string value = path.empty()
         ? std::string(translator.Text(anomaly::MessageId::LauncherNoDirectorySelected))
         : PathUtf8(path);
-    ImGui::SetNextItemWidth((std::max)(120.0f, ImGui::GetContentRegionAvail().x - trailing_width));
+    ImGui::SetNextItemWidth((std::max)(
+        Scale(120.0f), ImGui::GetContentRegionAvail().x - Scale(trailing_width)));
     ImGui::InputText(
         id, value.data(), value.size() + 1,
         ImGuiInputTextFlags_ReadOnly);
@@ -984,7 +1048,7 @@ void DrawRecoveryAxis(
     const anomaly::Translator& translator, const char* stable_id,
     anomaly::MessageId label, anomaly::MessageId action,
     anomaly::RuntimeRecoveryAxis axis) {
-    ImGui::TableNextRow(ImGuiTableRowFlags_None, 28.0f);
+    ImGui::TableNextRow(ImGuiTableRowFlags_None, Scale(28.0f));
     ImGui::TableSetColumnIndex(0);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(Text(translator, label));
@@ -1028,7 +1092,8 @@ void DrawRecoveryState(
         const std::string action_column = StableLabel(translator,
             anomaly::MessageId::LauncherRecoveryAction, "recovery-action");
         ImGui::TableSetupColumn(axis_column.c_str(), ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn(action_column.c_str(), ImGuiTableColumnFlags_WidthFixed, 72.0f);
+        ImGui::TableSetupColumn(
+            action_column.c_str(), ImGuiTableColumnFlags_WidthFixed, Scale(72.0f));
         if (safe_mode.minimal_core) {
             DrawRecoveryAxis(
                 controller, snapshot, translator, "minimal-core",
@@ -1093,9 +1158,10 @@ void DrawProxyMode(
     DrawRecoveryState(controller, snapshot, translator);
 
     const float action_y = (std::max)(
-        ImGui::GetCursorPosY() + 16.0f, ImGui::GetWindowHeight() - 48.0f);
+        ImGui::GetCursorPosY() + Scale(16.0f),
+        ImGui::GetWindowHeight() - Scale(48.0f));
     ImGui::SetCursorPosY(action_y);
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + kProxyActionLeftPadding);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Scale(kProxyActionLeftPadding));
     const auto action = anomaly::launcher::ProxyInstallationActionForState(
         snapshot.proxy.state);
     bool has_action = true;
@@ -1175,13 +1241,14 @@ void DrawAttachMode(
     }
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionProcesses));
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 30.0f);
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - Scale(30.0f));
     if (IconButton("refresh-processes", 0xe72c,
             Text(translator, anomaly::MessageId::LauncherProcessRefresh), !snapshot.busy)) {
         controller.RefreshProcesses();
     }
 
-    const float table_height = (std::max)(140.0f, ImGui::GetContentRegionAvail().y - 62.0f);
+    const float table_height = (std::max)(
+        Scale(140.0f), ImGui::GetContentRegionAvail().y - Scale(62.0f));
     if (ImGui::BeginTable(
             "AttachProcesses", 4,
             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
@@ -1196,15 +1263,15 @@ void DrawAttachMode(
         const std::string state_column = StableLabel(translator,
             anomaly::MessageId::LauncherProcessColumnState, "state-column");
         ImGui::TableSetupColumn(
-            process_column.c_str(), ImGuiTableColumnFlags_WidthFixed, 120.0f);
+            process_column.c_str(), ImGuiTableColumnFlags_WidthFixed, Scale(120.0f));
         ImGui::TableSetupColumn(
-            pid_column.c_str(), ImGuiTableColumnFlags_WidthFixed, 74.0f);
+            pid_column.c_str(), ImGuiTableColumnFlags_WidthFixed, Scale(74.0f));
         ImGui::TableSetupColumn(path_column.c_str(), ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn(
-            state_column.c_str(), ImGuiTableColumnFlags_WidthFixed, 110.0f);
+            state_column.c_str(), ImGuiTableColumnFlags_WidthFixed, Scale(110.0f));
         ImGui::TableHeadersRow();
         for (const auto& process : snapshot.processes) {
-            ImGui::TableNextRow(ImGuiTableRowFlags_None, 30.0f);
+            ImGui::TableNextRow(ImGuiTableRowFlags_None, Scale(30.0f));
             ImGui::TableSetColumnIndex(0);
             const std::string process_label = WideUtf8(process.executable_name);
             ImGui::TextUnformatted(process_label.c_str());
@@ -1243,10 +1310,10 @@ void DrawAttachMode(
 
 void DrawFooter(
     const LauncherSnapshot& snapshot, const anomaly::Translator& translator) {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 11.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 11.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.063f, 0.075f, 0.090f, 1.0f));
     ImGui::BeginChild(
-        "LauncherFooter", ImVec2(0.0f, kFooterHeight),
+        "LauncherFooter", ImVec2(0.0f, Scale(kFooterHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding);
     const ImVec4 color = snapshot.message_kind == MessageKind::Success ? kSuccess
         : snapshot.message_kind == MessageKind::Error ? kDanger : kMuted;
@@ -1278,10 +1345,10 @@ void DrawLauncher(
             ImGuiWindowFlags_NoBringToFrontOnFocus);
     DrawHeader(graphics, snapshot, translator);
     DrawModes(mode, translator);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 16.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 16.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f, 0.090f, 0.102f, 1.0f));
     ImGui::BeginChild(
-        "LauncherBody", ImVec2(0.0f, -kFooterHeight),
+        "LauncherBody", ImVec2(0.0f, -Scale(kFooterHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding);
     if (mode == LauncherMode::Proxy) {
         DrawProxyMode(window, controller, snapshot, translator);
@@ -1299,6 +1366,7 @@ void DrawLauncher(
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
+    static_cast<void>(SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2));
     const auto administrator = EnsureAdministrator(command_line);
     if (!administrator.run_current_process) return administrator.exit_code;
 
@@ -1317,7 +1385,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     const std::shared_ptr<const anomaly::Translator> translator =
         translator_result.translator;
 
-    static_cast<void>(SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2));
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     WNDCLASSEXW window_class{
         .cbSize = sizeof(window_class),
@@ -1332,9 +1399,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     if (RegisterClassExW(&window_class) == 0) return 1;
     const std::wstring window_title = Utf8Wide(
         translator->Text(anomaly::MessageId::LauncherWindowTitle));
+    g_launcher_dpi_scale = DpiScale(GetDpiForSystem());
     const HWND window = CreateWindowExW(
         0, window_class.lpszClassName, window_title.c_str(),
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 860, 600,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+        static_cast<int>(Scale(860.0f)), static_cast<int>(Scale(600.0f)),
         nullptr, nullptr, instance, nullptr);
     if (window == nullptr) {
         UnregisterClassW(window_class.lpszClassName, instance);
@@ -1352,7 +1421,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     static_cast<void>(ue5mem::ConfigurePlatformUiFontAtlas(runtime_root));
-    ue5mem::ApplyPlatformUiStyle();
+    g_launcher_dpi_scale = DpiScale(GetDpiForWindow(window));
+    ApplyLauncherDpiScale();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
@@ -1380,6 +1450,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
             if (message.message == WM_QUIT) running = false;
         }
         if (!running) break;
+        if (g_launcher_dpi_changed) ApplyLauncherDpiScale();
         if (IsIconic(window)) {
             Sleep(16);
             continue;

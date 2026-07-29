@@ -219,7 +219,13 @@ int wmain(int argc, wchar_t** argv) {
         Check(manifest.find("requestedExecutionLevel") != std::string_view::npos,
               "launcher manifest does not declare an execution level") &&
         Check(manifest.find("level=\"requireAdministrator\"") != std::string_view::npos,
-              "launcher manifest does not require administrator privileges");
+              "launcher manifest does not require administrator privileges") &&
+        Check(manifest.find("<dpiAware") != std::string_view::npos &&
+                  manifest.find("true/pm") != std::string_view::npos,
+              "launcher manifest does not declare per-monitor DPI awareness") &&
+        Check(manifest.find("<dpiAwareness") != std::string_view::npos &&
+                  manifest.find("PerMonitorV2") != std::string_view::npos,
+              "launcher manifest does not declare Per-Monitor V2 DPI awareness");
     FreeLibrary(executable);
     return result ? 0 : 1;
 }
