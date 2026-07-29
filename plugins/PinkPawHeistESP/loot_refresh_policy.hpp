@@ -23,8 +23,9 @@ public:
 
     void Complete(
         const Clock::time_point now,
-        const bool unchanged) noexcept {
-        stable_ = unchanged;
+        const bool unchanged,
+        const bool has_loot) noexcept {
+        stable_ = unchanged && has_loot;
         next_refresh_ = now + interval_;
     }
 

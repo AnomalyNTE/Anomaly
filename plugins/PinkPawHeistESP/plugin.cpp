@@ -946,6 +946,7 @@ void RefreshCacheIfDue() {
         });
         const bool unchanged =
             !forced && current && current->available && SameLootState(*current, loot);
+        const bool has_loot = !loot.empty();
         for (LootEntity& entry : loot) entry.label = BuildLootLabel(entry);
         auto cache = std::make_shared<LootCache>();
         cache->frame = frame;
@@ -955,7 +956,7 @@ void RefreshCacheIfDue() {
         g_context.last_valid_refresh = now;
         g_context.next_known_loot_validation = now + kKnownLootValidationInterval;
         g_context.known_loot_validation_cursor = 0;
-        g_context.loot_refresh.Complete(now, unchanged);
+        g_context.loot_refresh.Complete(now, unchanged, has_loot);
     } else {
         // Whole-collection retries reject partial data. Keep the last complete frame briefly
         // so a generation race does not make all ESP disappear for a single refresh.

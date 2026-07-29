@@ -712,21 +712,37 @@ bool LootRefreshStopsAfterStableObservation() {
     bool result = Check(
         policy.Begin(start, true),
         "Pink Paw loot refresh did not honor an explicit request");
-    policy.Complete(start, false);
+    policy.Complete(start, false, true);
     result = Check(
         !policy.Begin(start + 1s, false) && policy.Begin(start + 2s, false),
         "Pink Paw loot refresh did not wait for the convergence interval") && result;
-    policy.Complete(start + 2s, true);
+    policy.Complete(start + 2s, true, true);
     result = Check(
         !policy.Begin(start + 20s, false),
         "Pink Paw loot refresh continued after the state stabilized") && result;
     result = Check(
         policy.Begin(start + 20s, true),
         "Pink Paw loot refresh did not honor a later explicit refresh") && result;
-    policy.Complete(start + 20s, false);
+    policy.Complete(start + 20s, false, true);
     return Check(
         !policy.Begin(start + 21s, false) && policy.Begin(start + 22s, false),
         "Pink Paw loot refresh did not reconverge after an explicit refresh") && result;
+}
+
+bool EmptyLootDoesNotStopRefresh() {
+    using namespace std::chrono_literals;
+    using Policy = pink_paw_heist_esp::LootRefreshPolicy;
+
+    Policy policy(2s);
+    const Policy::Clock::time_point start{};
+    bool result = Check(policy.Begin(start, true),
+        "Pink Paw empty-loot refresh did not start");
+    policy.Complete(start, false, false);
+    result = Check(policy.Begin(start + 2s, false),
+        "Pink Paw empty-loot refresh did not retry") && result;
+    policy.Complete(start + 2s, true, false);
+    return Check(policy.Begin(start + 4s, false),
+        "Pink Paw empty-loot refresh incorrectly converged") && result;
 }
 
 }  // namespace
@@ -740,5 +756,6 @@ int main() {
     result = WorldGateUsesOneCachedFNameMarker() && result;
     result = LootClassMetadataIsResolvedOncePerClassIdentity() && result;
     result = LootRefreshStopsAfterStableObservation() && result;
+    result = EmptyLootDoesNotStopRefresh() && result;
     return result ? 0 : 1;
 }
