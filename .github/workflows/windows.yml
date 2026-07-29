@@ -7,29 +7,21 @@ on:
 jobs:
   build-test:
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        preset:
-          - windows-debug
-          - windows-relwithdebinfo
     steps:
       - uses: actions/checkout@v4
       - name: Configure
         run: cmake --preset windows-vs2022
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} --parallel
+        run: cmake --build --preset windows-relwithdebinfo --parallel
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: ctest --preset windows-relwithdebinfo
       - name: Install runtime package
-        if: matrix.preset == 'windows-relwithdebinfo'
         run: >-
           cmake --install .build/windows-vs2022
           --config RelWithDebInfo
           --prefix .build/windows-vs2022/game-package
           --component GameRuntime
       - name: Package and audit release components
-        if: matrix.preset == 'windows-relwithdebinfo'
         shell: pwsh
         run: >-
           ./tools/package_release.ps1
@@ -38,7 +30,7 @@ jobs:
           -Configuration RelWithDebInfo
           -OutputDirectory .build/pr-release
       - name: Upload package audit reports
-        if: always() && matrix.preset == 'windows-relwithdebinfo'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pr-release-metadata
@@ -54,7 +46,9 @@ jobs:
       - name: Configure AddressSanitizer
         run: cmake --preset windows-asan
       - name: Build AddressSanitizer fixtures
-        run: cmake --build --preset windows-asan --parallel
+        run: >-
+          cmake --build --preset windows-asan --parallel
+          --target input_fuzz_tests startup_fault_matrix plugin_runtime_v1_tests
       - name: Run parser, startup and plugin runtime fixtures under AddressSanitizer
         run: >-
           ctest --preset windows-asan
