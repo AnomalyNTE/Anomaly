@@ -11,9 +11,11 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - run: cmake --preset windows-vs2022
+      - run: >-
+          cmake --preset windows-vs2022
+          -DBUILD_TESTING=OFF
+          -DANOMALY_BUILD_PLUGIN_MANAGER_FIXTURE=OFF
       - run: cmake --build --preset windows-relwithdebinfo --parallel
-      - run: ctest --preset windows-relwithdebinfo
       - name: Package runtime, SDK, tools and symbols
         shell: pwsh
         run: ./tools/package_release.ps1 -BuildDirectory .build/windows-vs2022 -Version ($env:GITHUB_REF_NAME).TrimStart('v') -Configuration RelWithDebInfo

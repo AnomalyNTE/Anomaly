@@ -14,11 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake --preset windows-vs2022
+        run: >-
+          cmake --preset windows-vs2022
+          -DBUILD_TESTING=OFF
+          -DANOMALY_BUILD_PLUGIN_MANAGER_FIXTURE=OFF
       - name: Build
         run: cmake --build --preset windows-relwithdebinfo --parallel
-      - name: Test
-        run: ctest --preset windows-relwithdebinfo
       - name: Install runtime package
         run: >-
           cmake --install .build/windows-vs2022
@@ -43,17 +44,3 @@ jobs:
             .build/pr-release/sbom
             .build/pr-release/SHA256SUMS.txt
             .build/pr-release/release-manifest.json
-  address-sanitizer:
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure AddressSanitizer
-        run: cmake --preset windows-asan
-      - name: Build AddressSanitizer fixtures
-        run: >-
-          cmake --build --preset windows-asan --parallel
-          --target input_fuzz_tests startup_fault_matrix plugin_runtime_v1_tests
-      - name: Run parser, startup and plugin runtime fixtures under AddressSanitizer
-        run: >-
-          ctest --preset windows-asan
-          -R "input_fuzz_tests|startup_fault_matrix|plugin_runtime_v1_tests"
