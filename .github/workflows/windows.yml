@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - '**'
+    tags:
+      - 'v*'
     paths-ignore:
       - '**/*.md'
   pull_request:
@@ -11,7 +13,11 @@ on:
       - '**/*.md'
 
 jobs:
-  build-test:
+  build:
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -22,27 +28,24 @@ jobs:
           -DANOMALY_BUILD_PLUGIN_MANAGER_FIXTURE=OFF
       - name: Build
         run: cmake --build --preset windows-relwithdebinfo --parallel
-      - name: Install runtime package
-        run: >-
-          cmake --install .build/windows-vs2022
-          --config RelWithDebInfo
-          --prefix .build/windows-vs2022/game-package
-          --component GameRuntime
-      - name: Package and audit release components
+      - name: Package runtime, SDK, tools and symbols
+        if: github.ref_type == 'tag'
         shell: pwsh
-        run: >-
-          ./tools/package_release.ps1
-          -BuildDirectory .build/windows-vs2022
-          -Version 1.0.0
-          -Configuration RelWithDebInfo
-          -OutputDirectory .build/pr-release
-      - name: Upload package audit reports
-        if: always()
-        uses: actions/upload-artifact@v4
+        run: ./tools/package_release.ps1 -BuildDirectory .build/windows-vs2022 -Version ($env:GITHUB_REF_NAME).TrimStart('v') -Configuration RelWithDebInfo
+      - name: Attest published archives
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v2
         with:
-          name: pr-release-metadata
-          path: |
-            .build/pr-release/audit
-            .build/pr-release/sbom
-            .build/pr-release/SHA256SUMS.txt
-            .build/pr-release/release-manifest.json
+          subject-path: |
+            .build/release/Anomaly-*-runtime.zip
+            .build/release/Anomaly-*-sdk.zip
+            .build/release/Anomaly-*-tools.zip
+      - name: Publish runtime, SDK and tools
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            .build/release/Anomaly-*-runtime.zip
+            .build/release/Anomaly-*-sdk.zip
+            .build/release/Anomaly-*-tools.zip
+          fail_on_unmatched_files: true
