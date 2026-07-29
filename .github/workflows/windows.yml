@@ -15,9 +15,7 @@ on:
 jobs:
   build:
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: read
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -32,8 +30,31 @@ jobs:
         if: github.ref_type == 'tag'
         shell: pwsh
         run: ./tools/package_release.ps1 -BuildDirectory .build/windows-vs2022 -Version ($env:GITHUB_REF_NAME).TrimStart('v') -Configuration RelWithDebInfo
-      - name: Attest published archives
+      - name: Upload release archives
         if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-archives
+          path: |
+            .build/release/Anomaly-*-runtime.zip
+            .build/release/Anomaly-*-sdk.zip
+            .build/release/Anomaly-*-tools.zip
+          if-no-files-found: error
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    runs-on: windows-2022
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          name: release-archives
+          path: .build/release
+      - name: Attest published archives
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
@@ -41,7 +62,6 @@ jobs:
             .build/release/Anomaly-*-sdk.zip
             .build/release/Anomaly-*-tools.zip
       - name: Publish runtime, SDK and tools
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: |
