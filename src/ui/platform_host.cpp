@@ -4397,7 +4397,8 @@ private:
                     };
                     fact(Text(anomaly::MessageId::SettingsRuntime),
                         model_.Snapshot().diagnostics.runtime_version);
-                    fact(Text(anomaly::MessageId::SettingsSdkApi), ANOMALY_SDK_VERSION_STRING);
+                    fact(Text(anomaly::MessageId::SettingsSdkApi),
+                        "V" + std::to_string(ANOMALY_PLUGIN_API_V1_MAJOR));
                     fact(Text(anomaly::MessageId::SettingsRepository),
                         DisplayRepositoryState(model_.Snapshot().repository.state));
                     ImGui::EndTable();

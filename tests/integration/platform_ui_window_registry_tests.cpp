@@ -162,12 +162,20 @@ int wmain() {
     bool result = RepositoryUpdatesFollowInstalledManifest();
     auto manager = std::make_shared<ue5mem::PluginManager>(root, root / L"plugins");
     manager->SetUiService(anomaly::HostUiServiceTable());
+    bool settings_ready{};
+    ue5mem::PlatformDiagnostics diagnostics;
+    diagnostics.settings_snapshot = [&settings_ready] {
+        anomaly::PlatformSettingsSnapshot snapshot;
+        snapshot.ready = settings_ready;
+        if (settings_ready) snapshot.reason.clear();
+        return snapshot;
+    };
     result = Expect(
                  manager->UiResources().ImportPersistentWindowState({{
                      std::string(kExpectedStableId), false, 1040.0F, 700.0F, {}}}),
                  "legacy closed management shell state was not imported") &&
         result;
-    const bool initialized = ue5mem::InitializePlatformUi(*manager, {}, manager);
+    const bool initialized = ue5mem::InitializePlatformUi(*manager, std::move(diagnostics), manager);
     result = Expect(initialized, "platform UI did not initialize") && result;
     if (initialized) {
         result = Expect(!anomaly::HostUiDeveloperModeEnabled(),
@@ -626,6 +634,47 @@ int wmain() {
                                  "navigation arrow did not restore the left rail") &&
                         result;
                 }
+            }
+
+            settings_ready = true;
+            result = Expect(DrawFrame(), "ready settings frame did not complete") && result;
+            navigation_window = FindWindowContaining("PlatformShellNavigation");
+            result = Expect(navigation_window != nullptr,
+                         "management shell lost navigation before the About check") &&
+                result;
+            if (navigation_window != nullptr) {
+                const ImVec2 settings_center(
+                    navigation_window->Pos.x + navigation_window->Size.x * 0.5F,
+                    navigation_window->Pos.y + 10.0F + 2.0F * 44.0F + 20.0F);
+                result = Expect(ClickAt(io, settings_center),
+                             "settings navigation click for the About check did not complete") &&
+                    result;
+            }
+            ImGuiWindow* const settings_sections = FindWindowContaining("PlatformSettingsSections");
+            result = Expect(settings_sections != nullptr,
+                         "settings page did not render its section rail") &&
+                result;
+            if (settings_sections != nullptr) {
+                const ImVec2 about_center(
+                    settings_sections->WorkRect.Min.x + 20.0F,
+                    settings_sections->WorkRect.Min.y +
+                        5.0F * (34.0F + ImGui::GetStyle().ItemSpacing.y) + 17.0F);
+                result = Expect(ClickAt(io, about_center),
+                             "About section click did not complete") &&
+                    result;
+                std::string about_page_text;
+                result = Expect(DrawFrame(&about_page_text),
+                             "About section frame did not complete") &&
+                    result;
+                const bool api_version_rendered =
+                    about_page_text.find("SDK / API") != std::string::npos &&
+                    about_page_text.find("V1") != std::string::npos;
+                if (!api_version_rendered) {
+                    std::cerr << "About frame text:\n" << about_page_text << '\n';
+                }
+                result = Expect(api_version_rendered,
+                             "About section did not render the plugin API as V1") &&
+                    result;
             }
             io.DisplaySize = ImVec2(640.0F, 480.0F);
             result = Expect(DrawFrame(), "compact-layout restoration frame did not complete") && result;
