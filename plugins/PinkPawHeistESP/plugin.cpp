@@ -3,6 +3,7 @@
 
 #include "loot_class_cache.hpp"
 #include "loot_catalog.generated.h"
+#include "loot_filter_policy.hpp"
 #include "loot_refresh_policy.hpp"
 #include "rob_bank_runtime.hpp"
 
@@ -49,10 +50,11 @@ constexpr auto kExtractionWorldPollInterval = std::chrono::seconds(1);
 constexpr auto kExtractionStateReadDelay = std::chrono::seconds(1);
 constexpr auto kExtractionStateRetryInterval = std::chrono::milliseconds(250);
 constexpr std::string_view kSettingsSchemaId = "settings";
-constexpr std::uint32_t kSettingsSchemaVersion = 4;
+constexpr std::uint32_t kSettingsSchemaVersion = 5;
+constexpr std::uint32_t kPreviousSettingsSchemaVersion = 4;
 constexpr double kDefaultTeleportZOffsetCentimeters = 150.0;
 constexpr std::string_view kSettingsSchema = R"json(
-{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","showActiveExtractionsOnly","showPickableOnly","minimumValue","teleportZOffset"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"}}}
+{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","showActiveExtractionsOnly","showPickableOnly","alwaysShowAccessCards","minimumValue","teleportZOffset"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"alwaysShowAccessCards":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"}}}
 )json";
 
 struct LootEntity final {
@@ -101,6 +103,7 @@ struct Settings final {
     bool enabled{true};
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
+    bool always_show_access_cards{true};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
 };
@@ -151,6 +154,7 @@ struct Context final {
     int enabled{1};
     int show_active_extractions_only{1};
     int show_pickable_only{1};
+    int always_show_access_cards{1};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
     std::size_t current_page{};
@@ -186,13 +190,16 @@ class SettingsDocumentReader final {
 public:
     explicit SettingsDocumentReader(const std::string_view document) noexcept : document_(document) {}
 
-    bool Read(Settings& settings) noexcept {
+    bool Read(
+        Settings& settings,
+        const bool require_access_card_setting) noexcept {
         if (!Consume('{')) return false;
 
         bool menu_open_seen{};
         bool enabled_seen{};
         bool show_active_extractions_only_seen{};
         bool show_pickable_only_seen{};
+        bool always_show_access_cards_seen{};
         bool minimum_value_seen{};
         bool teleport_z_offset_seen{};
         for (;;) {
@@ -218,6 +225,12 @@ public:
                     return false;
                 }
                 show_pickable_only_seen = true;
+            } else if (key == "alwaysShowAccessCards") {
+                if (always_show_access_cards_seen ||
+                    !ReadBoolean(settings.always_show_access_cards)) {
+                    return false;
+                }
+                always_show_access_cards_seen = true;
             } else if (key == "minimumValue") {
                 if (minimum_value_seen || !ReadUInt32(settings.minimum_value)) return false;
                 minimum_value_seen = true;
@@ -236,7 +249,9 @@ public:
 
         SkipWhitespace();
         return menu_open_seen && enabled_seen && show_active_extractions_only_seen &&
-            show_pickable_only_seen && minimum_value_seen && teleport_z_offset_seen &&
+            show_pickable_only_seen &&
+            (!require_access_card_setting || always_show_access_cards_seen) &&
+            minimum_value_seen && teleport_z_offset_seen &&
             cursor_ == document_.size();
     }
 
@@ -382,6 +397,7 @@ Settings CurrentSettings() noexcept {
         g_context.enabled != 0,
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
+        g_context.always_show_access_cards != 0,
         g_context.minimum_value,
         std::isfinite(g_context.teleport_z_offset)
             ? g_context.teleport_z_offset : kDefaultTeleportZOffsetCentimeters};
@@ -392,6 +408,7 @@ void ApplySettings(const Settings& settings) noexcept {
     g_context.enabled = settings.enabled ? 1 : 0;
     g_context.show_active_extractions_only = settings.show_active_extractions_only ? 1 : 0;
     g_context.show_pickable_only = settings.show_pickable_only ? 1 : 0;
+    g_context.always_show_access_cards = settings.always_show_access_cards ? 1 : 0;
     g_context.minimum_value = settings.minimum_value;
     g_context.teleport_z_offset = std::isfinite(settings.teleport_z_offset)
         ? settings.teleport_z_offset : kDefaultTeleportZOffsetCentimeters;
@@ -414,6 +431,8 @@ std::string SerializeSettings() {
         (settings.show_active_extractions_only ? "true" : "false") +
         ",\"showPickableOnly\":" +
         (settings.show_pickable_only ? "true" : "false") +
+        ",\"alwaysShowAccessCards\":" +
+        (settings.always_show_access_cards ? "true" : "false") +
         ",\"minimumValue\":" + std::to_string(settings.minimum_value) +
         ",\"teleportZOffset\":" + FormatSettingsDouble(settings.teleport_z_offset) + "}";
 }
@@ -426,16 +445,20 @@ bool LoadSettings() {
     const AnomalyStatusV1 size_status = g_context.config->read(
         g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId), &schema_version,
         {nullptr, 0}, &size);
-    if (size_status.code != ANOMALY_STATUS_V1_OK || schema_version != kSettingsSchemaVersion ||
+    if (size_status.code != ANOMALY_STATUS_V1_OK ||
+        (schema_version != kSettingsSchemaVersion &&
+         schema_version != kPreviousSettingsSchemaVersion) ||
         size == 0 || size > kMaximumSettingsDocumentBytes) {
         return false;
     }
+    const std::uint32_t loaded_schema_version = schema_version;
 
     std::vector<std::uint8_t> document(size);
     const AnomalyStatusV1 read_status = g_context.config->read(
         g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId), &schema_version,
         {document.data(), document.size()}, &size);
-    if (read_status.code != ANOMALY_STATUS_V1_OK || schema_version != kSettingsSchemaVersion ||
+    if (read_status.code != ANOMALY_STATUS_V1_OK ||
+        schema_version != loaded_schema_version ||
         size == 0 || size > document.size()) {
         return false;
     }
@@ -443,8 +466,14 @@ bool LoadSettings() {
     Settings settings;
     const std::string_view serialized(
         reinterpret_cast<const char*>(document.data()), size);
-    if (!SettingsDocumentReader(serialized).Read(settings)) return false;
+    if (!SettingsDocumentReader(serialized).Read(
+            settings, loaded_schema_version == kSettingsSchemaVersion)) {
+        return false;
+    }
     ApplySettings(settings);
+    if (loaded_schema_version != kSettingsSchemaVersion) {
+        g_context.settings_dirty = true;
+    }
     return true;
 }
 
@@ -1051,8 +1080,9 @@ void RemoveCachedLoot(const pink_paw_heist_esp::RobBankEntity entity) {
 }
 
 bool PassesItemFilters(const LootEntity& entry) noexcept {
-    return entry.item != nullptr && entry.item->value.has_value() &&
-        *entry.item->value >= g_context.minimum_value;
+    return pink_paw_heist_esp::PassesItemValueFilter(
+        entry.item, g_context.minimum_value,
+        g_context.always_show_access_cards != 0);
 }
 
 bool IsPickable(const LootEntity& entry) noexcept {
@@ -1096,10 +1126,23 @@ std::string BuildWorldCoordinates(const LootEntity& entry) {
     return BuildWorldCoordinates(entry.snapshot);
 }
 
+std::string LootValueText(const LootEntity& entry) {
+    if (entry.item != nullptr && entry.item->value.has_value()) {
+        return FormatValue(*entry.item->value);
+    }
+    return g_context.localizer.Text("value.not_applicable", "-");
+}
+
 std::string BuildLootLabel(const LootEntity& entry) {
-    if (entry.item == nullptr || !entry.item->value.has_value()) return {};
-    const std::string value = FormatValue(*entry.item->value);
+    if (entry.item == nullptr) return {};
     const std::string coordinates = BuildWorldCoordinates(entry);
+    if (!entry.item->value.has_value()) {
+        const std::array arguments{
+            std::string_view(entry.item->name_utf8), std::string_view(coordinates)};
+        return g_context.localizer.Format(
+            "loot.access_card.label", "{0}\nAccess card\n{1}", arguments);
+    }
+    const std::string value = FormatValue(*entry.item->value);
     const std::array arguments{
         std::string_view(entry.item->name_utf8), std::string_view(value),
         std::string_view(coordinates)};
@@ -1122,8 +1165,11 @@ std::vector<const LootEntity*> CollectVisibleLoot(const LootCache& cache) {
         if (IsVisibleLoot(entry)) visible.push_back(&entry);
     }
     std::sort(visible.begin(), visible.end(), [](const LootEntity* left, const LootEntity* right) {
-        const std::uint32_t left_value = *left->item->value;
-        const std::uint32_t right_value = *right->item->value;
+        const bool left_access_card = pink_paw_heist_esp::IsAccessCard(left->item);
+        const bool right_access_card = pink_paw_heist_esp::IsAccessCard(right->item);
+        if (left_access_card != right_access_card) return left_access_card;
+        const std::uint32_t left_value = left->item->value.value_or(0);
+        const std::uint32_t right_value = right->item->value.value_or(0);
         if (left_value != right_value) return left_value > right_value;
         if (left->snapshot.entity_id != right->snapshot.entity_id) {
             return left->snapshot.entity_id < right->snapshot.entity_id;
@@ -1594,7 +1640,7 @@ void DrawLootRows(
             static_cast<void>(table_ui->table_next_column(table_ui->user));
             DrawLootItemCell(ui, table_ui, entry);
             static_cast<void>(table_ui->table_next_column(table_ui->user));
-            Text(ui, FormatValue(*entry.item->value));
+            Text(ui, LootValueText(entry));
             static_cast<void>(table_ui->table_next_column(table_ui->user));
             Text(ui, BuildWorldCoordinates(entry));
             if (developer_mode) {
@@ -1617,13 +1663,20 @@ void DrawLootRows(
     for (std::size_t index = first; index < last; ++index) {
         const LootEntity& entry = *visible_loot[index];
         DrawItemIcon(entry.item);
-        const std::string value = FormatValue(*entry.item->value);
         const std::string coordinates = BuildWorldCoordinates(entry);
-        const std::array arguments{
-            std::string_view(entry.item->name_utf8), std::string_view(value),
-            std::string_view(coordinates)};
-        Text(ui, g_context.localizer.Format(
-            "loot.row", "{0}  {1} Fons  {2}", arguments));
+        if (entry.item->value.has_value()) {
+            const std::string value = FormatValue(*entry.item->value);
+            const std::array arguments{
+                std::string_view(entry.item->name_utf8), std::string_view(value),
+                std::string_view(coordinates)};
+            Text(ui, g_context.localizer.Format(
+                "loot.row", "{0}  {1} Fons  {2}", arguments));
+        } else {
+            const std::array arguments{
+                std::string_view(entry.item->name_utf8), std::string_view(coordinates)};
+            Text(ui, g_context.localizer.Format(
+                "loot.access_card.row", "{0}  Access card  {1}", arguments));
+        }
         if (developer_mode) {
             const std::string button = g_context.localizer.Label(
                 "action.teleport", "Teleport",
@@ -1799,6 +1852,11 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "option.pickable_only", "Show pickable loot only", "pickable-only");
         const bool changed_pickable_only = Checkbox(
             ui, pickable_only, &g_context.show_pickable_only);
+        const std::string access_cards = g_context.localizer.Label(
+            "option.always_show_access_cards", "Always show access cards",
+            "always-show-access-cards");
+        const bool changed_access_cards = Checkbox(
+            ui, access_cards, &g_context.always_show_access_cards);
         const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
         const std::string minimum_value = g_context.localizer.Label(
             "option.minimum_value", "Minimum value", "minimum-value");
@@ -1809,8 +1867,8 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "option.teleport_z_offset", "Teleport Z offset (cm)", "teleport-z-offset");
         const bool changed_teleport_offset = developer_mode && InputDouble(
             ui, teleport_offset, &g_context.teleport_z_offset, 10.0, 100.0);
-        if (changed_enabled || changed_active_only || changed_pickable_only || changed_minimum ||
-            changed_teleport_offset) {
+        if (changed_enabled || changed_active_only || changed_pickable_only ||
+            changed_access_cards || changed_minimum || changed_teleport_offset) {
             g_context.settings_dirty = true;
             g_context.current_page = 0;
         }

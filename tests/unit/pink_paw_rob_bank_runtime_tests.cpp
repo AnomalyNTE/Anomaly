@@ -1,4 +1,5 @@
 #include "plugins/PinkPawHeistESP/loot_class_cache.hpp"
+#include "plugins/PinkPawHeistESP/loot_filter_policy.hpp"
 #include "plugins/PinkPawHeistESP/loot_refresh_policy.hpp"
 #include "plugins/PinkPawHeistESP/rob_bank_runtime.hpp"
 
@@ -703,6 +704,32 @@ bool LootClassMetadataIsResolvedOncePerClassIdentity() {
         "Pink Paw loot class cache did not invalidate a changed class identity") && result;
 }
 
+bool AccessCardsCanBypassTheValueFilter() {
+    const auto access_card = std::find_if(
+        pink_paw_heist_esp::catalog::kItemDefinitions.begin(),
+        pink_paw_heist_esp::catalog::kItemDefinitions.end(),
+        [](const auto& item) { return item.item_id == "RobBankItem_G001"; });
+    const auto regular_loot = std::find_if(
+        pink_paw_heist_esp::catalog::kItemDefinitions.begin(),
+        pink_paw_heist_esp::catalog::kItemDefinitions.end(),
+        [](const auto& item) { return item.item_id == "RobBankItem_006"; });
+    if (access_card == pink_paw_heist_esp::catalog::kItemDefinitions.end() ||
+        regular_loot == pink_paw_heist_esp::catalog::kItemDefinitions.end()) {
+        return Check(false, "Pink Paw filter fixture items were not found");
+    }
+
+    const pink_paw_heist_esp::catalog::ItemDefinition unknown_item{
+        "RobBankItem_X001", "Unknown", std::nullopt, "unknown.png"};
+    return Check(
+        pink_paw_heist_esp::IsAccessCard(&*access_card) &&
+            pink_paw_heist_esp::PassesItemValueFilter(&*access_card, 100000U, true) &&
+            !pink_paw_heist_esp::PassesItemValueFilter(&*access_card, 0, false) &&
+            !pink_paw_heist_esp::PassesItemValueFilter(&*regular_loot, 1001U, true) &&
+            !pink_paw_heist_esp::IsAccessCard(&unknown_item) &&
+            !pink_paw_heist_esp::PassesItemValueFilter(&unknown_item, 0, true),
+        "Pink Paw access-card option did not bypass only the value filter");
+}
+
 bool LootRefreshStopsAfterStableObservation() {
     using namespace std::chrono_literals;
     using Policy = pink_paw_heist_esp::LootRefreshPolicy;
@@ -755,6 +782,7 @@ int main() {
     result = KnownLootValidationHandlesManualPickup() && result;
     result = WorldGateUsesOneCachedFNameMarker() && result;
     result = LootClassMetadataIsResolvedOncePerClassIdentity() && result;
+    result = AccessCardsCanBypassTheValueFilter() && result;
     result = LootRefreshStopsAfterStableObservation() && result;
     result = EmptyLootDoesNotStopRefresh() && result;
     return result ? 0 : 1;
