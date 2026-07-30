@@ -271,6 +271,8 @@ private:
     bool Activate(LoadedPlugin& plugin);
     bool ReconcileEnablement(const anomaly::PluginCatalogSnapshot& catalog);
     void ReconcileWindowVisibility(LoadedPlugin& plugin) noexcept;
+    void SetPersistentPluginWindowVisibility(
+        std::string_view plugin_id, bool visible) noexcept;
     void UnloadIndices(
         const std::vector<std::size_t>& indices, bool retire_shadow_generations = true);
     bool UnloadIndicesWithDeadline(
@@ -308,6 +310,8 @@ private:
     mutable std::mutex ui_window_state_mutex_;
     std::string ui_window_state_last_document_;
     std::chrono::steady_clock::time_point ui_window_state_last_save_{};
+    mutable std::mutex plugin_window_visibility_mutex_;
+    std::unordered_map<std::string, bool> plugin_window_visibility_;
     std::shared_ptr<anomaly::UiResourceRegistry> ui_resources_ =
         std::make_shared<anomaly::UiResourceRegistry>();
     anomaly::InputService input_service_;

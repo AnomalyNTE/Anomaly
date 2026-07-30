@@ -150,6 +150,75 @@ bool TestPluginCacheCleanup(const anomaly::CoreMemoryServices& memory_services) 
     return !std::filesystem::exists(cache_root);
 }
 
+bool TestPluginWindowVisibilityPersistence(
+    const std::filesystem::path& source_root,
+    const anomaly::CoreMemoryServices& memory_services) {
+    constexpr std::string_view plugin_id = "anomaly.test.plugin-manager-fixture";
+    ScopedTemporaryDirectory fixture{
+        std::filesystem::temp_directory_path() /
+        (L"anomaly-plugin-window-visibility-" + std::to_wstring(GetCurrentProcessId()))};
+    std::error_code error;
+    std::filesystem::remove_all(fixture.path, error);
+    const std::filesystem::path source =
+        source_root / L"plugins" / L"PluginManagerFixture";
+    const std::filesystem::path destination =
+        fixture.path / L"plugins" / L"PluginManagerFixture";
+    std::filesystem::create_directories(destination, error);
+    if (error) return false;
+    for (const std::filesystem::path& filename :
+         {std::filesystem::path(L"plugin.dll"), std::filesystem::path(L"manifest.json"),
+             std::filesystem::path(L"watch.txt")}) {
+        if (!std::filesystem::copy_file(
+                source / filename, destination / filename,
+                std::filesystem::copy_options::overwrite_existing, error) || error) {
+            return false;
+        }
+    }
+
+    AnomalyUiServiceV1 ui_service{};
+    ui_service.struct_size = sizeof(ui_service);
+    ui_service.service_version = ANOMALY_UI_SERVICE_V1_VERSION;
+    WindowProbe window_probe{true};
+    ui_service.user = &window_probe;
+    ui_service.begin_window = CloseWindow;
+    ui_service.end_window = EndWindow;
+    ui_service.text = Text;
+    {
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        manager.SetUiService(&ui_service);
+        manager.LoadAll();
+        if (!manager.SetEnabled(plugin_id, true)) return false;
+        manager.Draw(nullptr);
+        const auto plugins = manager.Plugins();
+        if (plugins.size() != 1 || plugins.front().visible) return false;
+        manager.PersistUiWindowState();
+    }
+
+    const std::filesystem::path state_file =
+        fixture.path / L"state" / L"ui-window-state.json";
+    std::ifstream input(state_file, std::ios::binary);
+    const Json document = Json::parse(input, nullptr, false);
+    if (document.is_discarded() || !document.contains("pluginWindows") ||
+        !document["pluginWindows"].is_array() || document["pluginWindows"].size() != 1 ||
+        document["pluginWindows"][0].value("pluginId", std::string{}) != plugin_id ||
+        document["pluginWindows"][0].value("visible", true)) {
+        return false;
+    }
+
+    window_probe = {};
+    {
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        manager.SetUiService(&ui_service);
+        manager.LoadAll();
+        if (!manager.SetEnabled(plugin_id, true)) return false;
+        const auto plugins = manager.Plugins();
+        if (plugins.size() != 1 || plugins.front().visible || !window_probe.title.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool TestUiResourceWorkerStaging(
     ue5mem::PluginManager& manager, DeferredUiResourceWorker& worker,
     const std::filesystem::path& root) {
@@ -618,6 +687,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!logger->Start(structured_log)) return 13;
     const auto memory_services = anomaly::CreateCoreMemoryServices();
     if (!TestPluginCacheCleanup(memory_services)) return 34;
+    if (!TestPluginWindowVisibilityPersistence(root, memory_services)) return 36;
     if (!TestRawMemoryCapabilityRuntime(root, memory_services)) return 33;
     DeferredUiResourceWorker ui_resource_worker;
     ue5mem::PluginManager manager(

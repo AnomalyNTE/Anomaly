@@ -241,11 +241,20 @@ std::string Utf8(const std::filesystem::path& path) {
 
 constexpr std::uintmax_t kMaximumUiWindowStateFileBytes = 2U * 1024U * 1024U;
 constexpr std::size_t kMaximumUiPersistentWindows = 10000U;
+constexpr std::size_t kMaximumPersistentPluginWindows = 10000U;
+constexpr std::size_t kMaximumPluginIdBytes = 255U;
 constexpr auto kUiWindowStateSaveInterval = std::chrono::milliseconds(500);
 
+struct PersistentUiState final {
+    std::vector<anomaly::UiWindowPersistentState> windows;
+    std::unordered_map<std::string, bool> plugin_windows;
+};
+
 std::string SerializeUiWindowState(
-    const std::vector<anomaly::UiWindowPersistentState>& windows) {
-    nlohmann::json document{{"schemaVersion", 1}, {"windows", nlohmann::json::array()}};
+    const std::vector<anomaly::UiWindowPersistentState>& windows,
+    const std::unordered_map<std::string, bool>& plugin_windows) {
+    nlohmann::json document{{"schemaVersion", 1}, {"windows", nlohmann::json::array()},
+        {"pluginWindows", nlohmann::json::array()}};
     for (const anomaly::UiWindowPersistentState& window : windows) {
         document["windows"].push_back({
             {"stableId", window.stable_id},
@@ -258,10 +267,18 @@ std::string SerializeUiWindowState(
                 {"maximumWidth", window.constraints.maximum_width},
                 {"maximumHeight", window.constraints.maximum_height}}}});
     }
+    std::vector<std::pair<std::string, bool>> sorted_plugin_windows(
+        plugin_windows.begin(), plugin_windows.end());
+    std::ranges::sort(sorted_plugin_windows, {}, &std::pair<std::string, bool>::first);
+    for (const auto& [plugin_id, visible] : sorted_plugin_windows) {
+        document["pluginWindows"].push_back({
+            {"pluginId", plugin_id},
+            {"visible", visible}});
+    }
     return document.dump(2) + '\n';
 }
 
-std::vector<anomaly::UiWindowPersistentState> ParseUiWindowState(
+PersistentUiState ParseUiWindowState(
     const nlohmann::json& document) {
     if (!document.is_object() || document.value("schemaVersion", 0U) != 1U ||
         !document.contains("windows") || !document["windows"].is_array() ||
@@ -269,8 +286,8 @@ std::vector<anomaly::UiWindowPersistentState> ParseUiWindowState(
         throw std::runtime_error("UI window state document is invalid");
     }
 
-    std::vector<anomaly::UiWindowPersistentState> result;
-    result.reserve(document["windows"].size());
+    PersistentUiState result;
+    result.windows.reserve(document["windows"].size());
     for (const nlohmann::json& item : document["windows"]) {
         if (!item.is_object() || !item.contains("constraints") ||
             !item["constraints"].is_object()) {
@@ -287,7 +304,26 @@ std::vector<anomaly::UiWindowPersistentState> ParseUiWindowState(
             constraints.at("minimumHeight").get<float>(),
             constraints.at("maximumWidth").get<float>(),
             constraints.at("maximumHeight").get<float>()};
-        result.push_back(std::move(state));
+        result.windows.push_back(std::move(state));
+    }
+
+    if (!document.contains("pluginWindows")) return result;
+    const nlohmann::json& plugin_windows = document["pluginWindows"];
+    if (!plugin_windows.is_array() ||
+        plugin_windows.size() > kMaximumPersistentPluginWindows) {
+        throw std::runtime_error("plugin window state collection is invalid");
+    }
+    result.plugin_windows.reserve(plugin_windows.size());
+    for (const nlohmann::json& item : plugin_windows) {
+        if (!item.is_object()) {
+            throw std::runtime_error("plugin window state record is invalid");
+        }
+        std::string plugin_id = item.at("pluginId").get<std::string>();
+        const bool visible = item.at("visible").get<bool>();
+        if (plugin_id.empty() || plugin_id.size() > kMaximumPluginIdBytes ||
+            !result.plugin_windows.emplace(std::move(plugin_id), visible).second) {
+            throw std::runtime_error("plugin window state value is invalid");
+        }
     }
     return result;
 }
@@ -3909,12 +3945,16 @@ void PluginManager::LoadPersistentUiWindowState() {
         std::ifstream input(ui_window_state_file_, std::ios::binary);
         if (!input) throw std::runtime_error("UI window state file cannot be opened");
         const nlohmann::json document = nlohmann::json::parse(input);
-        const std::vector<anomaly::UiWindowPersistentState> windows =
-            ParseUiWindowState(document);
-        if (!ui_resources_->ImportPersistentWindowState(windows)) {
+        PersistentUiState state = ParseUiWindowState(document);
+        if (!ui_resources_->ImportPersistentWindowState(state.windows)) {
             throw std::runtime_error("UI window state values are invalid");
         }
-        ui_window_state_last_document_ = SerializeUiWindowState(windows);
+        ui_window_state_last_document_ = SerializeUiWindowState(
+            state.windows, state.plugin_windows);
+        {
+            std::scoped_lock lock(plugin_window_visibility_mutex_);
+            plugin_window_visibility_ = std::move(state.plugin_windows);
+        }
     } catch (const std::exception& exception) {
         Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "UI window state load failed: " + std::string(exception.what()));
     } catch (...) {
@@ -3930,8 +3970,13 @@ void PluginManager::SavePersistentUiWindowState(const bool force) noexcept {
             now - ui_window_state_last_save_ < kUiWindowStateSaveInterval) {
             return;
         }
+        std::unordered_map<std::string, bool> plugin_windows;
+        {
+            std::scoped_lock visibility_lock(plugin_window_visibility_mutex_);
+            plugin_windows = plugin_window_visibility_;
+        }
         const std::string document = SerializeUiWindowState(
-            ui_resources_->ExportPersistentWindowState());
+            ui_resources_->ExportPersistentWindowState(), plugin_windows);
         if (document == ui_window_state_last_document_) {
             ui_window_state_last_save_ = now;
             return;
@@ -3994,6 +4039,23 @@ void PluginManager::ReconcileWindowVisibility(LoadedPlugin& plugin) noexcept {
         ui_resources_->WindowGroupState(plugin.scope);
     if (windows.window_count != 0) {
         plugin.view.visible = windows.open_window_count != 0;
+        std::scoped_lock lock(plugin_window_visibility_mutex_);
+        plugin_window_visibility_.erase(plugin.view.id);
+        return;
+    }
+    std::scoped_lock lock(plugin_window_visibility_mutex_);
+    const auto persisted = plugin_window_visibility_.find(plugin.view.id);
+    if (persisted != plugin_window_visibility_.end()) {
+        plugin.view.visible = persisted->second;
+    }
+}
+
+void PluginManager::SetPersistentPluginWindowVisibility(
+    const std::string_view plugin_id, const bool visible) noexcept {
+    try {
+        std::scoped_lock lock(plugin_window_visibility_mutex_);
+        plugin_window_visibility_.insert_or_assign(std::string(plugin_id), visible);
+    } catch (...) {
     }
 }
 
@@ -4218,7 +4280,12 @@ void PluginManager::Draw(void* imgui_context) {
                 plugin->descriptor_v1.on_draw(
                     plugin->plugin_context,
                     reinterpret_cast<const AnomalyUiServiceV1*>(&plugin->ui_proxy));
-                if (plugin->ui_proxy_context.close_requested) plugin->view.visible = false;
+                if (plugin->ui_proxy_context.close_requested) {
+                    plugin->view.visible = false;
+                    if (ui_resources_->WindowGroupState(plugin->scope).window_count == 0) {
+                        SetPersistentPluginWindowVisibility(plugin->view.id, false);
+                    }
+                }
             } catch (...) {
                 fault = true;
                 plugin->faulted = true;
@@ -4996,6 +5063,9 @@ bool PluginManager::SetVisible(std::string_view plugin_id, bool visible) {
     if (windows.window_count != 0 &&
         !ui_resources_->SetWindowGroupOpen((*found)->scope, visible)) {
         return false;
+    }
+    if (windows.window_count == 0) {
+        SetPersistentPluginWindowVisibility((*found)->view.id, visible);
     }
     (*found)->view.visible = visible;
     (*found)->ui_proxy_context.reopen_requested = visible;
