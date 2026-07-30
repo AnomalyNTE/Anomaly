@@ -189,6 +189,8 @@ struct Context final {
     std::uint32_t reconcile_stage{kMissingPropertyOffset};
     std::uint32_t append_failure_stage{};
     AnomalyGenerationHandleV1 menu_container_handle{};
+    std::mutex discovery_mutex;
+    std::chrono::steady_clock::time_point next_discovery_poll{};
     std::recursive_mutex bridge_mutex;
     std::vector<MenuCandidate> menu_candidates;
     std::vector<WidgetBinding> bindings;
@@ -1378,6 +1380,7 @@ void ObserveMenuRebuild(Context& context) noexcept {
     context.expected_menu_root = latest_menu_root;
     context.observed_menu_page_event_ms = latest_event_ms;
     context.poll_latest_objects = true;
+    context.next_discovery_poll = {};
     context.reconciliation_complete = false;
     context.reconcile_stage = kMissingPropertyOffset;
     if (new_event_batch) {
@@ -1410,24 +1413,30 @@ void ObserveMenuRebuild(Context& context) noexcept {
             " new_batch=" + (new_event_batch ? "true" : "false"));
 }
 
+void Discover(Context& context) noexcept {
+    if (context.stopping.load(std::memory_order_acquire)) return;
+    std::scoped_lock discovery_lock(context.discovery_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (now < context.next_discovery_poll) return;
+    if (!NamesReady(context.names) || !ObjectsReady(context.objects)) RefreshServices(context);
+    ScanObjects(context);
+    const bool idle_poll = context.completed_full_scan && !context.menu_rebuild_active;
+    context.next_discovery_poll = idle_poll ? now + kRegistryPollInterval
+                                            : std::chrono::steady_clock::time_point{};
+}
+
 void Update(Context& context) noexcept {
     if (context.stopping.load(std::memory_order_acquire)) return;
-    if (!NamesReady(context.names) || !ObjectsReady(context.objects)) RefreshServices(context);
+    DrainClicks(context);
+    std::unique_lock discovery_lock(context.discovery_mutex, std::try_to_lock);
+    if (!discovery_lock.owns_lock()) return;
     ObserveMenuRebuild(context);
     const auto now = std::chrono::steady_clock::now();
-    const bool retry_append = context.append_failure_stage != 0U;
-    if (!context.reconciliation_complete &&
-        (!retry_append || now >= context.next_registry_poll)) {
-        ScanObjects(context);
-        ReconcileButtons(context);
-        context.next_registry_poll = now +
-            (context.append_failure_stage == 0U
-                ? kRegistryPollInterval : kAppendRetryInterval);
-    } else if (now >= context.next_registry_poll) {
-        ReconcileButtons(context);
-        context.next_registry_poll = now + kRegistryPollInterval;
-    }
-    DrainClicks(context);
+    if (now < context.next_registry_poll) return;
+    ReconcileButtons(context);
+    context.next_registry_poll = now +
+        (context.append_failure_stage == 0U
+            ? kRegistryPollInterval : kAppendRetryInterval);
 }
 
 void Reset(Context& context) noexcept {
@@ -1468,6 +1477,7 @@ void Reset(Context& context) noexcept {
     context.observed_menu_page_event_ms = 0U;
     context.menu_rebuild_active = false;
     context.reconciliation_complete = false;
+    context.next_discovery_poll = {};
     context.next_registry_poll = {};
     context.reconcile_stage = kMissingPropertyOffset;
     context.append_failure_stage = 0U;
@@ -1545,6 +1555,8 @@ public:
         return true;
     }
 
+    void Discover() noexcept { ::anomaly::Discover(context_); }
+
     void Update() noexcept { ::anomaly::Update(context_); }
 
     [[nodiscard]] bool Stop(const std::chrono::milliseconds timeout) noexcept {
@@ -1599,6 +1611,7 @@ NteEscMenuBridge::~NteEscMenuBridge() {
 }
 
 bool NteEscMenuBridge::Start() { return impl_->Start(); }
+void NteEscMenuBridge::Discover() noexcept { impl_->Discover(); }
 void NteEscMenuBridge::Update(double) noexcept { impl_->Update(); }
 bool NteEscMenuBridge::Stop(const std::chrono::milliseconds timeout) noexcept {
     return impl_->Stop(timeout);
