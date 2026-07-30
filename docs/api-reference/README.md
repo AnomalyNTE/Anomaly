@@ -126,6 +126,7 @@ void*    user;             // 调用每个函数时作为第一个参数回传
 | `anomaly.ue5.objects` | 1 | `ue5-objects` | [ue5.objects](ue5-services.md#anomalyue5objects) |
 | `anomaly.ue5.world` | 1 | `ue5-world` | [ue5.world](ue5-services.md#anomalyue5world) |
 | `anomaly.nte.build` | 1 | `nte-build` | [nte.build](nte-services.md#anomalyntebuild) |
+| `anomaly.nte.esc-menu-button` | 1 | `nte-esc-menu-button` | [nte.esc-menu-button](nte-services.md#anomalynteesc-menu-button) |
 | `anomaly.nte.session` | 1 | `nte-session-snapshot` | [nte.session](nte-services.md#anomalyntesession) |
 | `anomaly.nte.player` | 1 | `nte-player-snapshot` | [nte.player](nte-services.md#anomalynteplayer) |
 | `anomaly.nte.player-teleport` | 1 | `nte-player-teleport` | [nte.player-teleport](nte-services.md#anomalynteplayer-teleport) |

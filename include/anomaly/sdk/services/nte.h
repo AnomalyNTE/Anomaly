@@ -15,12 +15,53 @@
 #define ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY 256u
 #define ANOMALY_NTE_METRICS_SERVICE_V1_ID "anomaly.nte.metrics"
 #define ANOMALY_NTE_METRICS_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID "anomaly.nte.esc-menu-button"
+#define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION 1u
 // Service tables belong to one Host lifecycle generation. A cached table from a stopped or
 // replaced generation remains callable only to report UNAVAILABLE (or zero for scalar queries);
 // it never resumes against a later Start generation.
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef enum AnomalyNteEscMenuButtonFlagsV1 {
+    ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE = 0
+} AnomalyNteEscMenuButtonFlagsV1;
+
+typedef enum AnomalyNteEscMenuButtonIconFormatV1 {
+    ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE = 0,
+    ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG = 1
+} AnomalyNteEscMenuButtonIconFormatV1;
+
+typedef enum AnomalyNteEscMenuButtonResultV1 {
+    ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE = 0,
+    ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY = 1
+} AnomalyNteEscMenuButtonResultV1;
+
+typedef struct AnomalyNteEscMenuButtonSpecV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    AnomalyStringViewV1 id;
+    AnomalyStringViewV1 label;
+    uint32_t icon_format;
+    uint32_t reserved;
+    AnomalyByteSpanV1 icon_bytes;
+} AnomalyNteEscMenuButtonSpecV1;
+
+typedef uint32_t (ANOMALY_CALL *AnomalyNteEscMenuButtonCallbackV1)(
+    void* user, AnomalyGenerationHandleV1 button);
+
+typedef struct AnomalyNteEscMenuButtonServiceV1 {
+    uint32_t struct_size;
+    uint32_t service_version;
+    void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *register_button)(
+        void* user, const AnomalyNteEscMenuButtonSpecV1* spec,
+        AnomalyNteEscMenuButtonCallbackV1 callback, void* callback_user,
+        AnomalyGenerationHandleV1* handle);
+    AnomalyStatusV1 (ANOMALY_CALL *unregister_button)(
+        void* user, AnomalyGenerationHandleV1 handle);
+} AnomalyNteEscMenuButtonServiceV1;
 typedef struct AnomalyNteBuildServiceV1 {
     uint32_t struct_size; uint32_t service_version; void* user;
     AnomalyStatusV1 (ANOMALY_CALL *build_id)(void* user, char* destination, size_t* inout_size);

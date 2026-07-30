@@ -49,6 +49,28 @@ struct PluginCacheOwnerLease final {
     HANDLE value{INVALID_HANDLE_VALUE};
 };
 
+struct NteEscMenuButtonRegistry final {
+    struct Registration final {
+        std::shared_ptr<anomaly::PluginScope> scope;
+        std::uint64_t token{};
+        std::uint64_t ledger_token{};
+        std::uint64_t sequence{};
+        std::string id;
+        std::string label;
+        std::uint32_t icon_format{};
+        std::vector<std::uint8_t> icon_bytes;
+        AnomalyNteEscMenuButtonCallbackV1 callback{};
+        void* callback_user{};
+        std::atomic_bool active{true};
+    };
+
+    std::mutex mutex;
+    std::unordered_map<std::uint64_t, std::shared_ptr<Registration>> registrations;
+    std::uint64_t next_handle_id{1};
+    std::uint64_t next_sequence{1};
+    std::function<void()> host_action;
+};
+
 namespace {
 
 PluginManager* g_manager{};
@@ -61,6 +83,14 @@ anomaly::ThreadLocalScalar<std::uint64_t> g_callback_generation;
 anomaly::ThreadLocalScalar<bool> g_lifecycle_callback;
 
 constexpr std::wstring_view kPluginCacheOwnerFile{L".owner.lock"};
+constexpr std::size_t kMaximumNteEscMenuButtonIconBytes = 1024U * 1024U;
+constexpr std::array<std::uint8_t, 8> kPngSignature{
+    0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU};
+
+std::uint32_t ANOMALY_CALL ExpandAnomalyFromNteEscMenu(
+    void*, AnomalyGenerationHandleV1) noexcept {
+    return ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY;
+}
 
 std::optional<DWORD> CacheDirectoryProcessId(const std::filesystem::path& directory) noexcept {
     const std::string name = directory.filename().string();
@@ -1119,6 +1149,7 @@ struct PluginServiceContext {
     AnomalyIpcServiceV1 ipc_service{};
     AnomalyCommandsServiceV1 commands{};
     AnomalyNotificationsServiceV1 notifications{};
+    AnomalyNteEscMenuButtonServiceV1 nte_esc_menu_button{};
     AnomalySignatureServiceV1 signature{};
     AnomalyHookServiceV1 hook{};
     AnomalyPatchServiceV1 patch{};
@@ -1849,6 +1880,23 @@ AnomalyStatusV1 ANOMALY_CALL DismissNotificationV1(
     });
 }
 
+AnomalyStatusV1 ANOMALY_CALL RegisterNteEscMenuButtonV1(
+    void* user, const AnomalyNteEscMenuButtonSpecV1* spec,
+    AnomalyNteEscMenuButtonCallbackV1 callback, void* callback_user,
+    AnomalyGenerationHandleV1* handle) {
+    return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
+        return context.manager->RegisterNteEscMenuButton(
+            context.scope, spec, callback, callback_user, handle);
+    });
+}
+
+AnomalyStatusV1 ANOMALY_CALL UnregisterNteEscMenuButtonV1(
+    void* user, AnomalyGenerationHandleV1 handle) {
+    return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
+        return context.manager->UnregisterNteEscMenuButton(context.scope, handle);
+    });
+}
+
 AnomalyStatusV1 ANOMALY_CALL ResolveSignatureV1(
     void* user, AnomalyStringViewV1 module_name, AnomalyStringViewV1 section_name,
     AnomalyStringViewV1 pattern, std::uintptr_t* address) {
@@ -2534,6 +2582,11 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
         *service = &context->notifications;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
+    if (id == ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID &&
+        minimum_version <= context->nte_esc_menu_button.service_version) {
+        *service = &context->nte_esc_menu_button;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
     if (id == ANOMALY_SIGNATURE_SERVICE_V1_ID &&
         minimum_version <= context->signature.service_version) {
         *service = &context->signature;
@@ -2901,7 +2954,8 @@ PluginManager::PluginManager(
        lifecycle_ledger_(std::make_shared<anomaly::ResourceLedger>()),
       platform_services_(std::make_unique<anomaly::ScopedPlatformServices>(
           memory_services_, lifecycle_ledger_)),
-      ipc_registry_(std::make_unique<anomaly::IpcRegistry>(std::move(ipc_post))) {
+      ipc_registry_(std::make_unique<anomaly::IpcRegistry>(std::move(ipc_post))),
+      nte_esc_menu_buttons_(std::make_shared<NteEscMenuButtonRegistry>()) {
     if (g_manager != nullptr || g_process_quarantined) {
         throw std::logic_error("only one PluginManager may be active at a time");
     }
@@ -2917,6 +2971,12 @@ PluginManager::PluginManager(
 PluginManager::~PluginManager() {
     SavePersistentUiWindowState(true);
     UnloadAll();
+    if (host_nte_esc_menu_scope_ != nullptr) {
+        static_cast<void>(host_nte_esc_menu_scope_->BeginStop(std::chrono::seconds(1)));
+        static_cast<void>(host_nte_esc_menu_scope_->RevokeAll());
+        host_nte_esc_menu_button_ = {};
+        host_nte_esc_menu_scope_.reset();
+    }
     // A quarantined generation can still be executing inside its DLL.  Retain
     // the broker too, so that a late callback cannot dereference a stale
     // service context while the process is winding down.
@@ -2948,6 +3008,241 @@ PluginManager::~PluginManager() {
 
 void PluginManager::Log(AnomalyCoreLogLevelV1 level, std::string message) {
     LogImpl(level, std::move(message), {}, 0);
+}
+
+void PluginManager::SetNteEscMenuHostAction(std::function<void()> action) noexcept {
+    try {
+        std::scoped_lock lock(nte_esc_menu_buttons_->mutex);
+        nte_esc_menu_buttons_->host_action = std::move(action);
+    } catch (...) {
+    }
+}
+
+bool PluginManager::InstallDefaultNteEscMenuButton(
+    const std::span<const std::uint8_t> png_bytes) noexcept {
+    if (host_nte_esc_menu_scope_ != nullptr || png_bytes.empty() ||
+        png_bytes.size() > kMaximumNteEscMenuButtonIconBytes ||
+        png_bytes.size() < kPngSignature.size() ||
+        !std::ranges::equal(kPngSignature, png_bytes.first(kPngSignature.size()))) {
+        return false;
+    }
+    try {
+        auto scope = std::make_shared<anomaly::PluginScope>(
+            lifecycle_ledger_, "anomaly.host.nte-esc-menu", 1);
+        const AnomalyNteEscMenuButtonSpecV1 spec{
+            sizeof(spec), ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE,
+            {"anomaly.management", std::string_view("anomaly.management").size()},
+            {"Anomaly", std::string_view("Anomaly").size()},
+            ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG, 0,
+            {png_bytes.data(), png_bytes.size()}};
+        AnomalyGenerationHandleV1 handle{};
+        const AnomalyStatusV1 status = RegisterNteEscMenuButton(
+            scope, &spec, ExpandAnomalyFromNteEscMenu, nullptr, &handle);
+        if (status.code != ANOMALY_STATUS_V1_OK) {
+            static_cast<void>(scope->BeginStop(std::chrono::milliseconds::zero()));
+            static_cast<void>(scope->RevokeAll());
+            return false;
+        }
+        host_nte_esc_menu_scope_ = std::move(scope);
+        host_nte_esc_menu_button_ = handle;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+AnomalyStatusV1 PluginManager::RegisterNteEscMenuButton(
+    const std::shared_ptr<anomaly::PluginScope>& scope,
+    const AnomalyNteEscMenuButtonSpecV1* spec,
+    const AnomalyNteEscMenuButtonCallbackV1 callback, void* callback_user,
+    AnomalyGenerationHandleV1* handle) noexcept {
+    if (handle != nullptr) *handle = {};
+    if (scope == nullptr || spec == nullptr || spec->struct_size < sizeof(*spec) ||
+        spec->flags != ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE || callback == nullptr ||
+        handle == nullptr || spec->id.data == nullptr || spec->id.size == 0 ||
+        spec->id.size > 128 || spec->label.data == nullptr || spec->label.size == 0 ||
+        spec->label.size > 256 || spec->reserved != 0 ||
+        (spec->icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE &&
+            spec->icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG) ||
+        spec->icon_bytes.size > kMaximumNteEscMenuButtonIconBytes ||
+        (spec->icon_format == ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE &&
+            spec->icon_bytes.size != 0) ||
+        (spec->icon_format == ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG &&
+            (spec->icon_bytes.data == nullptr ||
+                spec->icon_bytes.size < kPngSignature.size() ||
+                !std::equal(
+                    kPngSignature.begin(), kPngSignature.end(), spec->icon_bytes.data)))) {
+        return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+    }
+    const std::string_view id(spec->id.data, spec->id.size);
+    const std::string_view label(spec->label.data, spec->label.size);
+    if (id.find('\0') != std::string_view::npos || label.find('\0') != std::string_view::npos) {
+        return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+    }
+    try {
+        auto registration = std::make_shared<NteEscMenuButtonRegistry::Registration>();
+        registration->scope = scope;
+        registration->id = std::string(id);
+        registration->label = std::string(label);
+        registration->icon_format = spec->icon_format;
+        if (spec->icon_bytes.size != 0) {
+            registration->icon_bytes.assign(
+                spec->icon_bytes.data, spec->icon_bytes.data + spec->icon_bytes.size);
+        }
+        registration->callback = callback;
+        registration->callback_user = callback_user;
+        std::scoped_lock lock(nte_esc_menu_buttons_->mutex);
+        const bool duplicate = std::ranges::any_of(
+            nte_esc_menu_buttons_->registrations, [&](const auto& entry) {
+                return entry.second != nullptr &&
+                    entry.second->active.load(std::memory_order_acquire) &&
+                    entry.second->scope->Owner() == scope->Owner() &&
+                    entry.second->id == id;
+            });
+        if (duplicate) {
+            return StatusV1(
+                ANOMALY_STATUS_V1_CONFLICT,
+                "NTE ESC menu button id is already registered");
+        }
+        registration->token = nte_esc_menu_buttons_->next_handle_id++;
+        registration->sequence = nte_esc_menu_buttons_->next_sequence++;
+        const std::weak_ptr<NteEscMenuButtonRegistry> weak_registry = nte_esc_menu_buttons_;
+        const std::weak_ptr<NteEscMenuButtonRegistry::Registration> weak_registration =
+            registration;
+        registration->ledger_token = scope->Register(
+            anomaly::PluginResourceKind::NteEscMenuButton,
+            "nte-esc-menu-button:" + registration->id,
+            [weak_registry, weak_registration] {
+                const auto registration = weak_registration.lock();
+                if (registration == nullptr) return;
+                registration->active.store(false, std::memory_order_release);
+                const auto registry = weak_registry.lock();
+                if (registry == nullptr) return;
+                std::scoped_lock registration_lock(registry->mutex);
+                registry->registrations.erase(registration->token);
+            });
+        if (registration->ledger_token == 0) {
+            return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "plugin scope is stopping");
+        }
+        nte_esc_menu_buttons_->registrations.emplace(registration->token, registration);
+        *handle = {registration->token, scope->Generation()};
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    } catch (...) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_FAILED,
+            "NTE ESC menu button registration failed");
+    }
+}
+
+AnomalyStatusV1 PluginManager::UnregisterNteEscMenuButton(
+    const std::shared_ptr<anomaly::PluginScope>& scope,
+    const AnomalyGenerationHandleV1 handle) noexcept {
+    if (scope == nullptr || handle.id == 0 || handle.generation != scope->Generation()) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_NOT_FOUND,
+            "NTE ESC menu button handle is stale");
+    }
+    std::shared_ptr<NteEscMenuButtonRegistry::Registration> registration;
+    {
+        std::scoped_lock lock(nte_esc_menu_buttons_->mutex);
+        const auto found = nte_esc_menu_buttons_->registrations.find(handle.id);
+        if (found != nte_esc_menu_buttons_->registrations.end()) registration = found->second;
+    }
+    if (registration == nullptr || registration->scope != scope) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_NOT_FOUND,
+            "NTE ESC menu button handle is stale");
+    }
+    return scope->Release(registration->ledger_token)
+        ? StatusV1(ANOMALY_STATUS_V1_OK)
+        : StatusV1(
+              ANOMALY_STATUS_V1_NOT_FOUND,
+              "NTE ESC menu button handle is stale");
+}
+
+std::vector<anomaly::NteEscMenuButtonSnapshot> PluginManager::NteEscMenuButtons() const {
+    struct Entry final {
+        anomaly::NteEscMenuButtonSnapshot snapshot;
+        std::uint64_t sequence{};
+    };
+    std::vector<Entry> entries;
+    {
+        std::scoped_lock lock(nte_esc_menu_buttons_->mutex);
+        entries.reserve(nte_esc_menu_buttons_->registrations.size());
+        for (const auto& [token, registration] : nte_esc_menu_buttons_->registrations) {
+            if (registration == nullptr ||
+                !registration->active.load(std::memory_order_acquire)) {
+                continue;
+            }
+            entries.push_back({{{token, registration->scope->Generation()},
+                registration->id, registration->label, registration->icon_format,
+                registration->icon_bytes}, registration->sequence});
+        }
+    }
+    std::ranges::sort(entries, {}, &Entry::sequence);
+    std::vector<anomaly::NteEscMenuButtonSnapshot> result;
+    result.reserve(entries.size());
+    for (auto& entry : entries) result.push_back(std::move(entry.snapshot));
+    return result;
+}
+
+AnomalyStatusV1 PluginManager::InvokeNteEscMenuButton(
+    const AnomalyGenerationHandleV1 handle) noexcept {
+    std::shared_ptr<NteEscMenuButtonRegistry::Registration> registration;
+    {
+        std::scoped_lock lock(nte_esc_menu_buttons_->mutex);
+        const auto found = nte_esc_menu_buttons_->registrations.find(handle.id);
+        if (found != nte_esc_menu_buttons_->registrations.end()) registration = found->second;
+    }
+    if (registration == nullptr ||
+        handle.generation != registration->scope->Generation() ||
+        !registration->active.load(std::memory_order_acquire)) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_NOT_FOUND,
+            "NTE ESC menu button handle is stale");
+    }
+    auto lease = registration->scope->AcquireCallback(handle.generation);
+    if (!lease) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_UNAVAILABLE,
+            "NTE ESC menu button owner is stopping");
+    }
+    std::uint32_t result{};
+    try {
+        ScopedPluginCallback callback_scope(
+            registration->scope, registration->scope->Generation(), false);
+        result = registration->callback(registration->callback_user, handle);
+    } catch (...) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_FAILED,
+            "NTE ESC menu button callback raised an exception");
+    }
+    if (result == ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE) {
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
+    if (result != ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+            "NTE ESC menu button returned an unknown result");
+    }
+    std::function<void()> host_action;
+    {
+        std::scoped_lock lock(nte_esc_menu_buttons_->mutex);
+        host_action = nte_esc_menu_buttons_->host_action;
+    }
+    if (!host_action) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_UNAVAILABLE,
+            "Anomaly management UI is not ready");
+    }
+    try {
+        host_action();
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    } catch (...) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_FAILED,
+            "Anomaly management UI action failed");
+    }
 }
 
 void PluginManager::LogPlugin(
@@ -3185,6 +3480,11 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
     plugin.service_context.notifications = {
         sizeof(AnomalyNotificationsServiceV1), ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION,
         &plugin.service_context, PostNotificationV1, DismissNotificationV1};
+    plugin.service_context.nte_esc_menu_button = {
+        sizeof(AnomalyNteEscMenuButtonServiceV1),
+        ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION,
+        &plugin.service_context,
+        RegisterNteEscMenuButtonV1, UnregisterNteEscMenuButtonV1};
     plugin.service_context.signature = {
         sizeof(AnomalySignatureServiceV1), ANOMALY_SIGNATURE_SERVICE_V1_VERSION,
         &plugin.service_context, ResolveSignatureV1};
@@ -4836,6 +5136,8 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
                     plugin.service_context.commands.service_version, true},
                 ServiceCandidate{ANOMALY_NOTIFICATIONS_SERVICE_V1_ID,
                     plugin.service_context.notifications.service_version, true},
+                ServiceCandidate{ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID,
+                    plugin.service_context.nte_esc_menu_button.service_version, true},
                 ServiceCandidate{ANOMALY_SIGNATURE_SERVICE_V1_ID,
                     plugin.service_context.signature.service_version, true},
                 ServiceCandidate{ANOMALY_HOOK_SERVICE_V1_ID,
@@ -4891,6 +5193,9 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
                         break;
                     case anomaly::PluginResourceKind::Ipc:
                         ++diagnostics.resources.ipc_resources;
+                        break;
+                    case anomaly::PluginResourceKind::NteEscMenuButton:
+                        ++diagnostics.resources.nte_esc_menu_buttons;
                         break;
                     default:
                         break;
@@ -5000,6 +5305,7 @@ std::string PluginManager::DiagnosticsJson() const {
             ",\"fonts\":" + std::to_string(resources.fonts) +
             ",\"textures\":" + std::to_string(resources.textures) +
             ",\"hotkeys\":" + std::to_string(resources.hotkeys) +
+            ",\"nteEscMenuButtons\":" + std::to_string(resources.nte_esc_menu_buttons) +
             "},\"queuedTasks\":" + std::to_string(platform.queued_tasks) +
             ",\"callbacks\":{\"updateSlow\":" +
                 std::to_string(plugin.update_metrics.slow_calls) +

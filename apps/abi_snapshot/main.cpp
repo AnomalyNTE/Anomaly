@@ -218,6 +218,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_METRICS_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_METRICS_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY\": ");
     AppendUnsigned(output, ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY);
     output.append(",\n    \"ANOMALY_NTE_METRICS_V1_VALID\": ");
@@ -267,6 +269,33 @@ std::string BuildSnapshot() {
          {"ANOMALY_NTE_SESSION_EVENT_V1_WORLD_READY", ANOMALY_NTE_SESSION_EVENT_V1_WORLD_READY},
          {"ANOMALY_NTE_SESSION_EVENT_V1_WORLD_CHANGED", ANOMALY_NTE_SESSION_EVENT_V1_WORLD_CHANGED},
          {"ANOMALY_NTE_SESSION_EVENT_V1_WORLD_UNAVAILABLE", ANOMALY_NTE_SESSION_EVENT_V1_WORLD_UNAVAILABLE}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteEscMenuButtonFlagsV1",
+        sizeof(AnomalyNteEscMenuButtonFlagsV1),
+        alignof(AnomalyNteEscMenuButtonFlagsV1),
+        {{"ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE", ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteEscMenuButtonResultV1",
+        sizeof(AnomalyNteEscMenuButtonResultV1),
+        alignof(AnomalyNteEscMenuButtonResultV1),
+        {{"ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE",
+             ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE},
+         {"ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY",
+             ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteEscMenuButtonIconFormatV1",
+        sizeof(AnomalyNteEscMenuButtonIconFormatV1),
+        alignof(AnomalyNteEscMenuButtonIconFormatV1),
+        {{"ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE",
+             ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE},
+         {"ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG",
+             ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG}},
         false);
     AppendEnum(
         output,
@@ -1397,6 +1426,30 @@ std::string BuildSnapshot() {
          {"service_version", offsetof(AnomalyNteMetricsServiceV1, service_version)},
          {"user", offsetof(AnomalyNteMetricsServiceV1, user)},
          {"snapshot", offsetof(AnomalyNteMetricsServiceV1, snapshot)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteEscMenuButtonSpecV1",
+        sizeof(AnomalyNteEscMenuButtonSpecV1),
+        alignof(AnomalyNteEscMenuButtonSpecV1),
+        {{"struct_size", offsetof(AnomalyNteEscMenuButtonSpecV1, struct_size)},
+         {"flags", offsetof(AnomalyNteEscMenuButtonSpecV1, flags)},
+         {"id", offsetof(AnomalyNteEscMenuButtonSpecV1, id)},
+         {"label", offsetof(AnomalyNteEscMenuButtonSpecV1, label)},
+         {"icon_format", offsetof(AnomalyNteEscMenuButtonSpecV1, icon_format)},
+         {"reserved", offsetof(AnomalyNteEscMenuButtonSpecV1, reserved)},
+         {"icon_bytes", offsetof(AnomalyNteEscMenuButtonSpecV1, icon_bytes)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteEscMenuButtonServiceV1",
+        sizeof(AnomalyNteEscMenuButtonServiceV1),
+        alignof(AnomalyNteEscMenuButtonServiceV1),
+        {{"struct_size", offsetof(AnomalyNteEscMenuButtonServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyNteEscMenuButtonServiceV1, service_version)},
+         {"user", offsetof(AnomalyNteEscMenuButtonServiceV1, user)},
+         {"register_button", offsetof(AnomalyNteEscMenuButtonServiceV1, register_button)},
+         {"unregister_button", offsetof(AnomalyNteEscMenuButtonServiceV1, unregister_button)}},
         true);
     output.append("  },\n");
 
@@ -1464,7 +1517,10 @@ std::string BuildSnapshot() {
     AppendService(output, ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
         ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION, "AnomalyNteActorsServiceV1", false);
     AppendService(output, ANOMALY_NTE_METRICS_SERVICE_V1_ID,
-        ANOMALY_NTE_METRICS_SERVICE_V1_VERSION, "AnomalyNteMetricsServiceV1", true);
+        ANOMALY_NTE_METRICS_SERVICE_V1_VERSION, "AnomalyNteMetricsServiceV1", false);
+    AppendService(output, ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID,
+        ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION,
+        "AnomalyNteEscMenuButtonServiceV1", true);
     output.append("  ]\n");
     output.append("}\n");
     return output;

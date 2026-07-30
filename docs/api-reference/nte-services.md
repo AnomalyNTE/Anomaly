@@ -37,6 +37,53 @@ typedef struct AnomalyNteBuildServiceV1 {
 
 ---
 
+## `anomaly.nte.esc-menu-button`
+
+- **ID**：`"anomaly.nte.esc-menu-button"` · **版本** 1 · **capability** `nte-esc-menu-button`
+
+该服务只扩展 **NTE 的 ESC 菜单**，不是通用菜单或通用 UI 服务。插件注册按钮后，NTE 桥接层按注册顺序把它追加到当前 ESC 菜单已有按钮的末尾；已有按钮数量不属于 ABI 合同，调用方不能假定固定为 25 个。
+
+```c
+typedef enum AnomalyNteEscMenuButtonResultV1 {
+    ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE = 0,
+    ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY = 1
+} AnomalyNteEscMenuButtonResultV1;
+
+typedef enum AnomalyNteEscMenuButtonIconFormatV1 {
+    ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE = 0,
+    ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG = 1
+} AnomalyNteEscMenuButtonIconFormatV1;
+
+typedef struct AnomalyNteEscMenuButtonSpecV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    AnomalyStringViewV1 id;
+    AnomalyStringViewV1 label;
+    uint32_t icon_format;
+    uint32_t reserved;
+    AnomalyByteSpanV1 icon_bytes;
+} AnomalyNteEscMenuButtonSpecV1;
+
+typedef uint32_t (ANOMALY_CALL *AnomalyNteEscMenuButtonCallbackV1)(
+    void* user, AnomalyGenerationHandleV1 button);
+
+typedef struct AnomalyNteEscMenuButtonServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *register_button)(
+        void* user, const AnomalyNteEscMenuButtonSpecV1* spec,
+        AnomalyNteEscMenuButtonCallbackV1 callback, void* callback_user,
+        AnomalyGenerationHandleV1* handle);
+    AnomalyStatusV1 (ANOMALY_CALL *unregister_button)(
+        void* user, AnomalyGenerationHandleV1 handle);
+} AnomalyNteEscMenuButtonServiceV1;
+```
+
+`flags` 必须为 `ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE`，`reserved` 必须为 0。`id` 在同一插件 owner 内必须唯一；不同插件可以使用相同 ID。`icon_format` 可为 `NONE` 或 `PNG`；`PNG` 的 `icon_bytes` 上限为 1 MiB，`NONE` 要求空字节 span。宿主复制 `id`、UTF-8 `label` 与图标字节，因此注册返回后原始内存可立即释放。成功注册得到的 generation handle 只属于该插件 generation；显式 `unregister_button` 或插件 Scope 撤销都会使其失效，并阻止 callback 越过 generation 生命周期。
+
+用户点击按钮后，宿主在 NTE game thread 上调用注册时提供的 callback，插件可在 callback 中实现自己的按钮事件。callback 返回 `NONE` 时不触发额外宿主动作；返回 `EXPAND_ANOMALY` 时请求展开 Anomaly 管理界面。自定义 PNG 在同一次菜单构建中连续导入失败 3 次后，该按钮使用 NTE 按钮 widget 的默认图标继续追加；下一次菜单重建会重新尝试自定义图标。Anomaly 自带的默认按钮使用内嵌 `logo.png`，并作为宿主追加区的第一项注册；第三方插件按注册成功顺序继续向后追加。
+
+---
+
 ## `anomaly.nte.session`
 
 - **ID**：`"anomaly.nte.session"` · **版本** 1 · **capability** `nte-session-snapshot`

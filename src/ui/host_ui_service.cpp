@@ -21,6 +21,7 @@ namespace {
 
 std::atomic_bool g_menus_collapsed{};
 std::atomic_bool g_menu_state_pending{true};
+std::atomic_bool g_management_expansion_requested{};
 std::atomic_bool g_developer_mode{};
 std::atomic<PlatformInputCapturePolicy> g_input_capture_policy{
     PlatformInputCapturePolicy::Automatic};
@@ -981,6 +982,15 @@ void SetHostUiMenusCollapsed(bool collapsed) noexcept {
 }
 
 bool HostUiMenusCollapsed() noexcept { return g_menus_collapsed.load(); }
+
+void RequestHostUiManagementExpansion() noexcept {
+    g_management_expansion_requested.store(true);
+    SetHostUiMenusCollapsed(false);
+}
+
+bool ConsumeHostUiManagementExpansionRequest() noexcept {
+    return g_management_expansion_requested.exchange(false);
+}
 
 bool HostUiMenusCaptureMouse() noexcept {
     // While the platform menu is expanded the cursor must always be owned by

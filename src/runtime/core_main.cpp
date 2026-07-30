@@ -39,7 +39,24 @@
 #include <utility>
 #include <vector>
 
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+
 namespace {
+
+constexpr int kNteEscMenuLogoResourceId = 102;
+
+[[nodiscard]] std::vector<std::uint8_t> LoadNteEscMenuLogoBytes() {
+    const auto module = reinterpret_cast<HMODULE>(&__ImageBase);
+    const HRSRC resource = FindResourceW(
+        module, MAKEINTRESOURCEW(kNteEscMenuLogoResourceId), RT_RCDATA);
+    if (resource == nullptr) return {};
+    const HGLOBAL loaded = LoadResource(module, resource);
+    const DWORD size = SizeofResource(module, resource);
+    const void* const bytes = loaded == nullptr ? nullptr : LockResource(loaded);
+    if (bytes == nullptr || size == 0) return {};
+    const auto* const first = static_cast<const std::uint8_t*>(bytes);
+    return {first, first + size};
+}
 
 struct CoreContext {
     std::filesystem::path runtime_root;
@@ -680,6 +697,10 @@ DWORD PreparePluginHost(
                         owner, generation));
                 }
             });
+        const auto esc_menu_logo = LoadNteEscMenuLogoBytes();
+        if (!plugins->InstallDefaultNteEscMenuButton(esc_menu_logo)) {
+            throw std::runtime_error("failed to install the default NTE ESC menu button");
+        }
         plugins->LoadAll();
         PublishPluginHost(context, std::move(plugins));
         const auto published = PluginHostSnapshot(context);

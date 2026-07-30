@@ -181,6 +181,17 @@ int wmain() {
         result = Expect(!anomaly::HostUiDeveloperModeEnabled(),
                      "platform UI did not reset developer mode for a new host") &&
             result;
+        result = Expect(DrawFrame(), "closed platform UI frame did not complete") && result;
+        const auto initially_closed = manager->UiResources().ExportPersistentWindowState();
+        result = Expect(
+                     ImGui::FindWindowByName(kExpectedWindowName.data()) == nullptr &&
+                         initially_closed.size() == 1 && !initially_closed.front().open,
+                     "management shell did not preserve its persisted closed state") &&
+            result;
+        result = Expect(
+                     ue5mem::RevealPlatformUi(),
+                     "management shell reveal did not open the persisted closed window") &&
+            result;
         std::string plugins_page_text;
         result = Expect(DrawFrame(&plugins_page_text), "platform UI frame did not complete") && result;
         result = Expect(
@@ -195,13 +206,47 @@ int wmain() {
             ImGui::FindWindowByName(kExpectedWindowName.data());
         result = Expect(
                       management_window != nullptr && !management_window->HasCloseButton,
-                      "management shell still exposed a permanent close button") &&
+                      "management shell unexpectedly exposed ImGui's native close button") &&
             result;
         result = Expect(
                       management_window != nullptr && management_window->Pos.x == 12.0F &&
                           management_window->Pos.y == 12.0F,
                       "management shell did not start at the viewport's top-left margin") &&
             result;
+        if (management_window != nullptr) {
+            const ImVec2 close_center(
+                management_window->Pos.x + management_window->Size.x - 27.0F,
+                management_window->Pos.y + 26.0F);
+            result = Expect(ClickAt(io, close_center),
+                         "management shell close click did not complete") &&
+                result;
+            const auto closed = manager->UiResources().ExportPersistentWindowState();
+            result = Expect(
+                         closed.size() == 1 && !closed.front().open &&
+                             anomaly::HostUiMenusCollapsed() &&
+                             !anomaly::HostUiMenusCaptureMouse(),
+                         "management shell close did not persist or release mouse capture") &&
+                result;
+            anomaly::RequestHostUiManagementExpansion();
+            result = Expect(
+                         ue5mem::ApplyHostUiManagementExpansionRequest(),
+                         "explicit management request was not consumed") &&
+                result;
+            const auto reopened = manager->UiResources().ExportPersistentWindowState();
+            result = Expect(
+                         reopened.size() == 1 && reopened.front().open &&
+                             !anomaly::HostUiMenusCollapsed() &&
+                             anomaly::HostUiMenusCaptureMouse(),
+                         "explicit management action did not reveal and expand the shell") &&
+                result;
+            result = Expect(DrawFrame(), "reopened management shell frame did not complete") &&
+                result;
+            management_window = ImGui::FindWindowByName(kExpectedWindowName.data());
+            result = Expect(
+                         management_window != nullptr && management_window->Size.y > 52.0F,
+                         "explicit management action did not clear the local collapsed state") &&
+                result;
+        }
         io.DisplaySize = ImVec2(640.0F, 480.0F);
         result = Expect(DrawFrame(), "compact viewport frame did not complete") && result;
         management_window = ImGui::FindWindowByName(kExpectedWindowName.data());
@@ -526,7 +571,7 @@ int wmain() {
                 }
             }
 
-            // The fixed header action column is [collapse] [lock] [disabled close].
+            // The fixed header action column is [collapse] [lock] [close].
             // It has a 12px right inset and 4px gaps between 30px controls.
             const ImVec2 lock_center(
                 header_window->Pos.x + header_window->Size.x - 61.0F,
@@ -549,8 +594,8 @@ int wmain() {
             anomaly::SetHostUiMenusCollapsed(false);
             result = Expect(DrawFrame(), "host menu expansion frame did not complete") && result;
 
-            // The disabled close control is the last 30px action. Clicking it
-            // must leave the host-owned management shell registered and open.
+            // The close control is the last 30px action. It persists a closed
+            // shell, and the explicit management action must reopen it.
             const ImVec2 close_center(
                 header_window->Pos.x + header_window->Size.x - 27.0F,
                 header_window->Pos.y + header_window->Size.y * 0.5F);
@@ -560,10 +605,19 @@ int wmain() {
             result = Expect(DrawFrame(), "management shell close press frame did not complete") && result;
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
             result = Expect(DrawFrame(), "management shell close release frame did not complete") && result;
-            const auto after_disabled_close = manager->UiResources().ExportPersistentWindowState();
+            const auto after_close = manager->UiResources().ExportPersistentWindowState();
             result = Expect(
-                         after_disabled_close.size() == 1 && after_disabled_close.front().open,
-                         "disabled management shell close control closed the main interface") &&
+                         after_close.size() == 1 && !after_close.front().open &&
+                             anomaly::HostUiMenusCollapsed() &&
+                             !anomaly::HostUiMenusCaptureMouse(),
+                         "management shell close did not release its input capture") &&
+                result;
+            anomaly::RequestHostUiManagementExpansion();
+            result = Expect(
+                         ue5mem::ApplyHostUiManagementExpansionRequest(),
+                         "management shell action did not consume the reopen request") &&
+                result;
+            result = Expect(DrawFrame(), "reopened management shell frame did not complete") &&
                 result;
 
             // The resized shell is now in the standard layout. Verify its
@@ -690,7 +744,7 @@ int wmain() {
                          persisted.front().open &&
                          persisted.front().width > 0.0F && persisted.front().width <= 616.0F &&
                          persisted.front().height > 0.0F && persisted.front().height <= 456.0F,
-                     "management shell did not repair its legacy closed state") &&
+                     "management shell did not persist its reopened state") &&
             result;
 
         auto closed_persisted = persisted;

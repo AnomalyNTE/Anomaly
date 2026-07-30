@@ -103,9 +103,11 @@ void RunEmbeddedPlatform(
     PluginManager& plugins,
     PlatformDiagnostics diagnostics,
     std::shared_ptr<PluginManager> plugin_owner);
-// Repairs a legacy or externally restored closed state for the host-owned
-// management shell. Returns true only when the shell changed to open.
+// Returns true only when the host-owned management shell changed to open.
 [[nodiscard]] bool RevealPlatformUi() noexcept;
+// Consumes a game-thread request on the UI thread, restores a closed
+// management shell, and expands it. Returns true when a request was consumed.
+[[nodiscard]] bool ApplyHostUiManagementExpansionRequest() noexcept;
 // Uploads management-shell resources after the plugin scopes are prepared and
 // before ImGui begins the next frame.
 void PreparePlatformUiResources() noexcept;

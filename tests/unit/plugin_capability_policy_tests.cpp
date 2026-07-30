@@ -100,6 +100,7 @@ bool TestEveryControlledServiceRequiresItsMappedCapability() {
         Mapping{"anomaly.nte.player", "nte-player-snapshot"},
         Mapping{"anomaly.nte.player-teleport", "nte-player-teleport"},
         Mapping{"anomaly.nte.entities", "nte-entity-snapshot"},
+        Mapping{"anomaly.nte.esc-menu-button", "nte-esc-menu-button"},
         Mapping{"anomaly.nte.actors", "nte-actor-snapshot"},
     };
     for (const Mapping& mapping : mappings) {

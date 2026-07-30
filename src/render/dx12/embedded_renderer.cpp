@@ -824,6 +824,7 @@ bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
         std::scoped_lock plugin_lock(*state.plugin_mutex);
         SynchronizeHostFontScale(state);
         state.plugins->SetUiResourceRenderBackend(resource_backend);
+        state.plugins->SetNteEscMenuHostAction(anomaly::RequestHostUiManagementExpansion);
         state.plugins->SetUiService(EmbeddedUiServiceTable());
         // The PluginManager owns logical font/texture generations. Do not
         // expose a fresh renderer generation until it has acknowledged the
@@ -925,6 +926,7 @@ bool ReleaseGraphics(
         }
         if (state.plugins != nullptr) {
             state.plugins->SetUiResourceRenderBackend({});
+            state.plugins->SetNteEscMenuHostAction({});
             state.plugins->SetUiService(nullptr);
             state.plugins->SetImGuiContext(nullptr);
         }
@@ -995,12 +997,9 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     const int toggle_state = GetAsyncKeyState(static_cast<int>(toggle_key));
     if (anomaly::ShouldTogglePlatformMenus(
             PlatformUiCapturingHotkey(), toggle_state)) {
-        if (RevealPlatformUi()) {
-            anomaly::SetHostUiMenusCollapsed(false);
-        } else {
-            anomaly::SetHostUiMenusCollapsed(!anomaly::HostUiMenusCollapsed());
-        }
+        anomaly::SetHostUiMenusCollapsed(!anomaly::HostUiMenusCollapsed());
     }
+    static_cast<void>(ApplyHostUiManagementExpansionRequest());
 
     const UINT index = state->swap_chain->GetCurrentBackBufferIndex();
     if (index >= state->frames.size()) return;

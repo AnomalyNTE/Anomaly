@@ -163,6 +163,7 @@ set(PROXY_CPP "${GENERATED_DIR}/proxy_exports.cpp")
 # This prefiltered 32px derivative keeps the one-level header texture close
 # to its display size without imposing mip generation on generic UI assets.
 file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/logo-header.png" ANOMALY_PLATFORM_LOGO_PATH)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/logo.png" ANOMALY_ESC_MENU_LOGO_PATH)
 file(TO_CMAKE_PATH
     "${CMAKE_SOURCE_DIR}/apps/launcher/AnomalyLauncher.ico"
     ANOMALY_LAUNCHER_ICON_PATH)
@@ -208,6 +209,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/schemas/repository-config.schema.json"
     "${CMAKE_SOURCE_DIR}/schemas/repository-index.schema.json"
     "${CMAKE_SOURCE_DIR}/logo-header.png"
+    "${CMAKE_SOURCE_DIR}/logo.png"
     "${CMAKE_SOURCE_DIR}/apps/launcher/AnomalyLauncher.ico")
 configure_file(
     "${CMAKE_SOURCE_DIR}/cmake/platform_ui_resources.rc.in"
@@ -766,6 +768,7 @@ add_library(anomaly_core SHARED
     src/ui/platform_host.cpp
     "${PLATFORM_UI_RESOURCES_RC}"
     src/render/dx12/embedded_bridge.cpp
+    src/game/nte/nte_esc_menu_bridge.cpp
     src/render/dx12/embedded_discovery.cpp
     src/render/dx12/embedded_input.cpp
     src/render/dx12/embedded_renderer.cpp

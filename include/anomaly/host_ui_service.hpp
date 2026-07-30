@@ -13,6 +13,8 @@ namespace anomaly {
 // of a frame. ESP foreground drawing remains independent from this menu state.
 void SetHostUiMenusCollapsed(bool collapsed) noexcept;
 [[nodiscard]] bool HostUiMenusCollapsed() noexcept;
+void RequestHostUiManagementExpansion() noexcept;
+[[nodiscard]] bool ConsumeHostUiManagementExpansionRequest() noexcept;
 [[nodiscard]] bool HostUiMenusCaptureMouse() noexcept;
 void SetHostUiInputCapturePolicy(PlatformInputCapturePolicy policy) noexcept;
 void SetHostUiDeveloperMode(bool enabled) noexcept;

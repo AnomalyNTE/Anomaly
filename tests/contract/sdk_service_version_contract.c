@@ -209,6 +209,11 @@ typedef AnomalyStatusV1 (ANOMALY_CALL *ContractNteEntityFNamePropertyFn)(
     void*, AnomalyGenerationHandleV1, AnomalyStringViewV1, char*, size_t*);
 typedef AnomalyStatusV1 (ANOMALY_CALL *ContractNteMetricsSnapshotFn)(
     void*, AnomalyNteSnapshotMetricsV1*);
+typedef uint32_t (ANOMALY_CALL *ContractNteEscMenuButtonCallbackFn)(
+    void*, AnomalyGenerationHandleV1);
+typedef AnomalyStatusV1 (ANOMALY_CALL *ContractNteEscMenuButtonRegisterFn)(
+    void*, const AnomalyNteEscMenuButtonSpecV1*, AnomalyNteEscMenuButtonCallbackV1,
+    void*, AnomalyGenerationHandleV1*);
 
 _Static_assert(sizeof(void*) == 8, "the ABI requires 64-bit pointers");
 _Static_assert(sizeof(size_t) == 8, "the ABI requires 64-bit size_t");
@@ -257,6 +262,24 @@ _Static_assert(ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY == 256u,
     "NTE entity page capacity changed");
 _Static_assert(ANOMALY_NTE_METRICS_SERVICE_V1_VERSION == 1u, "NTE metrics version changed");
 _Static_assert(ANOMALY_NTE_METRICS_V1_VALID == 1u, "NTE metrics valid flag changed");
+_Static_assert(ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION == 1u,
+    "NTE ESC menu button version changed");
+_Static_assert(sizeof(AnomalyNteEscMenuButtonFlagsV1) == 4,
+    "NTE ESC menu button flags width changed");
+_Static_assert(sizeof(AnomalyNteEscMenuButtonIconFormatV1) == 4,
+    "NTE ESC menu button icon format width changed");
+_Static_assert(sizeof(AnomalyNteEscMenuButtonResultV1) == 4,
+    "NTE ESC menu button result width changed");
+_Static_assert(ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE == 0,
+    "NTE ESC menu button flag changed");
+_Static_assert(ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE == 0,
+    "NTE ESC menu button empty icon format changed");
+_Static_assert(ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG == 1,
+    "NTE ESC menu button PNG icon format changed");
+_Static_assert(ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE == 0,
+    "NTE ESC menu button callback result changed");
+_Static_assert(ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY == 1,
+    "NTE ESC menu button host action changed");
 
 _Static_assert(ANOMALY_STATUS_V1_OK == 0, "status value changed");
 _Static_assert(ANOMALY_STATUS_V1_INVALID_ARGUMENT == 1, "status value changed");
@@ -952,6 +975,22 @@ ANOMALY_ASSERT_SERVICE_PREFIX(AnomalyNteMetricsServiceV1);
 ANOMALY_ASSERT_OFFSET(AnomalyNteMetricsServiceV1, snapshot, 16);
 ANOMALY_ASSERT_TAIL(AnomalyNteMetricsServiceV1, snapshot);
 
+ANOMALY_ASSERT_LAYOUT(AnomalyNteEscMenuButtonSpecV1, 64, 8);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonSpecV1, struct_size, 0);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonSpecV1, flags, 4);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonSpecV1, id, 8);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonSpecV1, label, 24);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonSpecV1, icon_format, 40);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonSpecV1, reserved, 44);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonSpecV1, icon_bytes, 48);
+ANOMALY_ASSERT_TAIL(AnomalyNteEscMenuButtonSpecV1, icon_bytes);
+
+ANOMALY_ASSERT_LAYOUT(AnomalyNteEscMenuButtonServiceV1, 32, 8);
+ANOMALY_ASSERT_SERVICE_PREFIX(AnomalyNteEscMenuButtonServiceV1);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonServiceV1, register_button, 16);
+ANOMALY_ASSERT_OFFSET(AnomalyNteEscMenuButtonServiceV1, unregister_button, 24);
+ANOMALY_ASSERT_TAIL(AnomalyNteEscMenuButtonServiceV1, unregister_button);
+
 _Static_assert(
     ANOMALY_TYPE_IS(((AnomalyAllocatorV1*)0)->allocate, ContractAllocateFn),
     "allocator.allocate signature");
@@ -1455,6 +1494,18 @@ _Static_assert(
     ANOMALY_TYPE_IS(((AnomalyNteMetricsServiceV1*)0)->snapshot,
                     ContractNteMetricsSnapshotFn),
     "nte.metrics.snapshot signature");
+_Static_assert(
+    ANOMALY_TYPE_IS((AnomalyNteEscMenuButtonCallbackV1)0,
+                    ContractNteEscMenuButtonCallbackFn),
+    "nte.esc-menu-button callback signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyNteEscMenuButtonServiceV1*)0)->register_button,
+                    ContractNteEscMenuButtonRegisterFn),
+    "nte.esc-menu-button register signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyNteEscMenuButtonServiceV1*)0)->unregister_button,
+                    ContractHandleFn),
+    "nte.esc-menu-button unregister signature");
 
 int main(void) {
     if (strcmp(ANOMALY_PLUGIN_V1_ENTRY_NAME, "AnomalyPluginEntryV1") != 0) return 1;
@@ -1489,5 +1540,7 @@ int main(void) {
     if (strcmp(ANOMALY_SIGNATURE_SERVICE_V1_ID, "anomaly.interop.signature") != 0) return 30;
     if (strcmp(ANOMALY_HOOK_SERVICE_V1_ID, "anomaly.interop.hook") != 0) return 31;
     if (strcmp(ANOMALY_PATCH_SERVICE_V1_ID, "anomaly.interop.patch") != 0) return 32;
+    if (strcmp(ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID,
+            "anomaly.nte.esc-menu-button") != 0) return 33;
     return 0;
 }

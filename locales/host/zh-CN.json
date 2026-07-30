@@ -13,7 +13,7 @@
     "shell.control.collapse": "折叠管理界面",
     "shell.control.unlock": "解锁管理界面",
     "shell.control.lock": "锁定管理界面为展开状态",
-    "shell.control.cannot_close": "主界面不能关闭",
+    "shell.control.close": "关闭",
     "shell.navigation.expand": "展开导航",
     "shell.navigation.collapse": "折叠导航",
     "shell.navigation.issues": "{0} 个问题",

@@ -1,6 +1,8 @@
 #include "embedded_host_internal.hpp"
 
 #include "anomaly/host_ui_service.hpp"
+#include "anomaly/nte_esc_menu_bridge.hpp"
+#include "anomaly/structured_logger.hpp"
 #include "anomaly/thread_local_value.hpp"
 #include "anomaly/ue5_nte_adapter.hpp"
 
@@ -236,7 +238,9 @@ void RunEmbeddedPlatform(
     if (g_hooks != nullptr || g_state.load(std::memory_order_acquire) != nullptr) return;
     const auto tick_plugins = plugin_owner;
     const auto tick_enabled = std::make_shared<std::atomic_bool>(true);
+    std::shared_ptr<anomaly::NteEscMenuBridge> esc_menu_bridge;
     bool tick_bound{};
+    bool esc_menu_bridge_started{};
     bool hooks_owned{};
     bool cleanup_done{};
     ScopeExit cleanup_guard;
@@ -262,6 +266,13 @@ void RunEmbeddedPlatform(
                     state.quarantined_plugin_owner = plugin_owner;
                     state_owner.release();
                     return;
+                }
+            }
+            if (esc_menu_bridge_started && esc_menu_bridge != nullptr) {
+                esc_menu_bridge_started = false;
+                if (!esc_menu_bridge->Stop(std::chrono::seconds(5))) {
+                    std::ofstream(root / L"anomaly-platform.log", std::ios::app)
+                        << "NTE ESC menu bridge shutdown deadline exceeded\n";
                 }
             }
             if (hooks_owned && !RemoveHooks()) {
@@ -321,15 +332,56 @@ void RunEmbeddedPlatform(
         }
     };
     if (adapter != nullptr) {
+        const auto bridge_logger = state.diagnostics.logger;
+        esc_menu_bridge = std::make_shared<anomaly::NteEscMenuBridge>(
+            memory_services, adapter->Resolution(),
+            [weak = std::weak_ptr<PluginManager>(plugin_owner)] {
+                const auto plugins = weak.lock();
+                return plugins == nullptr
+                    ? std::vector<anomaly::NteEscMenuButtonSnapshot>{}
+                    : plugins->NteEscMenuButtons();
+            },
+            [weak = std::weak_ptr<PluginManager>(plugin_owner)](
+                const AnomalyGenerationHandleV1 handle) {
+                if (const auto plugins = weak.lock()) {
+                    static_cast<void>(plugins->InvokeNteEscMenuButton(handle));
+                }
+            },
+            [bridge_logger](const std::uint32_t level, std::string message) {
+                if (bridge_logger == nullptr) return;
+                anomaly::LogLevel mapped = anomaly::LogLevel::Info;
+                if (level >= ANOMALY_CORE_LOG_LEVEL_V1_ERROR) {
+                    mapped = anomaly::LogLevel::Error;
+                } else if (level >= ANOMALY_CORE_LOG_LEVEL_V1_WARNING) {
+                    mapped = anomaly::LogLevel::Warning;
+                } else if (level == ANOMALY_CORE_LOG_LEVEL_V1_TRACE) {
+                    mapped = anomaly::LogLevel::Trace;
+                }
+                anomaly::LogDetails details;
+                details.thread_domain = anomaly::LogThreadDomain::Game;
+                details.event_id = "nte.esc-menu-bridge";
+                static_cast<void>(bridge_logger->Log(
+                    mapped, "nte.esc-menu", std::move(message), std::move(details)));
+            });
+        esc_menu_bridge_started = esc_menu_bridge->Start();
+        if (!esc_menu_bridge_started) {
+            std::ofstream(root / L"anomaly-platform.log", std::ios::app)
+                << "NTE ESC menu bridge unavailable for active Profile\n";
+        }
         const auto plugin_mutex = state.plugin_mutex;
         const auto game_pump = state.diagnostics.game_pump;
         tick_bound = true;
-        adapter->SetTickCallback([tick_plugins, plugin_mutex, tick_enabled, game_pump](double delta_seconds) {
+        adapter->SetTickCallback([
+            tick_plugins, plugin_mutex, tick_enabled, game_pump,
+            esc_menu_bridge](double delta_seconds) {
             if (!tick_enabled->load(std::memory_order_acquire)) return;
             if (game_pump) static_cast<void>(game_pump());
             std::scoped_lock plugin_lock(*plugin_mutex);
             if (tick_enabled->load(std::memory_order_relaxed)) {
                 if (tick_plugins != nullptr) tick_plugins->GameUpdate(delta_seconds);
+                if (esc_menu_bridge != nullptr && esc_menu_bridge->Started()) {
+                    esc_menu_bridge->Update(delta_seconds);
+                }
             }
         });
     }

@@ -111,6 +111,134 @@ struct ScopedHandle {
     }
 };
 
+struct NteEscMenuCallbackProbe {
+    const anomaly::PluginScope* scope{};
+    std::uint32_t result{};
+    std::uint32_t calls{};
+    bool observed_lease{};
+    AnomalyGenerationHandleV1 last_handle{};
+};
+
+std::uint32_t ANOMALY_CALL NteEscMenuCallback(
+    void* user, const AnomalyGenerationHandleV1 handle) {
+    auto& probe = *static_cast<NteEscMenuCallbackProbe*>(user);
+    ++probe.calls;
+    probe.last_handle = handle;
+    probe.observed_lease = probe.scope != nullptr && probe.scope->InFlightCallbacks() != 0;
+    return probe.result;
+}
+
+bool TestNteEscMenuButtonRegistry(const anomaly::CoreMemoryServices& memory_services) {
+    ScopedTemporaryDirectory fixture{
+        std::filesystem::temp_directory_path() /
+        (L"anomaly-nte-esc-menu-button-" + std::to_wstring(GetCurrentProcessId()))};
+    std::error_code error;
+    std::filesystem::remove_all(fixture.path, error);
+
+    ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+    std::vector<std::uint8_t> png{
+        0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x01U};
+    if (!manager.InstallDefaultNteEscMenuButton(png)) return false;
+    const auto ledger = std::make_shared<anomaly::ResourceLedger>();
+    const auto first_scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.first", 17);
+    const auto second_scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.second", 23);
+    NteEscMenuCallbackProbe first_callback{
+        first_scope.get(), ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE};
+    NteEscMenuCallbackProbe second_callback{
+        second_scope.get(), ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY};
+    const AnomalyNteEscMenuButtonSpecV1 first_spec{
+        sizeof(first_spec), ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE,
+        {"first", 5}, {"First", 5},
+        ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG, 0, {png.data(), png.size()}};
+    const AnomalyNteEscMenuButtonSpecV1 second_spec{
+        sizeof(second_spec), ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE,
+        {"first", 5}, {"Second", 6},
+        ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE, 0, {nullptr, 0}};
+    AnomalyGenerationHandleV1 first{};
+    AnomalyGenerationHandleV1 second{};
+    if (manager.RegisterNteEscMenuButton(
+            first_scope, &first_spec, NteEscMenuCallback, &first_callback, &first).code !=
+            ANOMALY_STATUS_V1_OK ||
+        manager.RegisterNteEscMenuButton(
+            second_scope, &second_spec, NteEscMenuCallback, &second_callback, &second).code !=
+            ANOMALY_STATUS_V1_OK ||
+        first.id == 0 || first.generation != first_scope->Generation() ||
+        second.id == 0 || second.generation != second_scope->Generation()) {
+        return false;
+    }
+    png.back() = 0xffU;
+
+    AnomalyGenerationHandleV1 duplicate{99, 99};
+    if (manager.RegisterNteEscMenuButton(
+            first_scope, &first_spec, NteEscMenuCallback, &first_callback, &duplicate).code !=
+            ANOMALY_STATUS_V1_CONFLICT ||
+        duplicate.id != 0 || duplicate.generation != 0) {
+        return false;
+    }
+
+    const auto rejects = [&](const AnomalyNteEscMenuButtonSpecV1& spec) {
+        AnomalyGenerationHandleV1 rejected{99, 99};
+        return manager.RegisterNteEscMenuButton(
+                   first_scope, &spec, NteEscMenuCallback, &first_callback, &rejected).code ==
+                ANOMALY_STATUS_V1_INVALID_ARGUMENT &&
+            rejected.id == 0 && rejected.generation == 0;
+    };
+    auto invalid_spec = first_spec;
+    invalid_spec.reserved = 1;
+    if (!rejects(invalid_spec)) return false;
+    invalid_spec = first_spec;
+    invalid_spec.icon_format = 99;
+    if (!rejects(invalid_spec)) return false;
+    const std::array<std::uint8_t, 8> invalid_png{};
+    invalid_spec = first_spec;
+    invalid_spec.icon_bytes = {invalid_png.data(), invalid_png.size()};
+    if (!rejects(invalid_spec)) return false;
+
+    auto buttons = manager.NteEscMenuButtons();
+    if (buttons.size() != 3 ||
+        buttons[1].handle.id != first.id ||
+        buttons[1].handle.generation != first.generation ||
+        buttons[2].handle.id != second.id ||
+        buttons[2].handle.generation != second.generation ||
+        buttons[0].id != "anomaly.management" || buttons[1].id != "first" ||
+        buttons[2].id != "first" || buttons[0].label != "Anomaly" ||
+        buttons[1].label != "First" || buttons[2].label != "Second" ||
+        buttons[0].icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG ||
+        buttons[1].icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG ||
+        buttons[2].icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE ||
+        buttons[1].icon_bytes.size() != 9 || buttons[1].icon_bytes.back() != 0x01U ||
+        !buttons[2].icon_bytes.empty()) {
+        return false;
+    }
+
+    std::uint32_t host_actions{};
+    manager.SetNteEscMenuHostAction([&host_actions] { ++host_actions; });
+    if (manager.InvokeNteEscMenuButton(buttons[0].handle).code !=
+            ANOMALY_STATUS_V1_OK || host_actions != 1 ||
+        manager.InvokeNteEscMenuButton(first).code != ANOMALY_STATUS_V1_OK ||
+        first_callback.calls != 1 || !first_callback.observed_lease ||
+        first_callback.last_handle.id != first.id || host_actions != 1 ||
+        manager.InvokeNteEscMenuButton(second).code != ANOMALY_STATUS_V1_OK ||
+        second_callback.calls != 1 || !second_callback.observed_lease || host_actions != 2 ||
+        manager.InvokeNteEscMenuButton({first.id, first.generation + 1}).code !=
+            ANOMALY_STATUS_V1_NOT_FOUND) {
+        return false;
+    }
+
+    if (manager.UnregisterNteEscMenuButton(first_scope, first).code != ANOMALY_STATUS_V1_OK ||
+        manager.UnregisterNteEscMenuButton(first_scope, first).code !=
+            ANOMALY_STATUS_V1_NOT_FOUND ||
+        second_scope->RevokeAll() != 1 ||
+        manager.InvokeNteEscMenuButton(second).code != ANOMALY_STATUS_V1_NOT_FOUND) {
+        return false;
+    }
+    buttons = manager.NteEscMenuButtons();
+    return buttons.size() == 1 && buttons[0].id == "anomaly.management" &&
+        ledger->Snapshot().empty();
+}
+
 bool TestPluginCacheCleanup(const anomaly::CoreMemoryServices& memory_services) {
     ScopedTemporaryDirectory fixture{
         std::filesystem::temp_directory_path() /
@@ -687,6 +815,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!logger->Start(structured_log)) return 13;
     const auto memory_services = anomaly::CreateCoreMemoryServices();
     if (!TestPluginCacheCleanup(memory_services)) return 34;
+    if (!TestNteEscMenuButtonRegistry(memory_services)) return 35;
     if (!TestPluginWindowVisibilityPersistence(root, memory_services)) return 36;
     if (!TestRawMemoryCapabilityRuntime(root, memory_services)) return 33;
     DeferredUiResourceWorker ui_resource_worker;

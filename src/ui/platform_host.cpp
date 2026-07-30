@@ -618,11 +618,6 @@ public:
         management_window_ = plugins_.UiResources().RegisterWindow(
             management_window_scope_, PlatformUiWindowRequest());
         if (management_window_) {
-            // The management shell is the only route back to host controls.
-            // Migrate persisted states written by older builds that allowed
-            // its ImGui close button to strand the UI permanently.
-            static_cast<void>(plugins_.UiResources().OpenWindow(
-                management_window_scope_, management_window_));
             if (const auto window = plugins_.UiResources().WindowState(
                     management_window_scope_, management_window_);
                 window && window->width > 0.0F && window->height > 0.0F) {
@@ -649,6 +644,11 @@ public:
         } catch (...) {
             return false;
         }
+    }
+
+    void ExpandManagementShell() noexcept {
+        std::scoped_lock operation_lock(operation_mutex_);
+        management_shell_collapsed_ = false;
     }
 
     [[nodiscard]] bool BelongsTo(const PluginManager& plugins) const noexcept {
@@ -1929,8 +1929,13 @@ private:
             if (!locked) management_shell_collapsed_ = false;
         }
         ImGui::SameLine(0.0f, 4.0f);
-        static_cast<void>(DrawShellHeaderControl("##shell-close", ShellHeaderControl::Close,
-            false, true, Text(anomaly::MessageId::ShellCannotClose)));
+        if (DrawShellHeaderControl("##shell-close", ShellHeaderControl::Close,
+                false, false, Text(anomaly::MessageId::ShellClose))) {
+            if (plugins_.UiResources().CloseWindow(
+                    management_window_scope_, management_window_)) {
+                anomaly::SetHostUiMenusCollapsed(true);
+            }
+        }
     }
 
     void DrawShellDragRegion(const ImVec2 origin, const ImVec2 size) const {
@@ -6116,6 +6121,21 @@ bool RevealPlatformUi() noexcept {
     return ui != nullptr && ui->Reveal();
 }
 
+bool ApplyHostUiManagementExpansionRequest() noexcept {
+    if (!anomaly::ConsumeHostUiManagementExpansionRequest()) return false;
+    std::shared_ptr<PlatformUi> ui;
+    {
+        std::scoped_lock lock(g_platform_ui_lifecycle_mutex);
+        if (!g_platform_ui_shutdown_in_progress) ui = g_platform_ui;
+    }
+    if (ui != nullptr) {
+        static_cast<void>(ui->Reveal());
+        ui->ExpandManagementShell();
+    }
+    anomaly::SetHostUiMenusCollapsed(false);
+    return true;
+}
+
 void PreparePlatformUiResources() noexcept {
     std::shared_ptr<PlatformUi> ui;
     {
@@ -6355,6 +6375,7 @@ void RunPlatform(
             } else {
                 try {
                     if (plugin_service_published) {
+                        plugins.SetNteEscMenuHostAction({});
                         plugins.SetUiService(nullptr);
                         plugin_service_published = false;
                     }
@@ -6501,6 +6522,7 @@ void RunPlatform(
         plugin_context_published = true;
         plugins.SetImGuiContext(ImGui::GetCurrentContext());
         plugin_service_published = true;
+        plugins.SetNteEscMenuHostAction(anomaly::RequestHostUiManagementExpansion);
         plugins.SetUiService(anomaly::HostUiServiceTable());
     }
     // Match the embedded renderer: the native host remains available while
@@ -6534,6 +6556,11 @@ void RunPlatform(
             } else {
                 anomaly::SetHostUiMenusCollapsed(!anomaly::HostUiMenusCollapsed());
             }
+        }
+        if (ApplyHostUiManagementExpansionRequest() && !host.visible) {
+            host.visible = true;
+            if (host.attached) PlaceAttachedWindow(host);
+            ShowWindow(host.window, host.attached ? SW_SHOWNOACTIVATE : SW_SHOW);
         }
         const auto now = std::chrono::steady_clock::now();
         const double delta = std::chrono::duration<double>(now - previous).count();

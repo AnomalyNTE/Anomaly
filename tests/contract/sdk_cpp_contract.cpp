@@ -31,6 +31,16 @@ static_assert(sizeof(AnomalyNteEntitiesServiceV1) == 80u);
 static_assert(offsetof(AnomalyNteEntitiesServiceV1, page) == 48u);
 static_assert(offsetof(AnomalyNteEntitiesServiceV1, component_bounds) == 56u);
 static_assert(offsetof(AnomalyNteEntitiesServiceV1, fname_property_utf8) == 72u);
+static_assert(std::is_standard_layout_v<AnomalyNteEscMenuButtonSpecV1>);
+static_assert(std::is_standard_layout_v<AnomalyNteEscMenuButtonServiceV1>);
+static_assert(sizeof(AnomalyNteEscMenuButtonSpecV1) == 64u);
+static_assert(offsetof(AnomalyNteEscMenuButtonSpecV1, id) == 8u);
+static_assert(offsetof(AnomalyNteEscMenuButtonSpecV1, label) == 24u);
+static_assert(offsetof(AnomalyNteEscMenuButtonSpecV1, icon_format) == 40u);
+static_assert(offsetof(AnomalyNteEscMenuButtonSpecV1, icon_bytes) == 48u);
+static_assert(sizeof(AnomalyNteEscMenuButtonServiceV1) == 32u);
+static_assert(offsetof(AnomalyNteEscMenuButtonServiceV1, register_button) == 16u);
+static_assert(offsetof(AnomalyNteEscMenuButtonServiceV1, unregister_button) == 24u);
 
 namespace {
 

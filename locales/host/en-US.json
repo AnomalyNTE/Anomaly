@@ -13,7 +13,7 @@
     "shell.control.collapse": "Collapse management shell",
     "shell.control.unlock": "Unlock management shell",
     "shell.control.lock": "Lock management shell open",
-    "shell.control.cannot_close": "The main interface cannot be closed",
+    "shell.control.close": "Close",
     "shell.navigation.expand": "Expand navigation",
     "shell.navigation.collapse": "Collapse navigation",
     "shell.navigation.issues": "{0} issues",

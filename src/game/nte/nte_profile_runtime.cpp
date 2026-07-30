@@ -34,9 +34,13 @@ inline constexpr std::string_view kOutgoingTransformAbiValidator =
     "ue5-outgoing-transform-abi-v1";
 inline constexpr std::string_view kPlayerTeleportFeature =
     "nte.player-teleport";
+inline constexpr std::string_view kEscMenuButtonFeature =
+    "nte.esc-menu-button";
 inline constexpr std::string_view kProcessEventSymbol = "ue5.ProcessEvent";
 inline constexpr std::string_view kProcessEventAbiValidator =
     "nte-player-teleport-process-event-abi-v1";
+inline constexpr std::string_view kEscMenuProcessEventAbiValidator =
+    "nte-esc-menu-process-event-abi-v1";
 
 template <std::size_t Size>
 bool MatchesBytes(
@@ -162,7 +166,7 @@ FeatureValidationResult ValidateProcessEventAbi(
     const std::string_view feature,
     const ProfileResolutionSnapshot& snapshot,
     const SymbolMemory& memory) {
-    if (feature != kPlayerTeleportFeature ||
+    if ((feature != kPlayerTeleportFeature && feature != kEscMenuButtonFeature) ||
         !FeatureRequires(profile, feature, kProcessEventSymbol)) {
         return {false, "profile does not declare the trusted ProcessEvent bridge"};
     }
@@ -220,6 +224,8 @@ FeatureLayoutValidatorRegistry NteFeatureLayoutValidators() {
     validators.Register(
         std::string(kOutgoingTransformAbiValidator), ValidateOutgoingTransformAbi);
     validators.Register(std::string(kProcessEventAbiValidator), ValidateProcessEventAbi);
+    validators.Register(
+        std::string(kEscMenuProcessEventAbiValidator), ValidateProcessEventAbi);
     return validators;
 }
 

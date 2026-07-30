@@ -19,6 +19,7 @@ static AnomalyStatusV1 ANOMALY_CALL load(
     AnomalyStatusV1 result;
     const AnomalyCoreServiceV1* core;
     const AnomalyPluginStateServiceV1* state;
+    const AnomalyNteEscMenuButtonServiceV1* esc_menu_buttons;
     char state_directory[4096];
     size_t state_directory_size = 0;
     if (host == NULL || plugin_context == NULL || host->query_service == NULL) {
@@ -40,6 +41,22 @@ static AnomalyStatusV1 ANOMALY_CALL load(
         host->host_context, view(ANOMALY_CORE_SERVICE_V1_ID),
         ANOMALY_CORE_SERVICE_V1_VERSION + 1u, &table);
     if (result.code != ANOMALY_STATUS_V1_UNAVAILABLE || table != NULL) {
+        return status(ANOMALY_STATUS_V1_FAILED);
+    }
+
+    table = NULL;
+    result = host->query_service(
+        host->host_context, view(ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID),
+        ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION, &table);
+    esc_menu_buttons = (const AnomalyNteEscMenuButtonServiceV1*)table;
+    if (result.code != ANOMALY_STATUS_V1_OK || esc_menu_buttons == NULL ||
+        esc_menu_buttons->struct_size <
+            offsetof(AnomalyNteEscMenuButtonServiceV1, unregister_button) +
+                sizeof(esc_menu_buttons->unregister_button) ||
+        esc_menu_buttons->service_version !=
+            ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION ||
+        esc_menu_buttons->register_button == NULL ||
+        esc_menu_buttons->unregister_button == NULL) {
         return status(ANOMALY_STATUS_V1_FAILED);
     }
 
