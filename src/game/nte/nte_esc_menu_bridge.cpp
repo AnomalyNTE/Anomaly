@@ -34,12 +34,8 @@ constexpr std::uintptr_t kStructPropertyLinkOffset = 112U;
 constexpr std::uintptr_t kFieldNameOffset = 32U;
 constexpr std::uintptr_t kPropertyOffsetInternalOffset = 68U;
 constexpr std::uintptr_t kPropertyLinkNextOffset = 72U;
-constexpr std::uint32_t kObjectsPerUpdate = 4096U;
-constexpr auto kScanBudget = std::chrono::milliseconds(2);
-constexpr auto kInitialScanBudget = std::chrono::milliseconds(6);
-constexpr std::uint32_t kTailScanObjectCount = 65536U;
-constexpr std::uint32_t kPollingScanObjectCount = 4096U;
-constexpr std::uint32_t kRebuildScanObjectCount = 16384U;
+constexpr std::uint32_t kObjectsPerUpdate = 16384U;
+constexpr auto kScanBudget = std::chrono::milliseconds(1);
 constexpr std::uint32_t kStableContainerUpdates = 12U;
 constexpr auto kMenuPageQuiescence = std::chrono::milliseconds(250);
 constexpr auto kRegistryPollInterval = std::chrono::milliseconds(250);
@@ -87,8 +83,7 @@ constexpr std::array<FunctionSpec, static_cast<std::size_t>(BridgeFunction::Coun
         {"SetBrushFromTexture", "Image"},
     }};
 
-// Exact-build hints are always validated through the object/name/class services. A stale
-// hint is ignored and the normal GObjects scan remains the fallback.
+// These indices belong to the v1 NTE build and are always validated before use.
 constexpr std::array<std::uint32_t, 10> kExactBuildObjectIndices{
     12863U, 12745U, 12748U, 12749U, 12750U, 12754U,
     36134U, 13642U, 21924U, 52607U};
@@ -152,12 +147,12 @@ struct Context final {
     std::uintptr_t object_registry{};
     std::uintptr_t object_chunks{};
     std::array<std::uintptr_t, 64> chunks{};
-    std::uint32_t scan_cursor{};
-    bool scan_initialized{};
-    bool completed_initial_tail_scan{};
-    bool completed_full_scan{};
-    bool poll_latest_objects{};
+    std::uint32_t reflection_scan_cursor{};
+    bool reflection_scan_complete{};
     bool exact_build_hints_checked{};
+    std::uintptr_t function_class{};
+    std::uintptr_t class_class{};
+    std::array<std::uintptr_t, kFunctionSpecs.size()> function_owner_classes{};
     std::uintptr_t feature_button_class{};
     std::uintptr_t widget_blueprint_library_cdo{};
     std::uintptr_t kismet_text_library_cdo{};
@@ -189,8 +184,6 @@ struct Context final {
     std::uint32_t reconcile_stage{kMissingPropertyOffset};
     std::uint32_t append_failure_stage{};
     AnomalyGenerationHandleV1 menu_container_handle{};
-    std::mutex discovery_mutex;
-    std::chrono::steady_clock::time_point next_discovery_poll{};
     std::recursive_mutex bridge_mutex;
     std::vector<MenuCandidate> menu_candidates;
     std::vector<WidgetBinding> bindings;
@@ -235,6 +228,23 @@ template <typename T>
 bool ReadValue(const Context& context, const std::uintptr_t address, T* value) noexcept {
     return value != nullptr && address != 0U && context.memory_services.memory != nullptr &&
         context.memory_services.memory->ReadMemoryInto(address, value, sizeof(T));
+}
+
+template <typename T>
+bool ReadGameThreadValue(
+    const std::uintptr_t address, T* const value) noexcept {
+    if (address == 0U || value == nullptr) return false;
+#if defined(_MSC_VER)
+    __try {
+        std::memcpy(value, reinterpret_cast<const void*>(address), sizeof(T));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+#else
+    std::memcpy(value, reinterpret_cast<const void*>(address), sizeof(T));
+    return true;
+#endif
 }
 
 void Log(Context& context, const std::uint32_t level, const std::string_view message) noexcept {
@@ -286,13 +296,6 @@ bool ResolveClassName(
         ResolveObjectName(context, class_object, name);
 }
 
-bool ResolveOuterName(
-    const Context& context, const std::uintptr_t object, std::string* name) noexcept {
-    std::uintptr_t outer{};
-    return ReadValue(context, object + kObjectOuterOffset, &outer) &&
-        ResolveObjectName(context, outer, name);
-}
-
 std::uintptr_t ObjectAddressAt(Context& context, const std::uint32_t index) noexcept {
     if (context.object_chunks == 0U) return 0U;
     const std::uint32_t chunk_index = index / kObjectChunkSize;
@@ -308,7 +311,7 @@ std::uintptr_t ObjectAddressAt(Context& context, const std::uint32_t index) noex
     std::uintptr_t object{};
     const std::uintptr_t item = chunk +
         static_cast<std::uintptr_t>(index % kObjectChunkSize) * kObjectItemStride;
-    return ReadValue(context, item, &object) ? object : 0U;
+    return ReadGameThreadValue(item, &object) ? object : 0U;
 }
 
 bool RefreshObjectChunks(Context& context) noexcept {
@@ -320,10 +323,8 @@ bool RefreshObjectChunks(Context& context) noexcept {
     }
     context.object_chunks = chunks;
     context.chunks.fill(0U);
-    context.scan_cursor = 0U;
-    context.scan_initialized = false;
-    context.completed_initial_tail_scan = false;
-    context.completed_full_scan = false;
+    context.reflection_scan_cursor = 0U;
+    context.reflection_scan_complete = false;
     context.exact_build_hints_checked = false;
     if (chunks != 0U) {
         Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
@@ -337,22 +338,39 @@ std::uintptr_t BridgeFunctionAddress(const BridgeFunction function) noexcept {
 }
 
 void DiscoverFunction(
-    Context& context, const std::uintptr_t object, const std::string_view name) noexcept {
+    Context& context, const std::uint32_t object_index,
+    const std::uintptr_t object, const std::string_view name) noexcept {
     for (std::size_t index{}; index < kFunctionSpecs.size(); ++index) {
         if (name != kFunctionSpecs[index].name ||
             g_functions[index].load(std::memory_order_acquire) != 0U) {
             continue;
         }
-        std::string class_name;
-        std::string outer_name;
-        if (ResolveClassName(context, object, &class_name) && class_name == "Function" &&
-            ResolveOuterName(context, object, &outer_name) &&
-            outer_name == kFunctionSpecs[index].owner) {
-            g_functions[index].store(object, std::memory_order_release);
-            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-                "NTE ESC bridge function ready: " + std::string(kFunctionSpecs[index].owner) +
-                    "." + std::string(kFunctionSpecs[index].name));
+        std::uintptr_t function_class{};
+        std::uintptr_t owner_class{};
+        std::uintptr_t class_class{};
+        std::string function_class_name;
+        std::string owner_name;
+        if (!ReadValue(context, object + kObjectClassOffset, &function_class) ||
+            !ReadValue(context, object + kObjectOuterOffset, &owner_class) ||
+            !ReadValue(context, owner_class + kObjectClassOffset, &class_class) ||
+            !ResolveObjectName(context, function_class, &function_class_name) ||
+            function_class_name != "Function" ||
+            !ResolveObjectName(context, owner_class, &owner_name) ||
+            owner_name != kFunctionSpecs[index].owner) {
+            continue;
         }
+        if ((context.function_class != 0U && context.function_class != function_class) ||
+            (context.class_class != 0U && context.class_class != class_class)) {
+            continue;
+        }
+        context.function_class = function_class;
+        context.class_class = class_class;
+        context.function_owner_classes[index] = owner_class;
+        g_functions[index].store(object, std::memory_order_release);
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "NTE ESC bridge function ready: " + std::string(kFunctionSpecs[index].owner) +
+                "." + std::string(kFunctionSpecs[index].name) +
+                " index=" + std::to_string(object_index));
     }
 }
 
@@ -457,7 +475,7 @@ void DiscoverPaginationProperties(
 void DiscoverObject(
     Context& context, const std::uint32_t index, const AnomalyGenerationHandleV1 handle,
     const std::uintptr_t object, const std::string_view name) noexcept {
-    DiscoverFunction(context, object, name);
+    DiscoverFunction(context, index, object, name);
     if (name == "WB_SystematicGameFeatureButton_C" && context.feature_button_class == 0U) {
         std::string class_name;
         if (ResolveClassName(context, object, &class_name) &&
@@ -610,59 +628,95 @@ void DiscoverExactBuildObjects(Context& context) noexcept {
     DiscoverClassDefaultObjects(context);
 }
 
+bool StaticReflectionDiscoveryComplete(const Context& context) noexcept {
+    return context.widget_blueprint_library_cdo != 0U &&
+        context.kismet_text_library_cdo != 0U &&
+        context.kismet_rendering_library_cdo != 0U &&
+        std::ranges::all_of(g_functions, [](const auto& function) {
+            return function.load(std::memory_order_acquire) != 0U;
+        });
+}
+
+void DiscoverReflectionCandidate(
+    Context& context, const std::uint32_t index,
+    const std::uintptr_t object) noexcept {
+    std::uintptr_t object_class{};
+    if (object == 0U ||
+        !ReadGameThreadValue(object + kObjectClassOffset, &object_class)) {
+        return;
+    }
+    if (object_class == context.class_class) {
+        std::string name;
+        if (!ResolveObjectName(context, object, &name)) return;
+        bool discovered{};
+        for (std::size_t function{}; function < kFunctionSpecs.size(); ++function) {
+            if (context.function_owner_classes[function] == 0U &&
+                name == kFunctionSpecs[function].owner) {
+                context.function_owner_classes[function] = object;
+                discovered = true;
+            }
+        }
+        if (discovered) {
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "NTE ESC bridge function owner ready: " + name +
+                    " index=" + std::to_string(index));
+        }
+        return;
+    }
+    if (object_class != context.function_class) return;
+
+    std::uintptr_t owner{};
+    if (!ReadGameThreadValue(object + kObjectOuterOffset, &owner)) return;
+    bool relevant{};
+    for (std::size_t function{}; function < kFunctionSpecs.size(); ++function) {
+        if (g_functions[function].load(std::memory_order_acquire) == 0U &&
+            context.function_owner_classes[function] == owner) {
+            relevant = true;
+            break;
+        }
+    }
+    if (!relevant) return;
+
+    std::uint32_t name_id{};
+    AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+    std::string name;
+    if (!ReadGameThreadValue(object + kObjectNameOffset, &name_id) ||
+        context.objects->snapshot_at(context.objects->user, index, &snapshot).code !=
+            ANOMALY_STATUS_V1_OK ||
+        snapshot.name_id != name_id || !ResolveName(context.names, name_id, &name)) {
+        return;
+    }
+    DiscoverObject(context, index, snapshot.handle, object, name);
+}
+
 void ScanObjects(Context& context) noexcept {
+    if (StaticReflectionDiscoveryComplete(context)) return;
     if (!ObjectsReady(context.objects) || !NamesReady(context.names)) return;
     if (!RefreshObjectChunks(context)) return;
     DiscoverExactBuildObjects(context);
     DiscoverClassDefaultObjects(context);
+    if (StaticReflectionDiscoveryComplete(context)) return;
     const std::uint32_t count = context.objects->count(context.objects->user);
     if (count == 0U) return;
-    if (!context.scan_initialized) {
-        context.scan_cursor = count > kTailScanObjectCount ? count - kTailScanObjectCount : 0U;
-        context.scan_initialized = true;
-    } else if (context.scan_cursor >= count) {
-        if (!context.completed_initial_tail_scan) {
-            context.completed_initial_tail_scan = true;
-            context.scan_cursor = 0U;
-        } else if (!context.completed_full_scan) {
-            context.completed_full_scan = true;
-            context.scan_cursor = count > kPollingScanObjectCount
-                ? count - kPollingScanObjectCount : 0U;
-        } else {
-            context.scan_cursor = count > kPollingScanObjectCount
-                ? count - kPollingScanObjectCount : 0U;
-        }
-    } else if (context.poll_latest_objects && context.completed_full_scan &&
-        context.scan_cursor + kPollingScanObjectCount < count) {
-        context.scan_cursor = count - kPollingScanObjectCount;
+    if (context.reflection_scan_complete) {
+        if (context.reflection_scan_cursor >= count) return;
+        context.reflection_scan_complete = false;
     }
-    const std::uint32_t end = context.scan_cursor +
-        (std::min)(kObjectsPerUpdate, count - context.scan_cursor);
+
     const auto started = std::chrono::steady_clock::now();
-    const auto budget = context.menu_container == 0U ? kInitialScanBudget : kScanBudget;
-    while (context.scan_cursor < end) {
-        if (std::chrono::steady_clock::now() - started >= budget) break;
-        const std::uint32_t index = context.scan_cursor++;
-        AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
-        if (context.objects->snapshot_at(context.objects->user, index, &snapshot).code !=
-            ANOMALY_STATUS_V1_OK) {
-            continue;
+    std::uint32_t scanned{};
+    while (context.reflection_scan_cursor < count && scanned < kObjectsPerUpdate) {
+        if ((scanned & 0x3fU) == 0U) {
+            if (StaticReflectionDiscoveryComplete(context)) break;
+            if (std::chrono::steady_clock::now() - started >= kScanBudget) break;
         }
-        std::string name;
-        if (!ResolveName(context.names, snapshot.name_id, &name)) continue;
-        const bool interesting =
-            name == "WB_SystematicGameFeatureButton_C" ||
-            name == "Default__WidgetBlueprintLibrary" ||
-            name == "Default__KismetTextLibrary" ||
-            name == "Default__KismetRenderingLibrary" ||
-            name == "WrapBoxMenuButtons" ||
-            std::any_of(kFunctionSpecs.begin(), kFunctionSpecs.end(), [&](const auto& spec) {
-                return spec.name == name;
-            });
-        if (!interesting) continue;
+        const std::uint32_t index = context.reflection_scan_cursor++;
+        ++scanned;
         const std::uintptr_t object = ObjectAddressAt(context, index);
-        if (object != 0U) DiscoverObject(context, index, snapshot.handle, object, name);
+        DiscoverReflectionCandidate(context, index, object);
     }
+    DiscoverClassDefaultObjects(context);
+    if (context.reflection_scan_cursor >= count) context.reflection_scan_complete = true;
 }
 
 bool SameHandle(
@@ -917,7 +971,6 @@ bool AppendButton(
     }
     *binding = {desired.handle, widget, before};
     context.append_failure_stage = 0U;
-    context.poll_latest_objects = true;
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
         "NTE ESC menu button appended at index " + std::to_string(before) +
             ": " + desired.id);
@@ -1379,8 +1432,6 @@ void ObserveMenuRebuild(Context& context) noexcept {
     context.expected_menu_page_index = latest_page_index;
     context.expected_menu_root = latest_menu_root;
     context.observed_menu_page_event_ms = latest_event_ms;
-    context.poll_latest_objects = true;
-    context.next_discovery_poll = {};
     context.reconciliation_complete = false;
     context.reconcile_stage = kMissingPropertyOffset;
     if (new_event_batch) {
@@ -1395,12 +1446,6 @@ void ObserveMenuRebuild(Context& context) noexcept {
         context.observed_child_count = -1;
         context.stable_container_updates = 0U;
         context.container_stable = false;
-        if (ObjectsReady(context.objects)) {
-            const std::uint32_t count = context.objects->count(context.objects->user);
-            context.scan_cursor = count > kRebuildScanObjectCount
-                ? count - kRebuildScanObjectCount : 0U;
-            context.scan_initialized = true;
-        }
         std::scoped_lock lock(context.bridge_mutex);
         context.menu_candidates.clear();
         context.bindings.clear();
@@ -1413,30 +1458,32 @@ void ObserveMenuRebuild(Context& context) noexcept {
             " new_batch=" + (new_event_batch ? "true" : "false"));
 }
 
-void Discover(Context& context) noexcept {
-    if (context.stopping.load(std::memory_order_acquire)) return;
-    std::scoped_lock discovery_lock(context.discovery_mutex);
-    const auto now = std::chrono::steady_clock::now();
-    if (now < context.next_discovery_poll) return;
-    if (!NamesReady(context.names) || !ObjectsReady(context.objects)) RefreshServices(context);
-    ScanObjects(context);
-    const bool idle_poll = context.completed_full_scan && !context.menu_rebuild_active;
-    context.next_discovery_poll = idle_poll ? now + kRegistryPollInterval
-                                            : std::chrono::steady_clock::time_point{};
-}
-
 void Update(Context& context) noexcept {
     if (context.stopping.load(std::memory_order_acquire)) return;
     DrainClicks(context);
-    std::unique_lock discovery_lock(context.discovery_mutex, std::try_to_lock);
-    if (!discovery_lock.owns_lock()) return;
+    if (!NamesReady(context.names) || !ObjectsReady(context.objects)) RefreshServices(context);
     ObserveMenuRebuild(context);
+    ScanObjects(context);
     const auto now = std::chrono::steady_clock::now();
-    if (now < context.next_registry_poll) return;
-    ReconcileButtons(context);
-    context.next_registry_poll = now +
-        (context.append_failure_stage == 0U
-            ? kRegistryPollInterval : kAppendRetryInterval);
+    const bool fast_reconcile = context.menu_rebuild_active ||
+        (!context.reconciliation_complete && !context.menu_candidates.empty());
+    const bool retry_ready = context.append_failure_stage == 0U ||
+        now >= context.next_registry_poll;
+    if (fast_reconcile && retry_ready) {
+        ReconcileButtons(context);
+        context.next_registry_poll = context.append_failure_stage == 0U
+            ? (context.reconciliation_complete
+                    ? now + kRegistryPollInterval
+                    : std::chrono::steady_clock::time_point{})
+            : now + kAppendRetryInterval;
+        return;
+    }
+    if (now >= context.next_registry_poll) {
+        ReconcileButtons(context);
+        context.next_registry_poll = now +
+            (context.append_failure_stage == 0U
+                ? kRegistryPollInterval : kAppendRetryInterval);
+    }
 }
 
 void Reset(Context& context) noexcept {
@@ -1444,12 +1491,12 @@ void Reset(Context& context) noexcept {
     context.chunks.fill(0U);
     static_cast<void>(ReadValue(
         context, context.object_registry + kObjectsItemsOffset, &context.object_chunks));
-    context.scan_cursor = 0U;
-    context.scan_initialized = false;
-    context.completed_initial_tail_scan = false;
-    context.completed_full_scan = false;
-    context.poll_latest_objects = false;
+    context.reflection_scan_cursor = 0U;
+    context.reflection_scan_complete = false;
     context.exact_build_hints_checked = false;
+    context.function_class = 0U;
+    context.class_class = 0U;
+    context.function_owner_classes.fill(0U);
     context.feature_button_class = 0U;
     context.widget_blueprint_library_cdo = 0U;
     context.kismet_text_library_cdo = 0U;
@@ -1477,7 +1524,6 @@ void Reset(Context& context) noexcept {
     context.observed_menu_page_event_ms = 0U;
     context.menu_rebuild_active = false;
     context.reconciliation_complete = false;
-    context.next_discovery_poll = {};
     context.next_registry_poll = {};
     context.reconcile_stage = kMissingPropertyOffset;
     context.append_failure_stage = 0U;
@@ -1555,8 +1601,6 @@ public:
         return true;
     }
 
-    void Discover() noexcept { ::anomaly::Discover(context_); }
-
     void Update() noexcept { ::anomaly::Update(context_); }
 
     [[nodiscard]] bool Stop(const std::chrono::milliseconds timeout) noexcept {
@@ -1611,7 +1655,6 @@ NteEscMenuBridge::~NteEscMenuBridge() {
 }
 
 bool NteEscMenuBridge::Start() { return impl_->Start(); }
-void NteEscMenuBridge::Discover() noexcept { impl_->Discover(); }
 void NteEscMenuBridge::Update(double) noexcept { impl_->Update(); }
 bool NteEscMenuBridge::Stop(const std::chrono::milliseconds timeout) noexcept {
     return impl_->Stop(timeout);

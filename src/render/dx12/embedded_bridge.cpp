@@ -414,9 +414,6 @@ void RunEmbeddedPlatform(
             std::scoped_lock plugin_lock(*state.plugin_mutex);
             if (state.plugins != nullptr) state.plugins->MaintenancePluginState();
         }
-        if (esc_menu_bridge_started && esc_menu_bridge != nullptr) {
-            esc_menu_bridge->Discover();
-        }
         // Persist through the registry's own synchronization after releasing
         // the renderer gate. The shared owner remains live for this loop, and
         // the filesystem publish must never delay a Present callback.

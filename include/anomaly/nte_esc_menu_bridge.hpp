@@ -31,9 +31,6 @@ public:
     NteEscMenuBridge& operator=(const NteEscMenuBridge&) = delete;
 
     [[nodiscard]] bool Start();
-    // Runs bounded reflection discovery on the Runtime worker, outside the game callback.
-    void Discover() noexcept;
-    // Consumes discovery state and mutates NTE widgets only from the game callback.
     void Update(double delta_seconds) noexcept;
     [[nodiscard]] bool Stop(
         std::chrono::milliseconds timeout = std::chrono::seconds(5)) noexcept;
