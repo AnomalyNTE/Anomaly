@@ -62,8 +62,11 @@ std::array<std::uint32_t, kObjectCount> g_object_name_ids{};
 unsigned g_signature_calls{};
 unsigned g_config_writes{};
 unsigned g_scheduled_tasks{};
+unsigned g_set_window_open_calls{};
+unsigned g_window_begin_calls{};
 std::uint32_t g_object_count{};
 bool g_apply_clicked{};
+bool g_window_open{};
 
 AnomalyConfigServiceV1 g_config{};
 AnomalySchedulerServiceV1 g_scheduler{};
@@ -281,7 +284,9 @@ AnomalyStatusV1 ANOMALY_CALL WindowHandle(
 }
 
 AnomalyStatusV1 ANOMALY_CALL SetWindowOpen(
-    void* user, const AnomalyGenerationHandleV1 handle, std::int32_t) {
+    void* user, const AnomalyGenerationHandleV1 handle, const std::int32_t open) {
+    ++g_set_window_open_calls;
+    g_window_open = open != 0;
     return WindowHandle(user, handle);
 }
 
@@ -290,7 +295,7 @@ AnomalyStatusV1 ANOMALY_CALL WindowState(
     if (handle.id != 1 || state == nullptr || state->struct_size < sizeof(*state)) {
         return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     }
-    *state = {sizeof(*state), 0, 240.0F, 170.0F, 1, 1, 0};
+    *state = {sizeof(*state), 0, 240.0F, 170.0F, 1, g_window_open ? 1 : 0, 0};
     return Status(ANOMALY_STATUS_V1_OK);
 }
 
@@ -300,6 +305,7 @@ AnomalyStatusV1 ANOMALY_CALL BeginWindow(
     if (handle.id != 1 || visible == nullptr) {
         return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     }
+    ++g_window_begin_calls;
     *visible = 1;
     return Status(ANOMALY_STATUS_V1_OK);
 }
@@ -359,11 +365,14 @@ bool ResetFixture() {
     g_signature_calls = 0;
     g_config_writes = 0;
     g_scheduled_tasks = 0;
+    g_set_window_open_calls = 0;
+    g_window_begin_calls = 0;
     g_object_count = static_cast<std::uint32_t>(kObjectCount);
     std::fill(
         g_object_name_ids.begin() + kInitialWidgetSlotStart,
         g_object_name_ids.end(), kTargetNameId);
     g_apply_clicked = false;
+    g_window_open = false;
 
     if (!PutRelative32(
             g_from_string_match.data() + 31, 5,
@@ -508,13 +517,19 @@ int wmain(const int argc, wchar_t** const argv) {
     ui.button = UiButton;
     ui.input_text = UiInputText;
     descriptor.on_draw(context, &ui);
-    if (!g_apply_clicked ||
-        !RunUpdatesUntil(descriptor, context, ReusedSlotWidgetsEqual)) {
-        std::cerr << "FakeUID Apply did not discover a newer widget in a reused slot\n";
+    if (g_set_window_open_calls != 0 || g_window_begin_calls != 0 || g_apply_clicked) {
+        std::cerr << "FakeUID reopened a host-persisted closed window\n";
         return 7;
     }
+    g_window_open = true;
+    descriptor.on_draw(context, &ui);
+    if (!g_apply_clicked || g_window_begin_calls != 1 ||
+        !RunUpdatesUntil(descriptor, context, ReusedSlotWidgetsEqual)) {
+        std::cerr << "FakeUID Apply did not discover a newer widget in a reused slot\n";
+        return 8;
+    }
 
-    if (descriptor.on_stop(context, 1000).code != ANOMALY_STATUS_V1_OK) return 8;
+    if (descriptor.on_stop(context, 1000).code != ANOMALY_STATUS_V1_OK) return 9;
     descriptor.on_unload(context);
     FreeLibrary(module);
     return 0;

@@ -739,9 +739,7 @@ bool EnsureWindow(Context& context) {
     window.default_open = 1;
     const AnomalyStatusV1 status = context.window->register_window(
         context.window->user, &window, &context.window_handle);
-    if (status.code != ANOMALY_STATUS_V1_OK || context.window_handle.id == 0) return false;
-    return context.window->set_open(
-        context.window->user, context.window_handle, 1).code == ANOMALY_STATUS_V1_OK;
+    return status.code == ANOMALY_STATUS_V1_OK && context.window_handle.id != 0;
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(
