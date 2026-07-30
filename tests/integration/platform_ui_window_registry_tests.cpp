@@ -175,11 +175,15 @@ int wmain() {
                      std::string(kExpectedStableId), false, 1040.0F, 700.0F, {}}}),
                  "legacy closed management shell state was not imported") &&
         result;
+    anomaly::SetHostUiMenusCollapsed(false);
     const bool initialized = ue5mem::InitializePlatformUi(*manager, std::move(diagnostics), manager);
     result = Expect(initialized, "platform UI did not initialize") && result;
     if (initialized) {
-        result = Expect(!anomaly::HostUiDeveloperModeEnabled(),
-                     "platform UI did not reset developer mode for a new host") &&
+        result = Expect(
+                     !anomaly::HostUiDeveloperModeEnabled() &&
+                         anomaly::HostUiMenusCollapsed() &&
+                         !anomaly::HostUiMenusCaptureMouse(),
+                     "closed startup state did not release host mouse capture") &&
             result;
         result = Expect(DrawFrame(), "closed platform UI frame did not complete") && result;
         const auto initially_closed = manager->UiResources().ExportPersistentWindowState();
@@ -188,9 +192,12 @@ int wmain() {
                          initially_closed.size() == 1 && !initially_closed.front().open,
                      "management shell did not preserve its persisted closed state") &&
             result;
+        anomaly::RequestHostUiManagementExpansion();
         result = Expect(
-                     ue5mem::RevealPlatformUi(),
-                     "management shell reveal did not open the persisted closed window") &&
+                     ue5mem::ApplyHostUiManagementExpansionRequest() &&
+                         !anomaly::HostUiMenusCollapsed() &&
+                         anomaly::HostUiMenusCaptureMouse(),
+                     "management action did not reopen the persisted closed window") &&
             result;
         std::string plugins_page_text;
         result = Expect(DrawFrame(&plugins_page_text), "platform UI frame did not complete") && result;

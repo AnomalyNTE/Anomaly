@@ -619,9 +619,11 @@ public:
             management_window_scope_, PlatformUiWindowRequest());
         if (management_window_) {
             if (const auto window = plugins_.UiResources().WindowState(
-                    management_window_scope_, management_window_);
-                window && window->width > 0.0F && window->height > 0.0F) {
-                management_shell_expanded_size_ = {window->width, window->height};
+                    management_window_scope_, management_window_)) {
+                if (!window->open) anomaly::SetHostUiMenusCollapsed(true);
+                if (window->width > 0.0F && window->height > 0.0F) {
+                    management_shell_expanded_size_ = {window->width, window->height};
+                }
             }
         }
     }
