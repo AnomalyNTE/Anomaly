@@ -1,0 +1,65 @@
+.code
+extern g_dxgi_procs:QWORD
+
+proxy_stub_0 proc
+  jmp g_dxgi_procs[8*0]
+proxy_stub_0 endp
+proxy_stub_1 proc
+  jmp g_dxgi_procs[8*1]
+proxy_stub_1 endp
+proxy_stub_2 proc
+  jmp g_dxgi_procs[8*2]
+proxy_stub_2 endp
+proxy_stub_3 proc
+  jmp g_dxgi_procs[8*3]
+proxy_stub_3 endp
+proxy_stub_4 proc
+  jmp g_dxgi_procs[8*4]
+proxy_stub_4 endp
+proxy_stub_5 proc
+  jmp g_dxgi_procs[8*5]
+proxy_stub_5 endp
+proxy_stub_6 proc
+  jmp g_dxgi_procs[8*6]
+proxy_stub_6 endp
+proxy_stub_7 proc
+  jmp g_dxgi_procs[8*7]
+proxy_stub_7 endp
+proxy_stub_8 proc
+  jmp g_dxgi_procs[8*8]
+proxy_stub_8 endp
+proxy_stub_9 proc
+  jmp g_dxgi_procs[8*9]
+proxy_stub_9 endp
+proxy_stub_10 proc
+  jmp g_dxgi_procs[8*10]
+proxy_stub_10 endp
+proxy_stub_11 proc
+  jmp g_dxgi_procs[8*11]
+proxy_stub_11 endp
+proxy_stub_12 proc
+  jmp g_dxgi_procs[8*12]
+proxy_stub_12 endp
+proxy_stub_13 proc
+  jmp g_dxgi_procs[8*13]
+proxy_stub_13 endp
+proxy_stub_14 proc
+  jmp g_dxgi_procs[8*14]
+proxy_stub_14 endp
+proxy_stub_15 proc
+  jmp g_dxgi_procs[8*15]
+proxy_stub_15 endp
+proxy_stub_16 proc
+  jmp g_dxgi_procs[8*16]
+proxy_stub_16 endp
+proxy_stub_17 proc
+  jmp g_dxgi_procs[8*17]
+proxy_stub_17 endp
+proxy_stub_18 proc
+  jmp g_dxgi_procs[8*18]
+proxy_stub_18 endp
+proxy_stub_19 proc
+  jmp g_dxgi_procs[8*19]
+proxy_stub_19 endp
+
+end

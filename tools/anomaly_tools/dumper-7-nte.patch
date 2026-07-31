@@ -1,0 +1,102 @@
+diff --git a/Dumper/Generator/Private/Generators/Generator.cpp b/Dumper/Generator/Private/Generators/Generator.cpp
+index 4879b5d..476463d 100644
+--- a/Dumper/Generator/Private/Generators/Generator.cpp
++++ b/Dumper/Generator/Private/Generators/Generator.cpp
+@@ -24,0 +25,56 @@ inline void InitSettings()
++namespace
++{
++	bool InitNteObjectArray()
++	{
++		constexpr char GObjectsSignature[] =
++			"48 8B 05 ? ? ? ? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
++		const auto Instruction = static_cast<const uint8*>(
++			Platform::FindPattern(GObjectsSignature, 0x0, true));
++		if (!Instruction)
++		{
++			std::cerr << "NTE GObjects signature was not found; falling back to the generic scan.\n";
++			return false;
++		}
++
++		const int32 Displacement = *reinterpret_cast<const int32*>(Instruction + 0x3);
++		const auto Registry = reinterpret_cast<const uint8*>(
++			static_cast<intptr_t>(reinterpret_cast<uintptr_t>(Instruction + 0x7)) +
++			Displacement - 0x10);
++
++		constexpr FChunkedFixedUObjectArrayLayout NteLayout
++		{
++			.ObjectsOffset = 0x10,
++			.MaxElementsOffset = 0x20,
++			.NumElementsOffset = 0x24,
++			.MaxChunksOffset = 0x28,
++			.NumChunksOffset = 0x2C,
++		};
++		constexpr int32 NteChunkSize = 0x10000;
++
++		if (Platform::IsBadReadPtr(Registry))
++		{
++			std::cerr << "NTE GObjects signature resolved to an unreadable registry.\n";
++			return false;
++		}
++
++		const auto Items = *reinterpret_cast<uint8* const*>(Registry + NteLayout.ObjectsOffset);
++		const int32 MaxElements = *reinterpret_cast<const int32*>(Registry + NteLayout.MaxElementsOffset);
++		const int32 NumElements = *reinterpret_cast<const int32*>(Registry + NteLayout.NumElementsOffset);
++		const int32 MaxChunks = *reinterpret_cast<const int32*>(Registry + NteLayout.MaxChunksOffset);
++		const int32 NumChunks = *reinterpret_cast<const int32*>(Registry + NteLayout.NumChunksOffset);
++		if (!Items || Platform::IsBadReadPtr(Items) || NumElements <= 0 ||
++			MaxElements <= 0 || NumElements > MaxElements || MaxChunks <= 0 ||
++			NumChunks <= 0 || NumChunks > MaxChunks)
++		{
++			std::cerr << "NTE GObjects is not initialized yet; start the dump after entering the game.\n";
++			return false;
++		}
++
++		const auto GObjectsOffset = static_cast<int32>(Platform::GetOffset(Registry));
++		std::cerr << "Resolved NTE GObjects at offset 0x" << std::hex
++			<< GObjectsOffset << " with " << std::dec << NumElements << " objects.\n\n";
++		ObjectArray::Init(GObjectsOffset, NteChunkSize, NteLayout);
++		return true;
++	}
++}
++
+@@ -45 +101,2 @@ void Generator::InitEngineCore()
+-	ObjectArray::Init();
++	if (!InitNteObjectArray())
++		ObjectArray::Init();
+diff --git a/Dumper/Settings.cpp b/Dumper/Settings.cpp
+index 2bd4e8c..755535c 100644
+--- a/Dumper/Settings.cpp
++++ b/Dumper/Settings.cpp
+@@ -4,0 +5 @@
++#include <iterator>
+@@ -9,0 +11,25 @@
++namespace
++{
++	const unsigned char ModuleAnchor = 0;
++
++	std::filesystem::path GetLocalConfigPath()
++	{
++		HMODULE Module{};
++		wchar_t ModulePath[32768]{};
++		if (GetModuleHandleExW(
++				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++					GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++				reinterpret_cast<LPCWSTR>(&ModuleAnchor), &Module))
++		{
++			const DWORD Length = GetModuleFileNameW(
++				Module, ModulePath, static_cast<DWORD>(std::size(ModulePath)));
++			if (Length > 0 && Length < std::size(ModulePath))
++			{
++				return std::filesystem::path(ModulePath).parent_path() / "Dumper-7.ini";
++			}
++		}
++
++		return std::filesystem::current_path() / "Dumper-7.ini";
++	}
++}
++
+@@ -113,2 +139,2 @@ void Settings::Config::Load()
+-	// Try local Dumper-7.ini
+-	const std::string LocalPath = (fs::current_path() / "Dumper-7.ini").string();
++	// Try Dumper-7.ini next to this DLL.
++	const std::string LocalPath = GetLocalConfigPath().string();
