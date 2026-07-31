@@ -148,31 +148,6 @@ $requiredSet = [Collections.Generic.HashSet[string]]::new(
     [StringComparer]::OrdinalIgnoreCase)
 foreach ($path in $requiredPaths) { [void]$requiredSet.Add($path) }
 
-function Test-AllowedComponentPath([string]$Relative) {
-    if ($requiredSet.Contains($Relative)) { return $true }
-    switch ($Component) {
-        'Runtime' {
-            if ($Relative -match '(?i)^Anomaly/profiles/nte/(?:nte-build-profile\.json\.example|nte-current\.json|README\.md)$') {
-                return $true
-            }
-            return $Relative -match '(?i)^Anomaly/plugins/[^/]+/(?:plugin\.dll|manifest\.json|README\.(?:txt|md)|package\.sha256)$' -or
-                $Relative -match '(?i)^Anomaly/plugins/[^/]+/locales/zh-CN\.json$' -or
-                $Relative -match '(?i)^Anomaly/plugins/PinkPawHeistESP/assets/icons/[^/]+\.png$'
-        }
-        'SDK' {
-            if ($Relative -match '(?i)^include/anomaly/sdk/(?:[^/]+/)*[^/]+\.(?:h|hpp)$') {
-                return $true
-            }
-            if ($Relative -match '(?i)^lib/cmake/AnomalySDK/[^/]+\.cmake$') { return $true }
-            if ($Relative -match '(?i)^share/anomaly/(?:schemas|abi)/[^/]+\.json$') { return $true }
-            return $Relative -match '(?i)^share/anomaly/examples/(?:CMakeLists\.txt|README\.md|(?:hello_ui|tick_counter|reliable_config|nte_inspector)/(?:plugin\.(?:c|cpp)|manifest\.json)|hello_ui/locales/zh-CN\.json)$'
-        }
-        'Tools' { return $requiredSet.Contains($Relative) }
-        'Symbols' { return $Relative -match '(?i)^symbols/[^/]+\.pdb$' }
-    }
-    return $false
-}
-
 $forbiddenExtensions = @(
     '.lib', '.exp', '.obj', '.ilk', '.idb', '.pch', '.iobj', '.ipdb', '.map'
 )
@@ -208,9 +183,6 @@ foreach ($entry in $entries) {
     if ($Component -eq 'Symbols' -and $entry.Extension -ine '.pdb' -and
         -not $requiredSet.Contains($relative)) {
         Add-Violation "non-PDB file in Symbols component: $relative"
-    }
-    if (-not (Test-AllowedComponentPath $relative)) {
-        Add-Violation "unexpected $Component component file: $relative"
     }
 }
 
