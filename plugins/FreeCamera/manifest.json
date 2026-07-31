@@ -5,7 +5,7 @@
   "description": "Detaches the camera from the player and moves it through the world.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],

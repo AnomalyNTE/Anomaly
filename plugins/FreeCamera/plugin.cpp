@@ -155,12 +155,13 @@ bool InputReady(const AnomalyInputServiceV1 *service) noexcept {
 }
 
 bool UiReady(const AnomalyUiServiceV1 *service) noexcept {
-  return HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_table)>(
-             service, offsetof(AnomalyUiServiceV1, end_table)) &&
+  return HasField<AnomalyUiServiceV1,
+                  decltype(AnomalyUiServiceV1::input_uint32)>(
+             service, offsetof(AnomalyUiServiceV1, input_uint32)) &&
          service->begin_window != nullptr && service->end_window != nullptr &&
          service->set_next_window_size != nullptr && service->text != nullptr &&
          service->button != nullptr && service->checkbox != nullptr &&
-         service->slider_float != nullptr && service->separator != nullptr &&
+         service->input_uint32 != nullptr && service->separator != nullptr &&
          service->begin_table != nullptr &&
          service->table_next_row != nullptr &&
          service->table_next_column != nullptr && service->end_table != nullptr;
@@ -1049,11 +1050,14 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       const std::string reset_label =
           context->localizer.Label("action.reset", "Reset", "reset-speed");
       const auto draw_speed = [&]() {
-        float speed = context->speed.load(std::memory_order_acquire);
-        if (ui->slider_float(ui->user, anomaly::sdk::StringView(speed_label),
-                             &speed, kMinimumSpeed, kMaximumSpeed) != 0) {
+        std::uint32_t speed = static_cast<std::uint32_t>(
+            std::lround(context->speed.load(std::memory_order_acquire)));
+        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(speed_label),
+                             &speed, 50U, 200U) != 0) {
           context->speed.store(
-              (std::clamp)(speed, kMinimumSpeed, kMaximumSpeed),
+              static_cast<float>(
+                  (std::clamp)(speed, static_cast<std::uint32_t>(kMinimumSpeed),
+                               static_cast<std::uint32_t>(kMaximumSpeed))),
               std::memory_order_release);
           MarkSettingsDirty(*context);
         }
@@ -1125,7 +1129,7 @@ AnomalyPluginEntryV1(AnomalyPluginDescriptorV1 *descriptor) {
                  anomaly::sdk::StringView("anomaly.local.nte.free-camera"),
                  anomaly::sdk::StringView("Free Camera"),
                  anomaly::sdk::StringView("Anomaly"),
-                 anomaly::sdk::StringView("1.0.0"),
+                 anomaly::sdk::StringView("1.0.1"),
                  Load,
                  Start,
                  Stop,
