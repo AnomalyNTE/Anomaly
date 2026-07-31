@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte.free-camera",
+  "name": "Free Camera",
+  "description": "Detaches the camera from the player and moves it through the world.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.config", "minVersion": 1},
+    {"id": "anomaly.input", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.interop.hook", "minVersion": 1}
+  ],
+  "capabilities": [
+    "configuration", "input", "ui", "interop-signature", "interop-hook", "memory-read"
+  ]
+}
