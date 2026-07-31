@@ -396,6 +396,7 @@ target_link_libraries(
 
 add_library(anomaly_adapter_services STATIC
     src/game/ue5/adapter_service_registry.cpp
+    src/game/ue5/ue5_process_event.cpp
     src/game/ue5/ue5_nte_adapter.cpp
     src/game/ue5/game_tick_hook.cpp
     src/game/ue5/ue5_outbound_bit_count_probe.cpp)

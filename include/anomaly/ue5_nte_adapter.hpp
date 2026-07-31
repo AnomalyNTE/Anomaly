@@ -3,6 +3,7 @@
 #include "anomaly/adapter_service_registry.hpp"
 #include "anomaly/sdk/anomaly_sdk.h"
 #include "anomaly/symbol_resolver.hpp"
+#include "anomaly/ue5_process_event.hpp"
 
 #include <Windows.h>
 
@@ -25,14 +26,10 @@ struct NteSnapshotSamplingOptions {
 class Ue5NteAdapter final {
 public:
     using TickCallback = std::function<void(double)>;
-    // Invocation boundary for a separately verified engine-owned ProcessEvent bridge.
-    // Tests inject this seam. Production leaves it empty until such a bridge exists;
-    // it must never fall back to a Pawn vtable slot.
-    using ProcessEventInvoker = std::function<bool(
-        std::uintptr_t object,
-        std::uintptr_t function,
-        void* parameters,
-        std::size_t parameter_size)>;
+    // Invocation boundary for the separately verified generic UE5 ProcessEvent capability.
+    // Tests inject this seam; production derives it from the active Profile and ABI validator.
+    // It must never fall back to a Pawn vtable slot.
+    using ProcessEventInvoker = Ue5ProcessEventInvoker;
 
     Ue5NteAdapter(
         BuildFingerprint fingerprint,

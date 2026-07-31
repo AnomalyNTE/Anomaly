@@ -72,10 +72,7 @@
       "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
       "resolve": {"kind": "direct"},
       "validators": ["address-in-module", "executable"],
-      "requiredBy": [
-        "anomaly.nte.player-teleport",
-        "anomaly.nte.esc-menu-button"
-      ]
+      "requiredBy": ["anomaly.ue5.framework"]
     },
     "nte.HTUI_MenuExtension.AddMenuPage": {
       "module": "HTGame.exe",
@@ -115,6 +112,7 @@
     "ue5.world": ["ue5.GWorld", "ue5.GameTick"],
     "ue5.names": ["ue5.FNamePool"],
     "ue5.objects": ["ue5.GObjects", "ue5.GameTick"],
+    "ue5.process-event": ["ue5.ProcessEvent"],
     "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
     "nte.session": ["ue5.GWorld", "ue5.GameTick"],
@@ -124,14 +122,12 @@
       "ue5.GWorld",
       "ue5.GameTick",
       "ue5.FNamePool",
-      "ue5.GObjects",
-      "ue5.ProcessEvent"
+      "ue5.GObjects"
     ],
     "nte.esc-menu-button": [
       "ue5.GameTick",
       "ue5.FNamePool",
       "ue5.GObjects",
-      "ue5.ProcessEvent",
       "nte.HTUI_MenuExtension.AddMenuPage",
       "nte.HTUI_MenuExtension.execAddMenuPage",
       "nte.CommonButtonBase.HandleButtonClicked",
@@ -142,6 +138,7 @@
   "optionalFeatures": [
     "ue5.actors",
     "ue5.functions",
+    "ue5.process-event",
     "nte.player-esp",
     "nte.player-teleport",
     "nte.esc-menu-button"
@@ -149,24 +146,24 @@
   "featureLayoutValidators": {
     "ue5.actors": ["ue5-actors-reflection-v1"],
     "ue5.functions": ["ue5-functions-reflection-v1"],
+    "ue5.process-event": ["ue5-process-event-abi-v1"],
     "nte.player": ["nte-player-layout-v1"],
     "nte.player-esp": ["nte-player-esp-layout-v1"],
-    "nte.player-teleport": [
-      "nte-player-teleport-layout-v1",
-      "nte-player-teleport-process-event-abi-v1"
-    ],
-    "nte.esc-menu-button": [
-      "nte-esc-menu-process-event-abi-v1",
-      "nte-esc-menu-hooks-v1"
-    ],
+    "nte.player-teleport": ["nte-player-teleport-layout-v1"],
+    "nte.esc-menu-button": ["nte-esc-menu-hooks-v1"],
     "nte.entities": ["nte-entities-layout-v2"]
   },
   "featureDependencies": {
     "ue5.actors": ["ue5.world", "ue5.names"],
     "ue5.functions": ["ue5.objects", "ue5.names"],
     "nte.player-esp": ["nte.player"],
-    "nte.player-teleport": ["nte.player", "ue5.names", "ue5.objects"],
-    "nte.esc-menu-button": ["ue5.names", "ue5.objects"],
+    "nte.player-teleport": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.esc-menu-button": ["ue5.names", "ue5.objects", "ue5.process-event"],
     "nte.entities": ["ue5.names"]
   },
   "layout": {

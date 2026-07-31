@@ -367,6 +367,20 @@ int main() {
                       "nte.player-teleport");
                   return found == profile->features.end() ? nullptr : &found->second;
               }();
+        const auto process_event_symbols = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found = profile->features.find("ue5.process-event");
+                  return found == profile->features.end() ? nullptr : &found->second;
+              }();
+        const auto process_event_validators = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found =
+                      profile->feature_layout_validators.find("ue5.process-event");
+                  return found == profile->feature_layout_validators.end()
+                      ? nullptr : &found->second;
+              }();
         const auto feature_validators = profile == nullptr
             ? nullptr
             : [&]() -> const std::vector<std::string>* {
@@ -380,7 +394,7 @@ int main() {
                   const auto found = profile->feature_dependencies.find(
                       "nte.player-teleport");
                   return found == profile->feature_dependencies.end() ? nullptr : &found->second;
-               }();
+              }();
         const auto esc_menu_symbols = profile == nullptr
             ? nullptr
             : [&]() -> const std::vector<std::string>* {
@@ -393,6 +407,14 @@ int main() {
                   const auto found =
                       profile->feature_layout_validators.find("nte.esc-menu-button");
                   return found == profile->feature_layout_validators.end()
+                      ? nullptr : &found->second;
+              }();
+        const auto esc_menu_dependencies = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found =
+                      profile->feature_dependencies.find("nte.esc-menu-button");
+                  return found == profile->feature_dependencies.end()
                       ? nullptr : &found->second;
               }();
         const auto actor_feature_symbols = profile == nullptr
@@ -543,16 +565,18 @@ int main() {
                 return profile->layout.contains(std::string(key));
             });
         const bool esc_menu_hook_topology = profile != nullptr &&
-            esc_menu_symbols != nullptr && esc_menu_symbols->size() == 8 &&
-            contains(*esc_menu_symbols, "ue5.ProcessEvent") &&
+            esc_menu_symbols != nullptr && esc_menu_symbols->size() == 7 &&
             contains(*esc_menu_symbols, "nte.HTUI_MenuExtension.AddMenuPage") &&
             contains(*esc_menu_symbols, "nte.HTUI_MenuExtension.execAddMenuPage") &&
             contains(*esc_menu_symbols, "nte.CommonButtonBase.HandleButtonClicked") &&
             contains(*esc_menu_symbols, "nte.CommonButtonBase.BP_OnClicked");
         const bool esc_menu_hook_validators = esc_menu_validators != nullptr &&
-            esc_menu_validators->size() == 2 &&
-            contains(*esc_menu_validators, "nte-esc-menu-process-event-abi-v1") &&
-            contains(*esc_menu_validators, "nte-esc-menu-hooks-v1");
+            *esc_menu_validators == std::vector<std::string>{"nte-esc-menu-hooks-v1"};
+        const bool esc_menu_dependencies_valid = esc_menu_dependencies != nullptr &&
+            esc_menu_dependencies->size() == 3 &&
+            contains(*esc_menu_dependencies, "ue5.names") &&
+            contains(*esc_menu_dependencies, "ue5.objects") &&
+            contains(*esc_menu_dependencies, "ue5.process-event");
         const bool esc_menu_hook_patterns = profile != nullptr &&
             profile->symbols.at("nte.HTUI_MenuExtension.AddMenuPage")
                 .pattern.starts_with("40 55 57 48 83 EC 38") &&
@@ -566,6 +590,9 @@ int main() {
             profile->layout.at("escMenu.buttonClickedVtableOffset") == 1392;
         result = Check(esc_menu_hook_topology, "current NTE profile omitted ESC hook symbols") &&
             Check(esc_menu_hook_validators, "current NTE profile omitted ESC hook validators") &&
+            Check(
+                esc_menu_dependencies_valid,
+                "current NTE profile omitted ESC hook dependencies") &&
             Check(esc_menu_hook_patterns, "current NTE profile omitted ESC hook patterns") &&
             Check(esc_menu_hook_layout, "current NTE profile omitted ESC hook layout") && result;
         result = Check(
@@ -574,19 +601,25 @@ int main() {
                               std::vector<std::string>{"nte-player-layout-v1"} &&
                           profile->feature_layout_validators.at("nte.player-esp") ==
                               std::vector<std::string>{"nte-player-esp-layout-v1"} &&
-                          feature_symbols != nullptr && feature_symbols->size() == 5 &&
+                          process_event_symbols != nullptr &&
+                          *process_event_symbols ==
+                              std::vector<std::string>{"ue5.ProcessEvent"} &&
+                          process_event_validators != nullptr &&
+                          *process_event_validators ==
+                              std::vector<std::string>{"ue5-process-event-abi-v1"} &&
+                          feature_symbols != nullptr && feature_symbols->size() == 4 &&
                           contains(*feature_symbols, "ue5.GWorld") &&
                           contains(*feature_symbols, "ue5.GameTick") &&
                           contains(*feature_symbols, "ue5.FNamePool") &&
                           contains(*feature_symbols, "ue5.GObjects") &&
-                          contains(*feature_symbols, "ue5.ProcessEvent") &&
-                          feature_validators != nullptr && feature_validators->size() == 2 &&
-                          contains(*feature_validators, "nte-player-teleport-layout-v1") &&
-                          contains(*feature_validators, "nte-player-teleport-process-event-abi-v1") &&
-                          feature_dependencies != nullptr && feature_dependencies->size() == 3 &&
+                          feature_validators != nullptr &&
+                          *feature_validators ==
+                              std::vector<std::string>{"nte-player-teleport-layout-v1"} &&
+                          feature_dependencies != nullptr && feature_dependencies->size() == 4 &&
                           contains(*feature_dependencies, "nte.player") &&
-                           contains(*feature_dependencies, "ue5.names") &&
-                           contains(*feature_dependencies, "ue5.objects") &&
+                          contains(*feature_dependencies, "ue5.names") &&
+                          contains(*feature_dependencies, "ue5.objects") &&
+                          contains(*feature_dependencies, "ue5.process-event") &&
                            actor_feature_symbols != nullptr && actor_feature_symbols->size() == 3 &&
                            contains(*actor_feature_symbols, "ue5.GWorld") &&
                            contains(*actor_feature_symbols, "ue5.GameTick") &&
@@ -622,9 +655,10 @@ int main() {
                             profile->layout.at("entities.maxLevels") == 4096 &&
                             profile->layout.at("entities.maxCount") == 32768 &&
                             profile->layout.at("controller.playerState") == 720 &&
-                            profile->optional_features.contains("ue5.actors") &&
-                            profile->optional_features.contains("ue5.functions") &&
-                            profile->optional_features.contains("nte.player-esp") &&
+                             profile->optional_features.contains("ue5.actors") &&
+                             profile->optional_features.contains("ue5.functions") &&
+                             profile->optional_features.contains("ue5.process-event") &&
+                             profile->optional_features.contains("nte.player-esp") &&
                             profile->optional_features.contains("nte.player-teleport") &&
                             excludes_rob_bank_contract &&
                            process_event != nullptr && process_event->module == L"HTGame.exe" &&
@@ -632,13 +666,16 @@ int main() {
                           process_event->resolve.kind == anomaly::ProfileResolveKind::Direct &&
                           process_event->pattern.starts_with("40 55 56 57") &&
                           process_event->validators.size() == 2 &&
-                          contains(process_event->validators, "address-in-module") &&
-                          contains(process_event->validators, "executable") &&
+                           contains(process_event->validators, "address-in-module") &&
+                           contains(process_event->validators, "executable") &&
+                           contains(process_event->required_by, "anomaly.ue5.framework") &&
+                           !contains(
+                               process_event->required_by,
+                               "anomaly.nte.player-teleport") &&
                           requires_teleport_service("ue5.GWorld") &&
                           requires_teleport_service("ue5.FNamePool") &&
                             requires_teleport_service("ue5.GObjects") &&
                             requires_teleport_service("ue5.GameTick") &&
-                            requires_teleport_service("ue5.ProcessEvent") &&
                             excludes_fake_uid_contract &&
                             retains_teleport_reflection_layout &&
                            retains_function_reflection_layout &&
@@ -675,7 +712,30 @@ int main() {
                                  return diagnostic.path ==
                                         "/featureLayoutValidators/ue5.functions";
                              }),
-                     "reflection feature accepted an unverified layout validator") &&
+                      "reflection feature accepted an unverified layout validator") &&
+            result;
+
+        auto invalid_process_event_contract = ReadTextFile(*current_nte_profile_path);
+        const std::string process_event_validator{"ue5-process-event-abi-v1"};
+        const auto process_event_validator_offset =
+            invalid_process_event_contract.find(process_event_validator);
+        if (process_event_validator_offset != std::string::npos) {
+            invalid_process_event_contract.replace(
+                process_event_validator_offset, process_event_validator.size(),
+                "unverified-process-event-abi-v1");
+        }
+        const auto invalid_process_event_profile = anomaly::ParseBuildProfile(
+            invalid_process_event_contract, *current_nte_profile_path);
+        result = Check(
+                     process_event_validator_offset != std::string::npos &&
+                         !invalid_process_event_profile.Ok() &&
+                         std::ranges::any_of(
+                             invalid_process_event_profile.diagnostics,
+                             [](const auto& diagnostic) {
+                                 return diagnostic.path ==
+                                     "/featureLayoutValidators/ue5.process-event";
+                             }),
+                     "ProcessEvent feature accepted an unverified ABI validator") &&
             result;
 
         auto incomplete_actor_reflection_contract = ReadTextFile(*current_nte_profile_path);

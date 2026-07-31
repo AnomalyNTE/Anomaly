@@ -325,6 +325,19 @@ std::string OutgoingTransformRejectedProfile(const anomaly::BuildFingerprint& fi
     return json.str();
 }
 
+std::string ProcessEventRejectedProfile(const anomaly::BuildFingerprint& fingerprint) {
+    std::ostringstream json;
+    const std::string pattern = FunctionPattern(
+        reinterpret_cast<const void*>(&ProfileRuntimeRaceTickTarget));
+    const std::string module = Narrow(fingerprint.module);
+    json << R"({"schemaVersion":1,"game":"nte","symbols":{"ue5.GameTick":{"module":")"
+         << module << R"(","section":".text","pattern":")" << pattern
+         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","tick-anchor-v1"],"requiredBy":["anomaly.ue5.framework"]},"ue5.ProcessEvent":{"module":")"
+         << module << R"(","section":".text","pattern":")" << pattern
+         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":["anomaly.ue5.framework"]}},"features":{"ue5.framework":["ue5.GameTick"],"ue5.process-event":["ue5.ProcessEvent"]},"optionalFeatures":["ue5.process-event"],"featureLayoutValidators":{"ue5.process-event":["ue5-process-event-abi-v1"]}})";
+    return json.str();
+}
+
 std::string EscMenuHooksRejectedProfile(const anomaly::BuildFingerprint& fingerprint) {
     std::ostringstream json;
     const std::string pattern = FunctionPattern(
@@ -455,6 +468,37 @@ bool TestOutgoingTransformFeatureRejectsUnverifiedAbi(
                 diagnostics.find("optional outgoing transform metadata capability unavailable: exact ABI gate failed") !=
                     std::string::npos,
             "unverified outgoing transform ABI activated a runtime probe") && result;
+    }
+    static_cast<void>(runtime.Stop());
+    std::error_code error;
+    std::filesystem::remove(profile, error);
+    return result;
+}
+
+bool TestProcessEventFeatureRejectsUnverifiedAbi(
+    const std::filesystem::path& root,
+    const anomaly::BuildFingerprint& fingerprint) {
+    const auto profile = root / L"profiles" / L"nte" / L"process-event-rejected.json";
+    std::ofstream(profile) << ProcessEventRejectedProfile(fingerprint);
+
+    anomaly::NteProfileRuntimeOptions options;
+    options.runtime_root = root;
+    options.game_module = GetModuleHandleW(nullptr);
+    anomaly::NteProfileRuntime runtime(std::move(options));
+    bool result = Check(runtime.Start(), "ProcessEvent rejection profile did not start");
+    if (result) {
+        const auto resolution = runtime.Resolution();
+        const auto* const feature = resolution
+            ? FindResolvedFeature(*resolution, "ue5.process-event") : nullptr;
+        const bool validator_rejected = feature != nullptr &&
+            std::ranges::any_of(
+                feature->validation_diagnostics, [](const std::string& diagnostic) {
+                    return diagnostic.starts_with("ue5-process-event-abi-v1:");
+                });
+        result = Check(
+            resolution && resolution->state == anomaly::ProfileResolutionState::Ready &&
+                feature != nullptr && !feature->available && validator_rejected,
+            "unverified ProcessEvent ABI activated the framework capability") && result;
     }
     static_cast<void>(runtime.Stop());
     std::error_code error;
@@ -735,6 +779,10 @@ int main() {
     if (!TestEscMenuFeatureRejectsUnverifiedHooks(root, fixture_identity)) {
         std::cerr << "unverified ESC menu hook topology escaped the ABI gate\n";
         return 11;
+    }
+    if (!TestProcessEventFeatureRejectsUnverifiedAbi(root, fixture_identity)) {
+        std::cerr << "unverified ProcessEvent escaped the framework ABI gate\n";
+        return 12;
     }
 
     std::filesystem::remove(root / L"state" / L"profile-symbol-cache.json", error);

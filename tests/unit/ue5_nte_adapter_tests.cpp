@@ -294,26 +294,30 @@ anomaly::BuildProfile SemanticProfile() {
         {"ue5.world", {"ue5.GWorld", "ue5.GameTick"}},
         {"ue5.names", {"ue5.FNamePool"}},
         {"ue5.objects", {"ue5.GObjects", "ue5.GameTick"}},
+        {"ue5.process-event", {"ue5.ProcessEvent"}},
         {"ue5.actors", {"ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"}},
         {"nte.session", {"ue5.GWorld", "ue5.GameTick"}},
         {"nte.player", {"ue5.GWorld", "ue5.GameTick"}},
         {"nte.player-esp", {"ue5.GWorld", "ue5.GameTick"}},
         {"nte.player-teleport",
-         {"ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent"}},
+         {"ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects"}},
         {"nte.entities", {"ue5.GWorld", "ue5.GameTick"}},
     };
     profile.feature_layout_validators = {
         {"nte.player", {"nte-player-layout-v1"}},
         {"nte.player-esp", {"nte-player-esp-layout-v1"}},
         {"nte.player-teleport", {"nte-player-teleport-layout-v1"}},
+        {"ue5.process-event", {"ue5-process-event-abi-v1"}},
         {"nte.entities", {"nte-entities-layout-v1"}},
         {"ue5.actors", {"ue5-actors-reflection-v1"}},
     };
     profile.feature_dependencies = {
         {"nte.player-esp", {"nte.player"}},
-        {"nte.player-teleport", {"nte.player", "ue5.names", "ue5.objects"}},
+        {"nte.player-teleport",
+         {"nte.player", "ue5.names", "ue5.objects", "ue5.process-event"}},
     };
-    profile.optional_features = {"nte.player-esp", "nte.player-teleport"};
+    profile.optional_features = {
+        "ue5.process-event", "nte.player-esp", "nte.player-teleport"};
     profile.layout.insert({"object.outer", 0x20});
     profile.layout.insert({"ustruct.propertyLink", 0x30});
     profile.layout.insert({"ufunction.numParms", 0x40});
@@ -345,12 +349,27 @@ anomaly::ProfileResolutionSnapshot Resolution() {
         "ue5.ProcessEvent", Available("ue5.ProcessEvent", FixtureMemory::kBase + 0x400));
     for (const std::string id : {
              "ue5.framework", "ue5.world", "ue5.names", "ue5.objects",
-             "ue5.actors",
+             "ue5.actors", "ue5.process-event",
               "nte.session", "nte.player", "nte.player-esp",
               "nte.player-teleport", "nte.entities"}) {
         resolution.features.emplace(id, anomaly::FeatureResolution{id, true, {}});
     }
     return resolution;
+}
+
+anomaly::FeatureLayoutValidatorRegistry FixtureFeatureLayoutValidators() {
+    anomaly::FeatureLayoutValidatorRegistry validators;
+    validators.Register(
+        std::string(anomaly::kUe5ProcessEventAbiValidator),
+        [](const anomaly::BuildProfile&,
+           const std::string_view feature,
+           const anomaly::ProfileResolutionSnapshot&,
+           const anomaly::SymbolMemory&) {
+            return anomaly::FeatureValidationResult{
+                feature == anomaly::kUe5ProcessEventFeature,
+                "fixture validator only accepts the UE5 ProcessEvent capability"};
+        });
+    return validators;
 }
 
 anomaly::BuildFingerprint Fingerprint() {
@@ -682,7 +701,8 @@ int main() {
             return true;
         };
     anomaly::Ue5NteAdapter adapter(
-        Fingerprint(), SemanticProfile(), Resolution(), memory, registry, {}, {},
+        Fingerprint(), SemanticProfile(), Resolution(), memory, registry, {},
+        FixtureFeatureLayoutValidators(),
         process_event_invoker);
     result = Check(adapter.Start(true), "adapter did not start") &&
         Check(registry.Snapshot().size() == 12, "adapter did not publish feature-gated services");
@@ -775,6 +795,20 @@ int main() {
         registry.Query(ANOMALY_NTE_METRICS_SERVICE_V1_ID, ANOMALY_NTE_METRICS_SERVICE_V1_VERSION));
     const auto* nte_build = static_cast<const AnomalyNteBuildServiceV1*>(
         registry.Query(ANOMALY_NTE_BUILD_SERVICE_V1_ID, ANOMALY_NTE_BUILD_SERVICE_V1_VERSION));
+    result = Check(
+                 nte_build != nullptr && nte_build->feature_state != nullptr &&
+                     nte_build->feature_state(
+                         nte_build->user,
+                         {"ue5.process-event", sizeof("ue5.process-event") - 1U}) ==
+                         ANOMALY_FEATURE_V1_AVAILABLE,
+                 "validated ProcessEvent framework feature is unavailable") && result;
+    result = Check(
+                 nte_build != nullptr && nte_build->feature_state != nullptr &&
+                     nte_build->feature_state(
+                         nte_build->user,
+                         {"nte.player-teleport", sizeof("nte.player-teleport") - 1U}) ==
+                         ANOMALY_FEATURE_V1_AVAILABLE,
+                 "ProcessEvent dependency did not activate player teleport") && result;
     AnomalyStatusV1 component_status{ANOMALY_STATUS_V1_UNAVAILABLE};
     AnomalyStatusV1 bool_status{ANOMALY_STATUS_V1_UNAVAILABLE};
     AnomalyStatusV1 fname_status{ANOMALY_STATUS_V1_UNAVAILABLE};
@@ -2378,7 +2412,7 @@ int main() {
 
     auto missing_process_event_profile = SemanticProfile();
     auto& missing_process_event_symbols = missing_process_event_profile.features.at(
-        "nte.player-teleport");
+        "ue5.process-event");
     std::erase(missing_process_event_symbols, "ue5.ProcessEvent");
     auto missing_process_event_memory = std::make_shared<FixtureMemory>();
     Populate(missing_process_event_memory);

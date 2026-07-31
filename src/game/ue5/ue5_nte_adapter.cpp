@@ -752,6 +752,7 @@ struct Ue5NteAdapter::State {
         const auto* const process_event = resolution.FindSymbol("ue5.ProcessEvent");
         return static_cast<bool>(process_event_invoker) &&
             process_event != nullptr && process_event->Available() &&
+            resolution.FeatureAvailable(kUe5ProcessEventFeature) &&
             resolution.FeatureAvailable("nte.player-teleport") &&
             resolution.FeatureAvailable("nte.player") &&
             resolution.FeatureAvailable("ue5.names") &&
@@ -775,13 +776,17 @@ struct Ue5NteAdapter::State {
             "fboolProperty.byteMask",
             "fboolProperty.fieldMask"}) &&
             FeatureDeclaresSymbol(
-                profile, "nte.player-teleport", "ue5.ProcessEvent") &&
+                profile, kUe5ProcessEventFeature, kUe5ProcessEventSymbol) &&
+            FeatureDeclaresLayoutValidator(
+                profile, kUe5ProcessEventFeature, kUe5ProcessEventAbiValidator) &&
             FeatureDeclaresDependency(
                 profile, "nte.player-teleport", "nte.player") &&
             FeatureDeclaresDependency(
                 profile, "nte.player-teleport", "ue5.names") &&
             FeatureDeclaresDependency(
                 profile, "nte.player-teleport", "ue5.objects") &&
+            FeatureDeclaresDependency(
+                profile, "nte.player-teleport", kUe5ProcessEventFeature) &&
             FeatureDeclaresLayoutValidator(
                 profile,
                 "nte.player-teleport",

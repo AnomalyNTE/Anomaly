@@ -315,6 +315,9 @@ void ValidateReflectionFeatureContracts(
     BuildProfileParseResult& result,
     const std::filesystem::path& source) {
     ValidateReflectionFeatureContract(
+        profile, "ue5.process-event", {"ue5.ProcessEvent"}, {},
+        "ue5-process-event-abi-v1", {}, result, source);
+    ValidateReflectionFeatureContract(
         profile, "ue5.actors",
         {"ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"},
         {"ue5.world", "ue5.names"},
