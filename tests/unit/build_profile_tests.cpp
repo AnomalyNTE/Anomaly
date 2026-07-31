@@ -381,6 +381,20 @@ int main() {
                       "nte.player-teleport");
                   return found == profile->feature_dependencies.end() ? nullptr : &found->second;
                }();
+        const auto esc_menu_symbols = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found = profile->features.find("nte.esc-menu-button");
+                  return found == profile->features.end() ? nullptr : &found->second;
+              }();
+        const auto esc_menu_validators = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found =
+                      profile->feature_layout_validators.find("nte.esc-menu-button");
+                  return found == profile->feature_layout_validators.end()
+                      ? nullptr : &found->second;
+              }();
         const auto actor_feature_symbols = profile == nullptr
             ? nullptr
             : [&]() -> const std::vector<std::string>* {
@@ -528,6 +542,32 @@ int main() {
             [profile](const std::string_view key) {
                 return profile->layout.contains(std::string(key));
             });
+        const bool esc_menu_hook_topology = profile != nullptr &&
+            esc_menu_symbols != nullptr && esc_menu_symbols->size() == 8 &&
+            contains(*esc_menu_symbols, "ue5.ProcessEvent") &&
+            contains(*esc_menu_symbols, "nte.HTUI_MenuExtension.AddMenuPage") &&
+            contains(*esc_menu_symbols, "nte.HTUI_MenuExtension.execAddMenuPage") &&
+            contains(*esc_menu_symbols, "nte.CommonButtonBase.HandleButtonClicked") &&
+            contains(*esc_menu_symbols, "nte.CommonButtonBase.BP_OnClicked");
+        const bool esc_menu_hook_validators = esc_menu_validators != nullptr &&
+            esc_menu_validators->size() == 2 &&
+            contains(*esc_menu_validators, "nte-esc-menu-process-event-abi-v1") &&
+            contains(*esc_menu_validators, "nte-esc-menu-hooks-v1");
+        const bool esc_menu_hook_patterns = profile != nullptr &&
+            profile->symbols.at("nte.HTUI_MenuExtension.AddMenuPage")
+                .pattern.starts_with("40 55 57 48 83 EC 38") &&
+            profile->symbols.at("nte.HTUI_MenuExtension.execAddMenuPage")
+                .pattern.ends_with("48 89 7B 20 E8 6D D7 87 01") &&
+            profile->symbols.at("nte.CommonButtonBase.HandleButtonClicked")
+                .pattern.starts_with("48 89 5C 24 08 57") &&
+            profile->symbols.at("nte.CommonButtonBase.BP_OnClicked")
+                .pattern.starts_with("40 53 48 83 EC 60");
+        const bool esc_menu_hook_layout = profile != nullptr &&
+            profile->layout.at("escMenu.buttonClickedVtableOffset") == 1392;
+        result = Check(esc_menu_hook_topology, "current NTE profile omitted ESC hook symbols") &&
+            Check(esc_menu_hook_validators, "current NTE profile omitted ESC hook validators") &&
+            Check(esc_menu_hook_patterns, "current NTE profile omitted ESC hook patterns") &&
+            Check(esc_menu_hook_layout, "current NTE profile omitted ESC hook layout") && result;
         result = Check(
                      current_nte_profile.Ok() && profile != nullptr &&
                           profile->feature_layout_validators.at("nte.player") ==

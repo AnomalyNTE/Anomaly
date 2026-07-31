@@ -325,6 +325,33 @@ std::string OutgoingTransformRejectedProfile(const anomaly::BuildFingerprint& fi
     return json.str();
 }
 
+std::string EscMenuHooksRejectedProfile(const anomaly::BuildFingerprint& fingerprint) {
+    std::ostringstream json;
+    const std::string pattern = FunctionPattern(
+        reinterpret_cast<const void*>(&ProfileRuntimeRaceTickTarget));
+    const std::string module = Narrow(fingerprint.module);
+    const auto symbol = [&](const std::string_view id, const std::string_view required_by) {
+        json << '"' << id << R"(":{"module":")" << module
+             << R"(","section":".text","pattern":")" << pattern
+             << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":[")"
+             << required_by << R"("]})";
+    };
+    json << R"({"schemaVersion":1,"game":"nte","symbols":{)";
+    symbol("ue5.GameTick", "anomaly.ue5.framework");
+    json << ',';
+    symbol("ue5.GObjects", "anomaly.nte.esc-menu-button");
+    json << ',';
+    symbol("nte.HTUI_MenuExtension.AddMenuPage", "anomaly.nte.esc-menu-button");
+    json << ',';
+    symbol("nte.HTUI_MenuExtension.execAddMenuPage", "anomaly.nte.esc-menu-button");
+    json << ',';
+    symbol("nte.CommonButtonBase.HandleButtonClicked", "anomaly.nte.esc-menu-button");
+    json << ',';
+    symbol("nte.CommonButtonBase.BP_OnClicked", "anomaly.nte.esc-menu-button");
+    json << R"(},"features":{"ue5.framework":["ue5.GameTick"],"nte.esc-menu-button":["ue5.GObjects","nte.HTUI_MenuExtension.AddMenuPage","nte.HTUI_MenuExtension.execAddMenuPage","nte.CommonButtonBase.HandleButtonClicked","nte.CommonButtonBase.BP_OnClicked"]},"optionalFeatures":["nte.esc-menu-button"],"featureLayoutValidators":{"nte.esc-menu-button":["nte-esc-menu-hooks-v1"]}})";
+    return json.str();
+}
+
 const anomaly::FeatureResolution* FindResolvedFeature(
     const anomaly::ProfileResolutionSnapshot& resolution,
     std::string_view id) {
@@ -428,6 +455,37 @@ bool TestOutgoingTransformFeatureRejectsUnverifiedAbi(
                 diagnostics.find("optional outgoing transform metadata capability unavailable: exact ABI gate failed") !=
                     std::string::npos,
             "unverified outgoing transform ABI activated a runtime probe") && result;
+    }
+    static_cast<void>(runtime.Stop());
+    std::error_code error;
+    std::filesystem::remove(profile, error);
+    return result;
+}
+
+bool TestEscMenuFeatureRejectsUnverifiedHooks(
+    const std::filesystem::path& root,
+    const anomaly::BuildFingerprint& fingerprint) {
+    const auto profile = root / L"profiles" / L"nte" / L"esc-menu-hooks-rejected.json";
+    std::ofstream(profile) << EscMenuHooksRejectedProfile(fingerprint);
+
+    anomaly::NteProfileRuntimeOptions options;
+    options.runtime_root = root;
+    options.game_module = GetModuleHandleW(nullptr);
+    anomaly::NteProfileRuntime runtime(std::move(options));
+    bool result = Check(runtime.Start(), "ESC menu hook rejection profile did not start");
+    if (result) {
+        const auto resolution = runtime.Resolution();
+        const auto* const feature = resolution
+            ? FindResolvedFeature(*resolution, "nte.esc-menu-button") : nullptr;
+        const bool validator_rejected = feature != nullptr &&
+            std::ranges::any_of(
+                feature->validation_diagnostics, [](const std::string& diagnostic) {
+                    return diagnostic.starts_with("nte-esc-menu-hooks-v1:");
+                });
+        result = Check(
+            resolution && resolution->state == anomaly::ProfileResolutionState::Ready &&
+                feature != nullptr && !feature->available && validator_rejected,
+            "unverified ESC menu hook topology activated the optional feature") && result;
     }
     static_cast<void>(runtime.Stop());
     std::error_code error;
@@ -673,6 +731,10 @@ int main() {
     if (!TestOutgoingTransformFeatureRejectsUnverifiedAbi(root, fixture_identity)) {
         std::cerr << "unverified outgoing transform profile escaped the ABI gate\n";
         return 10;
+    }
+    if (!TestEscMenuFeatureRejectsUnverifiedHooks(root, fixture_identity)) {
+        std::cerr << "unverified ESC menu hook topology escaped the ABI gate\n";
+        return 11;
     }
 
     std::filesystem::remove(root / L"state" / L"profile-symbol-cache.json", error);

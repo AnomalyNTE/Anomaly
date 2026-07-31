@@ -55,8 +55,6 @@ enum class BridgeFunction : std::size_t {
     RemoveChildAt,
     StringToText,
     SetText,
-    ButtonClicked,
-    AddMenuPage,
     ImportBufferAsTexture2D,
     SetBrushFromTexture,
     Count,
@@ -77,16 +75,13 @@ constexpr std::array<FunctionSpec, static_cast<std::size_t>(BridgeFunction::Coun
         {"RemoveChildAt", "PanelWidget"},
         {"Conv_StringToText", "KismetTextLibrary"},
         {"SetText", "TextBlock"},
-        {"BP_OnClicked", "CommonButtonBase"},
-        {"AddMenuPage", "HTUI_MenuExtension"},
         {"ImportBufferAsTexture2D", "KismetRenderingLibrary"},
         {"SetBrushFromTexture", "Image"},
     }};
 
 // These indices belong to the v1 NTE build and are always validated before use.
-constexpr std::array<std::uint32_t, 10> kExactBuildObjectIndices{
-    12863U, 12745U, 12748U, 12749U, 12750U, 12754U,
-    36134U, 13642U, 21924U, 52607U};
+constexpr std::array<std::uint32_t, 8> kExactBuildObjectIndices{
+    12863U, 12745U, 12748U, 12749U, 12750U, 12754U, 36134U, 13642U};
 
 struct FNameValue final {
     std::uint32_t comparison_index{};
@@ -144,6 +139,8 @@ struct Context final {
     std::unique_ptr<HookManager> hooks;
     std::atomic_bool stopping{true};
     std::uintptr_t process_event{};
+    std::uintptr_t add_menu_page{};
+    std::uintptr_t button_clicked{};
     std::uintptr_t object_registry{};
     std::uintptr_t object_chunks{};
     std::array<std::uintptr_t, 64> chunks{};
@@ -192,10 +189,13 @@ struct Context final {
 };
 
 using ProcessEventFn = void(ANOMALY_CALL*)(void*, void*, void*);
+using AddMenuPageFn = void(ANOMALY_CALL*)(void*, std::int32_t);
+using ButtonClickedFn = void(ANOMALY_CALL*)(void*);
 
 std::atomic<Context*> g_active{};
 std::atomic<HookManager*> g_hook_manager{};
-std::atomic<ProcessEventFn> g_original{};
+std::atomic<AddMenuPageFn> g_add_menu_page_original{};
+std::atomic<ButtonClickedFn> g_button_clicked_original{};
 std::mutex g_process_mutex;
 std::array<std::atomic<std::uintptr_t>, static_cast<std::size_t>(BridgeFunction::Count)>
     g_functions{};
@@ -773,7 +773,9 @@ bool ResolveWideLabel(const std::string_view label, std::wstring* wide) noexcept
 
 bool InvokeProcessEvent(
     void* object, const BridgeFunction function, void* parameters) noexcept {
-    const ProcessEventFn process_event = g_original.load(std::memory_order_acquire);
+    Context* const context = g_active.load(std::memory_order_acquire);
+    const ProcessEventFn process_event = context == nullptr
+        ? nullptr : reinterpret_cast<ProcessEventFn>(context->process_event);
     const std::uintptr_t reflected_function = BridgeFunctionAddress(function);
     if (object == nullptr || process_event == nullptr || reflected_function == 0U) return false;
     process_event(object, reinterpret_cast<void*>(reflected_function), parameters);
@@ -1346,45 +1348,59 @@ bool QueueClick(Context& context, const std::uintptr_t object) noexcept {
     return true;
 }
 
-void ANOMALY_CALL ProcessEventDetour(void* object, void* function, void* parameters) {
-    const ProcessEventFn original = g_original.load(std::memory_order_acquire);
+void PublishMenuPageAdded(
+    Context& context, void* const object, const std::int32_t menu_page_index) noexcept {
+    const auto event_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    context.last_menu_page_index.store(menu_page_index, std::memory_order_relaxed);
+    context.last_menu_root.store(
+        reinterpret_cast<std::uintptr_t>(object), std::memory_order_relaxed);
+    context.last_menu_page_event_ms.store(event_ms, std::memory_order_relaxed);
+    context.menu_rebuild_sequence.fetch_add(1U, std::memory_order_release);
+}
+
+void ANOMALY_CALL AddMenuPageDetour(void* object, const std::int32_t menu_page_index) noexcept {
+    const AddMenuPageFn original =
+        g_add_menu_page_original.load(std::memory_order_acquire);
     if (original == nullptr) return;
     HookManager* const hooks = g_hook_manager.load(std::memory_order_acquire);
     Context* const context = g_active.load(std::memory_order_acquire);
     if (hooks == nullptr || context == nullptr ||
         context->stopping.load(std::memory_order_acquire)) {
-        original(object, function, parameters);
+        original(object, menu_page_index);
         return;
     }
     auto lease = hooks->AcquireCallback(
-        kHookOwner, kHookGeneration, reinterpret_cast<void*>(context->process_event));
+        kHookOwner, kHookGeneration, reinterpret_cast<void*>(context->add_menu_page));
     if (!lease) {
-        original(object, function, parameters);
+        original(object, menu_page_index);
         return;
     }
-    const std::uintptr_t function_address = reinterpret_cast<std::uintptr_t>(function);
-    const bool menu_page_added =
-        function_address == BridgeFunctionAddress(BridgeFunction::AddMenuPage);
-    std::int32_t menu_page_index{-1};
-    if (menu_page_added && parameters != nullptr) {
-        std::memcpy(&menu_page_index, parameters, sizeof(menu_page_index));
+    original(object, menu_page_index);
+    if (menu_page_index >= 0) PublishMenuPageAdded(*context, object, menu_page_index);
+}
+
+void ANOMALY_CALL ButtonClickedDetour(void* object) noexcept {
+    const ButtonClickedFn original =
+        g_button_clicked_original.load(std::memory_order_acquire);
+    if (original == nullptr) return;
+    HookManager* const hooks = g_hook_manager.load(std::memory_order_acquire);
+    Context* const context = g_active.load(std::memory_order_acquire);
+    if (hooks == nullptr || context == nullptr ||
+        context->stopping.load(std::memory_order_acquire)) {
+        original(object);
+        return;
     }
-    if (function_address ==
-        BridgeFunctionAddress(BridgeFunction::ButtonClicked)) {
-        static_cast<void>(QueueClick(*context, reinterpret_cast<std::uintptr_t>(object)));
+    auto lease = hooks->AcquireCallback(
+        kHookOwner, kHookGeneration, reinterpret_cast<void*>(context->button_clicked));
+    if (!lease) {
+        original(object);
+        return;
     }
-    original(object, function, parameters);
-    if (menu_page_added && menu_page_index >= 0) {
-        const auto event_ms = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch())
-                .count());
-        context->last_menu_page_index.store(menu_page_index, std::memory_order_relaxed);
-        context->last_menu_root.store(
-            reinterpret_cast<std::uintptr_t>(object), std::memory_order_relaxed);
-        context->last_menu_page_event_ms.store(event_ms, std::memory_order_relaxed);
-        context->menu_rebuild_sequence.fetch_add(1U, std::memory_order_release);
-    }
+    static_cast<void>(QueueClick(*context, reinterpret_cast<std::uintptr_t>(object)));
+    original(object);
 }
 
 void DrainClicks(Context& context) noexcept {
@@ -1553,10 +1569,18 @@ public:
         context_.invoke_button = std::move(invoke_button);
         context_.logger = std::move(logger);
         const auto* process_event = resolution.FindSymbol("ue5.ProcessEvent");
+        const auto* add_menu_page =
+            resolution.FindSymbol("nte.HTUI_MenuExtension.AddMenuPage");
+        const auto* button_clicked =
+            resolution.FindSymbol("nte.CommonButtonBase.BP_OnClicked");
         const auto* objects = resolution.FindSymbol("ue5.GObjects");
         if (resolution.FeatureAvailable("nte.esc-menu-button") &&
-            process_event != nullptr && process_event->Available()) {
+            process_event != nullptr && process_event->Available() &&
+            add_menu_page != nullptr && add_menu_page->Available() &&
+            button_clicked != nullptr && button_clicked->Available()) {
             context_.process_event = process_event->address;
+            context_.add_menu_page = add_menu_page->address;
+            context_.button_clicked = button_clicked->address;
         }
         if (objects != nullptr && objects->Available()) {
             context_.object_registry = objects->address;
@@ -1569,22 +1593,36 @@ public:
 
     [[nodiscard]] bool Start() {
         std::scoped_lock process_lock(g_process_mutex);
-        if (context_.process_event == 0U || context_.object_registry == 0U ||
+        if (context_.process_event == 0U || context_.add_menu_page == 0U ||
+            context_.button_clicked == 0U || context_.object_registry == 0U ||
             !context_.snapshot_provider || !context_.invoke_button || context_.hooks != nullptr ||
             g_active.load(std::memory_order_acquire) != nullptr) {
             return false;
         }
         context_.hooks = std::make_unique<HookManager>(CreateMinHookBackend());
-        void* original{};
+        void* add_menu_page_original{};
+        void* button_clicked_original{};
         if (!context_.hooks->Create(
-                std::string(kHookOwner), kHookGeneration, "process-event",
-                reinterpret_cast<void*>(context_.process_event),
-                reinterpret_cast<void*>(&ProcessEventDetour), &original) ||
-            original == nullptr) {
+                std::string(kHookOwner), kHookGeneration, "add-menu-page",
+                reinterpret_cast<void*>(context_.add_menu_page),
+                reinterpret_cast<void*>(&AddMenuPageDetour), &add_menu_page_original) ||
+            add_menu_page_original == nullptr ||
+            !context_.hooks->Create(
+                std::string(kHookOwner), kHookGeneration, "button-clicked",
+                reinterpret_cast<void*>(context_.button_clicked),
+                reinterpret_cast<void*>(&ButtonClickedDetour), &button_clicked_original) ||
+            button_clicked_original == nullptr) {
+            static_cast<void>(
+                context_.hooks->RemoveOwner(kHookOwner, kHookGeneration));
             context_.hooks.reset();
             return false;
         }
-        g_original.store(reinterpret_cast<ProcessEventFn>(original), std::memory_order_release);
+        g_add_menu_page_original.store(
+            reinterpret_cast<AddMenuPageFn>(add_menu_page_original),
+            std::memory_order_release);
+        g_button_clicked_original.store(
+            reinterpret_cast<ButtonClickedFn>(button_clicked_original),
+            std::memory_order_release);
         g_hook_manager.store(context_.hooks.get(), std::memory_order_release);
         context_.stopping.store(false, std::memory_order_release);
         g_active.store(&context_, std::memory_order_release);
@@ -1593,7 +1631,8 @@ public:
             context_.stopping.store(true, std::memory_order_release);
             static_cast<void>(context_.hooks->RemoveOwner(kHookOwner, kHookGeneration));
             g_hook_manager.store(nullptr, std::memory_order_release);
-            g_original.store(nullptr, std::memory_order_release);
+            g_add_menu_page_original.store(nullptr, std::memory_order_release);
+            g_button_clicked_original.store(nullptr, std::memory_order_release);
             context_.hooks.reset();
             return false;
         }
@@ -1615,7 +1654,8 @@ public:
         if (!context_.hooks->RemoveOwner(kHookOwner, kHookGeneration, timeout)) return false;
         process_lock.lock();
         g_hook_manager.store(nullptr, std::memory_order_release);
-        g_original.store(nullptr, std::memory_order_release);
+        g_add_menu_page_original.store(nullptr, std::memory_order_release);
+        g_button_clicked_original.store(nullptr, std::memory_order_release);
         context_.hooks.reset();
         context_.names = nullptr;
         context_.objects = nullptr;

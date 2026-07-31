@@ -41,6 +41,15 @@ inline constexpr std::string_view kProcessEventAbiValidator =
     "nte-player-teleport-process-event-abi-v1";
 inline constexpr std::string_view kEscMenuProcessEventAbiValidator =
     "nte-esc-menu-process-event-abi-v1";
+inline constexpr std::string_view kEscMenuHooksValidator = "nte-esc-menu-hooks-v1";
+inline constexpr std::string_view kAddMenuPageSymbol =
+    "nte.HTUI_MenuExtension.AddMenuPage";
+inline constexpr std::string_view kExecAddMenuPageSymbol =
+    "nte.HTUI_MenuExtension.execAddMenuPage";
+inline constexpr std::string_view kHandleButtonClickedSymbol =
+    "nte.CommonButtonBase.HandleButtonClicked";
+inline constexpr std::string_view kButtonClickedSymbol =
+    "nte.CommonButtonBase.BP_OnClicked";
 
 template <std::size_t Size>
 bool MatchesBytes(
@@ -69,6 +78,36 @@ bool HasMatchingUnwindEntry(
         static_cast<DWORD64>(symbol.address), &image_base, nullptr);
     return unwind != nullptr && image_base == static_cast<DWORD64>(module.base) &&
         unwind->BeginAddress == symbol.rva;
+}
+
+bool ProfileLayoutValue(
+    const BuildProfile& profile,
+    const std::string_view key,
+    std::uint64_t* const value) {
+    if (value == nullptr) return false;
+    const auto found = profile.layout.find(key);
+    if (found == profile.layout.end() || found->second < 0) return false;
+    *value = static_cast<std::uint64_t>(found->second);
+    return true;
+}
+
+bool ResolveRel32Target(
+    const SymbolMemory& memory,
+    const std::uintptr_t instruction,
+    const std::size_t displacement_offset,
+    const std::size_t instruction_size,
+    std::uintptr_t* const target) noexcept {
+    std::int32_t displacement{};
+    if (target == nullptr || displacement_offset + sizeof(displacement) > instruction_size ||
+        !memory.Read(
+            instruction + displacement_offset, &displacement, sizeof(displacement))) {
+        return false;
+    }
+    const auto next = static_cast<std::intptr_t>(instruction + instruction_size);
+    const auto resolved = next + static_cast<std::intptr_t>(displacement);
+    if (resolved <= 0) return false;
+    *target = static_cast<std::uintptr_t>(resolved);
+    return true;
 }
 
 FeatureValidationResult ValidateOutgoingTransformAbi(
@@ -219,6 +258,101 @@ FeatureValidationResult ValidateProcessEventAbi(
     return {true, {}};
 }
 
+FeatureValidationResult ValidateEscMenuHooks(
+    const BuildProfile& profile,
+    const std::string_view feature,
+    const ProfileResolutionSnapshot& snapshot,
+    const SymbolMemory& memory) {
+    if (feature != kEscMenuButtonFeature ||
+        !FeatureRequires(profile, feature, kAddMenuPageSymbol) ||
+        !FeatureRequires(profile, feature, kExecAddMenuPageSymbol) ||
+        !FeatureRequires(profile, feature, kHandleButtonClickedSymbol) ||
+        !FeatureRequires(profile, feature, kButtonClickedSymbol)) {
+        return {false, "profile does not declare the ESC menu hook topology"};
+    }
+    const auto* const add_menu_page = snapshot.FindSymbol(kAddMenuPageSymbol);
+    const auto* const exec_add_menu_page = snapshot.FindSymbol(kExecAddMenuPageSymbol);
+    const auto* const handle_button_clicked =
+        snapshot.FindSymbol(kHandleButtonClickedSymbol);
+    const auto* const button_clicked = snapshot.FindSymbol(kButtonClickedSymbol);
+    if (add_menu_page == nullptr || exec_add_menu_page == nullptr ||
+        handle_button_clicked == nullptr || button_clicked == nullptr ||
+        !add_menu_page->Available() || !exec_add_menu_page->Available() ||
+        !handle_button_clicked->Available() || !button_clicked->Available()) {
+        return {false, "ESC menu hook symbols are unavailable"};
+    }
+    const auto module = memory.FindModule(add_menu_page->module);
+    if (!module || exec_add_menu_page->module != add_menu_page->module ||
+        handle_button_clicked->module != add_menu_page->module ||
+        button_clicked->module != add_menu_page->module) {
+        return {false, "ESC menu hook symbols do not share the profile module"};
+    }
+    if (!HasMatchingUnwindEntry(*module, *add_menu_page) ||
+        !HasMatchingUnwindEntry(*module, *exec_add_menu_page) ||
+        !HasMatchingUnwindEntry(*module, *handle_button_clicked) ||
+        !HasMatchingUnwindEntry(*module, *button_clicked)) {
+        return {false, "ESC menu hook topology has no matching unwind entry"};
+    }
+
+    // These bytes begin after MinHook's entry patch, so deferred feature
+    // validation remains valid while the bridge owns the two detours.
+    constexpr std::array<std::uint8_t, 5> kAddMenuPageArguments{
+        0x8B, 0xEA, 0x48, 0x8B, 0xF9};
+    if (!MatchesBytes(memory, add_menu_page->address + 0x0EU, kAddMenuPageArguments)) {
+        return {false, "AddMenuPage argument contract changed"};
+    }
+    constexpr std::array<std::uint8_t, 8> kHandleClickVirtualDispatch{
+        0x48, 0x8B, 0x03, 0x48, 0x8B, 0xCB, 0xFF, 0x90};
+    std::uint32_t handle_click_vtable_offset{};
+    std::uint64_t declared_vtable_offset{};
+    if (!MatchesBytes(
+            memory, handle_button_clicked->address + 0x7FU,
+            kHandleClickVirtualDispatch) ||
+        !memory.Read(
+            handle_button_clicked->address + 0x87U,
+            &handle_click_vtable_offset, sizeof(handle_click_vtable_offset)) ||
+        !ProfileLayoutValue(
+            profile, "escMenu.buttonClickedVtableOffset", &declared_vtable_offset) ||
+        declared_vtable_offset != handle_click_vtable_offset) {
+        return {false, "HandleButtonClicked virtual dispatch contract changed"};
+    }
+
+    constexpr std::array<std::uint8_t, 25> kAddMenuPageExecDispatch{
+        0x48, 0x8B, 0x43, 0x20, 0x48, 0x8B, 0xCE, 0x8B, 0x54,
+        0x24, 0x38, 0x48, 0x85, 0xC0, 0x40, 0x0F, 0x95, 0xC7,
+        0x48, 0x03, 0xF8, 0x48, 0x89, 0x7B, 0x20};
+    std::uint8_t call_opcode{};
+    std::uintptr_t add_menu_page_call_target{};
+    if (!MatchesBytes(
+            memory, exec_add_menu_page->address + 0x55U,
+            kAddMenuPageExecDispatch) ||
+        !memory.Read(
+            exec_add_menu_page->address + 0x6EU,
+            &call_opcode, sizeof(call_opcode)) ||
+        call_opcode != 0xE8U ||
+        !ResolveRel32Target(
+            memory, exec_add_menu_page->address + 0x6EU, 1U, 5U,
+            &add_menu_page_call_target) ||
+        add_menu_page_call_target != add_menu_page->address) {
+        return {false, "AddMenuPage Exec wrapper no longer calls the hook target"};
+    }
+
+    constexpr std::array<std::uint8_t, 10> kButtonClickedOverrideCheck{
+        0xF6, 0x81, 0x68, 0x04, 0x00, 0x00, 0x02, 0x48, 0x8B, 0xD9};
+    constexpr std::array<std::uint8_t, 19> kButtonClickedScriptDispatch{
+        0x4C, 0x8B, 0x0B, 0x45, 0x33, 0xC0, 0x48, 0x8B, 0xD0, 0x48,
+        0x8B, 0xCB, 0x41, 0xFF, 0x91, 0x60, 0x02, 0x00, 0x00};
+    if (!MatchesBytes(
+            memory, button_clicked->address + 0x06U,
+            kButtonClickedOverrideCheck) ||
+        !MatchesBytes(
+            memory, button_clicked->address + 0x22U,
+            kButtonClickedScriptDispatch)) {
+        return {false, "BP_OnClicked wrapper contract changed"};
+    }
+    return {true, {}};
+}
+
 FeatureLayoutValidatorRegistry NteFeatureLayoutValidators() {
     FeatureLayoutValidatorRegistry validators;
     validators.Register(
@@ -226,6 +360,7 @@ FeatureLayoutValidatorRegistry NteFeatureLayoutValidators() {
     validators.Register(std::string(kProcessEventAbiValidator), ValidateProcessEventAbi);
     validators.Register(
         std::string(kEscMenuProcessEventAbiValidator), ValidateProcessEventAbi);
+    validators.Register(std::string(kEscMenuHooksValidator), ValidateEscMenuHooks);
     return validators;
 }
 

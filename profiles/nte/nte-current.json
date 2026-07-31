@@ -76,6 +76,38 @@
         "anomaly.nte.player-teleport",
         "anomaly.nte.esc-menu-button"
       ]
+    },
+    "nte.HTUI_MenuExtension.AddMenuPage": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 55 57 48 83 EC 38 83 B9 00 0F 00 00 00 8B EA 48 8B F9 0F 84 ?? ?? ?? ?? 48 8B 89 10 0F 00 00 48 85 C9 0F 84 ?? ?? ?? ?? 39 91 B0 06 00 00 0F 8E ?? ?? ?? ?? 4C 89 6C 24 60",
+      "resolve": {"kind": "direct"},
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.nte.esc-menu-button"]
+    },
+    "nte.HTUI_MenuExtension.execAddMenuPage": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? ?? ?? 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 6D D7 87 01",
+      "resolve": {"kind": "direct"},
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.nte.esc-menu-button"]
+    },
+    "nte.CommonButtonBase.HandleButtonClicked": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B CB 0F B6 F8 E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 0F B6 93 79 04 00 00",
+      "resolve": {"kind": "direct"},
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.nte.esc-menu-button"]
+    },
+    "nte.CommonButtonBase.BP_OnClicked": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 53 48 83 EC 60 F6 81 68 04 00 00 02 48 8B D9 0F 85 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? 4C 8B 0B 45 33 C0 48 8B D0 48 8B CB 41 FF 91 60 02 00 00",
+      "resolve": {"kind": "direct"},
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.nte.esc-menu-button"]
     }
   },
   "features": {
@@ -99,7 +131,11 @@
       "ue5.GameTick",
       "ue5.FNamePool",
       "ue5.GObjects",
-      "ue5.ProcessEvent"
+      "ue5.ProcessEvent",
+      "nte.HTUI_MenuExtension.AddMenuPage",
+      "nte.HTUI_MenuExtension.execAddMenuPage",
+      "nte.CommonButtonBase.HandleButtonClicked",
+      "nte.CommonButtonBase.BP_OnClicked"
     ],
     "nte.entities": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"]
   },
@@ -119,7 +155,10 @@
       "nte-player-teleport-layout-v1",
       "nte-player-teleport-process-event-abi-v1"
     ],
-    "nte.esc-menu-button": ["nte-esc-menu-process-event-abi-v1"],
+    "nte.esc-menu-button": [
+      "nte-esc-menu-process-event-abi-v1",
+      "nte-esc-menu-hooks-v1"
+    ],
     "nte.entities": ["nte-entities-layout-v2"]
   },
   "featureDependencies": {
@@ -152,6 +191,7 @@
     "ufunction.numParms": 180,
     "ufunction.parmsSize": 182,
     "ufunction.returnValueOffset": 184,
+    "escMenu.buttonClickedVtableOffset": 1392,
     "ffield.class": 8,
     "ffield.name": 32,
     "ffieldClass.name": 0,
