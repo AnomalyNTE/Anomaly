@@ -33,6 +33,26 @@ jobs:
           cmake @arguments
       - name: Build
         run: cmake --build --preset windows-relwithdebinfo --parallel
+      - name: Stage CI runtime and tools
+        if: github.ref_type != 'tag'
+        shell: pwsh
+        run: |
+          cmake --install .build/windows-vs2022 --config RelWithDebInfo --prefix .build/ci-artifacts/runtime --component GameRuntime
+          cmake --install .build/windows-vs2022 --config RelWithDebInfo --prefix .build/ci-artifacts/tools --component Tools
+      - name: Upload CI runtime
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: anomaly-runtime-windows-x64
+          path: .build/ci-artifacts/runtime
+          if-no-files-found: error
+      - name: Upload CI tools
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: anomaly-tools-windows-x64
+          path: .build/ci-artifacts/tools
+          if-no-files-found: error
       - name: Package runtime, SDK, tools and symbols
         if: github.ref_type == 'tag'
         shell: pwsh
