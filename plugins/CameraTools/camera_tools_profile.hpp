@@ -3,11 +3,11 @@
 #include <cstdint>
 #include <string_view>
 
-namespace free_camera_profile {
+namespace camera_tools_profile {
 
-// Plugin-owned contracts for the current NTE camera-manager implementation.
-// The hook target is also checked against the active camera manager's vtable
-// before any output is replaced.
+// These contracts match the currently validated NTE camera-manager path used
+// by FreeCamera. The active manager's vtable must match the resolved hook target
+// before the returned camera location is adjusted.
 inline constexpr std::string_view kGWorldPattern =
     "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
 
@@ -48,4 +48,4 @@ inline constexpr std::uint32_t kMouseXNameId = 0x12CF;
 inline constexpr std::uint32_t kMouseYNameId = 0x12D3;
 inline constexpr std::uint32_t kMouse2DNameId = 0x12D7;
 
-} // namespace free_camera_profile
+} // namespace camera_tools_profile

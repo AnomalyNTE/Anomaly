@@ -1,6 +1,6 @@
 # 内建插件
 
-运行包默认提供四个面向用户的内建插件。它们和第三方插件一样，都是独立的目录包（`manifest.json` + `plugin.dll`），可以在 **Plugins** 页启停、重载与查看状态。
+运行包默认提供五个面向用户的内建插件。它们和第三方插件一样，都是独立的目录包（`manifest.json` + `plugin.dll`），可以在 **Plugins** 页启停、重载与查看状态。
 
 > [!NOTE]
 > 坐标、实体和传送等功能都依赖 [Profile](nte-profiles.md)。活动 Profile 缺少签名、偏移或校验未通过时，插件仍然可以加载，但对应功能会显示为不可用。
@@ -51,6 +51,17 @@
 
 > [!NOTE]
 > Custom UID 的 Manifest 当前声明 `builds: ["nte-*"]`，但插件内置的签名和布局只在已知游戏版本上验证过。宿主仅提供通用签名扫描、调度、对象快照和名称解析；插件会在运行时检查自己的签名、对象布局和 vtable，检查不通过时显示为不可用，不会强行写入。
+
+## Camera Tools
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.local.nte.camera-tools` |
+| **作用** | 保持角色跟随时增加视距，或切换为可移动的自由相机。 |
+| **依赖服务** | `anomaly.core`、`anomaly.config`、`anomaly.input`、`anomaly.ui`、`anomaly.localization`、`anomaly.interop.signature`、`anomaly.interop.hook` |
+| **需要 Profile** | 否（相机签名和布局由插件自带，并在加载时校验） |
+
+额外视距默认为 `0`，即完全使用游戏默认视距；插件不设置人为上限。自由相机默认关闭，激活键为 `F6`。
 
 ## 管理插件
 

@@ -1059,12 +1059,18 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/FakeUID/manifest.json
         PACKAGE_NAME FakeUID
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/FakeUID")
+    anomaly_add_plugin(anomaly_builtin_camera_tools
+        SOURCES plugins/CameraTools/plugin.cpp
+        MANIFEST plugins/CameraTools/manifest.json
+        PACKAGE_NAME CameraTools
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CameraTools")
     target_link_libraries(anomaly_builtin_fake_uid PRIVATE nlohmann_json::nlohmann_json)
+    target_link_libraries(anomaly_builtin_camera_tools PRIVATE nlohmann_json::nlohmann_json)
 
     foreach(builtin_target IN ITEMS
             anomaly_builtin_nte_position anomaly_builtin_nte_teleport
             anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-            anomaly_builtin_fake_uid)
+            anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
         target_include_directories(${builtin_target} PRIVATE "${CMAKE_SOURCE_DIR}")
         target_compile_definitions(${builtin_target} PRIVATE
             UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1082,11 +1088,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     anomaly_copy_builtin_locales(anomaly_builtin_entity_esp EntityESP)
     anomaly_copy_builtin_locales(anomaly_builtin_pink_paw_heist_esp PinkPawHeistESP)
     anomaly_copy_builtin_locales(anomaly_builtin_fake_uid FakeUID)
+    anomaly_copy_builtin_locales(anomaly_builtin_camera_tools CameraTools)
     set_target_properties(anomaly_builtin_nte_position PROPERTIES PDB_NAME NtePosition)
     set_target_properties(anomaly_builtin_nte_teleport PROPERTIES PDB_NAME NteTeleport)
     set_target_properties(anomaly_builtin_entity_esp PROPERTIES PDB_NAME EntityESP)
     set_target_properties(anomaly_builtin_pink_paw_heist_esp PROPERTIES PDB_NAME PinkPawHeistESP)
     set_target_properties(anomaly_builtin_fake_uid PROPERTIES PDB_NAME FakeUID)
+    set_target_properties(anomaly_builtin_camera_tools PROPERTIES PDB_NAME CameraTools)
     if(MSVC)
         target_compile_options(anomaly_builtin_pink_paw_heist_esp PRIVATE /utf-8)
     endif()
@@ -1102,11 +1110,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     add_dependencies(anomaly_test_host
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-        anomaly_builtin_fake_uid)
+        anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
     add_dependencies(anomaly-platform-preview
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-        anomaly_builtin_fake_uid)
+        anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
 endif()
 
 function(anomaly_stage_platform_preview_plugin target package_name)
@@ -1136,6 +1144,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_teleport NteTeleport)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_entity_esp EntityESP)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_pink_paw_heist_esp PinkPawHeistESP)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_fake_uid FakeUID)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_camera_tools CameraTools)
 
 add_custom_command(TARGET anomaly-platform-preview POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
@@ -2276,7 +2285,7 @@ foreach(runtime_plugin_target IN ITEMS
         anomaly_example_reliable_config anomaly_example_nte_inspector
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-        anomaly_builtin_fake_uid)
+        anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
     if(TARGET ${runtime_plugin_target})
         list(APPEND ANOMALY_RELEASE_PE_TARGETS ${runtime_plugin_target})
     endif()
@@ -2346,6 +2355,15 @@ if(TARGET anomaly_builtin_fake_uid)
         DESTINATION Anomaly/plugins/FakeUID COMPONENT GameRuntime)
     install(DIRECTORY plugins/FakeUID/locales/
         DESTINATION Anomaly/plugins/FakeUID/locales COMPONENT GameRuntime)
+endif()
+if(TARGET anomaly_builtin_camera_tools)
+    install(TARGETS anomaly_builtin_camera_tools
+        RUNTIME DESTINATION Anomaly/plugins/CameraTools COMPONENT GameRuntime
+        LIBRARY DESTINATION Anomaly/plugins/CameraTools COMPONENT GameRuntime)
+    install(FILES plugins/CameraTools/manifest.json
+        DESTINATION Anomaly/plugins/CameraTools COMPONENT GameRuntime)
+    install(DIRECTORY plugins/CameraTools/locales/
+        DESTINATION Anomaly/plugins/CameraTools/locales COMPONENT GameRuntime)
 endif()
 install(FILES CONTACT config/anomaly.ini config/repository.json config/plugin-repositories.json
     DESTINATION Anomaly COMPONENT GameRuntime)

@@ -1,6 +1,6 @@
 #include "../common/localization.hpp"
 #include "anomaly/sdk/cpp.hpp"
-#include "free_camera_profile.hpp"
+#include "camera_tools_profile.hpp"
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -19,13 +19,14 @@
 
 namespace {
 
-using namespace free_camera_profile;
+using namespace camera_tools_profile;
 
-constexpr std::string_view kSettingsSchemaId = "free-camera-settings-v1";
+constexpr std::string_view kSettingsSchemaId = "camera-tools-settings-v1";
 constexpr std::uint32_t kSettingsSchemaVersion = 1;
 constexpr std::size_t kMaximumSettingsBytes = 2048;
 constexpr std::uint64_t kSettingsSaveDelayMilliseconds = 500;
 constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+constexpr double kDefaultDistance = 0.0;
 constexpr float kDefaultSpeed = 800.0F;
 constexpr float kMinimumSpeed = 100.0F;
 constexpr float kMaximumSpeed = 5000.0F;
@@ -42,26 +43,20 @@ constexpr std::string_view kSettingsSchema = R"json(
 {
   "type":"object",
   "additionalProperties":false,
-  "required":["enabled","speed","toggle"],
+  "required":["distance","freeCameraEnabled","speed","toggle"],
   "properties":{
-    "enabled":{"type":"boolean"},
+    "distance":{"type":"number","minimum":0.0},
+    "freeCameraEnabled":{"type":"boolean"},
     "speed":{"type":"number","minimum":100.0,"maximum":5000.0},
     "toggle":{"type":"integer","minimum":1,"maximum":255}
   }
 }
 )json";
 
-struct KeyBindings final {
-  std::uint32_t toggle{VK_F6};
-
-  bool operator==(const KeyBindings &) const = default;
-};
-
 using CameraViewPointFn = void(ANOMALY_CALL *)(void *, double *, double *);
 using PlayerInputKeyFn = bool(ANOMALY_CALL *)(void *, const void *);
 
 struct Context final {
-  const AnomalyHostApiV1 *host{};
   anomaly::plugins::Localizer localizer;
   const AnomalyCoreServiceV1 *core{};
   const AnomalyConfigServiceV1 *config{};
@@ -73,19 +68,16 @@ struct Context final {
   AnomalyGenerationHandleV1 toggle_hotkey{};
   AnomalyGenerationHandleV1 view_point_hook{};
   AnomalyGenerationHandleV1 input_key_hook{};
-  std::atomic<std::shared_ptr<const KeyBindings>> bindings;
-  std::atomic<std::uint64_t> settings_revision{};
-  std::atomic<std::uint64_t> persisted_settings_revision{};
-  std::atomic<std::uint64_t> settings_changed_at{};
+  std::atomic<double> distance{kDefaultDistance};
+  std::atomic<float> speed{kDefaultSpeed};
+  std::atomic<std::uint32_t> toggle_key{VK_F6};
   std::atomic_bool capturing_toggle{};
   std::atomic_bool enabled{};
   std::atomic_bool configured_enabled{};
   std::atomic_bool active{};
-  std::atomic<float> speed{kDefaultSpeed};
-  std::atomic<std::uint64_t> intercepted{};
-  std::atomic<std::uint64_t> overrides{};
-  std::atomic<std::uint64_t> blocked_keys{};
-  std::atomic<std::uint64_t> passed_mouse_axes{};
+  std::atomic<std::uint64_t> settings_revision{};
+  std::atomic<std::uint64_t> persisted_settings_revision{};
+  std::atomic<std::uint64_t> settings_changed_at{};
   std::uintptr_t view_point_original{};
   std::uintptr_t input_key_original{};
   std::uintptr_t g_world_address{};
@@ -156,15 +148,16 @@ bool InputReady(const AnomalyInputServiceV1 *service) noexcept {
 
 bool UiReady(const AnomalyUiServiceV1 *service) noexcept {
   return HasField<AnomalyUiServiceV1,
-                  decltype(AnomalyUiServiceV1::input_uint32)>(
-             service, offsetof(AnomalyUiServiceV1, input_uint32)) &&
+                  decltype(AnomalyUiServiceV1::input_double)>(
+             service, offsetof(AnomalyUiServiceV1, input_double)) &&
+         service->set_next_window_size != nullptr &&
          service->begin_window != nullptr && service->end_window != nullptr &&
-         service->set_next_window_size != nullptr && service->text != nullptr &&
-         service->button != nullptr && service->checkbox != nullptr &&
-         service->input_uint32 != nullptr && service->separator != nullptr &&
-         service->begin_table != nullptr &&
+         service->text != nullptr && service->button != nullptr &&
+         service->checkbox != nullptr && service->input_uint32 != nullptr &&
+         service->separator != nullptr && service->begin_table != nullptr &&
          service->table_next_row != nullptr &&
-         service->table_next_column != nullptr && service->end_table != nullptr;
+         service->table_next_column != nullptr &&
+         service->end_table != nullptr && service->input_double != nullptr;
 }
 
 bool SignatureReady(const AnomalySignatureServiceV1 *service) noexcept {
@@ -193,8 +186,9 @@ void Log(Context &context, const std::uint32_t level,
 template <typename T>
 bool Read(Context &context, const std::uintptr_t address, T &value) noexcept {
   if (context.core == nullptr || context.core->read_memory == nullptr ||
-      address == 0)
+      address == 0) {
     return false;
+  }
   AnomalyMutableByteSpanV1 destination{reinterpret_cast<std::uint8_t *>(&value),
                                        sizeof(value)};
   return context.core->read_memory(context.core->user, address, destination)
@@ -355,7 +349,7 @@ void RefreshCameraManager(Context &context) noexcept {
   if (previous != manager) {
     context.active.store(false, std::memory_order_release);
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-        "free camera active CameraManager validated");
+        "camera tools active CameraManager validated");
   }
 }
 
@@ -369,8 +363,12 @@ void RefreshPlayerInput(Context &context) noexcept {
       context.player_input.exchange(player_input, std::memory_order_acq_rel);
   if (previous != player_input) {
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-        "free camera active EnhancedPlayerInput validated");
+        "camera tools active EnhancedPlayerInput validated");
   }
+}
+
+bool DistanceValid(const double distance) noexcept {
+  return std::isfinite(distance) && distance >= 0.0;
 }
 
 bool KeyDown(const AnomalyInputSnapshotV1 &input,
@@ -380,12 +378,10 @@ bool KeyDown(const AnomalyInputSnapshotV1 &input,
 }
 
 std::string VirtualKeyName(const Context &context, const std::uint32_t key) {
-  if ((key >= '0' && key <= '9') || (key >= 'A' && key <= 'Z')) {
+  if ((key >= '0' && key <= '9') || (key >= 'A' && key <= 'Z'))
     return std::string(1, static_cast<char>(key));
-  }
-  if (key >= VK_F1 && key <= VK_F24) {
+  if (key >= VK_F1 && key <= VK_F24)
     return "F" + std::to_string(key - VK_F1 + 1U);
-  }
   switch (key) {
   case VK_BACK:
     return context.localizer.Text("key.backspace", "Backspace");
@@ -466,15 +462,11 @@ std::string VirtualKeyName(const Context &context, const std::uint32_t key) {
                     : context.localizer.Text("key.unknown", "Unknown key");
 }
 
-bool SettingsValid(const KeyBindings &bindings, const float speed) noexcept {
-  return bindings.toggle > 0 && bindings.toggle < 256U &&
-         std::isfinite(speed) && speed >= kMinimumSpeed &&
-         speed <= kMaximumSpeed;
-}
-
-std::shared_ptr<const KeyBindings>
-ReadBindings(const Context &context) noexcept {
-  return context.bindings.load(std::memory_order_acquire);
+bool SettingsValid(const double distance, const float speed,
+                   const std::uint32_t toggle) noexcept {
+  return DistanceValid(distance) && std::isfinite(speed) &&
+         speed >= kMinimumSpeed && speed <= kMaximumSpeed && toggle > 0 &&
+         toggle < 256U;
 }
 
 void MarkSettingsDirty(Context &context) noexcept {
@@ -484,20 +476,24 @@ void MarkSettingsDirty(Context &context) noexcept {
 }
 
 bool PersistSettings(Context &context) noexcept {
-  const auto bindings = ReadBindings(context);
+  const double distance = context.distance.load(std::memory_order_acquire);
   const float speed = context.speed.load(std::memory_order_acquire);
-  if (!ConfigReady(context.config) || !bindings ||
-      !SettingsValid(*bindings, speed)) {
+  const auto toggle = context.toggle_key.load(std::memory_order_acquire);
+  if (!ConfigReady(context.config) ||
+      !SettingsValid(distance, speed, toggle)) {
     return false;
   }
   const auto revision =
       context.settings_revision.load(std::memory_order_acquire);
   try {
-    const auto document = nlohmann::json{
-        {"enabled", context.configured_enabled.load(std::memory_order_acquire)},
-        {"speed", speed},
-        {"toggle",
-         bindings->toggle}}.dump();
+    const auto document =
+        nlohmann::json{
+            {"distance", distance},
+            {"freeCameraEnabled",
+             context.configured_enabled.load(std::memory_order_acquire)},
+            {"speed", speed},
+            {"toggle", toggle}}
+            .dump();
     if (context.config
             ->write_atomic(context.config->user,
                            anomaly::sdk::StringView(kSettingsSchemaId),
@@ -521,17 +517,18 @@ bool LoadSettings(Context &context) noexcept {
         context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
         &version, {nullptr, 0}, &size);
     if (status.code == ANOMALY_STATUS_V1_NOT_FOUND) {
-      const auto defaults = std::make_shared<KeyBindings>();
-      context.bindings.store(defaults, std::memory_order_release);
+      context.distance.store(kDefaultDistance, std::memory_order_release);
       context.speed.store(kDefaultSpeed, std::memory_order_release);
+      context.toggle_key.store(VK_F6, std::memory_order_release);
       context.configured_enabled.store(false, std::memory_order_release);
       context.enabled.store(false, std::memory_order_release);
       return PersistSettings(context);
     }
     if (status.code != ANOMALY_STATUS_V1_OK ||
         version != kSettingsSchemaVersion || size == 0 ||
-        size > kMaximumSettingsBytes)
+        size > kMaximumSettingsBytes) {
       return false;
+    }
     std::string document(size, '\0');
     std::size_t copied = size;
     if (context.config
@@ -541,20 +538,22 @@ bool LoadSettings(Context &context) noexcept {
                         document.size()},
                        &copied)
                 .code != ANOMALY_STATUS_V1_OK ||
-        copied == 0 || copied > document.size())
+        copied == 0 || copied > document.size()) {
       return false;
+    }
     const auto json =
         nlohmann::json::parse(document.begin(), document.begin() + copied);
-    if (!json.is_object() || json.size() != 3)
+    if (!json.is_object() || json.size() != 4)
       return false;
-    auto bindings = std::make_shared<KeyBindings>();
-    bindings->toggle = json.at("toggle").get<std::uint32_t>();
+    const double distance = json.at("distance").get<double>();
     const float speed = json.at("speed").get<float>();
-    const bool enabled = json.at("enabled").get<bool>();
-    if (!SettingsValid(*bindings, speed))
+    const auto toggle = json.at("toggle").get<std::uint32_t>();
+    const bool enabled = json.at("freeCameraEnabled").get<bool>();
+    if (!SettingsValid(distance, speed, toggle))
       return false;
-    context.bindings.store(std::move(bindings), std::memory_order_release);
+    context.distance.store(distance, std::memory_order_release);
     context.speed.store(speed, std::memory_order_release);
+    context.toggle_key.store(toggle, std::memory_order_release);
     context.configured_enabled.store(enabled, std::memory_order_release);
     context.enabled.store(enabled, std::memory_order_release);
     return true;
@@ -563,7 +562,7 @@ bool LoadSettings(Context &context) noexcept {
   }
 }
 
-void SetEnabled(Context &context, const bool enabled) noexcept {
+void SetFreeCameraEnabled(Context &context, const bool enabled) noexcept {
   const bool changed = context.configured_enabled.exchange(
                            enabled, std::memory_order_acq_rel) != enabled;
   context.enabled.store(enabled, std::memory_order_release);
@@ -577,7 +576,8 @@ void ANOMALY_CALL ToggleHotkey(void *user, AnomalyGenerationHandleV1,
   auto *context = static_cast<Context *>(user);
   if (context != nullptr &&
       !context->capturing_toggle.load(std::memory_order_acquire)) {
-    SetEnabled(*context, !context->enabled.load(std::memory_order_acquire));
+    SetFreeCameraEnabled(
+        *context, !context->enabled.load(std::memory_order_acquire));
   }
 }
 
@@ -586,7 +586,8 @@ bool RegisterToggleHotkey(Context &context, const std::uint32_t key,
   if (!InputReady(context.input) || key == 0 || key >= 256U)
     return false;
   try {
-    const std::string id = "free-camera-toggle-" + std::to_string(key);
+    const std::string id = "camera-tools-free-camera-toggle-" +
+                           std::to_string(key);
     AnomalyHotkeySpecV1 spec{sizeof(spec)};
     spec.virtual_key = key;
     spec.flags = ANOMALY_HOTKEY_V1_ALLOW_EXTRA_MODIFIERS |
@@ -613,15 +614,9 @@ void ReleaseToggleHotkey(Context &context) noexcept {
 }
 
 bool ReplaceToggleHotkey(Context &context, const std::uint32_t key) noexcept {
-  const auto bindings = ReadBindings(context);
-  if (!bindings || key == bindings->toggle)
-    return bindings != nullptr;
-  std::shared_ptr<const KeyBindings> updated;
-  try {
-    updated = std::make_shared<const KeyBindings>(KeyBindings{key});
-  } catch (...) {
-    return false;
-  }
+  const auto current = context.toggle_key.load(std::memory_order_acquire);
+  if (key == current)
+    return true;
   AnomalyGenerationHandleV1 replacement{};
   if (!RegisterToggleHotkey(context, key, replacement))
     return false;
@@ -634,7 +629,7 @@ bool ReplaceToggleHotkey(Context &context, const std::uint32_t key) noexcept {
     return false;
   }
   context.toggle_hotkey = replacement;
-  context.bindings.store(std::move(updated), std::memory_order_release);
+  context.toggle_key.store(key, std::memory_order_release);
   MarkSettingsDirty(context);
   return true;
 }
@@ -660,6 +655,18 @@ void CaptureToggleKey(Context &context) noexcept {
   }
 }
 
+void ApplyViewDistance(double *location, const double *rotation,
+                       const double distance) noexcept {
+  if (!DistanceValid(distance) || distance == 0.0)
+    return;
+  const double pitch = rotation[0] * kDegreesToRadians;
+  const double yaw = rotation[1] * kDegreesToRadians;
+  const double pitch_cosine = std::cos(pitch);
+  location[0] -= pitch_cosine * std::cos(yaw) * distance;
+  location[1] -= pitch_cosine * std::sin(yaw) * distance;
+  location[2] -= std::sin(pitch) * distance;
+}
+
 void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
                                         double *rotation) noexcept {
   Context *context = g_active.load(std::memory_order_acquire);
@@ -682,19 +689,22 @@ void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
             ? nullptr
             : reinterpret_cast<CameraViewPointFn>(context->view_point_original);
   }
+
   try {
     if (original != nullptr) {
       original(object, location, rotation);
       if (context != nullptr && location != nullptr && rotation != nullptr &&
           object == reinterpret_cast<void *>(context->camera_manager.load(
                         std::memory_order_acquire))) {
-        context->intercepted.fetch_add(1, std::memory_order_relaxed);
         for (std::size_t axis{}; axis != 3; ++axis) {
           context->observed_rotation[axis].store(rotation[axis],
                                                  std::memory_order_release);
         }
+        const double distance =
+            context->distance.load(std::memory_order_acquire);
         if (context->enabled.load(std::memory_order_acquire)) {
           if (!context->active.load(std::memory_order_acquire)) {
+            ApplyViewDistance(location, rotation, distance);
             for (std::size_t axis{}; axis != 3; ++axis) {
               context->position[axis].store(location[axis],
                                             std::memory_order_relaxed);
@@ -709,7 +719,8 @@ void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
             rotation[axis] =
                 context->rotation[axis].load(std::memory_order_acquire);
           }
-          context->overrides.fetch_add(1, std::memory_order_relaxed);
+        } else {
+          ApplyViewDistance(location, rotation, distance);
         }
       }
     }
@@ -750,12 +761,8 @@ bool ANOMALY_CALL PlayerInputKeyDetour(void *object,
         object == reinterpret_cast<void *>(
                       context->player_input.load(std::memory_order_acquire)) &&
         context->enabled.load(std::memory_order_acquire) && !mouse_axis) {
-      context->blocked_keys.fetch_add(1, std::memory_order_relaxed);
       handled = true;
     } else if (original != nullptr) {
-      if (context != nullptr && mouse_axis) {
-        context->passed_mouse_axes.fetch_add(1, std::memory_order_relaxed);
-      }
       handled = original(object, parameters);
     }
   } catch (...) {
@@ -766,7 +773,7 @@ bool ANOMALY_CALL PlayerInputKeyDetour(void *object,
   return handled;
 }
 
-void UpdateCameraState(Context &context, const double delta_seconds) noexcept {
+void UpdateFreeCamera(Context &context, const double delta_seconds) noexcept {
   if (!InputReady(context.input) ||
       context.camera_manager.load(std::memory_order_acquire) == 0)
     return;
@@ -779,8 +786,9 @@ void UpdateCameraState(Context &context, const double delta_seconds) noexcept {
 
   AnomalyInputSnapshotV1 input{sizeof(input)};
   if (context.input->snapshot(context.input->user, &input).code !=
-      ANOMALY_STATUS_V1_OK)
+      ANOMALY_STATUS_V1_OK) {
     return;
+  }
   std::array<double, 3> view_rotation{};
   for (std::size_t axis{}; axis != view_rotation.size(); ++axis) {
     view_rotation[axis] =
@@ -789,8 +797,9 @@ void UpdateCameraState(Context &context, const double delta_seconds) noexcept {
                                  std::memory_order_release);
   }
   if ((input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_KEYBOARD) != 0 ||
-      !std::isfinite(delta_seconds) || delta_seconds <= 0.0)
+      !std::isfinite(delta_seconds) || delta_seconds <= 0.0) {
     return;
+  }
 
   const double pitch = view_rotation[0] * kDegreesToRadians;
   const double yaw = view_rotation[1] * kDegreesToRadians;
@@ -814,12 +823,13 @@ void UpdateCameraState(Context &context, const double delta_seconds) noexcept {
   if (length == 0.0)
     return;
   const double boost = KeyDown(input, kBoostKey) ? kBoostMultiplier : 1.0;
-  const double distance =
+  const double movement_distance =
       static_cast<double>(context.speed.load(std::memory_order_acquire)) *
       boost * delta_seconds;
   for (std::size_t axis{}; axis != movement.size(); ++axis) {
-    context.position[axis].fetch_add(movement[axis] / length * distance,
-                                     std::memory_order_release);
+    context.position[axis].fetch_add(
+        movement[axis] / length * movement_distance,
+        std::memory_order_release);
   }
 }
 
@@ -831,7 +841,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
   auto *context = new (std::nothrow) Context();
   if (context == nullptr)
     return Status(ANOMALY_STATUS_V1_FAILED);
-  context->host = host;
   context->localizer = anomaly::plugins::Localizer(host);
   context->core = Query<AnomalyCoreServiceV1>(host, ANOMALY_CORE_SERVICE_V1_ID,
                                               ANOMALY_CORE_SERVICE_V1_VERSION);
@@ -860,9 +869,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
   if (schema_status.code != ANOMALY_STATUS_V1_OK ||
       context->settings_schema.id == 0 || !LoadSettings(*context)) {
     delete context;
-    return Status(ANOMALY_STATUS_V1_FAILED, "free camera settings are invalid");
+    return Status(ANOMALY_STATUS_V1_FAILED,
+                  "camera tools settings are invalid");
   }
-  context->active.store(false, std::memory_order_release);
   *plugin_context = context;
   return anomaly::sdk::Ok();
 }
@@ -873,7 +882,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   if (!ResolveRipRelative(*context, kGWorldPattern, kGWorldResolveOffset,
                           kGWorldInstructionSize, context->g_world_address) ||
-      !ResolveRipRelative(*context, kFNamePoolPattern, kFNamePoolResolveOffset,
+      !ResolveRipRelative(*context, kFNamePoolPattern,
+                          kFNamePoolResolveOffset,
                           kFNamePoolInstructionSize,
                           context->f_name_pool_address) ||
       !MouseAxisNamesValid(*context) ||
@@ -882,7 +892,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
       !ResolveSignature(*context, kPlayerInputKeyPattern,
                         context->input_key_target)) {
     return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                  "free camera discovery signatures are unavailable");
+                  "camera tools discovery signatures are unavailable");
   }
   RefreshCameraManager(*context);
   RefreshPlayerInput(*context);
@@ -891,7 +901,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
   view_point_request.target = context->view_point_target;
   view_point_request.detour = reinterpret_cast<void *>(&CameraViewPointDetour);
   view_point_request.label =
-      anomaly::sdk::StringView("free-camera-get-camera-view-point");
+      anomaly::sdk::StringView("camera-tools-get-camera-view-point");
   g_active.store(context, std::memory_order_release);
   const auto hook_status = context->hook->create(
       context->hook->user, &view_point_request, &context->view_point_original,
@@ -909,7 +919,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
   input_key_request.target = context->input_key_target;
   input_key_request.detour = reinterpret_cast<void *>(&PlayerInputKeyDetour);
   input_key_request.label =
-      anomaly::sdk::StringView("free-camera-player-input-key");
+      anomaly::sdk::StringView("camera-tools-player-input-key");
   const auto input_hook_status = context->hook->create(
       context->hook->user, &input_key_request, &context->input_key_original,
       &context->input_key_hook);
@@ -924,9 +934,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
     return Status(ANOMALY_STATUS_V1_FAILED,
                   "PlayerInput InputKey hook creation failed");
   }
-  const auto bindings = ReadBindings(*context);
-  if (!bindings || !RegisterToggleHotkey(*context, bindings->toggle,
-                                         context->toggle_hotkey)) {
+  if (!RegisterToggleHotkey(
+          *context, context->toggle_key.load(std::memory_order_acquire),
+          context->toggle_hotkey)) {
     static_cast<void>(
         context->hook->release(context->hook->user, context->input_key_hook));
     static_cast<void>(
@@ -937,10 +947,10 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
     context->input_key_original = 0;
     context->view_point_original = 0;
     return Status(ANOMALY_STATUS_V1_FAILED,
-                  "toggle hotkey registration failed");
+                  "free camera hotkey registration failed");
   }
   Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-      "free camera native camera and keyboard hooks started");
+      "camera tools hooks started");
   return anomaly::sdk::Ok();
 }
 
@@ -1004,11 +1014,11 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
   try {
     RefreshCameraManager(*context);
     RefreshPlayerInput(*context);
-    UpdateCameraState(*context, delta_seconds);
+    UpdateFreeCamera(*context, delta_seconds);
     const auto revision =
         context->settings_revision.load(std::memory_order_acquire);
-    if (revision !=
-        context->persisted_settings_revision.load(std::memory_order_acquire)) {
+    if (revision != context->persisted_settings_revision.load(
+                        std::memory_order_acquire)) {
       const auto now = GetTickCount64();
       const auto changed_at =
           context->settings_changed_at.load(std::memory_order_acquire);
@@ -1018,7 +1028,7 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
       }
     }
   } catch (...) {
-    context->active.store(false, std::memory_order_release);
+    context->camera_manager.store(0, std::memory_order_release);
   }
 }
 
@@ -1029,26 +1039,66 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   bool window_begun = false;
   try {
     const std::string title =
-        context->localizer.Text("window.title", "Free Camera");
+        context->localizer.Text("window.title", "Camera Tools");
     int open = 1;
-    ui->set_next_window_size(ui->user, 400.0F, 0.0F, 4U);
+    ui->set_next_window_size(ui->user, 440.0F, 0.0F, 4U);
     const int visible =
         ui->begin_window(ui->user, anomaly::sdk::StringView(title), &open, 0);
     window_begun = true;
     if (visible != 0) {
+      const std::string view_distance_section = context->localizer.Text(
+          "section.view_distance", "View Distance");
+      ui->text(ui->user, anomaly::sdk::StringView(view_distance_section));
+      const std::string distance_label = context->localizer.Label(
+          "setting.distance", "Extra view distance", "camera-distance");
+      const std::string restore_label = context->localizer.Label(
+          "action.restore_game_default", "Restore game default",
+          "restore-game-distance");
+      const auto draw_distance = [&]() {
+        double distance = context->distance.load(std::memory_order_acquire);
+        if (ui->input_double(ui->user,
+                             anomaly::sdk::StringView(distance_label),
+                             &distance, 100.0, 1000.0) != 0 &&
+            DistanceValid(distance)) {
+          context->distance.store(distance, std::memory_order_release);
+          MarkSettingsDirty(*context);
+        }
+      };
+      if (ui->begin_table(ui->user,
+                          anomaly::sdk::StringView("camera-distance-row"), 2,
+                          0, 0.0F, 0.0F) != 0) {
+        ui->table_next_row(ui->user);
+        static_cast<void>(ui->table_next_column(ui->user));
+        draw_distance();
+        static_cast<void>(ui->table_next_column(ui->user));
+        if (ui->button(ui->user, anomaly::sdk::StringView(restore_label), 0.0F,
+                       0.0F) != 0) {
+          context->distance.store(kDefaultDistance,
+                                  std::memory_order_release);
+          MarkSettingsDirty(*context);
+        }
+        ui->end_table(ui->user);
+      } else {
+        draw_distance();
+      }
+
+      ui->separator(ui->user);
+      const std::string free_section =
+          context->localizer.Text("section.free_camera", "Free Camera");
+      ui->text(ui->user, anomaly::sdk::StringView(free_section));
       int enabled =
           context->configured_enabled.load(std::memory_order_acquire) ? 1 : 0;
-      const std::string enabled_label =
-          context->localizer.Label("setting.enabled", "Enabled", "enabled");
+      const std::string enabled_label = context->localizer.Label(
+          "setting.enabled", "Enabled", "free-camera-enabled");
       if (ui->checkbox(ui->user, anomaly::sdk::StringView(enabled_label),
                        &enabled) != 0) {
-        SetEnabled(*context, enabled != 0);
+        SetFreeCameraEnabled(*context, enabled != 0);
       }
 
       const std::string speed_label = context->localizer.Label(
-          "setting.speed", "Movement speed", "movement-speed");
-      const std::string reset_label =
-          context->localizer.Label("action.reset", "Reset", "reset-speed");
+          "setting.speed", "Movement speed", "free-camera-speed");
+      const std::string reset_speed_label = context->localizer.Label(
+          "action.reset_speed", "Reset speed", "reset-free-camera-speed");
       const auto draw_speed = [&]() {
         std::uint32_t speed = static_cast<std::uint32_t>(
             std::lround(context->speed.load(std::memory_order_acquire)));
@@ -1069,7 +1119,8 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         static_cast<void>(ui->table_next_column(ui->user));
         draw_speed();
         static_cast<void>(ui->table_next_column(ui->user));
-        if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 0.0F,
+        if (ui->button(ui->user,
+                       anomaly::sdk::StringView(reset_speed_label), 0.0F,
                        0.0F) != 0) {
           context->speed.store(kDefaultSpeed, std::memory_order_release);
           MarkSettingsDirty(*context);
@@ -1079,35 +1130,31 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         draw_speed();
       }
 
-      const auto bindings = ReadBindings(*context);
-      if (bindings) {
-        if (context->capturing_toggle.load(std::memory_order_acquire)) {
-          const std::string capture_label = context->localizer.Label(
-              "action.capture_key", "Press a key...", "activation-key");
-          if (ui->button(ui->user, anomaly::sdk::StringView(capture_label),
-                         0.0F, 0.0F) != 0) {
-            context->capturing_toggle.store(false, std::memory_order_release);
-          } else {
-            CaptureToggleKey(*context);
-          }
+      if (context->capturing_toggle.load(std::memory_order_acquire)) {
+        const std::string capture_label = context->localizer.Label(
+            "action.capture_key", "Press a key...", "free-camera-hotkey");
+        if (ui->button(ui->user, anomaly::sdk::StringView(capture_label),
+                       0.0F, 0.0F) != 0) {
+          context->capturing_toggle.store(false, std::memory_order_release);
         } else {
-          const std::string key_name =
-              VirtualKeyName(*context, bindings->toggle);
-          const std::array<std::string_view, 1> arguments{key_name};
-          std::string activation_label = context->localizer.Format(
-              "setting.activation_key", "Activation key: {0}", arguments);
-          activation_label.append("###activation-key");
-          if (ui->button(ui->user, anomaly::sdk::StringView(activation_label),
-                         0.0F, 0.0F) != 0) {
-            context->capturing_toggle.store(true, std::memory_order_release);
-          }
+          CaptureToggleKey(*context);
+        }
+      } else {
+        const std::string key_name = VirtualKeyName(
+            *context, context->toggle_key.load(std::memory_order_acquire));
+        const std::array<std::string_view, 1> arguments{key_name};
+        std::string activation_label = context->localizer.Format(
+            "setting.activation_key", "Activation key: {0}", arguments);
+        activation_label.append("###free-camera-hotkey");
+        if (ui->button(ui->user, anomaly::sdk::StringView(activation_label),
+                       0.0F, 0.0F) != 0) {
+          context->capturing_toggle.store(true, std::memory_order_release);
         }
       }
 
-      ui->separator(ui->user);
       const std::string guide = context->localizer.Text(
-          "controls.guide", "Controls:\nW/A/S/D: Forward / Backward / Left / "
-                            "Right\nSpace: Up\nShift: Down");
+          "controls.guide", "W/A/S/D: Forward / Backward / Left / Right\n"
+                            "Space: Up\nShift: Down");
       ui->text(ui->user, anomaly::sdk::StringView(guide));
     }
   } catch (...) {
@@ -1120,16 +1167,15 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
 
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL
 AnomalyPluginEntryV1(AnomalyPluginDescriptorV1 *descriptor) {
-  if (descriptor == nullptr || descriptor->struct_size < sizeof(*descriptor)) {
+  if (descriptor == nullptr || descriptor->struct_size < sizeof(*descriptor))
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
-  }
   *descriptor = {sizeof(*descriptor),
                  ANOMALY_PLUGIN_API_V1_MAJOR,
                  ANOMALY_PLUGIN_API_V1_MINOR,
-                 anomaly::sdk::StringView("anomaly.local.nte.free-camera"),
-                 anomaly::sdk::StringView("Free Camera"),
+                 anomaly::sdk::StringView("anomaly.local.nte.camera-tools"),
+                 anomaly::sdk::StringView("Camera Tools"),
                  anomaly::sdk::StringView("Anomaly"),
-                 anomaly::sdk::StringView("1.0.1"),
+                 anomaly::sdk::StringView("1.0.0"),
                  Load,
                  Start,
                  Stop,
