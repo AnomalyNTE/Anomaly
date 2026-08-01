@@ -165,6 +165,8 @@ struct PinkPawWorldGate::Impl final {
     AnomalyGenerationHandleV1 world{};
     PinkPawWorldState state{PinkPawWorldState::unavailable};
     std::uint32_t marker_name_id{};
+    std::uint64_t entity_frame_generation{};
+    std::uint64_t entity_frame_sequence{};
 
     [[nodiscard]] static bool SameHandle(
         const AnomalyGenerationHandleV1 left,
@@ -175,6 +177,16 @@ struct PinkPawWorldGate::Impl final {
     [[nodiscard]] static bool Complete(const std::uint32_t flags) noexcept {
         return (flags & ANOMALY_NTE_SNAPSHOT_V1_VALID) != 0 &&
             (flags & ANOMALY_NTE_SNAPSHOT_V1_PARTIAL) == 0;
+    }
+
+    [[nodiscard]] static bool ReadEntityFrame(
+        const AnomalyNteEntitiesServiceV1& entities,
+        AnomalyNteEntityFrameV1& frame) noexcept {
+        frame = AnomalyNteEntityFrameV1{sizeof(frame)};
+        return entities.frame != nullptr && entities.page != nullptr &&
+            entities.frame(entities.user, &frame).code == ANOMALY_STATUS_V1_OK &&
+            Complete(frame.flags) && frame.generation != 0 &&
+            frame.entity_count <= kMaximumMarkerEntityCount;
     }
 
     [[nodiscard]] static std::string ResolveName(
@@ -203,15 +215,8 @@ struct PinkPawWorldGate::Impl final {
 
     [[nodiscard]] PinkPawWorldState Probe(
         const AnomalyNteEntitiesServiceV1& entities,
-        const AnomalyUe5NamesServiceV1& names) {
-        AnomalyNteEntityFrameV1 frame{sizeof(frame)};
-        if (entities.frame == nullptr || entities.page == nullptr ||
-            entities.frame(entities.user, &frame).code != ANOMALY_STATUS_V1_OK ||
-            !Complete(frame.flags) || frame.generation == 0 ||
-            frame.entity_count > kMaximumMarkerEntityCount) {
-            return PinkPawWorldState::unavailable;
-        }
-
+        const AnomalyUe5NamesServiceV1& names,
+        const AnomalyNteEntityFrameV1& frame) {
         std::array<AnomalyNteEntitySnapshotV1, kMarkerPageCapacity> page{};
         const auto request_page = [&](const std::uint32_t offset,
                                       const std::uint32_t capacity,
@@ -232,7 +237,8 @@ struct PinkPawWorldGate::Impl final {
         if (marker_name_id != 0) {
             AnomalyNteEntityPageResultV1 result{sizeof(result)};
             if (!request_page(0, 1, result) || !Complete(result.flags) ||
-                result.generation != frame.generation || result.returned > 1 ||
+                result.generation != frame.generation ||
+                result.sequence != frame.sequence || result.returned > 1 ||
                 result.total_matches > frame.entity_count ||
                 result.returned != (result.total_matches == 0 ? 0U : 1U)) {
                 return PinkPawWorldState::unavailable;
@@ -249,6 +255,7 @@ struct PinkPawWorldGate::Impl final {
             if (!request_page(
                     offset, static_cast<std::uint32_t>(page.size()), result) ||
                 !Complete(result.flags) || result.generation != frame.generation ||
+                result.sequence != frame.sequence ||
                 result.total_matches != frame.entity_count ||
                 result.returned > page.size() || offset > result.total_matches ||
                 result.returned > result.total_matches - offset) {
@@ -305,25 +312,40 @@ PinkPawWorldState PinkPawWorldGate::Refresh(
             snapshot.world.id == 0 || snapshot.world.generation == 0) {
             impl_->world = {};
             impl_->state = PinkPawWorldState::unavailable;
+            impl_->entity_frame_generation = 0;
+            impl_->entity_frame_sequence = 0;
             return impl_->state;
         }
-        if (Impl::SameHandle(impl_->world, snapshot.world) &&
-            impl_->state != PinkPawWorldState::unavailable) {
+        const bool same_world = Impl::SameHandle(impl_->world, snapshot.world);
+        if (same_world && impl_->state == PinkPawWorldState::active) {
             return impl_->state;
         }
 
         const auto entities = services.Query<AnomalyNteEntitiesServiceV1>(
             ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
             ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION);
+        if (!entities) return PinkPawWorldState::unavailable;
+        AnomalyNteEntityFrameV1 frame{sizeof(frame)};
+        if (!Impl::ReadEntityFrame(*entities.get(), frame)) {
+            return PinkPawWorldState::unavailable;
+        }
+        if (same_world && impl_->state == PinkPawWorldState::outside &&
+            impl_->entity_frame_generation == frame.generation &&
+            impl_->entity_frame_sequence == frame.sequence) {
+            return impl_->state;
+        }
+
         const auto names = services.Query<AnomalyUe5NamesServiceV1>(
             ANOMALY_UE5_NAMES_SERVICE_V1_ID,
             ANOMALY_UE5_NAMES_SERVICE_V1_VERSION);
-        if (!entities || !names || names->resolve_utf8 == nullptr) {
+        if (!names || names->resolve_utf8 == nullptr) {
             return PinkPawWorldState::unavailable;
         }
-        const PinkPawWorldState next = impl_->Probe(*entities.get(), *names.get());
+        const PinkPawWorldState next = impl_->Probe(*entities.get(), *names.get(), frame);
         if (next != PinkPawWorldState::unavailable) {
             impl_->world = snapshot.world;
+            impl_->entity_frame_generation = frame.generation;
+            impl_->entity_frame_sequence = frame.sequence;
         }
         impl_->state = next;
         return next;
@@ -335,6 +357,8 @@ PinkPawWorldState PinkPawWorldGate::Refresh(
 void PinkPawWorldGate::Invalidate() noexcept {
     impl_->world = {};
     impl_->state = PinkPawWorldState::unavailable;
+    impl_->entity_frame_generation = 0;
+    impl_->entity_frame_sequence = 0;
 }
 
 void PinkPawWorldGate::Reset() noexcept {

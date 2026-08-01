@@ -24,8 +24,9 @@ public:
     PinkPawWorldGate(const PinkPawWorldGate&) = delete;
     PinkPawWorldGate& operator=(const PinkPawWorldGate&) = delete;
 
-    // Uses one exact class FName as the per-World marker. A completed negative
-    // probe is retained until the World changes or Invalidate is requested.
+    // Uses one exact class FName as the per-World marker. A positive probe is
+    // retained for the World; a negative probe is retained only for the same
+    // entity-frame generation and sequence so streamed markers are observed.
     [[nodiscard]] PinkPawWorldState Refresh(
         const AnomalyHostApiV1* host) noexcept;
     void Invalidate() noexcept;

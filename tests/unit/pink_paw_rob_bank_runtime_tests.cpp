@@ -137,7 +137,6 @@ public:
     void SetWorld(const AnomalyGenerationHandleV1 world) noexcept { world_ = world; }
     void SetEntityClassNames(std::vector<std::uint32_t> names) {
         entity_class_names_ = std::move(names);
-        ++entity_generation_;
         ++entity_sequence_;
     }
     void SetResolvedClassName(const std::uint32_t id, std::string name) {
@@ -688,18 +687,25 @@ bool WorldGateUsesOneCachedFNameMarker() {
             gate.Refresh(fixture.Host()) == pink_paw_heist_esp::PinkPawWorldState::outside &&
             fixture.EntityPageCalls() == outside_page_calls &&
             fixture.NameCalls() == outside_name_calls,
-        "Pink Paw world gate rescanned a completed negative World") && result;
+        "Pink Paw world gate rescanned an unchanged negative entity frame") && result;
 
-    fixture.SetWorld({100, 2});
     std::vector<std::uint32_t> marker_on_second_page(300, kOtherClassNameId);
     marker_on_second_page.push_back(kWorldMarkerNameId);
     fixture.SetEntityClassNames(std::move(marker_on_second_page));
     result = Check(
         gate.Refresh(fixture.Host()) == pink_paw_heist_esp::PinkPawWorldState::active,
-        "Pink Paw world gate did not identify its unique class marker") && result;
+        "Pink Paw world gate did not activate when a marker streamed into the same World") &&
+        result;
+    const std::uint32_t active_page_calls = fixture.EntityPageCalls();
     const std::uint32_t marker_name_calls = fixture.NameCalls();
+    fixture.SetEntityClassNames({kOtherClassNameId});
+    result = Check(
+        gate.Refresh(fixture.Host()) == pink_paw_heist_esp::PinkPawWorldState::active &&
+            fixture.EntityPageCalls() == active_page_calls &&
+            fixture.NameCalls() == marker_name_calls,
+        "Pink Paw world gate did not retain a positive World probe") && result;
 
-    fixture.SetWorld({100, 3});
+    fixture.SetWorld({100, 2});
     fixture.SetEntityClassNames({kOtherClassNameId});
     result = Check(
         gate.Refresh(fixture.Host()) == pink_paw_heist_esp::PinkPawWorldState::outside &&
@@ -707,6 +713,9 @@ bool WorldGateUsesOneCachedFNameMarker() {
         "Pink Paw world gate did not reuse the cached marker FName id") && result;
 
     fixture.SetEntityClassNames({kWorldMarkerNameId});
+    result = Check(
+        gate.Refresh(fixture.Host()) == pink_paw_heist_esp::PinkPawWorldState::active,
+        "Pink Paw world gate did not recheck a changed negative entity frame") && result;
     gate.Invalidate();
     result = Check(
         gate.Refresh(fixture.Host()) == pink_paw_heist_esp::PinkPawWorldState::active,
