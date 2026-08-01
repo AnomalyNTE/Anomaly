@@ -281,7 +281,9 @@ std::string RaceHookProfile(const anomaly::BuildFingerprint& fingerprint) {
 
 void ResetProfileLayers(const std::filesystem::path& root);
 
-std::string AhudHookProfile(const anomaly::BuildFingerprint& fingerprint) {
+std::string AhudHookProfile(
+    const anomaly::BuildFingerprint& fingerprint,
+    const bool valid_ahud_layout) {
     const std::string module = Narrow(fingerprint.module);
     std::ostringstream json;
     json << R"({"schemaVersion":1,"game":"nte","symbols":{"ue5.GameTick":{"module":")"
@@ -296,7 +298,9 @@ std::string AhudHookProfile(const anomaly::BuildFingerprint& fingerprint) {
          << R"(","resolve":{"kind":"direct","addend":16},"validators":["readable","name-pool-v1"],"requiredBy":["anomaly.ue5.functions"]},"ue5.ProcessEvent":{"module":")"
          << module << R"(","section":".text","pattern":")"
          << BytesPattern(&g_process_event_code, 64)
-         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":["anomaly.ue5.ahud"]}},"features":{"ue5.framework":["ue5.GameTick"],"ue5.objects":["ue5.GObjects","ue5.GameTick"],"ue5.names":["ue5.FNamePool"],"ue5.functions":["ue5.GObjects","ue5.GameTick","ue5.FNamePool"],"ue5.process-event":["ue5.ProcessEvent"],"ue5.ahud":["ue5.ProcessEvent"]},"optionalFeatures":["ue5.objects","ue5.names","ue5.functions","ue5.process-event","ue5.ahud"],"featureLayoutValidators":{"ue5.functions":["ue5-functions-reflection-v1"],"ue5.process-event":["ue5-process-event-abi-v1"],"ue5.ahud":["ue5-ahud-reflection-v1"]},"featureDependencies":{"ue5.functions":["ue5.objects","ue5.names"],"ue5.ahud":["ue5.functions","ue5.process-event"]},"layout":{"object.class":16,"object.nameOffset":24,"object.outer":32,"ufunction.numParms":180,"ufunction.parmsSize":182,"ufunction.returnValueOffset":184,"names.blocksOffset":16,"names.blockBits":16,"names.entryStride":2,"names.headerLengthShift":6,"objects.itemsOffset":0,"objects.maxCountOffset":12,"objects.countOffset":8,"objects.maxChunksOffset":16,"objects.numChunksOffset":20,"objects.chunkCountSize":4,"objects.chunkSize":65536,"objects.itemStride":24,"objects.objectOffset":0,"objects.serialOffset":16,"ustruct.propertyLink":112,"ffield.class":8,"ffield.name":32,"ffieldClass.name":0,"fproperty.arrayDim":48,"fproperty.elementSize":52,"fproperty.offsetInternal":68,"fproperty.propertyLinkNext":72,"fstructProperty.struct":112,"fboolProperty.fieldSize":112,"fboolProperty.byteOffset":113,"fboolProperty.byteMask":114,"fboolProperty.fieldMask":115}})";
+         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":["anomaly.ue5.ahud"]}},"features":{"ue5.framework":["ue5.GameTick"],"ue5.objects":["ue5.GObjects","ue5.GameTick"],"ue5.names":["ue5.FNamePool"],"ue5.functions":["ue5.GObjects","ue5.GameTick","ue5.FNamePool"],"ue5.process-event":["ue5.ProcessEvent"],"ue5.ahud":["ue5.ProcessEvent"]},"optionalFeatures":["ue5.objects","ue5.names","ue5.functions","ue5.process-event","ue5.ahud"],"featureLayoutValidators":{"ue5.functions":["ue5-functions-reflection-v1"],"ue5.process-event":["ue5-process-event-abi-v1"],"ue5.ahud":["ue5-ahud-reflection-v1"]},"featureDependencies":{"ue5.functions":["ue5.objects","ue5.names"],"ue5.ahud":["ue5.functions","ue5.process-event"]},"layout":{"object.class":16,"object.nameOffset":24,"object.outer":32,"ufunction.numParms":180,"ufunction.parmsSize":182,"ufunction.returnValueOffset":184,"names.blocksOffset":16,"names.blockBits":16,"names.entryStride":2,"names.headerLengthShift":6,"objects.itemsOffset":0,"objects.maxCountOffset":12,"objects.countOffset":8,"objects.maxChunksOffset":16,"objects.numChunksOffset":20,"objects.chunkCountSize":4,"objects.chunkSize":65536,"objects.itemStride":24,"objects.objectOffset":0,"objects.serialOffset":16,"ustruct.propertyLink":112,"ffield.class":8,"ffield.name":32,"ffieldClass.name":)"
+         << (valid_ahud_layout ? 0 : 4097)
+         << R"(,"fproperty.arrayDim":48,"fproperty.elementSize":52,"fproperty.offsetInternal":68,"fproperty.propertyLinkNext":72,"fstructProperty.struct":112,"fboolProperty.fieldSize":112,"fboolProperty.byteOffset":113,"fboolProperty.byteMask":114,"fboolProperty.fieldMask":115}})";
     return json.str();
 }
 
@@ -336,10 +340,68 @@ bool TestAhudHookLifecycle(
         ResetProfileLayers(root);
         return Check(false, "ProcessEvent fixture code patch failed");
     }
-    std::ofstream(root / L"profiles" / L"nte" / L"ahud-hook.json")
-        << AhudHookProfile(fingerprint);
-
     bool result = true;
+    std::ofstream(root / L"profiles" / L"nte" / L"ahud-hook.json")
+        << AhudHookProfile(fingerprint, false);
+    {
+        anomaly::NteProfileRuntimeOptions options;
+        options.runtime_root = root;
+        options.game_module = GetModuleHandleW(nullptr);
+        anomaly::NteProfileRuntime runtime(std::move(options));
+        const bool started = runtime.Start();
+        const auto resolution = runtime.Resolution();
+        const auto evidence = runtime.Evidence();
+        const auto diagnostics = runtime.DiagnosticsJson();
+        const auto hooks = runtime.Hooks();
+        const bool tick_hook = std::ranges::any_of(hooks, [](const auto& hook) {
+            return hook.owner == "anomaly.ue5.framework" &&
+                hook.label == "game-tick" && hook.enabled;
+        });
+        const bool process_event_hook = std::ranges::any_of(hooks, [](const auto& hook) {
+            return hook.owner == "anomaly.ue5.ahud" &&
+                hook.label == "process-event" && hook.enabled;
+        });
+        const bool armed_before_reflection =
+            started && resolution &&
+                resolution->FeatureAvailable("ue5.process-event") &&
+                !resolution->FeatureAvailable("ue5.ahud") &&
+                evidence.tick_hook_ready && evidence.ahud_hook_ready &&
+                diagnostics.find("\"tickHookReady\":true") != std::string::npos &&
+                diagnostics.find("\"ahudHookReady\":true") != std::string::npos &&
+                diagnostics.find(
+                    "optional AHUD service pending: reflection gate not ready") !=
+                    std::string::npos &&
+                hooks.size() == 2 && tick_hook && process_event_hook &&
+                anomaly::ProcessAdapterServices().Query(
+                    ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+                    ANOMALY_UE5_AHUD_SERVICE_V1_VERSION,
+                    false) == nullptr;
+        if (!armed_before_reflection) {
+            std::cerr << "pre-reflection AHUD runtime diagnostics: "
+                      << diagnostics << '\n';
+            for (const auto& hook : hooks) {
+                std::cerr << "hook owner=" << hook.owner << " label=" << hook.label
+                          << " enabled=" << hook.enabled << '\n';
+            }
+        }
+        result = Check(
+                     armed_before_reflection,
+                     "ProcessEvent hook waited for the full AHUD reflection gate") &&
+            result;
+        result = Check(
+                     runtime.Stop(),
+                     "pre-reflection AHUD hook runtime did not stop") &&
+            result;
+        result = Check(
+                     runtime.Hooks().empty() &&
+                         anomaly::ProcessAdapterServices().Snapshot().empty(),
+                     "pre-reflection AHUD hook or service survived Runtime stop") &&
+            result;
+    }
+
+    ResetProfileLayers(root);
+    std::ofstream(root / L"profiles" / L"nte" / L"ahud-hook.json")
+        << AhudHookProfile(fingerprint, true);
     {
         anomaly::NteProfileRuntimeOptions options;
         options.runtime_root = root;

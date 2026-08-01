@@ -686,10 +686,10 @@ public:
             if (!hook_ready) {
                 diagnostics_.push_back(
                     "optional AHUD capability unavailable: game tick hook failed");
-            } else if (!resolution_->FeatureAvailable(kAhudFeature) ||
+            } else if (!resolution_->FeatureAvailable(kUe5ProcessEventFeature) ||
                 process_event == nullptr || !process_event->Available()) {
                 diagnostics_.push_back(
-                    "optional AHUD capability unavailable: reflection or ProcessEvent gate failed");
+                    "optional AHUD capability unavailable: ProcessEvent gate failed");
             } else {
                 try {
                     process_event_hook_ = std::make_unique<Ue5ProcessEventHook>(
@@ -712,6 +712,10 @@ public:
                 } catch (...) {
                     process_event_hook_.reset();
                     diagnostics_.push_back("AHUD ProcessEvent hook allocation failed");
+                }
+                if (ahud_hook_ready && !resolution_->FeatureAvailable(kAhudFeature)) {
+                    diagnostics_.push_back(
+                        "optional AHUD service pending: reflection gate not ready");
                 }
             }
         }
