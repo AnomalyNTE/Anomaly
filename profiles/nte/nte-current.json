@@ -74,6 +74,14 @@
       "validators": ["address-in-module", "executable"],
       "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.ahud"]
     },
+    "ue5.AActorProcessEvent": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
+      "resolve": {"kind": "direct"},
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.ue5.ahud"]
+    },
     "nte.HTUI_MenuExtension.AddMenuPage": {
       "module": "HTGame.exe",
       "section": ".text",
@@ -113,7 +121,8 @@
     "ue5.names": ["ue5.FNamePool"],
     "ue5.objects": ["ue5.GObjects", "ue5.GameTick"],
     "ue5.process-event": ["ue5.ProcessEvent"],
-    "ue5.ahud": ["ue5.ProcessEvent"],
+    "ue5.actor-process-event": ["ue5.AActorProcessEvent"],
+    "ue5.ahud": [],
     "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
     "nte.session": ["ue5.GWorld", "ue5.GameTick"],
@@ -140,6 +149,7 @@
     "ue5.actors",
     "ue5.functions",
     "ue5.process-event",
+    "ue5.actor-process-event",
     "ue5.ahud",
     "nte.player-esp",
     "nte.player-teleport",
@@ -149,6 +159,7 @@
     "ue5.actors": ["ue5-actors-reflection-v1"],
     "ue5.functions": ["ue5-functions-reflection-v1"],
     "ue5.process-event": ["ue5-process-event-abi-v1"],
+    "ue5.actor-process-event": ["ue5-actor-process-event-abi-v1"],
     "ue5.ahud": ["ue5-ahud-reflection-v1"],
     "nte.player": ["nte-player-layout-v1"],
     "nte.player-esp": ["nte-player-esp-layout-v1"],
@@ -159,7 +170,8 @@
   "featureDependencies": {
     "ue5.actors": ["ue5.world", "ue5.names"],
     "ue5.functions": ["ue5.objects", "ue5.names"],
-    "ue5.ahud": ["ue5.functions", "ue5.process-event"],
+    "ue5.actor-process-event": ["ue5.process-event"],
+    "ue5.ahud": ["ue5.functions", "ue5.actor-process-event"],
     "nte.player-esp": ["nte.player"],
     "nte.player-teleport": [
       "nte.player",

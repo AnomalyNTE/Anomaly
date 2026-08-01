@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -76,6 +77,28 @@ extern "C" __declspec(noinline) void __fastcall ProfileRuntimeProcessEventTarget
 #undef ANOMALY_PROCESS_EVENT_FIXTURE_STEPS
     if (value == 0xA19D3E57U) OutputDebugStringA("ProcessEvent fixture");
 }
+
+extern "C" __declspec(noinline) void __fastcall ProfileRuntimeActorProcessEventTarget(
+    void* object, void* function, void* parameters) {
+    volatile std::uintptr_t value = reinterpret_cast<std::uintptr_t>(object) ^
+        reinterpret_cast<std::uintptr_t>(function) ^
+        reinterpret_cast<std::uintptr_t>(parameters);
+#define ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(base) \
+    value += base + 0U; value ^= base + 1U; value += base + 2U; value ^= base + 3U; \
+    value += base + 4U; value ^= base + 5U; value += base + 6U; value ^= base + 7U; \
+    value += base + 8U; value ^= base + 9U; value += base + 10U; value ^= base + 11U; \
+    value += base + 12U; value ^= base + 13U; value += base + 14U; value ^= base + 15U
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(0U);
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(16U);
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(32U);
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(48U);
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(64U);
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(80U);
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(96U);
+    ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS(112U);
+#undef ANOMALY_ACTOR_PROCESS_EVENT_FIXTURE_STEPS
+    if (value == 0x5A6C813FU) OutputDebugStringA("Actor ProcessEvent fixture");
+}
 #pragma optimize("", on)
 
 constexpr auto kProcessEventPrologue = std::to_array<std::uint8_t>({
@@ -123,6 +146,19 @@ static_assert(offsetof(ProcessEventCodeFixture, out_parameters) == 0x20FU);
 const ProcessEventCodeFixture g_process_event_code{
     kProcessEventPrologue, {}, kProcessEventArgumentSetup, {},
     kProcessEventOutParmSetup, {}};
+
+constexpr auto kActorProcessEventEntry = std::to_array<std::uint8_t>({
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C,
+    0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x20, 0xF7,
+    0x82, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+    0x00, 0x49, 0x8B, 0xE8, 0x48, 0x8B, 0xDA, 0x48,
+    0x8B, 0xF9, 0x75, 0x06, 0x83, 0x7A, 0x68, 0x00,
+    0x74, 0x4D});
+constexpr auto kActorProcessEventDispatch = std::to_array<std::uint8_t>({
+    0x4C, 0x8B, 0xC5, 0x48, 0x8B, 0xD3, 0x48, 0x8B, 0xCF, 0xE8});
+constexpr std::size_t kActorProcessEventDispatchOffset = 0x64U;
+constexpr std::size_t kActorProcessEventCallOffset = 0x6DU;
+constexpr std::size_t kActorProcessEventFixtureSize = 0x80U;
 
 constexpr std::array<std::uint8_t, 16> kObjectRegistryMarker{
     0xA1, 0x31, 0xC7, 0x42, 0x56, 0xE8, 0x99, 0x0B,
@@ -283,7 +319,8 @@ void ResetProfileLayers(const std::filesystem::path& root);
 
 std::string AhudHookProfile(
     const anomaly::BuildFingerprint& fingerprint,
-    const bool valid_ahud_layout) {
+    const bool valid_ahud_layout,
+    const void* const actor_process_event_target) {
     const std::string module = Narrow(fingerprint.module);
     std::ostringstream json;
     json << R"({"schemaVersion":1,"game":"nte","symbols":{"ue5.GameTick":{"module":")"
@@ -298,7 +335,10 @@ std::string AhudHookProfile(
          << R"(","resolve":{"kind":"direct","addend":16},"validators":["readable","name-pool-v1"],"requiredBy":["anomaly.ue5.functions"]},"ue5.ProcessEvent":{"module":")"
          << module << R"(","section":".text","pattern":")"
          << BytesPattern(&g_process_event_code, 64)
-         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":["anomaly.ue5.ahud"]}},"features":{"ue5.framework":["ue5.GameTick"],"ue5.objects":["ue5.GObjects","ue5.GameTick"],"ue5.names":["ue5.FNamePool"],"ue5.functions":["ue5.GObjects","ue5.GameTick","ue5.FNamePool"],"ue5.process-event":["ue5.ProcessEvent"],"ue5.ahud":["ue5.ProcessEvent"]},"optionalFeatures":["ue5.objects","ue5.names","ue5.functions","ue5.process-event","ue5.ahud"],"featureLayoutValidators":{"ue5.functions":["ue5-functions-reflection-v1"],"ue5.process-event":["ue5-process-event-abi-v1"],"ue5.ahud":["ue5-ahud-reflection-v1"]},"featureDependencies":{"ue5.functions":["ue5.objects","ue5.names"],"ue5.ahud":["ue5.functions","ue5.process-event"]},"layout":{"object.class":16,"object.nameOffset":24,"object.outer":32,"ufunction.numParms":180,"ufunction.parmsSize":182,"ufunction.returnValueOffset":184,"names.blocksOffset":16,"names.blockBits":16,"names.entryStride":2,"names.headerLengthShift":6,"objects.itemsOffset":0,"objects.maxCountOffset":12,"objects.countOffset":8,"objects.maxChunksOffset":16,"objects.numChunksOffset":20,"objects.chunkCountSize":4,"objects.chunkSize":65536,"objects.itemStride":24,"objects.objectOffset":0,"objects.serialOffset":16,"ustruct.propertyLink":112,"ffield.class":8,"ffield.name":32,"ffieldClass.name":)"
+         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":["anomaly.ue5.ahud"]},"ue5.AActorProcessEvent":{"module":")"
+         << module << R"(","section":".text","pattern":")"
+         << BytesPattern(actor_process_event_target, 64)
+         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":["anomaly.ue5.ahud"]}},"features":{"ue5.framework":["ue5.GameTick"],"ue5.objects":["ue5.GObjects","ue5.GameTick"],"ue5.names":["ue5.FNamePool"],"ue5.functions":["ue5.GObjects","ue5.GameTick","ue5.FNamePool"],"ue5.process-event":["ue5.ProcessEvent"],"ue5.actor-process-event":["ue5.AActorProcessEvent"],"ue5.ahud":[]},"optionalFeatures":["ue5.objects","ue5.names","ue5.functions","ue5.process-event","ue5.actor-process-event","ue5.ahud"],"featureLayoutValidators":{"ue5.functions":["ue5-functions-reflection-v1"],"ue5.process-event":["ue5-process-event-abi-v1"],"ue5.actor-process-event":["ue5-actor-process-event-abi-v1"],"ue5.ahud":["ue5-ahud-reflection-v1"]},"featureDependencies":{"ue5.functions":["ue5.objects","ue5.names"],"ue5.actor-process-event":["ue5.process-event"],"ue5.ahud":["ue5.functions","ue5.actor-process-event"]},"layout":{"object.class":16,"object.nameOffset":24,"object.outer":32,"ufunction.numParms":180,"ufunction.parmsSize":182,"ufunction.returnValueOffset":184,"names.blocksOffset":16,"names.blockBits":16,"names.entryStride":2,"names.headerLengthShift":6,"objects.itemsOffset":0,"objects.maxCountOffset":12,"objects.countOffset":8,"objects.maxChunksOffset":16,"objects.numChunksOffset":20,"objects.chunkCountSize":4,"objects.chunkSize":65536,"objects.itemStride":24,"objects.objectOffset":0,"objects.serialOffset":16,"ustruct.propertyLink":112,"ffield.class":8,"ffield.name":32,"ffieldClass.name":)"
          << (valid_ahud_layout ? 0 : 4097)
          << R"(,"fproperty.arrayDim":48,"fproperty.elementSize":52,"fproperty.offsetInternal":68,"fproperty.propertyLinkNext":72,"fstructProperty.struct":112,"fboolProperty.fieldSize":112,"fboolProperty.byteOffset":113,"fboolProperty.byteMask":114,"fboolProperty.fieldMask":115}})";
     return json.str();
@@ -311,6 +351,8 @@ bool TestAhudHookLifecycle(
 
     void* const process_event_target = ResolveLinkedFunction(
         reinterpret_cast<void*>(&ProfileRuntimeProcessEventTarget));
+    void* const actor_process_event_target = ResolveLinkedFunction(
+        reinterpret_cast<void*>(&ProfileRuntimeActorProcessEventTarget));
     const auto module_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     DWORD64 unwind_image_base{};
     const auto* const unwind_entry = RtlLookupFunctionEntry(
@@ -333,6 +375,43 @@ bool TestAhudHookLifecycle(
         ResetProfileLayers(root);
         return Check(false, "ProcessEvent fixture has no sufficiently large unwind entry");
     }
+    DWORD64 actor_unwind_image_base{};
+    const auto* const actor_unwind_entry = RtlLookupFunctionEntry(
+        reinterpret_cast<DWORD64>(actor_process_event_target),
+        &actor_unwind_image_base, nullptr);
+    const auto actor_process_event_rva =
+        reinterpret_cast<std::uintptr_t>(actor_process_event_target) - module_base;
+    if (actor_unwind_entry == nullptr || actor_unwind_image_base != module_base ||
+        actor_unwind_entry->BeginAddress != actor_process_event_rva ||
+        actor_unwind_entry->EndAddress - actor_unwind_entry->BeginAddress <
+            kActorProcessEventFixtureSize) {
+        ResetProfileLayers(root);
+        return Check(
+            false, "Actor ProcessEvent fixture has no sufficiently large unwind entry");
+    }
+
+    std::array<std::uint8_t, kActorProcessEventFixtureSize> actor_process_event_code{};
+    std::ranges::copy(
+        kActorProcessEventEntry, actor_process_event_code.begin());
+    std::ranges::copy(
+        kActorProcessEventDispatch,
+        actor_process_event_code.begin() + kActorProcessEventDispatchOffset);
+    const auto actor_call_end = reinterpret_cast<std::uintptr_t>(
+        actor_process_event_target) + kActorProcessEventCallOffset + 5U;
+    const auto process_event_address =
+        reinterpret_cast<std::uintptr_t>(process_event_target);
+    const auto displacement = static_cast<std::intptr_t>(process_event_address) -
+        static_cast<std::intptr_t>(actor_call_end);
+    if (displacement < (std::numeric_limits<std::int32_t>::min)() ||
+        displacement > (std::numeric_limits<std::int32_t>::max)()) {
+        ResetProfileLayers(root);
+        return Check(false, "Actor ProcessEvent fixture dispatch is outside rel32 range");
+    }
+    const auto relative_call = static_cast<std::int32_t>(displacement);
+    std::memcpy(
+        actor_process_event_code.data() + kActorProcessEventCallOffset + 1U,
+        &relative_call, sizeof(relative_call));
+
     ScopedCodePatch process_event_patch;
     if (!process_event_patch.Apply(
             process_event_target, &g_process_event_code,
@@ -340,9 +419,16 @@ bool TestAhudHookLifecycle(
         ResetProfileLayers(root);
         return Check(false, "ProcessEvent fixture code patch failed");
     }
+    ScopedCodePatch actor_process_event_patch;
+    if (!actor_process_event_patch.Apply(
+            actor_process_event_target, actor_process_event_code.data(),
+            actor_process_event_code.size())) {
+        ResetProfileLayers(root);
+        return Check(false, "Actor ProcessEvent fixture code patch failed");
+    }
     bool result = true;
     std::ofstream(root / L"profiles" / L"nte" / L"ahud-hook.json")
-        << AhudHookProfile(fingerprint, false);
+        << AhudHookProfile(fingerprint, false, actor_process_event_target);
     {
         anomaly::NteProfileRuntimeOptions options;
         options.runtime_root = root;
@@ -369,12 +455,24 @@ bool TestAhudHookLifecycle(
                 resolution->FeatureAvailable("ue5.process-event") &&
                 !resolution->FeatureAvailable("ue5.ahud") &&
                 evidence.tick_hook_ready && evidence.ahud_hook_ready &&
+                !evidence.ahud_binding_ready && evidence.ahud_frame_count == 0 &&
+                evidence.ahud_process_event_call_count == 0 &&
                 diagnostics.find("\"tickHookReady\":true") != std::string::npos &&
                 diagnostics.find("\"ahudHookReady\":true") != std::string::npos &&
+                diagnostics.find("\"ahudBindingReady\":false") !=
+                    std::string::npos &&
+                diagnostics.find("\"ahudFrameCount\":0") != std::string::npos &&
+                diagnostics.find("\"ahudProcessEventCallCount\":0") !=
+                    std::string::npos &&
                 diagnostics.find(
                     "optional AHUD service pending: reflection gate not ready") !=
                     std::string::npos &&
                 hooks.size() == 2 && tick_hook && process_event_hook &&
+                std::ranges::any_of(hooks, [&](const auto& hook) {
+                    return hook.owner == "anomaly.ue5.ahud" &&
+                        hook.target == actor_process_event_target &&
+                        hook.target != process_event_target;
+                }) &&
                 anomaly::ProcessAdapterServices().Query(
                     ANOMALY_UE5_AHUD_SERVICE_V1_ID,
                     ANOMALY_UE5_AHUD_SERVICE_V1_VERSION,
@@ -404,7 +502,7 @@ bool TestAhudHookLifecycle(
 
     ResetProfileLayers(root);
     std::ofstream(root / L"profiles" / L"nte" / L"ahud-hook.json")
-        << AhudHookProfile(fingerprint, true);
+        << AhudHookProfile(fingerprint, true, actor_process_event_target);
     {
         anomaly::NteProfileRuntimeOptions options;
         options.runtime_root = root;
@@ -429,9 +527,21 @@ bool TestAhudHookLifecycle(
         const bool activated =
             started && resolution && resolution->FeatureAvailable("ue5.ahud") &&
                 evidence.tick_hook_ready && evidence.ahud_hook_ready &&
+                !evidence.ahud_binding_ready && evidence.ahud_frame_count == 0 &&
+                evidence.ahud_process_event_call_count == 0 &&
                 diagnostics.find("\"tickHookReady\":true") != std::string::npos &&
                 diagnostics.find("\"ahudHookReady\":true") != std::string::npos &&
+                diagnostics.find("\"ahudBindingReady\":false") !=
+                    std::string::npos &&
+                diagnostics.find("\"ahudFrameCount\":0") != std::string::npos &&
+                diagnostics.find("\"ahudProcessEventCallCount\":0") !=
+                    std::string::npos &&
                 hooks.size() == 2 && tick_hook && process_event_hook &&
+                std::ranges::any_of(hooks, [&](const auto& hook) {
+                    return hook.owner == "anomaly.ue5.ahud" &&
+                        hook.target == actor_process_event_target &&
+                        hook.target != process_event_target;
+                }) &&
                 anomaly::ProcessAdapterServices().Query(
                     ANOMALY_UE5_AHUD_SERVICE_V1_ID,
                     ANOMALY_UE5_AHUD_SERVICE_V1_VERSION,
@@ -452,6 +562,9 @@ bool TestAhudHookLifecycle(
                 anomaly::ProcessAdapterServices().Snapshot().empty(),
             "AHUD ProcessEvent hook or service survived Runtime stop") && result;
     }
+    result = Check(
+        actor_process_event_patch.Restore(),
+        "Actor ProcessEvent fixture code restoration failed") && result;
     result = Check(
         process_event_patch.Restore(),
         "ProcessEvent fixture code restoration failed") && result;

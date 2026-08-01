@@ -322,15 +322,18 @@ anomaly::BuildProfile Profile() {
         {"ue5.names", {"ue5.FNamePool"}},
         {"ue5.objects", {"ue5.GObjects", "ue5.GameTick"}},
         {"ue5.process-event", {"ue5.ProcessEvent"}},
+        {"ue5.actor-process-event", {"ue5.AActorProcessEvent"}},
         {"ue5.functions", {"ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"}},
-        {"ue5.ahud", {"ue5.ProcessEvent"}}};
+        {"ue5.ahud", {}}};
     profile.feature_layout_validators = {
         {"ue5.process-event", {"ue5-process-event-abi-v1"}},
+        {"ue5.actor-process-event", {"ue5-actor-process-event-abi-v1"}},
         {"ue5.functions", {"ue5-functions-reflection-v1"}},
         {"ue5.ahud", {"ue5-ahud-reflection-v1"}}};
     profile.feature_dependencies = {
         {"ue5.functions", {"ue5.objects", "ue5.names"}},
-        {"ue5.ahud", {"ue5.functions", "ue5.process-event"}}};
+        {"ue5.actor-process-event", {"ue5.process-event"}},
+        {"ue5.ahud", {"ue5.functions", "ue5.actor-process-event"}}};
     profile.layout = {
         {"object.class", 0x10},
         {"object.nameOffset", 0x08},
@@ -388,9 +391,12 @@ anomaly::ProfileResolutionSnapshot Resolution() {
         "ue5.GameTick", Available("ue5.GameTick", FixtureMemory::kBase + 0x200));
     resolution.symbols.emplace(
         "ue5.ProcessEvent", Available("ue5.ProcessEvent", FixtureMemory::kBase + 0x300));
+    resolution.symbols.emplace(
+        "ue5.AActorProcessEvent",
+        Available("ue5.AActorProcessEvent", FixtureMemory::kBase + 0x400));
     for (const std::string id : {
              "ue5.framework", "ue5.names", "ue5.objects", "ue5.process-event",
-             "ue5.functions", "ue5.ahud"}) {
+             "ue5.actor-process-event", "ue5.functions", "ue5.ahud"}) {
         resolution.features.emplace(id, anomaly::FeatureResolution{id, true, {}});
     }
     return resolution;
@@ -422,6 +428,8 @@ anomaly::FeatureLayoutValidatorRegistry FeatureValidators() {
             });
     };
     register_validator("ue5-process-event-abi-v1", "ue5.process-event");
+    register_validator(
+        "ue5-actor-process-event-abi-v1", "ue5.actor-process-event");
     register_validator("ue5-functions-reflection-v1", "ue5.functions");
     register_validator("ue5-ahud-reflection-v1", "ue5.ahud");
     return validators;
@@ -607,8 +615,18 @@ int main() {
     auto memory = std::make_shared<FixtureMemory>();
     FixtureBuilder(*memory).Build();
     anomaly::AdapterServiceRegistry registry;
+    NativeCallRecorder recorder;
+    const anomaly::Ue5NteAdapter::ProcessEventInvoker base_invoker =
+        [&recorder](
+            const std::uintptr_t object,
+            const std::uintptr_t function,
+            void* const parameters,
+            const std::size_t parameter_size) {
+            return recorder.Invoke(object, function, parameters, parameter_size);
+        };
     anomaly::Ue5NteAdapter adapter(
-        Fingerprint(), Profile(), Resolution(), memory, registry, {}, FeatureValidators());
+        Fingerprint(), Profile(), Resolution(), memory, registry, {}, FeatureValidators(),
+        base_invoker);
     bool result = Check(adapter.Start(true, true), "AHUD adapter did not start");
     const auto* service = static_cast<const AnomalyUe5AhudServiceV1*>(
         registry.Query(
@@ -639,53 +657,45 @@ int main() {
         result;
 
     adapter.OnGameTick(1.0 / 60.0);
-    NativeCallRecorder recorder;
-    const anomaly::Ue5NteAdapter::ProcessEventInvoker original =
-        [&recorder](
-            const std::uintptr_t object,
-            const std::uintptr_t function,
-            void* const parameters,
-            const std::size_t parameter_size) {
-            return recorder.Invoke(object, function, parameters, parameter_size);
-        };
     std::array<std::int32_t, 2> viewport{1920, 1080};
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     result = Check(
                  draw_state.calls.load(std::memory_order_acquire) == 1 &&
                      draw_state.valid.load(std::memory_order_acquire) &&
                      count_calls.load(std::memory_order_acquire) == 1 &&
                      recorder.calls.load(std::memory_order_acquire) == 5 &&
-                     recorder.valid.load(std::memory_order_acquire),
+                     recorder.valid.load(std::memory_order_acquire) &&
+                     adapter.AhudBindingReady() &&
+                     adapter.AhudFrameCount() == 1 &&
+                     adapter.AhudProcessEventCallCount() == 5,
                  "AHUD frame did not marshal native HUD calls") &&
         result;
 
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kDrawLine],
-        viewport.data(),
-        original);
+        viewport.data());
     std::array<std::int32_t, 2> invalid_viewport{0, 1080};
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        invalid_viewport.data(),
-        original);
+        invalid_viewport.data());
     std::thread wrong_thread([&] {
         adapter.OnProcessEvent(
             FixtureMemory::kBase + 0x7000,
             kFunctions[kReceiveDrawHud],
-            viewport.data(),
-            original);
+            viewport.data());
     });
     wrong_thread.join();
     result = Check(
                  draw_state.calls.load(std::memory_order_acquire) == 1 &&
                      count_calls.load(std::memory_order_acquire) == 1 &&
-                     recorder.calls.load(std::memory_order_acquire) == 5,
+                     recorder.calls.load(std::memory_order_acquire) == 5 &&
+                     adapter.AhudFrameCount() == 1 &&
+                     adapter.AhudProcessEventCallCount() == 5,
                  "AHUD dispatch accepted a wrong event, viewport, or thread") &&
         result;
 
@@ -697,8 +707,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     result = Check(
                  draw_state.calls.load(std::memory_order_acquire) == 1 &&
                      count_calls.load(std::memory_order_acquire) == 2 &&
@@ -718,13 +727,11 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     result = Check(
                  self_state.calls.load(std::memory_order_acquire) == 1 &&
                      self_state.status.load(std::memory_order_acquire) ==
@@ -762,8 +769,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     unsubscribe_thread.join();
     result = Check(
                  blocking_state.observed_drain.load(std::memory_order_acquire) &&
@@ -792,8 +798,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     result = Check(
                  count_calls.load(std::memory_order_acquire) ==
                          count_before_resubscribe + 1U &&
@@ -846,8 +851,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     stop_thread.join();
     release_thread.join();
     result = Check(
@@ -866,6 +870,35 @@ int main() {
                   "AHUD service published without a GameTick framework hook") &&
         result;
 
+    anomaly::AdapterServiceRegistry missing_invoker_registry;
+    anomaly::Ue5NteAdapter missing_invoker_adapter(
+        Fingerprint(), Profile(), Resolution(), memory, missing_invoker_registry, {},
+        FeatureValidators());
+    result = Check(
+                 missing_invoker_adapter.Start(true, true) &&
+                     missing_invoker_registry.Query(
+                         ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+                         ANOMALY_UE5_AHUD_SERVICE_V1_VERSION) == nullptr &&
+                     missing_invoker_adapter.Stop(),
+                 "AHUD service published without the base ProcessEvent invoker") &&
+        result;
+
+    auto missing_actor_validator_profile = Profile();
+    missing_actor_validator_profile.feature_layout_validators.erase(
+        "ue5.actor-process-event");
+    anomaly::AdapterServiceRegistry missing_actor_validator_registry;
+    anomaly::Ue5NteAdapter missing_actor_validator_adapter(
+        Fingerprint(), std::move(missing_actor_validator_profile), Resolution(), memory,
+        missing_actor_validator_registry, {}, FeatureValidators(), base_invoker);
+    result = Check(
+                 missing_actor_validator_adapter.Start(true, true) &&
+                     missing_actor_validator_registry.Query(
+                         ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+                         ANOMALY_UE5_AHUD_SERVICE_V1_VERSION) == nullptr &&
+                     missing_actor_validator_adapter.Stop(),
+                 "AHUD service published without the Actor ProcessEvent ABI validator") &&
+        result;
+
     auto invalid_return_memory = std::make_shared<FixtureMemory>();
     FixtureBuilder(*invalid_return_memory).Build();
     invalid_return_memory->Put(
@@ -874,7 +907,7 @@ int main() {
     anomaly::AdapterServiceRegistry invalid_return_registry;
     anomaly::Ue5NteAdapter invalid_return_adapter(
         Fingerprint(), Profile(), Resolution(), invalid_return_memory,
-        invalid_return_registry, {}, FeatureValidators());
+        invalid_return_registry, {}, FeatureValidators(), base_invoker);
     result = Check(
                  invalid_return_adapter.Start(true, true),
                  "AHUD invalid-return fixture did not start") &&
@@ -895,8 +928,7 @@ int main() {
     invalid_return_adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data(),
-        original);
+        viewport.data());
     result = Check(
                  invalid_return_subscribed &&
                      invalid_return_calls.load(std::memory_order_acquire) == 0 &&

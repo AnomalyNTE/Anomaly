@@ -632,7 +632,8 @@ struct Ue5NteAdapter::State {
     struct AhudFrameCallContext {
         std::uintptr_t hud{};
         const AhudBinding* binding{};
-        const ProcessEventInvoker* original{};
+        const ProcessEventInvoker* invoker{};
+        std::atomic_uint64_t* process_event_call_count{};
     };
     struct NativeUtf16StringHeader {
         wchar_t* data{};
@@ -642,6 +643,8 @@ struct Ue5NteAdapter::State {
     static_assert(sizeof(NativeUtf16StringHeader) == 16);
     std::atomic<std::shared_ptr<const AhudBinding>> ahud_binding;
     std::atomic_bool ahud_demand{};
+    std::atomic_uint64_t ahud_frame_count{};
+    std::atomic_uint64_t ahud_process_event_call_count{};
     std::uintptr_t player_pawn{};
     std::uintptr_t player_controller{};
     std::uintptr_t player_root{};
@@ -942,10 +945,12 @@ struct Ue5NteAdapter::State {
     }
 
     [[nodiscard]] bool AhudFeatureAvailable() const noexcept {
-        return framework_hook_ready && ahud_hook_ready &&
+        return static_cast<bool>(process_event_invoker) &&
+            framework_hook_ready && ahud_hook_ready &&
             resolution.FeatureAvailable("ue5.ahud") &&
             resolution.FeatureAvailable("ue5.functions") &&
             resolution.FeatureAvailable(kUe5ProcessEventFeature) &&
+            resolution.FeatureAvailable(kUe5ActorProcessEventFeature) &&
             LayoutKeysAvailable(profile, {
                 "object.class",
                 "object.nameOffset",
@@ -968,7 +973,25 @@ struct Ue5NteAdapter::State {
                 "fboolProperty.fieldMask"}) &&
             FeatureDeclaresDependency(profile, "ue5.ahud", "ue5.functions") &&
             FeatureDeclaresDependency(
-                profile, "ue5.ahud", kUe5ProcessEventFeature) &&
+                profile, "ue5.ahud", kUe5ActorProcessEventFeature) &&
+            FeatureDeclaresDependency(
+                profile,
+                kUe5ActorProcessEventFeature,
+                kUe5ProcessEventFeature) &&
+            FeatureDeclaresSymbol(
+                profile, kUe5ProcessEventFeature, kUe5ProcessEventSymbol) &&
+            FeatureDeclaresLayoutValidator(
+                profile,
+                kUe5ProcessEventFeature,
+                kUe5ProcessEventAbiValidator) &&
+            FeatureDeclaresSymbol(
+                profile,
+                kUe5ActorProcessEventFeature,
+                kUe5ActorProcessEventSymbol) &&
+            FeatureDeclaresLayoutValidator(
+                profile,
+                kUe5ActorProcessEventFeature,
+                kUe5ActorProcessEventAbiValidator) &&
             FeatureDeclaresLayoutValidator(
                 profile, "ue5.ahud", "ue5-ahud-reflection-v1");
     }
@@ -1288,6 +1311,8 @@ struct Ue5NteAdapter::State {
         player_demand.store(false, std::memory_order_release);
         entity_demand.store(false, std::memory_order_release);
         ahud_demand.store(false, std::memory_order_release);
+        ahud_frame_count.store(0, std::memory_order_release);
+        ahud_process_event_call_count.store(0, std::memory_order_release);
         game_thread_id.store(0, std::memory_order_release);
         tick_sequence.store(0, std::memory_order_release);
         rejected_thread_ticks.store(0, std::memory_order_release);
@@ -2184,7 +2209,7 @@ struct Ue5NteAdapter::State {
         const AhudFrameCallContext* context,
         const AhudFunctionKind kind) noexcept {
         if (context == nullptr || context->hud == 0 || context->binding == nullptr ||
-            context->original == nullptr || !*context->original) {
+            context->invoker == nullptr || !*context->invoker) {
             return nullptr;
         }
         const auto index = AhudIndex(kind);
@@ -2251,15 +2276,20 @@ struct Ue5NteAdapter::State {
         const AhudFrameCallContext& context,
         const AhudFunctionBinding& function,
         std::span<std::uint8_t> parameters) noexcept {
-        if (parameters.size() < function.parms_size || context.original == nullptr) {
+        if (parameters.size() < function.parms_size || context.invoker == nullptr) {
             return false;
         }
         try {
-            return (*context.original)(
+            const bool invoked = (*context.invoker)(
                 context.hud,
                 function.function,
                 parameters.data(),
                 function.parms_size);
+            if (invoked && context.process_event_call_count != nullptr) {
+                context.process_event_call_count->fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            return invoked;
         } catch (...) {
             return false;
         }
@@ -2473,8 +2503,7 @@ struct Ue5NteAdapter::State {
     void DispatchAhudFrame(
         std::uintptr_t object,
         std::uintptr_t function,
-        void* parameters,
-        const ProcessEventInvoker& original) noexcept;
+        void* parameters) noexcept;
 
     [[nodiscard]] bool BuildTeleportBindingLocked(
         const std::uintptr_t function,
@@ -4605,9 +4634,9 @@ private:
 void Ue5NteAdapter::State::DispatchAhudFrame(
     const std::uintptr_t object,
     const std::uintptr_t function,
-    void* const parameters,
-    const ProcessEventInvoker& original) noexcept {
-    if (object == 0 || function == 0 || parameters == nullptr || !original ||
+    void* const parameters) noexcept {
+    if (object == 0 || function == 0 || parameters == nullptr ||
+        !process_event_invoker ||
         !started.load(std::memory_order_acquire) ||
         GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire)) {
         return;
@@ -4632,7 +4661,12 @@ void Ue5NteAdapter::State::DispatchAhudFrame(
 
     const auto endpoint = ahud_endpoint.load(std::memory_order_acquire);
     if (!endpoint) return;
-    AhudFrameCallContext context{object, binding.get(), &original};
+    ahud_frame_count.fetch_add(1, std::memory_order_relaxed);
+    AhudFrameCallContext context{
+        object,
+        binding.get(),
+        &process_event_invoker,
+        &ahud_process_event_call_count};
     const AnomalyUe5AhudFrameV1 frame{
         sizeof(AnomalyUe5AhudFrameV1),
         ANOMALY_UE5_AHUD_FRAME_V1_NONE,
@@ -5101,10 +5135,9 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
 void Ue5NteAdapter::OnProcessEvent(
     const std::uintptr_t object,
     const std::uintptr_t function,
-    void* const parameters,
-    const ProcessEventInvoker& original) noexcept {
+    void* const parameters) noexcept {
     const auto state = state_;
-    state->DispatchAhudFrame(object, function, parameters, original);
+    state->DispatchAhudFrame(object, function, parameters);
 }
 
 bool Ue5NteAdapter::Started() const noexcept {
@@ -5125,6 +5158,21 @@ std::uint64_t Ue5NteAdapter::TickSequence() const noexcept {
 std::uint64_t Ue5NteAdapter::RejectedThreadTicks() const noexcept {
     const auto state = state_;
     return state->rejected_thread_ticks.load(std::memory_order_acquire);
+}
+
+bool Ue5NteAdapter::AhudBindingReady() const noexcept {
+    const auto state = state_;
+    return state->ahud_binding.load(std::memory_order_acquire) != nullptr;
+}
+
+std::uint64_t Ue5NteAdapter::AhudFrameCount() const noexcept {
+    const auto state = state_;
+    return state->ahud_frame_count.load(std::memory_order_acquire);
+}
+
+std::uint64_t Ue5NteAdapter::AhudProcessEventCallCount() const noexcept {
+    const auto state = state_;
+    return state->ahud_process_event_call_count.load(std::memory_order_acquire);
 }
 
 ProfileResolutionSnapshot Ue5NteAdapter::Resolution() const {

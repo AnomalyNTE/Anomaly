@@ -41,6 +41,14 @@
       "resolve": { "kind": "direct" },
       "validators": ["address-in-module", "executable"],
       "requiredBy": ["anomaly.ue5.ahud"]
+    },
+    "ue5.AActorProcessEvent": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "ACTOR_PROCESS_EVENT_PATTERN",
+      "resolve": { "kind": "direct" },
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.ue5.ahud"]
     }
   },
   "features": {
@@ -51,17 +59,19 @@
     "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.process-event": ["ue5.ProcessEvent"],
-    "ue5.ahud": ["ue5.ProcessEvent"],
+    "ue5.actor-process-event": ["ue5.AActorProcessEvent"],
+    "ue5.ahud": [],
     "nte.session": ["ue5.GWorld", "ue5.GameTick"],
     "nte.player": ["ue5.GWorld", "ue5.GameTick"],
     "nte.player-esp": ["ue5.GWorld", "ue5.GameTick"],
     "nte.entities": ["ue5.GWorld", "ue5.GameTick"]
   },
-  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.process-event", "ue5.ahud", "nte.player-esp"],
+  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.process-event", "ue5.actor-process-event", "ue5.ahud", "nte.player-esp"],
   "featureLayoutValidators": {
     "ue5.actors": ["ue5-actors-reflection-v1"],
     "ue5.functions": ["ue5-functions-reflection-v1"],
     "ue5.process-event": ["ue5-process-event-abi-v1"],
+    "ue5.actor-process-event": ["ue5-actor-process-event-abi-v1"],
     "ue5.ahud": ["ue5-ahud-reflection-v1"],
     "nte.player": ["nte-player-layout-v1"],
     "nte.player-esp": ["nte-player-esp-layout-v1"],
@@ -70,7 +80,8 @@
   "featureDependencies": {
     "ue5.actors": ["ue5.world", "ue5.names"],
     "ue5.functions": ["ue5.objects", "ue5.names"],
-    "ue5.ahud": ["ue5.functions", "ue5.process-event"],
+    "ue5.actor-process-event": ["ue5.process-event"],
+    "ue5.ahud": ["ue5.functions", "ue5.actor-process-event"],
     "nte.player-esp": ["nte.player"]
   },
   "layout": {

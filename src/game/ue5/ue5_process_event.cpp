@@ -93,11 +93,72 @@ FeatureValidationResult ValidateProcessEventAbi(
     return {true, {}};
 }
 
+FeatureValidationResult ValidateActorProcessEventAbi(
+    const BuildProfile& profile,
+    const std::string_view feature,
+    const ProfileResolutionSnapshot& snapshot,
+    const SymbolMemory& memory) {
+    if (feature != kUe5ActorProcessEventFeature ||
+        !FeatureRequires(profile, feature, kUe5ActorProcessEventSymbol)) {
+        return {false, "profile does not declare the UE5 AActor ProcessEvent capability"};
+    }
+
+    const auto* const actor_process_event =
+        snapshot.FindSymbol(kUe5ActorProcessEventSymbol);
+    if (actor_process_event == nullptr || !actor_process_event->Available()) {
+        return {false, "AActor ProcessEvent symbol is unavailable"};
+    }
+    const auto* const process_event = snapshot.FindSymbol(kUe5ProcessEventSymbol);
+    if (process_event == nullptr || !process_event->Available()) {
+        return {false, "ProcessEvent symbol is unavailable"};
+    }
+    const auto module = memory.FindModule(actor_process_event->module);
+    if (!module) return {false, "profile module is unavailable"};
+    if (!HasMatchingUnwindEntry(*module, *actor_process_event)) {
+        return {false, "AActor ProcessEvent has no matching unwind entry"};
+    }
+
+    constexpr auto kEntry = std::to_array<std::uint8_t>({
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C,
+        0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x20, 0xF7,
+        0x82, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+        0x00, 0x49, 0x8B, 0xE8, 0x48, 0x8B, 0xDA, 0x48,
+        0x8B, 0xF9, 0x75, 0x06, 0x83, 0x7A, 0x68, 0x00,
+        0x74, 0x4D});
+    constexpr auto kBaseDispatch = std::to_array<std::uint8_t>({
+        0x4C, 0x8B, 0xC5, 0x48, 0x8B, 0xD3, 0x48, 0x8B, 0xCF, 0xE8});
+    constexpr std::uintptr_t kBaseDispatchOffset = 0x64U;
+    constexpr std::uintptr_t kBaseCallOffset = 0x6DU;
+    if (!MatchesBytes(memory, actor_process_event->address, kEntry) ||
+        !MatchesBytes(
+            memory, actor_process_event->address + kBaseDispatchOffset,
+            kBaseDispatch)) {
+        return {false, "AActor ProcessEvent ABI instruction contract changed"};
+    }
+
+    std::int32_t displacement{};
+    if (!memory.Read(
+            actor_process_event->address + kBaseCallOffset + 1U,
+            &displacement, sizeof(displacement))) {
+        return {false, "AActor ProcessEvent dispatch target is unreadable"};
+    }
+    const auto dispatch_target = static_cast<std::uintptr_t>(
+        static_cast<std::intptr_t>(actor_process_event->address + kBaseCallOffset + 5U) +
+        static_cast<std::intptr_t>(displacement));
+    if (dispatch_target != process_event->address) {
+        return {false, "AActor ProcessEvent no longer dispatches to ProcessEvent"};
+    }
+    return {true, {}};
+}
+
 }  // namespace
 
 FeatureLayoutValidatorRegistry Ue5FeatureLayoutValidators() {
     FeatureLayoutValidatorRegistry validators;
     validators.Register(std::string(kUe5ProcessEventAbiValidator), ValidateProcessEventAbi);
+    validators.Register(
+        std::string(kUe5ActorProcessEventAbiValidator),
+        ValidateActorProcessEventAbi);
     return validators;
 }
 

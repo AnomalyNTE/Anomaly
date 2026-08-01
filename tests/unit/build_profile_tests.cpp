@@ -381,6 +381,28 @@ int main() {
                   return found == profile->feature_layout_validators.end()
                       ? nullptr : &found->second;
               }();
+        const auto actor_process_event_symbols = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found = profile->features.find("ue5.actor-process-event");
+                  return found == profile->features.end() ? nullptr : &found->second;
+              }();
+        const auto actor_process_event_validators = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found =
+                      profile->feature_layout_validators.find("ue5.actor-process-event");
+                  return found == profile->feature_layout_validators.end()
+                      ? nullptr : &found->second;
+              }();
+        const auto actor_process_event_dependencies = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found =
+                      profile->feature_dependencies.find("ue5.actor-process-event");
+                  return found == profile->feature_dependencies.end()
+                      ? nullptr : &found->second;
+              }();
         const auto feature_validators = profile == nullptr
             ? nullptr
             : [&]() -> const std::vector<std::string>* {
@@ -490,9 +512,14 @@ int main() {
                   return found == profile->feature_dependencies.end() ? nullptr : &found->second;
               }();
         const anomaly::ProfileSymbol* process_event{};
+        const anomaly::ProfileSymbol* actor_process_event{};
         if (profile != nullptr) {
             const auto found = profile->symbols.find("ue5.ProcessEvent");
             if (found != profile->symbols.end()) process_event = &found->second;
+            const auto actor_found = profile->symbols.find("ue5.AActorProcessEvent");
+            if (actor_found != profile->symbols.end()) {
+                actor_process_event = &actor_found->second;
+            }
         }
         const auto requires_teleport_service = [&](const std::string_view symbol) {
             if (profile == nullptr) return false;
@@ -649,6 +676,15 @@ int main() {
                           process_event_validators != nullptr &&
                           *process_event_validators ==
                               std::vector<std::string>{"ue5-process-event-abi-v1"} &&
+                          actor_process_event_symbols != nullptr &&
+                          *actor_process_event_symbols ==
+                              std::vector<std::string>{"ue5.AActorProcessEvent"} &&
+                          actor_process_event_validators != nullptr &&
+                          *actor_process_event_validators == std::vector<std::string>{
+                              "ue5-actor-process-event-abi-v1"} &&
+                          actor_process_event_dependencies != nullptr &&
+                          *actor_process_event_dependencies ==
+                              std::vector<std::string>{"ue5.process-event"} &&
                           feature_symbols != nullptr && feature_symbols->size() == 4 &&
                           contains(*feature_symbols, "ue5.GWorld") &&
                           contains(*feature_symbols, "ue5.GameTick") &&
@@ -685,15 +721,16 @@ int main() {
                            contains(*function_feature_dependencies, "ue5.objects") &&
                            contains(*function_feature_dependencies, "ue5.names") &&
                            ahud_feature_symbols != nullptr &&
-                           *ahud_feature_symbols ==
-                               std::vector<std::string>{"ue5.ProcessEvent"} &&
+                           ahud_feature_symbols->empty() &&
                            ahud_feature_validators != nullptr &&
                            *ahud_feature_validators ==
                                std::vector<std::string>{"ue5-ahud-reflection-v1"} &&
                            ahud_feature_dependencies != nullptr &&
                            ahud_feature_dependencies->size() == 2 &&
                            contains(*ahud_feature_dependencies, "ue5.functions") &&
-                           contains(*ahud_feature_dependencies, "ue5.process-event") &&
+                           contains(
+                               *ahud_feature_dependencies,
+                               "ue5.actor-process-event") &&
                            entity_feature_symbols != nullptr && entity_feature_symbols->size() == 3 &&
                            contains(*entity_feature_symbols, "ue5.GWorld") &&
                            contains(*entity_feature_symbols, "ue5.GameTick") &&
@@ -710,6 +747,8 @@ int main() {
                              profile->optional_features.contains("ue5.actors") &&
                              profile->optional_features.contains("ue5.functions") &&
                               profile->optional_features.contains("ue5.process-event") &&
+                              profile->optional_features.contains(
+                                  "ue5.actor-process-event") &&
                               profile->optional_features.contains("ue5.ahud") &&
                              profile->optional_features.contains("nte.player-esp") &&
                             profile->optional_features.contains("nte.player-teleport") &&
@@ -723,6 +762,21 @@ int main() {
                            contains(process_event->validators, "executable") &&
                             contains(process_event->required_by, "anomaly.ue5.framework") &&
                             contains(process_event->required_by, "anomaly.ue5.ahud") &&
+                           actor_process_event != nullptr &&
+                           actor_process_event->module == L"HTGame.exe" &&
+                           actor_process_event->section == ".text" &&
+                           actor_process_event->resolve.kind ==
+                               anomaly::ProfileResolveKind::Direct &&
+                           actor_process_event->pattern.starts_with(
+                               "48 89 5C 24 10 48 89 6C 24 18") &&
+                           actor_process_event->validators.size() == 2 &&
+                           contains(
+                               actor_process_event->validators,
+                               "address-in-module") &&
+                           contains(actor_process_event->validators, "executable") &&
+                           contains(
+                               actor_process_event->required_by,
+                               "anomaly.ue5.ahud") &&
                            !contains(
                                process_event->required_by,
                                "anomaly.nte.player-teleport") &&
@@ -793,6 +847,31 @@ int main() {
                      "ProcessEvent feature accepted an unverified ABI validator") &&
             result;
 
+        auto invalid_actor_process_event_contract = ReadTextFile(*current_nte_profile_path);
+        const std::string actor_process_event_validator{
+            "ue5-actor-process-event-abi-v1"};
+        const auto actor_process_event_validator_offset =
+            invalid_actor_process_event_contract.find(actor_process_event_validator);
+        if (actor_process_event_validator_offset != std::string::npos) {
+            invalid_actor_process_event_contract.replace(
+                actor_process_event_validator_offset,
+                actor_process_event_validator.size(),
+                "unverified-actor-process-event-abi-v1");
+        }
+        const auto invalid_actor_process_event_profile = anomaly::ParseBuildProfile(
+            invalid_actor_process_event_contract, *current_nte_profile_path);
+        result = Check(
+                     actor_process_event_validator_offset != std::string::npos &&
+                         !invalid_actor_process_event_profile.Ok() &&
+                         std::ranges::any_of(
+                             invalid_actor_process_event_profile.diagnostics,
+                             [](const auto& diagnostic) {
+                                 return diagnostic.path ==
+                                     "/featureLayoutValidators/ue5.actor-process-event";
+                             }),
+                     "Actor ProcessEvent feature accepted an unverified ABI validator") &&
+            result;
+
         auto incomplete_actor_reflection_contract = ReadTextFile(*current_nte_profile_path);
         const std::string actor_name_layout{"\"names.blocksOffset\""};
         const auto actor_name_layout_offset = incomplete_actor_reflection_contract.find(
@@ -860,16 +939,28 @@ int main() {
             sizeof("PROCESS_EVENT_PATTERN") - 1,
             "40 55 56 57 48 83 EC 20");
     }
+    const auto actor_process_event_pattern =
+        example_nte_profile_json.find("ACTOR_PROCESS_EVENT_PATTERN");
+    if (actor_process_event_pattern != std::string::npos) {
+        example_nte_profile_json.replace(
+            actor_process_event_pattern,
+            sizeof("ACTOR_PROCESS_EVENT_PATTERN") - 1,
+            "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20");
+    }
     const auto example_nte_profile = anomaly::ParseBuildProfile(
         example_nte_profile_json,
         example_nte_profile_path ? *example_nte_profile_path : std::filesystem::path{});
     result = Check(
                  example_nte_profile_path.has_value() && name_pattern != std::string::npos &&
                      tick_pattern != std::string::npos &&
-                     process_event_pattern != std::string::npos && example_nte_profile.Ok() &&
+                     process_event_pattern != std::string::npos &&
+                     actor_process_event_pattern != std::string::npos &&
+                     example_nte_profile.Ok() &&
                      example_nte_profile.profile &&
                      example_nte_profile.profile->features.contains("ue5.actors") &&
                      example_nte_profile.profile->features.contains("ue5.functions") &&
+                     example_nte_profile.profile->features.contains(
+                         "ue5.actor-process-event") &&
                      example_nte_profile.profile->features.contains("ue5.ahud"),
                  "NTE profile template did not retain the reflection feature contracts") &&
         result;

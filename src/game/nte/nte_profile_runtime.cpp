@@ -293,27 +293,29 @@ FeatureValidationResult ValidateEscMenuHooks(
 }
 
 FeatureLayoutValidatorRegistry NteFeatureLayoutValidators(
-    const bool preserve_process_event_abi) {
+    const bool preserve_actor_process_event_abi) {
     FeatureLayoutValidatorRegistry validators = Ue5FeatureLayoutValidators();
     validators.Register(
         std::string(kOutgoingTransformAbiValidator), ValidateOutgoingTransformAbi);
     validators.Register(std::string(kEscMenuHooksValidator), ValidateEscMenuHooks);
-    if (preserve_process_event_abi) {
+    if (preserve_actor_process_event_abi) {
         validators.Register(
-            std::string(kUe5ProcessEventAbiValidator), [](
+            std::string(kUe5ActorProcessEventAbiValidator), [](
                 const BuildProfile&,
                 const std::string_view feature,
                 const ProfileResolutionSnapshot& snapshot,
                 const SymbolMemory&) {
-                if (feature != kUe5ProcessEventFeature) {
+                if (feature != kUe5ActorProcessEventFeature) {
                     return FeatureValidationResult{
-                        false, "startup ProcessEvent ABI evidence used by another feature"};
+                        false,
+                        "startup AActor ProcessEvent ABI evidence used by another feature"};
                 }
-                const auto* const process_event =
-                    snapshot.FindSymbol(kUe5ProcessEventSymbol);
-                if (process_event == nullptr || !process_event->Available()) {
+                const auto* const actor_process_event =
+                    snapshot.FindSymbol(kUe5ActorProcessEventSymbol);
+                if (actor_process_event == nullptr ||
+                    !actor_process_event->Available()) {
                     return FeatureValidationResult{
-                        false, "ue5.ProcessEvent is unavailable"};
+                        false, "ue5.AActorProcessEvent is unavailable"};
                 }
                 // Runtime owns the entry bytes after installing its detour. The
                 // unhooked ABI was validated before the adapter was constructed.
@@ -675,7 +677,7 @@ public:
             ProcessAdapterServices(),
             options_.snapshot_sampling,
             NteFeatureLayoutValidators(
-                resolution_->FeatureAvailable(kUe5ProcessEventFeature)),
+                resolution_->FeatureAvailable(kUe5ActorProcessEventFeature)),
             profile_ ? CreateUe5ProcessEventInvoker(*profile_, *resolution_, *memory_)
                      : Ue5NteAdapter::ProcessEventInvoker{});
         bool hook_ready{};
@@ -706,15 +708,17 @@ public:
             if (!hook_ready) diagnostics_.push_back("game tick hook activation failed");
         }
         bool ahud_hook_ready{};
-        const auto* const process_event = resolution_->FindSymbol(kUe5ProcessEventSymbol);
+        const auto* const actor_process_event =
+            resolution_->FindSymbol(kUe5ActorProcessEventSymbol);
         if (profile_ && profile_->features.contains(std::string(kAhudFeature))) {
             if (!hook_ready) {
                 diagnostics_.push_back(
                     "optional AHUD capability unavailable: game tick hook failed");
             } else if (!resolution_->FeatureAvailable(kUe5ProcessEventFeature) ||
-                process_event == nullptr || !process_event->Available()) {
+                !resolution_->FeatureAvailable(kUe5ActorProcessEventFeature) ||
+                actor_process_event == nullptr || !actor_process_event->Available()) {
                 diagnostics_.push_back(
-                    "optional AHUD capability unavailable: ProcessEvent gate failed");
+                    "optional AHUD capability unavailable: Actor ProcessEvent gate failed");
             } else {
                 try {
                     process_event_hook_ = std::make_unique<Ue5ProcessEventHook>(
@@ -722,17 +726,17 @@ public:
                             const std::uintptr_t object,
                             const std::uintptr_t function,
                             void* const parameters,
-                            const Ue5ProcessEventInvoker& original) {
+                            const Ue5ProcessEventInvoker&) {
                             const auto adapter = weak.lock();
                             if (adapter) {
-                                adapter->OnProcessEvent(
-                                    object, function, parameters, original);
+                                adapter->OnProcessEvent(object, function, parameters);
                             }
                         });
                     ahud_hook_ready = process_event_hook_->Start(
-                        reinterpret_cast<void*>(process_event->address));
+                        reinterpret_cast<void*>(actor_process_event->address));
                     if (!ahud_hook_ready) {
-                        diagnostics_.push_back("AHUD ProcessEvent hook activation failed");
+                        diagnostics_.push_back(
+                            "AHUD Actor ProcessEvent hook activation failed");
                     }
                 } catch (...) {
                     process_event_hook_.reset();
@@ -899,6 +903,10 @@ public:
             snapshot.game_thread_id = adapter_->GameThreadId();
             snapshot.tick_sequence = adapter_->TickSequence();
             snapshot.rejected_thread_ticks = adapter_->RejectedThreadTicks();
+            snapshot.ahud_binding_ready = adapter_->AhudBindingReady();
+            snapshot.ahud_frame_count = adapter_->AhudFrameCount();
+            snapshot.ahud_process_event_call_count =
+                adapter_->AhudProcessEventCallCount();
         }
         return snapshot;
     }
@@ -964,6 +972,14 @@ public:
             std::string(tick_hook_ready_ ? "true" : "false");
         json += ",\"ahudHookReady\":" +
             std::string(ahud_hook_ready_ ? "true" : "false");
+        json += ",\"ahudBindingReady\":" +
+            std::string(
+                adapter_ && adapter_->AhudBindingReady() ? "true" : "false");
+        json += ",\"ahudFrameCount\":" +
+            std::to_string(adapter_ ? adapter_->AhudFrameCount() : 0U);
+        json += ",\"ahudProcessEventCallCount\":" +
+            std::to_string(
+                adapter_ ? adapter_->AhudProcessEventCallCount() : 0U);
         const bool player_service_published = adapter_ &&
             ProcessAdapterServices().Query(
                 ANOMALY_NTE_PLAYER_SERVICE_V1_ID,

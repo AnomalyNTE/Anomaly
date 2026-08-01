@@ -318,7 +318,10 @@ void ValidateReflectionFeatureContracts(
         profile, "ue5.process-event", {"ue5.ProcessEvent"}, {},
         "ue5-process-event-abi-v1", {}, result, source);
     ValidateReflectionFeatureContract(
-        profile, "ue5.ahud", {}, {"ue5.functions", "ue5.process-event"},
+        profile, "ue5.actor-process-event", {"ue5.AActorProcessEvent"},
+        {"ue5.process-event"}, "ue5-actor-process-event-abi-v1", {}, result, source);
+    ValidateReflectionFeatureContract(
+        profile, "ue5.ahud", {}, {"ue5.functions", "ue5.actor-process-event"},
         "ue5-ahud-reflection-v1",
         {"object.class", "object.nameOffset", "object.outer",
          "ustruct.propertyLink", "ufunction.numParms", "ufunction.parmsSize",

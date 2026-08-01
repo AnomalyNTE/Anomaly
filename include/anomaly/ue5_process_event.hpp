@@ -13,6 +13,12 @@ inline constexpr std::string_view kUe5ProcessEventFeature = "ue5.process-event";
 inline constexpr std::string_view kUe5ProcessEventSymbol = "ue5.ProcessEvent";
 inline constexpr std::string_view kUe5ProcessEventAbiValidator =
     "ue5-process-event-abi-v1";
+inline constexpr std::string_view kUe5ActorProcessEventFeature =
+    "ue5.actor-process-event";
+inline constexpr std::string_view kUe5ActorProcessEventSymbol =
+    "ue5.AActorProcessEvent";
+inline constexpr std::string_view kUe5ActorProcessEventAbiValidator =
+    "ue5-actor-process-event-abi-v1";
 
 using Ue5ProcessEventInvoker = std::function<bool(
     std::uintptr_t object,

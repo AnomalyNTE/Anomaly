@@ -40,9 +40,12 @@ struct NteProfileEvidenceSnapshot {
     std::optional<ProfileResolutionSnapshot> resolution;
     bool tick_hook_ready{};
     bool ahud_hook_ready{};
+    bool ahud_binding_ready{};
     std::uint32_t game_thread_id{};
     std::uint64_t tick_sequence{};
     std::uint64_t rejected_thread_ticks{};
+    std::uint64_t ahud_frame_count{};
+    std::uint64_t ahud_process_event_call_count{};
 };
 
 class NteProfileRuntime final {

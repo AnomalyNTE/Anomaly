@@ -62,19 +62,21 @@ public:
     bool ClearTickCallback(
         std::chrono::milliseconds timeout = std::chrono::milliseconds::max()) noexcept;
     void OnGameTick(double delta_seconds) noexcept;
-    // Called only by the separately owned ProcessEvent detour after the
-    // original event has completed. The original invoker bypasses that detour
-    // and is valid only for this synchronous call.
+    // Called only by the separately owned Actor ProcessEvent wrapper detour
+    // after the wrapper has completed. AHUD calls use the separately verified
+    // base ProcessEvent invoker injected at construction.
     void OnProcessEvent(
         std::uintptr_t object,
         std::uintptr_t function,
-        void* parameters,
-        const ProcessEventInvoker& original) noexcept;
+        void* parameters) noexcept;
 
     [[nodiscard]] bool Started() const noexcept;
     [[nodiscard]] DWORD GameThreadId() const noexcept;
     [[nodiscard]] std::uint64_t TickSequence() const noexcept;
     [[nodiscard]] std::uint64_t RejectedThreadTicks() const noexcept;
+    [[nodiscard]] bool AhudBindingReady() const noexcept;
+    [[nodiscard]] std::uint64_t AhudFrameCount() const noexcept;
+    [[nodiscard]] std::uint64_t AhudProcessEventCallCount() const noexcept;
     [[nodiscard]] ProfileResolutionSnapshot Resolution() const;
 
 private:
