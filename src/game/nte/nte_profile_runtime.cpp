@@ -292,11 +292,34 @@ FeatureValidationResult ValidateEscMenuHooks(
     return {true, {}};
 }
 
-FeatureLayoutValidatorRegistry NteFeatureLayoutValidators() {
+FeatureLayoutValidatorRegistry NteFeatureLayoutValidators(
+    const bool preserve_process_event_abi) {
     FeatureLayoutValidatorRegistry validators = Ue5FeatureLayoutValidators();
     validators.Register(
         std::string(kOutgoingTransformAbiValidator), ValidateOutgoingTransformAbi);
     validators.Register(std::string(kEscMenuHooksValidator), ValidateEscMenuHooks);
+    if (preserve_process_event_abi) {
+        validators.Register(
+            std::string(kUe5ProcessEventAbiValidator), [](
+                const BuildProfile&,
+                const std::string_view feature,
+                const ProfileResolutionSnapshot& snapshot,
+                const SymbolMemory&) {
+                if (feature != kUe5ProcessEventFeature) {
+                    return FeatureValidationResult{
+                        false, "startup ProcessEvent ABI evidence used by another feature"};
+                }
+                const auto* const process_event =
+                    snapshot.FindSymbol(kUe5ProcessEventSymbol);
+                if (process_event == nullptr || !process_event->Available()) {
+                    return FeatureValidationResult{
+                        false, "ue5.ProcessEvent is unavailable"};
+                }
+                // Runtime owns the entry bytes after installing its detour. The
+                // unhooked ABI was validated before the adapter was constructed.
+                return FeatureValidationResult{true, {}};
+            });
+    }
     return validators;
 }
 
@@ -626,7 +649,7 @@ public:
             return false;
         }
 
-        SymbolResolver resolver(memory_, {}, {}, NteFeatureLayoutValidators());
+        SymbolResolver resolver(memory_, {}, {}, NteFeatureLayoutValidators(false));
         SymbolCache cache(options_.runtime_root / L"state" / L"profile-symbol-cache.json");
         ProfileResolutionSnapshot resolved =
             resolver.Resolve(adapter_context, selected ? &*selected : nullptr, &cache);
@@ -650,7 +673,9 @@ public:
         adapter_ = std::make_shared<Ue5NteAdapter>(
             std::move(adapter_context), adapter_profile, *resolution_, memory_,
             ProcessAdapterServices(),
-            options_.snapshot_sampling, NteFeatureLayoutValidators(),
+            options_.snapshot_sampling,
+            NteFeatureLayoutValidators(
+                resolution_->FeatureAvailable(kUe5ProcessEventFeature)),
             profile_ ? CreateUe5ProcessEventInvoker(*profile_, *resolution_, *memory_)
                      : Ue5NteAdapter::ProcessEventInvoker{});
         bool hook_ready{};

@@ -349,6 +349,9 @@ bool TestAhudHookLifecycle(
         options.game_module = GetModuleHandleW(nullptr);
         anomaly::NteProfileRuntime runtime(std::move(options));
         const bool started = runtime.Start();
+        if (started) {
+            ProfileRuntimeRaceTickTarget(nullptr, 1.0F / 60.0F, false);
+        }
         const auto resolution = runtime.Resolution();
         const auto evidence = runtime.Evidence();
         const auto diagnostics = runtime.DiagnosticsJson();
@@ -408,6 +411,9 @@ bool TestAhudHookLifecycle(
         options.game_module = GetModuleHandleW(nullptr);
         anomaly::NteProfileRuntime runtime(std::move(options));
         const bool started = runtime.Start();
+        if (started) {
+            ProfileRuntimeRaceTickTarget(nullptr, 1.0F / 60.0F, false);
+        }
         const auto resolution = runtime.Resolution();
         const auto evidence = runtime.Evidence();
         const auto diagnostics = runtime.DiagnosticsJson();
