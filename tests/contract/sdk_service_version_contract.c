@@ -178,6 +178,20 @@ typedef AnomalyStatusV1 (ANOMALY_CALL *ContractWorldCurrentFn)(
     void*, AnomalyGenerationHandleV1*);
 typedef AnomalyStatusV1 (ANOMALY_CALL *ContractWorldSnapshotFn)(
     void*, AnomalyGenerationHandleV1, AnomalyUe5WorldSnapshotV1*);
+typedef int (ANOMALY_CALL *ContractAhudProjectFn)(
+    void*, const double*, float*, double*);
+typedef int (ANOMALY_CALL *ContractAhudMeasureTextFn)(
+    void*, AnomalyStringViewV1, float, float*, float*);
+typedef int (ANOMALY_CALL *ContractAhudDrawTextFn)(
+    void*, AnomalyStringViewV1, float, float, uint32_t, float);
+typedef int (ANOMALY_CALL *ContractAhudDrawLineFn)(
+    void*, float, float, float, float, uint32_t, float);
+typedef int (ANOMALY_CALL *ContractAhudDrawRectFn)(
+    void*, float, float, float, float, uint32_t);
+typedef void (ANOMALY_CALL *ContractAhudDrawCallbackFn)(
+    void*, const AnomalyUe5AhudFrameV1*);
+typedef AnomalyStatusV1 (ANOMALY_CALL *ContractAhudSubscribeFn)(
+    void*, AnomalyUe5AhudDrawCallbackV1, void*, AnomalyGenerationHandleV1*);
 typedef AnomalyStatusV1 (ANOMALY_CALL *ContractNteSessionSnapshotFn)(
     void*, AnomalyNteSessionSnapshotV1*);
 typedef AnomalyStatusV1 (ANOMALY_CALL *ContractNteSessionNextEventFn)(
@@ -249,6 +263,7 @@ _Static_assert(ANOMALY_LOCALIZATION_SERVICE_V1_VERSION == 1u,
 _Static_assert(ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION == 1u,
     "NTE entities service version changed");
 _Static_assert(ANOMALY_UE5_BUILD_SERVICE_V1_VERSION == 1u, "UE5 build version changed");
+_Static_assert(ANOMALY_UE5_AHUD_SERVICE_V1_VERSION == 1u, "UE5 AHUD version changed");
 _Static_assert(ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION == 1u, "UE5 framework version changed");
 _Static_assert(ANOMALY_UE5_NAMES_SERVICE_V1_VERSION == 1u, "UE5 names version changed");
 _Static_assert(ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION == 1u, "UE5 objects version changed");
@@ -743,6 +758,25 @@ ANOMALY_ASSERT_OFFSET(AnomalyUe5BuildServiceV1, build_id, 16);
 ANOMALY_ASSERT_OFFSET(AnomalyUe5BuildServiceV1, profile_hash, 24);
 ANOMALY_ASSERT_OFFSET(AnomalyUe5BuildServiceV1, feature_state, 32);
 ANOMALY_ASSERT_TAIL(AnomalyUe5BuildServiceV1, feature_state);
+
+ANOMALY_ASSERT_LAYOUT(AnomalyUe5AhudFrameV1, 64, 8);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, struct_size, 0);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, flags, 4);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, user, 8);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, viewport_width, 16);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, viewport_height, 20);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, project, 24);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, measure_text, 32);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, draw_text, 40);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, draw_line, 48);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudFrameV1, draw_rect, 56);
+ANOMALY_ASSERT_TAIL(AnomalyUe5AhudFrameV1, draw_rect);
+
+ANOMALY_ASSERT_LAYOUT(AnomalyUe5AhudServiceV1, 32, 8);
+ANOMALY_ASSERT_SERVICE_PREFIX(AnomalyUe5AhudServiceV1);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudServiceV1, subscribe, 16);
+ANOMALY_ASSERT_OFFSET(AnomalyUe5AhudServiceV1, unsubscribe, 24);
+ANOMALY_ASSERT_TAIL(AnomalyUe5AhudServiceV1, unsubscribe);
 
 ANOMALY_ASSERT_LAYOUT(AnomalyUe5FrameworkServiceV1, 40, 8);
 ANOMALY_ASSERT_SERVICE_PREFIX(AnomalyUe5FrameworkServiceV1);
@@ -1355,6 +1389,30 @@ _Static_assert(
     ANOMALY_TYPE_IS(((AnomalyUe5BuildServiceV1*)0)->feature_state, ContractFeatureStateFn),
     "ue5.build.feature_state signature");
 _Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyUe5AhudFrameV1*)0)->project, ContractAhudProjectFn),
+    "ue5.ahud.project signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyUe5AhudFrameV1*)0)->measure_text, ContractAhudMeasureTextFn),
+    "ue5.ahud.measure_text signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyUe5AhudFrameV1*)0)->draw_text, ContractAhudDrawTextFn),
+    "ue5.ahud.draw_text signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyUe5AhudFrameV1*)0)->draw_line, ContractAhudDrawLineFn),
+    "ue5.ahud.draw_line signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyUe5AhudFrameV1*)0)->draw_rect, ContractAhudDrawRectFn),
+    "ue5.ahud.draw_rect signature");
+_Static_assert(
+    ANOMALY_TYPE_IS((AnomalyUe5AhudDrawCallbackV1)0, ContractAhudDrawCallbackFn),
+    "ue5.ahud callback signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyUe5AhudServiceV1*)0)->subscribe, ContractAhudSubscribeFn),
+    "ue5.ahud.subscribe signature");
+_Static_assert(
+    ANOMALY_TYPE_IS(((AnomalyUe5AhudServiceV1*)0)->unsubscribe, ContractHandleFn),
+    "ue5.ahud.unsubscribe signature");
+_Static_assert(
     ANOMALY_TYPE_IS(((AnomalyUe5FrameworkServiceV1*)0)->game_thread_id, ContractUint32ContextFn),
     "ue5.framework.game_thread_id signature");
 _Static_assert(
@@ -1542,5 +1600,6 @@ int main(void) {
     if (strcmp(ANOMALY_PATCH_SERVICE_V1_ID, "anomaly.interop.patch") != 0) return 32;
     if (strcmp(ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID,
             "anomaly.nte.esc-menu-button") != 0) return 33;
+    if (strcmp(ANOMALY_UE5_AHUD_SERVICE_V1_ID, "anomaly.ue5.ahud") != 0) return 34;
     return 0;
 }

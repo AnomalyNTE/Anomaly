@@ -22,7 +22,12 @@
       "id": "anomaly.nte.player",
       "minVersion": 1,
       "optional": true
+    },
+    {
+      "id": "anomaly.ue5.ahud",
+      "minVersion": 1,
+      "optional": true
     }
   ],
-  "capabilities": ["memory-read", "memory-write", "ui", "nte-player-snapshot"]
+  "capabilities": ["memory-read", "memory-write", "ui", "nte-player-snapshot", "ue5-ahud"]
 }

@@ -2,6 +2,7 @@
 
 #include "anomaly/ue5_outbound_bit_count_probe.hpp"
 #include "anomaly/ue5_process_event.hpp"
+#include "anomaly/ue5_process_event_hook.hpp"
 #include "anomaly/ue5_reflection_query.hpp"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <new>
@@ -27,6 +29,7 @@ namespace {
 
 inline constexpr std::string_view kOutgoingTransformMetadataFeature =
     "ue5.network.outgoing-transform-metadata";
+inline constexpr std::string_view kAhudFeature = "ue5.ahud";
 inline constexpr std::string_view kOutboundPreHandlerDispatchSymbol =
     "ue5.PacketHandler.OutboundDispatchPreHandler";
 inline constexpr std::string_view kOutgoingTransformSymbol =
@@ -438,6 +441,7 @@ std::string_view SymbolStateName(SymbolResolutionState state) noexcept {
 
 struct RetainedNteProfileGeneration final {
     std::unique_ptr<GameTickHook> tick_hook;
+    std::unique_ptr<Ue5ProcessEventHook> process_event_hook;
     std::unique_ptr<Ue5OutboundBitCountProbe> outgoing_transform_probe;
     std::shared_ptr<Ue5NteAdapter> adapter;
     RetainedNteProfileGeneration* next{};
@@ -518,24 +522,28 @@ private:
 
 void RetainNteProfileGeneration(
     std::unique_ptr<GameTickHook> tick_hook,
+    std::unique_ptr<Ue5ProcessEventHook> process_event_hook,
     std::unique_ptr<Ue5OutboundBitCountProbe> outgoing_transform_probe,
     std::shared_ptr<Ue5NteAdapter> adapter) noexcept {
     auto* registry = ProcessNteProfileQuarantine();
     if (registry == nullptr) {
         // The hook generation itself is intentionally leaked. Adapter State
-        // has shared ownership and its zero-budget destructor preserves any
-        // still-running tick without extending the stop call.
+        // has shared ownership and zero-budget hook destruction preserves any
+        // still-running callback without extending the stop call.
         static_cast<void>(tick_hook.release());
+        static_cast<void>(process_event_hook.release());
         static_cast<void>(outgoing_transform_probe.release());
         return;
     }
     registry->quarantined.store(true, std::memory_order_release);
     auto* generation = new (std::nothrow) RetainedNteProfileGeneration{
-        std::move(tick_hook), std::move(outgoing_transform_probe), std::move(adapter), nullptr};
+        std::move(tick_hook), std::move(process_event_hook),
+        std::move(outgoing_transform_probe), std::move(adapter), nullptr};
     if (generation == nullptr) {
-        // GameTickHook and Ue5NteAdapter destructors independently preserve
-        // their live state when a zero-budget drain still reports in-flight.
+        // Both hook types and Ue5NteAdapter independently preserve their live
+        // state when a zero-budget drain still reports in-flight.
         static_cast<void>(tick_hook.release());
+        static_cast<void>(process_event_hook.release());
         static_cast<void>(outgoing_transform_probe.release());
         return;
     }
@@ -573,8 +581,10 @@ public:
         adapter_.reset();
         tick_evidence_gate_.reset();
         tick_hook_.reset();
+        process_event_hook_.reset();
         outgoing_transform_probe_.reset();
         tick_hook_ready_ = false;
+        ahud_hook_ready_ = false;
         quarantined_ = false;
         module_path_ = ModulePath(options_.game_module);
         std::vector<BuildProfileCatalogLayer> layers;
@@ -629,7 +639,7 @@ public:
         }
         if (profile_ && NteProfileGenerationQuarantined()) {
             diagnostics_.push_back(
-                "profile generation not activated: prior game tick generation is quarantined");
+                "profile generation not activated: prior hook generation is quarantined");
             quarantined_ = true;
             started_ = true;
             return true;
@@ -670,14 +680,52 @@ public:
             hook_ready = tick_hook_->Start(reinterpret_cast<void*>(tick->address));
             if (!hook_ready) diagnostics_.push_back("game tick hook activation failed");
         }
-        if (!adapter_->Start(hook_ready)) {
+        bool ahud_hook_ready{};
+        const auto* const process_event = resolution_->FindSymbol(kUe5ProcessEventSymbol);
+        if (profile_ && profile_->features.contains(std::string(kAhudFeature))) {
+            if (!hook_ready) {
+                diagnostics_.push_back(
+                    "optional AHUD capability unavailable: game tick hook failed");
+            } else if (!resolution_->FeatureAvailable(kAhudFeature) ||
+                process_event == nullptr || !process_event->Available()) {
+                diagnostics_.push_back(
+                    "optional AHUD capability unavailable: reflection or ProcessEvent gate failed");
+            } else {
+                try {
+                    process_event_hook_ = std::make_unique<Ue5ProcessEventHook>(
+                        [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
+                            const std::uintptr_t object,
+                            const std::uintptr_t function,
+                            void* const parameters,
+                            const Ue5ProcessEventInvoker& original) {
+                            const auto adapter = weak.lock();
+                            if (adapter) {
+                                adapter->OnProcessEvent(
+                                    object, function, parameters, original);
+                            }
+                        });
+                    ahud_hook_ready = process_event_hook_->Start(
+                        reinterpret_cast<void*>(process_event->address));
+                    if (!ahud_hook_ready) {
+                        diagnostics_.push_back("AHUD ProcessEvent hook activation failed");
+                    }
+                } catch (...) {
+                    process_event_hook_.reset();
+                    diagnostics_.push_back("AHUD ProcessEvent hook allocation failed");
+                }
+            }
+        }
+        if (!adapter_->Start(hook_ready, ahud_hook_ready)) {
             diagnostics_.push_back("adapter service publication failed");
+            if (process_event_hook_) process_event_hook_->Stop();
+            process_event_hook_.reset();
             if (tick_hook_) tick_hook_->Stop();
             tick_hook_.reset();
             tick_evidence_gate_.reset();
             adapter_.reset();
         } else {
             tick_hook_ready_ = hook_ready;
+            ahud_hook_ready_ = ahud_hook_ready;
         }
         const bool player_service_published = adapter_ &&
             ProcessAdapterServices().Query(
@@ -723,6 +771,7 @@ public:
         std::unique_lock lock(mutex_);
         if (!started_) return !stopping_;
         auto tick_hook = std::move(tick_hook_);
+        auto process_event_hook = std::move(process_event_hook_);
         auto outgoing_transform_probe = std::move(outgoing_transform_probe_);
         auto adapter = std::move(adapter_);
         auto tick_evidence_gate = std::move(tick_evidence_gate_);
@@ -730,6 +779,7 @@ public:
         // only observable after the smoke observer has been fenced.
         if (tick_evidence_gate) tick_evidence_gate->Close();
         tick_hook_ready_ = false;
+        ahud_hook_ready_ = false;
         started_ = false;
         stopping_ = true;
         lock.unlock();
@@ -763,14 +813,18 @@ public:
             // Started()==false and cannot create a new adapter invocation.
             adapter_drained = adapter->Stop(std::chrono::milliseconds::zero());
         }
-        const bool hook_drained = tick_hook == nullptr || tick_hook->Stop(remaining());
+        const bool tick_hook_drained = tick_hook == nullptr || tick_hook->Stop(remaining());
+        const bool process_event_hook_drained = process_event_hook == nullptr ||
+            process_event_hook->Stop(remaining());
         if (evidence_drained && !adapter_drained && adapter != nullptr) {
             adapter_drained = adapter->Stop(remaining());
         }
-        const bool drained = outgoing_transform_probe_drained && evidence_drained && hook_drained && adapter_drained;
+        const bool drained = outgoing_transform_probe_drained && evidence_drained &&
+            tick_hook_drained && process_event_hook_drained && adapter_drained;
         if (!drained) {
             RetainNteProfileGeneration(
-                std::move(tick_hook), std::move(outgoing_transform_probe), std::move(adapter));
+                std::move(tick_hook), std::move(process_event_hook),
+                std::move(outgoing_transform_probe), std::move(adapter));
         }
 
         lock.lock();
@@ -811,6 +865,7 @@ public:
             snapshot.resolution = *resolution;
         }
         snapshot.tick_hook_ready = tick_hook_ready_;
+        snapshot.ahud_hook_ready = ahud_hook_ready_;
         if (adapter_) {
             snapshot.game_thread_id = adapter_->GameThreadId();
             snapshot.tick_sequence = adapter_->TickSequence();
@@ -821,7 +876,16 @@ public:
 
     std::vector<HookRecordView> Hooks() const {
         std::scoped_lock lock(mutex_);
-        return tick_hook_ ? tick_hook_->Snapshot() : std::vector<HookRecordView>{};
+        std::vector<HookRecordView> hooks;
+        if (tick_hook_) hooks = tick_hook_->Snapshot();
+        if (process_event_hook_) {
+            auto process_event_hooks = process_event_hook_->Snapshot();
+            hooks.insert(
+                hooks.end(),
+                std::make_move_iterator(process_event_hooks.begin()),
+                std::make_move_iterator(process_event_hooks.end()));
+        }
+        return hooks;
     }
 
     std::string ExecuteReflectionQuery(const std::string_view request) const {
@@ -869,6 +933,8 @@ public:
             std::string(quarantined_ ? "true" : "false");
         json += ",\"tickHookReady\":" +
             std::string(tick_hook_ready_ ? "true" : "false");
+        json += ",\"ahudHookReady\":" +
+            std::string(ahud_hook_ready_ ? "true" : "false");
         const bool player_service_published = adapter_ &&
             ProcessAdapterServices().Query(
                 ANOMALY_NTE_PLAYER_SERVICE_V1_ID,
@@ -1041,6 +1107,7 @@ private:
     bool stopping_{};
     bool quarantined_{};
     bool tick_hook_ready_{};
+    bool ahud_hook_ready_{};
     std::filesystem::path module_path_;
     BuildProfileCatalogSnapshot catalog_;
     std::optional<BuildProfile> profile_;
@@ -1048,6 +1115,7 @@ private:
     std::shared_ptr<Ue5NteAdapter> adapter_;
     std::shared_ptr<TickEvidenceObserverGate> tick_evidence_gate_;
     std::unique_ptr<GameTickHook> tick_hook_;
+    std::unique_ptr<Ue5ProcessEventHook> process_event_hook_;
     std::unique_ptr<Ue5OutboundBitCountProbe> outgoing_transform_probe_;
     std::vector<std::string> diagnostics_;
 };

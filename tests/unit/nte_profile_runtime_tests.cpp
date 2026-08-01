@@ -2,9 +2,13 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -42,16 +46,201 @@ extern "C" __declspec(noinline) void __fastcall ProfileRuntimeRaceTickTarget(
 
 using TickTarget = void(__fastcall*)(void*, float, bool);
 
-std::string FunctionPattern(const void* function) {
-    constexpr std::size_t kPatternBytes = 64;
-    const auto* bytes = static_cast<const unsigned char*>(function);
+#pragma optimize("", off)
+extern "C" __declspec(noinline) void __fastcall ProfileRuntimeProcessEventTarget(
+    void* object, void* function, void* parameters) {
+    volatile std::uintptr_t value = reinterpret_cast<std::uintptr_t>(object) ^
+        reinterpret_cast<std::uintptr_t>(function) ^
+        reinterpret_cast<std::uintptr_t>(parameters);
+#define ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(base) \
+    value += base + 0U; value ^= base + 1U; value += base + 2U; value ^= base + 3U; \
+    value += base + 4U; value ^= base + 5U; value += base + 6U; value ^= base + 7U; \
+    value += base + 8U; value ^= base + 9U; value += base + 10U; value ^= base + 11U; \
+    value += base + 12U; value ^= base + 13U; value += base + 14U; value ^= base + 15U
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(0U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(16U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(32U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(48U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(64U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(80U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(96U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(112U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(128U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(144U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(160U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(176U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(192U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(208U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(224U);
+    ANOMALY_PROCESS_EVENT_FIXTURE_STEPS(240U);
+#undef ANOMALY_PROCESS_EVENT_FIXTURE_STEPS
+    if (value == 0xA19D3E57U) OutputDebugStringA("ProcessEvent fixture");
+}
+#pragma optimize("", on)
+
+constexpr auto kProcessEventPrologue = std::to_array<std::uint8_t>({
+    0x40, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55,
+    0x41, 0x56, 0x41, 0x57, 0x48, 0x81, 0xEC, 0x00,
+    0x01, 0x00, 0x00, 0x48, 0x8D, 0x6C, 0x24, 0x30,
+    0x48, 0x89, 0x9D, 0x28, 0x01, 0x00, 0x00});
+constexpr auto kProcessEventArgumentSetup = std::to_array<std::uint8_t>({
+    0x48, 0x33, 0xC5, 0x48, 0x89, 0x85, 0xC0, 0x00,
+    0x00, 0x00, 0x8B, 0x41, 0x08, 0x4D, 0x8B, 0xF0,
+    0xC1, 0xE8, 0x1E, 0x48, 0x8B, 0xFA, 0xF6, 0xD0,
+    0x4C, 0x8B, 0xF9, 0xA8, 0x01});
+constexpr auto kProcessEventOutParmSetup = std::to_array<std::uint8_t>({
+    0x48, 0x8B, 0x4F, 0x50, 0x48, 0x8D, 0x95, 0x90,
+    0x00, 0x00, 0x00, 0x48, 0x85, 0xC9, 0x74, 0x56,
+    0x90, 0x48, 0x8B, 0x41, 0x38, 0x84, 0xC0, 0x79,
+    0x4D, 0x48, 0x0F, 0xBA, 0xE0, 0x08, 0x73, 0x3D,
+    0x8B, 0x04, 0x24, 0x48, 0x83, 0xEC, 0x30, 0x4C,
+    0x8D, 0x44, 0x24, 0x30, 0x41, 0x8B, 0x00, 0x48,
+    0x63, 0x41, 0x44, 0x49, 0x83, 0xC0, 0x0F, 0x49,
+    0x83, 0xE0, 0xF0, 0x49, 0x03, 0xC6, 0x49, 0x89,
+    0x40, 0x08, 0x49, 0x89, 0x08, 0x48, 0x8B, 0x02,
+    0x48, 0x85, 0xC0, 0x74, 0x0D, 0x4C, 0x89, 0x40,
+    0x10, 0x48, 0x8B, 0x12, 0x48, 0x83, 0xC2, 0x10,
+    0xEB, 0x03, 0x4C, 0x89, 0x02, 0x48, 0x8B, 0x49,
+    0x18, 0x48, 0x85, 0xC9, 0x75, 0xAB, 0x48, 0x8B,
+    0x02, 0x48, 0x85, 0xC0, 0x74, 0x04, 0x48, 0x89,
+    0x70, 0x10, 0x4D, 0x85, 0xE4, 0x75, 0x50});
+
+struct ProcessEventCodeFixture final {
+    decltype(kProcessEventPrologue) prologue;
+    std::array<std::uint8_t, 0x26U - kProcessEventPrologue.size()> gap_before_arguments;
+    decltype(kProcessEventArgumentSetup) arguments;
+    std::array<
+        std::uint8_t,
+        0x20FU - 0x26U - kProcessEventArgumentSetup.size()> gap_before_out_parameters;
+    decltype(kProcessEventOutParmSetup) out_parameters;
+    std::array<
+        std::uint8_t,
+        0x300U - 0x20FU - kProcessEventOutParmSetup.size()> tail;
+};
+static_assert(offsetof(ProcessEventCodeFixture, arguments) == 0x26U);
+static_assert(offsetof(ProcessEventCodeFixture, out_parameters) == 0x20FU);
+
+const ProcessEventCodeFixture g_process_event_code{
+    kProcessEventPrologue, {}, kProcessEventArgumentSetup, {},
+    kProcessEventOutParmSetup, {}};
+
+constexpr std::array<std::uint8_t, 16> kObjectRegistryMarker{
+    0xA1, 0x31, 0xC7, 0x42, 0x56, 0xE8, 0x99, 0x0B,
+    0xD2, 0x6D, 0x17, 0xF4, 0x83, 0xAC, 0x5E, 0x70};
+constexpr std::array<std::uint8_t, 16> kNamePoolMarker{
+    0xB4, 0x28, 0x6C, 0xD1, 0x9A, 0x05, 0xE7, 0x53,
+    0x1F, 0x88, 0x32, 0xCA, 0x74, 0xBD, 0x60, 0x0E};
+
+std::array<std::uintptr_t, 1> g_object_chunks{};
+struct alignas(std::uintptr_t) MarkedObjectRegistry final {
+    std::array<std::uint8_t, 16> marker;
+    std::uintptr_t items;
+    std::uint32_t count;
+    std::uint32_t max_count;
+    std::uint32_t max_chunks;
+    std::uint32_t num_chunks;
+};
+MarkedObjectRegistry g_object_registry{
+    kObjectRegistryMarker,
+    reinterpret_cast<std::uintptr_t>(g_object_chunks.data()),
+    0,
+    1,
+    1,
+    0};
+struct alignas(std::uintptr_t) MarkedNamePool final {
+    std::array<std::uint8_t, 16> marker;
+    std::uintptr_t payload;
+};
+MarkedNamePool g_name_pool{kNamePoolMarker, 1};
+
+class ScopedCodePatch final {
+public:
+    bool Apply(void* target, const void* replacement, const std::size_t size) {
+        if (target == nullptr || replacement == nullptr ||
+            size == 0 || size > original_.size()) {
+            return false;
+        }
+        DWORD old_protection{};
+        if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old_protection)) {
+            return false;
+        }
+        target_ = target;
+        size_ = size;
+        protection_ = old_protection;
+        active_ = true;
+        std::memcpy(original_.data(), target, size);
+        std::memcpy(target, replacement, size);
+        static_cast<void>(FlushInstructionCache(GetCurrentProcess(), target, size));
+        DWORD ignored{};
+        if (!VirtualProtect(target, size, old_protection, &ignored)) {
+            return false;
+        }
+        return true;
+    }
+
+    bool Restore() noexcept {
+        if (!active_) return true;
+        DWORD old_protection{};
+        if (!VirtualProtect(target_, size_, PAGE_EXECUTE_READWRITE, &old_protection)) {
+            return false;
+        }
+        std::memcpy(target_, original_.data(), size_);
+        static_cast<void>(FlushInstructionCache(GetCurrentProcess(), target_, size_));
+        DWORD ignored{};
+        const bool restored =
+            VirtualProtect(target_, size_, protection_, &ignored) != FALSE;
+        if (restored) active_ = false;
+        return restored;
+    }
+
+    ~ScopedCodePatch() { static_cast<void>(Restore()); }
+
+private:
+    std::array<std::uint8_t, sizeof(ProcessEventCodeFixture)> original_{};
+    void* target_{};
+    std::size_t size_{};
+    DWORD protection_{};
+    bool active_{};
+};
+
+void* ResolveLinkedFunction(void* entry) {
+    auto address = reinterpret_cast<std::uintptr_t>(entry);
+    for (std::size_t depth{}; depth < 4; ++depth) {
+        const auto* const code = reinterpret_cast<const std::uint8_t*>(address);
+        if (code[0] == 0xE9U) {
+            std::int32_t displacement{};
+            std::memcpy(&displacement, code + 1, sizeof(displacement));
+            address = static_cast<std::uintptr_t>(
+                static_cast<std::intptr_t>(address + 5U) + displacement);
+            continue;
+        }
+        if (code[0] == 0xFFU && code[1] == 0x25U) {
+            std::int32_t displacement{};
+            std::memcpy(&displacement, code + 2, sizeof(displacement));
+            const auto slot = static_cast<std::uintptr_t>(
+                static_cast<std::intptr_t>(address + 6U) + displacement);
+            std::memcpy(&address, reinterpret_cast<const void*>(slot), sizeof(address));
+            continue;
+        }
+        break;
+    }
+    return reinterpret_cast<void*>(address);
+}
+
+std::string BytesPattern(const void* data, const std::size_t size) {
+    const auto* bytes = static_cast<const unsigned char*>(data);
     std::ostringstream pattern;
     pattern << std::hex << std::uppercase << std::setfill('0');
-    for (std::size_t index = 0; index < kPatternBytes; ++index) {
+    for (std::size_t index = 0; index < size; ++index) {
         if (index != 0) pattern << ' ';
         pattern << std::setw(2) << static_cast<unsigned int>(bytes[index]);
     }
     return pattern.str();
+}
+
+std::string FunctionPattern(const void* function) {
+    constexpr std::size_t kPatternBytes = 64;
+    return BytesPattern(function, kPatternBytes);
 }
 
 std::string Narrow(std::wstring_view value) {
@@ -88,6 +277,118 @@ std::string RaceHookProfile(const anomaly::BuildFingerprint& fingerprint) {
          << FunctionPattern(reinterpret_cast<const void*>(&ProfileRuntimeRaceTickTarget))
          << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","tick-anchor-v1"],"requiredBy":["anomaly.ue5.framework"]}},"features":{"ue5.framework":["ue5.GameTick"],"nte.player":["ue5.GameTick"]}})";
     return json.str();
+}
+
+void ResetProfileLayers(const std::filesystem::path& root);
+
+std::string AhudHookProfile(const anomaly::BuildFingerprint& fingerprint) {
+    const std::string module = Narrow(fingerprint.module);
+    std::ostringstream json;
+    json << R"({"schemaVersion":1,"game":"nte","symbols":{"ue5.GameTick":{"module":")"
+         << module << R"(","section":".text","pattern":")"
+         << FunctionPattern(reinterpret_cast<const void*>(&ProfileRuntimeRaceTickTarget))
+         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","tick-anchor-v1"],"requiredBy":["anomaly.ue5.framework"]},"ue5.GObjects":{"module":")"
+         << module << R"(","section":".data","pattern":")"
+         << BytesPattern(g_object_registry.marker.data(), g_object_registry.marker.size())
+         << R"(","resolve":{"kind":"direct","addend":16},"validators":["readable","object-registry-v1"],"requiredBy":["anomaly.ue5.functions"]},"ue5.FNamePool":{"module":")"
+         << module << R"(","section":".data","pattern":")"
+         << BytesPattern(g_name_pool.marker.data(), g_name_pool.marker.size())
+         << R"(","resolve":{"kind":"direct","addend":16},"validators":["readable","name-pool-v1"],"requiredBy":["anomaly.ue5.functions"]},"ue5.ProcessEvent":{"module":")"
+         << module << R"(","section":".text","pattern":")"
+         << BytesPattern(&g_process_event_code, 64)
+         << R"(","resolve":{"kind":"direct"},"validators":["address-in-module","executable"],"requiredBy":["anomaly.ue5.ahud"]}},"features":{"ue5.framework":["ue5.GameTick"],"ue5.objects":["ue5.GObjects","ue5.GameTick"],"ue5.names":["ue5.FNamePool"],"ue5.functions":["ue5.GObjects","ue5.GameTick","ue5.FNamePool"],"ue5.process-event":["ue5.ProcessEvent"],"ue5.ahud":["ue5.ProcessEvent"]},"optionalFeatures":["ue5.objects","ue5.names","ue5.functions","ue5.process-event","ue5.ahud"],"featureLayoutValidators":{"ue5.functions":["ue5-functions-reflection-v1"],"ue5.process-event":["ue5-process-event-abi-v1"],"ue5.ahud":["ue5-ahud-reflection-v1"]},"featureDependencies":{"ue5.functions":["ue5.objects","ue5.names"],"ue5.ahud":["ue5.functions","ue5.process-event"]},"layout":{"object.class":16,"object.nameOffset":24,"object.outer":32,"ufunction.numParms":180,"ufunction.parmsSize":182,"ufunction.returnValueOffset":184,"names.blocksOffset":16,"names.blockBits":16,"names.entryStride":2,"names.headerLengthShift":6,"objects.itemsOffset":0,"objects.maxCountOffset":12,"objects.countOffset":8,"objects.maxChunksOffset":16,"objects.numChunksOffset":20,"objects.chunkCountSize":4,"objects.chunkSize":65536,"objects.itemStride":24,"objects.objectOffset":0,"objects.serialOffset":16,"ustruct.propertyLink":112,"ffield.class":8,"ffield.name":32,"ffieldClass.name":0,"fproperty.arrayDim":48,"fproperty.elementSize":52,"fproperty.offsetInternal":68,"fproperty.propertyLinkNext":72,"fstructProperty.struct":112,"fboolProperty.fieldSize":112,"fboolProperty.byteOffset":113,"fboolProperty.byteMask":114,"fboolProperty.fieldMask":115}})";
+    return json.str();
+}
+
+bool TestAhudHookLifecycle(
+    const std::filesystem::path& root,
+    const anomaly::BuildFingerprint& fingerprint) {
+    ResetProfileLayers(root);
+
+    void* const process_event_target = ResolveLinkedFunction(
+        reinterpret_cast<void*>(&ProfileRuntimeProcessEventTarget));
+    const auto module_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    DWORD64 unwind_image_base{};
+    const auto* const unwind_entry = RtlLookupFunctionEntry(
+        reinterpret_cast<DWORD64>(process_event_target), &unwind_image_base, nullptr);
+    const auto process_event_rva =
+        reinterpret_cast<std::uintptr_t>(process_event_target) - module_base;
+    if (unwind_entry == nullptr || unwind_image_base != module_base ||
+        unwind_entry->BeginAddress != process_event_rva ||
+        unwind_entry->EndAddress - unwind_entry->BeginAddress <
+            sizeof(g_process_event_code)) {
+        std::cerr << "ProcessEvent fixture rva=" << process_event_rva
+                  << " unwindBase=" << unwind_image_base
+                  << " moduleBase=" << module_base;
+        if (unwind_entry != nullptr) {
+            std::cerr << " begin=" << unwind_entry->BeginAddress
+                      << " end=" << unwind_entry->EndAddress
+                      << " size=" << unwind_entry->EndAddress - unwind_entry->BeginAddress;
+        }
+        std::cerr << " required=" << sizeof(g_process_event_code) << '\n';
+        ResetProfileLayers(root);
+        return Check(false, "ProcessEvent fixture has no sufficiently large unwind entry");
+    }
+    ScopedCodePatch process_event_patch;
+    if (!process_event_patch.Apply(
+            process_event_target, &g_process_event_code,
+            sizeof(g_process_event_code))) {
+        ResetProfileLayers(root);
+        return Check(false, "ProcessEvent fixture code patch failed");
+    }
+    std::ofstream(root / L"profiles" / L"nte" / L"ahud-hook.json")
+        << AhudHookProfile(fingerprint);
+
+    bool result = true;
+    {
+        anomaly::NteProfileRuntimeOptions options;
+        options.runtime_root = root;
+        options.game_module = GetModuleHandleW(nullptr);
+        anomaly::NteProfileRuntime runtime(std::move(options));
+        const bool started = runtime.Start();
+        const auto resolution = runtime.Resolution();
+        const auto evidence = runtime.Evidence();
+        const auto diagnostics = runtime.DiagnosticsJson();
+        const auto hooks = runtime.Hooks();
+        const bool tick_hook = std::ranges::any_of(hooks, [](const auto& hook) {
+            return hook.owner == "anomaly.ue5.framework" &&
+                hook.label == "game-tick" && hook.enabled;
+        });
+        const bool process_event_hook = std::ranges::any_of(hooks, [](const auto& hook) {
+            return hook.owner == "anomaly.ue5.ahud" &&
+                hook.label == "process-event" && hook.enabled;
+        });
+        const bool activated =
+            started && resolution && resolution->FeatureAvailable("ue5.ahud") &&
+                evidence.tick_hook_ready && evidence.ahud_hook_ready &&
+                diagnostics.find("\"tickHookReady\":true") != std::string::npos &&
+                diagnostics.find("\"ahudHookReady\":true") != std::string::npos &&
+                hooks.size() == 2 && tick_hook && process_event_hook &&
+                anomaly::ProcessAdapterServices().Query(
+                    ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+                    ANOMALY_UE5_AHUD_SERVICE_V1_VERSION,
+                    false) != nullptr;
+        if (!activated) {
+            std::cerr << "AHUD runtime diagnostics: " << diagnostics << '\n';
+            for (const auto& hook : hooks) {
+                std::cerr << "hook owner=" << hook.owner << " label=" << hook.label
+                          << " enabled=" << hook.enabled << '\n';
+            }
+        }
+        result = Check(
+            activated,
+            "AHUD feature did not activate the Runtime-owned ProcessEvent hook");
+        result = Check(runtime.Stop(), "AHUD hook runtime did not stop") && result;
+        result = Check(
+            runtime.Hooks().empty() &&
+                anomaly::ProcessAdapterServices().Snapshot().empty(),
+            "AHUD ProcessEvent hook or service survived Runtime stop") && result;
+    }
+    result = Check(
+        process_event_patch.Restore(),
+        "ProcessEvent fixture code restoration failed") && result;
+    ResetProfileLayers(root);
+    return result;
 }
 
 std::string HistoricalProfile(
@@ -734,6 +1035,7 @@ int main() {
         diagnostics.find("\"fingerprintAvailable\":false") == std::string::npos ||
         diagnostics.find("\"adapterStarted\":true") == std::string::npos ||
         diagnostics.find("\"tickHookReady\":false") == std::string::npos ||
+        diagnostics.find("\"ahudHookReady\":false") == std::string::npos ||
         diagnostics.find("\"ntePlayerPublished\":false") == std::string::npos ||
         diagnostics.find("\"outgoingTransformMetadataProbe\":{\"started\":false}") ==
             std::string::npos ||
@@ -753,6 +1055,9 @@ int main() {
     }
     if (!TestSectionReadinessTimeout(root, fixture_identity)) {
         return 12;
+    }
+    if (!TestAhudHookLifecycle(root, fixture_identity)) {
+        return 13;
     }
 
     std::filesystem::create_directories(root / L"profiles" / L"nte", error);

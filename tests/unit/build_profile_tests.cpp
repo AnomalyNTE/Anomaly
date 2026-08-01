@@ -452,6 +452,24 @@ int main() {
             : [&]() -> const std::vector<std::string>* {
                   const auto found = profile->feature_dependencies.find("ue5.functions");
                   return found == profile->feature_dependencies.end() ? nullptr : &found->second;
+               }();
+        const auto ahud_feature_symbols = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found = profile->features.find("ue5.ahud");
+                  return found == profile->features.end() ? nullptr : &found->second;
+              }();
+        const auto ahud_feature_validators = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found = profile->feature_layout_validators.find("ue5.ahud");
+                  return found == profile->feature_layout_validators.end() ? nullptr : &found->second;
+              }();
+        const auto ahud_feature_dependencies = profile == nullptr
+            ? nullptr
+            : [&]() -> const std::vector<std::string>* {
+                  const auto found = profile->feature_dependencies.find("ue5.ahud");
+                  return found == profile->feature_dependencies.end() ? nullptr : &found->second;
               }();
         const auto entity_feature_symbols = profile == nullptr
             ? nullptr
@@ -564,6 +582,30 @@ int main() {
             [profile](const std::string_view key) {
                 return profile->layout.contains(std::string(key));
             });
+        const bool retains_ahud_reflection_layout = profile != nullptr && std::ranges::all_of(
+            std::array<std::string_view, 19>{
+                "object.class",
+                "object.nameOffset",
+                "object.outer",
+                "ustruct.propertyLink",
+                "ufunction.numParms",
+                "ufunction.parmsSize",
+                "ufunction.returnValueOffset",
+                "ffield.class",
+                "ffield.name",
+                "ffieldClass.name",
+                "fproperty.arrayDim",
+                "fproperty.elementSize",
+                "fproperty.offsetInternal",
+                "fproperty.propertyLinkNext",
+                "fstructProperty.struct",
+                "fboolProperty.fieldSize",
+                "fboolProperty.byteOffset",
+                "fboolProperty.byteMask",
+                "fboolProperty.fieldMask"},
+            [profile](const std::string_view key) {
+                return profile->layout.contains(std::string(key));
+            });
         const bool esc_menu_hook_topology = profile != nullptr &&
             esc_menu_symbols != nullptr && esc_menu_symbols->size() == 7 &&
             contains(*esc_menu_symbols, "nte.HTUI_MenuExtension.AddMenuPage") &&
@@ -642,6 +684,16 @@ int main() {
                            function_feature_dependencies->size() == 2 &&
                            contains(*function_feature_dependencies, "ue5.objects") &&
                            contains(*function_feature_dependencies, "ue5.names") &&
+                           ahud_feature_symbols != nullptr &&
+                           *ahud_feature_symbols ==
+                               std::vector<std::string>{"ue5.ProcessEvent"} &&
+                           ahud_feature_validators != nullptr &&
+                           *ahud_feature_validators ==
+                               std::vector<std::string>{"ue5-ahud-reflection-v1"} &&
+                           ahud_feature_dependencies != nullptr &&
+                           ahud_feature_dependencies->size() == 2 &&
+                           contains(*ahud_feature_dependencies, "ue5.functions") &&
+                           contains(*ahud_feature_dependencies, "ue5.process-event") &&
                            entity_feature_symbols != nullptr && entity_feature_symbols->size() == 3 &&
                            contains(*entity_feature_symbols, "ue5.GWorld") &&
                            contains(*entity_feature_symbols, "ue5.GameTick") &&
@@ -657,7 +709,8 @@ int main() {
                             profile->layout.at("controller.playerState") == 720 &&
                              profile->optional_features.contains("ue5.actors") &&
                              profile->optional_features.contains("ue5.functions") &&
-                             profile->optional_features.contains("ue5.process-event") &&
+                              profile->optional_features.contains("ue5.process-event") &&
+                              profile->optional_features.contains("ue5.ahud") &&
                              profile->optional_features.contains("nte.player-esp") &&
                             profile->optional_features.contains("nte.player-teleport") &&
                             excludes_rob_bank_contract &&
@@ -668,7 +721,8 @@ int main() {
                           process_event->validators.size() == 2 &&
                            contains(process_event->validators, "address-in-module") &&
                            contains(process_event->validators, "executable") &&
-                           contains(process_event->required_by, "anomaly.ue5.framework") &&
+                            contains(process_event->required_by, "anomaly.ue5.framework") &&
+                            contains(process_event->required_by, "anomaly.ue5.ahud") &&
                            !contains(
                                process_event->required_by,
                                "anomaly.nte.player-teleport") &&
@@ -679,6 +733,7 @@ int main() {
                             excludes_fake_uid_contract &&
                             retains_teleport_reflection_layout &&
                            retains_function_reflection_layout &&
+                           retains_ahud_reflection_layout &&
                           !profile->layout.contains("object.vtable") &&
                           !profile->layout.contains("uobject.processEventVtableIndex") &&
                           !profile->features.contains("nte.player-root-location-override") &&
@@ -759,6 +814,29 @@ int main() {
                      "actor reflection feature accepted an incomplete name layout contract") &&
             result;
 
+        auto incomplete_ahud_reflection_contract = ReadTextFile(*current_nte_profile_path);
+        const std::string ahud_field_class_layout{"\"ffieldClass.name\""};
+        const auto ahud_field_class_layout_offset = incomplete_ahud_reflection_contract.find(
+            ahud_field_class_layout);
+        if (ahud_field_class_layout_offset != std::string::npos) {
+            incomplete_ahud_reflection_contract.replace(
+                ahud_field_class_layout_offset,
+                ahud_field_class_layout.size(),
+                "\"ffieldClass.unusedName\"");
+        }
+        const auto incomplete_ahud_reflection_profile = anomaly::ParseBuildProfile(
+            incomplete_ahud_reflection_contract, *current_nte_profile_path);
+        result = Check(
+                     ahud_field_class_layout_offset != std::string::npos &&
+                         !incomplete_ahud_reflection_profile.Ok() &&
+                         std::ranges::any_of(
+                             incomplete_ahud_reflection_profile.diagnostics,
+                             [](const auto& diagnostic) {
+                                 return diagnostic.path == "/layout/ffieldClass.name";
+                             }),
+                     "AHUD reflection feature accepted an incomplete field-class layout") &&
+            result;
+
     }
 
     const auto example_nte_profile_path = FindNteProfile("nte-build-profile.json.example");
@@ -775,15 +853,24 @@ int main() {
         example_nte_profile_json.replace(
             tick_pattern, sizeof("GAME_TICK_PATTERN") - 1, "40 53 48 83 EC 20");
     }
+    const auto process_event_pattern = example_nte_profile_json.find("PROCESS_EVENT_PATTERN");
+    if (process_event_pattern != std::string::npos) {
+        example_nte_profile_json.replace(
+            process_event_pattern,
+            sizeof("PROCESS_EVENT_PATTERN") - 1,
+            "40 55 56 57 48 83 EC 20");
+    }
     const auto example_nte_profile = anomaly::ParseBuildProfile(
         example_nte_profile_json,
         example_nte_profile_path ? *example_nte_profile_path : std::filesystem::path{});
     result = Check(
                  example_nte_profile_path.has_value() && name_pattern != std::string::npos &&
-                     tick_pattern != std::string::npos && example_nte_profile.Ok() &&
+                     tick_pattern != std::string::npos &&
+                     process_event_pattern != std::string::npos && example_nte_profile.Ok() &&
                      example_nte_profile.profile &&
                      example_nte_profile.profile->features.contains("ue5.actors") &&
-                     example_nte_profile.profile->features.contains("ue5.functions"),
+                     example_nte_profile.profile->features.contains("ue5.functions") &&
+                     example_nte_profile.profile->features.contains("ue5.ahud"),
                  "NTE profile template did not retain the reflection feature contracts") &&
         result;
 

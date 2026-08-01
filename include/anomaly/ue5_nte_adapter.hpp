@@ -47,7 +47,7 @@ public:
     Ue5NteAdapter(const Ue5NteAdapter&) = delete;
     Ue5NteAdapter& operator=(const Ue5NteAdapter&) = delete;
 
-    [[nodiscard]] bool Start(bool framework_hook_ready);
+    [[nodiscard]] bool Start(bool framework_hook_ready, bool ahud_hook_ready = false);
     // Closes cached service tables, detaches callbacks, and revokes registry
     // entries before draining state/callback work. Callback target destruction
     // is deferred off the lifecycle caller. A false result keeps the generation
@@ -62,6 +62,14 @@ public:
     bool ClearTickCallback(
         std::chrono::milliseconds timeout = std::chrono::milliseconds::max()) noexcept;
     void OnGameTick(double delta_seconds) noexcept;
+    // Called only by the separately owned ProcessEvent detour after the
+    // original event has completed. The original invoker bypasses that detour
+    // and is valid only for this synchronous call.
+    void OnProcessEvent(
+        std::uintptr_t object,
+        std::uintptr_t function,
+        void* parameters,
+        const ProcessEventInvoker& original) noexcept;
 
     [[nodiscard]] bool Started() const noexcept;
     [[nodiscard]] DWORD GameThreadId() const noexcept;

@@ -90,6 +90,7 @@ bool TestEveryControlledServiceRequiresItsMappedCapability() {
         Mapping{"anomaly.texture", "ui-texture"},
         Mapping{"anomaly.input", "input"},
         Mapping{"anomaly.ue5.build", "ue5-build"},
+        Mapping{"anomaly.ue5.ahud", "ue5-ahud"},
         Mapping{"anomaly.ue5.framework", "game-events"},
         Mapping{"anomaly.ue5.names", "ue5-names"},
         Mapping{"anomaly.ue5.objects", "ue5-objects"},

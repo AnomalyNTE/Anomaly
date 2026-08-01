@@ -1,6 +1,7 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "plugins/common/localization.hpp"
 
+#include "ahud_geometry.hpp"
 #include "loot_class_cache.hpp"
 #include "loot_catalog.generated.h"
 #include "loot_filter_policy.hpp"
@@ -19,6 +20,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -29,6 +31,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 namespace catalog = pink_paw_heist_esp::catalog;
+using pink_paw_heist_esp::ProjectedBounds;
 
 constexpr std::size_t kEntityPageCapacity = 256;
 constexpr std::uint32_t kMaximumEntityCount = 32768;
@@ -82,6 +85,7 @@ enum class ExtractionActivation {
 struct ExtractionPoint final {
     AnomalyNteEntitySnapshotV1 snapshot{sizeof(snapshot)};
     std::string id;
+    std::string label;
     ExtractionActivation activation{ExtractionActivation::unknown};
 };
 
@@ -99,6 +103,11 @@ struct ExtractionCache final {
     std::atomic_bool refresh_requested{true};
 };
 
+struct ExtractionDisplaySnapshot final {
+    bool available{};
+    std::vector<ExtractionPoint> points;
+};
+
 struct Settings final {
     bool menu_open{true};
     bool enabled{true};
@@ -107,6 +116,14 @@ struct Settings final {
     bool always_show_access_cards{true};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
+};
+
+struct DisplaySettings final {
+    bool enabled{true};
+    bool show_active_extractions_only{true};
+    bool show_pickable_only{true};
+    bool always_show_access_cards{true};
+    std::uint32_t minimum_value{};
 };
 
 struct PendingTeleport final {
@@ -146,6 +163,7 @@ struct Context final {
     anomaly::plugins::Localizer localizer;
     const AnomalyConfigServiceV1* config{};
     const AnomalyTextureServiceV1* texture{};
+    const AnomalyUe5AhudServiceV1* ahud{};
     AnomalyGenerationHandleV1 settings_schema{};
     std::array<AnomalyGenerationHandleV1, catalog::kItemDefinitions.size()> item_icons{};
     pink_paw_heist_esp::LootClassCache loot_classes;
@@ -177,7 +195,11 @@ pink_paw_heist_esp::PinkPawWorldGate g_world_gate;
 bool g_in_pink_paw_world{};
 std::atomic_bool g_world_gate_refresh_requested{true};
 std::atomic<std::shared_ptr<const LootCache>> g_loot_cache;
+std::atomic<std::shared_ptr<const ExtractionDisplaySnapshot>> g_extraction_snapshot;
+std::atomic<std::shared_ptr<const DisplaySettings>> g_display_settings;
 std::atomic_bool g_loot_refresh_requested{true};
+AnomalyGenerationHandleV1 g_ahud_subscription{};
+bool g_update_enabled{};
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -403,6 +425,21 @@ Settings CurrentSettings() noexcept {
         g_context.minimum_value,
         std::isfinite(g_context.teleport_z_offset)
             ? g_context.teleport_z_offset : kDefaultTeleportZOffsetCentimeters};
+}
+
+DisplaySettings CurrentDisplaySettings() noexcept {
+    return {
+        g_context.enabled != 0,
+        g_context.show_active_extractions_only != 0,
+        g_context.show_pickable_only != 0,
+        g_context.always_show_access_cards != 0,
+        g_context.minimum_value};
+}
+
+void PublishDisplaySettings() {
+    g_display_settings.store(
+        std::make_shared<const DisplaySettings>(CurrentDisplaySettings()),
+        std::memory_order_release);
 }
 
 void ApplySettings(const Settings& settings) noexcept {
@@ -813,6 +850,18 @@ bool CurrentWorld(AnomalyGenerationHandleV1& world) {
     return true;
 }
 
+std::string BuildExtractionLabel(const ExtractionPoint& point);
+
+void PublishExtractionSnapshotLocked() {
+    auto snapshot = std::make_shared<ExtractionDisplaySnapshot>();
+    snapshot->available = g_extractions.available;
+    snapshot->points = g_extractions.points;
+    for (ExtractionPoint& point : snapshot->points) {
+        point.label = BuildExtractionLabel(point);
+    }
+    g_extraction_snapshot.store(std::move(snapshot), std::memory_order_release);
+}
+
 void ResetExtractionData() noexcept {
     g_extractions.frame = AnomalyNteEntityFrameV1{sizeof(g_extractions.frame)};
     g_extractions.points.clear();
@@ -846,6 +895,7 @@ void RefreshExtractionCacheIfDue() {
             ResetExtractionData();
             g_extractions.world = {};
             g_extractions.next_world_check = now + kExtractionWorldPollInterval;
+            g_extraction_snapshot.store({}, std::memory_order_release);
             return;
         }
 
@@ -857,6 +907,7 @@ void RefreshExtractionCacheIfDue() {
             if (!SameHandle(g_extractions.world, world)) {
                 ResetExtractionData();
                 g_extractions.world = world;
+                g_extraction_snapshot.store({}, std::memory_order_release);
             }
             discover = !g_extractions.complete;
             class_id = g_extractions.class_id;
@@ -878,6 +929,7 @@ void RefreshExtractionCacheIfDue() {
                 g_extractions.frame = AnomalyNteEntityFrameV1{sizeof(g_extractions.frame)};
                 g_extractions.points.clear();
             }
+            PublishExtractionSnapshotLocked();
             return;
         }
     }
@@ -909,6 +961,7 @@ void RefreshExtractionCacheIfDue() {
             g_extractions.next_state_refresh = state_complete
                 ? Clock::time_point{}
                 : now + kExtractionStateRetryInterval;
+            PublishExtractionSnapshotLocked();
         }
     }
 }
@@ -920,6 +973,7 @@ void ClearExtractionCache() noexcept {
     g_extractions.next_world_check = {};
     g_extractions.next_state_refresh = {};
     g_extractions.refresh_requested.store(true, std::memory_order_release);
+    g_extraction_snapshot.store({}, std::memory_order_release);
 }
 
 void ClearCache() noexcept {
@@ -927,7 +981,6 @@ void ClearCache() noexcept {
     g_loot_refresh_requested.store(true, std::memory_order_release);
     g_context.loot_classes.Clear();
     g_context.loot_refresh.Reset();
-    g_context.current_page = 0;
     g_context.last_valid_refresh = {};
     g_context.next_known_loot_validation = {};
     g_context.next_pickability_context_refresh = {};
@@ -1095,10 +1148,11 @@ void RemoveCachedLoot(const pink_paw_heist_esp::RobBankEntity entity) {
     }
 }
 
-bool PassesItemFilters(const LootEntity& entry) noexcept {
+bool PassesItemFilters(
+    const LootEntity& entry,
+    const DisplaySettings& settings) noexcept {
     return pink_paw_heist_esp::PassesItemValueFilter(
-        entry.item, g_context.minimum_value,
-        g_context.always_show_access_cards != 0);
+        entry.item, settings.minimum_value, settings.always_show_access_cards);
 }
 
 bool IsPickable(const LootEntity& entry) noexcept {
@@ -1106,10 +1160,12 @@ bool IsPickable(const LootEntity& entry) noexcept {
         pink_paw_heist_esp::RobBankPickability::candidate;
 }
 
-bool IsVisibleLoot(const LootEntity& entry) noexcept {
-    return PassesItemFilters(entry) &&
+bool IsVisibleLoot(
+    const LootEntity& entry,
+    const DisplaySettings& settings) noexcept {
+    return PassesItemFilters(entry, settings) &&
         pink_paw_heist_esp::PassesPickabilityFilter(
-            entry.rob_bank.pickability, g_context.show_pickable_only != 0);
+            entry.rob_bank.pickability, settings.show_pickable_only);
 }
 
 std::string FormatValue(const std::uint32_t value) {
@@ -1174,11 +1230,13 @@ std::uint32_t LootColor(const LootEntity& entry) noexcept {
     return ANOMALY_RGBA_V1(95, 226, 148, 255);
 }
 
-std::vector<const LootEntity*> CollectVisibleLoot(const LootCache& cache) {
+std::vector<const LootEntity*> CollectVisibleLoot(
+    const LootCache& cache,
+    const DisplaySettings& settings) {
     std::vector<const LootEntity*> visible;
     visible.reserve(cache.loot.size());
     for (const LootEntity& entry : cache.loot) {
-        if (IsVisibleLoot(entry)) visible.push_back(&entry);
+        if (IsVisibleLoot(entry, settings)) visible.push_back(&entry);
     }
     std::sort(visible.begin(), visible.end(), [](const LootEntity* left, const LootEntity* right) {
         const bool left_access_card = pink_paw_heist_esp::IsAccessCard(left->item);
@@ -1767,6 +1825,16 @@ std::string ExtractionActivationText(const ExtractionActivation activation) {
     }
 }
 
+std::string BuildExtractionLabel(const ExtractionPoint& point) {
+    const std::string activation = ExtractionActivationText(point.activation);
+    const std::string coordinates = BuildWorldCoordinates(point.snapshot);
+    const std::array arguments{
+        std::string_view(point.id), std::string_view(activation),
+        std::string_view(coordinates)};
+    return g_context.localizer.Format(
+        "extraction.label", "Extraction {0}\n{1}\n{2}", arguments);
+}
+
 std::uint32_t ExtractionColor(const ExtractionActivation activation) noexcept {
     switch (activation) {
     case ExtractionActivation::active: return ANOMALY_RGBA_V1(72, 220, 132, 255);
@@ -1775,14 +1843,18 @@ std::uint32_t ExtractionColor(const ExtractionActivation activation) noexcept {
     }
 }
 
-bool ShouldShowExtraction(const ExtractionPoint& point) noexcept {
-    return g_context.show_active_extractions_only == 0 ||
+bool ShouldShowExtraction(
+    const ExtractionPoint& point,
+    const DisplaySettings& settings) noexcept {
+    return !settings.show_active_extractions_only ||
         point.activation == ExtractionActivation::active;
 }
 
-void FilterExtractionPoints(std::vector<ExtractionPoint>& points) {
-    std::erase_if(points, [](const ExtractionPoint& point) {
-        return !ShouldShowExtraction(point);
+void FilterExtractionPoints(
+    std::vector<ExtractionPoint>& points,
+    const DisplaySettings& settings) {
+    std::erase_if(points, [&](const ExtractionPoint& point) {
+        return !ShouldShowExtraction(point, settings);
     });
 }
 
@@ -1887,15 +1959,13 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             changed_access_cards || changed_minimum || changed_teleport_offset) {
             g_context.settings_dirty = true;
             g_context.current_page = 0;
+            PublishDisplaySettings();
         }
         if (changed_enabled) {
             if (g_context.enabled != 0) {
                 g_world_gate_refresh_requested.store(true, std::memory_order_release);
                 g_loot_refresh_requested.store(true, std::memory_order_release);
                 g_extractions.refresh_requested.store(true, std::memory_order_release);
-            } else {
-                ClearCache();
-                ClearExtractionCache();
             }
         }
         if (!supports_numeric_input) {
@@ -1918,14 +1988,14 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             g_extractions.refresh_requested.store(true, std::memory_order_release);
         }
 
-        std::vector<ExtractionPoint> extraction_points;
-        bool extraction_available{};
-        {
-            std::scoped_lock lock(g_extractions.mutex);
-            extraction_available = g_extractions.available;
-            extraction_points = g_extractions.points;
-        }
-        FilterExtractionPoints(extraction_points);
+        const DisplaySettings display_settings = CurrentDisplaySettings();
+        const auto extraction_snapshot =
+            g_extraction_snapshot.load(std::memory_order_acquire);
+        const bool extraction_available =
+            extraction_snapshot && extraction_snapshot->available;
+        std::vector<ExtractionPoint> extraction_points = extraction_snapshot
+            ? extraction_snapshot->points : std::vector<ExtractionPoint>{};
+        FilterExtractionPoints(extraction_points, display_settings);
         const std::string extraction_count = std::to_string(extraction_points.size());
         const std::array extraction_arguments{std::string_view(extraction_count)};
         Text(ui, g_context.localizer.Format(
@@ -1944,7 +2014,7 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         }
 
         const std::vector<const LootEntity*> visible_loot =
-            CollectVisibleLoot(loot_cache);
+            CollectVisibleLoot(loot_cache, display_settings);
         const std::size_t visible_count = visible_loot.size();
         const std::string total = std::to_string(loot_cache.loot.size());
         const std::string visible_total = std::to_string(visible_count);
@@ -1975,93 +2045,240 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
     ui->end_window(ui->user);
 }
 
-bool ReadEspCamera(AnomalyEspCameraV1& camera) {
-    const auto player = QueryService<AnomalyNtePlayerServiceV1>(
-        g_context.host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID,
-        ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
-    if (!player || player.service->esp_snapshot == nullptr) return false;
-
-    AnomalyNtePlayerEspSnapshotV1 snapshot{sizeof(snapshot)};
-    if (player.service->esp_snapshot(player.service->user, &snapshot).code !=
-            ANOMALY_STATUS_V1_OK ||
-        !IsCompleteSnapshot(snapshot.flags)) {
-        return false;
-    }
-    std::ranges::copy(snapshot.camera_position, camera.position);
-    std::ranges::copy(snapshot.camera_rotation, camera.rotation);
-    camera.horizontal_fov_degrees = snapshot.horizontal_fov_degrees;
-    return true;
+bool AhudServiceAvailable(const AnomalyUe5AhudServiceV1* service) noexcept {
+    return service != nullptr &&
+        HasField<AnomalyUe5AhudServiceV1,
+            decltype(AnomalyUe5AhudServiceV1::service_version)>(
+            service, offsetof(AnomalyUe5AhudServiceV1, service_version)) &&
+        service->service_version >= ANOMALY_UE5_AHUD_SERVICE_V1_VERSION &&
+        HasField<AnomalyUe5AhudServiceV1,
+            decltype(AnomalyUe5AhudServiceV1::subscribe)>(
+            service, offsetof(AnomalyUe5AhudServiceV1, subscribe)) &&
+        HasField<AnomalyUe5AhudServiceV1,
+            decltype(AnomalyUe5AhudServiceV1::unsubscribe)>(
+            service, offsetof(AnomalyUe5AhudServiceV1, unsubscribe)) &&
+        service->subscribe != nullptr && service->unsubscribe != nullptr;
 }
 
-void DrawEsp(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
-    if (ui == nullptr || g_context.enabled == 0) return;
-    std::vector<ExtractionPoint> extraction_points;
-    bool extraction_available{};
-    {
-        std::scoped_lock lock(g_extractions.mutex);
-        extraction_available = g_extractions.available;
-        extraction_points = g_extractions.points;
-    }
-    FilterExtractionPoints(extraction_points);
-    if (!loot_cache.available && !extraction_available) return;
-    const bool supports_boxes =
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::draw_entity_bbox)>(
-            ui, offsetof(AnomalyUiServiceV1, draw_entity_bbox)) &&
-        ui->draw_entity_bbox != nullptr;
-    const bool supports_labels =
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::draw_entity_label)>(
-            ui, offsetof(AnomalyUiServiceV1, draw_entity_label)) &&
-        ui->draw_entity_label != nullptr;
-    if (!supports_boxes && !supports_labels) return;
+bool AhudFrameAvailable(const AnomalyUe5AhudFrameV1* frame) noexcept {
+    return frame != nullptr &&
+        HasField<AnomalyUe5AhudFrameV1,
+            decltype(AnomalyUe5AhudFrameV1::viewport_height)>(
+            frame, offsetof(AnomalyUe5AhudFrameV1, viewport_height)) &&
+        frame->viewport_width != 0 && frame->viewport_height != 0 &&
+        HasField<AnomalyUe5AhudFrameV1,
+            decltype(AnomalyUe5AhudFrameV1::project)>(
+            frame, offsetof(AnomalyUe5AhudFrameV1, project)) &&
+        HasField<AnomalyUe5AhudFrameV1,
+            decltype(AnomalyUe5AhudFrameV1::measure_text)>(
+            frame, offsetof(AnomalyUe5AhudFrameV1, measure_text)) &&
+        HasField<AnomalyUe5AhudFrameV1,
+            decltype(AnomalyUe5AhudFrameV1::draw_text)>(
+            frame, offsetof(AnomalyUe5AhudFrameV1, draw_text)) &&
+        HasField<AnomalyUe5AhudFrameV1,
+            decltype(AnomalyUe5AhudFrameV1::draw_line)>(
+            frame, offsetof(AnomalyUe5AhudFrameV1, draw_line)) &&
+        frame->project != nullptr && frame->measure_text != nullptr &&
+        frame->draw_text != nullptr && frame->draw_line != nullptr;
+}
 
-    AnomalyEspCameraV1 camera{sizeof(camera)};
-    if (!ReadEspCamera(camera)) return;
-
-    for (const LootEntity& entry : loot_cache.loot) {
-        if (!IsVisibleLoot(entry)) continue;
-        const std::uint32_t color = LootColor(entry);
-        AnomalyEspEntityBoundsV1 bounds{sizeof(bounds)};
-        for (std::size_t index = 0; index < 3; ++index) {
-            bounds.center[index] = entry.snapshot.bounds_center[index];
-            bounds.extent[index] = entry.snapshot.bounds_extent[index];
-        }
-        const AnomalyEspBoxStyleV1 style{
-            sizeof(style), ANOMALY_ESP_BOX_V1_OUTLINE, color,
-            ANOMALY_RGBA_V1(0, 0, 0, 220), kFixedBoxThickness, 1.0F};
-        bool visible = !supports_boxes;
-        if (supports_boxes) {
-            visible = ui->draw_entity_bbox(ui->user, &camera, &bounds, &style) != 0;
-        }
-        if (supports_labels && visible) {
-            static_cast<void>(ui->draw_entity_label(
-                ui->user, &camera, &bounds, anomaly::sdk::StringView(entry.label), color));
+bool ProjectBounds(
+    const AnomalyUe5AhudFrameV1* frame,
+    const AnomalyNteEntitySnapshotV1& snapshot,
+    ProjectedBounds& bounds) noexcept {
+    for (std::size_t axis{}; axis != 3; ++axis) {
+        if (!std::isfinite(snapshot.bounds_center[axis]) ||
+            !std::isfinite(snapshot.bounds_extent[axis]) ||
+            snapshot.bounds_extent[axis] < 0.0) {
+            return false;
         }
     }
 
-    for (const ExtractionPoint& point : extraction_points) {
-        const std::uint32_t color = ExtractionColor(point.activation);
-        AnomalyEspEntityBoundsV1 bounds{sizeof(bounds)};
-        std::ranges::copy(point.snapshot.bounds_center, bounds.center);
-        std::ranges::copy(point.snapshot.bounds_extent, bounds.extent);
-        const AnomalyEspBoxStyleV1 style{
-            sizeof(style), ANOMALY_ESP_BOX_V1_OUTLINE, color,
-            ANOMALY_RGBA_V1(0, 0, 0, 220), kFixedBoxThickness, 1.0F};
-        bool visible = !supports_boxes;
-        if (supports_boxes) {
-            visible = ui->draw_entity_bbox(ui->user, &camera, &bounds, &style) != 0;
+    float left = (std::numeric_limits<float>::max)();
+    float top = (std::numeric_limits<float>::max)();
+    float right = (std::numeric_limits<float>::lowest)();
+    float bottom = (std::numeric_limits<float>::lowest)();
+    for (std::uint32_t corner{}; corner != 8; ++corner) {
+        double world[3]{};
+        for (std::size_t axis{}; axis != 3; ++axis) {
+            const double sign = (corner & (1U << axis)) != 0 ? 1.0 : -1.0;
+            world[axis] = snapshot.bounds_center[axis] + snapshot.bounds_extent[axis] * sign;
         }
-        if (supports_labels && visible) {
-            const std::string activation = ExtractionActivationText(point.activation);
-            const std::string coordinates = BuildWorldCoordinates(point.snapshot);
-            const std::array arguments{
-                std::string_view(point.id), std::string_view(activation),
-                std::string_view(coordinates)};
-            const std::string label = g_context.localizer.Format(
-                "extraction.label", "Extraction {0}\n{1}\n{2}", arguments);
-            static_cast<void>(ui->draw_entity_label(
-                ui->user, &camera, &bounds, anomaly::sdk::StringView(label), color));
+        float screen[2]{};
+        double depth{};
+        if (frame->project(frame->user, world, screen, &depth) == 0 ||
+            !std::isfinite(screen[0]) || !std::isfinite(screen[1]) ||
+            !std::isfinite(depth)) {
+            return false;
+        }
+        left = (std::min)(left, screen[0]);
+        top = (std::min)(top, screen[1]);
+        right = (std::max)(right, screen[0]);
+        bottom = (std::max)(bottom, screen[1]);
+    }
+
+    const float viewport_width = static_cast<float>(frame->viewport_width);
+    const float viewport_height = static_cast<float>(frame->viewport_height);
+    if (right < 0.0F || bottom < 0.0F || left > viewport_width || top > viewport_height) {
+        return false;
+    }
+    bounds = {left, top, right, bottom};
+    return bounds.right - bounds.left >= 1.0F && bounds.bottom - bounds.top >= 1.0F;
+}
+
+void DrawBounds(
+    const AnomalyUe5AhudFrameV1* frame,
+    const ProjectedBounds& bounds,
+    const std::uint32_t color) noexcept {
+    constexpr std::uint32_t kOutlineColor = ANOMALY_RGBA_V1(0, 0, 0, 220);
+    constexpr float kOutlineThickness = kFixedBoxThickness + 2.0F;
+    const auto lines = pink_paw_heist_esp::ClipOutlineToViewport(
+        bounds,
+        static_cast<float>(frame->viewport_width),
+        static_cast<float>(frame->viewport_height));
+    for (const auto& line : std::span(lines.values).first(lines.count)) {
+        static_cast<void>(frame->draw_line(
+            frame->user, line.start_x, line.start_y, line.end_x, line.end_y,
+            kOutlineColor, kOutlineThickness));
+    }
+    for (const auto& line : std::span(lines.values).first(lines.count)) {
+        static_cast<void>(frame->draw_line(
+            frame->user, line.start_x, line.start_y, line.end_x, line.end_y,
+            color, kFixedBoxThickness));
+    }
+}
+
+struct MeasuredTextLine final {
+    std::string_view text;
+    float width{};
+    float height{};
+};
+
+void DrawLabel(
+    const AnomalyUe5AhudFrameV1* frame,
+    const ProjectedBounds& bounds,
+    const std::string_view label,
+    const std::uint32_t color) noexcept {
+    constexpr float kBaseScale = 1.0F;
+    constexpr float kLabelGap = 4.0F;
+    constexpr float kShadowOffset = 1.0F;
+    constexpr std::uint32_t kShadowColor = ANOMALY_RGBA_V1(0, 0, 0, 230);
+    std::array<MeasuredTextLine, 8> lines{};
+    std::size_t line_count{};
+    float maximum_width{};
+    float total_height{};
+    for (std::size_t start{}; start <= label.size() && line_count < lines.size();) {
+        const std::size_t newline = label.find('\n', start);
+        const std::size_t end = newline == std::string_view::npos ? label.size() : newline;
+        const std::string_view text = label.substr(start, end - start);
+        float width{};
+        float height{};
+        if (!text.empty() &&
+            frame->measure_text(
+                frame->user, anomaly::sdk::StringView(text), kBaseScale, &width, &height) != 0 &&
+            std::isfinite(width) && std::isfinite(height) && width >= 0.0F && height > 0.0F) {
+            lines[line_count++] = {text, width, height};
+            maximum_width = (std::max)(maximum_width, width);
+            total_height += height;
+        }
+        if (newline == std::string_view::npos) break;
+        start = newline + 1U;
+    }
+    if (line_count == 0) return;
+
+    const float viewport_width = static_cast<float>(frame->viewport_width);
+    const float viewport_height = static_cast<float>(frame->viewport_height);
+    const float scale = pink_paw_heist_esp::FitTextScaleToViewport(
+        viewport_width, viewport_height, maximum_width, total_height, kShadowOffset);
+    if (scale <= 0.0F) return;
+    for (MeasuredTextLine& line : std::span(lines).first(line_count)) {
+        line.width *= scale;
+        line.height *= scale;
+    }
+    total_height *= scale;
+    const float drawable_width = viewport_width - kShadowOffset;
+    const float drawable_height = viewport_height - kShadowOffset;
+    float y = bounds.bottom + kLabelGap;
+    if (y + total_height > drawable_height) y = bounds.top - kLabelGap - total_height;
+    y = std::clamp(y, 0.0F, (std::max)(0.0F, drawable_height - total_height));
+    const float center = (bounds.left + bounds.right) * 0.5F;
+    for (const MeasuredTextLine& line : std::span(lines).first(line_count)) {
+        const float maximum_x = (std::max)(0.0F, drawable_width - line.width);
+        const float x = std::clamp(center - line.width * 0.5F, 0.0F, maximum_x);
+        static_cast<void>(frame->draw_text(
+            frame->user, anomaly::sdk::StringView(line.text),
+            x + kShadowOffset, y + kShadowOffset, kShadowColor, scale));
+        static_cast<void>(frame->draw_text(
+            frame->user, anomaly::sdk::StringView(line.text), x, y, color, scale));
+        y += line.height;
+    }
+}
+
+void DrawAhudEntity(
+    const AnomalyUe5AhudFrameV1* frame,
+    const AnomalyNteEntitySnapshotV1& snapshot,
+    const std::string_view label,
+    const std::uint32_t color) noexcept {
+    ProjectedBounds bounds;
+    if (!ProjectBounds(frame, snapshot, bounds)) return;
+    DrawBounds(frame, bounds, color);
+    DrawLabel(frame, bounds, label, color);
+}
+
+void ANOMALY_CALL DrawAhud(
+    void*,
+    const AnomalyUe5AhudFrameV1* frame) noexcept {
+    if (!AhudFrameAvailable(frame)) return;
+    const auto settings = g_display_settings.load(std::memory_order_acquire);
+    if (!settings || !settings->enabled) return;
+
+    const auto loot_cache = g_loot_cache.load(std::memory_order_acquire);
+    if (loot_cache && loot_cache->available) {
+        for (const LootEntity& entry : loot_cache->loot) {
+            if (!IsVisibleLoot(entry, *settings)) continue;
+            DrawAhudEntity(frame, entry.snapshot, entry.label, LootColor(entry));
         }
     }
+
+    const auto extraction_snapshot =
+        g_extraction_snapshot.load(std::memory_order_acquire);
+    if (!extraction_snapshot || !extraction_snapshot->available) return;
+    for (const ExtractionPoint& point : extraction_snapshot->points) {
+        if (!ShouldShowExtraction(point, *settings)) continue;
+        DrawAhudEntity(frame, point.snapshot, point.label, ExtractionColor(point.activation));
+    }
+}
+
+AnomalyStatusV1 SubscribeAhud() noexcept {
+    if (!AhudServiceAvailable(g_context.ahud)) {
+        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
+    }
+    AnomalyGenerationHandleV1 handle{};
+    const AnomalyStatusV1 status = g_context.ahud->subscribe(
+        g_context.ahud->user, DrawAhud, nullptr, &handle);
+    if (status.code != ANOMALY_STATUS_V1_OK) return status;
+    if (handle.id == 0 || handle.generation == 0) {
+        return {ANOMALY_STATUS_V1_FAILED, 0, {}};
+    }
+    g_ahud_subscription = handle;
+    return anomaly::sdk::Ok();
+}
+
+AnomalyStatusV1 UnsubscribeAhud() noexcept {
+    if (g_ahud_subscription.id == 0) return anomaly::sdk::Ok();
+    const AnomalyGenerationHandleV1 handle = g_ahud_subscription;
+    g_ahud_subscription = {};
+    if (!AhudServiceAvailable(g_context.ahud)) {
+        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
+    }
+    const AnomalyStatusV1 status =
+        g_context.ahud->unsubscribe(g_context.ahud->user, handle);
+    if (status.code == ANOMALY_STATUS_V1_OK ||
+        status.code == ANOMALY_STATUS_V1_NOT_FOUND ||
+        status.code == ANOMALY_STATUS_V1_UNAVAILABLE) {
+        return anomaly::sdk::Ok();
+    }
+    return status;
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
@@ -2072,17 +2289,26 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
     const auto config = host_view.Query<AnomalyConfigServiceV1>(
         ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION);
+    const auto ahud = host_view.Query<AnomalyUe5AhudServiceV1>(
+        ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION);
     if (!ui || !HasField<AnomalyUiServiceV1,
             decltype(AnomalyUiServiceV1::button_enabled)>(
             ui.get(), offsetof(AnomalyUiServiceV1, button_enabled)) ||
-        ui->button_enabled == nullptr || !ConfigMethodsAvailable(config.get())) {
+        ui->button_enabled == nullptr || !ConfigMethodsAvailable(config.get()) ||
+        !ahud || !AhudServiceAvailable(ahud.get())) {
         return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
     }
 
     g_context = {};
+    g_ahud_subscription = {};
+    g_update_enabled = false;
+    g_loot_cache.store({}, std::memory_order_release);
+    g_extraction_snapshot.store({}, std::memory_order_release);
+    g_display_settings.store({}, std::memory_order_release);
     g_context.host = host;
     g_context.localizer = anomaly::plugins::Localizer(host);
     g_context.config = config.get();
+    g_context.ahud = ahud.get();
     g_context.texture = host_view.Query<AnomalyTextureServiceV1>(
         ANOMALY_TEXTURE_SERVICE_V1_ID, ANOMALY_TEXTURE_SERVICE_V1_VERSION).get();
     const AnomalyStatusV1 schema_status = g_context.config->register_schema(
@@ -2096,6 +2322,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
             : schema_status;
     }
     static_cast<void>(LoadSettings());
+    PublishDisplaySettings();
     {
         std::scoped_lock lock(g_teleport.mutex);
         g_teleport.host = host;
@@ -2138,10 +2365,20 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
     ClearCache();
     ClearExtractionCache();
     RequestUiResources();
+    PublishDisplaySettings();
+    const AnomalyStatusV1 ahud_status = SubscribeAhud();
+    if (ahud_status.code != ANOMALY_STATUS_V1_OK) {
+        ReleaseUiResources();
+        g_rob_bank.Stop();
+        ClearCache();
+        ClearExtractionCache();
+        return ahud_status;
+    }
     return anomaly::sdk::Ok();
 }
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
+    const AnomalyStatusV1 ahud_status = UnsubscribeAhud();
     const bool saved = SaveSettings();
     SetDeveloperMode(false);
     g_world_gate.Reset();
@@ -2151,11 +2388,15 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     ReleaseUiResources();
     ClearCache();
     ClearExtractionCache();
+    g_update_enabled = false;
+    g_display_settings.store({}, std::memory_order_release);
+    if (ahud_status.code != ANOMALY_STATUS_V1_OK) return ahud_status;
     return saved ? anomaly::sdk::Ok()
                  : AnomalyStatusV1{ANOMALY_STATUS_V1_FAILED, 0, {}};
 }
 
 void ANOMALY_CALL Unload(void*) {
+    static_cast<void>(UnsubscribeAhud());
     SetDeveloperMode(false);
     g_world_gate.Reset();
     g_in_pink_paw_world = false;
@@ -2176,7 +2417,10 @@ void ANOMALY_CALL Unload(void*) {
         g_pickup.result_message[0] = '\0';
     }
     ReleaseUiResources();
+    ClearCache();
     ClearExtractionCache();
+    g_update_enabled = false;
+    g_display_settings.store({}, std::memory_order_release);
     g_context = {};
 }
 
@@ -2280,7 +2524,9 @@ void ProcessPendingPickup() {
 }
 
 void ANOMALY_CALL Update(void*, double) {
-    if (g_context.enabled != 0) {
+    const auto display_settings = g_display_settings.load(std::memory_order_acquire);
+    const bool enabled = display_settings && display_settings->enabled;
+    if (enabled) {
         if (g_world_gate_refresh_requested.exchange(false, std::memory_order_acq_rel)) {
             g_world_gate.Invalidate();
         }
@@ -2299,7 +2545,13 @@ void ANOMALY_CALL Update(void*, double) {
             ClearExtractionCache();
         }
         g_in_pink_paw_world = active;
+    } else if (g_update_enabled) {
+        g_world_gate.Reset();
+        g_in_pink_paw_world = false;
+        ClearCache();
+        ClearExtractionCache();
     }
+    g_update_enabled = enabled;
     ProcessPendingTeleport();
     ProcessPendingPickup();
 }
@@ -2309,7 +2561,6 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) {
     const LootCache empty;
     const LootCache& snapshot = cache ? *cache : empty;
     DrawMenu(ui, snapshot);
-    DrawEsp(ui, snapshot);
 }
 
 }  // namespace
@@ -2323,6 +2574,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.builtin.pink-paw-heist-esp"),
         anomaly::sdk::StringView("Pink Paw Heist ESP"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.7.0"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.8.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

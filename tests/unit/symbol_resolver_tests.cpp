@@ -598,6 +598,31 @@ int main() {
                    "unsupported packed chunk-count width passed validation") && result;
 
     const auto semantic_profile = SemanticProfile();
+    auto ahud_profile = semantic_profile;
+    ahud_profile.layout["ffield.class"] = 0x00;
+    ahud_profile.layout["ffieldClass.name"] = 0x00;
+    const anomaly::FeatureLayoutValidatorRegistry feature_validators;
+    const anomaly::ProfileResolutionSnapshot empty_snapshot;
+    const auto valid_ahud_layout = feature_validators.Validate(
+        "ue5-ahud-reflection-v1",
+        ahud_profile,
+        "ue5.ahud",
+        empty_snapshot,
+        *memory);
+    auto oversized_ahud_profile = ahud_profile;
+    oversized_ahud_profile.layout["ffieldClass.name"] = 4097;
+    const auto oversized_ahud_layout = feature_validators.Validate(
+        "ue5-ahud-reflection-v1",
+        oversized_ahud_profile,
+        "ue5.ahud",
+        empty_snapshot,
+        *memory);
+    result = Check(
+                 valid_ahud_layout.valid && !oversized_ahud_layout.valid &&
+                     oversized_ahud_layout.message.find("supported bound") !=
+                         std::string::npos,
+                 "AHUD reflection validator accepted an oversized owned offset") &&
+        result;
     PopulateSemanticLayout(*memory);
     const auto semantic = resolver.Resolve(fingerprint, &semantic_profile, nullptr);
     result = Check(

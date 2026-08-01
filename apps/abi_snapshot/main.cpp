@@ -198,6 +198,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_LOCALIZATION_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_UE5_BUILD_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_UE5_BUILD_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_UE5_AHUD_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_UE5_NAMES_SERVICE_V1_VERSION\": ");
@@ -250,6 +252,13 @@ std::string BuildSnapshot() {
         alignof(AnomalyFeatureStateV1),
         {{"ANOMALY_FEATURE_V1_UNAVAILABLE", ANOMALY_FEATURE_V1_UNAVAILABLE},
          {"ANOMALY_FEATURE_V1_AVAILABLE", ANOMALY_FEATURE_V1_AVAILABLE}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyUe5AhudFrameFlagsV1",
+        sizeof(AnomalyUe5AhudFrameFlagsV1),
+        alignof(AnomalyUe5AhudFrameFlagsV1),
+        {{"ANOMALY_UE5_AHUD_FRAME_V1_NONE", ANOMALY_UE5_AHUD_FRAME_V1_NONE}},
         false);
     AppendEnum(
         output,
@@ -1089,6 +1098,33 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyUe5AhudFrameV1",
+        sizeof(AnomalyUe5AhudFrameV1),
+        alignof(AnomalyUe5AhudFrameV1),
+        {{"struct_size", offsetof(AnomalyUe5AhudFrameV1, struct_size)},
+         {"flags", offsetof(AnomalyUe5AhudFrameV1, flags)},
+         {"user", offsetof(AnomalyUe5AhudFrameV1, user)},
+         {"viewport_width", offsetof(AnomalyUe5AhudFrameV1, viewport_width)},
+         {"viewport_height", offsetof(AnomalyUe5AhudFrameV1, viewport_height)},
+         {"project", offsetof(AnomalyUe5AhudFrameV1, project)},
+         {"measure_text", offsetof(AnomalyUe5AhudFrameV1, measure_text)},
+         {"draw_text", offsetof(AnomalyUe5AhudFrameV1, draw_text)},
+         {"draw_line", offsetof(AnomalyUe5AhudFrameV1, draw_line)},
+         {"draw_rect", offsetof(AnomalyUe5AhudFrameV1, draw_rect)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyUe5AhudServiceV1",
+        sizeof(AnomalyUe5AhudServiceV1),
+        alignof(AnomalyUe5AhudServiceV1),
+        {{"struct_size", offsetof(AnomalyUe5AhudServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyUe5AhudServiceV1, service_version)},
+         {"user", offsetof(AnomalyUe5AhudServiceV1, user)},
+         {"subscribe", offsetof(AnomalyUe5AhudServiceV1, subscribe)},
+         {"unsubscribe", offsetof(AnomalyUe5AhudServiceV1, unsubscribe)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyUe5FrameworkServiceV1",
         sizeof(AnomalyUe5FrameworkServiceV1),
         alignof(AnomalyUe5FrameworkServiceV1),
@@ -1494,6 +1530,8 @@ std::string BuildSnapshot() {
         ANOMALY_LOCALIZATION_SERVICE_V1_VERSION, "AnomalyLocalizationServiceV1", false);
     AppendService(output, ANOMALY_UE5_BUILD_SERVICE_V1_ID,
         ANOMALY_UE5_BUILD_SERVICE_V1_VERSION, "AnomalyUe5BuildServiceV1", false);
+    AppendService(output, ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+        ANOMALY_UE5_AHUD_SERVICE_V1_VERSION, "AnomalyUe5AhudServiceV1", false);
     AppendService(
         output, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION, "AnomalyUe5FrameworkServiceV1", false);

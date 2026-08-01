@@ -602,6 +602,38 @@ FeatureValidationResult ValidateUe5FunctionsReflection(
     return {true, {}};
 }
 
+FeatureValidationResult ValidateUe5AhudReflection(
+    const BuildProfile& profile,
+    const ProfileResolutionSnapshot&,
+    const SymbolMemory&) {
+    constexpr std::array<std::string_view, 13> kRequiredLayout{
+        "ustruct.propertyLink",
+        "ffield.class",
+        "ffield.name",
+        "ffieldClass.name",
+        "fproperty.arrayDim",
+        "fproperty.elementSize",
+        "fproperty.offsetInternal",
+        "fproperty.propertyLinkNext",
+        "fstructProperty.struct",
+        "fboolProperty.fieldSize",
+        "fboolProperty.byteOffset",
+        "fboolProperty.byteMask",
+        "fboolProperty.fieldMask",
+    };
+    std::string error;
+    for (const std::string_view key : kRequiredLayout) {
+        std::uint64_t value{};
+        if (!SemanticLayoutValue(profile, key, value, error)) {
+            return {false, std::move(error)};
+        }
+        if (value > kMaximumUFunctionHeaderOffset) {
+            return {false, "AHUD reflection layout offset exceeds the supported bound"};
+        }
+    }
+    return {true, {}};
+}
+
 FeatureValidationResult ValidateNtePlayerEspLayout(
     const BuildProfile& profile,
     const ProfileResolutionSnapshot& snapshot,
@@ -1427,6 +1459,13 @@ FeatureLayoutValidatorRegistry::FeatureLayoutValidatorRegistry() {
         const ProfileResolutionSnapshot& snapshot,
         const SymbolMemory& memory) {
         return ValidateUe5FunctionsReflection(profile, snapshot, memory);
+    });
+    Register("ue5-ahud-reflection-v1", [](
+        const BuildProfile& profile,
+        std::string_view,
+        const ProfileResolutionSnapshot& snapshot,
+        const SymbolMemory& memory) {
+        return ValidateUe5AhudReflection(profile, snapshot, memory);
     });
 }
 

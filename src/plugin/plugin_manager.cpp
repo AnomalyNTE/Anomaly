@@ -71,6 +71,30 @@ struct NteEscMenuButtonRegistry final {
     std::function<void()> host_action;
 };
 
+struct AhudProxyState;
+
+struct AhudProxyRegistration final {
+    std::shared_ptr<anomaly::PluginScope> scope;
+    std::weak_ptr<AhudProxyState> state;
+    PluginManager* manager{};
+    std::uint64_t generation{};
+    std::uint64_t ledger_token{};
+    AnomalyGenerationHandleV1 proxy_handle{};
+    const AnomalyUe5AhudServiceV1* service{};
+    AnomalyGenerationHandleV1 service_handle{};
+    AnomalyUe5AhudDrawCallbackV1 callback{};
+    void* callback_user{};
+    std::atomic_bool active{};
+    std::atomic_bool revoked{};
+    std::atomic<std::uint32_t> revoke_status{ANOMALY_STATUS_V1_OK};
+};
+
+struct AhudProxyState final {
+    std::mutex mutex;
+    std::unordered_map<std::uint64_t, std::shared_ptr<AhudProxyRegistration>> registrations;
+    std::uint64_t next_handle_id{1};
+};
+
 namespace {
 
 PluginManager* g_manager{};
@@ -1160,6 +1184,8 @@ struct PluginServiceContext {
     AnomalyFontServiceV1 font{};
     AnomalyTextureServiceV1 texture{};
     AnomalyInputServiceV1 input_service{};
+    std::shared_ptr<AhudProxyState> ahud_state;
+    AnomalyUe5AhudServiceV1 ahud{};
     std::vector<anomaly::UiResourceHandle> open_windows;
     std::vector<anomaly::UiResourceHandle> pushed_fonts;
 };
@@ -1180,6 +1206,197 @@ bool ValidServiceContext(const PluginServiceContext* context) noexcept {
         context->scope != nullptr &&
         context->generation == context->scope->Generation() &&
         context->plugin_id == context->scope->Owner();
+}
+
+constexpr std::size_t kAhudServiceV1Size =
+    offsetof(AnomalyUe5AhudServiceV1, unsubscribe) +
+    sizeof(AnomalyUe5AhudServiceV1::unsubscribe);
+
+bool ValidAhudServiceV1(const AnomalyUe5AhudServiceV1* service) noexcept {
+    return service != nullptr && service->struct_size >= kAhudServiceV1Size &&
+        service->service_version >= ANOMALY_UE5_AHUD_SERVICE_V1_VERSION &&
+        service->subscribe != nullptr && service->unsubscribe != nullptr;
+}
+
+const AnomalyUe5AhudServiceV1* QueryAhudServiceV1() noexcept {
+    const void* service = anomaly::ProcessAdapterServices().Query(
+        ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+        ANOMALY_UE5_AHUD_SERVICE_V1_VERSION);
+    const auto* ahud = static_cast<const AnomalyUe5AhudServiceV1*>(service);
+    return ValidAhudServiceV1(ahud) ? ahud : nullptr;
+}
+
+void RevokeAhudRegistration(
+    const std::shared_ptr<AhudProxyRegistration>& registration) noexcept {
+    if (registration == nullptr || registration->revoked.exchange(true)) return;
+    registration->active.store(false, std::memory_order_release);
+    if (ValidAhudServiceV1(registration->service)) {
+        try {
+            const AnomalyStatusV1 status = registration->service->unsubscribe(
+                registration->service->user, registration->service_handle);
+            registration->revoke_status.store(status.code, std::memory_order_release);
+        } catch (...) {
+            registration->revoke_status.store(
+                ANOMALY_STATUS_V1_FAILED, std::memory_order_release);
+        }
+    }
+    if (const auto state = registration->state.lock()) {
+        std::scoped_lock lock(state->mutex);
+        const auto found = state->registrations.find(registration->proxy_handle.id);
+        if (found != state->registrations.end() && found->second == registration) {
+            state->registrations.erase(found);
+        }
+    }
+}
+
+void ANOMALY_CALL InvokeAhudDrawCallbackV1(
+    void* user, const AnomalyUe5AhudFrameV1* frame) noexcept {
+    auto* const candidate = static_cast<AhudProxyRegistration*>(user);
+    if (candidate == nullptr) return;
+    const auto state = candidate->state.lock();
+    if (state == nullptr) return;
+    std::shared_ptr<AhudProxyRegistration> registration;
+    {
+        std::scoped_lock lock(state->mutex);
+        const auto found = state->registrations.find(candidate->proxy_handle.id);
+        if (found == state->registrations.end() || found->second.get() != candidate) {
+            return;
+        }
+        registration = found->second;
+    }
+    if (!registration->active.load(std::memory_order_acquire) ||
+        registration->scope == nullptr || registration->callback == nullptr) {
+        return;
+    }
+    auto callback = registration->scope->AcquireCallback(registration->generation);
+    if (!callback || !registration->active.load(std::memory_order_acquire)) return;
+    const ScopedLogThreadDomain log_domain(anomaly::LogThreadDomain::Game);
+    ScopedPluginCallback callback_scope(
+        registration->scope, registration->generation, false);
+    try {
+        registration->callback(registration->callback_user, frame);
+    } catch (...) {
+        if (registration->manager != nullptr) {
+            try {
+                registration->manager->LogPlugin(
+                    ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
+                    "exception in ABI v1 AHUD callback",
+                    registration->scope->Owner(), registration->generation);
+            } catch (...) {
+            }
+        }
+    }
+}
+
+AnomalyStatusV1 ANOMALY_CALL SubscribeAhudV1(
+    void* user, AnomalyUe5AhudDrawCallbackV1 callback, void* callback_user,
+    AnomalyGenerationHandleV1* handle) noexcept {
+    if (handle == nullptr || callback == nullptr) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+            "AHUD subscription arguments are invalid");
+    }
+    *handle = {};
+    auto* const context = static_cast<PluginServiceContext*>(user);
+    if (!ValidServiceContext(context) || context->ahud_state == nullptr) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+            "plugin AHUD service context is invalid");
+    }
+    auto service_callback = AcquireServiceCallback(context);
+    if (!service_callback) {
+        return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "plugin scope is stopping");
+    }
+    const AnomalyUe5AhudServiceV1* const service = QueryAhudServiceV1();
+    if (service == nullptr) {
+        return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "AHUD service is not ready");
+    }
+    std::shared_ptr<AhudProxyRegistration> registration;
+    bool subscribed{};
+    try {
+        registration = std::make_shared<AhudProxyRegistration>();
+        registration->scope = context->scope;
+        registration->state = context->ahud_state;
+        registration->manager = context->manager;
+        registration->generation = context->generation;
+        registration->service = service;
+        registration->callback = callback;
+        registration->callback_user = callback_user;
+
+        AnomalyStatusV1 status = service->subscribe(
+            service->user, InvokeAhudDrawCallbackV1, registration.get(),
+            &registration->service_handle);
+        if (status.code != ANOMALY_STATUS_V1_OK) return status;
+        subscribed = true;
+        if (registration->service_handle.id == 0) {
+            RevokeAhudRegistration(registration);
+            return StatusV1(
+                ANOMALY_STATUS_V1_FAILED,
+                "AHUD service returned an invalid subscription handle");
+        }
+
+        {
+            std::scoped_lock lock(context->ahud_state->mutex);
+            std::uint64_t id = context->ahud_state->next_handle_id++;
+            if (id == 0) id = context->ahud_state->next_handle_id++;
+            registration->proxy_handle = {id, context->generation};
+            context->ahud_state->registrations.emplace(id, registration);
+        }
+        registration->active.store(true, std::memory_order_release);
+        registration->ledger_token = context->scope->Register(
+            anomaly::PluginResourceKind::Subscription,
+            "ue5.ahud.draw",
+            [registration] { RevokeAhudRegistration(registration); });
+        if (registration->ledger_token == 0) {
+            RevokeAhudRegistration(registration);
+            return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "plugin scope is stopping");
+        }
+        if (registration->revoked.load(std::memory_order_acquire)) {
+            return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "plugin scope is stopping");
+        }
+        *handle = registration->proxy_handle;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    } catch (...) {
+        if (subscribed) RevokeAhudRegistration(registration);
+        return StatusV1(ANOMALY_STATUS_V1_FAILED, "AHUD subscription failed");
+    }
+}
+
+AnomalyStatusV1 ANOMALY_CALL UnsubscribeAhudV1(
+    void* user, const AnomalyGenerationHandleV1 handle) noexcept {
+    auto* const context = static_cast<PluginServiceContext*>(user);
+    if (!ValidServiceContext(context) || context->ahud_state == nullptr ||
+        handle.id == 0 || handle.generation != context->generation) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+            "AHUD subscription handle is invalid");
+    }
+    auto service_callback = AcquireServiceCallback(context);
+    if (!service_callback) {
+        return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "plugin scope is stopping");
+    }
+    std::shared_ptr<AhudProxyRegistration> registration;
+    {
+        std::scoped_lock lock(context->ahud_state->mutex);
+        const auto found = context->ahud_state->registrations.find(handle.id);
+        if (found == context->ahud_state->registrations.end() ||
+            found->second->proxy_handle.generation != handle.generation) {
+            return StatusV1(
+                ANOMALY_STATUS_V1_NOT_FOUND,
+                "AHUD subscription is not registered");
+        }
+        registration = found->second;
+    }
+    if (!context->scope->Release(registration->ledger_token)) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_NOT_FOUND,
+            "AHUD subscription is not registered");
+    }
+    const std::uint32_t revoke_status =
+        registration->revoke_status.load(std::memory_order_acquire);
+    return revoke_status == ANOMALY_STATUS_V1_OK
+        ? StatusV1(ANOMALY_STATUS_V1_OK)
+        : StatusV1(revoke_status, "AHUD provider rejected unsubscription");
 }
 
 bool IsActiveDrawResourceCallback(const PluginServiceContext& context) noexcept {
@@ -2622,6 +2839,20 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
         *service = &context->input_service;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
+    if (id == ANOMALY_UE5_AHUD_SERVICE_V1_ID) {
+        if (minimum_version > ANOMALY_UE5_AHUD_SERVICE_V1_VERSION) {
+            return StatusV1(
+                ANOMALY_STATUS_V1_UNAVAILABLE,
+                "requested AHUD version is not available");
+        }
+        if (QueryAhudServiceV1() == nullptr) {
+            return StatusV1(
+                ANOMALY_STATUS_V1_UNAVAILABLE,
+                "AHUD service is not ready");
+        }
+        *service = &context->ahud;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
     if (id == ANOMALY_UI_SERVICE_V1_ID) {
         const AnomalyUiServiceV1* ui = context->manager->UiService();
         if (ui != nullptr && ui->service_version >= minimum_version) {
@@ -3511,6 +3742,12 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
         sizeof(AnomalyInputServiceV1), ANOMALY_INPUT_SERVICE_V1_VERSION,
         &plugin.service_context,
         InputSnapshotV1, WasPressedV1, RegisterHotkeyV1, ReleaseHotkeyV1, InputCaptureStateV1};
+    if (plugin.service_context.ahud_state == nullptr) {
+        plugin.service_context.ahud_state = std::make_shared<AhudProxyState>();
+    }
+    plugin.service_context.ahud = {
+        sizeof(AnomalyUe5AhudServiceV1), ANOMALY_UE5_AHUD_SERVICE_V1_VERSION,
+        &plugin.service_context, SubscribeAhudV1, UnsubscribeAhudV1};
     plugin.service_context.ui = &plugin.ui_proxy;
     plugin.host_api = {
         sizeof(AnomalyHostApiV1), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,

@@ -33,6 +33,14 @@
       "resolve": { "kind": "direct" },
       "validators": ["address-in-module", "tick-anchor-v1"],
       "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.actors", "anomaly.ue5.functions"]
+    },
+    "ue5.ProcessEvent": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "PROCESS_EVENT_PATTERN",
+      "resolve": { "kind": "direct" },
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.ue5.ahud"]
     }
   },
   "features": {
@@ -42,15 +50,19 @@
     "ue5.objects": ["ue5.GObjects", "ue5.GameTick"],
     "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
+    "ue5.process-event": ["ue5.ProcessEvent"],
+    "ue5.ahud": ["ue5.ProcessEvent"],
     "nte.session": ["ue5.GWorld", "ue5.GameTick"],
     "nte.player": ["ue5.GWorld", "ue5.GameTick"],
     "nte.player-esp": ["ue5.GWorld", "ue5.GameTick"],
     "nte.entities": ["ue5.GWorld", "ue5.GameTick"]
   },
-  "optionalFeatures": ["ue5.actors", "ue5.functions", "nte.player-esp"],
+  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.process-event", "ue5.ahud", "nte.player-esp"],
   "featureLayoutValidators": {
     "ue5.actors": ["ue5-actors-reflection-v1"],
     "ue5.functions": ["ue5-functions-reflection-v1"],
+    "ue5.process-event": ["ue5-process-event-abi-v1"],
+    "ue5.ahud": ["ue5-ahud-reflection-v1"],
     "nte.player": ["nte-player-layout-v1"],
     "nte.player-esp": ["nte-player-esp-layout-v1"],
     "nte.entities": ["nte-entities-layout-v1"]
@@ -58,6 +70,7 @@
   "featureDependencies": {
     "ue5.actors": ["ue5.world", "ue5.names"],
     "ue5.functions": ["ue5.objects", "ue5.names"],
+    "ue5.ahud": ["ue5.functions", "ue5.process-event"],
     "nte.player-esp": ["nte.player"]
   },
   "layout": {
@@ -76,6 +89,19 @@
     "ufunction.numParms": 180,
     "ufunction.parmsSize": 182,
     "ufunction.returnValueOffset": 184,
+    "ustruct.propertyLink": 112,
+    "ffield.class": 8,
+    "ffield.name": 32,
+    "ffieldClass.name": 0,
+    "fproperty.arrayDim": 48,
+    "fproperty.elementSize": 52,
+    "fproperty.offsetInternal": 68,
+    "fproperty.propertyLinkNext": 72,
+    "fstructProperty.struct": 112,
+    "fboolProperty.fieldSize": 112,
+    "fboolProperty.byteOffset": 113,
+    "fboolProperty.byteMask": 114,
+    "fboolProperty.fieldMask": 115,
     "names.blocksOffset": 16,
     "names.blockBits": 16,
     "names.entryStride": 2,

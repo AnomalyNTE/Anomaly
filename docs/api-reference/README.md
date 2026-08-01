@@ -121,6 +121,7 @@ void*    user;             // 调用每个函数时作为第一个参数回传
 | `anomaly.texture` | 1 | `ui-texture` | [texture](ui-services.md#anomalytexture) |
 | `anomaly.input` | 1 | `input` | [input](ui-services.md#anomalyinput) |
 | `anomaly.ue5.build` | 1 | `ue5-build` | [ue5.build](ue5-services.md#anomalyue5build) |
+| `anomaly.ue5.ahud` | 1 | `ue5-ahud` | [ue5.ahud](ue5-services.md#anomalyue5ahud) |
 | `anomaly.ue5.framework` | 1 | `game-events` | [ue5.framework](ue5-services.md#anomalyue5framework) |
 | `anomaly.ue5.names` | 1 | `ue5-names` | [ue5.names](ue5-services.md#anomalyue5names) |
 | `anomaly.ue5.objects` | 1 | `ue5-objects` | [ue5.objects](ue5-services.md#anomalyue5objects) |

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -25,6 +26,8 @@ namespace anomaly {
 namespace {
 
 ThreadLocalScalar<const void*> g_active_tick_callback_state;
+ThreadLocalScalar<const void*> g_active_ahud_callback_state;
+ThreadLocalScalar<const void*> g_active_ahud_subscription_state;
 
 class ActiveTickCallbackScope final {
 public:
@@ -42,6 +45,28 @@ public:
 
 private:
     const void* previous_{};
+};
+
+class ActiveAhudCallbackScope final {
+public:
+    ActiveAhudCallbackScope(const void* state, const void* subscription) noexcept
+        : previous_state_(g_active_ahud_callback_state.Get()),
+          previous_subscription_(g_active_ahud_subscription_state.Get()) {
+        g_active_ahud_callback_state.Set(state);
+        g_active_ahud_subscription_state.Set(subscription);
+    }
+
+    ActiveAhudCallbackScope(const ActiveAhudCallbackScope&) = delete;
+    ActiveAhudCallbackScope& operator=(const ActiveAhudCallbackScope&) = delete;
+
+    ~ActiveAhudCallbackScope() {
+        g_active_ahud_subscription_state.Set(previous_subscription_);
+        g_active_ahud_callback_state.Set(previous_state_);
+    }
+
+private:
+    const void* previous_state_{};
+    const void* previous_subscription_{};
 };
 
 class AddressWaitApi final {
@@ -501,6 +526,7 @@ std::uint64_t EncodeObjectHandle(std::uint32_t index, std::uint32_t serial) noex
 struct Ue5NteAdapter::State {
     struct SemanticServiceEndpoint;
     struct CallbackEndpoint;
+    struct AhudServiceEndpoint;
 
     BuildFingerprint fingerprint;
     BuildProfile profile;
@@ -562,6 +588,60 @@ struct Ue5NteAdapter::State {
         bool available{};
         bool discovery_complete{};
     } teleport;
+    enum class AhudFunctionKind : std::size_t {
+        ReceiveDrawHud,
+        Project,
+        DrawText,
+        DrawLine,
+        DrawRect,
+        GetTextSize,
+        Count,
+    };
+    static constexpr std::size_t kAhudFunctionCount =
+        static_cast<std::size_t>(AhudFunctionKind::Count);
+    static constexpr std::size_t kMaximumAhudParameters = 7;
+    struct AhudFunctionBinding {
+        std::uintptr_t function{};
+        std::uint16_t parms_size{};
+        std::array<std::uint16_t, kMaximumAhudParameters> offsets{};
+        std::array<ReflectedBoolParameter, kMaximumAhudParameters> bool_parameters{};
+    };
+    struct AhudBinding {
+        std::array<AhudFunctionBinding, kAhudFunctionCount> functions{};
+        std::uint64_t object_generation{};
+    };
+    struct AhudDiscovery {
+        std::array<std::optional<AhudFunctionBinding>, kAhudFunctionCount> functions{};
+        std::uint64_t object_generation{};
+        std::uint32_t next_object_index{};
+        bool discovery_complete{};
+    } ahud_discovery;
+    struct AhudParameterSpec {
+        std::string_view name;
+        std::string_view type;
+        std::string_view structure;
+        std::int32_t element_size{};
+        bool return_value{};
+    };
+    struct AhudFunctionSpec {
+        AhudFunctionKind kind{};
+        std::string_view name;
+        std::uint16_t parms_size{};
+        std::span<const AhudParameterSpec> parameters;
+    };
+    struct AhudFrameCallContext {
+        std::uintptr_t hud{};
+        const AhudBinding* binding{};
+        const ProcessEventInvoker* original{};
+    };
+    struct NativeUtf16StringHeader {
+        wchar_t* data{};
+        std::int32_t count{};
+        std::int32_t capacity{};
+    };
+    static_assert(sizeof(NativeUtf16StringHeader) == 16);
+    std::atomic<std::shared_ptr<const AhudBinding>> ahud_binding;
+    std::atomic_bool ahud_demand{};
     std::uintptr_t player_pawn{};
     std::uintptr_t player_controller{};
     std::uintptr_t player_root{};
@@ -620,6 +700,7 @@ struct Ue5NteAdapter::State {
     std::uint64_t entity_page_request_count{};
     std::uint64_t entity_page_cache_hit_count{};
     bool framework_hook_ready{};
+    bool ahud_hook_ready{};
     std::uint64_t deferred_resolution_retry_sequence{1};
     std::vector<std::pair<std::string, const void*>> published;
     std::vector<std::pair<std::string, const void*>> pending_revocations;
@@ -629,9 +710,76 @@ struct Ue5NteAdapter::State {
     std::shared_ptr<SemanticServiceEndpoint> draining_semantic_endpoint;
     std::atomic<std::shared_ptr<CallbackEndpoint>> callback_endpoint;
     std::shared_ptr<CallbackEndpoint> draining_callback_endpoint;
+    std::atomic<std::shared_ptr<AhudServiceEndpoint>> ahud_endpoint;
+    std::shared_ptr<AhudServiceEndpoint> draining_ahud_endpoint;
 
     const ResolvedSymbol* Symbol(std::string_view id) const noexcept {
         return resolution.FindSymbol(id);
+    }
+
+    [[nodiscard]] static constexpr std::size_t AhudIndex(
+        const AhudFunctionKind kind) noexcept {
+        return static_cast<std::size_t>(kind);
+    }
+
+    [[nodiscard]] static AhudFunctionSpec AhudSpec(
+        const AhudFunctionKind kind) noexcept {
+        static constexpr std::array receive{
+            AhudParameterSpec{"SizeX", "IntProperty", {}, 4, false},
+            AhudParameterSpec{"SizeY", "IntProperty", {}, 4, false},
+        };
+        static constexpr std::array project{
+            AhudParameterSpec{"Location", "StructProperty", "Vector", 24, false},
+            AhudParameterSpec{"bClampToZeroPlane", "BoolProperty", {}, 1, false},
+            AhudParameterSpec{"ReturnValue", "StructProperty", "Vector", 24, true},
+        };
+        static constexpr std::array draw_text{
+            AhudParameterSpec{"Text", "StrProperty", {}, 16, false},
+            AhudParameterSpec{"TextColor", "StructProperty", "LinearColor", 16, false},
+            AhudParameterSpec{"ScreenX", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"ScreenY", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"Font", "ObjectProperty", {}, 8, false},
+            AhudParameterSpec{"Scale", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"bScalePosition", "BoolProperty", {}, 1, false},
+        };
+        static constexpr std::array draw_line{
+            AhudParameterSpec{"StartScreenX", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"StartScreenY", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"EndScreenX", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"EndScreenY", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"LineColor", "StructProperty", "LinearColor", 16, false},
+            AhudParameterSpec{"LineThickness", "FloatProperty", {}, 4, false},
+        };
+        static constexpr std::array draw_rect{
+            AhudParameterSpec{"RectColor", "StructProperty", "LinearColor", 16, false},
+            AhudParameterSpec{"ScreenX", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"ScreenY", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"ScreenW", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"ScreenH", "FloatProperty", {}, 4, false},
+        };
+        static constexpr std::array get_text_size{
+            AhudParameterSpec{"Text", "StrProperty", {}, 16, false},
+            AhudParameterSpec{"OutWidth", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"OutHeight", "FloatProperty", {}, 4, false},
+            AhudParameterSpec{"Font", "ObjectProperty", {}, 8, false},
+            AhudParameterSpec{"Scale", "FloatProperty", {}, 4, false},
+        };
+        switch (kind) {
+        case AhudFunctionKind::ReceiveDrawHud:
+            return {kind, "ReceiveDrawHUD", 8, receive};
+        case AhudFunctionKind::Project:
+            return {kind, "Project", 56, project};
+        case AhudFunctionKind::DrawText:
+            return {kind, "DrawText", 53, draw_text};
+        case AhudFunctionKind::DrawLine:
+            return {kind, "DrawLine", 36, draw_line};
+        case AhudFunctionKind::DrawRect:
+            return {kind, "DrawRect", 32, draw_rect};
+        case AhudFunctionKind::GetTextSize:
+            return {kind, "GetTextSize", 36, get_text_size};
+        case AhudFunctionKind::Count: break;
+        }
+        return {};
     }
 
     bool Publish(
@@ -793,6 +941,38 @@ struct Ue5NteAdapter::State {
                 "nte-player-teleport-layout-v1");
     }
 
+    [[nodiscard]] bool AhudFeatureAvailable() const noexcept {
+        return framework_hook_ready && ahud_hook_ready &&
+            resolution.FeatureAvailable("ue5.ahud") &&
+            resolution.FeatureAvailable("ue5.functions") &&
+            resolution.FeatureAvailable(kUe5ProcessEventFeature) &&
+            LayoutKeysAvailable(profile, {
+                "object.class",
+                "object.nameOffset",
+                "object.outer",
+                "ustruct.propertyLink",
+                "ufunction.numParms",
+                "ufunction.parmsSize",
+                "ufunction.returnValueOffset",
+                "ffield.class",
+                "ffield.name",
+                "ffieldClass.name",
+                "fproperty.arrayDim",
+                "fproperty.elementSize",
+                "fproperty.offsetInternal",
+                "fproperty.propertyLinkNext",
+                "fstructProperty.struct",
+                "fboolProperty.fieldSize",
+                "fboolProperty.byteOffset",
+                "fboolProperty.byteMask",
+                "fboolProperty.fieldMask"}) &&
+            FeatureDeclaresDependency(profile, "ue5.ahud", "ue5.functions") &&
+            FeatureDeclaresDependency(
+                profile, "ue5.ahud", kUe5ProcessEventFeature) &&
+            FeatureDeclaresLayoutValidator(
+                profile, "ue5.ahud", "ue5-ahud-reflection-v1");
+    }
+
     [[nodiscard]] bool NteEntitiesLayoutAvailable() const noexcept {
         return LayoutKeysAvailable(profile, {
             "world.persistentLevel",
@@ -928,6 +1108,9 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID) {
             return framework_hook_ready && resolution.FeatureAvailable("ue5.framework");
         }
+        if (id == ANOMALY_UE5_AHUD_SERVICE_V1_ID) {
+            return AhudFeatureAvailable();
+        }
         if (id == ANOMALY_UE5_NAMES_SERVICE_V1_ID) {
             return resolution.FeatureAvailable("ue5.names");
         }
@@ -1019,6 +1202,11 @@ struct Ue5NteAdapter::State {
                 ? ANOMALY_FEATURE_V1_AVAILABLE
                 : ANOMALY_FEATURE_V1_UNAVAILABLE;
         }
+        if (feature == "ue5.ahud") {
+            return AhudFeatureAvailable()
+                ? ANOMALY_FEATURE_V1_AVAILABLE
+                : ANOMALY_FEATURE_V1_UNAVAILABLE;
+        }
         if (feature == "nte.session" || feature == "nte.player" ||
             feature == "nte.player-esp" ||
             feature == "nte.player-teleport" || feature == "nte.entities") {
@@ -1069,6 +1257,12 @@ struct Ue5NteAdapter::State {
         player_partial = false;
     }
 
+    void InvalidateAhudBindingLocked() noexcept {
+        ahud_binding.store({}, std::memory_order_release);
+        ahud_discovery = {};
+        ahud_discovery.object_generation = object_generation;
+    }
+
     void ResetForStartLocked() noexcept {
         session_event_start = 0;
         session_event_count = 0;
@@ -1085,6 +1279,7 @@ struct Ue5NteAdapter::State {
         if (object_registry.items != 0) ++object_generation;
         object_registry = {};
         teleport = {};
+        InvalidateAhudBindingLocked();
         InvalidatePlayer();
         InvalidateEntities();
         InvalidateActors();
@@ -1092,6 +1287,7 @@ struct Ue5NteAdapter::State {
         player_attempt_sequence = 0;
         player_demand.store(false, std::memory_order_release);
         entity_demand.store(false, std::memory_order_release);
+        ahud_demand.store(false, std::memory_order_release);
         game_thread_id.store(0, std::memory_order_release);
         tick_sequence.store(0, std::memory_order_release);
         rejected_thread_ticks.store(0, std::memory_order_release);
@@ -1124,6 +1320,8 @@ struct Ue5NteAdapter::State {
         world_name_readable = false;
         teleport = {};
         framework_hook_ready = false;
+        ahud_hook_ready = false;
+        InvalidateAhudBindingLocked();
     }
 
     void RecordSessionEvent(
@@ -1182,6 +1380,7 @@ struct Ue5NteAdapter::State {
     }
 
     void RefreshObjects() noexcept {
+        const std::uint64_t previous_generation = object_generation;
         const auto* objects = Symbol("ue5.GObjects");
         ObjectRegistryState next;
         const bool available = objects != nullptr && objects->Available() &&
@@ -1190,6 +1389,9 @@ struct Ue5NteAdapter::State {
             if (object_registry.items != 0) ++object_generation;
             object_registry = {};
             teleport = {};
+            if (object_generation != previous_generation) {
+                InvalidateAhudBindingLocked();
+            }
             return;
         }
         if (object_registry.items == 0 || next.items != object_registry.items ||
@@ -1201,6 +1403,9 @@ struct Ue5NteAdapter::State {
             teleport = {};
         }
         object_registry = next;
+        if (object_generation != previous_generation) {
+            InvalidateAhudBindingLocked();
+        }
     }
 
     struct PlayerLocationSample {
@@ -1700,6 +1905,576 @@ struct Ue5NteAdapter::State {
         name = ResolveNameSnapshotLocked(name_id);
         return !name.empty();
     }
+
+    [[nodiscard]] bool ReadReflectedFieldClassNameLocked(
+        const std::uintptr_t field,
+        std::string& name) const {
+        std::uintptr_t field_class{};
+        std::uintptr_t name_address{};
+        std::uint32_t name_id{};
+        return ReadPointerAt(
+                   *memory, field, Layout(profile, "ffield.class"), field_class) &&
+            AddAddress(
+                field_class, Layout(profile, "ffieldClass.name"), name_address) &&
+            ReadValue(*memory, name_address, name_id) &&
+            !(name = ResolveNameSnapshotLocked(name_id)).empty();
+    }
+
+    [[nodiscard]] bool BuildAhudFunctionBindingLocked(
+        const std::uintptr_t function,
+        const AhudFunctionKind kind,
+        AhudFunctionBinding& binding) const {
+        try {
+            const AhudFunctionSpec spec = AhudSpec(kind);
+            if (spec.name.empty() || spec.parameters.empty() ||
+                spec.parameters.size() > kMaximumAhudParameters) {
+                return false;
+            }
+
+            std::string function_name;
+            if (!ReadReflectedObjectNameLocked(function, function_name) ||
+                function_name != spec.name) {
+                return false;
+            }
+            std::uintptr_t class_object{};
+            std::uintptr_t outer_object{};
+            if (!ReadPointerAt(
+                    *memory, function, Layout(profile, "object.class"), class_object) ||
+                !ReadPointerAt(
+                    *memory, function, Layout(profile, "object.outer"), outer_object)) {
+                return false;
+            }
+            std::string class_name;
+            std::string outer_name;
+            if (!ReadReflectedObjectNameLocked(class_object, class_name) ||
+                !ReadReflectedObjectNameLocked(outer_object, outer_name) ||
+                class_name != "Function" || outer_name != "HUD") {
+                return false;
+            }
+
+            std::uintptr_t property{};
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            std::uint16_t return_value_offset{};
+            if (!ReadPointerAt(
+                    *memory, function, Layout(profile, "ustruct.propertyLink"), property) ||
+                !ReadValue(
+                    *memory, function + Layout(profile, "ufunction.numParms"), num_parms) ||
+                !ReadValue(
+                    *memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+                !ReadValue(
+                    *memory,
+                    function + Layout(profile, "ufunction.returnValueOffset"),
+                    return_value_offset) ||
+                num_parms != spec.parameters.size() || parms_size != spec.parms_size) {
+                return false;
+            }
+            const bool has_return_value = std::ranges::any_of(
+                spec.parameters,
+                [](const AhudParameterSpec& parameter) { return parameter.return_value; });
+            if (!has_return_value &&
+                return_value_offset != (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+
+            AhudFunctionBinding candidate;
+            candidate.function = function;
+            candidate.parms_size = parms_size;
+            std::array<bool, kMaximumAhudParameters> found{};
+            std::size_t property_count{};
+            while (property != 0 && property_count < kMaximumAhudParameters) {
+                std::uintptr_t next{};
+                std::uintptr_t property_name_address{};
+                std::uintptr_t next_address{};
+                std::uint32_t property_name_id{};
+                std::int32_t array_dim{};
+                std::int32_t element_size{};
+                std::int32_t offset{};
+                if (!AddAddress(
+                        property, Layout(profile, "ffield.name"), property_name_address) ||
+                    !AddAddress(
+                        property,
+                        Layout(profile, "fproperty.propertyLinkNext"),
+                        next_address) ||
+                    !ReadValue(*memory, property_name_address, property_name_id) ||
+                    !ReadValue(
+                        *memory,
+                        property + Layout(profile, "fproperty.arrayDim"),
+                        array_dim) ||
+                    !ReadValue(
+                        *memory,
+                        property + Layout(profile, "fproperty.elementSize"),
+                        element_size) ||
+                    !ReadValue(
+                        *memory,
+                        property + Layout(profile, "fproperty.offsetInternal"),
+                        offset) ||
+                    !ReadValue(*memory, next_address, next)) {
+                    return false;
+                }
+
+                const std::string property_name =
+                    ResolveNameSnapshotLocked(property_name_id);
+                std::string property_type;
+                if (property_name.empty() ||
+                    !ReadReflectedFieldClassNameLocked(property, property_type) ||
+                    array_dim != 1 || element_size <= 0 || offset < 0 ||
+                    static_cast<std::uint64_t>(offset) +
+                            static_cast<std::uint64_t>(element_size) >
+                        parms_size) {
+                    return false;
+                }
+
+                std::size_t parameter_index = spec.parameters.size();
+                for (std::size_t index{}; index < spec.parameters.size(); ++index) {
+                    if (spec.parameters[index].name == property_name) {
+                        parameter_index = index;
+                        break;
+                    }
+                }
+                if (parameter_index == spec.parameters.size() || found[parameter_index]) {
+                    return false;
+                }
+                const AhudParameterSpec& parameter = spec.parameters[parameter_index];
+                if (parameter.type != property_type ||
+                    parameter.element_size != element_size ||
+                    static_cast<std::uint64_t>(offset) >
+                        (std::numeric_limits<std::uint16_t>::max)()) {
+                    return false;
+                }
+
+                if (!parameter.structure.empty()) {
+                    std::uintptr_t structure{};
+                    std::string structure_name;
+                    if (!ReadPointerAt(
+                            *memory,
+                            property,
+                            Layout(profile, "fstructProperty.struct"),
+                            structure) ||
+                        !ReadReflectedObjectNameLocked(structure, structure_name) ||
+                        structure_name != parameter.structure) {
+                        return false;
+                    }
+                }
+
+                candidate.offsets[parameter_index] =
+                    static_cast<std::uint16_t>(offset);
+                if (parameter.type == "BoolProperty") {
+                    std::uint8_t field_size{};
+                    std::uint8_t byte_offset{};
+                    std::uint8_t byte_mask{};
+                    std::uint8_t field_mask{};
+                    if (!ReadValue(
+                            *memory,
+                            property + Layout(profile, "fboolProperty.fieldSize"),
+                            field_size) ||
+                        !ReadValue(
+                            *memory,
+                            property + Layout(profile, "fboolProperty.byteOffset"),
+                            byte_offset) ||
+                        !ReadValue(
+                            *memory,
+                            property + Layout(profile, "fboolProperty.byteMask"),
+                            byte_mask) ||
+                        !ReadValue(
+                            *memory,
+                            property + Layout(profile, "fboolProperty.fieldMask"),
+                            field_mask) ||
+                        field_size == 0 || byte_offset >= field_size ||
+                        byte_mask == 0 || field_mask == 0 ||
+                        (byte_mask & field_mask) != byte_mask ||
+                        static_cast<std::uint64_t>(offset) + byte_offset >= parms_size ||
+                        static_cast<std::uint64_t>(offset) + byte_offset >
+                            (std::numeric_limits<std::uint16_t>::max)()) {
+                        return false;
+                    }
+                    candidate.bool_parameters[parameter_index] = {
+                        static_cast<std::uint16_t>(
+                            static_cast<std::uint32_t>(offset) + byte_offset),
+                        field_mask,
+                        byte_mask};
+                }
+                if (parameter.return_value &&
+                    return_value_offset != static_cast<std::uint16_t>(offset)) {
+                    return false;
+                }
+
+                found[parameter_index] = true;
+                ++property_count;
+                property = next;
+            }
+            if (property != 0 || property_count != spec.parameters.size() ||
+                !std::ranges::all_of(
+                    std::span(found).first(spec.parameters.size()),
+                    [](const bool value) { return value; })) {
+                return false;
+            }
+            binding = candidate;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void RefreshAhudBindingLocked() noexcept {
+        try {
+            if (!AhudFeatureAvailable() || object_registry.items == 0 ||
+                object_registry.count == 0) {
+                ahud_binding.store({}, std::memory_order_release);
+                return;
+            }
+            if (!ahud_demand.load(std::memory_order_acquire)) return;
+            const auto current = ahud_binding.load(std::memory_order_acquire);
+            if (current && current->object_generation == object_generation) return;
+            if (ahud_discovery.object_generation != object_generation) {
+                InvalidateAhudBindingLocked();
+            }
+            if (ahud_discovery.discovery_complete) return;
+
+            constexpr std::uint32_t kDiscoveryBatch = 4096;
+            const std::uint32_t end = (std::min)(
+                object_registry.count,
+                ahud_discovery.next_object_index + kDiscoveryBatch);
+            for (std::uint32_t index = ahud_discovery.next_object_index;
+                 index < end;
+                 ++index) {
+                std::uintptr_t object{};
+                std::uint32_t serial{};
+                if (!ReadObjectSlot(
+                        *memory, object_registry, index, object, serial) ||
+                    object == 0) {
+                    continue;
+                }
+                std::string name;
+                if (!ReadReflectedObjectNameLocked(object, name)) continue;
+                for (std::size_t function_index{};
+                     function_index < kAhudFunctionCount;
+                     ++function_index) {
+                    if (ahud_discovery.functions[function_index]) continue;
+                    const auto kind = static_cast<AhudFunctionKind>(function_index);
+                    if (AhudSpec(kind).name != name) continue;
+                    AhudFunctionBinding candidate;
+                    if (BuildAhudFunctionBindingLocked(object, kind, candidate)) {
+                        ahud_discovery.functions[function_index] = candidate;
+                    }
+                    break;
+                }
+            }
+            ahud_discovery.next_object_index = end;
+            const bool complete = std::ranges::all_of(
+                ahud_discovery.functions,
+                [](const auto& function) { return function.has_value(); });
+            if (complete) {
+                auto binding = std::make_shared<AhudBinding>();
+                binding->object_generation = object_generation;
+                for (std::size_t index{}; index < kAhudFunctionCount; ++index) {
+                    binding->functions[index] = *ahud_discovery.functions[index];
+                }
+                ahud_binding.store(std::move(binding), std::memory_order_release);
+                ahud_discovery.discovery_complete = true;
+            } else if (end == object_registry.count) {
+                ahud_discovery.discovery_complete = true;
+            }
+        } catch (...) {
+            ahud_discovery.discovery_complete = true;
+        }
+    }
+
+    [[nodiscard]] static const AhudFunctionBinding* AhudFunction(
+        const AhudFrameCallContext* context,
+        const AhudFunctionKind kind) noexcept {
+        if (context == nullptr || context->hud == 0 || context->binding == nullptr ||
+            context->original == nullptr || !*context->original) {
+            return nullptr;
+        }
+        const auto index = AhudIndex(kind);
+        if (index >= context->binding->functions.size()) return nullptr;
+        const auto& function = context->binding->functions[index];
+        return function.function != 0 && function.parms_size != 0
+            ? &function
+            : nullptr;
+    }
+
+    static bool WriteAhudBytes(
+        const AhudFunctionBinding& function,
+        const std::size_t parameter_index,
+        const void* const source,
+        const std::size_t size,
+        std::span<std::uint8_t> destination) noexcept {
+        if (source == nullptr || parameter_index >= function.offsets.size()) return false;
+        const std::size_t offset = function.offsets[parameter_index];
+        if (offset > destination.size() || size > destination.size() - offset ||
+            destination.size() < function.parms_size) {
+            return false;
+        }
+        std::memcpy(destination.data() + offset, source, size);
+        return true;
+    }
+
+    static bool ReadAhudBytes(
+        const AhudFunctionBinding& function,
+        const std::size_t parameter_index,
+        void* const destination,
+        const std::size_t size,
+        std::span<const std::uint8_t> source) noexcept {
+        if (destination == nullptr || parameter_index >= function.offsets.size()) return false;
+        const std::size_t offset = function.offsets[parameter_index];
+        if (offset > source.size() || size > source.size() - offset ||
+            source.size() < function.parms_size) {
+            return false;
+        }
+        std::memcpy(destination, source.data() + offset, size);
+        return true;
+    }
+
+    template <typename Value>
+    static bool WriteAhudValue(
+        const AhudFunctionBinding& function,
+        const std::size_t parameter_index,
+        const Value& value,
+        std::span<std::uint8_t> destination) noexcept {
+        return WriteAhudBytes(
+            function, parameter_index, &value, sizeof(value), destination);
+    }
+
+    template <typename Value>
+    static bool ReadAhudValue(
+        const AhudFunctionBinding& function,
+        const std::size_t parameter_index,
+        Value& value,
+        std::span<const std::uint8_t> source) noexcept {
+        return ReadAhudBytes(
+            function, parameter_index, &value, sizeof(value), source);
+    }
+
+    static bool InvokeAhud(
+        const AhudFrameCallContext& context,
+        const AhudFunctionBinding& function,
+        std::span<std::uint8_t> parameters) noexcept {
+        if (parameters.size() < function.parms_size || context.original == nullptr) {
+            return false;
+        }
+        try {
+            return (*context.original)(
+                context.hud,
+                function.function,
+                parameters.data(),
+                function.parms_size);
+        } catch (...) {
+            return false;
+        }
+    }
+
+    static bool EncodeAhudText(
+        const AnomalyStringViewV1 text,
+        std::vector<wchar_t>& storage,
+        NativeUtf16StringHeader& header) {
+        constexpr std::size_t kMaximumTextBytes = 16U * 1024U;
+        header = {};
+        storage.clear();
+        if ((text.data == nullptr && text.size != 0) ||
+            text.size > kMaximumTextBytes ||
+            text.size > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
+            return false;
+        }
+        if (text.size == 0) return true;
+        const int source_size = static_cast<int>(text.size);
+        const int count = MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, text.data, source_size, nullptr, 0);
+        if (count <= 0 || count >= (std::numeric_limits<std::int32_t>::max)()) {
+            return false;
+        }
+        storage.resize(static_cast<std::size_t>(count) + 1U);
+        if (MultiByteToWideChar(
+                CP_UTF8,
+                MB_ERR_INVALID_CHARS,
+                text.data,
+                source_size,
+                storage.data(),
+                count) != count) {
+            storage.clear();
+            return false;
+        }
+        storage[static_cast<std::size_t>(count)] = L'\0';
+        header.data = storage.data();
+        header.count = count + 1;
+        header.capacity = count + 1;
+        return true;
+    }
+
+    [[nodiscard]] static std::array<float, 4> LinearColor(
+        const std::uint32_t color) noexcept {
+        constexpr float scale = 1.0F / 255.0F;
+        return {
+            static_cast<float>(color & 0xFFU) * scale,
+            static_cast<float>((color >> 8U) & 0xFFU) * scale,
+            static_cast<float>((color >> 16U) & 0xFFU) * scale,
+            static_cast<float>((color >> 24U) & 0xFFU) * scale};
+    }
+
+    static int ANOMALY_CALL AhudProject(
+        void* user,
+        const double world[3],
+        float screen[2],
+        double* depth) noexcept {
+        const auto* context = static_cast<const AhudFrameCallContext*>(user);
+        const auto* function = AhudFunction(context, AhudFunctionKind::Project);
+        if (function == nullptr || world == nullptr || screen == nullptr ||
+            !std::ranges::all_of(
+                std::span(world, 3), [](const double value) { return std::isfinite(value); })) {
+            return 0;
+        }
+        alignas(std::uint64_t) std::array<std::uint8_t, 64> parameters{};
+        if (!WriteAhudBytes(
+                *function, 0, world, sizeof(double) * 3U, parameters) ||
+            !InvokeAhud(*context, *function, parameters)) {
+            return 0;
+        }
+        std::array<double, 3> projected{};
+        if (!ReadAhudValue(*function, 2, projected, parameters) ||
+            !std::ranges::all_of(
+                projected, [](const double value) { return std::isfinite(value); }) ||
+            std::abs(projected[0]) > (std::numeric_limits<float>::max)() ||
+            std::abs(projected[1]) > (std::numeric_limits<float>::max)()) {
+            return 0;
+        }
+        screen[0] = static_cast<float>(projected[0]);
+        screen[1] = static_cast<float>(projected[1]);
+        if (depth != nullptr) *depth = projected[2];
+        return projected[2] > 0.0 ? 1 : 0;
+    }
+
+    static int ANOMALY_CALL AhudMeasureText(
+        void* user,
+        const AnomalyStringViewV1 text,
+        const float scale,
+        float* width,
+        float* height) noexcept {
+        const auto* context = static_cast<const AhudFrameCallContext*>(user);
+        const auto* function = AhudFunction(context, AhudFunctionKind::GetTextSize);
+        if (function == nullptr || width == nullptr || height == nullptr ||
+            !std::isfinite(scale) || scale <= 0.0F) {
+            return 0;
+        }
+        try {
+            std::vector<wchar_t> storage;
+            NativeUtf16StringHeader native_text;
+            alignas(std::uint64_t) std::array<std::uint8_t, 64> parameters{};
+            if (!EncodeAhudText(text, storage, native_text) ||
+                !WriteAhudValue(*function, 0, native_text, parameters) ||
+                !WriteAhudValue(*function, 4, scale, parameters) ||
+                !InvokeAhud(*context, *function, parameters)) {
+                return 0;
+            }
+            float measured_width{};
+            float measured_height{};
+            if (!ReadAhudValue(*function, 1, measured_width, parameters) ||
+                !ReadAhudValue(*function, 2, measured_height, parameters) ||
+                !std::isfinite(measured_width) || !std::isfinite(measured_height) ||
+                measured_width < 0.0F || measured_height < 0.0F) {
+                return 0;
+            }
+            *width = measured_width;
+            *height = measured_height;
+            return 1;
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    static int ANOMALY_CALL AhudDrawText(
+        void* user,
+        const AnomalyStringViewV1 text,
+        const float x,
+        const float y,
+        const std::uint32_t color_rgba,
+        const float scale) noexcept {
+        const auto* context = static_cast<const AhudFrameCallContext*>(user);
+        const auto* function = AhudFunction(context, AhudFunctionKind::DrawText);
+        if (function == nullptr || !std::isfinite(x) || !std::isfinite(y) ||
+            !std::isfinite(scale) || scale <= 0.0F) {
+            return 0;
+        }
+        try {
+            std::vector<wchar_t> storage;
+            NativeUtf16StringHeader native_text;
+            const auto color = LinearColor(color_rgba);
+            alignas(std::uint64_t) std::array<std::uint8_t, 64> parameters{};
+            if (!EncodeAhudText(text, storage, native_text) ||
+                !WriteAhudValue(*function, 0, native_text, parameters) ||
+                !WriteAhudValue(*function, 1, color, parameters) ||
+                !WriteAhudValue(*function, 2, x, parameters) ||
+                !WriteAhudValue(*function, 3, y, parameters) ||
+                !WriteAhudValue(*function, 5, scale, parameters)) {
+                return 0;
+            }
+            return InvokeAhud(*context, *function, parameters) ? 1 : 0;
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    static int ANOMALY_CALL AhudDrawLine(
+        void* user,
+        const float start_x,
+        const float start_y,
+        const float end_x,
+        const float end_y,
+        const std::uint32_t color_rgba,
+        const float thickness) noexcept {
+        const auto* context = static_cast<const AhudFrameCallContext*>(user);
+        const auto* function = AhudFunction(context, AhudFunctionKind::DrawLine);
+        const std::array coordinates{start_x, start_y, end_x, end_y, thickness};
+        if (function == nullptr || thickness <= 0.0F ||
+            !std::ranges::all_of(
+                coordinates, [](const float value) { return std::isfinite(value); })) {
+            return 0;
+        }
+        const auto color = LinearColor(color_rgba);
+        alignas(std::uint64_t) std::array<std::uint8_t, 64> parameters{};
+        if (!WriteAhudValue(*function, 0, start_x, parameters) ||
+            !WriteAhudValue(*function, 1, start_y, parameters) ||
+            !WriteAhudValue(*function, 2, end_x, parameters) ||
+            !WriteAhudValue(*function, 3, end_y, parameters) ||
+            !WriteAhudValue(*function, 4, color, parameters) ||
+            !WriteAhudValue(*function, 5, thickness, parameters)) {
+            return 0;
+        }
+        return InvokeAhud(*context, *function, parameters) ? 1 : 0;
+    }
+
+    static int ANOMALY_CALL AhudDrawRect(
+        void* user,
+        const float x,
+        const float y,
+        const float width,
+        const float height,
+        const std::uint32_t color_rgba) noexcept {
+        const auto* context = static_cast<const AhudFrameCallContext*>(user);
+        const auto* function = AhudFunction(context, AhudFunctionKind::DrawRect);
+        const std::array values{x, y, width, height};
+        if (function == nullptr || width < 0.0F || height < 0.0F ||
+            !std::ranges::all_of(
+                values, [](const float value) { return std::isfinite(value); })) {
+            return 0;
+        }
+        const auto color = LinearColor(color_rgba);
+        alignas(std::uint64_t) std::array<std::uint8_t, 64> parameters{};
+        if (!WriteAhudValue(*function, 0, color, parameters) ||
+            !WriteAhudValue(*function, 1, x, parameters) ||
+            !WriteAhudValue(*function, 2, y, parameters) ||
+            !WriteAhudValue(*function, 3, width, parameters) ||
+            !WriteAhudValue(*function, 4, height, parameters)) {
+            return 0;
+        }
+        return InvokeAhud(*context, *function, parameters) ? 1 : 0;
+    }
+
+    void DispatchAhudFrame(
+        std::uintptr_t object,
+        std::uintptr_t function,
+        void* parameters,
+        const ProcessEventInvoker& original) noexcept;
 
     [[nodiscard]] bool BuildTeleportBindingLocked(
         const std::uintptr_t function,
@@ -3525,6 +4300,353 @@ private:
     std::atomic<std::shared_ptr<const TickCallback>> callback_;
 };
 
+struct Ue5NteAdapter::State::AhudServiceEndpoint final {
+    struct Subscription final {
+        class CallLease final {
+        public:
+            CallLease() = default;
+            explicit CallLease(std::shared_ptr<Subscription> subscription) noexcept
+                : subscription_(std::move(subscription)) {}
+            CallLease(const CallLease&) = delete;
+            CallLease& operator=(const CallLease&) = delete;
+            CallLease(CallLease&&) noexcept = default;
+            CallLease& operator=(CallLease&&) noexcept = delete;
+            ~CallLease() {
+                if (subscription_) subscription_->gate.Leave();
+            }
+
+            [[nodiscard]] explicit operator bool() const noexcept {
+                return subscription_ != nullptr;
+            }
+
+            void Invoke(const AnomalyUe5AhudFrameV1* frame) const {
+                subscription_->callback(subscription_->callback_user, frame);
+            }
+
+        private:
+            std::shared_ptr<Subscription> subscription_;
+        };
+
+        Subscription(
+            const std::uint64_t id_value,
+            const std::uint64_t generation_value,
+            const AnomalyUe5AhudDrawCallbackV1 callback_value,
+            void* const callback_user_value) noexcept
+            : id(id_value),
+              generation(generation_value),
+              callback(callback_value),
+              callback_user(callback_user_value) {}
+
+        [[nodiscard]] CallLease Acquire(
+            const std::shared_ptr<Subscription>& self) noexcept {
+            return gate.TryEnter() ? CallLease(self) : CallLease{};
+        }
+
+        void Close() noexcept {
+            gate.Close();
+        }
+
+        [[nodiscard]] bool DrainUntil(
+            const std::chrono::steady_clock::time_point deadline) noexcept {
+            return gate.DrainUntil(deadline);
+        }
+
+        [[nodiscard]] bool IsDrained() const noexcept {
+            return gate.IsDrained();
+        }
+
+        const std::uint64_t id{};
+        const std::uint64_t generation{};
+        const AnomalyUe5AhudDrawCallbackV1 callback{};
+        void* const callback_user{};
+        AdmissionGate gate;
+    };
+
+    class ServiceCallLease final {
+    public:
+        ServiceCallLease() = default;
+        ServiceCallLease(AhudServiceEndpoint* endpoint, std::shared_ptr<State> state) noexcept
+            : endpoint_(endpoint), state_(std::move(state)) {}
+        ServiceCallLease(const ServiceCallLease&) = delete;
+        ServiceCallLease& operator=(const ServiceCallLease&) = delete;
+        ServiceCallLease(ServiceCallLease&& other) noexcept
+            : endpoint_(std::exchange(other.endpoint_, nullptr)),
+              state_(std::move(other.state_)) {}
+        ServiceCallLease& operator=(ServiceCallLease&& other) noexcept {
+            if (this == &other) return *this;
+            Release();
+            endpoint_ = std::exchange(other.endpoint_, nullptr);
+            state_ = std::move(other.state_);
+            return *this;
+        }
+        ~ServiceCallLease() { Release(); }
+
+        [[nodiscard]] explicit operator bool() const noexcept {
+            return state_ != nullptr;
+        }
+
+        [[nodiscard]] const std::shared_ptr<State>& StateOwner() const noexcept {
+            return state_;
+        }
+
+    private:
+        void Release() noexcept {
+            if (endpoint_ == nullptr) return;
+            state_.reset();
+            endpoint_->gate_.Leave();
+            endpoint_ = nullptr;
+        }
+
+        AhudServiceEndpoint* endpoint_{};
+        std::shared_ptr<State> state_;
+    };
+
+    AhudServiceEndpoint(std::weak_ptr<State> state, const std::uint64_t generation) noexcept
+        : state_(std::move(state)), generation_(generation == 0 ? 1 : generation) {
+        service = {
+            sizeof(AnomalyUe5AhudServiceV1), ANOMALY_UE5_AHUD_SERVICE_V1_VERSION,
+            this, SubscribeThunk, UnsubscribeThunk};
+    }
+
+    [[nodiscard]] ServiceCallLease Acquire() noexcept {
+        if (!gate_.TryEnter()) return {};
+        auto state = state_.lock();
+        if (!state) {
+            gate_.Leave();
+            return {};
+        }
+        return ServiceCallLease(this, std::move(state));
+    }
+
+    void Close() noexcept {
+        gate_.Close();
+        callback_gate_.Close();
+        const auto state = state_.lock();
+        {
+            std::scoped_lock lock(mutex_);
+            closed_ = true;
+            for (const auto& [id, subscription] : subscriptions_) {
+                static_cast<void>(id);
+                subscription->Close();
+            }
+            if (state) {
+                state->ahud_demand.store(false, std::memory_order_release);
+            }
+        }
+    }
+
+    [[nodiscard]] bool IsDrained() const noexcept {
+        if (!gate_.IsDrained() || !callback_gate_.IsDrained()) return false;
+        std::scoped_lock lock(mutex_);
+        return std::ranges::all_of(subscriptions_, [](const auto& entry) {
+            return entry.second->IsDrained();
+        });
+    }
+
+    [[nodiscard]] bool DrainUntil(
+        const std::chrono::steady_clock::time_point deadline) noexcept {
+        if (!gate_.DrainUntil(deadline) || !callback_gate_.DrainUntil(deadline)) {
+            return false;
+        }
+        std::vector<std::shared_ptr<Subscription>> subscriptions;
+        try {
+            std::scoped_lock lock(mutex_);
+            subscriptions.reserve(subscriptions_.size());
+            for (const auto& [id, subscription] : subscriptions_) {
+                static_cast<void>(id);
+                subscriptions.push_back(subscription);
+            }
+        } catch (...) {
+            return false;
+        }
+        return std::ranges::all_of(subscriptions, [deadline](const auto& subscription) {
+            return subscription->DrainUntil(deadline);
+        });
+    }
+
+    void Dispatch(const void* state, const AnomalyUe5AhudFrameV1* frame) noexcept {
+        std::vector<std::shared_ptr<Subscription>> subscriptions;
+        try {
+            {
+                std::scoped_lock lock(mutex_);
+                if (closed_) return;
+                subscriptions.reserve(subscriptions_.size());
+                for (const auto& [id, subscription] : subscriptions_) {
+                    static_cast<void>(id);
+                    subscriptions.push_back(subscription);
+                }
+            }
+            for (const auto& subscription : subscriptions) {
+                if (!callback_gate_.TryEnter()) return;
+                const auto leave_callback_gate = std::unique_ptr<AdmissionGate, void(*)(AdmissionGate*)>(
+                    &callback_gate_, [](AdmissionGate* gate) { gate->Leave(); });
+                auto lease = subscription->Acquire(subscription);
+                if (!lease) continue;
+                const ActiveAhudCallbackScope callback_scope(state, subscription.get());
+                try {
+                    lease.Invoke(frame);
+                } catch (...) {
+                }
+            }
+        } catch (...) {
+        }
+    }
+
+    AnomalyUe5AhudServiceV1 service{};
+
+private:
+    [[nodiscard]] AnomalyStatusV1 Subscribe(
+        const std::shared_ptr<State>& state,
+        const AnomalyUe5AhudDrawCallbackV1 callback,
+        void* const callback_user,
+        AnomalyGenerationHandleV1* const handle) noexcept {
+        if (handle == nullptr || callback == nullptr) {
+            return Status(
+                ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                "AHUD subscription callback and handle are required");
+        }
+        *handle = {};
+        {
+            std::scoped_lock state_lock(state->mutex);
+            if (!state->started.load(std::memory_order_acquire) ||
+                !state->AhudFeatureAvailable()) {
+                return StoppedStatus();
+            }
+        }
+
+        try {
+            std::shared_ptr<Subscription> subscription;
+            {
+                std::scoped_lock lock(mutex_);
+                if (closed_) return StoppedStatus();
+                if (next_id_ == (std::numeric_limits<std::uint64_t>::max)()) {
+                    return Status(
+                        ANOMALY_STATUS_V1_UNAVAILABLE,
+                        "AHUD subscription handle space is exhausted");
+                }
+                const std::uint64_t id = ++next_id_;
+                subscription = std::make_shared<Subscription>(
+                    id, generation_, callback, callback_user);
+                subscriptions_.emplace(id, subscription);
+                *handle = {id, generation_};
+                state->ahud_demand.store(true, std::memory_order_release);
+            }
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "AHUD subscription allocation failed");
+        }
+    }
+
+    [[nodiscard]] AnomalyStatusV1 Unsubscribe(
+        const std::shared_ptr<State>& state,
+        const AnomalyGenerationHandleV1 handle) noexcept {
+        std::shared_ptr<Subscription> subscription;
+        bool has_subscribers{};
+        {
+            std::scoped_lock lock(mutex_);
+            const auto found = subscriptions_.find(handle.id);
+            if (handle.id == 0 || handle.generation != generation_ ||
+                found == subscriptions_.end()) {
+                return Status(
+                    ANOMALY_STATUS_V1_NOT_FOUND,
+                    "AHUD subscription handle is not found");
+            }
+            subscription = std::move(found->second);
+            subscriptions_.erase(found);
+            has_subscribers = !closed_ && !subscriptions_.empty();
+            state->ahud_demand.store(has_subscribers, std::memory_order_release);
+        }
+        subscription->Close();
+        if (g_active_ahud_subscription_state.Get() == subscription.get()) {
+            return Status(ANOMALY_STATUS_V1_OK);
+        }
+        return subscription->DrainUntil(
+                   std::chrono::steady_clock::time_point::max())
+            ? Status(ANOMALY_STATUS_V1_OK)
+            : Status(ANOMALY_STATUS_V1_TIMEOUT, "AHUD subscription drain timed out");
+    }
+
+    static AnomalyStatusV1 StoppedStatus() noexcept {
+        return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "AHUD service is stopped");
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL SubscribeThunk(
+        void* const user,
+        const AnomalyUe5AhudDrawCallbackV1 callback,
+        void* const callback_user,
+        AnomalyGenerationHandleV1* const handle) noexcept {
+        auto* const endpoint = static_cast<AhudServiceEndpoint*>(user);
+        auto lease = endpoint->Acquire();
+        return lease
+            ? endpoint->Subscribe(lease.StateOwner(), callback, callback_user, handle)
+            : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UnsubscribeThunk(
+        void* const user,
+        const AnomalyGenerationHandleV1 handle) noexcept {
+        auto* const endpoint = static_cast<AhudServiceEndpoint*>(user);
+        auto lease = endpoint->Acquire();
+        return lease
+            ? endpoint->Unsubscribe(lease.StateOwner(), handle)
+            : StoppedStatus();
+    }
+
+    std::weak_ptr<State> state_;
+    const std::uint64_t generation_{};
+    AdmissionGate gate_;
+    AdmissionGate callback_gate_;
+    mutable std::mutex mutex_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<Subscription>> subscriptions_;
+    std::uint64_t next_id_{};
+    bool closed_{};
+};
+
+void Ue5NteAdapter::State::DispatchAhudFrame(
+    const std::uintptr_t object,
+    const std::uintptr_t function,
+    void* const parameters,
+    const ProcessEventInvoker& original) noexcept {
+    if (object == 0 || function == 0 || parameters == nullptr || !original ||
+        !started.load(std::memory_order_acquire) ||
+        GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire)) {
+        return;
+    }
+    const auto binding = ahud_binding.load(std::memory_order_acquire);
+    if (!binding) return;
+    const auto& receive = binding->functions[AhudIndex(AhudFunctionKind::ReceiveDrawHud)];
+    if (receive.function != function || receive.parms_size == 0) return;
+
+    const auto parameter_bytes = std::span(
+        static_cast<const std::uint8_t*>(parameters), receive.parms_size);
+    std::int32_t viewport_width{};
+    std::int32_t viewport_height{};
+    constexpr std::int32_t kMaximumViewportDimension = 1 << 20;
+    if (!ReadAhudValue(receive, 0, viewport_width, parameter_bytes) ||
+        !ReadAhudValue(receive, 1, viewport_height, parameter_bytes) ||
+        viewport_width <= 0 || viewport_height <= 0 ||
+        viewport_width > kMaximumViewportDimension ||
+        viewport_height > kMaximumViewportDimension) {
+        return;
+    }
+
+    const auto endpoint = ahud_endpoint.load(std::memory_order_acquire);
+    if (!endpoint) return;
+    AhudFrameCallContext context{object, binding.get(), &original};
+    const AnomalyUe5AhudFrameV1 frame{
+        sizeof(AnomalyUe5AhudFrameV1),
+        ANOMALY_UE5_AHUD_FRAME_V1_NONE,
+        &context,
+        static_cast<std::uint32_t>(viewport_width),
+        static_cast<std::uint32_t>(viewport_height),
+        AhudProject,
+        AhudMeasureText,
+        AhudDrawText,
+        AhudDrawLine,
+        AhudDrawRect};
+    endpoint->Dispatch(this, &frame);
+}
+
 bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& self) {
     const auto endpoint = semantic_endpoint.load(std::memory_order_acquire);
     if (!endpoint) return false;
@@ -3548,6 +4670,17 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION,
             &endpoint->framework_service,
             {}, semantic_lifetime)) {
+        return false;
+    }
+    const auto current_ahud_endpoint = ahud_endpoint.load(std::memory_order_acquire);
+    if (AhudFeatureAvailable() &&
+        (!current_ahud_endpoint ||
+         !PublishIfMissing(
+             ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+             ANOMALY_UE5_AHUD_SERVICE_V1_VERSION,
+             &current_ahud_endpoint->service,
+             {},
+             std::static_pointer_cast<const void>(current_ahud_endpoint)))) {
         return false;
     }
     if (resolution.FeatureAvailable("ue5.names") &&
@@ -3678,18 +4811,22 @@ Ue5NteAdapter::~Ue5NteAdapter() {
     static_cast<void>(Stop(std::chrono::milliseconds::zero()));
 }
 
-bool Ue5NteAdapter::Start(bool framework_hook_ready) {
+bool Ue5NteAdapter::Start(bool framework_hook_ready, bool ahud_hook_ready) {
     const auto state = state_;
     std::shared_ptr<State::SemanticServiceEndpoint> retired_semantic_endpoint;
     std::shared_ptr<State::CallbackEndpoint> retired_callback_endpoint;
+    std::shared_ptr<State::AhudServiceEndpoint> retired_ahud_endpoint;
     std::unique_lock<std::timed_mutex> lifecycle_lock(state->lifecycle_mutex);
     if (state->stopping.load(std::memory_order_acquire) ||
         state->semantic_endpoint.load(std::memory_order_acquire) ||
         state->callback_endpoint.load(std::memory_order_acquire) ||
+        state->ahud_endpoint.load(std::memory_order_acquire) ||
         (state->draining_semantic_endpoint &&
             !state->draining_semantic_endpoint->IsDrained()) ||
         (state->draining_callback_endpoint &&
-            !state->draining_callback_endpoint->IsDrained())) {
+            !state->draining_callback_endpoint->IsDrained()) ||
+        (state->draining_ahud_endpoint &&
+            !state->draining_ahud_endpoint->IsDrained())) {
         return false;
     }
     std::unique_lock<std::timed_mutex> lock(state->mutex);
@@ -3698,15 +4835,21 @@ bool Ue5NteAdapter::Start(bool framework_hook_ready) {
     }
     retired_semantic_endpoint = std::move(state->draining_semantic_endpoint);
     retired_callback_endpoint = std::move(state->draining_callback_endpoint);
-    state->lifecycle_epoch.fetch_add(1, std::memory_order_acq_rel);
+    retired_ahud_endpoint = std::move(state->draining_ahud_endpoint);
+    const auto lifecycle_generation =
+        state->lifecycle_epoch.fetch_add(1, std::memory_order_acq_rel) + 1U;
     state->ResetForStartLocked();
     state->framework_hook_ready = framework_hook_ready;
+    state->ahud_hook_ready = ahud_hook_ready;
     state->semantic_endpoint.store(
         std::make_shared<State::SemanticServiceEndpoint>(state),
         std::memory_order_release);
     state->callback_endpoint.store(
         std::make_shared<State::CallbackEndpoint>(
             state->configured_tick_callback.load(std::memory_order_acquire)),
+        std::memory_order_release);
+    state->ahud_endpoint.store(
+        std::make_shared<State::AhudServiceEndpoint>(state, lifecycle_generation),
         std::memory_order_release);
     const auto first_service = state->PublishedCount();
     if (state->PublishAvailableServices(state)) {
@@ -3717,8 +4860,11 @@ bool Ue5NteAdapter::Start(bool framework_hook_ready) {
         std::shared_ptr<State::SemanticServiceEndpoint>{}, std::memory_order_acq_rel);
     const auto failed_callback_endpoint = state->callback_endpoint.exchange(
         std::shared_ptr<State::CallbackEndpoint>{}, std::memory_order_acq_rel);
+    const auto failed_ahud_endpoint = state->ahud_endpoint.exchange(
+        std::shared_ptr<State::AhudServiceEndpoint>{}, std::memory_order_acq_rel);
     if (failed_endpoint) failed_endpoint->Close();
     if (failed_callback_endpoint) failed_callback_endpoint->Close();
+    if (failed_ahud_endpoint) failed_ahud_endpoint->Close();
     state->RevokePublishedFrom(first_service);
     return false;
 }
@@ -3732,18 +4878,23 @@ bool Ue5NteAdapter::Stop(std::chrono::milliseconds timeout) noexcept {
         : std::chrono::steady_clock::now() + bounded_timeout;
     const bool called_by_active_tick_callback =
         g_active_tick_callback_state.Get() == state.get();
+    const bool called_by_active_ahud_callback =
+        g_active_ahud_callback_state.Get() == state.get();
+    const bool called_by_active_callback =
+        called_by_active_tick_callback || called_by_active_ahud_callback;
     std::shared_ptr<State::SemanticServiceEndpoint> semantic_endpoint;
     std::shared_ptr<State::CallbackEndpoint> callback_endpoint;
+    std::shared_ptr<State::AhudServiceEndpoint> ahud_endpoint;
     std::shared_ptr<const TickCallback> detached_endpoint_callback;
     std::shared_ptr<const TickCallback> detached_configured_callback;
 
     // A callback can safely initiate its own transition, but it must not wait
     // behind another stopper that is already draining that callback.
-    if (called_by_active_tick_callback && state->stopping.load(std::memory_order_acquire)) {
+    if (called_by_active_callback && state->stopping.load(std::memory_order_acquire)) {
         return false;
     }
     std::unique_lock<std::timed_mutex> lifecycle_lock(state->lifecycle_mutex, std::defer_lock);
-    const bool lifecycle_locked = called_by_active_tick_callback
+    const bool lifecycle_locked = called_by_active_callback
         ? lifecycle_lock.try_lock()
         : LockUntil(lifecycle_lock, deadline);
     if (!lifecycle_locked) return false;
@@ -3777,6 +4928,17 @@ bool Ue5NteAdapter::Stop(std::chrono::milliseconds timeout) noexcept {
             detached_endpoint_callback = callback_endpoint->Clear();
         }
     }
+    ahud_endpoint = state->ahud_endpoint.exchange(
+        std::shared_ptr<State::AhudServiceEndpoint>{}, std::memory_order_acq_rel);
+    if (ahud_endpoint) {
+        ahud_endpoint->Close();
+        if (!state->draining_ahud_endpoint) {
+            state->draining_ahud_endpoint = ahud_endpoint;
+        }
+    } else {
+        ahud_endpoint = state->draining_ahud_endpoint;
+        if (ahud_endpoint) ahud_endpoint->Close();
+    }
     detached_configured_callback = state->configured_tick_callback.exchange(
         {}, std::memory_order_acq_rel);
     lifecycle_lock.unlock();
@@ -3794,7 +4956,8 @@ bool Ue5NteAdapter::Stop(std::chrono::milliseconds timeout) noexcept {
     state->ClearSemanticStateForStopLocked();
     state_lock.unlock();
 
-    if (called_by_active_tick_callback) return false;
+    if (called_by_active_callback) return false;
+    if (ahud_endpoint && !ahud_endpoint->DrainUntil(deadline)) return false;
     if (callback_endpoint && !callback_endpoint->DrainUntil(deadline)) return false;
     if (semantic_endpoint && !semantic_endpoint->DrainUntil(deadline)) return false;
 
@@ -3803,14 +4966,19 @@ bool Ue5NteAdapter::Stop(std::chrono::milliseconds timeout) noexcept {
     if (!LockUntil(final_lifecycle_lock, deadline)) return false;
     std::shared_ptr<State::SemanticServiceEndpoint> retired_semantic_endpoint;
     std::shared_ptr<State::CallbackEndpoint> retired_callback_endpoint;
+    std::shared_ptr<State::AhudServiceEndpoint> retired_ahud_endpoint;
     if (state->draining_semantic_endpoint == semantic_endpoint) {
         retired_semantic_endpoint = std::move(state->draining_semantic_endpoint);
     }
     if (state->draining_callback_endpoint == callback_endpoint) {
         retired_callback_endpoint = std::move(state->draining_callback_endpoint);
     }
+    if (state->draining_ahud_endpoint == ahud_endpoint) {
+        retired_ahud_endpoint = std::move(state->draining_ahud_endpoint);
+    }
     if (!state->semantic_endpoint.load(std::memory_order_acquire) &&
-        !state->callback_endpoint.load(std::memory_order_acquire)) {
+        !state->callback_endpoint.load(std::memory_order_acquire) &&
+        !state->ahud_endpoint.load(std::memory_order_acquire)) {
         state->stopping.store(false, std::memory_order_release);
     }
     final_lifecycle_lock.unlock();
@@ -3884,6 +5052,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->RefreshWorld(sequence);
         state->RefreshObjects();
         state->RefreshTeleportBindingLocked();
+        state->RefreshAhudBindingLocked();
         const bool entity_requested = state->entity_demand.load(std::memory_order_acquire);
         const bool player_requested = state->player_demand.load(std::memory_order_acquire);
         const bool entity_due = entity_requested && State::SamplingDue(
@@ -3927,6 +5096,15 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         callback.Invoke(delta_seconds);
     } catch (...) {
     }
+}
+
+void Ue5NteAdapter::OnProcessEvent(
+    const std::uintptr_t object,
+    const std::uintptr_t function,
+    void* const parameters,
+    const ProcessEventInvoker& original) noexcept {
+    const auto state = state_;
+    state->DispatchAhudFrame(object, function, parameters, original);
 }
 
 bool Ue5NteAdapter::Started() const noexcept {

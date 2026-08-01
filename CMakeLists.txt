@@ -397,6 +397,7 @@ target_link_libraries(
 add_library(anomaly_adapter_services STATIC
     src/game/ue5/adapter_service_registry.cpp
     src/game/ue5/ue5_process_event.cpp
+    src/game/ue5/ue5_process_event_hook.cpp
     src/game/ue5/ue5_nte_adapter.cpp
     src/game/ue5/game_tick_hook.cpp
     src/game/ue5/ue5_outbound_bit_count_probe.cpp)
@@ -2132,6 +2133,15 @@ if(BUILD_TESTING)
     add_test(NAME pink_paw_rob_bank_runtime_tests
         COMMAND pink_paw_rob_bank_runtime_tests)
 
+    add_executable(pink_paw_ahud_geometry_tests
+        tests/unit/pink_paw_ahud_geometry_tests.cpp)
+    target_include_directories(pink_paw_ahud_geometry_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}")
+    target_compile_options(pink_paw_ahud_geometry_tests PRIVATE
+        /W4 /permissive- /EHsc)
+    add_test(NAME pink_paw_ahud_geometry_tests
+        COMMAND pink_paw_ahud_geometry_tests)
+
     if(TARGET anomaly_builtin_fake_uid)
         add_executable(fake_uid_plugin_tests
             tests/integration/fake_uid_plugin_tests.cpp)
@@ -2160,6 +2170,14 @@ if(BUILD_TESTING)
     target_link_libraries(ue5_nte_adapter_tests PRIVATE anomaly_adapter_services)
     add_test(NAME ue5_nte_adapter_tests COMMAND ue5_nte_adapter_tests)
 
+    add_executable(ue5_ahud_adapter_tests tests/unit/ue5_ahud_adapter_tests.cpp)
+    target_include_directories(ue5_ahud_adapter_tests PRIVATE include)
+    target_compile_definitions(
+        ue5_ahud_adapter_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(ue5_ahud_adapter_tests PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(ue5_ahud_adapter_tests PRIVATE anomaly_adapter_services)
+    add_test(NAME ue5_ahud_adapter_tests COMMAND ue5_ahud_adapter_tests)
+
     add_executable(game_tick_hook_tests tests/unit/game_tick_hook_tests.cpp)
     target_include_directories(game_tick_hook_tests PRIVATE include)
     target_compile_definitions(
@@ -2167,6 +2185,16 @@ if(BUILD_TESTING)
     target_compile_options(game_tick_hook_tests PRIVATE /W4 /permissive- /EHsc)
     target_link_libraries(game_tick_hook_tests PRIVATE anomaly_adapter_services)
     add_test(NAME game_tick_hook_tests COMMAND game_tick_hook_tests)
+
+    add_executable(
+        ue5_process_event_hook_tests
+        tests/unit/ue5_process_event_hook_tests.cpp)
+    target_include_directories(ue5_process_event_hook_tests PRIVATE include)
+    target_compile_definitions(
+        ue5_process_event_hook_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(ue5_process_event_hook_tests PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(ue5_process_event_hook_tests PRIVATE anomaly_adapter_services)
+    add_test(NAME ue5_process_event_hook_tests COMMAND ue5_process_event_hook_tests)
 
     add_executable(
         ue5_outbound_bit_count_probe_tests

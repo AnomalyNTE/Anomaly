@@ -41,6 +41,66 @@ typedef struct AnomalyUe5FrameworkServiceV1 {
 
 提供游戏线程锚点：`game_thread_id`、单调递增的 `tick_sequence`、`is_game_thread`（当前是否在 Game 线程）。
 
+## `anomaly.ue5.ahud`
+
+- **ID**：`"anomaly.ue5.ahud"` · **版本** 1 · **capability** `ue5-ahud`
+
+```c
+typedef struct AnomalyUe5AhudFrameV1 {
+    uint32_t struct_size; uint32_t flags; void* user;
+    uint32_t viewport_width; uint32_t viewport_height;
+    int (ANOMALY_CALL *project)(
+        void* user, const double world[3], float screen[2], double* depth);
+    int (ANOMALY_CALL *measure_text)(
+        void* user, AnomalyStringViewV1 text, float scale,
+        float* width, float* height);
+    int (ANOMALY_CALL *draw_text)(
+        void* user, AnomalyStringViewV1 text, float x, float y,
+        uint32_t color_rgba, float scale);
+    int (ANOMALY_CALL *draw_line)(
+        void* user, float start_x, float start_y, float end_x, float end_y,
+        uint32_t color_rgba, float thickness);
+    int (ANOMALY_CALL *draw_rect)(
+        void* user, float x, float y, float width, float height,
+        uint32_t color_rgba);
+} AnomalyUe5AhudFrameV1;
+
+typedef void (ANOMALY_CALL *AnomalyUe5AhudDrawCallbackV1)(
+    void* user, const AnomalyUe5AhudFrameV1* frame);
+
+typedef struct AnomalyUe5AhudServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *subscribe)(
+        void* user, AnomalyUe5AhudDrawCallbackV1 callback, void* callback_user,
+        AnomalyGenerationHandleV1* handle);
+    AnomalyStatusV1 (ANOMALY_CALL *unsubscribe)(
+        void* user, AnomalyGenerationHandleV1 handle);
+} AnomalyUe5AhudServiceV1;
+```
+
+宿主在 UE 原生 `ReceiveDrawHUD` 完成后，于 Game 线程同步调用订阅者；同一订阅 endpoint 的
+callback 串行执行，不会并发进入。`frame`、`frame->user` 及其中全部函数只在当前 callback 返回前
+有效；不得缓存，也不得从其他线程调用。服务不向插件暴露 `AHUD*`、`UCanvas*` 或其他 UE 对象。
+订阅成功后，宿主会先完成一次实时 UFunction 反射绑定；六个函数的名称、owner、参数类型、偏移和
+`ParmsSize` 全部验证通过后才开始 callback admission，绑定仍在扫描期间不会调用订阅者。
+
+| 函数 | 说明 |
+| --- | --- |
+| `project` | 把三维世界坐标投影到屏幕；成功且位于相机前方时返回非零，`depth` 可为空 |
+| `measure_text` | 使用 AHUD 默认字体测量 UTF-8 文本；成功返回非零 |
+| `draw_text` | 使用 AHUD 默认字体绘制 UTF-8 文本；成功返回非零 |
+| `draw_line` | 绘制指定厚度的线段；成功返回非零 |
+| `draw_rect` | 绘制实心矩形；成功返回非零 |
+| `subscribe` | 创建独立同步绘制订阅，返回 generation handle |
+| `unsubscribe` | 成功后阻止未来 callback admission；从 callback 外调用时，会在返回前排空已进入的 callback |
+
+`color_rgba` 使用 `ANOMALY_RGBA_V1(red, green, blue, alpha)` 的字节布局。回调应只消费已发布的
+不可变快照并提交绘制，不应执行文件、网络或生命周期工作。插件异常由宿主边界隔离；同一帧的其他
+订阅仍可继续执行。
+
+callback 内允许使用自身 handle 调用 `unsubscribe`。这种 self-unsubscribe 只阻止未来 admission，
+不会等待当前 callback 自身返回；插件必须保证 `callback_user` 至少存活到当前 callback 返回。
+
 ## `anomaly.ue5.names`
 
 - **ID**：`"anomaly.ue5.names"` · **版本** 1 · **capability** `ue5-names`

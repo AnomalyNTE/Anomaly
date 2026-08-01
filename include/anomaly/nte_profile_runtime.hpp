@@ -39,6 +39,7 @@ struct NteProfileEvidenceSnapshot {
     std::optional<BuildProfile> profile;
     std::optional<ProfileResolutionSnapshot> resolution;
     bool tick_hook_ready{};
+    bool ahud_hook_ready{};
     std::uint32_t game_thread_id{};
     std::uint64_t tick_sequence{};
     std::uint64_t rejected_thread_ticks{};
@@ -54,7 +55,7 @@ public:
 
     // Unknown builds and partial symbol failures are successful degraded starts.
     [[nodiscard]] bool Start(std::stop_token stop_token = {}) noexcept;
-    // Uses one deadline for the tick hook and adapter. A timed-out generation
+    // Uses one deadline for both hooks and the adapter. A timed-out generation
     // is retained in process quarantine so Runtime shutdown can continue.
     bool Stop(
         std::chrono::milliseconds timeout = std::chrono::seconds(5)) noexcept;

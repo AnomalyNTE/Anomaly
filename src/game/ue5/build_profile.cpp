@@ -318,6 +318,18 @@ void ValidateReflectionFeatureContracts(
         profile, "ue5.process-event", {"ue5.ProcessEvent"}, {},
         "ue5-process-event-abi-v1", {}, result, source);
     ValidateReflectionFeatureContract(
+        profile, "ue5.ahud", {}, {"ue5.functions", "ue5.process-event"},
+        "ue5-ahud-reflection-v1",
+        {"object.class", "object.nameOffset", "object.outer",
+         "ustruct.propertyLink", "ufunction.numParms", "ufunction.parmsSize",
+         "ufunction.returnValueOffset", "ffield.class", "ffield.name",
+         "ffieldClass.name", "fproperty.arrayDim", "fproperty.elementSize",
+         "fproperty.offsetInternal", "fproperty.propertyLinkNext",
+         "fstructProperty.struct", "fboolProperty.fieldSize",
+         "fboolProperty.byteOffset", "fboolProperty.byteMask",
+         "fboolProperty.fieldMask"},
+        result, source);
+    ValidateReflectionFeatureContract(
         profile, "ue5.actors",
         {"ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"},
         {"ue5.world", "ue5.names"},

@@ -1,11 +1,14 @@
 #include "plugin_manager.hpp"
+#include "anomaly/adapter_service_registry.hpp"
 #include "anomaly/structured_logger.hpp"
 #include "anomaly/ui_resource_decoder.hpp"
 
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -13,11 +16,13 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -276,6 +281,390 @@ bool TestPluginCacheCleanup(const anomaly::CoreMemoryServices& memory_services) 
         if (std::filesystem::exists(active)) return false;
     }
     return !std::filesystem::exists(cache_root);
+}
+
+struct ScopedAdapterServicePublication {
+    std::string_view id;
+    const void* table{};
+    bool published{};
+
+    ~ScopedAdapterServicePublication() {
+        if (published) {
+            static_cast<void>(anomaly::ProcessAdapterServices().Revoke(id, table));
+        }
+    }
+};
+
+thread_local const void* g_active_fake_ahud_subscription{};
+
+class FakeAhudService final {
+public:
+    FakeAhudService() {
+        table_.struct_size = sizeof(table_);
+        table_.service_version = ANOMALY_UE5_AHUD_SERVICE_V1_VERSION;
+        table_.user = this;
+        table_.subscribe = Subscribe;
+        table_.unsubscribe = Unsubscribe;
+    }
+
+    [[nodiscard]] const AnomalyUe5AhudServiceV1* Table() const noexcept {
+        return &table_;
+    }
+
+    [[nodiscard]] std::size_t SubscribeCalls() const noexcept {
+        std::scoped_lock lock(mutex_);
+        return subscribe_calls_;
+    }
+
+    [[nodiscard]] std::size_t UnsubscribeCalls() const noexcept {
+        std::scoped_lock lock(mutex_);
+        return unsubscribe_calls_;
+    }
+
+    [[nodiscard]] std::size_t ActiveSubscriptions() const noexcept {
+        std::scoped_lock lock(mutex_);
+        return subscriptions_.size();
+    }
+
+    [[nodiscard]] bool WaitForUnsubscribeCalls(
+        const std::size_t count, const std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(
+            lock, timeout, [&] { return unsubscribe_calls_ >= count; });
+    }
+
+    [[nodiscard]] bool FireOne(const AnomalyUe5AhudFrameV1* frame) {
+        return Fire(frame, false);
+    }
+
+    [[nodiscard]] bool FireSelfUnsubscribe(const AnomalyUe5AhudFrameV1* frame) {
+        return Fire(frame, true);
+    }
+
+private:
+    [[nodiscard]] bool Fire(
+        const AnomalyUe5AhudFrameV1* frame,
+        const bool newest_subscription) {
+        std::shared_ptr<Subscription> subscription;
+        {
+            std::scoped_lock lock(mutex_);
+            const auto found = newest_subscription
+                ? std::ranges::max_element(
+                      subscriptions_, {}, [](const auto& entry) { return entry.first; })
+                : subscriptions_.begin();
+            if (found == subscriptions_.end()) return false;
+            subscription = found->second;
+        }
+        {
+            std::scoped_lock lock(subscription->mutex);
+            if (!subscription->active) return false;
+            ++subscription->in_flight;
+        }
+        g_active_fake_ahud_subscription = subscription.get();
+        subscription->callback(subscription->callback_user, frame);
+        g_active_fake_ahud_subscription = nullptr;
+        {
+            std::scoped_lock lock(subscription->mutex);
+            --subscription->in_flight;
+        }
+        subscription->condition.notify_all();
+        return true;
+    }
+
+    struct Subscription {
+        std::mutex mutex;
+        std::condition_variable condition;
+        AnomalyGenerationHandleV1 handle{};
+        AnomalyUe5AhudDrawCallbackV1 callback{};
+        void* callback_user{};
+        bool active{true};
+        std::size_t in_flight{};
+    };
+
+    static AnomalyStatusV1 ANOMALY_CALL Subscribe(
+        void* user, AnomalyUe5AhudDrawCallbackV1 callback, void* callback_user,
+        AnomalyGenerationHandleV1* handle) {
+        if (user == nullptr || callback == nullptr || handle == nullptr) {
+            return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
+        }
+        *handle = {};
+        auto& service = *static_cast<FakeAhudService*>(user);
+        auto subscription = std::make_shared<Subscription>();
+        subscription->callback = callback;
+        subscription->callback_user = callback_user;
+        {
+            std::scoped_lock lock(service.mutex_);
+            subscription->handle = {
+                service.next_handle_id_++, service.service_generation_};
+            service.subscriptions_.emplace(subscription->handle.id, subscription);
+            ++service.subscribe_calls_;
+        }
+        *handle = subscription->handle;
+        return {ANOMALY_STATUS_V1_OK, 0, {nullptr, 0}};
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL Unsubscribe(
+        void* user, const AnomalyGenerationHandleV1 handle) {
+        if (user == nullptr || handle.id == 0) {
+            return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
+        }
+        auto& service = *static_cast<FakeAhudService*>(user);
+        std::shared_ptr<Subscription> subscription;
+        {
+            std::scoped_lock lock(service.mutex_);
+            const auto found = service.subscriptions_.find(handle.id);
+            if (found == service.subscriptions_.end() ||
+                found->second->handle.generation != handle.generation) {
+                return {ANOMALY_STATUS_V1_NOT_FOUND, 0, {nullptr, 0}};
+            }
+            subscription = found->second;
+            service.subscriptions_.erase(found);
+            ++service.unsubscribe_calls_;
+        }
+        service.condition_.notify_all();
+        {
+            std::unique_lock lock(subscription->mutex);
+            subscription->active = false;
+            if (g_active_fake_ahud_subscription != subscription.get()) {
+                subscription->condition.wait(
+                    lock, [&] { return subscription->in_flight == 0; });
+            }
+        }
+        return {ANOMALY_STATUS_V1_OK, 0, {nullptr, 0}};
+    }
+
+    AnomalyUe5AhudServiceV1 table_{};
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<Subscription>> subscriptions_;
+    std::uint64_t next_handle_id_{1};
+    std::uint64_t service_generation_{73};
+    std::size_t subscribe_calls_{};
+    std::size_t unsubscribe_calls_{};
+};
+
+struct AhudFrameProbe {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered{};
+    bool released{};
+    std::size_t project_calls{};
+
+    [[nodiscard]] bool WaitUntilEntered(const std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex);
+        return condition.wait_for(lock, timeout, [&] { return entered; });
+    }
+
+    void Release() {
+        {
+            std::scoped_lock lock(mutex);
+            released = true;
+        }
+        condition.notify_all();
+    }
+};
+
+int ANOMALY_CALL ProjectAhudFrame(
+    void* user, const double[3], float screen[2], double* depth) {
+    auto& probe = *static_cast<AhudFrameProbe*>(user);
+    {
+        std::unique_lock lock(probe.mutex);
+        ++probe.project_calls;
+        probe.entered = true;
+        probe.condition.notify_all();
+        probe.condition.wait(lock, [&] { return probe.released; });
+    }
+    if (screen != nullptr) {
+        screen[0] = 320.0F;
+        screen[1] = 180.0F;
+    }
+    if (depth != nullptr) *depth = 1.0;
+    return 1;
+}
+
+bool CopyPluginManagerFixture(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root) {
+    const std::filesystem::path source =
+        source_root / L"plugins" / L"PluginManagerFixture";
+    const std::filesystem::path destination =
+        destination_root / L"plugins" / L"PluginManagerFixture";
+    std::error_code error;
+    std::filesystem::create_directories(destination, error);
+    if (error) return false;
+    for (const std::filesystem::path& filename :
+         {std::filesystem::path(L"plugin.dll"), std::filesystem::path(L"manifest.json"),
+             std::filesystem::path(L"watch.txt")}) {
+        if (!std::filesystem::copy_file(
+                source / filename, destination / filename,
+                std::filesystem::copy_options::overwrite_existing, error) || error) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ContainsEvent(
+    const ue5mem::PluginManager& manager, const std::string_view fragment) {
+    const auto events = manager.Events();
+    return std::any_of(events.begin(), events.end(), [&](const std::string& event) {
+        return event.find(fragment) != std::string::npos;
+    });
+}
+
+bool TestAhudServiceProxy(
+    const std::filesystem::path& source_root,
+    const anomaly::CoreMemoryServices& memory_services) {
+    constexpr std::string_view plugin_id = "anomaly.test.plugin-manager-fixture";
+    const auto fail = [](const char* message) {
+        std::cerr << "AHUD proxy test: " << message << '\n';
+        return false;
+    };
+    AnomalyUiServiceV1 ui_service{};
+    ui_service.struct_size = sizeof(ui_service);
+    ui_service.service_version = ANOMALY_UI_SERVICE_V1_VERSION;
+
+    {
+        ScopedTemporaryDirectory fixture{
+            std::filesystem::temp_directory_path() /
+            (L"anomaly-plugin-ahud-short-service-" +
+                std::to_wstring(GetCurrentProcessId()))};
+        std::error_code error;
+        std::filesystem::remove_all(fixture.path, error);
+        if (!CopyPluginManagerFixture(source_root, fixture.path)) return fail("copy short fixture");
+
+        AnomalyUe5AhudServiceV1 short_service{};
+        short_service.struct_size = offsetof(AnomalyUe5AhudServiceV1, subscribe);
+        short_service.service_version = ANOMALY_UE5_AHUD_SERVICE_V1_VERSION;
+        ScopedAdapterServicePublication publication{
+            ANOMALY_UE5_AHUD_SERVICE_V1_ID, &short_service,
+            anomaly::ProcessAdapterServices().Publish(
+                ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+                ANOMALY_UE5_AHUD_SERVICE_V1_VERSION, &short_service)};
+        if (!publication.published) return fail("publish short service");
+
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        manager.SetUiService(&ui_service);
+        manager.LoadAll();
+        if (!manager.SetEnabled(plugin_id, true) ||
+            !ContainsEvent(
+                manager, "AHUD query status=" +
+                    std::to_string(ANOMALY_STATUS_V1_UNAVAILABLE))) {
+            return fail("short service rejection");
+        }
+    }
+
+    ScopedTemporaryDirectory fixture{
+        std::filesystem::temp_directory_path() /
+        (L"anomaly-plugin-ahud-proxy-" + std::to_wstring(GetCurrentProcessId()))};
+    std::error_code error;
+    std::filesystem::remove_all(fixture.path, error);
+    if (!CopyPluginManagerFixture(source_root, fixture.path)) return fail("copy fixture");
+
+    FakeAhudService ahud;
+    ScopedAdapterServicePublication publication{
+        ANOMALY_UE5_AHUD_SERVICE_V1_ID, ahud.Table(),
+        anomaly::ProcessAdapterServices().Publish(
+            ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+            ANOMALY_UE5_AHUD_SERVICE_V1_VERSION, ahud.Table())};
+    if (!publication.published) return fail("publish service");
+
+    ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+    manager.SetUiService(&ui_service);
+    manager.LoadAll();
+    if (!manager.SetEnabled(plugin_id, true) || ahud.SubscribeCalls() != 3 ||
+        ahud.ActiveSubscriptions() != 3 ||
+        !ContainsEvent(
+            manager, "AHUD query status=" +
+                std::to_string(ANOMALY_STATUS_V1_OK))) {
+        return fail("start subscriptions");
+    }
+    auto plugins = manager.Plugins();
+    if (plugins.size() != 1 ||
+        plugins.front().platform_diagnostics.resources.ledger_resources != 5) {
+        return fail("initial ledger");
+    }
+
+    const bool self_fired = ahud.FireSelfUnsubscribe(nullptr);
+    const std::size_t self_unsubscribes = ahud.UnsubscribeCalls();
+    const std::size_t self_active = ahud.ActiveSubscriptions();
+    const bool self_status_logged = ContainsEvent(
+        manager, "AHUD self-unsubscribe status=" +
+            std::to_string(ANOMALY_STATUS_V1_OK));
+    const bool self_exception_logged =
+        ContainsEvent(manager, "exception in ABI v1 AHUD callback");
+    if (!self_fired || self_unsubscribes != 1 || self_active != 2 ||
+        !self_status_logged || !self_exception_logged) {
+        std::cerr << "AHUD proxy self-unsubscribe: fired=" << self_fired
+                  << " unsubscribe=" << self_unsubscribes
+                  << " active=" << self_active
+                  << " status_log=" << self_status_logged
+                  << " exception_log=" << self_exception_logged << '\n';
+        return fail("self-unsubscribe callback");
+    }
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 ||
+        plugins.front().platform_diagnostics.resources.ledger_resources != 4) {
+        return fail("self-unsubscribe ledger");
+    }
+
+    manager.GameUpdate(0.0);
+    if (ahud.UnsubscribeCalls() != 2 || ahud.ActiveSubscriptions() != 1 ||
+        !ContainsEvent(
+            manager, "AHUD explicit unsubscribe status=" +
+                std::to_string(ANOMALY_STATUS_V1_OK))) {
+        return fail("explicit unsubscribe");
+    }
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 ||
+        plugins.front().platform_diagnostics.resources.ledger_resources != 3) {
+        return fail("explicit unsubscribe ledger");
+    }
+
+    AhudFrameProbe frame_probe;
+    AnomalyUe5AhudFrameV1 frame{};
+    frame.struct_size = sizeof(frame);
+    frame.user = &frame_probe;
+    frame.viewport_width = 1920;
+    frame.viewport_height = 1080;
+    frame.project = ProjectAhudFrame;
+    std::atomic_bool fired{};
+    std::thread callback_thread([&] { fired.store(ahud.FireOne(&frame)); });
+    if (!frame_probe.WaitUntilEntered(2s)) {
+        frame_probe.Release();
+        callback_thread.join();
+        return fail("blocking callback entry");
+    }
+
+    std::atomic_bool stop_done{};
+    bool stop_result{};
+    std::thread stop_thread([&] {
+        stop_result = manager.StopForRuntime(2s);
+        stop_done.store(true, std::memory_order_release);
+    });
+    const bool revoke_started = ahud.WaitForUnsubscribeCalls(3, 2s);
+    std::this_thread::sleep_for(20ms);
+    const bool callback_drained_before_stop =
+        revoke_started && !stop_done.load(std::memory_order_acquire);
+    frame_probe.Release();
+    callback_thread.join();
+    stop_thread.join();
+
+    const bool passed = callback_drained_before_stop && stop_result && fired.load() &&
+        frame_probe.project_calls == 1 && ahud.UnsubscribeCalls() == 3 &&
+        ahud.ActiveSubscriptions() == 0 && manager.Plugins().empty() &&
+        ContainsEvent(manager, "AHUD fixture callback") && !ahud.FireOne(&frame);
+    if (!passed) {
+        std::cerr << "AHUD proxy test: stop drain"
+                  << " drain=" << callback_drained_before_stop
+                  << " stop=" << stop_result
+                  << " fired=" << fired.load()
+                  << " project=" << frame_probe.project_calls
+                  << " unsubscribe=" << ahud.UnsubscribeCalls()
+                  << " active=" << ahud.ActiveSubscriptions()
+                  << " plugins=" << manager.Plugins().size() << '\n';
+    }
+    return passed;
 }
 
 bool TestPluginWindowVisibilityPersistence(
@@ -816,6 +1205,7 @@ int wmain(int argc, wchar_t** argv) {
     const auto memory_services = anomaly::CreateCoreMemoryServices();
     if (!TestPluginCacheCleanup(memory_services)) return 34;
     if (!TestNteEscMenuButtonRegistry(memory_services)) return 35;
+    if (!TestAhudServiceProxy(root, memory_services)) return 37;
     if (!TestPluginWindowVisibilityPersistence(root, memory_services)) return 36;
     if (!TestRawMemoryCapabilityRuntime(root, memory_services)) return 33;
     DeferredUiResourceWorker ui_resource_worker;
