@@ -1672,6 +1672,7 @@ static ManualMapLaunchResult LaunchAndManualMapRuntimeCoreOnce(
                             ManualMapError::AccessDenied, open_error,
                             "new target process could not retain mapping access; use Proxy mode "
                             "if the game protects process handles at creation");
+                        continue;
                     }
                     rejected_targets.insert(process_id);
                     continue;

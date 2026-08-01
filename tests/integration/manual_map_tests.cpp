@@ -28,12 +28,13 @@ std::wstring Quote(const std::filesystem::path& path) {
 
 bool StartTarget(
     const std::filesystem::path& target, std::wstring_view ready_name,
-    std::wstring_view stop_name, DWORD flags, PROCESS_INFORMATION& process) {
+    std::wstring_view stop_name, DWORD flags, PROCESS_INFORMATION& process,
+    SECURITY_ATTRIBUTES* process_security = nullptr) {
     std::wstring command = Quote(target) + L" \"" + std::wstring(ready_name) +
         L"\" \"" + std::wstring(stop_name) + L"\"";
     STARTUPINFOW startup{.cb = sizeof(startup)};
     return CreateProcessW(
-            nullptr, command.data(), nullptr, nullptr, FALSE,
+            nullptr, command.data(), process_security, nullptr, FALSE,
             flags, nullptr, nullptr, &startup, &process) != FALSE;
 }
 
@@ -108,6 +109,46 @@ int RunSuspendedLauncher(int argc, wchar_t** argv) {
     if (wait == WAIT_OBJECT_0) GetExitCodeProcess(process.hProcess, &exit_code);
     CloseHandle(process.hProcess);
     return wait == WAIT_OBJECT_0 ? static_cast<int>(exit_code) : 24;
+}
+
+int RunAccessDelayedLauncher(int argc, wchar_t** argv) {
+    if (argc != 6) return 50;
+    wchar_t* delay_end{};
+    const unsigned long delay = std::wcstoul(argv[5], &delay_end, 10);
+    if (delay_end == argv[5] || *delay_end != L'\0') return 51;
+
+    ACL empty_acl{};
+    SECURITY_DESCRIPTOR descriptor{};
+    if (InitializeAcl(&empty_acl, sizeof(empty_acl), ACL_REVISION) == FALSE ||
+        InitializeSecurityDescriptor(
+            &descriptor, SECURITY_DESCRIPTOR_REVISION) == FALSE ||
+        SetSecurityDescriptorDacl(
+            &descriptor, TRUE, &empty_acl, FALSE) == FALSE) {
+        return 52;
+    }
+    SECURITY_ATTRIBUTES security{
+        .nLength = sizeof(security),
+        .lpSecurityDescriptor = &descriptor,
+        .bInheritHandle = FALSE,
+    };
+    PROCESS_INFORMATION target{};
+    if (!StartTarget(
+            argv[2], argv[3], argv[4], CREATE_SUSPENDED | CREATE_NO_WINDOW,
+            target, &security)) {
+        return 53;
+    }
+
+    Sleep(static_cast<DWORD>(delay));
+    const DWORD restore_error = SetSecurityInfo(
+        target.hProcess, SE_KERNEL_OBJECT,
+        DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, nullptr, nullptr);
+    if (restore_error != ERROR_SUCCESS ||
+        ResumeThread(target.hThread) == static_cast<DWORD>(-1)) {
+        StopTarget(target);
+        return 54;
+    }
+    return WaitForTarget(target);
 }
 
 int RunCandidateLauncher(int argc, wchar_t** argv) {
@@ -202,6 +243,9 @@ std::optional<bool> RemoteModuleVisible(
 int wmain(int argc, wchar_t** argv) {
     if (argc >= 2 && std::wstring_view(argv[1]) == L"--launch-suspended") {
         return RunSuspendedLauncher(argc, argv);
+    }
+    if (argc >= 2 && std::wstring_view(argv[1]) == L"--launch-access-delayed") {
+        return RunAccessDelayedLauncher(argc, argv);
     }
     if (argc >= 2 && std::wstring_view(argv[1]) == L"--launch-candidates") {
         return RunCandidateLauncher(argc, argv);
@@ -363,6 +407,42 @@ int wmain(int argc, wchar_t** argv) {
         result = Check(
             GetLastError() == ERROR_INVALID_PARAMETER,
             "failed discovered target cleanup could not be verified") && result;
+    }
+
+    ResetEvent(ready);
+    ResetEvent(stop);
+    auto access_delayed_options = launch_options;
+    access_delayed_options.launcher_path = CurrentExecutable();
+    access_delayed_options.launcher_arguments = L"--launch-access-delayed " +
+        Quote(target_executable) + L" \"" + ready_name + L"\" \"" +
+        stop_name + L"\" 250";
+    access_delayed_options.target_timeout = std::chrono::seconds(2);
+    access_delayed_options.loader_timeout = std::chrono::seconds(5);
+    const auto access_delayed = anomaly::launcher::LaunchAndManualMapRuntimeCore(
+        access_delayed_options);
+    result = Check(
+        access_delayed.Ok() && access_delayed.mapping.remote_image != 0,
+        access_delayed.mapping.message.empty()
+            ? "temporarily inaccessible target was not recaptured"
+            : access_delayed.mapping.message.c_str()) && result;
+    result = Check(
+        access_delayed.mapping.message.find("after one loader-ready retry") ==
+            std::string::npos,
+        "temporarily inaccessible target required a launcher retry") && result;
+    HANDLE access_delayed_process = access_delayed.process_id != 0
+        ? OpenProcess(SYNCHRONIZE, FALSE, access_delayed.process_id) : nullptr;
+    result = Check(
+        access_delayed_process != nullptr,
+        "recaptured target process could not be opened") && result;
+    result = Check(
+        WaitForSingleObject(ready, 2000) == WAIT_OBJECT_0,
+        "recaptured target did not run") && result;
+    SetEvent(stop);
+    if (access_delayed_process != nullptr) {
+        result = Check(
+            WaitForSingleObject(access_delayed_process, 5000) == WAIT_OBJECT_0,
+            "recaptured target did not stop") && result;
+        CloseHandle(access_delayed_process);
     }
 
     ResetEvent(ready);
