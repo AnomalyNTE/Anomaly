@@ -1566,7 +1566,7 @@ ManualMapResult ManualMapRuntimeCore(const ManualMapOptions& options) noexcept {
     }
 }
 
-static ManualMapLaunchResult LaunchAndManualMapRuntimeCoreOnce(
+ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
     const ManualMapLaunchOptions& options) noexcept {
     ManualMapLaunchResult result;
     try {
@@ -1624,28 +1624,10 @@ static ManualMapLaunchResult LaunchAndManualMapRuntimeCoreOnce(
         Handle target_process;
         Handle target_cleanup;
         AttachableProcess target;
-        struct PendingTarget final {
-            Handle process;
-            Handle cleanup;
-            AttachableProcess info;
-        };
-        std::map<DWORD, PendingTarget> pending_targets;
         std::set<DWORD> rejected_targets;
-        std::optional<std::chrono::steady_clock::time_point> loader_deadline;
-        const auto loader_timeout = std::clamp<std::int64_t>(
-            options.loader_timeout.count(), 1,
-            std::chrono::minutes(10).count() * 60'000LL);
         ManualMapResult deferred_failure;
         DWORD deferred_failure_process{};
-        DWORD last_module_error{ERROR_NOT_READY};
-        bool observed_compatible_target{};
-        for (;;) {
-            const auto now = std::chrono::steady_clock::now();
-            if ((!loader_deadline && now >= discovery_deadline) ||
-                (loader_deadline && now >= *loader_deadline)) {
-                break;
-            }
-
+        while (std::chrono::steady_clock::now() < discovery_deadline) {
             DWORD discovery_error{};
             const auto observed_targets = SnapshotProcessIds(
                 options.target_executable_name, discovery_error);
@@ -1658,8 +1640,7 @@ static ManualMapLaunchResult LaunchAndManualMapRuntimeCoreOnce(
 
             for (const DWORD process_id : observed_targets) {
                 if (existing_targets.contains(process_id) ||
-                    rejected_targets.contains(process_id) ||
-                    pending_targets.contains(process_id)) {
+                    rejected_targets.contains(process_id)) {
                     continue;
                 }
 
@@ -1686,133 +1667,90 @@ static ManualMapLaunchResult LaunchAndManualMapRuntimeCoreOnce(
                     continue;
                 }
 
+                target_process = std::move(candidate);
                 DWORD cleanup_error{};
-                Handle cleanup = OpenProcessWithAccess(
+                target_cleanup = OpenProcessWithAccess(
                     process_id, PROCESS_TERMINATE | SYNCHRONIZE, cleanup_error);
-                AttachableProcess info;
-                info.process_id = process_id;
-                info.executable_path = path;
-                info.executable_name = path.filename().wstring();
-                info.owned_by_current_user = SameUser(candidate.Get(), inspection_error);
-                info.x64 = inspection_error == ERROR_SUCCESS &&
-                    IsX64Process(candidate.Get(), inspection_error);
-                info.inspection_error = inspection_error;
+                target.process_id = process_id;
+                target.executable_path = path;
+                target.executable_name = path.filename().wstring();
+                target.owned_by_current_user = SameUser(
+                    target_process.Get(), inspection_error);
+                target.x64 = inspection_error == ERROR_SUCCESS &&
+                    IsX64Process(target_process.Get(), inspection_error);
+                target.inspection_error = inspection_error;
+                result.process_id = target.process_id;
                 if (inspection_error != ERROR_SUCCESS ||
-                    !info.owned_by_current_user || !info.x64) {
-                    deferred_failure_process = process_id;
-                    deferred_failure = Failure(
-                        !info.owned_by_current_user
+                    !target.owned_by_current_user || !target.x64) {
+                    result.mapping = Failure(
+                        !target.owned_by_current_user
                             ? ManualMapError::DifferentUser
                             : ManualMapError::IncompatibleArchitecture,
                         inspection_error != ERROR_SUCCESS ? inspection_error
-                            : !info.owned_by_current_user ? ERROR_ACCESS_DENIED
-                                                        : ERROR_BAD_EXE_FORMAT,
+                            : !target.owned_by_current_user ? ERROR_ACCESS_DENIED
+                                                            : ERROR_BAD_EXE_FORMAT,
                         "captured target process is not a compatible x64 process");
-                    rejected_targets.insert(process_id);
-                    continue;
                 }
-
-                observed_compatible_target = true;
-                if (!loader_deadline) {
-                    loader_deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(loader_timeout);
-                }
-                pending_targets.emplace(
-                    process_id,
-                    PendingTarget{
-                        std::move(candidate), std::move(cleanup), std::move(info)});
+                break;
             }
-
-            for (auto candidate = pending_targets.begin();
-                 candidate != pending_targets.end();) {
-                DWORD exit_code{STILL_ACTIVE};
-                if (GetExitCodeProcess(
-                        candidate->second.process.Get(), &exit_code) == FALSE ||
-                    exit_code != STILL_ACTIVE) {
-                    rejected_targets.insert(candidate->first);
-                    candidate = pending_targets.erase(candidate);
-                    continue;
-                }
-
-                DWORD module_error{};
-                const auto modules = SnapshotModules(
-                    candidate->second.process.Get(), module_error);
-                last_module_error = module_error;
-                const bool loader_ready = module_error == ERROR_SUCCESS &&
-                    modules.contains(Fold(candidate->second.info.executable_name)) &&
-                    modules.contains(L"ntdll.dll") &&
-                    modules.contains(L"kernel32.dll");
-                if (loader_ready) {
-                    result.process_id = candidate->first;
-                    target_process = std::move(candidate->second.process);
-                    target_cleanup = std::move(candidate->second.cleanup);
-                    target = std::move(candidate->second.info);
-                    pending_targets.erase(candidate);
-                    break;
-                }
-
-                const bool transient_error =
-                    module_error == ERROR_SUCCESS ||
-                    module_error == ERROR_NOT_READY ||
-                    module_error == ERROR_PARTIAL_COPY ||
-                    module_error == ERROR_BAD_LENGTH;
-                if (!transient_error) {
-                    deferred_failure_process = candidate->first;
-                    deferred_failure = Failure(
-                        ManualMapError::DependencyFailure, module_error,
-                        "captured target module state could not be inspected");
-                    rejected_targets.insert(candidate->first);
-                    candidate = pending_targets.erase(candidate);
-                    continue;
-                }
-                ++candidate;
-            }
-            if (target_process) break;
+            if (target_process || result.mapping.error != ManualMapError::None) break;
             Sleep(1);
         }
 
         if (!target_process) {
-            if (result.mapping.error != ManualMapError::None) return result;
-            if (observed_compatible_target) {
-                result.process_id = !pending_targets.empty()
-                    ? pending_targets.begin()->first : deferred_failure_process;
-                for (auto& [process_id, pending] : pending_targets) {
-                    static_cast<void>(process_id);
-                    if (pending.cleanup) {
-                        static_cast<void>(TerminateProcess(
-                            pending.cleanup.Get(), ERROR_PROCESS_ABORTED));
-                    }
+            if (result.mapping.error == ManualMapError::None) {
+                if (deferred_failure.error != ManualMapError::None) {
+                    result.process_id = deferred_failure_process;
+                    result.mapping = std::move(deferred_failure);
+                } else {
+                    result.mapping = Failure(
+                        ManualMapError::ProcessLaunchFailure, ERROR_TIMEOUT,
+                        "official launcher did not create a new target process before the timeout");
                 }
-                for (auto& [process_id, pending] : pending_targets) {
-                    static_cast<void>(process_id);
-                    if (pending.cleanup) {
-                        static_cast<void>(WaitForSingleObject(
-                            pending.cleanup.Get(), 5000));
-                    }
-                }
-                result.mapping = Failure(
-                    ManualMapError::DependencyFailure,
-                    last_module_error == ERROR_SUCCESS
-                        ? ERROR_TIMEOUT : last_module_error,
-                    "no newly captured target reached loader-ready state before the timeout; "
-                    "mapping was not started");
-            } else if (deferred_failure.error != ManualMapError::None) {
-                result.process_id = deferred_failure_process;
-                result.mapping = std::move(deferred_failure);
-            } else {
-                result.mapping = Failure(
-                    ManualMapError::ProcessLaunchFailure, ERROR_TIMEOUT,
-                    "official launcher did not create a new target process before the timeout");
             }
             return result;
         }
 
-        ManualMapOptions mapping_options = options.manual_map;
-        mapping_options.process_id = target.process_id;
-        result.mapping = ManualMapRuntimeCoreWithHandle(
-            mapping_options, target, target_process);
+        bool mapping_started{};
+        if (result.mapping.error == ManualMapError::None) {
+            const auto loader_timeout = std::clamp<std::int64_t>(
+                options.loader_timeout.count(), 1,
+                std::chrono::minutes(10).count() * 60'000LL);
+            const auto loader_deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(loader_timeout);
+            DWORD module_error = ERROR_NOT_READY;
+            bool loader_ready{};
+            do {
+                auto modules = SnapshotModules(target_process.Get(), module_error);
+                loader_ready = module_error == ERROR_SUCCESS &&
+                    modules.contains(Fold(target.executable_name)) &&
+                    modules.contains(L"ntdll.dll") &&
+                    modules.contains(L"kernel32.dll");
+                if (module_error != ERROR_SUCCESS &&
+                    module_error != ERROR_NOT_READY &&
+                    module_error != ERROR_PARTIAL_COPY &&
+                    module_error != ERROR_BAD_LENGTH) {
+                    break;
+                }
+                if (!loader_ready) Sleep(1);
+            } while (!loader_ready &&
+                std::chrono::steady_clock::now() < loader_deadline);
+            if (!loader_ready) {
+                result.mapping = Failure(
+                    ManualMapError::DependencyFailure,
+                    module_error == ERROR_SUCCESS ? ERROR_TIMEOUT : module_error,
+                    "target process loader did not initialize before the timeout; the target "
+                    "was left running because mapping had not started");
+            } else {
+                ManualMapOptions mapping_options = options.manual_map;
+                mapping_options.process_id = target.process_id;
+                mapping_started = true;
+                result.mapping = ManualMapRuntimeCoreWithHandle(
+                    mapping_options, target, target_process);
+            }
+        }
 
-        if (!result.mapping.Ok()) {
+        if (!result.mapping.Ok() && mapping_started) {
             if (target_cleanup) {
                 static_cast<void>(TerminateProcess(
                     target_cleanup.Get(), ERROR_PROCESS_ABORTED));
@@ -1826,31 +1764,6 @@ static ManualMapLaunchResult LaunchAndManualMapRuntimeCoreOnce(
             "official launcher target capture raised an unexpected exception");
         return result;
     }
-}
-
-static bool ShouldRetryLoaderCapture(
-    const ManualMapLaunchResult& result) noexcept {
-    if (result.process_id == 0 ||
-        result.mapping.error != ManualMapError::DependencyFailure ||
-        result.mapping.remote_image != 0) {
-        return false;
-    }
-    return result.mapping.win32_error == ERROR_TIMEOUT ||
-        result.mapping.win32_error == ERROR_NOT_READY ||
-        result.mapping.win32_error == ERROR_PARTIAL_COPY ||
-        result.mapping.win32_error == ERROR_BAD_LENGTH;
-}
-
-ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
-    const ManualMapLaunchOptions& options) noexcept {
-    auto result = LaunchAndManualMapRuntimeCoreOnce(options);
-    if (!ShouldRetryLoaderCapture(result)) return result;
-    Sleep(250);
-    auto retried = LaunchAndManualMapRuntimeCoreOnce(options);
-    if (retried.Ok()) {
-        retried.mapping.message.append(" after one loader-ready retry");
-    }
-    return retried;
 }
 
 }  // namespace anomaly::launcher
