@@ -2503,7 +2503,8 @@ struct Ue5NteAdapter::State {
     void DispatchAhudFrame(
         std::uintptr_t object,
         std::uintptr_t function,
-        void* parameters) noexcept;
+        void* parameters,
+        const ProcessEventInvoker& actor_process_event) noexcept;
 
     [[nodiscard]] bool BuildTeleportBindingLocked(
         const std::uintptr_t function,
@@ -4634,9 +4635,10 @@ private:
 void Ue5NteAdapter::State::DispatchAhudFrame(
     const std::uintptr_t object,
     const std::uintptr_t function,
-    void* const parameters) noexcept {
+    void* const parameters,
+    const ProcessEventInvoker& actor_process_event) noexcept {
     if (object == 0 || function == 0 || parameters == nullptr ||
-        !process_event_invoker ||
+        !actor_process_event ||
         !started.load(std::memory_order_acquire) ||
         GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire)) {
         return;
@@ -4665,7 +4667,7 @@ void Ue5NteAdapter::State::DispatchAhudFrame(
     AhudFrameCallContext context{
         object,
         binding.get(),
-        &process_event_invoker,
+        &actor_process_event,
         &ahud_process_event_call_count};
     const AnomalyUe5AhudFrameV1 frame{
         sizeof(AnomalyUe5AhudFrameV1),
@@ -5135,9 +5137,10 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
 void Ue5NteAdapter::OnProcessEvent(
     const std::uintptr_t object,
     const std::uintptr_t function,
-    void* const parameters) noexcept {
+    void* const parameters,
+    const ProcessEventInvoker& actor_process_event) noexcept {
     const auto state = state_;
-    state->DispatchAhudFrame(object, function, parameters);
+    state->DispatchAhudFrame(object, function, parameters, actor_process_event);
 }
 
 bool Ue5NteAdapter::Started() const noexcept {

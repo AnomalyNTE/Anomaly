@@ -63,12 +63,13 @@ public:
         std::chrono::milliseconds timeout = std::chrono::milliseconds::max()) noexcept;
     void OnGameTick(double delta_seconds) noexcept;
     // Called only by the separately owned Actor ProcessEvent wrapper detour
-    // after the wrapper has completed. AHUD calls use the separately verified
-    // base ProcessEvent invoker injected at construction.
+    // after the wrapper has completed. AHUD calls use that wrapper's original
+    // trampoline so native HUD dispatch matches the object's virtual path.
     void OnProcessEvent(
         std::uintptr_t object,
         std::uintptr_t function,
-        void* parameters) noexcept;
+        void* parameters,
+        const ProcessEventInvoker& actor_process_event) noexcept;
 
     [[nodiscard]] bool Started() const noexcept;
     [[nodiscard]] DWORD GameThreadId() const noexcept;

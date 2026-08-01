@@ -726,10 +726,11 @@ public:
                             const std::uintptr_t object,
                             const std::uintptr_t function,
                             void* const parameters,
-                            const Ue5ProcessEventInvoker&) {
+                            const Ue5ProcessEventInvoker& original) {
                             const auto adapter = weak.lock();
                             if (adapter) {
-                                adapter->OnProcessEvent(object, function, parameters);
+                                adapter->OnProcessEvent(
+                                    object, function, parameters, original);
                             }
                         });
                     ahud_hook_ready = process_event_hook_->Start(

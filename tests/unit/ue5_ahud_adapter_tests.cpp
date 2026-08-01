@@ -616,7 +616,13 @@ int main() {
     FixtureBuilder(*memory).Build();
     anomaly::AdapterServiceRegistry registry;
     NativeCallRecorder recorder;
+    std::atomic_uint32_t base_invoker_calls{};
     const anomaly::Ue5NteAdapter::ProcessEventInvoker base_invoker =
+        [&base_invoker_calls](std::uintptr_t, std::uintptr_t, void*, std::size_t) {
+            base_invoker_calls.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        };
+    const anomaly::Ue5NteAdapter::ProcessEventInvoker actor_invoker =
         [&recorder](
             const std::uintptr_t object,
             const std::uintptr_t function,
@@ -661,13 +667,14 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     result = Check(
                  draw_state.calls.load(std::memory_order_acquire) == 1 &&
                      draw_state.valid.load(std::memory_order_acquire) &&
                      count_calls.load(std::memory_order_acquire) == 1 &&
                      recorder.calls.load(std::memory_order_acquire) == 5 &&
                      recorder.valid.load(std::memory_order_acquire) &&
+                     base_invoker_calls.load(std::memory_order_acquire) == 0 &&
                      adapter.AhudBindingReady() &&
                      adapter.AhudFrameCount() == 1 &&
                      adapter.AhudProcessEventCallCount() == 5,
@@ -677,17 +684,17 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kDrawLine],
-        viewport.data());
+        viewport.data(), actor_invoker);
     std::array<std::int32_t, 2> invalid_viewport{0, 1080};
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        invalid_viewport.data());
+        invalid_viewport.data(), actor_invoker);
     std::thread wrong_thread([&] {
         adapter.OnProcessEvent(
             FixtureMemory::kBase + 0x7000,
             kFunctions[kReceiveDrawHud],
-            viewport.data());
+            viewport.data(), actor_invoker);
     });
     wrong_thread.join();
     result = Check(
@@ -707,7 +714,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     result = Check(
                  draw_state.calls.load(std::memory_order_acquire) == 1 &&
                      count_calls.load(std::memory_order_acquire) == 2 &&
@@ -727,11 +734,11 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     result = Check(
                  self_state.calls.load(std::memory_order_acquire) == 1 &&
                      self_state.status.load(std::memory_order_acquire) ==
@@ -769,7 +776,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     unsubscribe_thread.join();
     result = Check(
                  blocking_state.observed_drain.load(std::memory_order_acquire) &&
@@ -798,7 +805,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     result = Check(
                  count_calls.load(std::memory_order_acquire) ==
                          count_before_resubscribe + 1U &&
@@ -851,7 +858,7 @@ int main() {
     adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     stop_thread.join();
     release_thread.join();
     result = Check(
@@ -928,7 +935,7 @@ int main() {
     invalid_return_adapter.OnProcessEvent(
         FixtureMemory::kBase + 0x7000,
         kFunctions[kReceiveDrawHud],
-        viewport.data());
+        viewport.data(), actor_invoker);
     result = Check(
                  invalid_return_subscribed &&
                      invalid_return_calls.load(std::memory_order_acquire) == 0 &&
