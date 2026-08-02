@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2, "id": "example.external-sdk", "name": "External SDK", "author": "Fixture", "license": "AGPL-3.0-only", "version": "1.0.0",
+  "entry": "plugin.dll", "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"], "builds": ["nte-*"], "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.config", "minVersion": 1},
+    {"id": "anomaly.storage", "minVersion": 1},
+    {"id": "anomaly.runtime-info", "minVersion": 1},
+    {"id": "anomaly.diagnostics", "minVersion": 1},
+    {"id": "anomaly.scheduler", "minVersion": 1},
+    {"id": "anomaly.ipc", "minVersion": 1},
+    {"id": "anomaly.commands", "minVersion": 1},
+    {"id": "anomaly.notifications", "minVersion": 1},
+    {"id": "anomaly.interop.hook", "minVersion": 1},
+    {"id": "anomaly.interop.patch", "minVersion": 1}
+  ],
+  "capabilities": [
+    "configuration", "storage", "runtime-info", "diagnostics", "scheduler", "ipc",
+    "commands", "notifications", "interop-hook", "interop-patch"
+  ]
+}

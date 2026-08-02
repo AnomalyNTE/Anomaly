@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.fixture.service-query",
+  "name": "Service Query Contract",
+  "author": "Anomaly",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-win64-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.plugin-state", "minVersion": 1},
+    {"id": "anomaly.nte.esc-menu-button", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": ["configuration", "nte-esc-menu-button"]
+}

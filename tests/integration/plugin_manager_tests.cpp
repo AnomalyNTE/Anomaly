@@ -1,0 +1,1360 @@
+#include "plugin_manager.hpp"
+#include "anomaly/adapter_service_registry.hpp"
+#include "anomaly/structured_logger.hpp"
+#include "anomaly/ui_resource_decoder.hpp"
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <memory>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+using namespace std::chrono_literals;
+using Json = nlohmann::json;
+
+namespace {
+
+constexpr std::string_view kRawMemoryCapabilityFixtureId =
+    "anomaly.fixture.raw-memory-capability";
+
+struct WindowProbe {
+    bool close{};
+    std::string title;
+};
+
+int ANOMALY_CALL CloseWindow(
+    void* user, const AnomalyStringViewV1 title, int* open, std::uint32_t) {
+    auto* probe = static_cast<WindowProbe*>(user);
+    if (probe != nullptr && title.data != nullptr) {
+        probe->title.assign(title.data, title.size);
+    }
+    if (open != nullptr && probe != nullptr && probe->close) *open = 0;
+    return 0;
+}
+
+void ANOMALY_CALL EndWindow(void*) {}
+void ANOMALY_CALL Text(void*, AnomalyStringViewV1) {}
+
+struct DeferredUiResourceWorker {
+    struct Task {
+        std::string owner;
+        std::uint64_t generation{};
+        std::function<void()> callback;
+    };
+
+    [[nodiscard]] bool Post(
+        std::string owner, const std::uint64_t generation, std::function<void()> callback) {
+        if (!accepting || !callback) return false;
+        tasks.push_back({std::move(owner), generation, std::move(callback)});
+        return true;
+    }
+
+    [[nodiscard]] bool HasSingleTask(
+        const std::string_view owner, const std::uint64_t generation) const {
+        return tasks.size() == 1 && tasks.front().owner == owner &&
+            tasks.front().generation == generation && static_cast<bool>(tasks.front().callback);
+    }
+
+    [[nodiscard]] bool RunNext() {
+        if (tasks.empty()) return false;
+        Task task = std::move(tasks.front());
+        tasks.erase(tasks.begin());
+        task.callback();
+        return true;
+    }
+
+    [[nodiscard]] bool DropNext() {
+        if (tasks.empty()) return false;
+        tasks.erase(tasks.begin());
+        return true;
+    }
+
+    bool accepting{true};
+    std::vector<Task> tasks;
+};
+
+struct ScopedTemporaryFile {
+    std::filesystem::path path;
+
+    ~ScopedTemporaryFile() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+};
+
+struct ScopedTemporaryDirectory {
+    std::filesystem::path path;
+
+    ~ScopedTemporaryDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+};
+
+struct ScopedHandle {
+    HANDLE value{INVALID_HANDLE_VALUE};
+
+    ~ScopedHandle() {
+        if (value != INVALID_HANDLE_VALUE) CloseHandle(value);
+    }
+};
+
+struct NteEscMenuCallbackProbe {
+    const anomaly::PluginScope* scope{};
+    std::uint32_t result{};
+    std::uint32_t calls{};
+    bool observed_lease{};
+    AnomalyGenerationHandleV1 last_handle{};
+};
+
+std::uint32_t ANOMALY_CALL NteEscMenuCallback(
+    void* user, const AnomalyGenerationHandleV1 handle) {
+    auto& probe = *static_cast<NteEscMenuCallbackProbe*>(user);
+    ++probe.calls;
+    probe.last_handle = handle;
+    probe.observed_lease = probe.scope != nullptr && probe.scope->InFlightCallbacks() != 0;
+    return probe.result;
+}
+
+bool TestNteEscMenuButtonRegistry(const anomaly::CoreMemoryServices& memory_services) {
+    ScopedTemporaryDirectory fixture{
+        std::filesystem::temp_directory_path() /
+        (L"anomaly-nte-esc-menu-button-" + std::to_wstring(GetCurrentProcessId()))};
+    std::error_code error;
+    std::filesystem::remove_all(fixture.path, error);
+
+    ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+    std::vector<std::uint8_t> png{
+        0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x01U};
+    if (!manager.InstallDefaultNteEscMenuButton(png)) return false;
+    const auto ledger = std::make_shared<anomaly::ResourceLedger>();
+    const auto first_scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.first", 17);
+    const auto second_scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.second", 23);
+    NteEscMenuCallbackProbe first_callback{
+        first_scope.get(), ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_NONE};
+    NteEscMenuCallbackProbe second_callback{
+        second_scope.get(), ANOMALY_NTE_ESC_MENU_BUTTON_RESULT_V1_EXPAND_ANOMALY};
+    const AnomalyNteEscMenuButtonSpecV1 first_spec{
+        sizeof(first_spec), ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE,
+        {"first", 5}, {"First", 5},
+        ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG, 0, {png.data(), png.size()}};
+    const AnomalyNteEscMenuButtonSpecV1 second_spec{
+        sizeof(second_spec), ANOMALY_NTE_ESC_MENU_BUTTON_V1_NONE,
+        {"first", 5}, {"Second", 6},
+        ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE, 0, {nullptr, 0}};
+    AnomalyGenerationHandleV1 first{};
+    AnomalyGenerationHandleV1 second{};
+    if (manager.RegisterNteEscMenuButton(
+            first_scope, &first_spec, NteEscMenuCallback, &first_callback, &first).code !=
+            ANOMALY_STATUS_V1_OK ||
+        manager.RegisterNteEscMenuButton(
+            second_scope, &second_spec, NteEscMenuCallback, &second_callback, &second).code !=
+            ANOMALY_STATUS_V1_OK ||
+        first.id == 0 || first.generation != first_scope->Generation() ||
+        second.id == 0 || second.generation != second_scope->Generation()) {
+        return false;
+    }
+    png.back() = 0xffU;
+
+    AnomalyGenerationHandleV1 duplicate{99, 99};
+    if (manager.RegisterNteEscMenuButton(
+            first_scope, &first_spec, NteEscMenuCallback, &first_callback, &duplicate).code !=
+            ANOMALY_STATUS_V1_CONFLICT ||
+        duplicate.id != 0 || duplicate.generation != 0) {
+        return false;
+    }
+
+    const auto rejects = [&](const AnomalyNteEscMenuButtonSpecV1& spec) {
+        AnomalyGenerationHandleV1 rejected{99, 99};
+        return manager.RegisterNteEscMenuButton(
+                   first_scope, &spec, NteEscMenuCallback, &first_callback, &rejected).code ==
+                ANOMALY_STATUS_V1_INVALID_ARGUMENT &&
+            rejected.id == 0 && rejected.generation == 0;
+    };
+    auto invalid_spec = first_spec;
+    invalid_spec.reserved = 1;
+    if (!rejects(invalid_spec)) return false;
+    invalid_spec = first_spec;
+    invalid_spec.icon_format = 99;
+    if (!rejects(invalid_spec)) return false;
+    const std::array<std::uint8_t, 8> invalid_png{};
+    invalid_spec = first_spec;
+    invalid_spec.icon_bytes = {invalid_png.data(), invalid_png.size()};
+    if (!rejects(invalid_spec)) return false;
+
+    auto buttons = manager.NteEscMenuButtons();
+    if (buttons.size() != 3 ||
+        buttons[1].handle.id != first.id ||
+        buttons[1].handle.generation != first.generation ||
+        buttons[2].handle.id != second.id ||
+        buttons[2].handle.generation != second.generation ||
+        buttons[0].id != "anomaly.management" || buttons[1].id != "first" ||
+        buttons[2].id != "first" || buttons[0].label != "Anomaly" ||
+        buttons[1].label != "First" || buttons[2].label != "Second" ||
+        buttons[0].icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG ||
+        buttons[1].icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_PNG ||
+        buttons[2].icon_format != ANOMALY_NTE_ESC_MENU_BUTTON_ICON_V1_NONE ||
+        buttons[1].icon_bytes.size() != 9 || buttons[1].icon_bytes.back() != 0x01U ||
+        !buttons[2].icon_bytes.empty()) {
+        return false;
+    }
+
+    std::uint32_t host_actions{};
+    manager.SetNteEscMenuHostAction([&host_actions] { ++host_actions; });
+    if (manager.InvokeNteEscMenuButton(buttons[0].handle).code !=
+            ANOMALY_STATUS_V1_OK || host_actions != 1 ||
+        manager.InvokeNteEscMenuButton(first).code != ANOMALY_STATUS_V1_OK ||
+        first_callback.calls != 1 || !first_callback.observed_lease ||
+        first_callback.last_handle.id != first.id || host_actions != 1 ||
+        manager.InvokeNteEscMenuButton(second).code != ANOMALY_STATUS_V1_OK ||
+        second_callback.calls != 1 || !second_callback.observed_lease || host_actions != 2 ||
+        manager.InvokeNteEscMenuButton({first.id, first.generation + 1}).code !=
+            ANOMALY_STATUS_V1_NOT_FOUND) {
+        return false;
+    }
+
+    if (manager.UnregisterNteEscMenuButton(first_scope, first).code != ANOMALY_STATUS_V1_OK ||
+        manager.UnregisterNteEscMenuButton(first_scope, first).code !=
+            ANOMALY_STATUS_V1_NOT_FOUND ||
+        second_scope->RevokeAll() != 1 ||
+        manager.InvokeNteEscMenuButton(second).code != ANOMALY_STATUS_V1_NOT_FOUND) {
+        return false;
+    }
+    buttons = manager.NteEscMenuButtons();
+    return buttons.size() == 1 && buttons[0].id == "anomaly.management" &&
+        ledger->Snapshot().empty();
+}
+
+bool TestPluginCacheCleanup(const anomaly::CoreMemoryServices& memory_services) {
+    ScopedTemporaryDirectory fixture{
+        std::filesystem::temp_directory_path() /
+        (L"anomaly-plugin-cache-cleanup-" + std::to_wstring(GetCurrentProcessId()))};
+    std::error_code error;
+    std::filesystem::remove_all(fixture.path, error);
+    const std::filesystem::path cache_root = fixture.path / L"plugins" / L".cache";
+    const std::filesystem::path stale = cache_root / L"4294967295";
+    const std::filesystem::path active = cache_root / L"4294967294";
+    std::filesystem::create_directories(stale / L"packages", error);
+    if (error) return false;
+    std::filesystem::create_directories(active, error);
+    if (error) return false;
+    std::ofstream(stale / L"packages" / L"stale.dll", std::ios::binary) << "stale";
+    ScopedHandle active_owner{CreateFileW(
+        (active / L".owner.lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_TEMPORARY, nullptr)};
+    if (active_owner.value == INVALID_HANDLE_VALUE) return false;
+
+    {
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        const std::filesystem::path current =
+            cache_root / std::to_wstring(GetCurrentProcessId());
+        if (std::filesystem::exists(stale) || !std::filesystem::exists(active) ||
+            !std::filesystem::exists(current / L".owner.lock")) {
+            return false;
+        }
+    }
+    if (!std::filesystem::exists(active)) return false;
+
+    CloseHandle(active_owner.value);
+    active_owner.value = INVALID_HANDLE_VALUE;
+    {
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        if (std::filesystem::exists(active)) return false;
+    }
+    return !std::filesystem::exists(cache_root);
+}
+
+struct ScopedAdapterServicePublication {
+    std::string_view id;
+    const void* table{};
+    bool published{};
+
+    ~ScopedAdapterServicePublication() {
+        if (published) {
+            static_cast<void>(anomaly::ProcessAdapterServices().Revoke(id, table));
+        }
+    }
+};
+
+thread_local const void* g_active_fake_ahud_subscription{};
+
+class FakeAhudService final {
+public:
+    FakeAhudService() {
+        table_.struct_size = sizeof(table_);
+        table_.service_version = ANOMALY_UE5_AHUD_SERVICE_V1_VERSION;
+        table_.user = this;
+        table_.subscribe = Subscribe;
+        table_.unsubscribe = Unsubscribe;
+    }
+
+    [[nodiscard]] const AnomalyUe5AhudServiceV1* Table() const noexcept {
+        return &table_;
+    }
+
+    [[nodiscard]] std::size_t SubscribeCalls() const noexcept {
+        std::scoped_lock lock(mutex_);
+        return subscribe_calls_;
+    }
+
+    [[nodiscard]] std::size_t UnsubscribeCalls() const noexcept {
+        std::scoped_lock lock(mutex_);
+        return unsubscribe_calls_;
+    }
+
+    [[nodiscard]] std::size_t ActiveSubscriptions() const noexcept {
+        std::scoped_lock lock(mutex_);
+        return subscriptions_.size();
+    }
+
+    [[nodiscard]] bool WaitForUnsubscribeCalls(
+        const std::size_t count, const std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(
+            lock, timeout, [&] { return unsubscribe_calls_ >= count; });
+    }
+
+    [[nodiscard]] bool FireOne(const AnomalyUe5AhudFrameV1* frame) {
+        return Fire(frame, false);
+    }
+
+    [[nodiscard]] bool FireSelfUnsubscribe(const AnomalyUe5AhudFrameV1* frame) {
+        return Fire(frame, true);
+    }
+
+private:
+    [[nodiscard]] bool Fire(
+        const AnomalyUe5AhudFrameV1* frame,
+        const bool newest_subscription) {
+        std::shared_ptr<Subscription> subscription;
+        {
+            std::scoped_lock lock(mutex_);
+            const auto found = newest_subscription
+                ? std::ranges::max_element(
+                      subscriptions_, {}, [](const auto& entry) { return entry.first; })
+                : subscriptions_.begin();
+            if (found == subscriptions_.end()) return false;
+            subscription = found->second;
+        }
+        {
+            std::scoped_lock lock(subscription->mutex);
+            if (!subscription->active) return false;
+            ++subscription->in_flight;
+        }
+        g_active_fake_ahud_subscription = subscription.get();
+        subscription->callback(subscription->callback_user, frame);
+        g_active_fake_ahud_subscription = nullptr;
+        {
+            std::scoped_lock lock(subscription->mutex);
+            --subscription->in_flight;
+        }
+        subscription->condition.notify_all();
+        return true;
+    }
+
+    struct Subscription {
+        std::mutex mutex;
+        std::condition_variable condition;
+        AnomalyGenerationHandleV1 handle{};
+        AnomalyUe5AhudDrawCallbackV1 callback{};
+        void* callback_user{};
+        bool active{true};
+        std::size_t in_flight{};
+    };
+
+    static AnomalyStatusV1 ANOMALY_CALL Subscribe(
+        void* user, AnomalyUe5AhudDrawCallbackV1 callback, void* callback_user,
+        AnomalyGenerationHandleV1* handle) {
+        if (user == nullptr || callback == nullptr || handle == nullptr) {
+            return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
+        }
+        *handle = {};
+        auto& service = *static_cast<FakeAhudService*>(user);
+        auto subscription = std::make_shared<Subscription>();
+        subscription->callback = callback;
+        subscription->callback_user = callback_user;
+        {
+            std::scoped_lock lock(service.mutex_);
+            subscription->handle = {
+                service.next_handle_id_++, service.service_generation_};
+            service.subscriptions_.emplace(subscription->handle.id, subscription);
+            ++service.subscribe_calls_;
+        }
+        *handle = subscription->handle;
+        return {ANOMALY_STATUS_V1_OK, 0, {nullptr, 0}};
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL Unsubscribe(
+        void* user, const AnomalyGenerationHandleV1 handle) {
+        if (user == nullptr || handle.id == 0) {
+            return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
+        }
+        auto& service = *static_cast<FakeAhudService*>(user);
+        std::shared_ptr<Subscription> subscription;
+        {
+            std::scoped_lock lock(service.mutex_);
+            const auto found = service.subscriptions_.find(handle.id);
+            if (found == service.subscriptions_.end() ||
+                found->second->handle.generation != handle.generation) {
+                return {ANOMALY_STATUS_V1_NOT_FOUND, 0, {nullptr, 0}};
+            }
+            subscription = found->second;
+            service.subscriptions_.erase(found);
+            ++service.unsubscribe_calls_;
+        }
+        service.condition_.notify_all();
+        {
+            std::unique_lock lock(subscription->mutex);
+            subscription->active = false;
+            if (g_active_fake_ahud_subscription != subscription.get()) {
+                subscription->condition.wait(
+                    lock, [&] { return subscription->in_flight == 0; });
+            }
+        }
+        return {ANOMALY_STATUS_V1_OK, 0, {nullptr, 0}};
+    }
+
+    AnomalyUe5AhudServiceV1 table_{};
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<Subscription>> subscriptions_;
+    std::uint64_t next_handle_id_{1};
+    std::uint64_t service_generation_{73};
+    std::size_t subscribe_calls_{};
+    std::size_t unsubscribe_calls_{};
+};
+
+struct AhudFrameProbe {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered{};
+    bool released{};
+    std::size_t project_calls{};
+
+    [[nodiscard]] bool WaitUntilEntered(const std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex);
+        return condition.wait_for(lock, timeout, [&] { return entered; });
+    }
+
+    void Release() {
+        {
+            std::scoped_lock lock(mutex);
+            released = true;
+        }
+        condition.notify_all();
+    }
+};
+
+int ANOMALY_CALL ProjectAhudFrame(
+    void* user, const double[3], float screen[2], double* depth) {
+    auto& probe = *static_cast<AhudFrameProbe*>(user);
+    {
+        std::unique_lock lock(probe.mutex);
+        ++probe.project_calls;
+        probe.entered = true;
+        probe.condition.notify_all();
+        probe.condition.wait(lock, [&] { return probe.released; });
+    }
+    if (screen != nullptr) {
+        screen[0] = 320.0F;
+        screen[1] = 180.0F;
+    }
+    if (depth != nullptr) *depth = 1.0;
+    return 1;
+}
+
+bool CopyPluginManagerFixture(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root) {
+    const std::filesystem::path source =
+        source_root / L"plugins" / L"PluginManagerFixture";
+    const std::filesystem::path destination =
+        destination_root / L"plugins" / L"PluginManagerFixture";
+    std::error_code error;
+    std::filesystem::create_directories(destination, error);
+    if (error) return false;
+    for (const std::filesystem::path& filename :
+         {std::filesystem::path(L"plugin.dll"), std::filesystem::path(L"manifest.json"),
+             std::filesystem::path(L"watch.txt")}) {
+        if (!std::filesystem::copy_file(
+                source / filename, destination / filename,
+                std::filesystem::copy_options::overwrite_existing, error) || error) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ContainsEvent(
+    const ue5mem::PluginManager& manager, const std::string_view fragment) {
+    const auto events = manager.Events();
+    return std::any_of(events.begin(), events.end(), [&](const std::string& event) {
+        return event.find(fragment) != std::string::npos;
+    });
+}
+
+bool TestAhudServiceProxy(
+    const std::filesystem::path& source_root,
+    const anomaly::CoreMemoryServices& memory_services) {
+    constexpr std::string_view plugin_id = "anomaly.test.plugin-manager-fixture";
+    const auto fail = [](const char* message) {
+        std::cerr << "AHUD proxy test: " << message << '\n';
+        return false;
+    };
+    AnomalyUiServiceV1 ui_service{};
+    ui_service.struct_size = sizeof(ui_service);
+    ui_service.service_version = ANOMALY_UI_SERVICE_V1_VERSION;
+
+    {
+        ScopedTemporaryDirectory fixture{
+            std::filesystem::temp_directory_path() /
+            (L"anomaly-plugin-ahud-short-service-" +
+                std::to_wstring(GetCurrentProcessId()))};
+        std::error_code error;
+        std::filesystem::remove_all(fixture.path, error);
+        if (!CopyPluginManagerFixture(source_root, fixture.path)) return fail("copy short fixture");
+
+        AnomalyUe5AhudServiceV1 short_service{};
+        short_service.struct_size = offsetof(AnomalyUe5AhudServiceV1, subscribe);
+        short_service.service_version = ANOMALY_UE5_AHUD_SERVICE_V1_VERSION;
+        ScopedAdapterServicePublication publication{
+            ANOMALY_UE5_AHUD_SERVICE_V1_ID, &short_service,
+            anomaly::ProcessAdapterServices().Publish(
+                ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+                ANOMALY_UE5_AHUD_SERVICE_V1_VERSION, &short_service)};
+        if (!publication.published) return fail("publish short service");
+
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        manager.SetUiService(&ui_service);
+        manager.LoadAll();
+        if (!manager.SetEnabled(plugin_id, true) ||
+            !ContainsEvent(
+                manager, "AHUD query status=" +
+                    std::to_string(ANOMALY_STATUS_V1_UNAVAILABLE))) {
+            return fail("short service rejection");
+        }
+    }
+
+    ScopedTemporaryDirectory fixture{
+        std::filesystem::temp_directory_path() /
+        (L"anomaly-plugin-ahud-proxy-" + std::to_wstring(GetCurrentProcessId()))};
+    std::error_code error;
+    std::filesystem::remove_all(fixture.path, error);
+    if (!CopyPluginManagerFixture(source_root, fixture.path)) return fail("copy fixture");
+
+    FakeAhudService ahud;
+    ScopedAdapterServicePublication publication{
+        ANOMALY_UE5_AHUD_SERVICE_V1_ID, ahud.Table(),
+        anomaly::ProcessAdapterServices().Publish(
+            ANOMALY_UE5_AHUD_SERVICE_V1_ID,
+            ANOMALY_UE5_AHUD_SERVICE_V1_VERSION, ahud.Table())};
+    if (!publication.published) return fail("publish service");
+
+    ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+    manager.SetUiService(&ui_service);
+    manager.LoadAll();
+    if (!manager.SetEnabled(plugin_id, true) || ahud.SubscribeCalls() != 3 ||
+        ahud.ActiveSubscriptions() != 3 ||
+        !ContainsEvent(
+            manager, "AHUD query status=" +
+                std::to_string(ANOMALY_STATUS_V1_OK))) {
+        return fail("start subscriptions");
+    }
+    auto plugins = manager.Plugins();
+    if (plugins.size() != 1 ||
+        plugins.front().platform_diagnostics.resources.ledger_resources != 5) {
+        return fail("initial ledger");
+    }
+
+    const bool self_fired = ahud.FireSelfUnsubscribe(nullptr);
+    const std::size_t self_unsubscribes = ahud.UnsubscribeCalls();
+    const std::size_t self_active = ahud.ActiveSubscriptions();
+    const bool self_status_logged = ContainsEvent(
+        manager, "AHUD self-unsubscribe status=" +
+            std::to_string(ANOMALY_STATUS_V1_OK));
+    const bool self_exception_logged =
+        ContainsEvent(manager, "exception in ABI v1 AHUD callback");
+    if (!self_fired || self_unsubscribes != 1 || self_active != 2 ||
+        !self_status_logged || !self_exception_logged) {
+        std::cerr << "AHUD proxy self-unsubscribe: fired=" << self_fired
+                  << " unsubscribe=" << self_unsubscribes
+                  << " active=" << self_active
+                  << " status_log=" << self_status_logged
+                  << " exception_log=" << self_exception_logged << '\n';
+        return fail("self-unsubscribe callback");
+    }
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 ||
+        plugins.front().platform_diagnostics.resources.ledger_resources != 4) {
+        return fail("self-unsubscribe ledger");
+    }
+
+    manager.GameUpdate(0.0);
+    if (ahud.UnsubscribeCalls() != 2 || ahud.ActiveSubscriptions() != 1 ||
+        !ContainsEvent(
+            manager, "AHUD explicit unsubscribe status=" +
+                std::to_string(ANOMALY_STATUS_V1_OK))) {
+        return fail("explicit unsubscribe");
+    }
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 ||
+        plugins.front().platform_diagnostics.resources.ledger_resources != 3) {
+        return fail("explicit unsubscribe ledger");
+    }
+
+    AhudFrameProbe frame_probe;
+    AnomalyUe5AhudFrameV1 frame{};
+    frame.struct_size = sizeof(frame);
+    frame.user = &frame_probe;
+    frame.viewport_width = 1920;
+    frame.viewport_height = 1080;
+    frame.project = ProjectAhudFrame;
+    std::atomic_bool fired{};
+    std::thread callback_thread([&] { fired.store(ahud.FireOne(&frame)); });
+    if (!frame_probe.WaitUntilEntered(2s)) {
+        frame_probe.Release();
+        callback_thread.join();
+        return fail("blocking callback entry");
+    }
+
+    std::atomic_bool stop_done{};
+    bool stop_result{};
+    std::thread stop_thread([&] {
+        stop_result = manager.StopForRuntime(2s);
+        stop_done.store(true, std::memory_order_release);
+    });
+    const bool revoke_started = ahud.WaitForUnsubscribeCalls(3, 2s);
+    std::this_thread::sleep_for(20ms);
+    const bool callback_drained_before_stop =
+        revoke_started && !stop_done.load(std::memory_order_acquire);
+    frame_probe.Release();
+    callback_thread.join();
+    stop_thread.join();
+
+    const bool passed = callback_drained_before_stop && stop_result && fired.load() &&
+        frame_probe.project_calls == 1 && ahud.UnsubscribeCalls() == 3 &&
+        ahud.ActiveSubscriptions() == 0 && manager.Plugins().empty() &&
+        ContainsEvent(manager, "AHUD fixture callback") && !ahud.FireOne(&frame);
+    if (!passed) {
+        std::cerr << "AHUD proxy test: stop drain"
+                  << " drain=" << callback_drained_before_stop
+                  << " stop=" << stop_result
+                  << " fired=" << fired.load()
+                  << " project=" << frame_probe.project_calls
+                  << " unsubscribe=" << ahud.UnsubscribeCalls()
+                  << " active=" << ahud.ActiveSubscriptions()
+                  << " plugins=" << manager.Plugins().size() << '\n';
+    }
+    return passed;
+}
+
+bool TestPluginWindowVisibilityPersistence(
+    const std::filesystem::path& source_root,
+    const anomaly::CoreMemoryServices& memory_services) {
+    constexpr std::string_view plugin_id = "anomaly.test.plugin-manager-fixture";
+    ScopedTemporaryDirectory fixture{
+        std::filesystem::temp_directory_path() /
+        (L"anomaly-plugin-window-visibility-" + std::to_wstring(GetCurrentProcessId()))};
+    std::error_code error;
+    std::filesystem::remove_all(fixture.path, error);
+    const std::filesystem::path source =
+        source_root / L"plugins" / L"PluginManagerFixture";
+    const std::filesystem::path destination =
+        fixture.path / L"plugins" / L"PluginManagerFixture";
+    std::filesystem::create_directories(destination, error);
+    if (error) return false;
+    for (const std::filesystem::path& filename :
+         {std::filesystem::path(L"plugin.dll"), std::filesystem::path(L"manifest.json"),
+             std::filesystem::path(L"watch.txt")}) {
+        if (!std::filesystem::copy_file(
+                source / filename, destination / filename,
+                std::filesystem::copy_options::overwrite_existing, error) || error) {
+            return false;
+        }
+    }
+
+    AnomalyUiServiceV1 ui_service{};
+    ui_service.struct_size = sizeof(ui_service);
+    ui_service.service_version = ANOMALY_UI_SERVICE_V1_VERSION;
+    WindowProbe window_probe{true};
+    ui_service.user = &window_probe;
+    ui_service.begin_window = CloseWindow;
+    ui_service.end_window = EndWindow;
+    ui_service.text = Text;
+    {
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        manager.SetUiService(&ui_service);
+        manager.LoadAll();
+        if (!manager.SetEnabled(plugin_id, true)) return false;
+        manager.Draw(nullptr);
+        const auto plugins = manager.Plugins();
+        if (plugins.size() != 1 || plugins.front().visible) return false;
+        manager.PersistUiWindowState();
+    }
+
+    const std::filesystem::path state_file =
+        fixture.path / L"state" / L"ui-window-state.json";
+    std::ifstream input(state_file, std::ios::binary);
+    const Json document = Json::parse(input, nullptr, false);
+    if (document.is_discarded() || !document.contains("pluginWindows") ||
+        !document["pluginWindows"].is_array() || document["pluginWindows"].size() != 1 ||
+        document["pluginWindows"][0].value("pluginId", std::string{}) != plugin_id ||
+        document["pluginWindows"][0].value("visible", true)) {
+        return false;
+    }
+
+    window_probe = {};
+    {
+        ue5mem::PluginManager manager(fixture.path, L"plugins", memory_services);
+        manager.SetUiService(&ui_service);
+        manager.LoadAll();
+        if (!manager.SetEnabled(plugin_id, true)) return false;
+        const auto plugins = manager.Plugins();
+        if (plugins.size() != 1 || plugins.front().visible || !window_probe.title.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TestUiResourceWorkerStaging(
+    ue5mem::PluginManager& manager, DeferredUiResourceWorker& worker,
+    const std::filesystem::path& root) {
+    ScopedTemporaryFile font_file{root / L"ui-worker-staging-font.bin"};
+    std::error_code file_error;
+    std::filesystem::remove(font_file.path, file_error);
+    const std::vector<std::uint8_t> font_bytes{0x74, 0x74, 0x66, 0x2d, 0x73, 0x74, 0x61, 0x67, 0x65};
+    {
+        std::ofstream output(font_file.path, std::ios::binary | std::ios::trunc);
+        if (!output) return false;
+        output.write(
+            reinterpret_cast<const char*>(font_bytes.data()),
+            static_cast<std::streamsize>(font_bytes.size()));
+        if (!output) return false;
+    }
+
+    const auto ledger = std::make_shared<anomaly::ResourceLedger>();
+    const auto active_scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.ui-worker", 41);
+    anomaly::UiFontRequest font_request;
+    font_request.relative_path = font_file.path.string();
+    font_request.size_pixels = 16.0F;
+    font_request.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto font = manager.UiResources().RequestFont(active_scope, std::move(font_request));
+    if (!font || !manager.QueueUiFontLoad(active_scope, font) ||
+        !worker.HasSingleTask(active_scope->Owner(), active_scope->Generation()) ||
+        !manager.UiResources().ReserveResourceStaging(
+            active_scope, font, font_bytes.size())) {
+        return false;
+    }
+    anomaly::UiFontRequest duplicate_font_request;
+    duplicate_font_request.relative_path = font_file.path.string();
+    duplicate_font_request.size_pixels = 16.0F;
+    duplicate_font_request.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto duplicate_font = manager.UiResources().RequestFont(
+        active_scope, std::move(duplicate_font_request));
+    if (!duplicate_font || !manager.QueueUiFontLoad(active_scope, duplicate_font) ||
+        !manager.UiResources().Release(active_scope, font) ||
+        !worker.HasSingleTask(active_scope->Owner(), active_scope->Generation()) ||
+        !worker.RunNext()) {
+        return false;
+    }
+    const auto staged_font = manager.UiResources().FontState(active_scope, duplicate_font);
+    if (!staged_font || staged_font->resource.state != anomaly::UiResourceState::Queued ||
+        staged_font->request.encoded_bytes != font_bytes) {
+        return false;
+    }
+
+    // The Worker must fall back to the earlier duplicate when the newest
+    // pending lease is released before its deferred callback starts.
+    anomaly::UiFontRequest fallback_font_request;
+    fallback_font_request.relative_path = font_file.path.string();
+    fallback_font_request.size_pixels = 17.0F;
+    fallback_font_request.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto fallback_font = manager.UiResources().RequestFont(
+        active_scope, std::move(fallback_font_request));
+    anomaly::UiFontRequest released_font_request;
+    released_font_request.relative_path = font_file.path.string();
+    released_font_request.size_pixels = 17.0F;
+    released_font_request.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto released_font = manager.UiResources().RequestFont(
+        active_scope, std::move(released_font_request));
+    if (!fallback_font || !released_font || !manager.QueueUiFontLoad(active_scope, fallback_font) ||
+        !manager.QueueUiFontLoad(active_scope, released_font) ||
+        !manager.UiResources().Release(active_scope, released_font) ||
+        !worker.HasSingleTask(active_scope->Owner(), active_scope->Generation()) || !worker.RunNext()) {
+        return false;
+    }
+    const auto fallback_font_state = manager.UiResources().FontState(active_scope, fallback_font);
+    if (!fallback_font_state || fallback_font_state->resource.state != anomaly::UiResourceState::Queued ||
+        fallback_font_state->request.encoded_bytes != font_bytes) {
+        return false;
+    }
+
+    const std::vector<std::uint8_t> rgba{0x11, 0x22, 0x33, 0x44};
+    anomaly::UiTextureRequest raw_texture_request;
+    raw_texture_request.encoded_bytes = rgba;
+    raw_texture_request.format = anomaly::UiTextureFormat::Rgba8;
+    raw_texture_request.width = 1;
+    raw_texture_request.height = 1;
+    const auto raw_texture =
+        manager.UiResources().RequestTexture(active_scope, std::move(raw_texture_request));
+    if (!raw_texture || !manager.QueueUiTextureLoad(active_scope, raw_texture) || !worker.tasks.empty() ||
+        !manager.UiResources().MarkTextureReady(
+            active_scope, raw_texture, manager.UiResources().DeviceGeneration(), 1, 1) ||
+        !manager.QueueUiTextureLoad(active_scope, raw_texture) || !worker.tasks.empty()) {
+        return false;
+    }
+    const auto staged_raw_texture = manager.UiResources().TextureState(active_scope, raw_texture);
+    if (!staged_raw_texture || staged_raw_texture->resource.state != anomaly::UiResourceState::Ready ||
+        staged_raw_texture->request.format != anomaly::UiTextureFormat::Rgba8 ||
+        staged_raw_texture->request.width != 1 || staged_raw_texture->request.height != 1 ||
+        staged_raw_texture->request.encoded_bytes != rgba || staged_raw_texture->byte_size != rgba.size()) {
+        return false;
+    }
+
+    anomaly::UiTextureRequest invalid_encoded_request;
+    invalid_encoded_request.encoded_bytes = {0x00};
+    invalid_encoded_request.format = anomaly::UiTextureFormat::Auto;
+    const auto invalid_encoded =
+        manager.UiResources().RequestTexture(active_scope, std::move(invalid_encoded_request));
+    anomaly::UiTextureRequest duplicate_invalid_encoded_request;
+    duplicate_invalid_encoded_request.encoded_bytes = {0x00};
+    duplicate_invalid_encoded_request.format = anomaly::UiTextureFormat::Auto;
+    const auto duplicate_invalid_encoded = manager.UiResources().RequestTexture(
+        active_scope, std::move(duplicate_invalid_encoded_request));
+    if (!invalid_encoded || !duplicate_invalid_encoded ||
+        !manager.QueueUiTextureLoad(active_scope, invalid_encoded) ||
+        !manager.QueueUiTextureLoad(active_scope, duplicate_invalid_encoded) ||
+        !manager.UiResources().Release(active_scope, invalid_encoded) ||
+        !worker.HasSingleTask(active_scope->Owner(), active_scope->Generation()) ||
+        !worker.RunNext()) {
+        return false;
+    }
+    const auto failed_encoded = manager.UiResources().TextureState(
+        active_scope, duplicate_invalid_encoded);
+    if (!failed_encoded || failed_encoded->resource.state != anomaly::UiResourceState::Failed) {
+        return false;
+    }
+
+    anomaly::UiTextureRequest fallback_texture_request;
+    fallback_texture_request.encoded_bytes = {0x01};
+    fallback_texture_request.format = anomaly::UiTextureFormat::Auto;
+    const auto fallback_texture = manager.UiResources().RequestTexture(
+        active_scope, std::move(fallback_texture_request));
+    anomaly::UiTextureRequest released_texture_request;
+    released_texture_request.encoded_bytes = {0x01};
+    released_texture_request.format = anomaly::UiTextureFormat::Auto;
+    const auto released_texture = manager.UiResources().RequestTexture(
+        active_scope, std::move(released_texture_request));
+    if (!fallback_texture || !released_texture ||
+        !manager.QueueUiTextureLoad(active_scope, fallback_texture) ||
+        !manager.QueueUiTextureLoad(active_scope, released_texture) ||
+        !manager.UiResources().Release(active_scope, released_texture) ||
+        !worker.HasSingleTask(active_scope->Owner(), active_scope->Generation()) || !worker.RunNext()) {
+        return false;
+    }
+    const auto fallback_texture_state = manager.UiResources().TextureState(
+        active_scope, fallback_texture);
+    if (!fallback_texture_state ||
+        fallback_texture_state->resource.state != anomaly::UiResourceState::Failed) {
+        return false;
+    }
+
+    anomaly::UiTextureRequest oversized_encoded_request;
+    oversized_encoded_request.encoded_bytes.resize(
+        anomaly::kDefaultUiResourceEncodedByteLimit + 1U, 0U);
+    oversized_encoded_request.format = anomaly::UiTextureFormat::Auto;
+    const auto oversized_encoded =
+        manager.UiResources().RequestTexture(active_scope, std::move(oversized_encoded_request));
+    if (!oversized_encoded || !manager.QueueUiTextureLoad(active_scope, oversized_encoded) ||
+        !worker.HasSingleTask(active_scope->Owner(), active_scope->Generation()) ||
+        !worker.RunNext()) {
+        return false;
+    }
+    const auto oversized_state = manager.UiResources().ResourceState(active_scope, oversized_encoded);
+    if (!oversized_state || oversized_state->state != anomaly::UiResourceState::Failed) {
+        return false;
+    }
+
+    const auto stale_scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.ui-worker", 42);
+    anomaly::UiFontRequest stale_font_request;
+    stale_font_request.relative_path = font_file.path.string();
+    stale_font_request.size_pixels = 18.0F;
+    stale_font_request.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto stale_font =
+        manager.UiResources().RequestFont(stale_scope, std::move(stale_font_request));
+    if (!stale_font || !manager.QueueUiFontLoad(stale_scope, stale_font) ||
+        !worker.HasSingleTask(stale_scope->Owner(), stale_scope->Generation()) ||
+        !stale_scope->FreezeCallbackSources() || !worker.RunNext()) {
+        return false;
+    }
+    const auto stale_state = manager.UiResources().FontState(stale_scope, stale_font);
+    if (!stale_state || !stale_state->request.encoded_bytes.empty() ||
+        stale_state->resource.state != anomaly::UiResourceState::Queued ||
+        stale_scope->RevokeAll() != 1 || manager.UiResources().FontState(stale_scope, stale_font)) {
+        return false;
+    }
+
+    return active_scope->RevokeAll() == 6 && worker.tasks.empty();
+}
+
+bool TestUiResourceWorkerTerminalPaths(
+    ue5mem::PluginManager& manager, DeferredUiResourceWorker& worker,
+    const std::filesystem::path& root) {
+    ScopedTemporaryFile font_file{root / L"ui-worker-terminal-font.bin"};
+    const std::vector<std::uint8_t> font_bytes{0x74, 0x74, 0x66, 0x2d, 0x74, 0x65, 0x72, 0x6d};
+    {
+        std::ofstream output(font_file.path, std::ios::binary | std::ios::trunc);
+        if (!output) return false;
+        output.write(
+            reinterpret_cast<const char*>(font_bytes.data()),
+            static_cast<std::streamsize>(font_bytes.size()));
+        if (!output) return false;
+    }
+
+    const auto ledger = std::make_shared<anomaly::ResourceLedger>();
+    const auto scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.ui-worker-terminal", 44);
+    anomaly::UiFontRequest request;
+    request.relative_path = font_file.path.string();
+    request.size_pixels = 18.0F;
+    request.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto font = manager.UiResources().RequestFont(scope, std::move(request));
+    if (!font) return false;
+
+    worker.accepting = false;
+    if (manager.QueueUiFontLoad(scope, font)) return false;
+    const auto rejected = manager.UiResources().ResourceState(scope, font);
+    if (!rejected || rejected->state != anomaly::UiResourceState::Failed ||
+        rejected->reserved_staging_bytes != 0 || !worker.tasks.empty()) {
+        return false;
+    }
+
+    worker.accepting = true;
+    if (!manager.UiResources().RetryFont(scope, font) ||
+        !manager.QueueUiFontLoad(scope, font) ||
+        !worker.HasSingleTask(scope->Owner(), scope->Generation()) || !worker.DropNext()) {
+        return false;
+    }
+    const auto cancelled = manager.UiResources().ResourceState(scope, font);
+    if (!cancelled || cancelled->state != anomaly::UiResourceState::Failed ||
+        cancelled->reserved_staging_bytes != 0 || !worker.tasks.empty()) {
+        return false;
+    }
+
+    if (!manager.UiResources().RetryFont(scope, font) ||
+        !manager.QueueUiFontLoad(scope, font) ||
+        !worker.HasSingleTask(scope->Owner(), scope->Generation()) || !worker.RunNext()) {
+        return false;
+    }
+    const auto completed = manager.UiResources().FontState(scope, font);
+    return completed && completed->resource.state == anomaly::UiResourceState::Queued &&
+        completed->request.encoded_bytes == font_bytes && scope->RevokeAll() == 1;
+}
+
+bool TestUiResourceWorkerConfinedPackagePaths(
+    ue5mem::PluginManager& manager, DeferredUiResourceWorker& worker,
+    const std::filesystem::path& root) {
+    ScopedTemporaryDirectory package{root / L"ui-worker-confined-package"};
+    std::error_code error;
+    std::filesystem::remove_all(package.path, error);
+    error.clear();
+    std::filesystem::create_directories(package.path / L"assets", error);
+    if (error) return false;
+
+    const std::vector<std::uint8_t> bytes{0x63, 0x6f, 0x6e, 0x66, 0x69, 0x6e, 0x65, 0x64};
+    {
+        std::ofstream output(package.path / L"assets" / L"font.bin", std::ios::binary | std::ios::trunc);
+        if (!output) return false;
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!output) return false;
+    }
+
+    const auto ledger = std::make_shared<anomaly::ResourceLedger>();
+    const auto scope = std::make_shared<anomaly::PluginScope>(
+        ledger, "anomaly.test.ui-worker-confined-package", 45);
+    anomaly::UiFontRequest existing;
+    existing.package_directory = package.path;
+    existing.relative_path = "assets/font.bin";
+    existing.size_pixels = 18.0F;
+    existing.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto existing_font = manager.UiResources().RequestFont(scope, std::move(existing));
+    if (!existing_font || !manager.QueueUiFontLoad(scope, existing_font) ||
+        !worker.HasSingleTask(scope->Owner(), scope->Generation()) || !worker.RunNext()) {
+        return false;
+    }
+    const auto loaded = manager.UiResources().FontState(scope, existing_font);
+    if (!loaded || loaded->resource.state != anomaly::UiResourceState::Queued ||
+        loaded->request.encoded_bytes != bytes) {
+        return false;
+    }
+
+    // A package-relative AUTO texture must stay in the Worker domain through
+    // file confinement and WIC decode before it becomes an uploadable RGBA8 payload.
+    const std::vector<std::uint8_t> bitmap{
+        0x42, 0x4d, 0x3a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00,
+        0x28, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x22,
+        0x33, 0x00};
+    {
+        std::ofstream output(package.path / L"assets" / L"texture.bmp", std::ios::binary | std::ios::trunc);
+        if (!output) return false;
+        output.write(reinterpret_cast<const char*>(bitmap.data()), static_cast<std::streamsize>(bitmap.size()));
+        if (!output) return false;
+    }
+    anomaly::UiTextureRequest texture;
+    texture.package_directory = package.path;
+    texture.relative_path = "assets/texture.bmp";
+    texture.format = anomaly::UiTextureFormat::Auto;
+    const auto package_texture = manager.UiResources().RequestTexture(scope, std::move(texture));
+    if (!package_texture || !manager.QueueUiTextureLoad(scope, package_texture) ||
+        !worker.HasSingleTask(scope->Owner(), scope->Generation()) || !worker.RunNext()) {
+        return false;
+    }
+    const auto decoded = manager.UiResources().TextureState(scope, package_texture);
+    if (!decoded || decoded->resource.state != anomaly::UiResourceState::Queued ||
+        decoded->request.format != anomaly::UiTextureFormat::Rgba8 ||
+        decoded->request.width != 1 || decoded->request.height != 1 ||
+        decoded->request.encoded_bytes.size() != 4) {
+        return false;
+    }
+
+    anomaly::UiFontRequest missing;
+    missing.package_directory = package.path;
+    missing.relative_path = "assets/missing.ttf";
+    missing.size_pixels = 18.0F;
+    missing.glyph_range = anomaly::UiGlyphRange::Latin;
+    const auto missing_font = manager.UiResources().RequestFont(scope, std::move(missing));
+    if (!missing_font || !manager.QueueUiFontLoad(scope, missing_font) ||
+        !worker.HasSingleTask(scope->Owner(), scope->Generation()) || !worker.RunNext()) {
+        return false;
+    }
+    const auto missing_state = manager.UiResources().FontState(scope, missing_font);
+    return missing_state && missing_state->resource.state == anomaly::UiResourceState::Failed &&
+        worker.tasks.empty() && scope->RevokeAll() == 3;
+}
+
+bool HasService(
+    const ue5mem::PluginPlatformDiagnosticsView& diagnostics,
+    const std::string_view id) {
+    return std::any_of(
+        diagnostics.services.begin(), diagnostics.services.end(),
+        [&](const ue5mem::PluginServiceVersionView& service) { return service.id == id; });
+}
+
+bool HasDeny(
+    const ue5mem::PluginPlatformDiagnosticsView& diagnostics,
+    const std::string_view service_id) {
+    return std::any_of(
+        diagnostics.deny_reasons.begin(), diagnostics.deny_reasons.end(),
+        [&](const std::string& reason) { return reason.starts_with(service_id); });
+}
+
+struct RawMemoryCapabilityCase {
+    const wchar_t* directory_name;
+    std::vector<std::string> capabilities;
+};
+
+bool WriteRawMemoryCapabilityManifest(
+    const std::filesystem::path& package_directory,
+    const RawMemoryCapabilityCase& test_case) {
+    const Json manifest = {
+        {"schemaVersion", 2},
+        {"id", std::string(kRawMemoryCapabilityFixtureId)},
+        {"name", "Raw Memory Capability Fixture"},
+        {"author", "Anomaly"},
+        {"version", "1.0.0"},
+        {"entry", "plugin.dll"},
+        {"api", {{"major", 1}, {"minMinor", 0}, {"maxMinor", 0}}},
+        {"games", {"nte"}},
+        {"builds", {"nte-win64-*"}},
+        {"loadPhase", "game-ready"},
+        {"services", Json::array({Json{
+            {"id", ANOMALY_CORE_SERVICE_V1_ID},
+            {"minVersion", ANOMALY_CORE_SERVICE_V1_VERSION}}})},
+        {"capabilities", test_case.capabilities},
+    };
+    std::ofstream output(
+        package_directory / L"manifest.json", std::ios::binary | std::ios::trunc);
+    if (!output) return false;
+    output << manifest.dump(2) << '\n';
+    return static_cast<bool>(output);
+}
+
+bool TestRawMemoryCapabilityRuntime(
+    const std::filesystem::path& root,
+    const anomaly::CoreMemoryServices& memory_services) {
+    const std::filesystem::path fixture =
+        root / L"raw-memory-capability-fixture" / L"plugin.dll";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(fixture, error) || error) {
+        std::cerr << "raw-memory capability fixture binary is missing\n";
+        return false;
+    }
+
+    ScopedTemporaryDirectory test_root{root / L"raw-memory-capability-contract"};
+    std::filesystem::remove_all(test_root.path, error);
+    if (error) {
+        std::cerr << "raw-memory capability fixture root cleanup failed\n";
+        return false;
+    }
+
+    const std::vector<RawMemoryCapabilityCase> cases{
+        {L"no-memory", {}},
+        {L"read-only", {"memory-read"}},
+        {L"write-only", {"memory-write"}},
+    };
+    const std::string started_event =
+        "ABI v1 plugin started: " + std::string(kRawMemoryCapabilityFixtureId);
+
+    for (const RawMemoryCapabilityCase& test_case : cases) {
+        const std::filesystem::path case_root = test_root.path / test_case.directory_name;
+        const std::filesystem::path package = case_root / L"plugins" / L"RawMemoryCapability";
+        const auto fail_case = [&](const std::string_view reason) {
+            std::cerr << "raw-memory capability fixture "
+                      << std::filesystem::path(test_case.directory_name).string()
+                      << ": " << reason << '\n';
+            return false;
+        };
+        std::filesystem::create_directories(package, error);
+        if (error) return fail_case("could not create package directory");
+        if (!std::filesystem::copy_file(
+                fixture, package / L"plugin.dll",
+                std::filesystem::copy_options::overwrite_existing, error) ||
+            error) {
+            return fail_case("could not copy fixture binary");
+        }
+        if (!WriteRawMemoryCapabilityManifest(package, test_case)) {
+            return fail_case("could not write manifest");
+        }
+
+        {
+            ue5mem::PluginManager manager(case_root, L"plugins", memory_services);
+            manager.LoadAll();
+            if (!manager.SetEnabled(kRawMemoryCapabilityFixtureId, true)) {
+                return fail_case("could not explicitly enable fixture");
+            }
+
+            const auto plugins = manager.Plugins();
+            if (plugins.size() != 1 || plugins.front().id != kRawMemoryCapabilityFixtureId ||
+                plugins.front().generation == 0) {
+                std::cerr << "raw-memory capability fixture did not activate: "
+                          << std::filesystem::path(test_case.directory_name).string() << '\n';
+                for (const std::string& event : manager.Events()) std::cerr << "  " << event << '\n';
+                return false;
+            }
+            const auto diagnostics = manager.DiagnosticsSnapshot();
+            if (diagnostics.plugins.size() != 1) return fail_case("did not publish one diagnostics view");
+            const auto& platform = diagnostics.plugins.front().platform_diagnostics;
+            if (!platform.capability_enforced ||
+                platform.capabilities.size() != test_case.capabilities.size()) {
+                return fail_case("published unexpected capability diagnostics");
+            }
+            for (const std::string& capability : test_case.capabilities) {
+                if (std::find(
+                        platform.capabilities.begin(), platform.capabilities.end(), capability) ==
+                    platform.capabilities.end()) {
+                    return fail_case("omitted a declared capability");
+                }
+            }
+            const auto events = manager.Events();
+            if (std::none_of(events.begin(), events.end(), [&](const std::string& event) {
+                    return event.find(started_event) != std::string::npos;
+                })) {
+                return fail_case("did not publish the start event");
+            }
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+int wmain(int argc, wchar_t** argv) {
+    if (argc != 2) return 1;
+    const std::filesystem::path root(argv[1]);
+    const std::filesystem::path structured_log =
+        root / L"logs" / L"plugin-manager-integration.jsonl";
+    std::error_code log_error;
+    std::filesystem::create_directories(structured_log.parent_path(), log_error);
+    std::filesystem::remove(structured_log, log_error);
+    auto logger = std::make_shared<anomaly::StructuredLogger>();
+    if (!logger->Start(structured_log)) return 13;
+    const auto memory_services = anomaly::CreateCoreMemoryServices();
+    if (!TestPluginCacheCleanup(memory_services)) return 34;
+    if (!TestNteEscMenuButtonRegistry(memory_services)) return 35;
+    if (!TestAhudServiceProxy(root, memory_services)) return 37;
+    if (!TestPluginWindowVisibilityPersistence(root, memory_services)) return 36;
+    if (!TestRawMemoryCapabilityRuntime(root, memory_services)) return 33;
+    DeferredUiResourceWorker ui_resource_worker;
+    ue5mem::PluginManager manager(
+        root, L"plugins", memory_services, {}, logger, {},
+        [&ui_resource_worker](
+            std::string owner, const std::uint64_t generation,
+            std::function<void()> callback) -> bool {
+            return ui_resource_worker.Post(std::move(owner), generation, std::move(callback));
+        });
+    const auto& manager_services = manager.MemoryServices();
+    if (manager_services.memory.get() != memory_services.memory.get() ||
+        manager_services.patterns.get() != memory_services.patterns.get() ||
+        manager_services.patterns->Memory().get() != manager_services.memory.get()) {
+        return 2;
+    }
+    if (!TestUiResourceWorkerStaging(manager, ui_resource_worker, root)) return 30;
+    if (!TestUiResourceWorkerTerminalPaths(manager, ui_resource_worker, root)) return 31;
+    if (!TestUiResourceWorkerConfinedPackagePaths(manager, ui_resource_worker, root)) return 32;
+    bool duplicate_rejected{};
+    try {
+        ue5mem::PluginManager duplicate(root, L"plugins", memory_services);
+    } catch (const std::logic_error&) {
+        duplicate_rejected = true;
+    }
+    if (!duplicate_rejected) return 3;
+    manager.LoadAll();
+    if (!manager.SetEnabled("anomaly.test.plugin-manager-fixture", true)) return 4;
+    AnomalyUiServiceV1 ui_service{};
+    ui_service.struct_size = sizeof(ui_service);
+    ui_service.service_version = 1;
+    manager.SetUiService(&ui_service);
+
+    auto plugins = manager.Plugins();
+    if (plugins.size() != 1) return 4;
+    const auto& plugin = plugins.front();
+    if (plugin.id != "anomaly.test.plugin-manager-fixture" || !plugin.visibility_control ||
+        !plugin.visible || plugin.package_directory.filename() != L"PluginManagerFixture" ||
+        !std::filesystem::exists(plugin.package_directory / L"watch.txt")) {
+        return 5;
+    }
+    const auto diagnostics = manager.DiagnosticsSnapshot();
+    if (diagnostics.schema_version != 1 || diagnostics.plugins.size() != 1) return 19;
+    const auto& platform = diagnostics.plugins.front().platform_diagnostics;
+    const bool ui_capability = std::find(
+        platform.capabilities.begin(), platform.capabilities.end(), "ui") !=
+        platform.capabilities.end();
+    if (!platform.capability_enforced || !ui_capability ||
+        !HasService(platform, ANOMALY_CORE_SERVICE_V1_ID) ||
+        !HasService(platform, ANOMALY_UI_SERVICE_V1_ID) ||
+        platform.resources.windows != 0 || platform.resources.fonts != 0 ||
+        platform.resources.textures != 0 || platform.resources.hotkeys != 0 ||
+        !HasDeny(platform, "anomaly.config")) {
+        return 20;
+    }
+    const std::string diagnostics_json = manager.DiagnosticsJson();
+    const Json diagnostics_document = Json::parse(diagnostics_json, nullptr, false);
+    if (diagnostics_document.is_discarded() || diagnostics_document.value("schemaVersion", 0U) != 1U ||
+        !diagnostics_document.contains("plugins") || !diagnostics_document["plugins"].is_array() ||
+        diagnostics_document["plugins"].size() != 1 ||
+        !diagnostics_document["plugins"][0].value("capabilityEnforced", false) ||
+        !diagnostics_document["plugins"][0].contains("services") ||
+        !diagnostics_document["plugins"][0].contains("resources") ||
+        !diagnostics_document["plugins"][0]["resources"].contains("windows") ||
+        !diagnostics_document["plugins"][0]["resources"].contains("fonts") ||
+        !diagnostics_document["plugins"][0]["resources"].contains("textures") ||
+        !diagnostics_document["plugins"][0]["resources"].contains("hotkeys") ||
+        !diagnostics_document["plugins"][0].contains("queuedTasks") ||
+        !diagnostics_document["plugins"][0].contains("callbacks") ||
+        !diagnostics_document["plugins"][0].contains("denyReasons")) {
+        return 21;
+    }
+    const std::string plugin_id = plugin.id;
+    const std::filesystem::path package_directory = plugin.package_directory;
+    const auto startup_events = manager.Events();
+    if (std::none_of(startup_events.begin(), startup_events.end(), [](const std::string& event) {
+            return event.find("ABI v1 plugin started: anomaly.test.plugin-manager-fixture") !=
+                std::string::npos;
+        })) {
+        return 6;
+    }
+    if (!manager.SetVisible(plugin_id, false)) return 7;
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 || plugins.front().visible) return 8;
+    if (!manager.SetVisible(plugin_id, true)) return 9;
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 || !plugins.front().visible) return 10;
+
+    WindowProbe window_probe{true};
+    ui_service.user = &window_probe;
+    ui_service.begin_window = CloseWindow;
+    ui_service.end_window = EndWindow;
+    ui_service.text = Text;
+    manager.Draw(nullptr);
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 || plugins.front().visible ||
+        !window_probe.title.starts_with("Plugin Manager Fixture###anomaly-plugin:") ||
+        window_probe.title == "Plugin Manager Fixture") {
+        return 16;
+    }
+    if (!manager.SetVisible(plugin_id, true)) return 17;
+    window_probe.close = false;
+    manager.Draw(nullptr);
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 || !plugins.front().visible) return 18;
+
+    const std::filesystem::path watch_file = package_directory / L"watch.txt";
+    std::ifstream original_input(watch_file, std::ios::binary);
+    const std::string original(
+        (std::istreambuf_iterator<char>(original_input)), std::istreambuf_iterator<char>());
+    original_input.close();
+    std::ofstream(watch_file, std::ios::binary | std::ios::app) << "\nwatcher-probe";
+    manager.Maintenance();
+    std::this_thread::sleep_for(800ms);
+    manager.Maintenance();
+    plugins = manager.Plugins();
+    if (plugins.size() != 1 || plugins.front().id != plugin_id) return 11;
+    const auto& events = manager.Events();
+    if (std::none_of(events.begin(), events.end(), [](const std::string& event) {
+            return event.find("plugin package change applied: PluginManagerFixture") != std::string::npos;
+        })) {
+        return 12;
+    }
+    std::ofstream(watch_file, std::ios::binary | std::ios::trunc) << original;
+
+    manager.LogPlugin(
+        ANOMALY_CORE_LOG_LEVEL_V1_INFO, "structured-log-probe", plugin_id,
+        plugins.front().generation);
+    if (!logger->Flush(2s)) return 14;
+    std::ifstream structured_input(structured_log, std::ios::binary);
+    const std::string structured_records(
+        (std::istreambuf_iterator<char>(structured_input)),
+        std::istreambuf_iterator<char>());
+    if (structured_records.find("\"component\":\"plugin-manager\"") ==
+            std::string::npos ||
+        structured_records.find("\"thread_domain\":\"unknown\"") ==
+            std::string::npos ||
+        structured_records.find("\"event_id\":\"plugin.host\"") ==
+            std::string::npos ||
+        structured_records.find(
+            "\"plugin_id\":\"anomaly.test.plugin-manager-fixture\"") ==
+            std::string::npos ||
+        structured_records.find("\"plugin_generation\":" +
+            std::to_string(plugins.front().generation)) == std::string::npos ||
+        structured_records.find("\"message\":\"structured-log-probe\"") ==
+            std::string::npos) {
+        return 15;
+    }
+
+    std::cout << "plugin catalog package, selective reload and visibility controls passed\n";
+    return 0;
+}

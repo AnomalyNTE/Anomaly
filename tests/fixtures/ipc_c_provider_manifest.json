@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "id": "dev.anomaly.ipc-c-provider",
+  "name": "IPC C Provider",
+  "author": "Anomaly",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [{"id": "anomaly.ipc", "minVersion": 1}],
+  "capabilities": ["ipc"]
+}

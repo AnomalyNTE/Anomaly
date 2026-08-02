@@ -9,30 +9,32 @@ PowerShell 7+（`pwsh`，供测试和脚本使用）。共享构建树固定为 
 ```powershell
 cmake --preset windows-vs2022
 cmake --build --preset windows-relwithdebinfo --parallel
+ctest --preset windows-relwithdebinfo
 cmake --install .build\windows-vs2022 --config RelWithDebInfo `
   --prefix .build\windows-vs2022\game-package --component GameRuntime
 ```
 
 AddressSanitizer 使用：`cmake --preset windows-asan`、
-`cmake --build --preset windows-asan --parallel`。
+`cmake --build --preset windows-asan --parallel`、`ctest --preset windows-asan`。
 日常二进制位于 `.build/windows-vs2022/bin/RelWithDebInfo`，可部署 Runtime 位于
 `.build/windows-vs2022/game-package`。
 
 ## 验证范围
 
-验证应沿改动的 target、模块归属和依赖关系收敛：先构建直接受影响的 target，再运行对应的独立
-契约、fixture 或集成验证。跨共享模块边界、构建图、公开 ABI 或发布打包的改动需要扩大到受影响的
-依赖方和合同，但不因目录或模块名称自动升级为完整验证。
+验证应沿改动的 target、模块归属和依赖关系收敛：先构建直接受影响的 target，再运行对应的单元、
+契约或集成测试。跨共享模块边界、构建图、公开 ABI 或发布打包的改动需要扩大到受影响的依赖方和
+合同，但不因目录或模块名称自动升级为完整测试。只有影响无法可靠界定或用户明确要求时，才运行
+完整 `ctest --preset windows-relwithdebinfo`。
 
 | 改动类型 | 最低验证 |
 | --- | --- |
 | 仅 Markdown | `git diff --check`，并检查链接和路径 |
-| 单个实现单元或模块内行为 | 构建直接受影响的 target，并运行对应的独立验证程序或 fixture |
-| 跨共享模块边界或公共合同 | 构建受影响模块及直接依赖方，运行两侧相关契约与集成验证 |
-| CMake 或构建图 | 重新 configure，构建受影响 target，并运行受影响验证；仅在影响无法界定时扩大范围 |
-| 公开 SDK/ABI | 构建 SDK 直接依赖方，运行 ABI、外部消费者及相关集成验证 |
-| 内存安全、解析器、重载、所有权或停止 | 完成上述相关验证，并增加对应的定向 `windows-asan` 构建与验证 |
-| 发布包 | 构建发布所需 target、运行相关合同/集成验证，再使用标准构建树运行 `tools/package_release.ps1` |
+| 单个实现单元或模块内行为 | 构建直接受影响的 target，并以 `ctest --preset windows-relwithdebinfo -R <name>` 运行对应测试 |
+| 跨共享模块边界或公共合同 | 构建受影响模块及直接依赖方，运行两侧相关单测、契约与集成测试 |
+| CMake 或构建图 | 重新 configure，构建受影响 target，并运行受影响测试；仅在影响无法界定时扩大到完整门禁 |
+| 公开 SDK/ABI | 构建 SDK 直接依赖方，运行 ABI、外部消费者及相关集成测试 |
+| 内存安全、解析器、重载、所有权或停止 | 完成上述相关验证，并增加对应的定向 `windows-asan` 测试 |
+| 发布包 | 构建发布所需 target、运行相关合同/集成测试，再使用标准构建树运行 `tools/package_release.ps1` |
 
 环境限制导致命令无法执行时，运行可执行的最强子集，并在完成说明中记录未执行命令及原因。
 不能因为某个构建目录存在，就宣称发布包或真实 NTE Smoke 已验证。

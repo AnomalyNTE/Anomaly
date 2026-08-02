@@ -125,8 +125,8 @@ Game\Binaries\Win64\
 
 ## 架构检查
 
-- 一次干净的 `configure → build → install` 是集成门禁。
-- ABI Snapshot 冻结 Windows x64 布局与回调类型。
+- 一次干净的 `configure → build → test → install` 是集成门禁。
+- ABI 合同测试把已安装头文件分别按 C 与 C++ 编译，并冻结 Windows x64 布局与回调类型。
 - 新服务显式声明依赖与线程亲和性。
 - 新的 NTE 地址需要 Build Profile 与 validator。
 - 新的插件可见资源需要 Scope-ledger 登记与拆除。

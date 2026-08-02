@@ -4,11 +4,11 @@
 
 ## 阅读顺序
 
-1. [从源码构建](building.md) — 环境要求、唯一受支持的构建路径、验证与发布打包。
+1. [从源码构建](building.md) — 环境要求、唯一受支持的构建路径、测试与发布打包。
 2. [架构概览](architecture.md) — 设计原则、组件模型、线程域、所有权与 ABI 边界。
 3. [插件开发](plugin-development.md) — 用 SDK 从零写一个插件：Manifest、capability、生命周期、热重载、打包。
 4. [发布第三方插件](plugin-distribution.md) — 制作下载 ZIP、配置在线插件源 JSON、发布和验证。
-5. [贡献指南](contributing.md) — 工作流、提交规范、不可突破的代码边界与验证门禁。
+5. [贡献指南](contributing.md) — 工作流、提交规范、不可突破的代码边界与测试门禁。
 
 写插件时的接口细节见 [API 参考](../api-reference/README.md)。
 

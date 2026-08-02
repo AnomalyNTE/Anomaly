@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.test.plugin-manager-fixture",
+  "name": "Plugin Manager Fixture",
+  "author": "Anomaly",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.ahud",
+      "minVersion": 1,
+      "optional": true
+    }
+  ],
+  "capabilities": ["memory-read", "memory-write", "ui", "nte-player-snapshot", "ue5-ahud"]
+}

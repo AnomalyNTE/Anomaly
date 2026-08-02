@@ -6,7 +6,7 @@
 
 1. 开始前执行 `git status --short --branch`，保留与当前任务无关的已修改和未跟踪文件。
 2. 编辑前确定功能所属**模块与公开边界**。以最小改动完成需求，不夹带无关重构或格式化。
-3. 行为变化必须在**所属层**补充或更新验证；先运行最窄的相关验证，再按影响扩大范围。
+3. 行为变化必须在**所属层**补充或更新测试；先运行最窄的相关测试，再运行扩展门禁。
 4. 完成前执行 `git diff --check`，检查暂存差异，并说明实际执行的验证或未执行原因。
 5. 每一项源码 / 构建 / CI / Profile / Schema / 运行时行为 / 工具脚本变更，都要有对应的**原子 Git commit**。纯文档改动也应提交，除非明确要求不提交。
 
@@ -38,9 +38,9 @@ docs(sdk): document the config schema migration flow
 
 完整的模块、线程与变更影响图见[架构概览](architecture.md)与 `.agents/architecture.md`。
 
-## 构建与验证
+## 构建与测试
 
-主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建预设（AddressSanitizer 用 `windows-asan`）。`build.cmd` 只是 CI 同一命令序列的便捷包装。**禁止**新建临时 NMake / Ninja / `build/` 或按阶段命名的主构建树。命令见[从源码构建](building.md)。
+主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建 / 测试预设（AddressSanitizer 用 `windows-asan`）。`build.cmd` 只是 CI 同一命令序列的便捷包装。**禁止**新建临时 NMake / Ninja / `build/` 或按阶段命名的主构建树。命令见[从源码构建](building.md)。
 
 ## 实时目标与数据安全
 
@@ -53,4 +53,4 @@ docs(sdk): document the config schema migration flow
 
 - 用户可见的行为变化应同步更新[用户文档](../user-guide/README.md)。
 - 公开接口变化应同步更新 [API 参考](../api-reference/README.md)。
-- 文档描述稳定接口与流程；易变数字（fingerprint、发布清单）留在代码与构建输出中，不写进文档以免漂移。
+- 文档描述稳定接口与流程；易变数字（测试数量、fingerprint、发布清单）留在代码与构建输出中，不写进文档以免漂移。

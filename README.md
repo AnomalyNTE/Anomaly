@@ -105,7 +105,7 @@ qq交流群: 1037114140
 .\build.cmd
 ```
 
-`build.cmd` 是唯一受支持构建路径（CMake Preset `windows-vs2022` + `windows-relwithdebinfo`）的薄包装器，配置 → 构建后生成可直接部署的运行包。详见[从源码构建](docs/developer-guide/building.md)。
+`build.cmd` 是唯一受支持构建路径（CMake Preset `windows-vs2022` + `windows-relwithdebinfo`）的薄包装器，配置 → 构建 → 测试通过后生成可直接部署的运行包。详见[从源码构建](docs/developer-guide/building.md)。
 
 ## 📚 文档
 
@@ -137,11 +137,11 @@ qq交流群: 1037114140
 
 ## 💻 开发指南
 
-- [从源码构建](docs/developer-guide/building.md) — 环境、`build.cmd`、验证与发布打包
+- [从源码构建](docs/developer-guide/building.md) — 环境、`build.cmd`、测试与发布打包
 - [架构概览](docs/developer-guide/architecture.md) — 线程域、ServiceGraph、所有权与 ABI 边界
 - [插件开发](docs/developer-guide/plugin-development.md) — SDK、Manifest、capability、生命周期与热重载
 - [发布第三方插件](docs/developer-guide/plugin-distribution.md) — 打包 ZIP、配置在线插件源 JSON、发布与验证
-- [贡献指南](docs/developer-guide/contributing.md) — 工作流、提交规范、代码边界与验证门禁
+- [贡献指南](docs/developer-guide/contributing.md) — 工作流、提交规范、代码边界与测试门禁
 
 新建独立插件仓库可使用 [Anomaly 插件模板](https://github.com/AnomalyNTE/Anomaly-Plugin-Template)；仓库 [`examples/`](examples/README.md) 内另有四个独立 SDK 示例。
 

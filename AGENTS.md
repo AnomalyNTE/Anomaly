@@ -25,10 +25,10 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 
 1. 开始前执行 `git status --short --branch`，保留与当前任务无关的已修改和未跟踪文件。
 2. 编辑前确定功能所属模块和公开边界。以最小改动完成需求，不夹带无关重构或格式化。
-3. 行为变化必须在所属层补充或更新验证。验证范围以实际改动和依赖关系为准：构建直接受影响的
-   target，运行对应的单元、契约或集成验证；仅在跨共享模块边界、修改构建图/公开 ABI/发布打包，
-   或用户明确要求时扩大范围。不得仅因改动属于 Runtime、Launcher、CMake 或工具等类别就默认扩大
-   验证范围。具体命令见 `.agents/tooling.md`。
+3. 行为变化必须在所属层补充或更新测试。验证范围以实际改动和依赖关系为准：构建直接受影响的
+   target，运行对应的单元、契约或集成测试；仅在跨共享模块边界、修改构建图/公开 ABI/发布打包，
+   或用户明确要求时扩大范围。不得仅因改动属于 Runtime、Launcher、CMake 或工具等类别就默认运行
+   完整 `ctest`；完整测试只用于影响无法可靠界定或明确要求的场景。具体命令见 `.agents/tooling.md`。
 4. 完成前执行 `git diff --check`，检查暂存差异，并说明实际执行的验证或未执行原因。
 5. **每一项代码改动都必须 Git commit，没有例外。** 源码、构建、CI、Profile/Schema、运行时行为
    或工具脚本的任何变更，都必须在同一任务中落到对应的原子 Git commit，不允许把已实现的代码
@@ -80,14 +80,10 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 
 ## 构建与测试约定
 
-主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建预设。
+主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建/测试预设。
 `build.cmd` 只是 CI 同一命令序列的便捷包装。禁止新建临时 NMake、Ninja、`build/` 或按阶段命名的
 主构建树。AddressSanitizer 使用独立的 `windows-asan` 预设。精确命令与产物路径见
 `.agents/tooling.md`。
-
-**硬性禁止构建任何测试目标、测试套件或测试专用 fixture，也不得将它们加入默认构建图。** 不得引入
-或恢复 CTest、`BUILD_TESTING`、`add_test`、测试预设或 `tests/` 源码树。`anomaly-test-host` 是发布的
-Tools 验证程序，不属于 CTest 测试套件；仅在当前任务需要该工具时构建。
 
 ## 冗余清理约定
 
@@ -114,4 +110,4 @@ ABI/线程/回调最外层 `catch (...)`、Dispatcher 锁外销毁 callback 等�
 | 插件 ABI 与热重载 | `include/anomaly/sdk/`、`src/plugin/`、`examples/` |
 | UE5/NTE 兼容 | `src/game/ue5/`、`src/game/nte/`、`profiles/nte/` |
 | 渲染与 UI | `src/render/dx12/`、`src/ui/` |
-| 验证与发布门禁 | `CMakeLists.txt`、`.agents/tooling.md` |
+| 测试与发布门禁 | `tests/`、`CMakeLists.txt`、`.agents/tooling.md` |
