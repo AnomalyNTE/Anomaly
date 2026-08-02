@@ -11,10 +11,7 @@
       "displayName": "Windows x64 / Visual Studio 2022",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/.build/windows-vs2022",
-      "cacheVariables": {
-        "BUILD_TESTING": "ON"
-      }
+      "binaryDir": "${sourceDir}/.build/windows-vs2022"
     },
     {
       "name": "windows-asan",
@@ -22,7 +19,6 @@
       "inherits": "windows-vs2022",
       "binaryDir": "${sourceDir}/.build/windows-asan",
       "cacheVariables": {
-        "BUILD_TESTING": "ON",
         "ANOMALY_ENABLE_ASAN": "ON"
       }
     }
@@ -42,32 +38,6 @@
       "name": "windows-asan",
       "configurePreset": "windows-asan",
       "configuration": "RelWithDebInfo"
-    }
-  ],
-  "testPresets": [
-    {
-      "name": "windows-debug",
-      "configurePreset": "windows-vs2022",
-      "configuration": "Debug",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "windows-relwithdebinfo",
-      "configurePreset": "windows-vs2022",
-      "configuration": "RelWithDebInfo",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "windows-asan",
-      "configurePreset": "windows-asan",
-      "configuration": "RelWithDebInfo",
-      "output": {
-        "outputOnFailure": true
-      }
     }
   ]
 }

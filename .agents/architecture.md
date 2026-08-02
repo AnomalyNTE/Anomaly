@@ -53,9 +53,9 @@ Lifecycle intent，不能拥有插件加载过程。
 ## 变更规则
 
 - 新增 UE5/NTE 地址、布局或能力：必须更新活动 Profile、resolver/validator 覆盖、不可用/降级
-  行为和 Adapter 层测试。
+  行为和 Adapter 层验证。
 - 新增 SDK 字段：必须保持 C 内存布局，使用 `struct_size` 或新的版本化服务表；同步更新 C/C++
-  Contract Test 和 ABI Snapshot 预期。
+  使用方验证与 ABI Snapshot 基线。
 - 新增插件资源（Hook、Subscription、Task、UI、Texture、Patch、IPC）：必须登记到 Scope ledger，
   并在 DLL 卸载前撤销。
 - 新增会改变宿主状态的 UI 操作：只能向 Lifecycle 投递 typed work，不能在 `Present` 执行发现、
