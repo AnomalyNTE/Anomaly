@@ -751,12 +751,27 @@ public:
         }
         if (!adapter_->Start(hook_ready, ahud_hook_ready)) {
             diagnostics_.push_back("adapter service publication failed");
-            if (process_event_hook_) process_event_hook_->Stop();
-            process_event_hook_.reset();
-            if (tick_hook_) tick_hook_->Stop();
-            tick_hook_.reset();
+            if (tick_evidence_gate_) tick_evidence_gate_->Close();
+            const bool process_event_hook_stopped =
+                !process_event_hook_ ||
+                process_event_hook_->Stop();
+            const bool tick_hook_stopped =
+                !tick_hook_ || tick_hook_->Stop();
+            if (process_event_hook_stopped) process_event_hook_.reset();
+            if (tick_hook_stopped) tick_hook_.reset();
             tick_evidence_gate_.reset();
-            adapter_.reset();
+            if (!process_event_hook_stopped || !tick_hook_stopped) {
+                RetainNteProfileGeneration(
+                    std::move(tick_hook_), std::move(process_event_hook_), {},
+                    std::move(adapter_));
+                quarantined_ = true;
+                diagnostics_.push_back(
+                    "adapter startup rollback quarantined a hook generation");
+                started_ = true;
+                return true;
+            } else {
+                adapter_.reset();
+            }
         } else {
             tick_hook_ready_ = hook_ready;
             ahud_hook_ready_ = ahud_hook_ready;

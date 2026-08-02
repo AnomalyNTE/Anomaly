@@ -4333,8 +4333,6 @@ bool PluginManager::UnloadIndicesWithDeadline(
                 quarantine = true;
                 timed_out = StopRemaining(deadline) == std::chrono::milliseconds::zero();
                 quarantine_reason = "platform hook revocation failed";
-            } else {
-                static_cast<void>(scope->RevokeAllExcept(anomaly::PluginResourceKind::Config));
             }
         }
 
@@ -4356,6 +4354,10 @@ bool PluginManager::UnloadIndicesWithDeadline(
                 timed_out = true;
                 quarantine_reason = "callback barrier timed out";
             }
+        }
+
+        if (!quarantine && scope != nullptr) {
+            static_cast<void>(scope->RevokeAllExcept(anomaly::PluginResourceKind::Config));
         }
 
         if (!quarantine && plugin.started &&

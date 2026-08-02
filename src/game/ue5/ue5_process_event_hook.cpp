@@ -56,9 +56,13 @@ public:
             std::memory_order_release);
         active_.store(this, std::memory_order_release);
         if (!hooks_.EnableOwner(kOwner, kGeneration)) {
-            active_.store(nullptr, std::memory_order_release);
-            if (hooks_.RemoveOwner(kOwner, kGeneration)) owner_registered_ = false;
-            original_ = nullptr;
+            if (hooks_.RemoveOwner(kOwner, kGeneration)) {
+                owner_registered_ = false;
+                Impl* expected = this;
+                static_cast<void>(active_.compare_exchange_strong(
+                    expected, nullptr, std::memory_order_acq_rel));
+                original_ = nullptr;
+            }
             return false;
         }
         target_ = target;
@@ -68,18 +72,33 @@ public:
 
     bool Stop(const std::chrono::milliseconds timeout) noexcept {
         std::scoped_lock stop_lock(stop_mutex_);
-        const bool was_started = started_.exchange(false, std::memory_order_acq_rel);
+        static_cast<void>(started_.exchange(false, std::memory_order_acq_rel));
         if (!owner_registered_) return true;
-        if (was_started) {
-            static_cast<void>(hooks_.DisableOwner(kOwner, kGeneration));
+        const auto bounded_timeout =
+            (std::max)(timeout, std::chrono::milliseconds::zero());
+        const bool detour_disabled = hooks_.DisableOwner(kOwner, kGeneration);
+        if (!detour_disabled) {
+            // Keep active_ installed until RemoveOwner has made a successful
+            // retry. A still-patched target would otherwise recurse through
+            // passthrough_ after the thunk loses its original invoker.
+            if (!hooks_.RemoveOwner(kOwner, kGeneration, bounded_timeout)) return false;
+        }
+        if (detour_disabled) {
             std::scoped_lock process_lock(process_mutex_);
             Impl* expected = this;
             static_cast<void>(active_.compare_exchange_strong(
                 expected, nullptr, std::memory_order_acq_rel));
         }
-        const auto bounded_timeout =
-            (std::max)(timeout, std::chrono::milliseconds::zero());
-        if (!hooks_.RemoveOwner(kOwner, kGeneration, bounded_timeout)) return false;
+        if (detour_disabled &&
+            !hooks_.RemoveOwner(kOwner, kGeneration, bounded_timeout)) {
+            return false;
+        }
+        if (!detour_disabled) {
+            std::scoped_lock process_lock(process_mutex_);
+            Impl* expected = this;
+            static_cast<void>(active_.compare_exchange_strong(
+                expected, nullptr, std::memory_order_acq_rel));
+        }
         owner_registered_ = false;
         original_ = nullptr;
         target_ = nullptr;
