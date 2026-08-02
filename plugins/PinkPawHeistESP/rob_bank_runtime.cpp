@@ -27,6 +27,13 @@ constexpr std::string_view kPickupPattern =
     "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? "
     "84 C0 0F 84 ?? ?? ?? ?? 48 83 BB D0 02 00 00 00 0F 84 ?? ?? ?? ?? "
     "E8 ?? ?? ?? ??";
+constexpr std::string_view kTextToStringPattern =
+    "40 53 48 83 EC 20 48 8B D9 48 8B CA E8 ?? ?? ?? ?? 48 8B D0 48 8B CB "
+    "E8 ?? ?? ?? ?? 48 8B C3 48 83 C4 20 5B C3";
+constexpr std::string_view kFreeStringPattern =
+    "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 "
+    "75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 "
+    "48 83 C4 20 5B C3";
 
 constexpr std::uint32_t kRipDisplacementOffset = 3;
 constexpr std::uint32_t kRipInstructionSize = 7;
@@ -64,6 +71,8 @@ constexpr std::ptrdiff_t kRobBankDelayInteractOffset = 3136;
 constexpr std::uint8_t kRobBankDelayInteractMask = 1;
 constexpr std::ptrdiff_t kRobBankPointUidOffset = 2944;
 constexpr std::ptrdiff_t kRobBankPointKeyDoorIdOffset = 196;
+constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3048;
+constexpr std::ptrdiff_t kRobBankCloneDataAssetItemOffset = 104;
 constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 36928;
 constexpr std::int32_t kMaximumKeyDoors = 4096;
 
@@ -71,9 +80,15 @@ constexpr std::ptrdiff_t kDataTableRowMapOffset = 48;
 constexpr std::size_t kDataTableRowStride = 24;
 constexpr std::size_t kDataTableRowPointerOffset = 8;
 constexpr std::int32_t kMaximumDataTableRows = 4096;
+constexpr std::ptrdiff_t kStaticItemNameOffset = 160;
+constexpr std::ptrdiff_t kStaticItemElementDataOffset = 392;
+constexpr std::ptrdiff_t kInstancedStructDataOffset = 8;
+constexpr std::ptrdiff_t kRobBankItemValueOffset = 0;
+constexpr std::ptrdiff_t kRobBankItemCoinOffset = 4;
 
 constexpr std::uint32_t kMaximumObjects = 16U * 1024U * 1024U;
 constexpr std::uint32_t kMaximumObjectChunks = 4096;
+constexpr std::uint32_t kObjectDiscoveryBatch = 2048;
 constexpr std::size_t kMaximumResolvedNameBytes = 1024;
 constexpr std::uint32_t kMaximumMarkerEntityCount = 32768;
 constexpr std::size_t kMarkerPageCapacity = ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY;
@@ -134,6 +149,15 @@ struct FNameValue final {
     std::uint32_t number{};
 };
 
+struct UnrealString final {
+    char16_t* data{};
+    std::int32_t count{};
+    std::int32_t capacity{};
+};
+
+using TextToStringFunction = UnrealString*(ANOMALY_CALL*)(UnrealString*, const void*);
+using FreeStringFunction = void(ANOMALY_CALL*)(void*);
+
 std::uint64_t EncodeFName(const FNameValue value) noexcept {
     return static_cast<std::uint64_t>(value.comparison_index) |
         (static_cast<std::uint64_t>(value.number) << 32U);
@@ -155,6 +179,26 @@ struct PointTable final {
     std::unordered_map<std::uint64_t, std::uintptr_t> rows;
     std::unordered_map<std::string, std::uintptr_t> rows_by_name;
     std::unordered_map<std::uintptr_t, FNameValue> key_doors;
+    bool available{};
+    bool discovery_complete{};
+};
+
+struct DataTableRows final {
+    std::uintptr_t table{};
+    std::unordered_map<std::uint64_t, std::uintptr_t> rows;
+    std::unordered_map<std::string, std::uintptr_t> rows_by_name;
+};
+
+struct RobBankItemMetadata final {
+    std::string name_utf8;
+    std::uint32_t fons_value{};
+    std::uint32_t pink_paw_coin_value{};
+};
+
+struct RobBankItemTables final {
+    std::uint64_t registry_generation{};
+    std::uint32_t observed_object_count{};
+    std::unordered_map<std::string, RobBankItemMetadata> items;
     bool available{};
     bool discovery_complete{};
 };
@@ -350,13 +394,17 @@ struct RobBankRuntime::Impl final {
     std::uintptr_t world_storage{};
     std::uintptr_t object_registry_address{};
     std::uintptr_t pickup_function{};
+    std::uintptr_t text_to_string_function{};
+    std::uintptr_t free_string_function{};
     std::uintptr_t world{};
     std::uintptr_t player_controller{};
     ObjectRegistry registry;
     std::uint64_t registry_generation{};
     PointTable point_table;
+    RobBankItemTables item_tables;
     std::unordered_set<std::uint64_t> unlocked_key_doors;
     std::unordered_map<std::uintptr_t, bool> rob_bank_classes;
+    std::unordered_map<std::uintptr_t, bool> rob_bank_clone_data_asset_classes;
     bool key_door_context_available{};
     bool started{};
     bool refreshed{};
@@ -437,10 +485,14 @@ struct RobBankRuntime::Impl final {
 
     [[nodiscard]] bool ResolvePluginProfile() noexcept {
         std::uintptr_t pickup{};
+        std::uintptr_t text_to_string{};
+        std::uintptr_t free_string{};
         if (!ResolveRipRelative(kGWorldPattern, 0, world_storage) ||
             !ResolveRipRelative(
                 kGObjectsPattern, kGObjectsAddend, object_registry_address) ||
-            !ResolveDirect(kPickupPattern, pickup)) {
+            !ResolveDirect(kPickupPattern, pickup) ||
+            !ResolveDirect(kTextToStringPattern, text_to_string) ||
+            !ResolveDirect(kFreeStringPattern, free_string)) {
             return false;
         }
         std::uintptr_t success_return{};
@@ -453,6 +505,8 @@ struct RobBankRuntime::Impl final {
             return false;
         }
         pickup_function = pickup;
+        text_to_string_function = text_to_string;
+        free_string_function = free_string;
         return true;
     }
 
@@ -494,6 +548,35 @@ struct RobBankRuntime::Impl final {
         return name;
     }
 
+    [[nodiscard]] std::string ReadText(const std::uintptr_t text) const {
+        UnrealString converted;
+        const auto text_to_string = reinterpret_cast<TextToStringFunction>(text_to_string_function);
+        const auto free_string = reinterpret_cast<FreeStringFunction>(free_string_function);
+        if (text_to_string(&converted, reinterpret_cast<const void*>(text)) == nullptr ||
+            converted.data == nullptr || converted.count <= 1) {
+            if (converted.data != nullptr) free_string(converted.data);
+            return {};
+        }
+
+        std::string utf8;
+        utf8.reserve((static_cast<std::size_t>(converted.count) - 1U) * 3U);
+        for (std::int32_t index{}; index + 1 < converted.count; ++index) {
+            const std::uint32_t code_point = converted.data[index];
+            if (code_point <= 0x7FU) {
+                utf8.push_back(static_cast<char>(code_point));
+            } else if (code_point <= 0x7FFU) {
+                utf8.push_back(static_cast<char>(0xC0U | (code_point >> 6U)));
+                utf8.push_back(static_cast<char>(0x80U | (code_point & 0x3FU)));
+            } else {
+                utf8.push_back(static_cast<char>(0xE0U | (code_point >> 12U)));
+                utf8.push_back(static_cast<char>(0x80U | ((code_point >> 6U) & 0x3FU)));
+                utf8.push_back(static_cast<char>(0x80U | (code_point & 0x3FU)));
+            }
+        }
+        free_string(converted.data);
+        return utf8;
+    }
+
     [[nodiscard]] bool ClassIsOrDerivesFrom(
         std::uintptr_t class_object,
         const std::string_view expected_name) const {
@@ -513,6 +596,16 @@ struct RobBankRuntime::Impl final {
         }
         const bool matches = ClassIsOrDerivesFrom(class_object, "HTRobBankItemActor");
         rob_bank_classes.emplace(class_object, matches);
+        return matches;
+    }
+
+    [[nodiscard]] bool IsRobBankCloneDataAssetClass(const std::uintptr_t class_object) {
+        if (const auto found = rob_bank_clone_data_asset_classes.find(class_object);
+            found != rob_bank_clone_data_asset_classes.end()) {
+            return found->second;
+        }
+        const bool matches = ClassIsOrDerivesFrom(class_object, "RobBankCloneDataAsset");
+        rob_bank_clone_data_asset_classes.emplace(class_object, matches);
         return matches;
     }
 
@@ -647,8 +740,10 @@ struct RobBankRuntime::Impl final {
 
     void ResetWorldState() noexcept {
         point_table = {};
+        item_tables = {};
         unlocked_key_doors.clear();
         rob_bank_classes.clear();
+        rob_bank_clone_data_asset_classes.clear();
         key_door_context_available = false;
     }
 
@@ -719,8 +814,10 @@ struct RobBankRuntime::Impl final {
             }
 
             const std::uint32_t begin = point_table.observed_object_count;
+            const std::uint32_t end = begin + (std::min)(
+                kObjectDiscoveryBatch, registry.count - begin);
             point_table.discovery_complete = false;
-            for (std::uint32_t index = begin; index < registry.count; ++index) {
+            for (std::uint32_t index = begin; index < end; ++index) {
                 std::uintptr_t object{};
                 if (!ReadObjectPointer(registry, index, object) || object == 0 ||
                     ResolveObjectName(object) != "DT_RobBankPoint") {
@@ -733,11 +830,163 @@ struct RobBankRuntime::Impl final {
                 point_table = std::move(candidate);
                 return;
             }
-            point_table.observed_object_count = registry.count;
-            point_table.discovery_complete = true;
+            point_table.observed_object_count = end;
+            point_table.discovery_complete = end == registry.count;
         } catch (...) {
             point_table.discovery_complete = true;
         }
+    }
+
+    [[nodiscard]] bool BuildDataTableRows(
+        const std::uintptr_t table,
+        DataTableRows& result) {
+        std::uintptr_t class_object{};
+        if (!ReadPointerAt(table, kObjectClassOffset, class_object) ||
+            ResolveObjectName(class_object) != "DataTable") {
+            return false;
+        }
+
+        std::uintptr_t row_map_address{};
+        ArrayHeader header;
+        if (!AddSignedAddress(table, kDataTableRowMapOffset, row_map_address) ||
+            !Read(row_map_address, header) || header.count <= 0 ||
+            header.capacity < header.count || header.capacity > kMaximumDataTableRows ||
+            header.data == 0) {
+            return false;
+        }
+        const std::size_t byte_count = static_cast<std::size_t>(header.count) *
+            kDataTableRowStride;
+        std::vector<std::uint8_t> elements(byte_count);
+        if (!ReadBytes(header.data, elements.data(), elements.size())) return false;
+
+        DataTableRows candidate;
+        candidate.table = table;
+        candidate.rows.reserve(static_cast<std::size_t>(header.count));
+        candidate.rows_by_name.reserve(static_cast<std::size_t>(header.count));
+        for (std::int32_t index{}; index < header.count; ++index) {
+            const std::size_t offset = static_cast<std::size_t>(index) *
+                kDataTableRowStride;
+            FNameValue key;
+            std::uintptr_t row{};
+            std::memcpy(&key, elements.data() + offset, sizeof(key));
+            std::memcpy(
+                &row, elements.data() + offset + kDataTableRowPointerOffset,
+                sizeof(row));
+            const std::string rendered = RenderFName(key);
+            if (key.comparison_index == 0 || row == 0 || rendered.empty()) return false;
+            candidate.rows.emplace(EncodeFName(key), row);
+            candidate.rows_by_name.emplace(rendered, row);
+        }
+        result = std::move(candidate);
+        return true;
+    }
+
+    [[nodiscard]] bool BuildItemTables(const std::uintptr_t data_asset) {
+        std::uintptr_t table{};
+        DataTableRows rows;
+        if (!ReadPointerAt(data_asset, kRobBankCloneDataAssetItemOffset, table) ||
+            !BuildDataTableRows(table, rows)) {
+            return false;
+        }
+        std::unordered_map<std::string, RobBankItemMetadata> items;
+        if (!BuildItemMetadata(rows, items)) return false;
+        for (auto& [award_drop_id, item] : items) {
+            item_tables.items.emplace(std::move(award_drop_id), std::move(item));
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool BuildItemMetadata(
+        const DataTableRows& rows,
+        std::unordered_map<std::string, RobBankItemMetadata>& items) const {
+        if (rows.rows_by_name.empty()) return false;
+
+        items.reserve(rows.rows_by_name.size());
+        for (const auto& [row_name, row] : rows.rows_by_name) {
+            std::uintptr_t address{};
+            std::uintptr_t element_data{};
+            std::int32_t fons_value{};
+            std::int32_t pink_paw_coin_value{};
+            if (!AddSignedAddress(row, kStaticItemElementDataOffset, address) ||
+                !AddSignedAddress(address, kInstancedStructDataOffset, address) ||
+                !Read(address, element_data) || element_data == 0 ||
+                !AddSignedAddress(element_data, kRobBankItemValueOffset, address) ||
+                !Read(address, fons_value) ||
+                !AddSignedAddress(element_data, kRobBankItemCoinOffset, address) ||
+                !Read(address, pink_paw_coin_value) ||
+                fons_value < 0 || pink_paw_coin_value < 0) {
+                continue;
+            }
+            if (!AddSignedAddress(row, kStaticItemNameOffset, address)) continue;
+            std::string name = ReadText(address);
+            if (name.empty()) name = row_name;
+            items.emplace(
+                "drop_" + row_name,
+                RobBankItemMetadata{
+                    std::move(name), static_cast<std::uint32_t>(fons_value),
+                    static_cast<std::uint32_t>(pink_paw_coin_value)});
+        }
+        if (items.empty()) return false;
+        return true;
+    }
+
+    void RefreshItemTables() noexcept {
+        try {
+            if (registry.items == 0 || registry.count == 0) {
+                item_tables = {};
+                return;
+            }
+            if (item_tables.registry_generation != registry_generation) {
+                item_tables = {};
+                item_tables.registry_generation = registry_generation;
+            }
+            if (item_tables.observed_object_count >= registry.count) {
+                item_tables.discovery_complete = true;
+                return;
+            }
+
+            const std::uint32_t begin = item_tables.observed_object_count;
+            const std::uint32_t end = begin + (std::min)(
+                kObjectDiscoveryBatch, registry.count - begin);
+            item_tables.discovery_complete = false;
+            for (std::uint32_t index = begin; index < end; ++index) {
+                std::uintptr_t object{};
+                std::uintptr_t class_object{};
+                if (!ReadObjectPointer(registry, index, object) || object == 0 ||
+                    !ReadPointerAt(object, kObjectClassOffset, class_object) ||
+                    !IsRobBankCloneDataAssetClass(class_object) ||
+                    !BuildItemTables(object)) {
+                    continue;
+                }
+                item_tables.available = !item_tables.items.empty();
+                item_tables.observed_object_count = registry.count;
+                item_tables.discovery_complete = true;
+                return;
+            }
+            item_tables.available = !item_tables.items.empty();
+            item_tables.observed_object_count = end;
+            item_tables.discovery_complete = end == registry.count;
+        } catch (...) {
+            item_tables.discovery_complete = true;
+        }
+    }
+
+    void ResolveItemMetadata(
+        const std::uintptr_t actor,
+        RobBankInspection& inspection) const {
+        if (!item_tables.available) return;
+        std::uintptr_t address{};
+        FNameValue award_drop_id;
+        if (!AddSignedAddress(actor, kRobBankAwardDropIdOffset, address) ||
+            !Read(address, award_drop_id)) {
+            return;
+        }
+        const auto item = item_tables.items.find(RenderFName(award_drop_id));
+        if (item == item_tables.items.end()) return;
+        inspection.name_utf8 = item->second.name_utf8;
+        inspection.fons_value = item->second.fons_value;
+        inspection.pink_paw_coin_value = item->second.pink_paw_coin_value;
+        inspection.item_resolved = true;
     }
 
     [[nodiscard]] bool RefreshKeyDoorContext(bool* const changed = nullptr) {
@@ -927,6 +1176,7 @@ struct RobBankRuntime::Impl final {
                     actor, class_object)) {
                 return inspection;
             }
+            ResolveItemMetadata(actor, inspection);
             bool blocked{};
             if (!EvaluatePickability(actor, blocked)) return inspection;
             inspection.pickability = blocked
@@ -997,13 +1247,17 @@ void RobBankRuntime::Stop() noexcept {
     impl_->world_storage = 0;
     impl_->object_registry_address = 0;
     impl_->pickup_function = 0;
+    impl_->text_to_string_function = 0;
+    impl_->free_string_function = 0;
     impl_->world = 0;
     impl_->player_controller = 0;
     impl_->registry = {};
     impl_->registry_generation = 0;
     impl_->point_table = {};
+    impl_->item_tables = {};
     impl_->unlocked_key_doors.clear();
     impl_->rob_bank_classes.clear();
+    impl_->rob_bank_clone_data_asset_classes.clear();
     impl_->key_door_context_available = false;
     impl_->started = false;
     impl_->refreshed = false;
@@ -1024,12 +1278,15 @@ bool RobBankRuntime::Refresh() noexcept {
         if (impl_->RegistryIdentityChanged(next_registry)) {
             ++impl_->registry_generation;
             impl_->point_table = {};
+            impl_->item_tables = {};
             impl_->rob_bank_classes.clear();
+            impl_->rob_bank_clone_data_asset_classes.clear();
         }
         impl_->world = next_world;
         impl_->player_controller = next_controller;
         impl_->registry = next_registry;
         impl_->RefreshPointTable();
+        impl_->RefreshItemTables();
         impl_->key_door_context_available = impl_->RefreshKeyDoorContext();
         impl_->refreshed = true;
         return true;
@@ -1165,7 +1422,8 @@ bool RobBankRuntime::CanInspect() const noexcept {
 bool RobBankRuntime::DiscoveryPending() const noexcept {
     return impl_->started &&
         (!impl_->refreshed ||
-         (!impl_->point_table.available && !impl_->point_table.discovery_complete));
+         (!impl_->point_table.available && !impl_->point_table.discovery_complete) ||
+         (!impl_->item_tables.available && !impl_->item_tables.discovery_complete));
 }
 
 bool RobBankRuntime::PickabilityReady() const noexcept {

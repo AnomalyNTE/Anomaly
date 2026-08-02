@@ -2,8 +2,6 @@
 
 #include "anomaly/sdk/anomaly_sdk.h"
 
-#include "loot_catalog.generated.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -23,7 +21,6 @@ enum class LootClassResolution {
 struct LootClassMetadata final {
     std::uint32_t name_id{};
     std::string name;
-    const catalog::ItemDefinition* item{};
     bool bank_box{};
 };
 
@@ -84,9 +81,7 @@ public:
         }
         if (candidate.name.empty()) return LootClassResolution::unresolved;
 
-        candidate.bank_box =
-            catalog::FindAsciiInsensitive(candidate.name, "BankBox_") != std::string_view::npos;
-        if (candidate.bank_box) candidate.item = catalog::FindItemDefinition(candidate.name);
+        candidate.bank_box = candidate.name.find("BankBox_") != std::string::npos;
         const auto [inserted, added] = entries_.emplace(class_id, std::move(candidate));
         if (!added) return LootClassResolution::retry;
         metadata = &inserted->second;

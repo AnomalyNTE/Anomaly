@@ -1064,15 +1064,6 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     if(MSVC)
         target_compile_options(anomaly_builtin_pink_paw_heist_esp PRIVATE /utf-8)
     endif()
-    file(GLOB_RECURSE ANOMALY_PINK_PAW_HEIST_ESP_ASSETS CONFIGURE_DEPENDS
-        "${CMAKE_SOURCE_DIR}/plugins/PinkPawHeistESP/assets/*")
-    set_property(SOURCE plugins/PinkPawHeistESP/plugin.cpp APPEND PROPERTY
-        OBJECT_DEPENDS "${ANOMALY_PINK_PAW_HEIST_ESP_ASSETS}")
-    add_custom_command(TARGET anomaly_builtin_pink_paw_heist_esp POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${CMAKE_SOURCE_DIR}/plugins/PinkPawHeistESP/assets"
-                "$<TARGET_FILE_DIR:anomaly_builtin_pink_paw_heist_esp>/assets"
-        VERBATIM)
     add_dependencies(anomaly_test_host
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
@@ -1263,8 +1254,6 @@ if(TARGET anomaly_builtin_pink_paw_heist_esp)
         DESTINATION Anomaly/plugins/PinkPawHeistESP COMPONENT GameRuntime)
     install(DIRECTORY plugins/PinkPawHeistESP/locales/
         DESTINATION Anomaly/plugins/PinkPawHeistESP/locales COMPONENT GameRuntime)
-    install(DIRECTORY plugins/PinkPawHeistESP/assets/
-        DESTINATION Anomaly/plugins/PinkPawHeistESP/assets COMPONENT GameRuntime)
 endif()
 if(TARGET anomaly_builtin_fake_uid)
     install(TARGETS anomaly_builtin_fake_uid

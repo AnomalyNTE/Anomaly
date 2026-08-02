@@ -64,7 +64,7 @@ struct KnownLootValidationState final {
 
 [[nodiscard]] inline KnownLootValidationAction ApplyKnownLootObservation(
     KnownLootValidationState& state,
-    const RobBankInspection observation) noexcept {
+    const RobBankInspection& observation) {
     constexpr std::uint8_t kMissingObservationLimit = 2;
 
     if (!observation.entity.Valid()) {
@@ -92,10 +92,18 @@ struct KnownLootValidationState final {
     if (observation.pickability != RobBankPickability::unavailable) {
         next.pickability = observation.pickability;
     }
+    next.name_utf8 = observation.name_utf8;
+    next.fons_value = observation.fons_value;
+    next.pink_paw_coin_value = observation.pink_paw_coin_value;
+    next.item_resolved = observation.item_resolved;
     const bool changed = state.missing_observations != 0 ||
         next.entity.object_index != state.inspection.entity.object_index ||
         next.entity.object_serial != state.inspection.entity.object_serial ||
-        next.pickability != state.inspection.pickability;
+        next.pickability != state.inspection.pickability ||
+        next.item_resolved != state.inspection.item_resolved ||
+        next.name_utf8 != state.inspection.name_utf8 ||
+        next.fons_value != state.inspection.fons_value ||
+        next.pink_paw_coin_value != state.inspection.pink_paw_coin_value;
     state.inspection = next;
     state.missing_observations = 0;
     return changed

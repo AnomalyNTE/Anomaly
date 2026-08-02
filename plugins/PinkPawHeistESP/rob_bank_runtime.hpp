@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
 
 namespace pink_paw_heist_esp {
@@ -60,6 +61,10 @@ enum class RobBankContextRefresh {
 struct RobBankInspection final {
     RobBankEntity entity;
     RobBankPickability pickability{RobBankPickability::unavailable};
+    std::string name_utf8;
+    std::uint32_t fons_value{};
+    std::uint32_t pink_paw_coin_value{};
+    bool item_resolved{};
 };
 
 class RobBankRuntime final {

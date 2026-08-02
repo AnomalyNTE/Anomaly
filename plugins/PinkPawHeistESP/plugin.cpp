@@ -3,8 +3,6 @@
 
 #include "ahud_geometry.hpp"
 #include "loot_class_cache.hpp"
-#include "loot_catalog.generated.h"
-#include "loot_filter_policy.hpp"
 #include "loot_refresh_policy.hpp"
 #include "rob_bank_runtime.hpp"
 
@@ -30,14 +28,12 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
-namespace catalog = pink_paw_heist_esp::catalog;
 using pink_paw_heist_esp::ProjectedBounds;
 
 constexpr std::size_t kEntityPageCapacity = 256;
 constexpr std::uint32_t kMaximumEntityCount = 32768;
 constexpr std::size_t kMaximumNameBytes = 1024;
 constexpr std::size_t kLootRowsPerPage = 6;
-constexpr std::uint32_t kTableSizingFixedFit = 1U << 13U;
 // BankBoxes are stationary; full discovery stops after convergence. Cached identities are
 // checked in small batches so manual pickups do not restart the entity-frame scan.
 constexpr auto kLootRefreshInterval = std::chrono::seconds(2);
@@ -54,18 +50,17 @@ constexpr auto kExtractionWorldPollInterval = std::chrono::seconds(1);
 constexpr auto kExtractionStateReadDelay = std::chrono::seconds(1);
 constexpr auto kExtractionStateRetryInterval = std::chrono::milliseconds(250);
 constexpr std::string_view kSettingsSchemaId = "settings";
-constexpr std::uint32_t kSettingsSchemaVersion = 5;
-constexpr std::uint32_t kPreviousSettingsSchemaVersion = 4;
+constexpr std::uint32_t kSettingsSchemaVersion = 6;
+constexpr std::uint32_t kPreviousSettingsSchemaVersion = 5;
 constexpr double kDefaultTeleportZOffsetCentimeters = 150.0;
 constexpr std::string_view kSettingsSchema = R"json(
-{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","showActiveExtractionsOnly","showPickableOnly","alwaysShowAccessCards","minimumValue","teleportZOffset"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"alwaysShowAccessCards":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"}}}
+{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","showActiveExtractionsOnly","showPickableOnly","minimumValue","teleportZOffset"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"}}}
 )json";
 
 struct LootEntity final {
     AnomalyNteEntitySnapshotV1 snapshot{sizeof(snapshot)};
     std::string class_name;
     std::string label;
-    const catalog::ItemDefinition* item{};
     pink_paw_heist_esp::RobBankInspection rob_bank;
     std::uint8_t missing_observations{};
 };
@@ -113,7 +108,6 @@ struct Settings final {
     bool enabled{true};
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
-    bool always_show_access_cards{true};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
 };
@@ -122,7 +116,6 @@ struct DisplaySettings final {
     bool enabled{true};
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
-    bool always_show_access_cards{true};
     std::uint32_t minimum_value{};
 };
 
@@ -162,10 +155,8 @@ struct Context final {
     const AnomalyHostApiV1* host{};
     anomaly::plugins::Localizer localizer;
     const AnomalyConfigServiceV1* config{};
-    const AnomalyTextureServiceV1* texture{};
     const AnomalyUe5AhudServiceV1* ahud{};
     AnomalyGenerationHandleV1 settings_schema{};
-    std::array<AnomalyGenerationHandleV1, catalog::kItemDefinitions.size()> item_icons{};
     pink_paw_heist_esp::LootClassCache loot_classes;
     pink_paw_heist_esp::LootRefreshPolicy loot_refresh{kLootRefreshInterval};
 
@@ -173,7 +164,6 @@ struct Context final {
     int enabled{1};
     int show_active_extractions_only{1};
     int show_pickable_only{1};
-    int always_show_access_cards{1};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
     std::size_t current_page{};
@@ -216,14 +206,14 @@ public:
 
     bool Read(
         Settings& settings,
-        const bool require_access_card_setting) noexcept {
+        const bool accept_legacy_access_card_setting) noexcept {
         if (!Consume('{')) return false;
 
         bool menu_open_seen{};
         bool enabled_seen{};
         bool show_active_extractions_only_seen{};
         bool show_pickable_only_seen{};
-        bool always_show_access_cards_seen{};
+        bool legacy_access_card_seen{};
         bool minimum_value_seen{};
         bool teleport_z_offset_seen{};
         for (;;) {
@@ -250,11 +240,12 @@ public:
                 }
                 show_pickable_only_seen = true;
             } else if (key == "alwaysShowAccessCards") {
-                if (always_show_access_cards_seen ||
-                    !ReadBoolean(settings.always_show_access_cards)) {
+                bool ignored{};
+                if (!accept_legacy_access_card_setting || legacy_access_card_seen ||
+                    !ReadBoolean(ignored)) {
                     return false;
                 }
-                always_show_access_cards_seen = true;
+                legacy_access_card_seen = true;
             } else if (key == "minimumValue") {
                 if (minimum_value_seen || !ReadUInt32(settings.minimum_value)) return false;
                 minimum_value_seen = true;
@@ -274,7 +265,7 @@ public:
         SkipWhitespace();
         return menu_open_seen && enabled_seen && show_active_extractions_only_seen &&
             show_pickable_only_seen &&
-            (!require_access_card_setting || always_show_access_cards_seen) &&
+            (!accept_legacy_access_card_setting || legacy_access_card_seen) &&
             minimum_value_seen && teleport_z_offset_seen &&
             cursor_ == document_.size();
     }
@@ -421,7 +412,6 @@ Settings CurrentSettings() noexcept {
         g_context.enabled != 0,
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
-        g_context.always_show_access_cards != 0,
         g_context.minimum_value,
         std::isfinite(g_context.teleport_z_offset)
             ? g_context.teleport_z_offset : kDefaultTeleportZOffsetCentimeters};
@@ -432,7 +422,6 @@ DisplaySettings CurrentDisplaySettings() noexcept {
         g_context.enabled != 0,
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
-        g_context.always_show_access_cards != 0,
         g_context.minimum_value};
 }
 
@@ -447,7 +436,6 @@ void ApplySettings(const Settings& settings) noexcept {
     g_context.enabled = settings.enabled ? 1 : 0;
     g_context.show_active_extractions_only = settings.show_active_extractions_only ? 1 : 0;
     g_context.show_pickable_only = settings.show_pickable_only ? 1 : 0;
-    g_context.always_show_access_cards = settings.always_show_access_cards ? 1 : 0;
     g_context.minimum_value = settings.minimum_value;
     g_context.teleport_z_offset = std::isfinite(settings.teleport_z_offset)
         ? settings.teleport_z_offset : kDefaultTeleportZOffsetCentimeters;
@@ -470,8 +458,6 @@ std::string SerializeSettings() {
         (settings.show_active_extractions_only ? "true" : "false") +
         ",\"showPickableOnly\":" +
         (settings.show_pickable_only ? "true" : "false") +
-        ",\"alwaysShowAccessCards\":" +
-        (settings.always_show_access_cards ? "true" : "false") +
         ",\"minimumValue\":" + std::to_string(settings.minimum_value) +
         ",\"teleportZOffset\":" + FormatSettingsDouble(settings.teleport_z_offset) + "}";
 }
@@ -506,7 +492,7 @@ bool LoadSettings() {
     const std::string_view serialized(
         reinterpret_cast<const char*>(document.data()), size);
     if (!SettingsDocumentReader(serialized).Read(
-            settings, loaded_schema_version == kSettingsSchemaVersion)) {
+            settings, loaded_schema_version == kPreviousSettingsSchemaVersion)) {
         return false;
     }
     ApplySettings(settings);
@@ -557,7 +543,6 @@ bool AppendLootEntity(
     LootEntity entry;
     entry.snapshot = snapshot;
     entry.class_name = metadata->name;
-    entry.item = metadata->item;
     entry.rob_bank = g_rob_bank.Inspect(snapshot.entity_id, entry.class_name);
     loot.push_back(std::move(entry));
     return true;
@@ -1001,7 +986,11 @@ bool SameLootState(
             left.snapshot.class_name_id != right.snapshot.class_name_id ||
             left.class_name != right.class_name ||
             left.rob_bank.entity.object_serial != right.rob_bank.entity.object_serial ||
-            left.rob_bank.pickability != right.rob_bank.pickability) {
+            left.rob_bank.pickability != right.rob_bank.pickability ||
+            left.rob_bank.item_resolved != right.rob_bank.item_resolved ||
+            left.rob_bank.name_utf8 != right.rob_bank.name_utf8 ||
+            left.rob_bank.fons_value != right.rob_bank.fons_value ||
+            left.rob_bank.pink_paw_coin_value != right.rob_bank.pink_paw_coin_value) {
             return false;
         }
     }
@@ -1129,6 +1118,7 @@ void RefreshKnownLootIfDue() {
         next->loot[change.index].rob_bank = change.state.inspection;
         next->loot[change.index].missing_observations =
             change.state.missing_observations;
+        next->loot[change.index].label = BuildLootLabel(next->loot[change.index]);
     }
     g_loot_cache.store(std::move(next), std::memory_order_release);
 }
@@ -1151,8 +1141,8 @@ void RemoveCachedLoot(const pink_paw_heist_esp::RobBankEntity entity) {
 bool PassesItemFilters(
     const LootEntity& entry,
     const DisplaySettings& settings) noexcept {
-    return pink_paw_heist_esp::PassesItemValueFilter(
-        entry.item, settings.minimum_value, settings.always_show_access_cards);
+    return entry.rob_bank.item_resolved &&
+        entry.rob_bank.fons_value >= settings.minimum_value;
 }
 
 bool IsPickable(const LootEntity& entry) noexcept {
@@ -1198,35 +1188,30 @@ std::string BuildWorldCoordinates(const LootEntity& entry) {
     return BuildWorldCoordinates(entry.snapshot);
 }
 
-std::string LootValueText(const LootEntity& entry) {
-    if (entry.item != nullptr && entry.item->value.has_value()) {
-        return FormatValue(*entry.item->value);
-    }
-    return g_context.localizer.Text("value.not_applicable", "-");
+std::string FonsValueText(const LootEntity& entry) {
+    return FormatValue(entry.rob_bank.fons_value);
+}
+
+std::string PinkPawCoinValueText(const LootEntity& entry) {
+    return FormatValue(entry.rob_bank.pink_paw_coin_value);
 }
 
 std::string BuildLootLabel(const LootEntity& entry) {
-    if (entry.item == nullptr) return {};
     const std::string coordinates = BuildWorldCoordinates(entry);
-    if (!entry.item->value.has_value()) {
-        const std::array arguments{
-            std::string_view(entry.item->name_utf8), std::string_view(coordinates)};
-        return g_context.localizer.Format(
-            "loot.access_card.label", "{0}\nAccess card\n{1}", arguments);
-    }
-    const std::string value = FormatValue(*entry.item->value);
+    if (!entry.rob_bank.item_resolved) return {};
+    const std::string fons_value = FonsValueText(entry);
+    const std::string pink_paw_coin_value = PinkPawCoinValueText(entry);
     const std::array arguments{
-        std::string_view(entry.item->name_utf8), std::string_view(value),
-        std::string_view(coordinates)};
+        std::string_view(entry.rob_bank.name_utf8), std::string_view(fons_value),
+        std::string_view(pink_paw_coin_value), std::string_view(coordinates)};
     return g_context.localizer.Format(
-        "loot.label", "{0}\nValue {1} Fons\n{2}", arguments);
+        "loot.label", "{0}\nFons {1}\nPink Paw Coin {2}\n{3}", arguments);
 }
 
 std::uint32_t LootColor(const LootEntity& entry) noexcept {
-    if (entry.item == nullptr) return ANOMALY_RGBA_V1(170, 170, 170, 255);
-    if (!entry.item->value.has_value()) return ANOMALY_RGBA_V1(104, 196, 255, 255);
-    if (*entry.item->value >= 100000U) return ANOMALY_RGBA_V1(255, 196, 64, 255);
-    if (*entry.item->value >= 10000U) return ANOMALY_RGBA_V1(255, 122, 92, 255);
+    if (!entry.rob_bank.item_resolved) return ANOMALY_RGBA_V1(170, 170, 170, 255);
+    if (entry.rob_bank.fons_value >= 100000U) return ANOMALY_RGBA_V1(255, 196, 64, 255);
+    if (entry.rob_bank.fons_value >= 10000U) return ANOMALY_RGBA_V1(255, 122, 92, 255);
     return ANOMALY_RGBA_V1(95, 226, 148, 255);
 }
 
@@ -1239,57 +1224,18 @@ std::vector<const LootEntity*> CollectVisibleLoot(
         if (IsVisibleLoot(entry, settings)) visible.push_back(&entry);
     }
     std::sort(visible.begin(), visible.end(), [](const LootEntity* left, const LootEntity* right) {
-        const bool left_access_card = pink_paw_heist_esp::IsAccessCard(left->item);
-        const bool right_access_card = pink_paw_heist_esp::IsAccessCard(right->item);
-        if (left_access_card != right_access_card) return left_access_card;
-        const std::uint32_t left_value = left->item->value.value_or(0);
-        const std::uint32_t right_value = right->item->value.value_or(0);
-        if (left_value != right_value) return left_value > right_value;
+        if (left->rob_bank.fons_value != right->rob_bank.fons_value) {
+            return left->rob_bank.fons_value > right->rob_bank.fons_value;
+        }
+        if (left->rob_bank.pink_paw_coin_value != right->rob_bank.pink_paw_coin_value) {
+            return left->rob_bank.pink_paw_coin_value > right->rob_bank.pink_paw_coin_value;
+        }
         if (left->snapshot.entity_id != right->snapshot.entity_id) {
             return left->snapshot.entity_id < right->snapshot.entity_id;
         }
         return left->class_name < right->class_name;
     });
     return visible;
-}
-
-bool TextureMethodsAvailable(const AnomalyTextureServiceV1* service) noexcept {
-    return service != nullptr &&
-        HasField<AnomalyTextureServiceV1, decltype(AnomalyTextureServiceV1::request)>(
-            service, offsetof(AnomalyTextureServiceV1, request)) &&
-        HasField<AnomalyTextureServiceV1, decltype(AnomalyTextureServiceV1::release)>(
-            service, offsetof(AnomalyTextureServiceV1, release)) &&
-        HasField<AnomalyTextureServiceV1, decltype(AnomalyTextureServiceV1::state)>(
-            service, offsetof(AnomalyTextureServiceV1, state)) &&
-        HasField<AnomalyTextureServiceV1, decltype(AnomalyTextureServiceV1::draw)>(
-            service, offsetof(AnomalyTextureServiceV1, draw)) &&
-        service->request != nullptr && service->release != nullptr && service->state != nullptr &&
-        service->draw != nullptr;
-}
-
-void ReleaseUiResources() noexcept {
-    if (TextureMethodsAvailable(g_context.texture)) {
-        for (auto& handle : g_context.item_icons) {
-            if (handle.id != 0) {
-                static_cast<void>(g_context.texture->release(g_context.texture->user, handle));
-                handle = {};
-            }
-        }
-    }
-}
-
-void RequestUiResources() {
-    if (!TextureMethodsAvailable(g_context.texture)) return;
-    for (std::size_t index = 0; index < catalog::kItemDefinitions.size(); ++index) {
-        std::string relative_path = "assets/icons/";
-        relative_path += catalog::kItemDefinitions[index].icon_filename;
-        AnomalyTextureRequestV1 request{};
-        request.struct_size = sizeof(request);
-        request.relative_path = anomaly::sdk::StringView(relative_path);
-        request.format = ANOMALY_TEXTURE_FORMAT_V1_AUTO;
-        static_cast<void>(g_context.texture->request(
-            g_context.texture->user, &request, &g_context.item_icons[index]));
-    }
 }
 
 void Text(const AnomalyUiServiceV1* ui, const std::string_view value) {
@@ -1652,54 +1598,20 @@ const AnomalyUiServiceV1* TableUi(const AnomalyUiServiceV1* ui) noexcept {
     return complete ? ui : nullptr;
 }
 
-void DrawItemIcon(const catalog::ItemDefinition* item) {
-    if (item == nullptr || !TextureMethodsAvailable(g_context.texture)) return;
-    const std::ptrdiff_t difference = item - catalog::kItemDefinitions.data();
-    if (difference < 0 || static_cast<std::size_t>(difference) >= g_context.item_icons.size()) return;
-    const AnomalyGenerationHandleV1 handle = g_context.item_icons[static_cast<std::size_t>(difference)];
-    if (handle.id == 0) return;
-    AnomalyTextureStateV1 state{sizeof(state)};
-    if (g_context.texture->state(g_context.texture->user, handle, &state).code !=
-            ANOMALY_STATUS_V1_OK ||
-        (state.flags & ANOMALY_TEXTURE_STATE_V1_READY) == 0) {
-        return;
-    }
-    static_cast<void>(g_context.texture->draw(
-        g_context.texture->user, handle, 28.0F, 28.0F, ANOMALY_RGBA_V1(255, 255, 255, 255)));
-}
-
-void DrawLootItemCell(
-    const AnomalyUiServiceV1* ui, const AnomalyUiServiceV1* table_ui,
-    const LootEntity& entry) {
-    const std::string table_id = "loot-item-" + std::to_string(entry.snapshot.entity_id);
-    if (table_ui->begin_table(
-            table_ui->user, anomaly::sdk::StringView(table_id), 2,
-            kTableSizingFixedFit, 0.0F, 0.0F) != 0) {
-        table_ui->table_next_row(table_ui->user);
-        static_cast<void>(table_ui->table_next_column(table_ui->user));
-        DrawItemIcon(entry.item);
-        static_cast<void>(table_ui->table_next_column(table_ui->user));
-        Text(ui, entry.item->name_utf8);
-        table_ui->end_table(table_ui->user);
-        return;
-    }
-
-    DrawItemIcon(entry.item);
-    Text(ui, entry.item->name_utf8);
-}
-
 void DrawLootRows(
     const AnomalyUiServiceV1* ui, const std::vector<const LootEntity*>& visible_loot,
     const std::size_t first, const std::size_t last, const bool developer_mode) {
     const auto* table_ui = TableUi(ui);
     if (table_ui != nullptr && table_ui->begin_table(
-            table_ui->user, anomaly::sdk::StringView("loot"), developer_mode ? 5 : 3,
+            table_ui->user, anomaly::sdk::StringView("loot"), developer_mode ? 6 : 4,
             0, 0.0F, 250.0F) != 0) {
         table_ui->table_next_row(table_ui->user);
         static_cast<void>(table_ui->table_next_column(table_ui->user));
         Text(ui, g_context.localizer.Text("column.loot", "Loot"));
         static_cast<void>(table_ui->table_next_column(table_ui->user));
-        Text(ui, g_context.localizer.Text("column.value", "Value"));
+        Text(ui, g_context.localizer.Text("column.fons_value", "Fons"));
+        static_cast<void>(table_ui->table_next_column(table_ui->user));
+        Text(ui, g_context.localizer.Text("column.pink_paw_coin_value", "Pink Paw Coin"));
         static_cast<void>(table_ui->table_next_column(table_ui->user));
         Text(ui, g_context.localizer.Text("column.world_coordinates", "World coordinates"));
         if (developer_mode) {
@@ -1712,9 +1624,11 @@ void DrawLootRows(
             const LootEntity& entry = *visible_loot[index];
             table_ui->table_next_row(table_ui->user);
             static_cast<void>(table_ui->table_next_column(table_ui->user));
-            DrawLootItemCell(ui, table_ui, entry);
+            Text(ui, entry.rob_bank.name_utf8);
             static_cast<void>(table_ui->table_next_column(table_ui->user));
-            Text(ui, LootValueText(entry));
+            Text(ui, FonsValueText(entry));
+            static_cast<void>(table_ui->table_next_column(table_ui->user));
+            Text(ui, PinkPawCoinValueText(entry));
             static_cast<void>(table_ui->table_next_column(table_ui->user));
             Text(ui, BuildWorldCoordinates(entry));
             if (developer_mode) {
@@ -1736,21 +1650,14 @@ void DrawLootRows(
 
     for (std::size_t index = first; index < last; ++index) {
         const LootEntity& entry = *visible_loot[index];
-        DrawItemIcon(entry.item);
         const std::string coordinates = BuildWorldCoordinates(entry);
-        if (entry.item->value.has_value()) {
-            const std::string value = FormatValue(*entry.item->value);
-            const std::array arguments{
-                std::string_view(entry.item->name_utf8), std::string_view(value),
-                std::string_view(coordinates)};
-            Text(ui, g_context.localizer.Format(
-                "loot.row", "{0}  {1} Fons  {2}", arguments));
-        } else {
-            const std::array arguments{
-                std::string_view(entry.item->name_utf8), std::string_view(coordinates)};
-            Text(ui, g_context.localizer.Format(
-                "loot.access_card.row", "{0}  Access card  {1}", arguments));
-        }
+        const std::string fons_value = FonsValueText(entry);
+        const std::string pink_paw_coin_value = PinkPawCoinValueText(entry);
+        const std::array arguments{
+            std::string_view(entry.rob_bank.name_utf8), std::string_view(fons_value),
+            std::string_view(pink_paw_coin_value), std::string_view(coordinates)};
+        Text(ui, g_context.localizer.Format(
+            "loot.row", "{0}  {1} Fons  {2} Pink Paw Coin  {3}", arguments));
         if (developer_mode) {
             const std::string button = g_context.localizer.Label(
                 "action.teleport", "Teleport",
@@ -1940,11 +1847,6 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "option.pickable_only", "Show pickable loot only", "pickable-only");
         const bool changed_pickable_only = Checkbox(
             ui, pickable_only, &g_context.show_pickable_only);
-        const std::string access_cards = g_context.localizer.Label(
-            "option.always_show_access_cards", "Always show access cards",
-            "always-show-access-cards");
-        const bool changed_access_cards = Checkbox(
-            ui, access_cards, &g_context.always_show_access_cards);
         const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
         const std::string minimum_value = g_context.localizer.Label(
             "option.minimum_value", "Minimum value", "minimum-value");
@@ -1956,7 +1858,7 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         const bool changed_teleport_offset = developer_mode && InputDouble(
             ui, teleport_offset, &g_context.teleport_z_offset, 10.0, 100.0);
         if (changed_enabled || changed_active_only || changed_pickable_only ||
-            changed_access_cards || changed_minimum || changed_teleport_offset) {
+            changed_minimum || changed_teleport_offset) {
             g_context.settings_dirty = true;
             g_context.current_page = 0;
             PublishDisplaySettings();
@@ -2309,8 +2211,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.localizer = anomaly::plugins::Localizer(host);
     g_context.config = config.get();
     g_context.ahud = ahud.get();
-    g_context.texture = host_view.Query<AnomalyTextureServiceV1>(
-        ANOMALY_TEXTURE_SERVICE_V1_ID, ANOMALY_TEXTURE_SERVICE_V1_VERSION).get();
     const AnomalyStatusV1 schema_status = g_context.config->register_schema(
         g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
         kSettingsSchemaVersion, Bytes(kSettingsSchema), &g_context.settings_schema);
@@ -2364,11 +2264,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
     ClearCache();
     ClearExtractionCache();
-    RequestUiResources();
     PublishDisplaySettings();
     const AnomalyStatusV1 ahud_status = SubscribeAhud();
     if (ahud_status.code != ANOMALY_STATUS_V1_OK) {
-        ReleaseUiResources();
         g_rob_bank.Stop();
         ClearCache();
         ClearExtractionCache();
@@ -2385,7 +2283,6 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_in_pink_paw_world = false;
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
     g_rob_bank.Stop();
-    ReleaseUiResources();
     ClearCache();
     ClearExtractionCache();
     g_update_enabled = false;
@@ -2416,7 +2313,6 @@ void ANOMALY_CALL Unload(void*) {
         g_pickup.result_code = ANOMALY_STATUS_V1_UNAVAILABLE;
         g_pickup.result_message[0] = '\0';
     }
-    ReleaseUiResources();
     ClearCache();
     ClearExtractionCache();
     g_update_enabled = false;
@@ -2574,6 +2470,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.builtin.pink-paw-heist-esp"),
         anomaly::sdk::StringView("Pink Paw Heist ESP"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.8.0"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.9.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
