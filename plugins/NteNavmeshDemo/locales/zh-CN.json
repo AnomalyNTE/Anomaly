@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "导航网格演示",
+    "plugin.description": "对输入的世界坐标发起一次原生 MoveToLocation 寻路请求。",
+    "window.title": "导航网格演示",
+    "window.hint": "输入世界坐标后请求角色使用原生寻路移动。",
+    "action.move": "开始寻路",
+    "status.label": "状态"
+  }
+}

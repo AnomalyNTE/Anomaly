@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte-navmesh-demo",
+  "name": "Navmesh Demo",
+  "description": "Queues one native MoveToLocation request for a supplied world coordinate.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "developer",
+  "version": "0.1.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1}
+  ],
+  "capabilities": ["ui", "interop-signature", "memory-read"]
+}
