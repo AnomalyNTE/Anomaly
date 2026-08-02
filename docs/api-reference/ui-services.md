@@ -4,7 +4,7 @@
 
 ## `anomaly.ui`
 
-- **ID**：`"anomaly.ui"` · **版本** 1 · **capability** `ui`（ESP 绘制另见 `entity-esp`）
+- **ID**：`"anomaly.ui"` · **版本** 1 · **capability** `ui`
 
 `anomaly.ui` 只发布 `AnomalyUiServiceV1`。除 `developer_mode_enabled` 外，表中的 UI 调用仅在当前 `on_draw` 回调内有效；`developer_mode_enabled` 也可在 `on_update` 中调用。
 
@@ -82,8 +82,9 @@ typedef struct AnomalyUiServiceV1 {
 | `draw_entity_label` | 投影盒并在其 2D 边界上方绘制居中标签 |
 
 > [!NOTE]
-> `draw_entity_*`（ESP 绘制）需要 `entity-esp` capability。`AnomalyPluginDescriptorV1::on_draw` 收到的
-> `ui` 就是 `AnomalyUiServiceV1*`。
+> `draw_entity_*`（ESP 绘制）需要 `entity-esp` capability。它们仅为 ABI v1 兼容而保留；新插件应使用
+> [`anomaly.ue5.ahud`](ue5-services.md#anomalyue5ahud) 的 Game-thread 绘制回调。`Entity ESP` 已采用该路径。
+> `AnomalyPluginDescriptorV1::on_draw` 收到的 `ui` 就是 `AnomalyUiServiceV1*`。
 
 相关枚举：
 
