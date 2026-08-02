@@ -21,11 +21,11 @@
 | | |
 | --- | --- |
 | **ID** | `anomaly.builtin.entity-esp` |
-| **作用** | 在前景绘制实体的世界空间包围盒与标签（ESP 覆盖层）。 |
-| **依赖服务** | `anomaly.config`、`anomaly.ui`；`anomaly.core`、`anomaly.nte.entities`、`anomaly.ue5.names`（均可选） |
-| **需要 Profile** | 是（实体快照与名称解析依赖已验证符号） |
+| **作用** | 使用 UE 原生 AHUD 绘制实体的世界空间包围盒与标签。 |
+| **依赖服务** | `anomaly.config`、`anomaly.ui`、`anomaly.ue5.ahud`；`anomaly.core`、`anomaly.nte.entities`、`anomaly.ue5.names`（均可选） |
+| **需要 Profile** | 是（实体快照、名称解析和 AHUD 绘制依赖已验证符号） |
 
-绘制发生在游戏前景，即使管理菜单折叠也会显示。设置项通过 `anomaly.config` 持久化。
+插件窗口和设置菜单继续使用 ImGui；实体边界框和标签由 AHUD 在 Game 线程绘制，即使管理菜单折叠也会显示。设置项通过 `anomaly.config` 持久化。
 
 ## Pink Paw Heist ESP
 

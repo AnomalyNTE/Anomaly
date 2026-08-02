@@ -13,7 +13,7 @@
 | [Interop 与内存](interop-and-memory.md) | `interop.signature`、`interop.hook`、`interop.patch`、内存 grant |
 | [插件间 IPC](ipc.md) | `anomaly.ipc` |
 | [UI 服务](ui-services.md) | `anomaly.ui`、`window`、`font`、`texture`、`input` |
-| [UE5 服务](ue5-services.md) | `ue5.build`、`framework`、`names`、`objects`、`world` |
+| [UE5 服务](ue5-services.md) | `ue5.build`、`ahud`、`framework`、`names`、`objects`、`world` |
 | [NTE 服务](nte-services.md) | `nte.build`、`session`、`player`、`player-teleport`、`entities`、`actors`、`metrics` |
 | [Manifest 与 capability](manifest-and-capabilities.md) | Manifest v2 schema、capability 映射、状态码 |
 

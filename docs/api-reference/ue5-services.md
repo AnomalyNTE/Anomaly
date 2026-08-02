@@ -98,6 +98,8 @@ callback 串行执行，不会并发进入。`frame`、`frame->user` 及其中�
 不可变快照并提交绘制，不应执行文件、网络或生命周期工作。插件异常由宿主边界隔离；同一帧的其他
 订阅仍可继续执行。
 
+AHUD 是新插件的世界空间绘制入口；不要在 `anomaly.ui` 的 Render-thread 回调中执行 ESP 投影或绘制。
+
 callback 内允许使用自身 handle 调用 `unsubscribe`。这种 self-unsubscribe 只阻止未来 admission，
 不会等待当前 callback 自身返回；插件必须保证 `callback_user` 至少存活到当前 callback 返回。
 
