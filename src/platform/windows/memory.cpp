@@ -240,15 +240,10 @@ std::vector<std::uintptr_t> ScanSection(
     if (found == sections.end() || found->virtual_size == 0) {
         return {};
     }
-    std::vector<std::uint8_t> bytes(found->virtual_size);
-    SIZE_T read{};
-    if (!ReadProcessMemory(
-            GetCurrentProcess(), reinterpret_cast<const void*>(found->base), bytes.data(),
-            bytes.size(), &read) || read == 0) {
-        return {};
-    }
-    bytes.resize(read);
-    const auto offsets = pattern.FindAll(bytes, limit);
+    if (!HasRange(found->base, found->virtual_size, false)) return {};
+    const auto* const mapped = reinterpret_cast<const std::uint8_t*>(found->base);
+    const auto offsets = pattern.FindAll(
+        std::span<const std::uint8_t>(mapped, found->virtual_size), limit);
     std::vector<std::uintptr_t> addresses;
     addresses.reserve(offsets.size());
     for (const auto offset : offsets) {

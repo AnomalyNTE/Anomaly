@@ -1,6 +1,9 @@
 #include "pattern.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <functional>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 
@@ -61,6 +64,32 @@ Pattern Pattern::Parse(std::string_view text) {
     if (result.bytes_.empty()) {
         throw std::invalid_argument("pattern is empty");
     }
+
+    std::size_t best_offset{};
+    std::size_t best_size{};
+    for (std::size_t anchor_cursor{}; anchor_cursor < result.bytes_.size();) {
+        if (result.bytes_[anchor_cursor].mask != 0xffU) {
+            ++anchor_cursor;
+            continue;
+        }
+        const std::size_t offset = anchor_cursor;
+        while (anchor_cursor < result.bytes_.size() &&
+               result.bytes_[anchor_cursor].mask == 0xffU) {
+            ++anchor_cursor;
+        }
+        const std::size_t size = anchor_cursor - offset;
+        if (size > best_size) {
+            best_offset = offset;
+            best_size = size;
+        }
+    }
+    if (best_size != 0) {
+        result.anchor_offset_ = best_offset;
+        result.anchor_.reserve(best_size);
+        for (std::size_t index{}; index < best_size; ++index) {
+            result.anchor_.push_back(result.bytes_[best_offset + index].value);
+        }
+    }
     return result;
 }
 
@@ -71,20 +100,37 @@ std::vector<std::size_t> Pattern::FindAll(
     if (bytes_.size() > bytes.size() || limit == 0) {
         return matches;
     }
-    for (std::size_t offset = 0; offset <= bytes.size() - bytes_.size(); ++offset) {
-        bool match = true;
+    const auto matches_at = [&](const std::size_t offset) {
         for (std::size_t index = 0; index < bytes_.size(); ++index) {
             const auto& expected = bytes_[index];
             if ((bytes[offset + index] & expected.mask) != expected.value) {
-                match = false;
-                break;
+                return false;
             }
         }
-        if (match) {
-            matches.push_back(offset);
-            if (matches.size() == limit) {
-                break;
+        return true;
+    };
+
+    if (anchor_.empty()) {
+        for (std::size_t offset = 0; offset <= bytes.size() - bytes_.size(); ++offset) {
+            if (matches_at(offset)) {
+                matches.push_back(offset);
+                if (matches.size() == limit) break;
             }
+        }
+        return matches;
+    }
+
+    const std::size_t trailing_bytes = bytes_.size() - anchor_offset_ - anchor_.size();
+    const auto search_begin = bytes.begin() + anchor_offset_;
+    const auto search_end = bytes.begin() + (bytes.size() - trailing_bytes);
+    const std::boyer_moore_horspool_searcher searcher(anchor_.begin(), anchor_.end());
+    for (auto candidate = std::search(search_begin, search_end, searcher);
+         candidate != search_end;
+         candidate = std::search(std::next(candidate), search_end, searcher)) {
+        const std::size_t offset = static_cast<std::size_t>(candidate - bytes.begin()) - anchor_offset_;
+        if (matches_at(offset)) {
+            matches.push_back(offset);
+            if (matches.size() == limit) break;
         }
     }
     return matches;

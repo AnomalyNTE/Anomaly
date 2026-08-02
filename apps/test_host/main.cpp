@@ -1,10 +1,12 @@
 #include "anomaly/host_ui_service.hpp"
+#include "pattern.hpp"
 #include "plugin_manager.hpp"
 
 #include <Windows.h>
 #include <Psapi.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -13,6 +15,7 @@
 #include <limits>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -79,6 +82,21 @@ std::uint64_t PrivateBytes() {
     return static_cast<std::uint64_t>(counters.PrivateUsage);
 }
 
+bool VerifyPatternMatcher() {
+    const std::array<std::uint8_t, 10> bytes{
+        0x00, 0xA1, 0x2B, 0xCC, 0xA7, 0x3B, 0xCC, 0x7F, 0x7F, 0x7F};
+    const auto masked = ue5mem::Pattern::Parse("A? ?B CC");
+    if (masked.FindAll(bytes) != std::vector<std::size_t>{1, 4}) return false;
+
+    const auto overlap = ue5mem::Pattern::Parse("7F 7F");
+    if (overlap.FindAll(bytes) != std::vector<std::size_t>{7, 8}) return false;
+    if (overlap.FindAll(bytes, 1) != std::vector<std::size_t>{7}) return false;
+
+    const auto wildcard = ue5mem::Pattern::Parse("??");
+    return wildcard.FindAll(std::span(bytes).first(3), 2) ==
+        std::vector<std::size_t>{0, 1};
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -108,6 +126,10 @@ int wmain(int argc, wchar_t** argv) {
         private_growth_budget_bytes == 0 ||
         private_growth_budget_bytes > kMaxPrivateGrowthBudgetBytes) {
         Usage(); return 1;
+    }
+    if (!VerifyPatternMatcher()) {
+        std::cerr << "pattern matcher fixture failed\n";
+        return 9;
     }
     std::error_code error;
     input = std::filesystem::weakly_canonical(input, error);

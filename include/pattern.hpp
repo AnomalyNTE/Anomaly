@@ -24,6 +24,10 @@ public:
 
 private:
     std::vector<PatternByte> bytes_;
+    // The longest contiguous fully-specified run is searched first; every
+    // candidate is still checked against the complete masked pattern.
+    std::size_t anchor_offset_{};
+    std::vector<std::uint8_t> anchor_;
 };
 
 }  // namespace ue5mem
