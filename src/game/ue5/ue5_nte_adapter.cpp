@@ -3240,6 +3240,29 @@ struct Ue5NteAdapter::State {
         result->next_offset = 0;
         result->reserved = 0;
 
+        const bool unfiltered = request->class_id == 0 && request->class_name_id == 0 &&
+            request->entity_name_id == 0 && request->required_flags == 0 &&
+            request->excluded_flags == 0;
+        if (unfiltered) {
+            result->total_matches = static_cast<std::uint32_t>(cache->entities.size());
+            if (request->offset < result->total_matches) {
+                const std::uint32_t available = result->total_matches - request->offset;
+                result->returned = (std::min)(request->capacity, available);
+                for (std::uint32_t index = 0; index < result->returned; ++index) {
+                    PopulateEntitySnapshot(
+                        *cache, current_sequence,
+                        cache->entities[static_cast<std::size_t>(request->offset) + index],
+                        &destination[index]);
+                }
+            }
+            const std::uint64_t consumed =
+                static_cast<std::uint64_t>(request->offset) + result->returned;
+            result->next_offset = consumed < result->total_matches
+                ? static_cast<std::uint32_t>(consumed)
+                : result->total_matches;
+            return Status(ANOMALY_STATUS_V1_OK);
+        }
+
         for (const EntityRecord& entity : cache->entities) {
             if (!EntityMatches(entity, *request)) continue;
             if (result->total_matches >= request->offset &&

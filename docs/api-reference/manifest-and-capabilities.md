@@ -128,7 +128,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | --- | --- |
 | `memory-read` | `anomaly.core` 的 `read_memory` |
 | `memory-write` | `anomaly.core` 的 `write_memory` |
-| `entity-esp` | ABI v1 兼容的 `anomaly.ui` ESP 绘制调用（`draw_entity_bbox` / `draw_entity_box3d` / `draw_entity_label`）；新插件应声明 `ue5-ahud` 并订阅 `anomaly.ue5.ahud` |
+| `entity-esp` | `anomaly.ui` 的 ESP 绘制调用（`draw_entity_bbox` / `draw_entity_box3d` / `draw_entity_label`） |
 
 以上三个 capability 是已知 capability，但不通过 service 映射自动派生——插件按需在 `capabilities` 中显式声明。
 

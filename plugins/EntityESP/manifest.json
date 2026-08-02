@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 2, "id": "anomaly.builtin.entity-esp", "name": "Entity ESP", "description": "Draws configurable native AHUD bounds and labels for NTE entities.", "author": "Anomaly", "license": "AGPL-3.0-only", "version": "2.4.0",
+  "schemaVersion": 2, "id": "anomaly.builtin.entity-esp", "name": "Entity ESP", "description": "Draws configurable 2D and 3D bounds and labels for NTE entities.", "author": "Anomaly", "license": "AGPL-3.0-only", "version": "2.4.1",
   "entry": "plugin.dll", "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"], "builds": ["nte-*"], "loadPhase": "game-ready",
-  "services": [{"id": "anomaly.core", "minVersion": 1, "optional": true}, {"id": "anomaly.config", "minVersion": 1}, {"id": "anomaly.ui", "minVersion": 1}, {"id": "anomaly.ue5.ahud", "minVersion": 1}, {"id": "anomaly.nte.entities", "minVersion": 1, "optional": true}, {"id": "anomaly.ue5.names", "minVersion": 1, "optional": true}],
-  "capabilities": ["ui", "configuration", "ue5-ahud", "nte-entity-snapshot", "ue5-names"]
+  "services": [{"id": "anomaly.core", "minVersion": 1, "optional": true}, {"id": "anomaly.config", "minVersion": 1}, {"id": "anomaly.ui", "minVersion": 1}, {"id": "anomaly.nte.entities", "minVersion": 1, "optional": true}, {"id": "anomaly.ue5.names", "minVersion": 1, "optional": true}],
+  "capabilities": ["ui", "configuration", "entity-esp", "nte-entity-snapshot", "ue5-names"]
 }
