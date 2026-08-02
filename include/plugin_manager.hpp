@@ -289,6 +289,8 @@ private:
         const std::filesystem::path& package_directory,
         anomaly::PluginShadowGeneration shadow_generation);
     bool Activate(LoadedPlugin& plugin);
+    void RetryWaitingForAdapterServices();
+    void RetryWaitingPlugins();
     bool ReconcileEnablement(const anomaly::PluginCatalogSnapshot& catalog);
     void ReconcileWindowVisibility(LoadedPlugin& plugin) noexcept;
     void SetPersistentPluginWindowVisibility(
@@ -326,6 +328,7 @@ private:
     std::unordered_map<std::string, PluginView> disabled_plugins_;
     void* imgui_context_{};
     const AnomalyUiServiceV1* ui_service_{};
+    std::uint64_t observed_adapter_service_revision_{};
     anomaly::PluginShadowStore shadow_store_;
     anomaly::PluginFileWatcher file_watcher_;
     anomaly::PluginEnablementStore enablement_store_;

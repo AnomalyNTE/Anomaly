@@ -59,6 +59,7 @@ bool AdapterServiceRegistry::Publish(
     AdapterServiceView view{id, version, table};
     services_.emplace(
         std::move(id), Entry{std::move(view), std::move(observer), std::move(lifetime)});
+    revision_.fetch_add(1, std::memory_order_release);
     return true;
 }
 
@@ -89,6 +90,7 @@ AdapterServiceRegistry::RevokeResult AdapterServiceRegistry::RevokeUntil(
             // Publish reserves for every live entry before it becomes revocable.
             retired_lifetimes_.push_back(std::move(lifetime));
         }
+        revision_.fetch_add(1, std::memory_order_release);
     }
     // The extracted observer and any duplicate lifetime are released after
     // dropping the registry lock; both can own caller-provided work.
@@ -119,6 +121,10 @@ const void* AdapterServiceRegistry::Query(
     return table;
 }
 
+std::uint64_t AdapterServiceRegistry::Revision() const noexcept {
+    return revision_.load(std::memory_order_acquire);
+}
+
 std::vector<AdapterServiceView> AdapterServiceRegistry::Snapshot() const {
     std::scoped_lock lock(mutex_);
     std::vector<AdapterServiceView> result;
@@ -135,6 +141,7 @@ void AdapterServiceRegistry::Clear() noexcept {
     {
         std::scoped_lock lock(mutex_);
         removed.swap(services_);
+        if (!removed.empty()) revision_.fetch_add(1, std::memory_order_release);
         for (auto& [id, service] : removed) {
             static_cast<void>(id);
             if (service.lifetime &&

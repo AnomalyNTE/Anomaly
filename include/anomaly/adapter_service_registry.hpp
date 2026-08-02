@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -46,6 +47,7 @@ public:
         std::string_view id,
         std::uint32_t minimum_version,
         bool observe = true) const noexcept;
+    [[nodiscard]] std::uint64_t Revision() const noexcept;
     [[nodiscard]] std::vector<AdapterServiceView> Snapshot() const;
     void Clear() noexcept;
 
@@ -60,6 +62,7 @@ private:
 
     mutable std::timed_mutex mutex_;
     std::map<std::string, Entry, std::less<>> services_;
+    std::atomic<std::uint64_t> revision_{};
     // Providers that supply a lifetime can keep a queried C ABI table valid
     // after revocation so cached callbacks can fail cleanly.
     std::vector<std::shared_ptr<const void>> retired_lifetimes_;

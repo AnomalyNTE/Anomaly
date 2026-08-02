@@ -3807,6 +3807,14 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
                 try { plugin.descriptor_v1.on_unload(plugin.plugin_context); } catch (...) {}
             }
             plugin.plugin_context = nullptr;
+            if (start_status.code == ANOMALY_STATUS_V1_UNAVAILABLE) {
+                plugin.waiting_for_service = true;
+                plugin.started = false;
+                Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                    "ABI v1 plugin waiting for service: " + plugin.view.id);
+                return true;
+            }
+            plugin.waiting_for_service = false;
             return false;
         }
     }
@@ -4564,7 +4572,26 @@ void PluginManager::Maintenance() {
 
 void PluginManager::MaintenancePluginState() {
     const ScopedLogThreadDomain log_domain(anomaly::LogThreadDomain::Worker);
+    RetryWaitingForAdapterServices();
     PollForChanges();
+}
+
+void PluginManager::RetryWaitingForAdapterServices() {
+    const std::uint64_t revision = anomaly::ProcessAdapterServices().Revision();
+    if (revision == observed_adapter_service_revision_) return;
+    observed_adapter_service_revision_ = revision;
+    if (ui_service_ == nullptr) return;
+
+    RetryWaitingPlugins();
+}
+
+void PluginManager::RetryWaitingPlugins() {
+    for (const auto& plugin : plugins_) {
+        if (!plugin->waiting_for_service || Activate(*plugin)) continue;
+        plugin->waiting_for_service = false;
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
+            "ABI v1 deferred activation failed: " + plugin->view.id);
+    }
 }
 
 void PluginManager::PersistUiWindowState() {
@@ -4880,12 +4907,10 @@ void PluginManager::SetUiService(const AnomalyUiServiceV1* service) {
     for (const auto& plugin : plugins_) {
         plugin->ui_proxy_context.service = ui_service_;
         plugin->ui_proxy = MakeUiProxy(&plugin->ui_proxy_context);
-        if (ui_service_ == nullptr) continue;
-        if (plugin->waiting_for_service && !Activate(*plugin)) {
-            plugin->waiting_for_service = false;
-            Log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "ABI v1 deferred activation failed: " + plugin->view.id);
-        }
     }
+    if (ui_service_ == nullptr) return;
+    observed_adapter_service_revision_ = anomaly::ProcessAdapterServices().Revision();
+    RetryWaitingPlugins();
 }
 
 void PluginManager::PublishInputFrame(
