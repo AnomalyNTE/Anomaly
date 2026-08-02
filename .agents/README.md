@@ -7,8 +7,8 @@
 
 1. `../AGENTS.md`：强制交付流程、Git、风险操作和边界规则。
 2. `architecture.md`：源码所有权、依赖方向和线程域。
-3. `tooling.md`：构建、测试、打包、诊断与实时工具的使用约束。
-4. `../ARCHITECTURE.md`、`../README.md`、相关 ADR 与所属测试目录：请求涉及的详细实现事实。
+3. `tooling.md`：构建、验证、打包、诊断与实时工具的使用约束。
+4. `../ARCHITECTURE.md`、`../README.md` 与相关 ADR：请求涉及的详细实现事实。
 
 这里只记录稳定、项目专属、能直接指导实现决策的规则。产品行为写入 README，架构理由写入 ADR，
 发布证据写入 `docs/release/` 或 `docs/baseline/`。

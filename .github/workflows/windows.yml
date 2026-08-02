@@ -23,9 +23,7 @@ jobs:
         shell: pwsh
         run: |
           $arguments = @(
-            '--preset', 'windows-vs2022',
-            '-DBUILD_TESTING=OFF',
-            '-DANOMALY_BUILD_PLUGIN_MANAGER_FIXTURE=OFF'
+            '--preset', 'windows-vs2022'
           )
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             $arguments += "-DANOMALY_RELEASE_VERSION=$env:GITHUB_REF_NAME"

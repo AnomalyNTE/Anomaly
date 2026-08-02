@@ -11,11 +11,11 @@
 ## 唯一受支持的构建路径
 
 > [!IMPORTANT]
-> 主仓库只有**一套**受支持的构建路径：CMake Preset `windows-vs2022` 配置 + `windows-relwithdebinfo` 构建 / 测试。CI、发布与本机构建都走这条路径。**不要**新建 `cmake -S/-B`、NMake、Ninja 或按阶段命名的构建树。全部构建配置以 [`CMakePresets.json`](../../CMakePresets.json) 为准。
+> 主仓库只有**一套**受支持的构建路径：CMake Preset `windows-vs2022` 配置 + `windows-relwithdebinfo` 构建。CI、发布与本机构建都走这条路径。**不要**新建 `cmake -S/-B`、NMake、Ninja 或按阶段命名的构建树。全部构建配置以 [`CMakePresets.json`](../../CMakePresets.json) 为准。
 
 ### 一条命令
 
-`build.cmd` 是下面命令序列的薄包装器，会在测试通过后生成 GameRuntime 安装树：
+`build.cmd` 是下面命令序列的薄包装器，会在构建完成后生成 GameRuntime 安装树：
 
 ```powershell
 .\build.cmd
@@ -26,7 +26,6 @@
 ```powershell
 cmake --preset windows-vs2022
 cmake --build --preset windows-relwithdebinfo --parallel
-ctest --preset windows-relwithdebinfo
 cmake --install .build\windows-vs2022 --config RelWithDebInfo `
   --prefix .build\windows-vs2022\game-package --component GameRuntime
 ```
@@ -35,36 +34,22 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 
 | 内容 | 路径 |
 | --- | --- |
-| 构建出的工具（CLI、测试程序、预览程序） | `.build\windows-vs2022\bin\RelWithDebInfo` |
+| 构建出的工具（CLI、验证工具、预览程序） | `.build\windows-vs2022\bin\RelWithDebInfo` |
 | 可直接部署的干净运行包 | `.build\windows-vs2022\game-package` |
 
-运行包结构见[安装与更新](../user-guide/installation.md)。CLI、测试程序与界面演示程序保留在 `bin`，不会进入游戏运行包。
+运行包结构见[安装与更新](../user-guide/installation.md)。CLI、验证工具与界面演示程序保留在 `bin`，不会进入游戏运行包。
 
-## 测试
-
-`build.cmd` / `ctest` 会运行 CTest 注册的分层测试，覆盖 ABI、生命周期、ServiceGraph、Dispatcher、日志、存储、渲染、Pattern、Memory、Pipe、Proxy、HookManager、Plugin Runtime、Profile、Symbol / Validator 与 UE5 / NTE Adapter，以及 Repository 签名 / 事务、网络线程隔离与全局插件启用状态。
-
-> [!NOTE]
-> 测试数量以当前构建目录的 `ctest -N` 输出为准，不在文档固定历史数字。
-
-几类关键集成门禁：
-
-- **SDK 集成门** — 先安装 SDK，再从独立 Fixture 仓库执行 configure / build / pack / validate / TestHost。
-- **Core 集成** — 真实加载 Core 与代理，调用 `DwmIsCompositionEnabled`，验证服务诊断、模块查询、内存区域、实时扫描与 UE 状态的管道往返，并在退出前停止并等待全部 Runtime worker。
-- **D3D12 Fixture** — 连续绘制 1000 帧、执行 50 次 Resize 和 10 次窗口 / SwapChain 重建，验证像素非空并启用 Debug Layer 资源检查。
-
-### 预览界面（无游戏）
+## 预览界面（无游戏）
 
 直接运行 `anomaly-platform-preview.exe` 可以在独立进程通过与游戏内相同的 Platform 与 PluginManager 路径预览和调试界面与插件。
 
-### AddressSanitizer
+## AddressSanitizer
 
 ASan 使用独立预设：
 
 ```powershell
 cmake --preset windows-asan
 cmake --build --preset windows-asan --parallel
-ctest --preset windows-asan
 ```
 
 ## 发布打包
@@ -104,7 +89,7 @@ Tools 三个 ZIP，并为这三个归档生成 GitHub build provenance attestati
 | `anomaly-abi-snapshot.exe` | ABI 基线生成与校验 |
 | `anomaly-test-host.exe` | 无游戏的插件 fixture 宿主 |
 
-`AnomalyLauncher.exe` 与 `AnomalyCrashCoordinator.exe` 随 Runtime 分发；`anomaly-render-fixture.exe` 与 `anomaly-platform-preview.exe` 是构建目录中的测试 / 开发程序。
+`AnomalyLauncher.exe` 与 `AnomalyCrashCoordinator.exe` 随 Runtime 分发；`anomaly-render-fixture.exe` 与 `anomaly-platform-preview.exe` 是构建目录中的开发程序。
 
 ## 相关
 
