@@ -85,6 +85,10 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 主构建树。AddressSanitizer 使用独立的 `windows-asan` 预设。精确命令与产物路径见
 `.agents/tooling.md`。
 
+**硬性禁止构建任何测试目标、测试套件或测试专用 fixture，也不得将它们加入默认构建图。** 不得引入
+或恢复 CTest、`BUILD_TESTING`、`add_test`、测试预设或 `tests/` 源码树。`anomaly-test-host` 是发布的
+Tools 验证程序，不属于 CTest 测试套件；仅在当前任务需要该工具时构建。
+
 ## 冗余清理约定
 
 清理冗余时：
