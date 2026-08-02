@@ -50,11 +50,11 @@ constexpr auto kExtractionWorldPollInterval = std::chrono::seconds(1);
 constexpr auto kExtractionStateReadDelay = std::chrono::seconds(1);
 constexpr auto kExtractionStateRetryInterval = std::chrono::milliseconds(250);
 constexpr std::string_view kSettingsSchemaId = "settings";
-constexpr std::uint32_t kSettingsSchemaVersion = 6;
-constexpr std::uint32_t kPreviousSettingsSchemaVersion = 5;
+constexpr std::uint32_t kSettingsSchemaVersion = 7;
+constexpr std::uint32_t kPreviousSettingsSchemaVersion = 6;
 constexpr double kDefaultTeleportZOffsetCentimeters = 150.0;
 constexpr std::string_view kSettingsSchema = R"json(
-{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","showActiveExtractionsOnly","showPickableOnly","minimumValue","teleportZOffset"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"}}}
+{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","minimumValue","teleportZOffset"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"}}}
 )json";
 
 struct LootEntity final {
@@ -92,7 +92,7 @@ struct ExtractionCache final {
     AnomalyGenerationHandleV1 world{};
     bool available{};
     bool complete{};
-    bool state_complete{};
+    bool activation_settled{};
     Clock::time_point next_world_check{};
     Clock::time_point next_state_refresh{};
     std::atomic_bool refresh_requested{true};
@@ -106,6 +106,8 @@ struct ExtractionDisplaySnapshot final {
 struct Settings final {
     bool menu_open{true};
     bool enabled{true};
+    bool draw_loot_boxes{true};
+    bool draw_extractions{true};
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
     std::uint32_t minimum_value{};
@@ -114,6 +116,8 @@ struct Settings final {
 
 struct DisplaySettings final {
     bool enabled{true};
+    bool draw_loot_boxes{true};
+    bool draw_extractions{true};
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
     std::uint32_t minimum_value{};
@@ -162,6 +166,8 @@ struct Context final {
 
     int menu_open{1};
     int enabled{1};
+    int draw_loot_boxes{1};
+    int draw_extractions{1};
     int show_active_extractions_only{1};
     int show_pickable_only{1};
     std::uint32_t minimum_value{};
@@ -189,7 +195,6 @@ std::atomic<std::shared_ptr<const ExtractionDisplaySnapshot>> g_extraction_snaps
 std::atomic<std::shared_ptr<const DisplaySettings>> g_display_settings;
 std::atomic_bool g_loot_refresh_requested{true};
 AnomalyGenerationHandleV1 g_ahud_subscription{};
-bool g_update_enabled{};
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -206,14 +211,15 @@ public:
 
     bool Read(
         Settings& settings,
-        const bool accept_legacy_access_card_setting) noexcept {
+        const bool require_hud_draw_settings) noexcept {
         if (!Consume('{')) return false;
 
         bool menu_open_seen{};
         bool enabled_seen{};
+        bool draw_loot_boxes_seen{};
+        bool draw_extractions_seen{};
         bool show_active_extractions_only_seen{};
         bool show_pickable_only_seen{};
-        bool legacy_access_card_seen{};
         bool minimum_value_seen{};
         bool teleport_z_offset_seen{};
         for (;;) {
@@ -227,6 +233,12 @@ public:
             } else if (key == "enabled") {
                 if (enabled_seen || !ReadBoolean(settings.enabled)) return false;
                 enabled_seen = true;
+            } else if (key == "drawLootBoxes") {
+                if (draw_loot_boxes_seen || !ReadBoolean(settings.draw_loot_boxes)) return false;
+                draw_loot_boxes_seen = true;
+            } else if (key == "drawExtractions") {
+                if (draw_extractions_seen || !ReadBoolean(settings.draw_extractions)) return false;
+                draw_extractions_seen = true;
             } else if (key == "showActiveExtractionsOnly") {
                 if (show_active_extractions_only_seen ||
                     !ReadBoolean(settings.show_active_extractions_only)) {
@@ -239,13 +251,6 @@ public:
                     return false;
                 }
                 show_pickable_only_seen = true;
-            } else if (key == "alwaysShowAccessCards") {
-                bool ignored{};
-                if (!accept_legacy_access_card_setting || legacy_access_card_seen ||
-                    !ReadBoolean(ignored)) {
-                    return false;
-                }
-                legacy_access_card_seen = true;
             } else if (key == "minimumValue") {
                 if (minimum_value_seen || !ReadUInt32(settings.minimum_value)) return false;
                 minimum_value_seen = true;
@@ -263,9 +268,9 @@ public:
         }
 
         SkipWhitespace();
-        return menu_open_seen && enabled_seen && show_active_extractions_only_seen &&
-            show_pickable_only_seen &&
-            (!accept_legacy_access_card_setting || legacy_access_card_seen) &&
+        return menu_open_seen && enabled_seen &&
+            (!require_hud_draw_settings || (draw_loot_boxes_seen && draw_extractions_seen)) &&
+            show_active_extractions_only_seen && show_pickable_only_seen &&
             minimum_value_seen && teleport_z_offset_seen &&
             cursor_ == document_.size();
     }
@@ -410,6 +415,8 @@ Settings CurrentSettings() noexcept {
     return {
         g_context.menu_open != 0,
         g_context.enabled != 0,
+        g_context.draw_loot_boxes != 0,
+        g_context.draw_extractions != 0,
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
         g_context.minimum_value,
@@ -420,6 +427,8 @@ Settings CurrentSettings() noexcept {
 DisplaySettings CurrentDisplaySettings() noexcept {
     return {
         g_context.enabled != 0,
+        g_context.draw_loot_boxes != 0,
+        g_context.draw_extractions != 0,
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
         g_context.minimum_value};
@@ -434,6 +443,8 @@ void PublishDisplaySettings() {
 void ApplySettings(const Settings& settings) noexcept {
     g_context.menu_open = settings.menu_open ? 1 : 0;
     g_context.enabled = settings.enabled ? 1 : 0;
+    g_context.draw_loot_boxes = settings.draw_loot_boxes ? 1 : 0;
+    g_context.draw_extractions = settings.draw_extractions ? 1 : 0;
     g_context.show_active_extractions_only = settings.show_active_extractions_only ? 1 : 0;
     g_context.show_pickable_only = settings.show_pickable_only ? 1 : 0;
     g_context.minimum_value = settings.minimum_value;
@@ -454,6 +465,8 @@ std::string SerializeSettings() {
     const Settings settings = CurrentSettings();
     return std::string{"{\"menuOpen\":"} + (settings.menu_open ? "true" : "false") +
         ",\"enabled\":" + (settings.enabled ? "true" : "false") +
+        ",\"drawLootBoxes\":" + (settings.draw_loot_boxes ? "true" : "false") +
+        ",\"drawExtractions\":" + (settings.draw_extractions ? "true" : "false") +
         ",\"showActiveExtractionsOnly\":" +
         (settings.show_active_extractions_only ? "true" : "false") +
         ",\"showPickableOnly\":" +
@@ -492,7 +505,7 @@ bool LoadSettings() {
     const std::string_view serialized(
         reinterpret_cast<const char*>(document.data()), size);
     if (!SettingsDocumentReader(serialized).Read(
-            settings, loaded_schema_version == kPreviousSettingsSchemaVersion)) {
+            settings, loaded_schema_version == kSettingsSchemaVersion)) {
         return false;
     }
     ApplySettings(settings);
@@ -853,7 +866,7 @@ void ResetExtractionData() noexcept {
     g_extractions.class_id = 0;
     g_extractions.available = false;
     g_extractions.complete = false;
-    g_extractions.state_complete = false;
+    g_extractions.activation_settled = false;
     g_extractions.next_state_refresh = {};
 }
 
@@ -866,7 +879,7 @@ void RefreshExtractionCacheIfDue() {
         std::scoped_lock lock(g_extractions.mutex);
         check_world = forced || now >= g_extractions.next_world_check;
         if (!check_world) {
-            if (!g_extractions.complete || g_extractions.state_complete ||
+            if (!g_extractions.complete || g_extractions.activation_settled ||
                 now < g_extractions.next_state_refresh) {
                 return;
             }
@@ -923,7 +936,8 @@ void RefreshExtractionCacheIfDue() {
     {
         std::scoped_lock lock(g_extractions.mutex);
         if (!g_extractions.complete ||
-            (!forced && (g_extractions.state_complete || now < g_extractions.next_state_refresh))) {
+            (!forced && (g_extractions.activation_settled ||
+                now < g_extractions.next_state_refresh))) {
             return;
         }
         points = g_extractions.points;
@@ -931,7 +945,7 @@ void RefreshExtractionCacheIfDue() {
     const anomaly::sdk::Host host(g_context.host);
     const auto actors = host.Query<AnomalyNteActorsServiceV1>(
         ANOMALY_NTE_ACTORS_SERVICE_V1_ID, ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION);
-    const bool state_complete = RefreshExtractionActivation(actors.get(), points);
+    const bool activation_complete = RefreshExtractionActivation(actors.get(), points);
     {
         std::scoped_lock lock(g_extractions.mutex);
         if (g_extractions.complete && points.size() == g_extractions.points.size()) {
@@ -942,10 +956,15 @@ void RefreshExtractionCacheIfDue() {
                 }
             }
             g_extractions.points = std::move(points);
-            g_extractions.state_complete = state_complete;
-            g_extractions.next_state_refresh = state_complete
+            g_extractions.activation_settled = activation_complete && std::ranges::any_of(
+                g_extractions.points, [](const ExtractionPoint& point) {
+                    return point.activation == ExtractionActivation::inactive;
+                });
+            g_extractions.next_state_refresh = g_extractions.activation_settled
                 ? Clock::time_point{}
-                : now + kExtractionStateRetryInterval;
+                : now + (activation_complete
+                    ? kExtractionStateReadDelay
+                    : kExtractionStateRetryInterval);
             PublishExtractionSnapshotLocked();
         }
     }
@@ -1838,6 +1857,14 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         const std::string enabled = g_context.localizer.Label(
             "option.enabled", "Enable display", "enabled");
         const bool changed_enabled = Checkbox(ui, enabled, &g_context.enabled);
+        const std::string loot_boxes = g_context.localizer.Label(
+            "option.draw_loot_boxes", "Draw loot boxes", "draw-loot-boxes");
+        const bool changed_loot_boxes = Checkbox(
+            ui, loot_boxes, &g_context.draw_loot_boxes);
+        const std::string extractions = g_context.localizer.Label(
+            "option.draw_extractions", "Draw extractions", "draw-extractions");
+        const bool changed_extractions = Checkbox(
+            ui, extractions, &g_context.draw_extractions);
         const std::string active_extractions = g_context.localizer.Label(
             "option.active_extractions_only", "Show active extractions only",
             "active-extractions-only");
@@ -1857,18 +1884,12 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "option.teleport_z_offset", "Teleport Z offset (cm)", "teleport-z-offset");
         const bool changed_teleport_offset = developer_mode && InputDouble(
             ui, teleport_offset, &g_context.teleport_z_offset, 10.0, 100.0);
-        if (changed_enabled || changed_active_only || changed_pickable_only ||
+        if (changed_enabled || changed_loot_boxes || changed_extractions || changed_active_only ||
+            changed_pickable_only ||
             changed_minimum || changed_teleport_offset) {
             g_context.settings_dirty = true;
             g_context.current_page = 0;
             PublishDisplaySettings();
-        }
-        if (changed_enabled) {
-            if (g_context.enabled != 0) {
-                g_world_gate_refresh_requested.store(true, std::memory_order_release);
-                g_loot_refresh_requested.store(true, std::memory_order_release);
-                g_extractions.refresh_requested.store(true, std::memory_order_release);
-            }
         }
         if (!supports_numeric_input) {
             const std::string value = std::to_string(g_context.minimum_value);
@@ -2120,10 +2141,11 @@ void DrawAhudEntity(
     const AnomalyUe5AhudFrameV1* frame,
     const AnomalyNteEntitySnapshotV1& snapshot,
     const std::string_view label,
-    const std::uint32_t color) noexcept {
+    const std::uint32_t color,
+    const bool draw_bounds) noexcept {
     ProjectedBounds bounds;
     if (!ProjectBounds(frame, snapshot, bounds)) return;
-    DrawBounds(frame, bounds, color);
+    if (draw_bounds) DrawBounds(frame, bounds, color);
     DrawLabel(frame, bounds, label, color);
 }
 
@@ -2138,16 +2160,19 @@ void ANOMALY_CALL DrawAhud(
     if (loot_cache && loot_cache->available) {
         for (const LootEntity& entry : loot_cache->loot) {
             if (!IsVisibleLoot(entry, *settings)) continue;
-            DrawAhudEntity(frame, entry.snapshot, entry.label, LootColor(entry));
+            DrawAhudEntity(
+                frame, entry.snapshot, entry.label, LootColor(entry), settings->draw_loot_boxes);
         }
     }
 
+    if (!settings->draw_extractions) return;
     const auto extraction_snapshot =
         g_extraction_snapshot.load(std::memory_order_acquire);
     if (!extraction_snapshot || !extraction_snapshot->available) return;
     for (const ExtractionPoint& point : extraction_snapshot->points) {
         if (!ShouldShowExtraction(point, *settings)) continue;
-        DrawAhudEntity(frame, point.snapshot, point.label, ExtractionColor(point.activation));
+        DrawAhudEntity(
+            frame, point.snapshot, point.label, ExtractionColor(point.activation), false);
     }
 }
 
@@ -2203,7 +2228,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 
     g_context = {};
     g_ahud_subscription = {};
-    g_update_enabled = false;
     g_loot_cache.store({}, std::memory_order_release);
     g_extraction_snapshot.store({}, std::memory_order_release);
     g_display_settings.store({}, std::memory_order_release);
@@ -2285,7 +2309,6 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_rob_bank.Stop();
     ClearCache();
     ClearExtractionCache();
-    g_update_enabled = false;
     g_display_settings.store({}, std::memory_order_release);
     if (ahud_status.code != ANOMALY_STATUS_V1_OK) return ahud_status;
     return saved ? anomaly::sdk::Ok()
@@ -2315,7 +2338,6 @@ void ANOMALY_CALL Unload(void*) {
     }
     ClearCache();
     ClearExtractionCache();
-    g_update_enabled = false;
     g_display_settings.store({}, std::memory_order_release);
     g_context = {};
 }
@@ -2420,34 +2442,24 @@ void ProcessPendingPickup() {
 }
 
 void ANOMALY_CALL Update(void*, double) {
-    const auto display_settings = g_display_settings.load(std::memory_order_acquire);
-    const bool enabled = display_settings && display_settings->enabled;
-    if (enabled) {
-        if (g_world_gate_refresh_requested.exchange(false, std::memory_order_acq_rel)) {
-            g_world_gate.Invalidate();
+    if (g_world_gate_refresh_requested.exchange(false, std::memory_order_acq_rel)) {
+        g_world_gate.Invalidate();
+    }
+    const bool active = g_world_gate.Refresh(g_context.host) ==
+        pink_paw_heist_esp::PinkPawWorldState::active;
+    if (active) {
+        if (!g_in_pink_paw_world) {
+            g_loot_refresh_requested.store(true, std::memory_order_release);
+            g_extractions.refresh_requested.store(true, std::memory_order_release);
         }
-        const bool active = g_world_gate.Refresh(g_context.host) ==
-            pink_paw_heist_esp::PinkPawWorldState::active;
-        if (active) {
-            if (!g_in_pink_paw_world) {
-                g_loot_refresh_requested.store(true, std::memory_order_release);
-                g_extractions.refresh_requested.store(true, std::memory_order_release);
-            }
-            RefreshExtractionCacheIfDue();
-            RefreshCacheIfDue();
-            RefreshKnownLootIfDue();
-        } else if (g_in_pink_paw_world) {
-            ClearCache();
-            ClearExtractionCache();
-        }
-        g_in_pink_paw_world = active;
-    } else if (g_update_enabled) {
-        g_world_gate.Reset();
-        g_in_pink_paw_world = false;
+        RefreshExtractionCacheIfDue();
+        RefreshCacheIfDue();
+        RefreshKnownLootIfDue();
+    } else if (g_in_pink_paw_world) {
         ClearCache();
         ClearExtractionCache();
     }
-    g_update_enabled = enabled;
+    g_in_pink_paw_world = active;
     ProcessPendingTeleport();
     ProcessPendingPickup();
 }
@@ -2470,6 +2482,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.builtin.pink-paw-heist-esp"),
         anomaly::sdk::StringView("Pink Paw Heist ESP"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.9.0"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.9.1"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

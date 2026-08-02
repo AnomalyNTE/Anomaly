@@ -5,7 +5,7 @@
   "description": "Displays Pink Paw Heist loot and extraction points with value filters, teleport, and pickup controls.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
