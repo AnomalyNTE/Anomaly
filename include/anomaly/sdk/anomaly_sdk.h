@@ -7,6 +7,7 @@
 #include "anomaly/sdk/services/localization.h"
 #include "anomaly/sdk/services/interop.h"
 #include "anomaly/sdk/services/ipc.h"
+#include "anomaly/sdk/services/websocket.h"
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/ui_resources.h"
 #include "anomaly/sdk/services/ue5.h"

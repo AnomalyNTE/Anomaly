@@ -172,6 +172,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_SCHEDULER_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_IPC_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_IPC_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_WEBSOCKET_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_WEBSOCKET_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_IPC_SCHEMA_HASH_V1_SIZE\": ");
     AppendUnsigned(output, ANOMALY_IPC_SCHEMA_HASH_V1_SIZE);
     output.append(",\n    \"ANOMALY_COMMANDS_SERVICE_V1_VERSION\": ");
@@ -686,6 +688,29 @@ std::string BuildSnapshot() {
          {"user", offsetof(AnomalySchedulerServiceV1, user)},
          {"schedule", offsetof(AnomalySchedulerServiceV1, schedule)},
          {"cancel", offsetof(AnomalySchedulerServiceV1, cancel)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyWebSocketServerInfoV1",
+        sizeof(AnomalyWebSocketServerInfoV1),
+        alignof(AnomalyWebSocketServerInfoV1),
+        {{"struct_size", offsetof(AnomalyWebSocketServerInfoV1, struct_size)},
+         {"port", offsetof(AnomalyWebSocketServerInfoV1, port)},
+         {"reserved", offsetof(AnomalyWebSocketServerInfoV1, reserved)},
+         {"connected_clients", offsetof(AnomalyWebSocketServerInfoV1, connected_clients)},
+         {"published_messages", offsetof(AnomalyWebSocketServerInfoV1, published_messages)},
+         {"dropped_messages", offsetof(AnomalyWebSocketServerInfoV1, dropped_messages)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyWebSocketServiceV1",
+        sizeof(AnomalyWebSocketServiceV1),
+        alignof(AnomalyWebSocketServiceV1),
+        {{"struct_size", offsetof(AnomalyWebSocketServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyWebSocketServiceV1, service_version)},
+         {"user", offsetof(AnomalyWebSocketServiceV1, user)},
+         {"publish_text", offsetof(AnomalyWebSocketServiceV1, publish_text)},
+         {"server_info", offsetof(AnomalyWebSocketServiceV1, server_info)}},
         false);
     AppendStruct(
         output,
@@ -1506,6 +1531,8 @@ std::string BuildSnapshot() {
         ANOMALY_SCHEDULER_SERVICE_V1_VERSION, "AnomalySchedulerServiceV1", false);
     AppendService(output, ANOMALY_IPC_SERVICE_V1_ID,
         ANOMALY_IPC_SERVICE_V1_VERSION, "AnomalyIpcServiceV1", false);
+    AppendService(output, ANOMALY_WEBSOCKET_SERVICE_V1_ID,
+        ANOMALY_WEBSOCKET_SERVICE_V1_VERSION, "AnomalyWebSocketServiceV1", false);
     AppendService(output, ANOMALY_COMMANDS_SERVICE_V1_ID,
         ANOMALY_COMMANDS_SERVICE_V1_VERSION, "AnomalyCommandsServiceV1", false);
     AppendService(output, ANOMALY_NOTIFICATIONS_SERVICE_V1_ID,

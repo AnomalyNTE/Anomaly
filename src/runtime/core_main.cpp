@@ -1,5 +1,6 @@
 #include "analyzer.hpp"
 #include "anomaly/core_api.hpp"
+#include "anomaly/adapter_service_registry.hpp"
 #include "anomaly/crash_reporter.hpp"
 #include "anomaly/diagnostic_pipe_service.hpp"
 #include "anomaly/i18n.hpp"
@@ -13,6 +14,7 @@
 #include "anomaly/service_graph.hpp"
 #include "anomaly/service_graph_diagnostics.hpp"
 #include "anomaly/structured_logger.hpp"
+#include "anomaly/websocket_server.hpp"
 #include "config.hpp"
 #include "pipe_server.hpp"
 #include "platform_host.hpp"
@@ -68,6 +70,7 @@ struct CoreContext {
     std::shared_ptr<anomaly::DiagnosticPipeService> diagnostic_pipe;
     std::shared_ptr<anomaly::StructuredLogger> logger;
     std::shared_ptr<anomaly::PlatformSettingsStore> settings;
+    std::shared_ptr<anomaly::WebSocketServer> websocket;
     HMODULE game_module{};
     std::shared_ptr<anomaly::NteProfileRuntime> profile_runtime;
     std::shared_ptr<anomaly::RepositoryCoordinator> repository;
@@ -406,6 +409,43 @@ void StopRepository(const std::shared_ptr<CoreContext>& context) noexcept {
             anomaly::SerializeRepositoryCoordinatorSnapshotJson(repository->Snapshot());
         repository->Stop();
     }
+}
+
+DWORD PrepareWebSocketService(
+    const std::shared_ptr<CoreContext>& context, std::stop_token stop_token) {
+    if (stop_token.stop_requested()) return ERROR_CANCELLED;
+    auto server = std::make_shared<anomaly::WebSocketServer>();
+    if (!server->Start()) {
+        RuntimeLog(
+            context, anomaly::LogLevel::Warning, "websocket.unavailable",
+            "websocket=unavailable reason=listen-failed");
+        return ERROR_SUCCESS;
+    }
+    const AnomalyWebSocketServiceV1* const service = server->Service();
+    if (service == nullptr || !anomaly::ProcessAdapterServices().Publish(
+            ANOMALY_WEBSOCKET_SERVICE_V1_ID,
+            ANOMALY_WEBSOCKET_SERVICE_V1_VERSION,
+            service,
+            {}, std::static_pointer_cast<const void>(server))) {
+        server->Stop();
+        RuntimeLog(
+            context, anomaly::LogLevel::Warning, "websocket.unavailable",
+            "websocket=unavailable reason=service-publish-failed");
+        return ERROR_SUCCESS;
+    }
+    context->websocket = std::move(server);
+    RuntimeLog(
+        context, anomaly::LogLevel::Info, "websocket.ready",
+        "websocket=ready address=127.0.0.1:14514");
+    return stop_token.stop_requested() ? ERROR_CANCELLED : ERROR_SUCCESS;
+}
+
+void StopWebSocketService(const std::shared_ptr<CoreContext>& context) noexcept {
+    auto server = std::exchange(context->websocket, {});
+    if (server == nullptr) return;
+    static_cast<void>(anomaly::ProcessAdapterServices().Revoke(
+        ANOMALY_WEBSOCKET_SERVICE_V1_ID, server->Service()));
+    server->Stop();
 }
 
 DWORD PrepareDiagnosticPipe(
@@ -1153,6 +1193,20 @@ anomaly::RuntimeSessionOptions BuildSessionOptions(
             "register module memory service");
     }
 
+    anomaly::ServiceDescriptor websocket;
+    websocket.id = ANOMALY_WEBSOCKET_SERVICE_V1_ID;
+    websocket.startup = anomaly::ServiceStartup::Blocking;
+    websocket.affinity = anomaly::ServiceAffinity::Lifecycle;
+    websocket.start = [context](std::stop_token stop_token) {
+        return PrepareWebSocketService(context, stop_token);
+    };
+    websocket.stop = [context] { StopWebSocketService(context); };
+    result = services->Register(std::move(websocket));
+    if (result != ERROR_SUCCESS) {
+        throw std::system_error(
+            static_cast<int>(result), std::system_category(), "register websocket service");
+    }
+
     anomaly::ServiceDescriptor pattern;
     pattern.id = "anomaly.internal.pattern";
     pattern.lifetime = anomaly::ServiceLifetime::Provided;
@@ -1225,6 +1279,7 @@ anomaly::RuntimeSessionOptions BuildSessionOptions(
     plugin_host.startup = anomaly::ServiceStartup::Blocking;
     plugin_host.affinity = anomaly::ServiceAffinity::Lifecycle;
     plugin_host.required_dependencies.push_back({"anomaly.config", 1});
+    plugin_host.required_dependencies.push_back({ANOMALY_WEBSOCKET_SERVICE_V1_ID, 1});
     plugin_host.required_dependencies.push_back({"anomaly.internal.nte-profile", 1});
     plugin_host.required_dependencies.push_back({"anomaly.repository.coordinator", 1});
     plugin_host.start = [context](std::stop_token stop_token) {

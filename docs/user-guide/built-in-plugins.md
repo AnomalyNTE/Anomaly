@@ -33,13 +33,17 @@
 | --- | --- |
 | **ID** | `anomaly.builtin.pink-paw-heist-esp` |
 | **作用** | 显示粉爪大劫案中的战利品和撤离点，战利品可按最低价值筛选。 |
-| **依赖服务** | `anomaly.ui`、`anomaly.config`、`anomaly.interop.signature`、`anomaly.ue5.framework`、`anomaly.ue5.ahud`、`anomaly.ue5.names`；`anomaly.nte.session/player/player-teleport/entities/actors`、`anomaly.font`、`anomaly.texture`（均为 V1，可选） |
+| **依赖服务** | `anomaly.ui`、`anomaly.config`、`anomaly.interop.signature`、`anomaly.ue5.framework`、`anomaly.ue5.ahud`、`anomaly.ue5.names`；`anomaly.websocket`、`anomaly.nte.session/player/player-teleport/entities/actors`、`anomaly.font`、`anomaly.texture`（均为 V1，可选） |
 | **需要 Profile** | 是；物品与撤离点绘制需要已验证的 `ue5.ahud`，通用会话、玩家、实体、Actor 与传送服务也由 Profile 控制；Pink Paw 专用拾取签名和布局由插件自带 |
 
 插件窗口和设置菜单继续使用 ImGui；物品边框、标签与撤离点改由 UE 原生 AHUD 绘制，即使管理菜单
 折叠也会显示。窗口中仍会列出物品名称、价值、坐标和撤离点状态。RobBank 可拾取判定和 native
 pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AHUD 绘制、名称解析、原始内存读取
 以及上述通用 NTE 服务。
+
+在粉爪地图中，插件还会通过 Runtime 的本地 `anomaly.websocket` 服务向
+`ws://127.0.0.1:14514` 广播兼容的坐标消息、完整战利品快照以及战利品增量；离开粉爪地图时会发送
+清空事件。战利品筛选由地图前端完成，不受 ESP 菜单的价值或可拾取筛选影响。
 
 ## Custom UID
 

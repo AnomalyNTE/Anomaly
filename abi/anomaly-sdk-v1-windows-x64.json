@@ -23,6 +23,7 @@
     "ANOMALY_DIAGNOSTICS_SERVICE_V1_VERSION": 1,
     "ANOMALY_SCHEDULER_SERVICE_V1_VERSION": 1,
     "ANOMALY_IPC_SERVICE_V1_VERSION": 1,
+    "ANOMALY_WEBSOCKET_SERVICE_V1_VERSION": 1,
     "ANOMALY_IPC_SCHEMA_HASH_V1_SIZE": 32,
     "ANOMALY_COMMANDS_SERVICE_V1_VERSION": 1,
     "ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION": 1,
@@ -501,6 +502,29 @@
         "user": 8,
         "schedule": 16,
         "cancel": 24
+      }
+    },
+    "AnomalyWebSocketServerInfoV1": {
+      "size": 32,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "port": 4,
+        "reserved": 6,
+        "connected_clients": 8,
+        "published_messages": 16,
+        "dropped_messages": 24
+      }
+    },
+    "AnomalyWebSocketServiceV1": {
+      "size": 32,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "publish_text": 16,
+        "server_info": 24
       }
     },
     "AnomalyIpcSchemaHashV1": {
@@ -1304,6 +1328,7 @@
     { "id": "anomaly.diagnostics", "version": 1, "table": "AnomalyDiagnosticsServiceV1" },
     { "id": "anomaly.scheduler", "version": 1, "table": "AnomalySchedulerServiceV1" },
     { "id": "anomaly.ipc", "version": 1, "table": "AnomalyIpcServiceV1" },
+    { "id": "anomaly.websocket", "version": 1, "table": "AnomalyWebSocketServiceV1" },
     { "id": "anomaly.commands", "version": 1, "table": "AnomalyCommandsServiceV1" },
     { "id": "anomaly.notifications", "version": 1, "table": "AnomalyNotificationsServiceV1" },
     { "id": "anomaly.interop.signature", "version": 1, "table": "AnomalySignatureServiceV1" },

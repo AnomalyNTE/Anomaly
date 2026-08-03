@@ -49,6 +49,14 @@ constexpr std::size_t kMaximumSettingsDocumentBytes = 1024;
 constexpr auto kExtractionWorldPollInterval = std::chrono::seconds(1);
 constexpr auto kExtractionStateReadDelay = std::chrono::seconds(1);
 constexpr auto kExtractionStateRetryInterval = std::chrono::milliseconds(250);
+constexpr auto kMapPositionPublishInterval = std::chrono::milliseconds(200);
+constexpr auto kMapLootSnapshotInterval = std::chrono::seconds(2);
+constexpr auto kMapLootSnapshotChunkPublishInterval = std::chrono::milliseconds(100);
+constexpr auto kMapLootSnapshotChunkRetryInterval = std::chrono::milliseconds(250);
+constexpr std::size_t kMapLootSnapshotMaximumTextBytes = 768U * 1024U;
+constexpr std::size_t kMapLootSnapshotMetadataMaximumBytes = 256U;
+constexpr std::size_t kMapLootSnapshotMaximumItemsBytes =
+    kMapLootSnapshotMaximumTextBytes - kMapLootSnapshotMetadataMaximumBytes;
 constexpr std::string_view kSettingsSchemaId = "settings";
 constexpr std::uint32_t kSettingsSchemaVersion = 7;
 constexpr std::uint32_t kPreviousSettingsSchemaVersion = 6;
@@ -69,6 +77,34 @@ struct LootCache final {
     AnomalyNteEntityFrameV1 frame{sizeof(frame)};
     std::vector<LootEntity> loot;
     bool available{};
+};
+
+struct MapLootItem final {
+    std::string id;
+    std::string json;
+};
+
+struct MapLootSnapshotTransfer final {
+    std::vector<std::size_t> chunk_ends;
+    Clock::time_point next_chunk_publish{};
+    std::uint64_t revision{};
+    std::size_t next_chunk{};
+    bool active{};
+};
+
+struct MapSyncState final {
+    std::shared_ptr<const LootCache> observed_cache;
+    std::vector<MapLootItem> current_loot;
+    std::vector<MapLootItem> published_loot;
+    MapLootSnapshotTransfer snapshot;
+    Clock::time_point next_position_publish{};
+    Clock::time_point next_snapshot_publish{};
+    std::uint64_t revision{};
+    std::uint32_t connected_clients{};
+    bool active{};
+    bool position_active{};
+    bool force_snapshot{};
+    bool clear_pending{};
 };
 
 enum class ExtractionActivation {
@@ -160,6 +196,7 @@ struct Context final {
     anomaly::plugins::Localizer localizer;
     const AnomalyConfigServiceV1* config{};
     const AnomalyUe5AhudServiceV1* ahud{};
+    const AnomalyWebSocketServiceV1* websocket{};
     AnomalyGenerationHandleV1 settings_schema{};
     pink_paw_heist_esp::LootClassCache loot_classes;
     pink_paw_heist_esp::LootRefreshPolicy loot_refresh{kLootRefreshInterval};
@@ -195,6 +232,7 @@ std::atomic<std::shared_ptr<const ExtractionDisplaySnapshot>> g_extraction_snaps
 std::atomic<std::shared_ptr<const DisplaySettings>> g_display_settings;
 std::atomic_bool g_loot_refresh_requested{true};
 AnomalyGenerationHandleV1 g_ahud_subscription{};
+MapSyncState g_map_sync;
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -1413,6 +1451,436 @@ bool IsFinitePosition(const double position[3]) noexcept {
         std::isfinite(position[2]);
 }
 
+void AppendJsonString(std::string& output, const std::string_view value) {
+    constexpr std::string_view kHex = "0123456789abcdef";
+    output.push_back('"');
+    for (const unsigned char character : value) {
+        switch (character) {
+        case '"': output += "\\\""; break;
+        case '\\': output += "\\\\"; break;
+        case '\b': output += "\\b"; break;
+        case '\f': output += "\\f"; break;
+        case '\n': output += "\\n"; break;
+        case '\r': output += "\\r"; break;
+        case '\t': output += "\\t"; break;
+        default:
+            if (character < 0x20U) {
+                output += "\\u00";
+                output.push_back(kHex[(character >> 4U) & 0x0FU]);
+                output.push_back(kHex[character & 0x0FU]);
+            } else {
+                output.push_back(static_cast<char>(character));
+            }
+            break;
+        }
+    }
+    output.push_back('"');
+}
+
+bool AppendJsonNumber(std::string& output, const double value) {
+    if (!std::isfinite(value)) return false;
+    std::array<char, 64> buffer{};
+    const auto [end, error] = std::to_chars(
+        buffer.data(), buffer.data() + buffer.size(), value,
+        std::chars_format::general, std::numeric_limits<double>::max_digits10);
+    if (error != std::errc{}) return false;
+    output.append(buffer.data(), end);
+    return true;
+}
+
+void AppendJsonUnsigned(std::string& output, const std::uint64_t value) {
+    std::array<char, 32> buffer{};
+    const auto [end, error] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    if (error == std::errc{}) output.append(buffer.data(), end);
+}
+
+std::string BuildMapLootItemJson(const LootEntity& entry, const std::string_view id) {
+    std::string output;
+    output.reserve(384U + entry.class_name.size() + entry.rob_bank.name_utf8.size());
+    output += "{\"id\":";
+    AppendJsonString(output, id);
+    output += ",\"entityId\":";
+    AppendJsonUnsigned(output, entry.snapshot.entity_id);
+    output += ",\"objectIndex\":";
+    AppendJsonUnsigned(output, entry.rob_bank.entity.object_index);
+    output += ",\"objectSerial\":";
+    AppendJsonUnsigned(output, entry.rob_bank.entity.object_serial);
+    output += ",\"name\":";
+    AppendJsonString(
+        output, entry.rob_bank.name_utf8.empty() ? std::string_view(entry.class_name)
+                                                 : std::string_view(entry.rob_bank.name_utf8));
+    output += ",\"category\":";
+    AppendJsonString(output, entry.class_name);
+    output += ",\"className\":";
+    AppendJsonString(output, entry.class_name);
+    output += ",\"fonsValue\":";
+    AppendJsonUnsigned(output, entry.rob_bank.fons_value);
+    output += ",\"pinkPawCoinValue\":";
+    AppendJsonUnsigned(output, entry.rob_bank.pink_paw_coin_value);
+    output += ",\"itemResolved\":";
+    output += entry.rob_bank.item_resolved ? "true" : "false";
+    output += ",\"pickable\":";
+    output += IsPickable(entry) ? "true" : "false";
+    output += ",\"position\":";
+    if (IsFinitePosition(entry.snapshot.bounds_center)) {
+        output += "{\"x\":";
+        static_cast<void>(AppendJsonNumber(output, entry.snapshot.bounds_center[0]));
+        output += ",\"y\":";
+        static_cast<void>(AppendJsonNumber(output, entry.snapshot.bounds_center[1]));
+        output += ",\"z\":";
+        static_cast<void>(AppendJsonNumber(output, entry.snapshot.bounds_center[2]));
+        output.push_back('}');
+    } else {
+        output += "null";
+    }
+    output.push_back('}');
+    return output;
+}
+
+std::vector<MapLootItem> BuildMapLootItems(const LootCache& cache) {
+    std::vector<MapLootItem> items;
+    items.reserve(cache.loot.size());
+    for (const LootEntity& entry : cache.loot) {
+        const std::string id = std::to_string(entry.snapshot.entity_id);
+        items.push_back({id, BuildMapLootItemJson(entry, id)});
+    }
+    std::sort(items.begin(), items.end(), [](const MapLootItem& left, const MapLootItem& right) {
+        return left.id < right.id;
+    });
+    return items;
+}
+
+bool SameMapLootItems(
+    const std::vector<MapLootItem>& left, const std::vector<MapLootItem>& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t index{}; index != left.size(); ++index) {
+        if (left[index].id != right[index].id || left[index].json != right[index].json) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool PublishMapText(const std::string_view text) noexcept {
+    const AnomalyWebSocketServiceV1* const websocket = g_context.websocket;
+    if (websocket == nullptr || websocket->publish_text == nullptr) return false;
+    const AnomalyStatusV1 status = websocket->publish_text(
+        websocket->user, anomaly::sdk::StringView(text));
+    return status.code == ANOMALY_STATUS_V1_OK;
+}
+
+bool NewMapClientConnected() noexcept {
+    const AnomalyWebSocketServiceV1* const websocket = g_context.websocket;
+    if (websocket == nullptr || !HasField<AnomalyWebSocketServiceV1,
+            decltype(AnomalyWebSocketServiceV1::server_info)>(
+            websocket, offsetof(AnomalyWebSocketServiceV1, server_info)) ||
+        websocket->server_info == nullptr) {
+        return false;
+    }
+    AnomalyWebSocketServerInfoV1 info{sizeof(info)};
+    if (websocket->server_info(websocket->user, &info).code != ANOMALY_STATUS_V1_OK) {
+        return false;
+    }
+    const bool increased = info.connected_clients > g_map_sync.connected_clients;
+    g_map_sync.connected_clients = info.connected_clients;
+    return increased;
+}
+
+double MapTimestamp() noexcept {
+    return std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string BuildNavigationStateJson(const AnomalyNtePlayerSnapshotV1& player) {
+    std::string output;
+    output.reserve(192U);
+    output += "{\"type\":\"navi-state\",\"version\":1,\"position\":{\"x\":";
+    static_cast<void>(AppendJsonNumber(output, player.position[0]));
+    output += ",\"y\":";
+    static_cast<void>(AppendJsonNumber(output, player.position[1]));
+    output += ",\"z\":";
+    static_cast<void>(AppendJsonNumber(output, player.position[2]));
+    output += "},\"angle\":null,\"angleConfidence\":0,\"timestamp\":";
+    static_cast<void>(AppendJsonNumber(output, MapTimestamp()));
+    output.push_back('}');
+    return output;
+}
+
+std::string BuildNavigationClearJson() {
+    std::string output{"{\"type\":\"navi-state\",\"version\":1,\"position\":null,"
+                       "\"angle\":null,\"angleConfidence\":0,\"timestamp\":"};
+    static_cast<void>(AppendJsonNumber(output, MapTimestamp()));
+    output.push_back('}');
+    return output;
+}
+
+std::vector<std::size_t> BuildLootSnapshotChunkEnds(const std::vector<MapLootItem>& items) {
+    std::vector<std::size_t> ends;
+    if (items.empty()) {
+        ends.push_back(0U);
+        return ends;
+    }
+
+    std::size_t chunk_start{};
+    std::size_t chunk_bytes{};
+    for (std::size_t index{}; index != items.size(); ++index) {
+        const std::size_t item_bytes = items[index].json.size();
+        const std::size_t separator_bytes = index == chunk_start ? 0U : 1U;
+        const bool has_room = chunk_bytes <= kMapLootSnapshotMaximumItemsBytes - separator_bytes &&
+            item_bytes <= kMapLootSnapshotMaximumItemsBytes - separator_bytes - chunk_bytes;
+        if (index != chunk_start && !has_room) {
+            ends.push_back(index);
+            chunk_start = index;
+            chunk_bytes = item_bytes;
+        } else {
+            chunk_bytes += separator_bytes + item_bytes;
+        }
+    }
+    ends.push_back(items.size());
+    return ends;
+}
+
+std::string BuildLootSnapshotChunkJson(
+    const std::vector<MapLootItem>& items,
+    const std::size_t begin,
+    const std::size_t end,
+    const std::uint64_t revision,
+    const std::size_t chunk_index,
+    const std::size_t chunk_count) {
+    std::string output{"{\"type\":\"loot-snapshot\",\"version\":1,\"revision\":"};
+    AppendJsonUnsigned(output, revision);
+    output += ",\"chunkIndex\":";
+    AppendJsonUnsigned(output, static_cast<std::uint64_t>(chunk_index));
+    output += ",\"chunkCount\":";
+    AppendJsonUnsigned(output, static_cast<std::uint64_t>(chunk_count));
+    output += ",\"items\":[";
+    for (std::size_t index = begin; index != end; ++index) {
+        if (index != begin) output.push_back(',');
+        output += items[index].json;
+    }
+    output += "]}";
+    return output;
+}
+
+void CancelLootSnapshot() noexcept {
+    MapLootSnapshotTransfer& snapshot = g_map_sync.snapshot;
+    snapshot.chunk_ends.clear();
+    snapshot.next_chunk_publish = {};
+    snapshot.revision = 0;
+    snapshot.next_chunk = 0;
+    snapshot.active = false;
+}
+
+bool BeginLootSnapshot(const Clock::time_point now) {
+    std::vector<std::size_t> chunk_ends;
+    try {
+        chunk_ends = BuildLootSnapshotChunkEnds(g_map_sync.current_loot);
+    } catch (...) {
+        g_map_sync.force_snapshot = false;
+        g_map_sync.next_snapshot_publish = now + kMapLootSnapshotInterval;
+        return false;
+    }
+
+    MapLootSnapshotTransfer& snapshot = g_map_sync.snapshot;
+    snapshot.chunk_ends = std::move(chunk_ends);
+    snapshot.next_chunk_publish = now;
+    snapshot.revision = g_map_sync.revision + 1U;
+    snapshot.next_chunk = 0;
+    snapshot.active = true;
+    g_map_sync.revision = snapshot.revision;
+    g_map_sync.force_snapshot = false;
+    return true;
+}
+
+bool PublishNextLootSnapshotChunk(const Clock::time_point now) {
+    MapLootSnapshotTransfer& snapshot = g_map_sync.snapshot;
+    if (!snapshot.active || now < snapshot.next_chunk_publish) return false;
+    if (snapshot.next_chunk >= snapshot.chunk_ends.size()) {
+        CancelLootSnapshot();
+        g_map_sync.force_snapshot = true;
+        return false;
+    }
+
+    const std::size_t begin = snapshot.next_chunk == 0U
+        ? 0U
+        : snapshot.chunk_ends[snapshot.next_chunk - 1U];
+    const std::size_t end = snapshot.chunk_ends[snapshot.next_chunk];
+    try {
+        if (!PublishMapText(BuildLootSnapshotChunkJson(
+                g_map_sync.current_loot, begin, end, snapshot.revision,
+                snapshot.next_chunk, snapshot.chunk_ends.size()))) {
+            snapshot.next_chunk_publish = now + kMapLootSnapshotChunkRetryInterval;
+            return false;
+        }
+    } catch (...) {
+        snapshot.next_chunk_publish = now + kMapLootSnapshotChunkRetryInterval;
+        return false;
+    }
+
+    ++snapshot.next_chunk;
+    if (snapshot.next_chunk == snapshot.chunk_ends.size()) {
+        snapshot.active = false;
+        snapshot.chunk_ends.clear();
+        snapshot.next_chunk_publish = {};
+        snapshot.next_chunk = 0;
+        g_map_sync.published_loot = g_map_sync.current_loot;
+        g_map_sync.next_snapshot_publish = now + kMapLootSnapshotInterval;
+    } else {
+        snapshot.next_chunk_publish = now + kMapLootSnapshotChunkPublishInterval;
+    }
+    return true;
+}
+
+bool PublishLootDelta() {
+    std::vector<const MapLootItem*> upserts;
+    std::vector<std::string_view> removed;
+    std::size_t current_index{};
+    std::size_t published_index{};
+    while (current_index < g_map_sync.current_loot.size() ||
+           published_index < g_map_sync.published_loot.size()) {
+        if (published_index == g_map_sync.published_loot.size() ||
+            (current_index < g_map_sync.current_loot.size() &&
+             g_map_sync.current_loot[current_index].id <
+                 g_map_sync.published_loot[published_index].id)) {
+            upserts.push_back(&g_map_sync.current_loot[current_index++]);
+        } else if (current_index == g_map_sync.current_loot.size() ||
+                   g_map_sync.published_loot[published_index].id <
+                       g_map_sync.current_loot[current_index].id) {
+            removed.push_back(g_map_sync.published_loot[published_index++].id);
+        } else {
+            if (g_map_sync.current_loot[current_index].json !=
+                g_map_sync.published_loot[published_index].json) {
+                upserts.push_back(&g_map_sync.current_loot[current_index]);
+            }
+            ++current_index;
+            ++published_index;
+        }
+    }
+    if (upserts.empty() && removed.empty()) {
+        g_map_sync.published_loot = g_map_sync.current_loot;
+        return true;
+    }
+
+    const std::uint64_t revision = g_map_sync.revision + 1U;
+    std::string output{"{\"type\":\"loot-delta\",\"version\":1,\"revision\":"};
+    AppendJsonUnsigned(output, revision);
+    output += ",\"upserts\":[";
+    for (std::size_t index{}; index != upserts.size(); ++index) {
+        if (index != 0U) output.push_back(',');
+        output += upserts[index]->json;
+    }
+    output += "],\"removed\":[";
+    for (std::size_t index{}; index != removed.size(); ++index) {
+        if (index != 0U) output.push_back(',');
+        AppendJsonString(output, removed[index]);
+    }
+    output += "]}";
+    if (!PublishMapText(output)) return false;
+    g_map_sync.revision = revision;
+    g_map_sync.published_loot = g_map_sync.current_loot;
+    return true;
+}
+
+bool FlushMapClear() {
+    if (!g_map_sync.clear_pending) return true;
+    CancelLootSnapshot();
+    if (!PublishMapText("{\"type\":\"loot-clear\",\"version\":1}")) return false;
+    if (!PublishMapText(BuildNavigationClearJson())) return false;
+    g_map_sync.clear_pending = false;
+    g_map_sync.observed_cache.reset();
+    g_map_sync.current_loot.clear();
+    g_map_sync.published_loot.clear();
+    g_map_sync.position_active = false;
+    g_map_sync.force_snapshot = true;
+    return true;
+}
+
+void RequestMapClear() noexcept {
+    g_map_sync.active = false;
+    g_map_sync.clear_pending = true;
+    CancelLootSnapshot();
+    g_map_sync.next_position_publish = {};
+    g_map_sync.next_snapshot_publish = {};
+}
+
+void SynchronizeMap(const AnomalyNtePlayerSnapshotV1* const player) {
+    if (!FlushMapClear()) return;
+    if (!g_map_sync.active) {
+        g_map_sync.active = true;
+        g_map_sync.force_snapshot = true;
+    }
+    if (NewMapClientConnected()) g_map_sync.force_snapshot = true;
+    const Clock::time_point now = Clock::now();
+    if (player != nullptr && now >= g_map_sync.next_position_publish &&
+        PublishMapText(BuildNavigationStateJson(*player))) {
+        g_map_sync.position_active = true;
+        g_map_sync.next_position_publish = now + kMapPositionPublishInterval;
+    } else if (player == nullptr && g_map_sync.position_active &&
+               PublishMapText(BuildNavigationClearJson())) {
+        g_map_sync.position_active = false;
+        g_map_sync.next_position_publish = {};
+    }
+
+    if (g_map_sync.snapshot.active && g_map_sync.force_snapshot) {
+        CancelLootSnapshot();
+    }
+    const auto cache = g_loot_cache.load(std::memory_order_acquire);
+    const bool cache_changed = cache != g_map_sync.observed_cache;
+    if (!cache || !cache->available) {
+        if (cache_changed) {
+            g_map_sync.observed_cache = cache;
+            if (g_map_sync.snapshot.active) {
+                CancelLootSnapshot();
+                g_map_sync.force_snapshot = true;
+            }
+        }
+        return;
+    }
+    if (cache_changed) {
+        std::vector<MapLootItem> next_loot = BuildMapLootItems(*cache);
+        const bool loot_changed = !SameMapLootItems(next_loot, g_map_sync.current_loot);
+        g_map_sync.observed_cache = cache;
+        if (loot_changed) {
+            if (g_map_sync.snapshot.active) {
+                CancelLootSnapshot();
+                g_map_sync.force_snapshot = true;
+            }
+            g_map_sync.current_loot = std::move(next_loot);
+            if (!g_map_sync.force_snapshot && g_map_sync.revision != 0U) {
+                if (!PublishLootDelta()) g_map_sync.force_snapshot = true;
+            }
+        }
+    }
+    if (g_map_sync.snapshot.active) {
+        static_cast<void>(PublishNextLootSnapshotChunk(now));
+    } else if ((g_map_sync.force_snapshot || now >= g_map_sync.next_snapshot_publish) &&
+               BeginLootSnapshot(now)) {
+        static_cast<void>(PublishNextLootSnapshotChunk(now));
+    }
+}
+
+void SynchronizeMapIfPossible() noexcept {
+    if (g_context.websocket == nullptr || g_context.host == nullptr) return;
+    try {
+        AnomalyNtePlayerSnapshotV1 snapshot{sizeof(snapshot)};
+        const AnomalyNtePlayerSnapshotV1* current_player{};
+        const auto player = QueryService<AnomalyNtePlayerServiceV1>(
+            g_context.host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID,
+            ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
+        if (player && HasField<AnomalyNtePlayerServiceV1,
+                decltype(AnomalyNtePlayerServiceV1::snapshot)>(
+                player.service, offsetof(AnomalyNtePlayerServiceV1, snapshot)) &&
+            player.service->snapshot != nullptr &&
+            player.service->snapshot(player.service->user, &snapshot).code ==
+                ANOMALY_STATUS_V1_OK &&
+            IsCurrentPlayer(snapshot) && IsFinitePosition(snapshot.position)) {
+            current_player = &snapshot;
+        }
+        SynchronizeMap(current_player);
+    } catch (...) {
+    }
+}
+
 void RecordTeleportResult(const AnomalyStatusV1 status) noexcept {
     std::scoped_lock lock(g_teleport.mutex);
     g_teleport.has_result = true;
@@ -2218,6 +2686,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION);
     const auto ahud = host_view.Query<AnomalyUe5AhudServiceV1>(
         ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION);
+    const auto websocket = host_view.Query<AnomalyWebSocketServiceV1>(
+        ANOMALY_WEBSOCKET_SERVICE_V1_ID, ANOMALY_WEBSOCKET_SERVICE_V1_VERSION);
     if (!ui || !HasField<AnomalyUiServiceV1,
             decltype(AnomalyUiServiceV1::button_enabled)>(
             ui.get(), offsetof(AnomalyUiServiceV1, button_enabled)) ||
@@ -2235,6 +2705,14 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.localizer = anomaly::plugins::Localizer(host);
     g_context.config = config.get();
     g_context.ahud = ahud.get();
+    g_context.websocket = websocket &&
+            HasField<AnomalyWebSocketServiceV1,
+                decltype(AnomalyWebSocketServiceV1::publish_text)>(
+                websocket.get(), offsetof(AnomalyWebSocketServiceV1, publish_text)) &&
+            websocket->publish_text != nullptr
+        ? websocket.get()
+        : nullptr;
+    g_map_sync = {};
     const AnomalyStatusV1 schema_status = g_context.config->register_schema(
         g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
         kSettingsSchemaVersion, Bytes(kSettingsSchema), &g_context.settings_schema);
@@ -2288,6 +2766,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
     ClearCache();
     ClearExtractionCache();
+    g_map_sync = {};
     PublishDisplaySettings();
     const AnomalyStatusV1 ahud_status = SubscribeAhud();
     if (ahud_status.code != ANOMALY_STATUS_V1_OK) {
@@ -2306,6 +2785,11 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_world_gate.Reset();
     g_in_pink_paw_world = false;
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
+    RequestMapClear();
+    try {
+        static_cast<void>(FlushMapClear());
+    } catch (...) {
+    }
     g_rob_bank.Stop();
     ClearCache();
     ClearExtractionCache();
@@ -2321,6 +2805,11 @@ void ANOMALY_CALL Unload(void*) {
     g_world_gate.Reset();
     g_in_pink_paw_world = false;
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
+    RequestMapClear();
+    try {
+        static_cast<void>(FlushMapClear());
+    } catch (...) {
+    }
     g_rob_bank.Stop();
     {
         std::scoped_lock lock(g_teleport.mutex);
@@ -2458,6 +2947,15 @@ void ANOMALY_CALL Update(void*, double) {
     } else if (g_in_pink_paw_world) {
         ClearCache();
         ClearExtractionCache();
+        RequestMapClear();
+    }
+    if (active) {
+        SynchronizeMapIfPossible();
+    } else {
+        try {
+            static_cast<void>(FlushMapClear());
+        } catch (...) {
+        }
     }
     g_in_pink_paw_world = active;
     ProcessPendingTeleport();
@@ -2482,6 +2980,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.builtin.pink-paw-heist-esp"),
         anomaly::sdk::StringView("Pink Paw Heist ESP"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.9.1"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.10.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

@@ -409,6 +409,13 @@ target_link_libraries(
     anomaly_adapter_services
     PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend)
 
+add_library(anomaly_websocket_server STATIC src/platform/windows/websocket_server.cpp)
+target_include_directories(anomaly_websocket_server PUBLIC include)
+target_compile_definitions(
+    anomaly_websocket_server PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_websocket_server PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_websocket_server PUBLIC Ws2_32 bcrypt)
+
 add_library(anomaly_nte_profile_runtime STATIC src/game/nte/nte_profile_runtime.cpp)
 target_include_directories(anomaly_nte_profile_runtime PUBLIC include)
 target_compile_definitions(
@@ -814,6 +821,7 @@ target_link_libraries(
     anomaly_scoped_platform
     anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
     anomaly_nte_profile_runtime
+    anomaly_websocket_server
     anomaly_repository_coordinator
     anomaly_crash_reporter anomaly_runtime_crash_coordinator
     anomaly_structured_logger anomaly_ui_resources anomaly_i18n

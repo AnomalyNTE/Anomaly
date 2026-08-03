@@ -5,7 +5,7 @@
   "description": "Displays Pink Paw Heist loot and extraction points with value filters, teleport, and pickup controls.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -18,6 +18,7 @@
     {"id": "anomaly.ue5.framework", "minVersion": 1},
     {"id": "anomaly.ue5.ahud", "minVersion": 1},
     {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.websocket", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
@@ -25,5 +26,5 @@
     {"id": "anomaly.nte.actors", "minVersion": 1, "optional": true},
     {"id": "anomaly.font", "minVersion": 1, "optional": true}
   ],
-  "capabilities": ["ui", "configuration", "game-events", "interop-signature", "memory-read", "ue5-ahud", "ue5-names", "nte-entity-snapshot", "nte-actor-snapshot", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "ui-font"]
+  "capabilities": ["ui", "configuration", "game-events", "interop-signature", "memory-read", "ue5-ahud", "ue5-names", "websocket", "nte-entity-snapshot", "nte-actor-snapshot", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "ui-font"]
 }

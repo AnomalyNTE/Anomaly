@@ -12,6 +12,7 @@
 | [平台作用域服务](platform-services.md) | `config`、`storage`、`runtime-info`、`diagnostics`、`scheduler`、`commands`、`notifications` |
 | [Interop 与内存](interop-and-memory.md) | `interop.signature`、`interop.hook`、`interop.patch`、内存 grant |
 | [插件间 IPC](ipc.md) | `anomaly.ipc` |
+| [WebSocket 广播](websocket.md) | `anomaly.websocket` |
 | [UI 服务](ui-services.md) | `anomaly.ui`、`window`、`font`、`texture`、`input` |
 | [UE5 服务](ue5-services.md) | `ue5.build`、`ahud`、`framework`、`names`、`objects`、`world` |
 | [NTE 服务](nte-services.md) | `nte.build`、`session`、`player`、`player-teleport`、`entities`、`actors`、`metrics` |
@@ -115,6 +116,7 @@ void*    user;             // 调用每个函数时作为第一个参数回传
 | `anomaly.interop.hook` | 1 | `interop-hook` | [hook](interop-and-memory.md#anomalyinterophook) |
 | `anomaly.interop.patch` | 1 | `interop-patch` | [patch](interop-and-memory.md#anomalyinteroppatch) |
 | `anomaly.ipc` | 1 | `ipc` | [ipc](ipc.md) |
+| `anomaly.websocket` | 1 | `websocket` | [websocket](websocket.md) |
 | `anomaly.ui` | 1 | `ui` | [ui](ui-services.md#anomalyui) |
 | `anomaly.window` | 1 | `ui-window` | [window](ui-services.md#anomalywindow) |
 | `anomaly.font` | 1 | `ui-font` | [font](ui-services.md#anomalyfont) |
