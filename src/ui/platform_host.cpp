@@ -5419,6 +5419,7 @@ private:
             route.swap(settings_route_to_record_);
             external_url.swap(pending_external_url_);
         }
+        if (!external_url) external_url = anomaly::ConsumeHostUiExternalUrlRequest();
         const auto submit = diagnostics_.lifecycle_post
             ? diagnostics_.lifecycle_post
             : diagnostics_.lifecycle_invoke;

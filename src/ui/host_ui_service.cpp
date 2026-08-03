@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cctype>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,6 +27,8 @@ std::atomic_bool g_management_expansion_requested{};
 std::atomic_bool g_developer_mode{};
 std::atomic<PlatformInputCapturePolicy> g_input_capture_policy{
     PlatformInputCapturePolicy::Automatic};
+std::mutex g_external_url_mutex;
+std::optional<std::string> g_pending_external_url;
 ThreadLocalScalar<bool> g_apply_menu_state;
 ThreadLocalScalar<bool> g_frame_menus_collapsed;
 std::unordered_map<ImGuiID, bool> g_window_locks;
@@ -381,6 +385,24 @@ std::string Copy(AnomalyStringViewV1 value) {
     return value.data == nullptr ? std::string{} : std::string(value.data, value.size);
 }
 
+bool IsExternalHttpUrl(const std::string_view value) noexcept {
+    constexpr std::string_view kHttpPrefix = "http://";
+    constexpr std::string_view kHttpsPrefix = "https://";
+    return (value.size() > kHttpPrefix.size() && value.starts_with(kHttpPrefix)) ||
+        (value.size() > kHttpsPrefix.size() && value.starts_with(kHttpsPrefix));
+}
+
+bool QueueExternalUrl(std::string value) noexcept {
+    if (!IsExternalHttpUrl(value)) return false;
+    try {
+        std::scoped_lock lock(g_external_url_mutex);
+        g_pending_external_url = std::move(value);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 void ANOMALY_CALL SetNextWindowSize(void*, float width, float height, std::uint32_t condition) {
     ImGui::SetNextWindowSize(ImVec2(width, height), static_cast<ImGuiCond>(condition));
 }
@@ -515,6 +537,29 @@ int ANOMALY_CALL ButtonEnabled(
     return enabled != 0 && pressed ? 1 : 0;
 }
 
+void ANOMALY_CALL SameLine(
+    void*, const float offset_from_start_x, const float spacing) {
+    if (!std::isfinite(offset_from_start_x) || !std::isfinite(spacing)) return;
+    ImGui::SameLine(offset_from_start_x, spacing);
+}
+
+void ANOMALY_CALL SetCursorPosX(void*, const float local_x) {
+    if (!std::isfinite(local_x)) return;
+    ImGui::SetCursorPosX(local_x);
+}
+
+int ANOMALY_CALL TextLink(
+    void*, AnomalyStringViewV1 label, AnomalyStringViewV1 url) {
+    try {
+        const std::string destination = Copy(url);
+        if (!IsExternalHttpUrl(destination)) return 0;
+        const std::string text = Copy(label);
+        return ImGui::TextLink(text.c_str()) && QueueExternalUrl(destination) ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
+}
+
 int ANOMALY_CALL Checkbox(void*, AnomalyStringViewV1 label, int* value) {
     if (value == nullptr) return 0;
     const std::string text = Copy(label);
@@ -607,10 +652,15 @@ void ANOMALY_CALL EndChild(void*) { ImGui::EndChild(); }
 int ANOMALY_CALL BeginTable(
     void*, AnomalyStringViewV1 id, std::int32_t columns, std::uint32_t flags,
     float outer_width, float outer_height) {
-    if (columns <= 0) return 0;
+    constexpr std::uint32_t kKnownFlags = ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT;
+    if (columns <= 0 || (flags & ~kKnownFlags) != 0) return 0;
     const std::string text = Copy(id);
+    ImGuiTableFlags imgui_flags = ImGuiTableFlags_None;
+    if ((flags & ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT) != 0) {
+        imgui_flags |= ImGuiTableFlags_SizingFixedFit;
+    }
     return ImGui::BeginTable(
-        text.c_str(), columns, static_cast<ImGuiTableFlags>(flags),
+        text.c_str(), columns, imgui_flags,
         ImVec2(outer_width, outer_height)) ? 1 : 0;
 }
 
@@ -968,7 +1018,7 @@ const AnomalyUiServiceV1 kUiService{
     EndTable, BeginMenu, EndMenu, OpenPopup, BeginPopupModal, EndPopup,
     CloseCurrentPopup, FilterMatch, FrameState,
     SetNextWindowSizeConstraints, GetWindowSize, InputUInt32, InputDouble,
-    DeveloperModeEnabled, InputText, ButtonEnabled};
+    DeveloperModeEnabled, InputText, ButtonEnabled, SameLine, SetCursorPosX, TextLink};
 
 }  // namespace
 
@@ -1010,6 +1060,13 @@ void SetHostUiDeveloperMode(const bool enabled) noexcept {
 }
 
 bool HostUiDeveloperModeEnabled() noexcept { return g_developer_mode.load(); }
+
+std::optional<std::string> ConsumeHostUiExternalUrlRequest() noexcept {
+    std::scoped_lock lock(g_external_url_mutex);
+    std::optional<std::string> request;
+    request.swap(g_pending_external_url);
+    return request;
+}
 
 bool HostUiCurrentWindowLocked() noexcept {
     ImGuiWindow* const window = CurrentHostWindow();

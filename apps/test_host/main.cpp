@@ -33,6 +33,9 @@ int ANOMALY_CALL InputDouble(
     void*, AnomalyStringViewV1, double*, double, double) {
     return 0;
 }
+void ANOMALY_CALL SameLine(void*, float, float) {}
+void ANOMALY_CALL SetCursorPosX(void*, float) {}
+int ANOMALY_CALL TextLink(void*, AnomalyStringViewV1, AnomalyStringViewV1) { return 0; }
 const AnomalyUiServiceV1 kUi = [] {
     AnomalyUiServiceV1 ui{};
     ui.struct_size = sizeof(ui);
@@ -44,6 +47,9 @@ const AnomalyUiServiceV1 kUi = [] {
     ui.button = Button;
     ui.input_uint32 = InputUInt32;
     ui.input_double = InputDouble;
+    ui.same_line = SameLine;
+    ui.set_cursor_pos_x = SetCursorPosX;
+    ui.text_link = TextLink;
     return ui;
 }();
 

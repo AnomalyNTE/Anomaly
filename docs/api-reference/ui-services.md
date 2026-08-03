@@ -67,6 +67,9 @@ typedef struct AnomalyUiServiceV1 {
     int  (ANOMALY_CALL *developer_mode_enabled)(void* user);
     int  (ANOMALY_CALL *input_text)(void* user, AnomalyStringViewV1 label, char* buffer, size_t buffer_capacity, uint32_t flags);
     int  (ANOMALY_CALL *button_enabled)(void* user, AnomalyStringViewV1 label, float width, float height, int enabled);
+    void (ANOMALY_CALL *same_line)(void* user, float offset_from_start_x, float spacing);
+    void (ANOMALY_CALL *set_cursor_pos_x)(void* user, float local_x);
+    int  (ANOMALY_CALL *text_link)(void* user, AnomalyStringViewV1 label, AnomalyStringViewV1 url);
 } AnomalyUiServiceV1;
 ```
 
@@ -75,6 +78,8 @@ typedef struct AnomalyUiServiceV1 {
 | `set_next_window_size(w, h, condition)` | 设置下一个窗口尺寸 |
 | `begin_window(title, open, flags)` / `end_window()` | 开始 / 结束窗口，返回是否展开 |
 | `text` / `button` / `button_enabled` / `checkbox` / `slider_float` / `color_edit4` / `input_*` | 基础控件与有界输入 |
+| `same_line` / `set_cursor_pos_x` | 紧凑的内联控件和局部水平定位 |
+| `text_link(label, url)` | 显示左键可点的文本链接；仅接受 `http://` 或 `https://`，点击后由宿主在绘制结束后请求默认浏览器打开 |
 | `begin_child` / `begin_table` / `begin_menu` / `begin_popup_modal` 及对应 `end_*` | 作用域 UI 容器 |
 | `filter_match` / `frame_state` / `developer_mode_enabled` | 当前帧和会话状态查询 |
 | `draw_entity_bbox` | 用 Unreal rotator 约定投影一个轴对齐世界盒并在前景绘制；仅当可见时返回 1 |
@@ -98,7 +103,15 @@ typedef enum AnomalyUiFrameStateV1 {   // frame_state() 返回值的位
 typedef enum AnomalyUiTextInputFlagsV1 {
     ANOMALY_UI_TEXT_INPUT_V1_NONE = 0, ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1<<0
 } AnomalyUiTextInputFlagsV1;
+typedef enum AnomalyUiTableFlagsV1 {
+    ANOMALY_UI_TABLE_V1_NONE = 0, ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT = 1<<0
+} AnomalyUiTableFlagsV1;
 ```
+
+`begin_table` 的 `flags` 只接受 `AnomalyUiTableFlagsV1`。使用
+`ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT` 让列宽贴合内容，而不是把同一行的列拉伸到可用宽度。
+`same_line(0, spacing)` 可在相邻控件之间使用固定小间隔；`set_cursor_pos_x` 接受窗口本地 X 坐标。
+服务表尾部字段必须先用 `struct_size` 检查后再调用，以兼容尚未提供这些可选控件的 V1 宿主。
 
 ---
 

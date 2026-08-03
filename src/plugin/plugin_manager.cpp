@@ -1058,8 +1058,47 @@ void ANOMALY_CALL ProxyGetWindowSize(void* user, float* width, float* height) {
     }
 }
 
+void ANOMALY_CALL ProxySameLine(
+    void* user, const float offset_from_start_x, const float spacing) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return;
+    if (context != nullptr &&
+        HasUiField<decltype(AnomalyUiServiceV1::same_line)>(
+            context->service, offsetof(AnomalyUiServiceV1, same_line)) &&
+        context->service->same_line != nullptr) {
+        context->service->same_line(
+            context->service->user, offset_from_start_x, spacing);
+    }
+}
+
+void ANOMALY_CALL ProxySetCursorPosX(void* user, const float local_x) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return;
+    if (context != nullptr &&
+        HasUiField<decltype(AnomalyUiServiceV1::set_cursor_pos_x)>(
+            context->service, offsetof(AnomalyUiServiceV1, set_cursor_pos_x)) &&
+        context->service->set_cursor_pos_x != nullptr) {
+        context->service->set_cursor_pos_x(context->service->user, local_x);
+    }
+}
+
+int ANOMALY_CALL ProxyTextLink(
+    void* user, AnomalyStringViewV1 label, AnomalyStringViewV1 url) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return 0;
+    return context != nullptr &&
+            HasUiField<decltype(AnomalyUiServiceV1::text_link)>(
+                context->service, offsetof(AnomalyUiServiceV1, text_link)) &&
+            context->service->text_link != nullptr
+        ? context->service->text_link(context->service->user, label, url)
+        : 0;
+}
+
 AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
-    return {
+    AnomalyUiServiceV1 proxy{
         sizeof(AnomalyUiServiceV1), ANOMALY_UI_SERVICE_V1_VERSION,
         context,
         ProxySetNextWindowSize, ProxyBeginWindow, ProxyEndWindow, ProxyText, ProxyButton,
@@ -1070,7 +1109,35 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         ProxyEndMenu, ProxyOpenPopup, ProxyBeginPopupModal, ProxyEndPopup,
         ProxyCloseCurrentPopup, ProxyFilterMatch, ProxyFrameState,
         ProxySetNextWindowSizeConstraints, ProxyGetWindowSize, ProxyInputUInt32, ProxyInputDouble,
-        ProxyDeveloperModeEnabled, ProxyInputText, ProxyButtonEnabled};
+        ProxyDeveloperModeEnabled, ProxyInputText, ProxyButtonEnabled,
+        ProxySameLine, ProxySetCursorPosX, ProxyTextLink};
+    if (context == nullptr || context->service == nullptr) {
+        proxy.struct_size = offsetof(AnomalyUiServiceV1, user) + sizeof(proxy.user);
+        return proxy;
+    }
+
+    std::size_t advertised_size = (std::min)(
+        static_cast<std::size_t>(context->service->struct_size), sizeof(proxy));
+    if (!HasUiField<decltype(AnomalyUiServiceV1::same_line)>(
+            context->service, offsetof(AnomalyUiServiceV1, same_line)) ||
+        context->service->same_line == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size, offsetof(AnomalyUiServiceV1, same_line));
+    }
+    if (!HasUiField<decltype(AnomalyUiServiceV1::set_cursor_pos_x)>(
+            context->service, offsetof(AnomalyUiServiceV1, set_cursor_pos_x)) ||
+        context->service->set_cursor_pos_x == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size, offsetof(AnomalyUiServiceV1, set_cursor_pos_x));
+    }
+    if (!HasUiField<decltype(AnomalyUiServiceV1::text_link)>(
+            context->service, offsetof(AnomalyUiServiceV1, text_link)) ||
+        context->service->text_link == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size, offsetof(AnomalyUiServiceV1, text_link));
+    }
+    proxy.struct_size = static_cast<std::uint32_t>(advertised_size);
+    return proxy;
 }
 
 const char* LevelName(AnomalyCoreLogLevelV1 level) {

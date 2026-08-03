@@ -517,14 +517,15 @@
       }
     },
     "AnomalyWebSocketServiceV1": {
-      "size": 32,
+      "size": 40,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
         "service_version": 4,
         "user": 8,
         "publish_text": 16,
-        "server_info": 24
+        "server_info": 24,
+        "set_port": 32
       }
     },
     "AnomalyIpcSchemaHashV1": {
@@ -698,7 +699,7 @@
       }
     },
     "AnomalyUiServiceV1": {
-      "size": 280,
+      "size": 304,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -736,7 +737,10 @@
         "input_double": 248,
         "developer_mode_enabled": 256,
         "input_text": 264,
-        "button_enabled": 272
+        "button_enabled": 272,
+        "same_line": 280,
+        "set_cursor_pos_x": 288,
+        "text_link": 296
       }
     },
     "AnomalyWindowSpecV1": {

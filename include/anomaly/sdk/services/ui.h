@@ -56,6 +56,11 @@ typedef enum AnomalyUiTextInputFlagsV1 {
     ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1u << 0u
 } AnomalyUiTextInputFlagsV1;
 
+typedef enum AnomalyUiTableFlagsV1 {
+    ANOMALY_UI_TABLE_V1_NONE = 0,
+    ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT = 1u << 0u
+} AnomalyUiTableFlagsV1;
+
 // Stable C facade over the host UI implementation. Plugins never exchange C++ UI types.
 // Draw callbacks are valid only during the current on_draw callback unless documented otherwise.
 typedef struct AnomalyUiServiceV1 {
@@ -128,6 +133,13 @@ typedef struct AnomalyUiServiceV1 {
     int (ANOMALY_CALL *button_enabled)(
         void* user, AnomalyStringViewV1 label,
         float width, float height, int enabled);
+    void (ANOMALY_CALL *same_line)(
+        void* user, float offset_from_start_x, float spacing);
+    void (ANOMALY_CALL *set_cursor_pos_x)(void* user, float local_x);
+    // Displays a text link and queues a host-owned browser launch when it is
+    // left-clicked. The URL must use the http:// or https:// scheme.
+    int (ANOMALY_CALL *text_link)(
+        void* user, AnomalyStringViewV1 label, AnomalyStringViewV1 url);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus

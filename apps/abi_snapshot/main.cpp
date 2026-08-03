@@ -710,7 +710,8 @@ std::string BuildSnapshot() {
          {"service_version", offsetof(AnomalyWebSocketServiceV1, service_version)},
          {"user", offsetof(AnomalyWebSocketServiceV1, user)},
          {"publish_text", offsetof(AnomalyWebSocketServiceV1, publish_text)},
-         {"server_info", offsetof(AnomalyWebSocketServiceV1, server_info)}},
+         {"server_info", offsetof(AnomalyWebSocketServiceV1, server_info)},
+         {"set_port", offsetof(AnomalyWebSocketServiceV1, set_port)}},
         false);
     AppendStruct(
         output,
@@ -929,7 +930,10 @@ std::string BuildSnapshot() {
          {"input_double", offsetof(AnomalyUiServiceV1, input_double)},
          {"developer_mode_enabled", offsetof(AnomalyUiServiceV1, developer_mode_enabled)},
          {"input_text", offsetof(AnomalyUiServiceV1, input_text)},
-         {"button_enabled", offsetof(AnomalyUiServiceV1, button_enabled)}},
+         {"button_enabled", offsetof(AnomalyUiServiceV1, button_enabled)},
+         {"same_line", offsetof(AnomalyUiServiceV1, same_line)},
+         {"set_cursor_pos_x", offsetof(AnomalyUiServiceV1, set_cursor_pos_x)},
+         {"text_link", offsetof(AnomalyUiServiceV1, text_link)}},
         false);
     AppendStruct(
         output,

@@ -58,11 +58,15 @@ constexpr std::size_t kMapLootSnapshotMetadataMaximumBytes = 256U;
 constexpr std::size_t kMapLootSnapshotMaximumItemsBytes =
     kMapLootSnapshotMaximumTextBytes - kMapLootSnapshotMetadataMaximumBytes;
 constexpr std::string_view kSettingsSchemaId = "settings";
-constexpr std::uint32_t kSettingsSchemaVersion = 7;
-constexpr std::uint32_t kPreviousSettingsSchemaVersion = 6;
+constexpr std::uint32_t kSettingsSchemaVersion = 8;
+constexpr std::uint32_t kPreviousSettingsSchemaVersion = 7;
+constexpr std::uint32_t kLegacySettingsSchemaVersion = 6;
 constexpr double kDefaultTeleportZOffsetCentimeters = 150.0;
+constexpr std::uint32_t kDefaultWebSocketPort = 14514U;
+constexpr std::uint32_t kMinimumWebSocketPort = 1U;
+constexpr std::uint32_t kMaximumWebSocketPort = 65535U;
 constexpr std::string_view kSettingsSchema = R"json(
-{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","minimumValue","teleportZOffset"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"}}}
+{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","minimumValue","teleportZOffset","websocketEnabled","websocketPort"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"},"websocketEnabled":{"type":"boolean"},"websocketPort":{"type":"integer","minimum":1,"maximum":65535}}}
 )json";
 
 struct LootEntity final {
@@ -148,6 +152,8 @@ struct Settings final {
     bool show_pickable_only{true};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
+    bool websocket_enabled{true};
+    std::uint32_t websocket_port{kDefaultWebSocketPort};
 };
 
 struct DisplaySettings final {
@@ -209,6 +215,8 @@ struct Context final {
     int show_pickable_only{1};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
+    int websocket_enabled{1};
+    std::uint32_t websocket_port{kDefaultWebSocketPort};
     std::size_t current_page{};
 
     bool settings_dirty{};
@@ -233,6 +241,7 @@ std::atomic<std::shared_ptr<const DisplaySettings>> g_display_settings;
 std::atomic_bool g_loot_refresh_requested{true};
 AnomalyGenerationHandleV1 g_ahud_subscription{};
 MapSyncState g_map_sync;
+std::atomic_bool g_websocket_map_enabled{true};
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -247,10 +256,11 @@ class SettingsDocumentReader final {
 public:
     explicit SettingsDocumentReader(const std::string_view document) noexcept : document_(document) {}
 
-    bool Read(
-        Settings& settings,
-        const bool require_hud_draw_settings) noexcept {
+    bool Read(Settings& settings, const std::uint32_t schema_version) noexcept {
         if (!Consume('{')) return false;
+
+        const bool require_hud_draw_settings = schema_version >= kPreviousSettingsSchemaVersion;
+        const bool require_websocket_settings = schema_version >= kSettingsSchemaVersion;
 
         bool menu_open_seen{};
         bool enabled_seen{};
@@ -260,6 +270,8 @@ public:
         bool show_pickable_only_seen{};
         bool minimum_value_seen{};
         bool teleport_z_offset_seen{};
+        bool websocket_enabled_seen{};
+        bool websocket_port_seen{};
         for (;;) {
             if (Consume('}')) break;
 
@@ -297,6 +309,18 @@ public:
                     return false;
                 }
                 teleport_z_offset_seen = true;
+            } else if (key == "websocketEnabled") {
+                if (!require_websocket_settings || websocket_enabled_seen ||
+                    !ReadBoolean(settings.websocket_enabled)) {
+                    return false;
+                }
+                websocket_enabled_seen = true;
+            } else if (key == "websocketPort") {
+                if (!require_websocket_settings || websocket_port_seen ||
+                    !ReadUInt32(settings.websocket_port)) {
+                    return false;
+                }
+                websocket_port_seen = true;
             } else {
                 return false;
             }
@@ -310,6 +334,10 @@ public:
             (!require_hud_draw_settings || (draw_loot_boxes_seen && draw_extractions_seen)) &&
             show_active_extractions_only_seen && show_pickable_only_seen &&
             minimum_value_seen && teleport_z_offset_seen &&
+            (!require_websocket_settings ||
+             (websocket_enabled_seen && websocket_port_seen &&
+              settings.websocket_port >= kMinimumWebSocketPort &&
+              settings.websocket_port <= kMaximumWebSocketPort)) &&
             cursor_ == document_.size();
     }
 
@@ -449,6 +477,21 @@ bool ConfigMethodsAvailable(const AnomalyConfigServiceV1* service) noexcept {
         service->write_atomic != nullptr;
 }
 
+bool RequestConfiguredWebSocketPort() noexcept {
+    const AnomalyWebSocketServiceV1* const websocket = g_context.websocket;
+    if (websocket == nullptr || !HasField<AnomalyWebSocketServiceV1,
+            decltype(AnomalyWebSocketServiceV1::set_port)>(
+            websocket, offsetof(AnomalyWebSocketServiceV1, set_port)) ||
+        websocket->set_port == nullptr) {
+        return false;
+    }
+    const std::uint32_t port = std::clamp(
+        g_context.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort);
+    return websocket->set_port(
+               websocket->user, static_cast<std::uint16_t>(port)).code ==
+        ANOMALY_STATUS_V1_OK;
+}
+
 Settings CurrentSettings() noexcept {
     return {
         g_context.menu_open != 0,
@@ -459,7 +502,10 @@ Settings CurrentSettings() noexcept {
         g_context.show_pickable_only != 0,
         g_context.minimum_value,
         std::isfinite(g_context.teleport_z_offset)
-            ? g_context.teleport_z_offset : kDefaultTeleportZOffsetCentimeters};
+            ? g_context.teleport_z_offset : kDefaultTeleportZOffsetCentimeters,
+        g_context.websocket_enabled != 0,
+        std::clamp(
+            g_context.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort)};
 }
 
 DisplaySettings CurrentDisplaySettings() noexcept {
@@ -488,6 +534,10 @@ void ApplySettings(const Settings& settings) noexcept {
     g_context.minimum_value = settings.minimum_value;
     g_context.teleport_z_offset = std::isfinite(settings.teleport_z_offset)
         ? settings.teleport_z_offset : kDefaultTeleportZOffsetCentimeters;
+    g_context.websocket_enabled = settings.websocket_enabled ? 1 : 0;
+    g_context.websocket_port = std::clamp(
+        settings.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort);
+    g_websocket_map_enabled.store(settings.websocket_enabled, std::memory_order_release);
     g_context.current_page = 0;
     g_context.settings_dirty = false;
 }
@@ -510,7 +560,9 @@ std::string SerializeSettings() {
         ",\"showPickableOnly\":" +
         (settings.show_pickable_only ? "true" : "false") +
         ",\"minimumValue\":" + std::to_string(settings.minimum_value) +
-        ",\"teleportZOffset\":" + FormatSettingsDouble(settings.teleport_z_offset) + "}";
+        ",\"teleportZOffset\":" + FormatSettingsDouble(settings.teleport_z_offset) +
+        ",\"websocketEnabled\":" + (settings.websocket_enabled ? "true" : "false") +
+        ",\"websocketPort\":" + std::to_string(settings.websocket_port) + "}";
 }
 
 bool LoadSettings() {
@@ -523,7 +575,8 @@ bool LoadSettings() {
         {nullptr, 0}, &size);
     if (size_status.code != ANOMALY_STATUS_V1_OK ||
         (schema_version != kSettingsSchemaVersion &&
-         schema_version != kPreviousSettingsSchemaVersion) ||
+         schema_version != kPreviousSettingsSchemaVersion &&
+         schema_version != kLegacySettingsSchemaVersion) ||
         size == 0 || size > kMaximumSettingsDocumentBytes) {
         return false;
     }
@@ -542,8 +595,7 @@ bool LoadSettings() {
     Settings settings;
     const std::string_view serialized(
         reinterpret_cast<const char*>(document.data()), size);
-    if (!SettingsDocumentReader(serialized).Read(
-            settings, loaded_schema_version == kSettingsSchemaVersion)) {
+    if (!SettingsDocumentReader(serialized).Read(settings, loaded_schema_version)) {
         return false;
     }
     ApplySettings(settings);
@@ -1862,6 +1914,11 @@ void SynchronizeMap(const AnomalyNtePlayerSnapshotV1* const player) {
 void SynchronizeMapIfPossible() noexcept {
     if (g_context.websocket == nullptr || g_context.host == nullptr) return;
     try {
+        if (!g_websocket_map_enabled.load(std::memory_order_acquire)) {
+            if (g_map_sync.active) RequestMapClear();
+            if (g_map_sync.clear_pending) static_cast<void>(FlushMapClear());
+            return;
+        }
         AnomalyNtePlayerSnapshotV1 snapshot{sizeof(snapshot)};
         const AnomalyNtePlayerSnapshotV1* current_player{};
         const auto player = QueryService<AnomalyNtePlayerServiceV1>(
@@ -2085,13 +2142,59 @@ const AnomalyUiServiceV1* TableUi(const AnomalyUiServiceV1* ui) noexcept {
     return complete ? ui : nullptr;
 }
 
+const AnomalyUiServiceV1* InlineLayoutUi(const AnomalyUiServiceV1* ui) noexcept {
+    if (ui == nullptr || ui->service_version != ANOMALY_UI_SERVICE_V1_VERSION) return nullptr;
+    const bool complete =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::same_line)>(
+            ui, offsetof(AnomalyUiServiceV1, same_line)) &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::set_cursor_pos_x)>(
+            ui, offsetof(AnomalyUiServiceV1, set_cursor_pos_x)) &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::get_window_size)>(
+            ui, offsetof(AnomalyUiServiceV1, get_window_size)) &&
+        ui->same_line != nullptr && ui->set_cursor_pos_x != nullptr &&
+        ui->get_window_size != nullptr;
+    return complete ? ui : nullptr;
+}
+
+const AnomalyUiServiceV1* TextLinkUi(const AnomalyUiServiceV1* ui) noexcept {
+    if (ui == nullptr || ui->service_version != ANOMALY_UI_SERVICE_V1_VERSION) return nullptr;
+    return HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::text_link)>(
+               ui, offsetof(AnomalyUiServiceV1, text_link)) &&
+            ui->text_link != nullptr
+        ? ui
+        : nullptr;
+}
+
+void DrawWebSocketInstructions(const AnomalyUiServiceV1* ui) {
+    constexpr std::string_view kMapUrl = "https://pph.maante.org/";
+    const std::string prefix = g_context.localizer.Text(
+        "websocket.instructions.prefix", "Open ");
+    const std::string suffix = g_context.localizer.Text(
+        "websocket.instructions.suffix", ", then enable real-time positioning in the lower-left corner");
+    const auto* const layout_ui = InlineLayoutUi(ui);
+    const auto* const link_ui = TextLinkUi(ui);
+    if (layout_ui != nullptr && link_ui != nullptr) {
+        Text(ui, prefix);
+        layout_ui->same_line(layout_ui->user, 0.0F, 0.0F);
+        static_cast<void>(link_ui->text_link(
+            link_ui->user, anomaly::sdk::StringView(kMapUrl), anomaly::sdk::StringView(kMapUrl)));
+        layout_ui->same_line(layout_ui->user, 0.0F, 0.0F);
+        Text(ui, suffix);
+        return;
+    }
+    Text(ui, prefix + std::string(kMapUrl) + suffix);
+}
+
 void DrawLootRows(
     const AnomalyUiServiceV1* ui, const std::vector<const LootEntity*>& visible_loot,
     const std::size_t first, const std::size_t last, const bool developer_mode) {
     const auto* table_ui = TableUi(ui);
+    const std::uint32_t table_flags = !developer_mode && InlineLayoutUi(ui) != nullptr
+        ? ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT
+        : ANOMALY_UI_TABLE_V1_NONE;
     if (table_ui != nullptr && table_ui->begin_table(
             table_ui->user, anomaly::sdk::StringView("loot"), developer_mode ? 6 : 4,
-            0, 0.0F, 250.0F) != 0) {
+            table_flags, 0.0F, 250.0F) != 0) {
         table_ui->table_next_row(table_ui->user);
         static_cast<void>(table_ui->table_next_column(table_ui->user));
         Text(ui, g_context.localizer.Text("column.loot", "Loot"));
@@ -2186,16 +2289,36 @@ void DrawLootPagination(
         PaginationAction{g_context.localizer.Label(
             "action.last", "Last", "last-page"), has_next, page_count - 1},
     };
-    const auto draw_action = [ui](const PaginationAction& action) {
-        if (ButtonEnabled(ui, action.label, action.enabled)) {
+    const auto draw_action = [ui](const PaginationAction& action, const float width = 0.0F) {
+        if (ButtonEnabled(ui, action.label, action.enabled, width)) {
             g_context.current_page = action.destination;
         }
     };
 
+    constexpr float kButtonWidth = 72.0F;
+    constexpr float kButtonGap = 4.0F;
+    const auto* const inline_ui = InlineLayoutUi(ui);
+    if (inline_ui != nullptr && ButtonEnabledUi(ui) != nullptr) {
+        float window_width{};
+        float window_height{};
+        inline_ui->get_window_size(inline_ui->user, &window_width, &window_height);
+        const float group_width =
+            kButtonWidth * static_cast<float>(actions.size()) +
+            kButtonGap * static_cast<float>(actions.size() - 1U);
+        inline_ui->set_cursor_pos_x(
+            inline_ui->user, (std::max)(0.0F, (window_width - group_width) * 0.5F));
+        for (std::size_t index{}; index != actions.size(); ++index) {
+            if (index != 0U) inline_ui->same_line(inline_ui->user, 0.0F, kButtonGap);
+            draw_action(actions[index], kButtonWidth);
+        }
+        return;
+    }
+
     const auto* table_ui = TableUi(ui);
     if (table_ui != nullptr && table_ui->begin_table(
             table_ui->user, anomaly::sdk::StringView("loot-pagination"),
-            static_cast<std::int32_t>(actions.size()), 0, 0.0F, 0.0F) != 0) {
+            static_cast<std::int32_t>(actions.size()), ANOMALY_UI_TABLE_V1_NONE,
+            0.0F, 0.0F) != 0) {
         table_ui->table_next_row(table_ui->user);
         for (const PaginationAction& action : actions) {
             static_cast<void>(table_ui->table_next_column(table_ui->user));
@@ -2257,9 +2380,12 @@ void DrawExtractionRows(
     const std::vector<ExtractionPoint>& points,
     const bool developer_mode) {
     const auto* table_ui = TableUi(ui);
+    const std::uint32_t table_flags = !developer_mode && InlineLayoutUi(ui) != nullptr
+        ? ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT
+        : ANOMALY_UI_TABLE_V1_NONE;
     if (table_ui != nullptr && table_ui->begin_table(
             table_ui->user, anomaly::sdk::StringView("extractions"), developer_mode ? 4 : 3,
-            0, 0.0F, 220.0F) != 0) {
+            table_flags, 0.0F, 220.0F) != 0) {
         table_ui->table_next_row(table_ui->user);
         static_cast<void>(table_ui->table_next_column(table_ui->user));
         Text(ui, g_context.localizer.Text("column.extraction", "Extraction"));
@@ -2352,19 +2478,44 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "option.teleport_z_offset", "Teleport Z offset (cm)", "teleport-z-offset");
         const bool changed_teleport_offset = developer_mode && InputDouble(
             ui, teleport_offset, &g_context.teleport_z_offset, 10.0, 100.0);
-        if (changed_enabled || changed_loot_boxes || changed_extractions || changed_active_only ||
-            changed_pickable_only ||
-            changed_minimum || changed_teleport_offset) {
+        const std::string websocket_enabled = g_context.localizer.Label(
+            "option.websocket_enabled", "Enable WebSocket real-time positioning",
+            "websocket-enabled");
+        const bool changed_websocket_enabled = Checkbox(
+            ui, websocket_enabled, &g_context.websocket_enabled);
+        const std::string websocket_port = g_context.localizer.Label(
+            "option.websocket_port", "WebSocket port", "websocket-port");
+        const bool changed_websocket_port = InputUInt32(
+            ui, websocket_port, &g_context.websocket_port, 1U, 100U);
+        if (changed_websocket_port) {
+            g_context.websocket_port = std::clamp(
+                g_context.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort);
+            static_cast<void>(RequestConfiguredWebSocketPort());
+        }
+        if (changed_websocket_enabled) {
+            g_websocket_map_enabled.store(
+                g_context.websocket_enabled != 0, std::memory_order_release);
+        }
+        const bool changed_display_settings =
+            changed_enabled || changed_loot_boxes || changed_extractions || changed_active_only ||
+            changed_pickable_only || changed_minimum || changed_teleport_offset;
+        if (changed_display_settings) {
             g_context.settings_dirty = true;
             g_context.current_page = 0;
             PublishDisplaySettings();
         }
+        if (changed_websocket_enabled || changed_websocket_port) g_context.settings_dirty = true;
         if (!supports_numeric_input) {
             const std::string value = std::to_string(g_context.minimum_value);
             const std::array arguments{std::string_view(value)};
             Text(ui, g_context.localizer.Format(
                 "option.minimum_value.summary", "Minimum value: {0}", arguments));
+            const std::string port = std::to_string(g_context.websocket_port);
+            const std::array port_arguments{std::string_view(port)};
+            Text(ui, g_context.localizer.Format(
+                "option.websocket_port.summary", "WebSocket port: {0}", port_arguments));
         }
+        DrawWebSocketInstructions(ui);
         if (developer_mode && !supports_double_input) {
             const std::string value = FormatSettingsDouble(g_context.teleport_z_offset);
             const std::array arguments{std::string_view(value)};
@@ -2697,6 +2848,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     }
 
     g_context = {};
+    g_websocket_map_enabled.store(true, std::memory_order_release);
     g_ahud_subscription = {};
     g_loot_cache.store({}, std::memory_order_release);
     g_extraction_snapshot.store({}, std::memory_order_release);
@@ -2724,6 +2876,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
             : schema_status;
     }
     static_cast<void>(LoadSettings());
+    static_cast<void>(RequestConfiguredWebSocketPort());
     PublishDisplaySettings();
     {
         std::scoped_lock lock(g_teleport.mutex);

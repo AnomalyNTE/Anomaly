@@ -3,6 +3,9 @@
 #include "anomaly/sdk/anomaly_sdk.h"
 #include "anomaly/platform_settings.hpp"
 
+#include <optional>
+#include <string>
+
 namespace anomaly {
 
 // Process-lifetime function table; calls are valid only while the current thread owns
@@ -19,6 +22,9 @@ void RequestHostUiManagementExpansion() noexcept;
 void SetHostUiInputCapturePolicy(PlatformInputCapturePolicy policy) noexcept;
 void SetHostUiDeveloperMode(bool enabled) noexcept;
 [[nodiscard]] bool HostUiDeveloperModeEnabled() noexcept;
+// UI link clicks are collected during Render and consumed by the Platform UI
+// after the frame, where the Lifecycle dispatcher owns the browser launch.
+[[nodiscard]] std::optional<std::string> ConsumeHostUiExternalUrlRequest() noexcept;
 // These resolve the top-level host window even when called from a child.
 // They are valid only while an active ImGui frame owns a current window.
 [[nodiscard]] bool HostUiCurrentWindowLocked() noexcept;
