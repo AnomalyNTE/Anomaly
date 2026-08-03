@@ -66,6 +66,7 @@ constexpr double kDefaultTeleportZOffsetCentimeters = 150.0;
 constexpr std::uint32_t kDefaultWebSocketPort = 14514U;
 constexpr std::uint32_t kMinimumWebSocketPort = 1U;
 constexpr std::uint32_t kMaximumWebSocketPort = 65535U;
+constexpr std::uint32_t kEternalHeartValue = 666666U;
 constexpr std::string_view kSettingsSchema = R"json(
 {"type":"object","additionalProperties":false,"required":["menuOpen","enabled","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","alwaysShowAccessCards","minimumValue","teleportZOffset","websocketEnabled","websocketPort"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"alwaysShowAccessCards":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"},"websocketEnabled":{"type":"boolean"},"websocketPort":{"type":"integer","minimum":1,"maximum":65535}}}
 )json";
@@ -165,6 +166,7 @@ struct DisplaySettings final {
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
     bool always_show_access_cards{true};
+    bool rainbow_preview{true};
     std::uint32_t minimum_value{};
 };
 
@@ -217,6 +219,7 @@ struct Context final {
     int show_active_extractions_only{1};
     int show_pickable_only{1};
     int always_show_access_cards{1};
+    int rainbow_preview{1};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
     int websocket_enabled{1};
@@ -530,6 +533,7 @@ DisplaySettings CurrentDisplaySettings() noexcept {
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
         g_context.always_show_access_cards != 0,
+        g_context.rainbow_preview != 0,
         g_context.minimum_value};
 }
 
@@ -1360,12 +1364,43 @@ std::string BuildLootLabel(const LootEntity& entry) {
         "loot.label", "{0}\nFons {1}\nPink Paw Coin {2}\n{3}", arguments);
 }
 
+std::uint32_t RainbowColor(const std::uint64_t phase_offset) noexcept {
+    constexpr double kCycleSeconds = 2.0;
+    constexpr double kHueSectors = 6.0;
+    const double seconds = std::chrono::duration<double>(
+        Clock::now().time_since_epoch()).count();
+    const double hue = std::fmod(
+        seconds / kCycleSeconds +
+            static_cast<double>(phase_offset % 360U) / 360.0,
+        1.0);
+    const double sector = hue * kHueSectors;
+    const auto sector_index = static_cast<std::uint32_t>(sector);
+    const double fraction = sector - static_cast<double>(sector_index);
+    const auto channel = [](const double value) noexcept {
+        return static_cast<std::uint8_t>(std::lround(value * 255.0));
+    };
+    const std::uint8_t rising = channel(fraction);
+    const std::uint8_t falling = channel(1.0 - fraction);
+    switch (sector_index) {
+    case 0: return ANOMALY_RGBA_V1(255, rising, 0, 255);
+    case 1: return ANOMALY_RGBA_V1(falling, 255, 0, 255);
+    case 2: return ANOMALY_RGBA_V1(0, 255, rising, 255);
+    case 3: return ANOMALY_RGBA_V1(0, falling, 255, 255);
+    case 4: return ANOMALY_RGBA_V1(rising, 0, 255, 255);
+    default: return ANOMALY_RGBA_V1(255, 0, falling, 255);
+    }
+}
+
 std::uint32_t LootColor(const LootEntity& entry) noexcept {
     if (!entry.rob_bank.item_resolved) return ANOMALY_RGBA_V1(170, 170, 170, 255);
-    if (entry.rob_bank.is_access_card) return ANOMALY_RGBA_V1(104, 196, 255, 255);
-    if (entry.rob_bank.fons_value >= 100000U) return ANOMALY_RGBA_V1(255, 196, 64, 255);
-    if (entry.rob_bank.fons_value >= 10000U) return ANOMALY_RGBA_V1(255, 122, 92, 255);
-    return ANOMALY_RGBA_V1(95, 226, 148, 255);
+    if (entry.rob_bank.is_access_card) return ANOMALY_RGBA_V1(255, 102, 0, 255);
+    if (entry.rob_bank.fons_value == kEternalHeartValue) {
+        return RainbowColor(entry.snapshot.entity_id);
+    }
+    if (entry.rob_bank.fons_value <= 999U) return ANOMALY_RGBA_V1(64, 235, 112, 255);
+    if (entry.rob_bank.fons_value <= 4999U) return ANOMALY_RGBA_V1(72, 152, 255, 255);
+    if (entry.rob_bank.fons_value <= 9999U) return ANOMALY_RGBA_V1(178, 94, 255, 255);
+    return ANOMALY_RGBA_V1(255, 225, 24, 255);
 }
 
 std::vector<const LootEntity*> CollectVisibleLoot(
@@ -2444,7 +2479,7 @@ std::string BuildExtractionLabel(const ExtractionPoint& point) {
 
 std::uint32_t ExtractionColor(const ExtractionActivation activation) noexcept {
     switch (activation) {
-    case ExtractionActivation::active: return ANOMALY_RGBA_V1(72, 220, 132, 255);
+    case ExtractionActivation::active: return ANOMALY_RGBA_V1(0, 255, 0, 255);
     case ExtractionActivation::inactive: return ANOMALY_RGBA_V1(235, 72, 72, 255);
     default: return ANOMALY_RGBA_V1(255, 190, 72, 255);
     }
@@ -2561,6 +2596,13 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "always-show-access-cards");
         const bool changed_access_cards = Checkbox(
             ui, access_cards, &g_context.always_show_access_cards);
+        bool changed_rainbow_preview{};
+        if (developer_mode) {
+            const std::string rainbow_preview = g_context.localizer.Label(
+                "option.rainbow_preview", "R \xC2\xB7 G \xC2\xB7 B", "rgb-easter-egg");
+            changed_rainbow_preview = Checkbox(
+                ui, rainbow_preview, &g_context.rainbow_preview);
+        }
         const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
         const std::string minimum_value = g_context.localizer.Label(
             "option.minimum_value", "Minimum value", "minimum-value");
@@ -2598,6 +2640,7 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             g_context.current_page = 0;
             PublishDisplaySettings();
         }
+        if (changed_rainbow_preview) PublishDisplaySettings();
         if (changed_websocket_enabled || changed_websocket_port) g_context.settings_dirty = true;
         if (!supports_numeric_input) {
             const std::string value = std::to_string(g_context.minimum_value);
@@ -2874,7 +2917,9 @@ void ANOMALY_CALL DrawAhud(
         for (const LootEntity& entry : loot_cache->loot) {
             if (!IsVisibleLoot(entry, *settings)) continue;
             DrawAhudEntity(
-                frame, entry.snapshot, entry.label, LootColor(entry), settings->draw_loot_boxes);
+                frame, entry.snapshot, entry.label,
+                settings->rainbow_preview ? RainbowColor(entry.snapshot.entity_id) : LootColor(entry),
+                settings->draw_loot_boxes);
         }
     }
 
@@ -2885,7 +2930,10 @@ void ANOMALY_CALL DrawAhud(
     for (const ExtractionPoint& point : extraction_snapshot->points) {
         if (!ShouldShowExtraction(point, *settings)) continue;
         DrawAhudEntity(
-            frame, point.snapshot, point.label, ExtractionColor(point.activation), false);
+            frame, point.snapshot, point.label,
+            settings->rainbow_preview ? RainbowColor(point.snapshot.entity_id)
+                                      : ExtractionColor(point.activation),
+            false);
     }
 }
 

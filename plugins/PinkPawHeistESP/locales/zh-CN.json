@@ -10,6 +10,7 @@
     "option.active_extractions_only": "仅显示已开启撤离点",
     "option.pickable_only": "仅显示可拾取物品",
     "option.always_show_access_cards": "始终显示门禁卡",
+    "option.rainbow_preview": "R · G · B",
     "option.minimum_value": "最低价值",
     "option.minimum_value.summary": "最低价值：{0}",
     "option.teleport_z_offset": "传送 Z 偏移 (cm)",
