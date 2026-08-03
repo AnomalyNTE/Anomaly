@@ -92,15 +92,19 @@ struct KnownLootValidationState final {
     if (observation.pickability != RobBankPickability::unavailable) {
         next.pickability = observation.pickability;
     }
+    next.item_id_utf8 = observation.item_id_utf8;
     next.name_utf8 = observation.name_utf8;
     next.fons_value = observation.fons_value;
     next.pink_paw_coin_value = observation.pink_paw_coin_value;
+    next.is_access_card = observation.is_access_card;
     next.item_resolved = observation.item_resolved;
     const bool changed = state.missing_observations != 0 ||
         next.entity.object_index != state.inspection.entity.object_index ||
         next.entity.object_serial != state.inspection.entity.object_serial ||
         next.pickability != state.inspection.pickability ||
         next.item_resolved != state.inspection.item_resolved ||
+        next.is_access_card != state.inspection.is_access_card ||
+        next.item_id_utf8 != state.inspection.item_id_utf8 ||
         next.name_utf8 != state.inspection.name_utf8 ||
         next.fons_value != state.inspection.fons_value ||
         next.pink_paw_coin_value != state.inspection.pink_paw_coin_value;

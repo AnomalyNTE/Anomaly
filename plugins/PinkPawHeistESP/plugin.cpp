@@ -58,15 +58,16 @@ constexpr std::size_t kMapLootSnapshotMetadataMaximumBytes = 256U;
 constexpr std::size_t kMapLootSnapshotMaximumItemsBytes =
     kMapLootSnapshotMaximumTextBytes - kMapLootSnapshotMetadataMaximumBytes;
 constexpr std::string_view kSettingsSchemaId = "settings";
-constexpr std::uint32_t kSettingsSchemaVersion = 8;
-constexpr std::uint32_t kPreviousSettingsSchemaVersion = 7;
-constexpr std::uint32_t kLegacySettingsSchemaVersion = 6;
+constexpr std::uint32_t kSettingsSchemaVersion = 9;
+constexpr std::uint32_t kPreviousSettingsSchemaVersion = 8;
+constexpr std::uint32_t kLegacySettingsSchemaVersion = 7;
+constexpr std::uint32_t kOldestSettingsSchemaVersion = 6;
 constexpr double kDefaultTeleportZOffsetCentimeters = 150.0;
 constexpr std::uint32_t kDefaultWebSocketPort = 14514U;
 constexpr std::uint32_t kMinimumWebSocketPort = 1U;
 constexpr std::uint32_t kMaximumWebSocketPort = 65535U;
 constexpr std::string_view kSettingsSchema = R"json(
-{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","minimumValue","teleportZOffset","websocketEnabled","websocketPort"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"},"websocketEnabled":{"type":"boolean"},"websocketPort":{"type":"integer","minimum":1,"maximum":65535}}}
+{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","alwaysShowAccessCards","minimumValue","teleportZOffset","websocketEnabled","websocketPort"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"alwaysShowAccessCards":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"},"websocketEnabled":{"type":"boolean"},"websocketPort":{"type":"integer","minimum":1,"maximum":65535}}}
 )json";
 
 struct LootEntity final {
@@ -150,6 +151,7 @@ struct Settings final {
     bool draw_extractions{true};
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
+    bool always_show_access_cards{true};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
     bool websocket_enabled{true};
@@ -162,6 +164,7 @@ struct DisplaySettings final {
     bool draw_extractions{true};
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
+    bool always_show_access_cards{true};
     std::uint32_t minimum_value{};
 };
 
@@ -213,6 +216,7 @@ struct Context final {
     int draw_extractions{1};
     int show_active_extractions_only{1};
     int show_pickable_only{1};
+    int always_show_access_cards{1};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
     int websocket_enabled{1};
@@ -259,8 +263,9 @@ public:
     bool Read(Settings& settings, const std::uint32_t schema_version) noexcept {
         if (!Consume('{')) return false;
 
-        const bool require_hud_draw_settings = schema_version >= kPreviousSettingsSchemaVersion;
-        const bool require_websocket_settings = schema_version >= kSettingsSchemaVersion;
+        const bool require_hud_draw_settings = schema_version >= kLegacySettingsSchemaVersion;
+        const bool require_websocket_settings = schema_version >= kPreviousSettingsSchemaVersion;
+        const bool require_access_card_setting = schema_version >= kSettingsSchemaVersion;
 
         bool menu_open_seen{};
         bool enabled_seen{};
@@ -268,6 +273,7 @@ public:
         bool draw_extractions_seen{};
         bool show_active_extractions_only_seen{};
         bool show_pickable_only_seen{};
+        bool always_show_access_cards_seen{};
         bool minimum_value_seen{};
         bool teleport_z_offset_seen{};
         bool websocket_enabled_seen{};
@@ -301,6 +307,12 @@ public:
                     return false;
                 }
                 show_pickable_only_seen = true;
+            } else if (key == "alwaysShowAccessCards") {
+                if (!require_access_card_setting || always_show_access_cards_seen ||
+                    !ReadBoolean(settings.always_show_access_cards)) {
+                    return false;
+                }
+                always_show_access_cards_seen = true;
             } else if (key == "minimumValue") {
                 if (minimum_value_seen || !ReadUInt32(settings.minimum_value)) return false;
                 minimum_value_seen = true;
@@ -333,6 +345,7 @@ public:
         return menu_open_seen && enabled_seen &&
             (!require_hud_draw_settings || (draw_loot_boxes_seen && draw_extractions_seen)) &&
             show_active_extractions_only_seen && show_pickable_only_seen &&
+            (!require_access_card_setting || always_show_access_cards_seen) &&
             minimum_value_seen && teleport_z_offset_seen &&
             (!require_websocket_settings ||
              (websocket_enabled_seen && websocket_port_seen &&
@@ -500,6 +513,7 @@ Settings CurrentSettings() noexcept {
         g_context.draw_extractions != 0,
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
+        g_context.always_show_access_cards != 0,
         g_context.minimum_value,
         std::isfinite(g_context.teleport_z_offset)
             ? g_context.teleport_z_offset : kDefaultTeleportZOffsetCentimeters,
@@ -515,6 +529,7 @@ DisplaySettings CurrentDisplaySettings() noexcept {
         g_context.draw_extractions != 0,
         g_context.show_active_extractions_only != 0,
         g_context.show_pickable_only != 0,
+        g_context.always_show_access_cards != 0,
         g_context.minimum_value};
 }
 
@@ -531,6 +546,7 @@ void ApplySettings(const Settings& settings) noexcept {
     g_context.draw_extractions = settings.draw_extractions ? 1 : 0;
     g_context.show_active_extractions_only = settings.show_active_extractions_only ? 1 : 0;
     g_context.show_pickable_only = settings.show_pickable_only ? 1 : 0;
+    g_context.always_show_access_cards = settings.always_show_access_cards ? 1 : 0;
     g_context.minimum_value = settings.minimum_value;
     g_context.teleport_z_offset = std::isfinite(settings.teleport_z_offset)
         ? settings.teleport_z_offset : kDefaultTeleportZOffsetCentimeters;
@@ -559,6 +575,8 @@ std::string SerializeSettings() {
         (settings.show_active_extractions_only ? "true" : "false") +
         ",\"showPickableOnly\":" +
         (settings.show_pickable_only ? "true" : "false") +
+        ",\"alwaysShowAccessCards\":" +
+        (settings.always_show_access_cards ? "true" : "false") +
         ",\"minimumValue\":" + std::to_string(settings.minimum_value) +
         ",\"teleportZOffset\":" + FormatSettingsDouble(settings.teleport_z_offset) +
         ",\"websocketEnabled\":" + (settings.websocket_enabled ? "true" : "false") +
@@ -576,7 +594,8 @@ bool LoadSettings() {
     if (size_status.code != ANOMALY_STATUS_V1_OK ||
         (schema_version != kSettingsSchemaVersion &&
          schema_version != kPreviousSettingsSchemaVersion &&
-         schema_version != kLegacySettingsSchemaVersion) ||
+         schema_version != kLegacySettingsSchemaVersion &&
+         schema_version != kOldestSettingsSchemaVersion) ||
         size == 0 || size > kMaximumSettingsDocumentBytes) {
         return false;
     }
@@ -1097,6 +1116,8 @@ bool SameLootState(
             left.rob_bank.entity.object_serial != right.rob_bank.entity.object_serial ||
             left.rob_bank.pickability != right.rob_bank.pickability ||
             left.rob_bank.item_resolved != right.rob_bank.item_resolved ||
+            left.rob_bank.is_access_card != right.rob_bank.is_access_card ||
+            left.rob_bank.item_id_utf8 != right.rob_bank.item_id_utf8 ||
             left.rob_bank.name_utf8 != right.rob_bank.name_utf8 ||
             left.rob_bank.fons_value != right.rob_bank.fons_value ||
             left.rob_bank.pink_paw_coin_value != right.rob_bank.pink_paw_coin_value) {
@@ -1251,7 +1272,15 @@ bool PassesItemFilters(
     const LootEntity& entry,
     const DisplaySettings& settings) noexcept {
     return entry.rob_bank.item_resolved &&
-        entry.rob_bank.fons_value >= settings.minimum_value;
+        (entry.rob_bank.fons_value >= settings.minimum_value ||
+         (settings.always_show_access_cards && entry.rob_bank.is_access_card));
+}
+
+bool IsAlwaysVisibleAccessCard(
+    const LootEntity& entry,
+    const DisplaySettings& settings) noexcept {
+    return settings.always_show_access_cards && entry.rob_bank.item_resolved &&
+        entry.rob_bank.is_access_card;
 }
 
 bool IsPickable(const LootEntity& entry) noexcept {
@@ -1262,9 +1291,10 @@ bool IsPickable(const LootEntity& entry) noexcept {
 bool IsVisibleLoot(
     const LootEntity& entry,
     const DisplaySettings& settings) noexcept {
-    return PassesItemFilters(entry, settings) &&
+    return IsAlwaysVisibleAccessCard(entry, settings) ||
+        (PassesItemFilters(entry, settings) &&
         pink_paw_heist_esp::PassesPickabilityFilter(
-            entry.rob_bank.pickability, settings.show_pickable_only);
+            entry.rob_bank.pickability, settings.show_pickable_only));
 }
 
 std::string FormatValue(const std::uint32_t value) {
@@ -1297,21 +1327,34 @@ std::string BuildWorldCoordinates(const LootEntity& entry) {
     return BuildWorldCoordinates(entry.snapshot);
 }
 
+std::string LootDisplayName(const LootEntity& entry) {
+    return entry.rob_bank.name_utf8;
+}
+
 std::string FonsValueText(const LootEntity& entry) {
+    if (entry.rob_bank.is_access_card) return "-";
     return FormatValue(entry.rob_bank.fons_value);
 }
 
 std::string PinkPawCoinValueText(const LootEntity& entry) {
+    if (entry.rob_bank.is_access_card) return "-";
     return FormatValue(entry.rob_bank.pink_paw_coin_value);
 }
 
 std::string BuildLootLabel(const LootEntity& entry) {
     const std::string coordinates = BuildWorldCoordinates(entry);
     if (!entry.rob_bank.item_resolved) return {};
+    const std::string name = LootDisplayName(entry);
+    if (entry.rob_bank.is_access_card) {
+        const std::array arguments{
+            std::string_view(name), std::string_view(coordinates)};
+        return g_context.localizer.Format(
+            "loot.access_card.label", "{0}\nAccess card\n{1}", arguments);
+    }
     const std::string fons_value = FonsValueText(entry);
     const std::string pink_paw_coin_value = PinkPawCoinValueText(entry);
     const std::array arguments{
-        std::string_view(entry.rob_bank.name_utf8), std::string_view(fons_value),
+        std::string_view(name), std::string_view(fons_value),
         std::string_view(pink_paw_coin_value), std::string_view(coordinates)};
     return g_context.localizer.Format(
         "loot.label", "{0}\nFons {1}\nPink Paw Coin {2}\n{3}", arguments);
@@ -1319,6 +1362,7 @@ std::string BuildLootLabel(const LootEntity& entry) {
 
 std::uint32_t LootColor(const LootEntity& entry) noexcept {
     if (!entry.rob_bank.item_resolved) return ANOMALY_RGBA_V1(170, 170, 170, 255);
+    if (entry.rob_bank.is_access_card) return ANOMALY_RGBA_V1(104, 196, 255, 255);
     if (entry.rob_bank.fons_value >= 100000U) return ANOMALY_RGBA_V1(255, 196, 64, 255);
     if (entry.rob_bank.fons_value >= 10000U) return ANOMALY_RGBA_V1(255, 122, 92, 255);
     return ANOMALY_RGBA_V1(95, 226, 148, 255);
@@ -1333,6 +1377,9 @@ std::vector<const LootEntity*> CollectVisibleLoot(
         if (IsVisibleLoot(entry, settings)) visible.push_back(&entry);
     }
     std::sort(visible.begin(), visible.end(), [](const LootEntity* left, const LootEntity* right) {
+        if (left->rob_bank.is_access_card != right->rob_bank.is_access_card) {
+            return left->rob_bank.is_access_card;
+        }
         if (left->rob_bank.fons_value != right->rob_bank.fons_value) {
             return left->rob_bank.fons_value > right->rob_bank.fons_value;
         }
@@ -2221,9 +2268,10 @@ void DrawLootRows(
         }
         for (std::size_t index = first; index < last; ++index) {
             const LootEntity& entry = *visible_loot[index];
+            const std::string name = LootDisplayName(entry);
             table_ui->table_next_row(table_ui->user);
             static_cast<void>(table_ui->table_next_column(table_ui->user));
-            Text(ui, entry.rob_bank.name_utf8);
+            Text(ui, name);
             static_cast<void>(table_ui->table_next_column(table_ui->user));
             Text(ui, FonsValueText(entry));
             static_cast<void>(table_ui->table_next_column(table_ui->user));
@@ -2250,13 +2298,21 @@ void DrawLootRows(
     for (std::size_t index = first; index < last; ++index) {
         const LootEntity& entry = *visible_loot[index];
         const std::string coordinates = BuildWorldCoordinates(entry);
+        const std::string name = LootDisplayName(entry);
         const std::string fons_value = FonsValueText(entry);
         const std::string pink_paw_coin_value = PinkPawCoinValueText(entry);
-        const std::array arguments{
-            std::string_view(entry.rob_bank.name_utf8), std::string_view(fons_value),
-            std::string_view(pink_paw_coin_value), std::string_view(coordinates)};
-        Text(ui, g_context.localizer.Format(
-            "loot.row", "{0}  {1} Fons  {2} Pink Paw Coin  {3}", arguments));
+        if (entry.rob_bank.is_access_card) {
+            const std::array arguments{
+                std::string_view(name), std::string_view(coordinates)};
+            Text(ui, g_context.localizer.Format(
+                "loot.access_card.row", "{0}  Access card  {1}", arguments));
+        } else {
+            const std::array arguments{
+                std::string_view(name), std::string_view(fons_value),
+                std::string_view(pink_paw_coin_value), std::string_view(coordinates)};
+            Text(ui, g_context.localizer.Format(
+                "loot.row", "{0}  {1} Fons  {2} Pink Paw Coin  {3}", arguments));
+        }
         if (developer_mode) {
             const std::string button = g_context.localizer.Label(
                 "action.teleport", "Teleport",
@@ -2500,6 +2556,11 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "option.pickable_only", "Show pickable loot only", "pickable-only");
         const bool changed_pickable_only = Checkbox(
             ui, pickable_only, &g_context.show_pickable_only);
+        const std::string access_cards = g_context.localizer.Label(
+            "option.always_show_access_cards", "Always show access cards",
+            "always-show-access-cards");
+        const bool changed_access_cards = Checkbox(
+            ui, access_cards, &g_context.always_show_access_cards);
         const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
         const std::string minimum_value = g_context.localizer.Label(
             "option.minimum_value", "Minimum value", "minimum-value");
@@ -2530,7 +2591,8 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         }
         const bool changed_display_settings =
             changed_enabled || changed_loot_boxes || changed_extractions || changed_active_only ||
-            changed_pickable_only || changed_minimum || changed_teleport_offset;
+            changed_pickable_only || changed_access_cards || changed_minimum ||
+            changed_teleport_offset;
         if (changed_display_settings) {
             g_context.settings_dirty = true;
             g_context.current_page = 0;

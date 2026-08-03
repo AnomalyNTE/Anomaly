@@ -85,6 +85,8 @@ constexpr std::ptrdiff_t kStaticItemElementDataOffset = 392;
 constexpr std::ptrdiff_t kInstancedStructDataOffset = 8;
 constexpr std::ptrdiff_t kRobBankItemValueOffset = 0;
 constexpr std::ptrdiff_t kRobBankItemCoinOffset = 4;
+constexpr std::string_view kAccessCardItemPrefix = "RobBankItem_G";
+constexpr std::string_view kAwardDropIdPrefix = "drop_";
 
 constexpr std::uint32_t kMaximumObjects = 16U * 1024U * 1024U;
 constexpr std::uint32_t kMaximumObjectChunks = 4096;
@@ -193,7 +195,15 @@ struct RobBankItemMetadata final {
     std::string name_utf8;
     std::uint32_t fons_value{};
     std::uint32_t pink_paw_coin_value{};
+    bool is_access_card{};
 };
+
+[[nodiscard]] std::string_view ItemIdFromAwardDropId(
+    const std::string_view award_drop_id) noexcept {
+    return award_drop_id.starts_with(kAwardDropIdPrefix)
+        ? award_drop_id.substr(kAwardDropIdPrefix.size())
+        : award_drop_id;
+}
 
 struct RobBankItemTables final {
     std::uint64_t registry_generation{};
@@ -907,24 +917,31 @@ struct RobBankRuntime::Impl final {
             std::uintptr_t element_data{};
             std::int32_t fons_value{};
             std::int32_t pink_paw_coin_value{};
-            if (!AddSignedAddress(row, kStaticItemElementDataOffset, address) ||
-                !AddSignedAddress(address, kInstancedStructDataOffset, address) ||
-                !Read(address, element_data) || element_data == 0 ||
-                !AddSignedAddress(element_data, kRobBankItemValueOffset, address) ||
-                !Read(address, fons_value) ||
-                !AddSignedAddress(element_data, kRobBankItemCoinOffset, address) ||
-                !Read(address, pink_paw_coin_value) ||
-                fons_value < 0 || pink_paw_coin_value < 0) {
-                continue;
-            }
+            const bool is_access_card = row_name.starts_with(kAccessCardItemPrefix);
+            const bool values_resolved =
+                AddSignedAddress(row, kStaticItemElementDataOffset, address) &&
+                AddSignedAddress(address, kInstancedStructDataOffset, address) &&
+                Read(address, element_data) && element_data != 0 &&
+                AddSignedAddress(element_data, kRobBankItemValueOffset, address) &&
+                Read(address, fons_value) &&
+                AddSignedAddress(element_data, kRobBankItemCoinOffset, address) &&
+                Read(address, pink_paw_coin_value) &&
+                fons_value >= 0 && pink_paw_coin_value >= 0;
+            if (!values_resolved && !is_access_card) continue;
             if (!AddSignedAddress(row, kStaticItemNameOffset, address)) continue;
             std::string name = ReadText(address);
-            if (name.empty()) name = row_name;
+            if (name.empty()) {
+                if (is_access_card) continue;
+                name = row_name;
+            }
             items.emplace(
                 "drop_" + row_name,
                 RobBankItemMetadata{
-                    std::move(name), static_cast<std::uint32_t>(fons_value),
-                    static_cast<std::uint32_t>(pink_paw_coin_value)});
+                    std::move(name), values_resolved
+                        ? static_cast<std::uint32_t>(fons_value) : 0U,
+                    values_resolved
+                        ? static_cast<std::uint32_t>(pink_paw_coin_value) : 0U,
+                    is_access_card});
         }
         if (items.empty()) return false;
         return true;
@@ -974,19 +991,29 @@ struct RobBankRuntime::Impl final {
     void ResolveItemMetadata(
         const std::uintptr_t actor,
         RobBankInspection& inspection) const {
-        if (!item_tables.available) return;
         std::uintptr_t address{};
         FNameValue award_drop_id;
         if (!AddSignedAddress(actor, kRobBankAwardDropIdOffset, address) ||
             !Read(address, award_drop_id)) {
             return;
         }
-        const auto item = item_tables.items.find(RenderFName(award_drop_id));
-        if (item == item_tables.items.end()) return;
-        inspection.name_utf8 = item->second.name_utf8;
-        inspection.fons_value = item->second.fons_value;
-        inspection.pink_paw_coin_value = item->second.pink_paw_coin_value;
-        inspection.item_resolved = true;
+        const std::string award_drop_id_utf8 = RenderFName(award_drop_id);
+        const std::string_view item_id = ItemIdFromAwardDropId(award_drop_id_utf8);
+        inspection.item_id_utf8.assign(item_id);
+        inspection.is_access_card = item_id.starts_with(kAccessCardItemPrefix);
+
+        if (item_tables.available) {
+            const auto item = item_tables.items.find(award_drop_id_utf8);
+            if (item != item_tables.items.end()) {
+                inspection.name_utf8 = item->second.name_utf8;
+                inspection.fons_value = item->second.fons_value;
+                inspection.pink_paw_coin_value = item->second.pink_paw_coin_value;
+                inspection.is_access_card = item->second.is_access_card;
+                inspection.item_resolved = true;
+                return;
+            }
+        }
+
     }
 
     [[nodiscard]] bool RefreshKeyDoorContext(bool* const changed = nullptr) {

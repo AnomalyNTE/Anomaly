@@ -61,9 +61,11 @@ enum class RobBankContextRefresh {
 struct RobBankInspection final {
     RobBankEntity entity;
     RobBankPickability pickability{RobBankPickability::unavailable};
+    std::string item_id_utf8;
     std::string name_utf8;
     std::uint32_t fons_value{};
     std::uint32_t pink_paw_coin_value{};
+    bool is_access_card{};
     bool item_resolved{};
 };
 
