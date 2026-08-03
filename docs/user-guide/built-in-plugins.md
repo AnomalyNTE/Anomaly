@@ -63,11 +63,11 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 | | |
 | --- | --- |
 | **ID** | `anomaly.local.nte.camera-tools` |
-| **作用** | 保持角色跟随时增加视距，或切换为可移动的自由相机。 |
+| **作用** | 保持角色跟随时增加视距，或切换为可移动的自由相机；可选让场景跟随相机加载。 |
 | **依赖服务** | `anomaly.core`、`anomaly.config`、`anomaly.input`、`anomaly.ui`、`anomaly.localization`、`anomaly.interop.signature`、`anomaly.interop.hook` |
 | **需要 Profile** | 否（相机签名和布局由插件自带，并在加载时校验） |
 
-额外视距默认为 `0`，即完全使用游戏默认视距；插件不设置人为上限。自由相机默认关闭，激活键为 `F6`。
+额外视距默认为 `0`，即完全使用游戏默认视距；插件不设置人为上限。自由相机和“场景跟随相机加载”默认关闭，激活键为 `F6`。启用该选项后，插件只在自由相机已激活时让场景按本地 PlayerController 的自由相机位置和旋转加载；关闭时完全保留游戏原始加载位置。
 
 ## 管理插件
 
