@@ -166,7 +166,7 @@ struct DisplaySettings final {
     bool show_active_extractions_only{true};
     bool show_pickable_only{true};
     bool always_show_access_cards{true};
-    bool rainbow_preview{true};
+    bool rainbow_preview{};
     std::uint32_t minimum_value{};
 };
 
@@ -219,7 +219,7 @@ struct Context final {
     int show_active_extractions_only{1};
     int show_pickable_only{1};
     int always_show_access_cards{1};
-    int rainbow_preview{1};
+    int rainbow_preview{};
     std::uint32_t minimum_value{};
     double teleport_z_offset{kDefaultTeleportZOffsetCentimeters};
     int websocket_enabled{1};
@@ -2596,13 +2596,10 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
             "always-show-access-cards");
         const bool changed_access_cards = Checkbox(
             ui, access_cards, &g_context.always_show_access_cards);
-        bool changed_rainbow_preview{};
-        if (developer_mode) {
-            const std::string rainbow_preview = g_context.localizer.Label(
-                "option.rainbow_preview", "R \xC2\xB7 G \xC2\xB7 B", "rgb-easter-egg");
-            changed_rainbow_preview = Checkbox(
-                ui, rainbow_preview, &g_context.rainbow_preview);
-        }
+        const std::string rainbow_preview = g_context.localizer.Label(
+            "option.rainbow_preview", "R \xC2\xB7 G \xC2\xB7 B", "rgb-easter-egg");
+        const bool changed_rainbow_preview = Checkbox(
+            ui, rainbow_preview, &g_context.rainbow_preview);
         const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
         const std::string minimum_value = g_context.localizer.Label(
             "option.minimum_value", "Minimum value", "minimum-value");
