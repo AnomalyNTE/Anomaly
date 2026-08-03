@@ -36,6 +36,8 @@ constexpr std::size_t kMaximumQueuedFramesPerClient = kMaximumQueuedMessages;
 constexpr std::size_t kMaximumQueuedBytesPerClient =
     kMaximumQueuedFramesPerClient * (kMaximumTextBytes + 10U);
 constexpr auto kFinalDrainTimeout = std::chrono::milliseconds(1000);
+constexpr std::uint64_t kPortRequestPortMask = 0xFFFFU;
+constexpr unsigned kPortRequestGenerationShift = 16U;
 
 AnomalyStatusV1 Status(const std::uint32_t code) noexcept {
     return {code, 0, {}};
@@ -185,6 +187,40 @@ void CloseSocket(const SOCKET socket) noexcept {
     }
 }
 
+[[nodiscard]] SOCKET CreateListener(const std::uint16_t port) noexcept {
+    SOCKET listening = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listening == INVALID_SOCKET) return INVALID_SOCKET;
+
+    const BOOL reuse = TRUE;
+    static_cast<void>(setsockopt(
+        listening, SOL_SOCKET, SO_REUSEADDR,
+        reinterpret_cast<const char*>(&reuse), sizeof(reuse)));
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(listening, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR ||
+        listen(listening, SOMAXCONN) == SOCKET_ERROR || !SetNonBlocking(listening)) {
+        CloseSocket(listening);
+        return INVALID_SOCKET;
+    }
+    return listening;
+}
+
+[[nodiscard]] constexpr std::uint64_t PackPortRequest(
+    const std::uint64_t generation, const std::uint16_t port) noexcept {
+    return (generation << kPortRequestGenerationShift) | port;
+}
+
+[[nodiscard]] constexpr std::uint64_t PortRequestGeneration(
+    const std::uint64_t request) noexcept {
+    return request >> kPortRequestGenerationShift;
+}
+
+[[nodiscard]] constexpr std::uint16_t PortRequestPort(const std::uint64_t request) noexcept {
+    return static_cast<std::uint16_t>(request & kPortRequestPortMask);
+}
+
 }  // namespace
 
 struct WebSocketServer::Impl final {
@@ -197,7 +233,9 @@ struct WebSocketServer::Impl final {
         std::size_t queued_bytes{};
     };
 
-    std::uint16_t port{};
+    std::atomic<std::uint16_t> port{};
+    std::atomic<std::uint64_t> generation{};
+    std::atomic<std::uint64_t> pending_port_request{};
     std::atomic<SOCKET> listener{INVALID_SOCKET};
     std::atomic<SOCKET> handshaking_client{INVALID_SOCKET};
     std::atomic_bool running{};
@@ -210,6 +248,29 @@ struct WebSocketServer::Impl final {
     std::mutex queue_mutex;
     std::deque<std::string> outbound;
     AnomalyWebSocketServiceV1 service{};
+
+    void RebindPendingListener() noexcept {
+        const std::uint64_t request = pending_port_request.exchange(0U, std::memory_order_acq_rel);
+        const std::uint16_t requested = PortRequestPort(request);
+        const std::uint64_t request_generation = PortRequestGeneration(request);
+        if (requested == 0U || request_generation != generation.load(std::memory_order_acquire) ||
+            requested == port.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        std::scoped_lock lock(lifecycle_mutex);
+        if (!running.load(std::memory_order_acquire) ||
+            request_generation != generation.load(std::memory_order_acquire) ||
+            requested == port.load(std::memory_order_acquire)) {
+            return;
+        }
+        const SOCKET replacement = CreateListener(requested);
+        if (replacement == INVALID_SOCKET) return;
+
+        const SOCKET previous = listener.exchange(replacement, std::memory_order_acq_rel);
+        port.store(requested, std::memory_order_release);
+        CloseSocket(previous);
+    }
 
     [[nodiscard]] bool Handshake(const SOCKET client) noexcept {
         try {
@@ -398,6 +459,7 @@ struct WebSocketServer::Impl final {
     void Run() noexcept {
         std::vector<Client> clients;
         while (running.load(std::memory_order_acquire)) {
+            RebindPendingListener();
             fd_set read_set{};
             fd_set write_set{};
             const SOCKET listening = listener.load(std::memory_order_acquire);
@@ -462,13 +524,23 @@ AnomalyStatusV1 ANOMALY_CALL ServerInfoV1(
                                    : ANOMALY_STATUS_V1_OK);
 }
 
+AnomalyStatusV1 ANOMALY_CALL SetPortV1(void* user, const std::uint16_t port) noexcept {
+    auto* const server = static_cast<WebSocketServer*>(user);
+    if (server == nullptr || port == 0U) {
+        return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+    }
+    return Status(server->RequestPortChange(port)
+        ? ANOMALY_STATUS_V1_OK
+        : ANOMALY_STATUS_V1_UNAVAILABLE);
+}
+
 }  // namespace
 
 WebSocketServer::WebSocketServer(const std::uint16_t port)
     : impl_(std::make_unique<Impl>(port)) {
     impl_->service = {
         sizeof(AnomalyWebSocketServiceV1), ANOMALY_WEBSOCKET_SERVICE_V1_VERSION,
-        this, PublishTextV1, ServerInfoV1};
+        this, PublishTextV1, ServerInfoV1, SetPortV1};
 }
 
 WebSocketServer::~WebSocketServer() {
@@ -483,23 +555,9 @@ bool WebSocketServer::Start() noexcept {
     WSADATA data{};
     if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return false;
     impl_->winsock_ready.store(true, std::memory_order_release);
-    SOCKET listening = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    impl_->generation.fetch_add(1U, std::memory_order_acq_rel);
+    SOCKET listening = CreateListener(impl_->port.load(std::memory_order_acquire));
     if (listening == INVALID_SOCKET) {
-        WSACleanup();
-        impl_->winsock_ready.store(false, std::memory_order_release);
-        return false;
-    }
-    const BOOL reuse = TRUE;
-    static_cast<void>(setsockopt(
-        listening, SOL_SOCKET, SO_REUSEADDR,
-        reinterpret_cast<const char*>(&reuse), sizeof(reuse)));
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(impl_->port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(listening, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR ||
-        listen(listening, SOMAXCONN) == SOCKET_ERROR || !SetNonBlocking(listening)) {
-        CloseSocket(listening);
         WSACleanup();
         impl_->winsock_ready.store(false, std::memory_order_release);
         return false;
@@ -559,12 +617,36 @@ bool WebSocketServer::PublishText(const std::string_view message) noexcept {
     }
 }
 
+bool WebSocketServer::RequestPortChange(const std::uint16_t port) noexcept {
+    if (impl_ == nullptr || port == 0U) return false;
+    const std::uint64_t request_generation = impl_->generation.load(std::memory_order_acquire);
+    if (request_generation == 0U || !impl_->running.load(std::memory_order_acquire) ||
+        impl_->generation.load(std::memory_order_acquire) != request_generation) {
+        return false;
+    }
+    const std::uint64_t request = PackPortRequest(request_generation, port);
+    std::uint64_t pending = impl_->pending_port_request.load(std::memory_order_acquire);
+    do {
+        if (PortRequestGeneration(pending) > request_generation) return false;
+    } while (!impl_->pending_port_request.compare_exchange_weak(
+        pending, request, std::memory_order_release, std::memory_order_acquire));
+
+    if (impl_->running.load(std::memory_order_acquire) &&
+        impl_->generation.load(std::memory_order_acquire) == request_generation) {
+        return true;
+    }
+    std::uint64_t expected = request;
+    static_cast<void>(impl_->pending_port_request.compare_exchange_strong(
+        expected, 0U, std::memory_order_acq_rel, std::memory_order_acquire));
+    return false;
+}
+
 AnomalyWebSocketServerInfoV1 WebSocketServer::Snapshot() const noexcept {
     if (impl_ == nullptr) return {sizeof(AnomalyWebSocketServerInfoV1)};
     const bool running = impl_->running.load(std::memory_order_acquire);
     return {
         sizeof(AnomalyWebSocketServerInfoV1),
-        running ? impl_->port : 0U,
+        running ? impl_->port.load(std::memory_order_acquire) : 0U,
         0,
         impl_->connected_clients.load(std::memory_order_acquire),
         impl_->published_messages.load(std::memory_order_acquire),

@@ -29,6 +29,8 @@ typedef struct AnomalyWebSocketServiceV1 {
         void* user, AnomalyStringViewV1 message);
     AnomalyStatusV1 (ANOMALY_CALL *server_info)(
         void* user, AnomalyWebSocketServerInfoV1* info);
+    // Optional V1 tail. Check struct_size before accessing this operation.
+    AnomalyStatusV1 (ANOMALY_CALL *set_port)(void* user, uint16_t port);
 } AnomalyWebSocketServiceV1;
 
 #ifdef __cplusplus

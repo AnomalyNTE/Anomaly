@@ -21,6 +21,8 @@ public:
     [[nodiscard]] bool Start() noexcept;
     void Stop() noexcept;
     [[nodiscard]] bool PublishText(std::string_view message) noexcept;
+    // Queues a listener rebind for the Runtime-owned socket worker.
+    [[nodiscard]] bool RequestPortChange(std::uint16_t port) noexcept;
     [[nodiscard]] AnomalyWebSocketServerInfoV1 Snapshot() const noexcept;
     [[nodiscard]] const AnomalyWebSocketServiceV1* Service() const noexcept;
 

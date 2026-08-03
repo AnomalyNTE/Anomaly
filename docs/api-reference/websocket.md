@@ -6,7 +6,7 @@ and socket I/O; a plugin may only enqueue UTF-8 text frames for broadcast.
 
 ## Endpoint
 
-- Listener: `127.0.0.1:14514`
+- Listener: `127.0.0.1:14514` by default; the port can be changed while running
 - Transport: RFC 6455 WebSocket, text frames
 - Scope: process-local clients only
 - Queue: bounded; `publish_text` returns `CONFLICT` when a frame cannot be admitted
@@ -38,6 +38,7 @@ typedef struct AnomalyWebSocketServiceV1 {
         void* user, AnomalyStringViewV1 message);
     AnomalyStatusV1 (ANOMALY_CALL *server_info)(
         void* user, AnomalyWebSocketServerInfoV1* info);
+    AnomalyStatusV1 (ANOMALY_CALL *set_port)(void* user, uint16_t port);
 } AnomalyWebSocketServiceV1;
 ```
 
@@ -45,6 +46,16 @@ typedef struct AnomalyWebSocketServiceV1 {
 network I/O. It returns `UNAVAILABLE` after Runtime shutdown and `CONFLICT`
 when the bounded queue is full. `server_info` requires a caller-initialized
 `struct_size` and reports `port = 0` while the listener is unavailable.
+
+`set_port` is an optional tail field. A caller must confirm that `struct_size`
+reaches the field before dereferencing it. It accepts ports `1..65535` and
+returns after queueing the change; socket binding runs on the Runtime-owned
+worker. Poll `server_info` to observe the active port. The worker binds the
+replacement listener before closing the current listener, so a failed bind
+leaves the current listener and its port unchanged.
+
+When multiple changes are queued before the worker processes them, the latest
+request replaces earlier pending requests.
 
 Plugins must declare the `websocket` capability to query this service. The
 service may be marked optional when a plugin can operate without a local map
