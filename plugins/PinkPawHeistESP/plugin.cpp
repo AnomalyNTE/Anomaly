@@ -2142,6 +2142,17 @@ const AnomalyUiServiceV1* TableUi(const AnomalyUiServiceV1* ui) noexcept {
     return complete ? ui : nullptr;
 }
 
+const AnomalyUiServiceV1* ChildUi(const AnomalyUiServiceV1* ui) noexcept {
+    if (ui == nullptr || ui->service_version != ANOMALY_UI_SERVICE_V1_VERSION) return nullptr;
+    return HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
+               ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+            HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
+                ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+            ui->begin_child != nullptr && ui->end_child != nullptr
+        ? ui
+        : nullptr;
+}
+
 const AnomalyUiServiceV1* InlineLayoutUi(const AnomalyUiServiceV1* ui) noexcept {
     if (ui == nullptr || ui->service_version != ANOMALY_UI_SERVICE_V1_VERSION) return nullptr;
     const bool complete =
@@ -2189,12 +2200,10 @@ void DrawLootRows(
     const AnomalyUiServiceV1* ui, const std::vector<const LootEntity*>& visible_loot,
     const std::size_t first, const std::size_t last, const bool developer_mode) {
     const auto* table_ui = TableUi(ui);
-    const std::uint32_t table_flags = !developer_mode && InlineLayoutUi(ui) != nullptr
-        ? ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT
-        : ANOMALY_UI_TABLE_V1_NONE;
+    constexpr std::uint32_t table_flags = ANOMALY_UI_TABLE_V1_NONE;
     if (table_ui != nullptr && table_ui->begin_table(
             table_ui->user, anomaly::sdk::StringView("loot"), developer_mode ? 6 : 4,
-            table_flags, 0.0F, 250.0F) != 0) {
+            table_flags, 0.0F, developer_mode ? 250.0F : 0.0F) != 0) {
         table_ui->table_next_row(table_ui->user);
         static_cast<void>(table_ui->table_next_column(table_ui->user));
         Text(ui, g_context.localizer.Text("column.loot", "Loot"));
@@ -2297,7 +2306,32 @@ void DrawLootPagination(
 
     constexpr float kButtonWidth = 72.0F;
     constexpr float kButtonGap = 4.0F;
+    constexpr float kPaginationRowHeight = 40.0F;
     const auto* const inline_ui = InlineLayoutUi(ui);
+    const auto* const child_ui = ChildUi(ui);
+    if (inline_ui != nullptr && child_ui != nullptr && ButtonEnabledUi(ui) != nullptr) {
+        const int visible = child_ui->begin_child(
+            child_ui->user, anomaly::sdk::StringView("loot-pagination-layout"),
+            0.0F, kPaginationRowHeight, 0U);
+        if (visible != 0) {
+            float window_width{};
+            float window_height{};
+            inline_ui->get_window_size(inline_ui->user, &window_width, &window_height);
+            const float group_width =
+                kButtonWidth * static_cast<float>(actions.size()) +
+                kButtonGap * static_cast<float>(actions.size() - 1U);
+            inline_ui->set_cursor_pos_x(
+                inline_ui->user, (std::max)(0.0F, (window_width - group_width) * 0.5F));
+            for (std::size_t index{}; index != actions.size(); ++index) {
+                if (index != 0U) inline_ui->same_line(inline_ui->user, 0.0F, kButtonGap);
+                draw_action(actions[index], kButtonWidth);
+            }
+            child_ui->end_child(child_ui->user);
+            return;
+        }
+        child_ui->end_child(child_ui->user);
+    }
+
     if (inline_ui != nullptr && ButtonEnabledUi(ui) != nullptr) {
         float window_width{};
         float window_height{};
@@ -2380,12 +2414,10 @@ void DrawExtractionRows(
     const std::vector<ExtractionPoint>& points,
     const bool developer_mode) {
     const auto* table_ui = TableUi(ui);
-    const std::uint32_t table_flags = !developer_mode && InlineLayoutUi(ui) != nullptr
-        ? ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT
-        : ANOMALY_UI_TABLE_V1_NONE;
+    constexpr std::uint32_t table_flags = ANOMALY_UI_TABLE_V1_NONE;
     if (table_ui != nullptr && table_ui->begin_table(
             table_ui->user, anomaly::sdk::StringView("extractions"), developer_mode ? 4 : 3,
-            table_flags, 0.0F, 220.0F) != 0) {
+            table_flags, 0.0F, developer_mode ? 220.0F : 0.0F) != 0) {
         table_ui->table_next_row(table_ui->user);
         static_cast<void>(table_ui->table_next_column(table_ui->user));
         Text(ui, g_context.localizer.Text("column.extraction", "Extraction"));
