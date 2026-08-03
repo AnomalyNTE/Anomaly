@@ -36,6 +36,7 @@ inline constexpr std::uint32_t kGameInstanceLocalPlayersOffset = 0x38;
 inline constexpr std::uint32_t kLocalPlayerControllerOffset = 0x30;
 inline constexpr std::uint32_t kControllerCameraManagerOffset = 0x380;
 inline constexpr std::uint32_t kControllerPlayerInputOffset = 0x440;
+inline constexpr std::uint32_t kControllerStreamingSourceVtableOffset = 0xC60;
 inline constexpr std::uint32_t kCameraViewPointVtableOffset = 0x850;
 inline constexpr std::uint32_t kPlayerInputKeyVtableOffset = 0x2B8;
 inline constexpr std::uint32_t kInputKeyEventArgsKeyOffset = 0x10;

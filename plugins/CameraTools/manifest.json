@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "anomaly.local.nte.camera-tools",
   "name": "Camera Tools",
-  "description": "Combines view-distance adjustment and free-camera controls in one plugin.",
+  "description": "Combines view-distance adjustment, free-camera controls, and optional scene loading around the free camera.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "version": "1.0.0",
