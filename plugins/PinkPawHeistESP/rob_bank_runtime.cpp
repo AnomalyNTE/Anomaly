@@ -25,8 +25,12 @@ constexpr std::string_view kGObjectsPattern =
     "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
 constexpr std::string_view kRobBankPointPath =
     "/Game/DataTable/RobBank/DT_RobBankPoint";
+constexpr std::string_view kRobBankPointObjectPath =
+    "/Game/DataTable/RobBank/DT_RobBankPoint.DT_RobBankPoint";
 constexpr std::string_view kRobBankDataAssetPath =
     "/Game/DataTable/RobBank/DA_RobBank";
+constexpr std::string_view kRobBankDataAssetObjectPath =
+    "/Game/DataTable/RobBank/DA_RobBank.DA_RobBank";
 constexpr std::string_view kPickupPattern =
     "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? "
     "84 C0 0F 84 ?? ?? ?? ?? 48 83 BB D0 02 00 00 00 0F 84 ?? ?? ?? ?? "
@@ -864,7 +868,7 @@ struct RobBankRuntime::Impl final {
 
             if (native_object_find_available) {
                 std::uintptr_t object{};
-                if (FindExactObject(kRobBankPointPath, object)) {
+                if (FindExactObject(kRobBankPointObjectPath, object)) {
                     PointTable candidate;
                     if (BuildPointTable(object, candidate)) {
                         candidate.registry_generation = registry_generation;
@@ -1016,7 +1020,7 @@ struct RobBankRuntime::Impl final {
 
             if (native_object_find_available) {
                 std::uintptr_t object{};
-                if (FindExactObject(kRobBankDataAssetPath, object)) {
+                if (FindExactObject(kRobBankDataAssetObjectPath, object)) {
                     if (BuildItemTables(object)) {
                         item_tables.available = !item_tables.items.empty();
                         item_tables.observed_object_count = registry.count;
