@@ -131,6 +131,7 @@ typedef struct AnomalyUe5ObjectsServiceV1 {
     uint32_t (ANOMALY_CALL *count)(void* user);
     AnomalyStatusV1 (ANOMALY_CALL *snapshot_at)(void* user, uint32_t index, AnomalyUe5ObjectSnapshotV1*);
     AnomalyStatusV1 (ANOMALY_CALL *snapshot_by_handle)(void* user, AnomalyGenerationHandleV1, AnomalyUe5ObjectSnapshotV1*);
+    AnomalyStatusV1 (ANOMALY_CALL *find_exact)(void* user, AnomalyStringViewV1 path, AnomalyGenerationHandleV1*);
 } AnomalyUe5ObjectsServiceV1;
 ```
 
@@ -140,6 +141,9 @@ typedef struct AnomalyUe5ObjectsServiceV1 {
 | `count` | 对象数量 |
 | `snapshot_at(index, ...)` | 按索引取对象快照 |
 | `snapshot_by_handle(handle, ...)` | 按 handle 取对象快照 |
+| `find_exact(path, ...)` | 仅在 Game 线程按精确 UTF-8 对象路径调用 Profile 验证过的 UE 原生查找；对象尚未加载时返回 `NOT_FOUND` |
+
+`find_exact` 是版本 1 表尾追加字段。调用方必须先用 `struct_size` 检查字段存在；旧宿主不会发布该字段。
 
 辅助宏从 handle 拆分索引 / 序号：
 

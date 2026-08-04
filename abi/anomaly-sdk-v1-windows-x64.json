@@ -994,7 +994,7 @@
       }
     },
     "AnomalyUe5ObjectsServiceV1": {
-      "size": 48,
+      "size": 56,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -1003,7 +1003,8 @@
         "generation": 16,
         "count": 24,
         "snapshot_at": 32,
-        "snapshot_by_handle": 40
+        "snapshot_by_handle": 40,
+        "find_exact": 48
       }
     },
     "AnomalyUe5WorldSnapshotV1": {

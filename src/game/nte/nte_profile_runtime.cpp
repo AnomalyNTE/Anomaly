@@ -1,5 +1,6 @@
 #include "anomaly/nte_profile_runtime.hpp"
 
+#include "anomaly/ue5_object_lookup.hpp"
 #include "anomaly/ue5_outbound_bit_count_probe.hpp"
 #include "anomaly/ue5_process_event.hpp"
 #include "anomaly/ue5_process_event_hook.hpp"
@@ -679,7 +680,9 @@ public:
             NteFeatureLayoutValidators(
                 resolution_->FeatureAvailable(kUe5ActorProcessEventFeature)),
             profile_ ? CreateUe5ProcessEventInvoker(*profile_, *resolution_, *memory_)
-                     : Ue5NteAdapter::ProcessEventInvoker{});
+                     : Ue5NteAdapter::ProcessEventInvoker{},
+            profile_ ? CreateUe5ObjectLookup(*profile_, *resolution_, *memory_)
+                     : Ue5NteAdapter::ObjectLookup{});
         bool hook_ready{};
         const auto* tick = resolution_->FindSymbol("ue5.GameTick");
         if (tick != nullptr && tick->Available() &&

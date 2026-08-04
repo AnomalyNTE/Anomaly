@@ -318,6 +318,14 @@ void ValidateReflectionFeatureContracts(
         profile, "ue5.process-event", {"ue5.ProcessEvent"}, {},
         "ue5-process-event-abi-v1", {}, result, source);
     ValidateReflectionFeatureContract(
+        profile, "ue5.object-find", {"ue5.StaticFindObject"}, {"ue5.objects"},
+        "ue5-static-find-object-abi-v1",
+        {"object.internalIndex", "objects.itemsOffset", "objects.maxCountOffset",
+         "objects.countOffset", "objects.maxChunksOffset", "objects.numChunksOffset",
+         "objects.chunkCountSize", "objects.chunkSize", "objects.itemStride",
+         "objects.objectOffset", "objects.serialOffset"},
+        result, source);
+    ValidateReflectionFeatureContract(
         profile, "ue5.actor-process-event", {"ue5.AActorProcessEvent"},
         {"ue5.process-event"}, "ue5-actor-process-event-abi-v1", {}, result, source);
     ValidateReflectionFeatureContract(

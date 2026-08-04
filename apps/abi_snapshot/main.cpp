@@ -1197,7 +1197,8 @@ std::string BuildSnapshot() {
          {"count", offsetof(AnomalyUe5ObjectsServiceV1, count)},
          {"snapshot_at", offsetof(AnomalyUe5ObjectsServiceV1, snapshot_at)},
          {"snapshot_by_handle",
-          offsetof(AnomalyUe5ObjectsServiceV1, snapshot_by_handle)}},
+          offsetof(AnomalyUe5ObjectsServiceV1, snapshot_by_handle)},
+         {"find_exact", offsetof(AnomalyUe5ObjectsServiceV1, find_exact)}},
         false);
     AppendStruct(
         output,

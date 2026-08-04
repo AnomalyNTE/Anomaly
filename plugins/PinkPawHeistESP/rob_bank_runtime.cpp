@@ -23,6 +23,10 @@ constexpr std::string_view kGWorldPattern =
     "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
 constexpr std::string_view kGObjectsPattern =
     "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
+constexpr std::string_view kRobBankPointPath =
+    "/Game/DataTable/RobBank/DT_RobBankPoint";
+constexpr std::string_view kRobBankDataAssetPath =
+    "/Game/DataTable/RobBank/DA_RobBank";
 constexpr std::string_view kPickupPattern =
     "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? "
     "84 C0 0F 84 ?? ?? ?? ?? 48 83 BB D0 02 00 00 00 0F 84 ?? ?? ?? ?? "
@@ -401,6 +405,7 @@ struct RobBankRuntime::Impl final {
     const AnomalySignatureServiceV1* signatures{};
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5FrameworkServiceV1* framework{};
+    const AnomalyUe5ObjectsServiceV1* objects{};
     std::uintptr_t world_storage{};
     std::uintptr_t object_registry_address{};
     std::uintptr_t pickup_function{};
@@ -418,6 +423,7 @@ struct RobBankRuntime::Impl final {
     bool key_door_context_available{};
     bool started{};
     bool refreshed{};
+    bool native_object_find_available{};
 
     [[nodiscard]] bool ReadBytes(
         const std::uintptr_t address,
@@ -451,6 +457,39 @@ struct RobBankRuntime::Impl final {
     [[nodiscard]] bool IsGameThread() const noexcept {
         return framework != nullptr && framework->is_game_thread != nullptr &&
             framework->is_game_thread(framework->user) != 0;
+    }
+
+    [[nodiscard]] bool FindExactObject(
+        const std::string_view path,
+        std::uintptr_t& object) noexcept {
+        object = 0;
+        if (!native_object_find_available || objects == nullptr ||
+            objects->find_exact == nullptr) {
+            return false;
+        }
+        AnomalyGenerationHandleV1 handle{};
+        const AnomalyStatusV1 status = objects->find_exact(
+            objects->user,
+            anomaly::sdk::StringView(path),
+            &handle);
+        if (status.code == ANOMALY_STATUS_V1_UNAVAILABLE) {
+            native_object_find_available = false;
+            return false;
+        }
+        if (status.code != ANOMALY_STATUS_V1_OK || handle.id == 0 ||
+            static_cast<std::uint32_t>(handle.id) == 0) {
+            return false;
+        }
+        const std::uint32_t index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
+        const std::uint32_t expected_serial =
+            ANOMALY_UE5_OBJECT_HANDLE_SERIAL(handle);
+        std::uint32_t serial{};
+        if (!ReadObjectSlot(registry, index, object, serial) ||
+            object == 0 || serial != expected_serial) {
+            object = 0;
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]] bool ResolveDirect(
@@ -767,7 +806,7 @@ struct RobBankRuntime::Impl final {
             !ReadPointerAt(table, kObjectOuterOffset, outer_object) ||
             ResolveObjectName(class_object) != "DataTable" ||
             ResolveObjectName(outer_object) !=
-                "/Game/DataTable/RobBank/DT_RobBankPoint") {
+                kRobBankPointPath) {
             return false;
         }
 
@@ -821,6 +860,19 @@ struct RobBankRuntime::Impl final {
                 point_table.observed_object_count >= registry.count) {
                 point_table.discovery_complete = true;
                 return;
+            }
+
+            if (native_object_find_available) {
+                std::uintptr_t object{};
+                if (FindExactObject(kRobBankPointPath, object)) {
+                    PointTable candidate;
+                    if (BuildPointTable(object, candidate)) {
+                        candidate.registry_generation = registry_generation;
+                        candidate.observed_object_count = registry.count;
+                        point_table = std::move(candidate);
+                    }
+                }
+                if (native_object_find_available) return;
             }
 
             const std::uint32_t begin = point_table.observed_object_count;
@@ -892,6 +944,12 @@ struct RobBankRuntime::Impl final {
     }
 
     [[nodiscard]] bool BuildItemTables(const std::uintptr_t data_asset) {
+        std::uintptr_t outer_object{};
+        if (ResolveObjectName(data_asset) != "DA_RobBank" ||
+            !ReadPointerAt(data_asset, kObjectOuterOffset, outer_object) ||
+            ResolveObjectName(outer_object) != kRobBankDataAssetPath) {
+            return false;
+        }
         std::uintptr_t table{};
         DataTableRows rows;
         if (!ReadPointerAt(data_asset, kRobBankCloneDataAssetItemOffset, table) ||
@@ -960,6 +1018,18 @@ struct RobBankRuntime::Impl final {
             if (item_tables.observed_object_count >= registry.count) {
                 item_tables.discovery_complete = true;
                 return;
+            }
+
+            if (native_object_find_available) {
+                std::uintptr_t object{};
+                if (FindExactObject(kRobBankDataAssetPath, object)) {
+                    if (BuildItemTables(object)) {
+                        item_tables.available = !item_tables.items.empty();
+                        item_tables.observed_object_count = registry.count;
+                        item_tables.discovery_complete = item_tables.available;
+                    }
+                }
+                if (native_object_find_available) return;
             }
 
             const std::uint32_t begin = item_tables.observed_object_count;
@@ -1237,6 +1307,13 @@ bool RobBankRuntime::Start(const AnomalyHostApiV1* const host) noexcept {
         impl_->framework = services.Query<AnomalyUe5FrameworkServiceV1>(
             ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
             ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION).get();
+        impl_->objects = services.Query<AnomalyUe5ObjectsServiceV1>(
+            ANOMALY_UE5_OBJECTS_SERVICE_V1_ID,
+            ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION).get();
+        impl_->native_object_find_available = HasField<AnomalyUe5ObjectsServiceV1,
+            decltype(AnomalyUe5ObjectsServiceV1::find_exact)>(
+                impl_->objects, offsetof(AnomalyUe5ObjectsServiceV1, find_exact)) &&
+            impl_->objects->find_exact != nullptr;
         if (!HasField<AnomalyCoreServiceV1,
                 decltype(AnomalyCoreServiceV1::read_memory)>(
                 impl_->core, offsetof(AnomalyCoreServiceV1, read_memory)) ||
@@ -1271,6 +1348,7 @@ void RobBankRuntime::Stop() noexcept {
     impl_->signatures = nullptr;
     impl_->names = nullptr;
     impl_->framework = nullptr;
+    impl_->objects = nullptr;
     impl_->world_storage = 0;
     impl_->object_registry_address = 0;
     impl_->pickup_function = 0;
@@ -1288,6 +1366,7 @@ void RobBankRuntime::Stop() noexcept {
     impl_->key_door_context_available = false;
     impl_->started = false;
     impl_->refreshed = false;
+    impl_->native_object_find_available = false;
 }
 
 bool RobBankRuntime::Refresh() noexcept {

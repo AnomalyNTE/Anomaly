@@ -46,6 +46,14 @@
         "anomaly.nte.esc-menu-button"
       ]
     },
+    "ue5.StaticFindObject": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B E9 41 0F B6 D9 33 C9 49 8B F8 48 8B F2",
+      "resolve": {"kind": "direct"},
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.ue5.objects"]
+    },
     "ue5.GameTick": {
       "module": "HTGame.exe",
       "section": ".text",
@@ -120,6 +128,7 @@
     "ue5.world": ["ue5.GWorld", "ue5.GameTick"],
     "ue5.names": ["ue5.FNamePool"],
     "ue5.objects": ["ue5.GObjects", "ue5.GameTick"],
+    "ue5.object-find": ["ue5.StaticFindObject"],
     "ue5.process-event": ["ue5.ProcessEvent"],
     "ue5.actor-process-event": ["ue5.AActorProcessEvent"],
     "ue5.ahud": [],
@@ -148,6 +157,7 @@
   "optionalFeatures": [
     "ue5.actors",
     "ue5.functions",
+    "ue5.object-find",
     "ue5.process-event",
     "ue5.actor-process-event",
     "ue5.ahud",
@@ -158,6 +168,7 @@
   "featureLayoutValidators": {
     "ue5.actors": ["ue5-actors-reflection-v1"],
     "ue5.functions": ["ue5-functions-reflection-v1"],
+    "ue5.object-find": ["ue5-static-find-object-abi-v1"],
     "ue5.process-event": ["ue5-process-event-abi-v1"],
     "ue5.actor-process-event": ["ue5-actor-process-event-abi-v1"],
     "ue5.ahud": ["ue5-ahud-reflection-v1"],
@@ -170,6 +181,7 @@
   "featureDependencies": {
     "ue5.actors": ["ue5.world", "ue5.names"],
     "ue5.functions": ["ue5.objects", "ue5.names"],
+    "ue5.object-find": ["ue5.objects"],
     "ue5.actor-process-event": ["ue5.process-event"],
     "ue5.ahud": ["ue5.functions", "ue5.actor-process-event"],
     "nte.player-esp": ["nte.player"],

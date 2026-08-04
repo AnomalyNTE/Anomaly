@@ -3,6 +3,7 @@
 #include "anomaly/adapter_service_registry.hpp"
 #include "anomaly/sdk/anomaly_sdk.h"
 #include "anomaly/symbol_resolver.hpp"
+#include "anomaly/ue5_object_lookup.hpp"
 #include "anomaly/ue5_process_event.hpp"
 
 #include <Windows.h>
@@ -30,6 +31,7 @@ public:
     // Tests inject this seam; production derives it from the active Profile and ABI validator.
     // It must never fall back to a Pawn vtable slot.
     using ProcessEventInvoker = Ue5ProcessEventInvoker;
+    using ObjectLookup = Ue5ObjectLookup;
 
     Ue5NteAdapter(
         BuildFingerprint fingerprint,
@@ -41,7 +43,8 @@ public:
         FeatureLayoutValidatorRegistry feature_layout_validators = {},
         // Mutation services remain default-deny until the current module's ABI
         // and reflection validators supply an invocation bridge.
-        ProcessEventInvoker process_event_invoker = {});
+        ProcessEventInvoker process_event_invoker = {},
+        ObjectLookup object_lookup = {});
     ~Ue5NteAdapter();
 
     Ue5NteAdapter(const Ue5NteAdapter&) = delete;

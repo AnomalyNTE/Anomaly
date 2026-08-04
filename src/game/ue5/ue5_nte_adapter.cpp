@@ -521,6 +521,30 @@ std::uint64_t EncodeObjectHandle(std::uint32_t index, std::uint32_t serial) noex
         (static_cast<std::uint64_t>(index) + 1U);
 }
 
+bool DecodeExactObjectPath(
+    const AnomalyStringViewV1 path,
+    std::wstring& decoded) {
+    constexpr std::size_t kMaximumPathBytes = 16U * 1024U;
+    decoded.clear();
+    if (path.data == nullptr || path.size == 0 || path.size > kMaximumPathBytes ||
+        path.size > static_cast<std::size_t>((std::numeric_limits<int>::max)()) ||
+        std::memchr(path.data, '\0', path.size) != nullptr) {
+        return false;
+    }
+    const int source_size = static_cast<int>(path.size);
+    const int count = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, path.data, source_size, nullptr, 0);
+    if (count <= 0) return false;
+    decoded.resize(static_cast<std::size_t>(count));
+    return MultiByteToWideChar(
+               CP_UTF8,
+               MB_ERR_INVALID_CHARS,
+               path.data,
+               source_size,
+               decoded.data(),
+               count) == count;
+}
+
 }  // namespace
 
 struct Ue5NteAdapter::State {
@@ -535,6 +559,7 @@ struct Ue5NteAdapter::State {
     FeatureLayoutValidatorRegistry feature_layout_validators;
     AdapterServiceRegistry* services{};
     Ue5NteAdapter::ProcessEventInvoker process_event_invoker;
+    Ue5NteAdapter::ObjectLookup object_lookup;
     mutable std::timed_mutex mutex;
     std::timed_mutex lifecycle_mutex;
     mutable std::recursive_timed_mutex publication_mutex;
@@ -942,6 +967,20 @@ struct Ue5NteAdapter::State {
                 profile,
                 "nte.player-teleport",
                 "nte-player-teleport-layout-v1");
+    }
+
+    [[nodiscard]] bool ObjectFindAvailable() const noexcept {
+        return static_cast<bool>(object_lookup) &&
+            resolution.FeatureAvailable(kUe5ObjectFindFeature) &&
+            resolution.FeatureAvailable("ue5.objects") &&
+            FeatureDeclaresSymbol(
+                profile, kUe5ObjectFindFeature, kUe5StaticFindObjectSymbol) &&
+            FeatureDeclaresDependency(
+                profile, kUe5ObjectFindFeature, "ue5.objects") &&
+            FeatureDeclaresLayoutValidator(
+                profile,
+                kUe5ObjectFindFeature,
+                kUe5StaticFindObjectAbiValidator);
     }
 
     [[nodiscard]] bool AhudFeatureAvailable() const noexcept {
@@ -2827,6 +2866,89 @@ struct Ue5NteAdapter::State {
         return ObjectSnapshotLocked(state, index, &serial, snapshot);
     }
 
+    static AnomalyStatusV1 ANOMALY_CALL FindExactObject(
+        void* user,
+        const AnomalyStringViewV1 path,
+        AnomalyGenerationHandleV1* handle) noexcept {
+        if (handle == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        *handle = {};
+        try {
+            std::wstring decoded;
+            if (!DecodeExactObjectPath(path, decoded)) {
+                return Status(
+                    ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                    "exact object path must be non-empty UTF-8 without NUL bytes");
+            }
+
+            auto& state = *static_cast<State*>(user);
+            const DWORD expected = state.game_thread_id.load(std::memory_order_acquire);
+            if (expected == 0 || expected != GetCurrentThreadId()) {
+                return Status(
+                    ANOMALY_STATUS_V1_CONFLICT,
+                    "exact object lookup requires the Game thread");
+            }
+
+            Ue5NteAdapter::ObjectLookup lookup;
+            {
+                std::scoped_lock lock(state.mutex);
+                if (!state.ServiceAvailableForPublication(
+                        ANOMALY_UE5_OBJECTS_SERVICE_V1_ID) ||
+                    !state.ObjectFindAvailable()) {
+                    return Status(
+                        ANOMALY_STATUS_V1_UNAVAILABLE,
+                        "exact object lookup is unavailable for the active Profile");
+                }
+                lookup = state.object_lookup;
+            }
+
+            const std::uintptr_t object = lookup(decoded.c_str());
+            if (object == 0) {
+                return Status(ANOMALY_STATUS_V1_NOT_FOUND, "exact object is not loaded");
+            }
+
+            std::scoped_lock lock(state.mutex);
+            if (!state.ServiceAvailableForPublication(
+                    ANOMALY_UE5_OBJECTS_SERVICE_V1_ID) ||
+                !state.ObjectFindAvailable() || state.object_registry.items == 0) {
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "object registry changed during exact lookup");
+            }
+            std::uintptr_t index_address{};
+            std::int32_t internal_index{-1};
+            if (!AddAddress(
+                    object,
+                    Layout(state.profile, "object.internalIndex"),
+                    index_address) ||
+                !ReadValue(*state.memory, index_address, internal_index) ||
+                internal_index < 0 ||
+                static_cast<std::uint64_t>(internal_index) >=
+                    state.object_registry.count) {
+                return Status(
+                    ANOMALY_STATUS_V1_NOT_FOUND,
+                    "exact object has no valid registry index");
+            }
+            const auto index = static_cast<std::uint32_t>(internal_index);
+            std::uintptr_t slot_object{};
+            std::uint32_t serial{};
+            if (!ReadObjectSlot(
+                    *state.memory,
+                    state.object_registry,
+                    index,
+                    slot_object,
+                    serial) ||
+                slot_object != object) {
+                return Status(
+                    ANOMALY_STATUS_V1_NOT_FOUND,
+                    "exact object registry identity changed");
+            }
+            *handle = {EncodeObjectHandle(index, serial), state.object_generation};
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "exact object lookup failed");
+        }
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL CurrentWorld(
         void* user, AnomalyGenerationHandleV1* handle) noexcept {
         if (handle == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
@@ -3925,7 +4047,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
         objects_service = {
             sizeof(AnomalyUe5ObjectsServiceV1), ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION,
             this, ObjectGenerationThunk, ObjectCountThunk, ObjectSnapshotThunk,
-            ObjectSnapshotByHandleThunk};
+            ObjectSnapshotByHandleThunk, FindExactObjectThunk};
         world_service = {
             sizeof(AnomalyUe5WorldServiceV1), ANOMALY_UE5_WORLD_SERVICE_V1_VERSION,
             this, CurrentWorldThunk, WorldSnapshotThunk};
@@ -4056,6 +4178,16 @@ private:
         void* user, AnomalyGenerationHandleV1 handle, AnomalyUe5ObjectSnapshotV1* snapshot) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::ObjectSnapshotByHandle(lease.User(), handle, snapshot) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL FindExactObjectThunk(
+        void* user,
+        AnomalyStringViewV1 path,
+        AnomalyGenerationHandleV1* handle) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease
+            ? State::FindExactObject(lease.User(), path, handle)
+            : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL CurrentWorldThunk(
@@ -4853,7 +4985,8 @@ Ue5NteAdapter::Ue5NteAdapter(
     AdapterServiceRegistry& services,
     NteSnapshotSamplingOptions sampling,
     FeatureLayoutValidatorRegistry feature_layout_validators,
-    ProcessEventInvoker process_event_invoker)
+    ProcessEventInvoker process_event_invoker,
+    ObjectLookup object_lookup)
     : state_(std::make_shared<State>()) {
     state_->fingerprint = std::move(fingerprint);
     state_->profile = std::move(profile);
@@ -4862,6 +4995,7 @@ Ue5NteAdapter::Ue5NteAdapter(
     state_->feature_layout_validators = std::move(feature_layout_validators);
     state_->services = &services;
     state_->process_event_invoker = std::move(process_event_invoker);
+    state_->object_lookup = std::move(object_lookup);
     state_->sampling.player_tick_interval = (std::max)(1U, sampling.player_tick_interval);
     state_->sampling.entity_tick_interval = (std::max)(1U, sampling.entity_tick_interval);
 }

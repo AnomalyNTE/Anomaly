@@ -1,4 +1,5 @@
 #include "anomaly/ue5_process_event.hpp"
+#include "anomaly/ue5_object_lookup.hpp"
 
 #include <Windows.h>
 
@@ -155,6 +156,7 @@ FeatureValidationResult ValidateActorProcessEventAbi(
 
 FeatureLayoutValidatorRegistry Ue5FeatureLayoutValidators() {
     FeatureLayoutValidatorRegistry validators;
+    RegisterUe5ObjectLookupValidator(validators);
     validators.Register(std::string(kUe5ProcessEventAbiValidator), ValidateProcessEventAbi);
     validators.Register(
         std::string(kUe5ActorProcessEventAbiValidator),
