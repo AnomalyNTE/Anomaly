@@ -944,12 +944,6 @@ struct RobBankRuntime::Impl final {
     }
 
     [[nodiscard]] bool BuildItemTables(const std::uintptr_t data_asset) {
-        std::uintptr_t outer_object{};
-        if (ResolveObjectName(data_asset) != "DA_RobBank" ||
-            !ReadPointerAt(data_asset, kObjectOuterOffset, outer_object) ||
-            ResolveObjectName(outer_object) != kRobBankDataAssetPath) {
-            return false;
-        }
         std::uintptr_t table{};
         DataTableRows rows;
         if (!ReadPointerAt(data_asset, kRobBankCloneDataAssetItemOffset, table) ||
