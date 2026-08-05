@@ -303,6 +303,7 @@ private:
         std::chrono::milliseconds timeout);
     [[nodiscard]] bool ReloadPackages(const std::vector<std::string>& package_names);
     void PollForChanges();
+    void QueuePackageChanges(std::vector<std::string> package_names) noexcept;
     void LoadPersistentUiWindowState();
     void SavePersistentUiWindowState(bool force = false) noexcept;
 
@@ -331,6 +332,8 @@ private:
     std::uint64_t observed_adapter_service_revision_{};
     anomaly::PluginShadowStore shadow_store_;
     anomaly::PluginFileWatcher file_watcher_;
+    mutable std::mutex pending_package_changes_mutex_;
+    std::vector<std::string> pending_package_changes_;
     anomaly::PluginEnablementStore enablement_store_;
     std::filesystem::path ui_window_state_file_;
     mutable std::mutex ui_window_state_mutex_;

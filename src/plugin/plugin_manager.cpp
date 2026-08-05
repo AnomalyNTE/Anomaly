@@ -3267,6 +3267,7 @@ PluginManager::PluginManager(
 }
 
 PluginManager::~PluginManager() {
+    file_watcher_.Stop();
     SavePersistentUiWindowState(true);
     UnloadAll();
     if (host_nte_esc_menu_scope_ != nullptr) {
@@ -4045,6 +4046,11 @@ bool PluginManager::LoadBinary(
 }
 
 void PluginManager::LoadAll() {
+    file_watcher_.Stop();
+    {
+        std::scoped_lock lock(pending_package_changes_mutex_);
+        pending_package_changes_.clear();
+    }
     std::error_code error;
     std::filesystem::create_directories(plugin_directory_, error);
     const anomaly::PluginCatalogSnapshot catalog =
@@ -4101,8 +4107,11 @@ void PluginManager::LoadAll() {
     if (plan.load_order.empty()) {
         Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "plugin directory is ready: " + plugin_directory_.string());
     }
-    file_watcher_.ResetBaseline();
-    static_cast<void>(file_watcher_.PollForTests(std::chrono::steady_clock::now()));
+    if (!file_watcher_.Start([this](std::vector<std::string> package_names) {
+            QueuePackageChanges(std::move(package_names));
+        })) {
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "plugin file watcher failed to start");
+    }
     if (!loaded) Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "one or more plugin packages were not activated");
 }
 
@@ -4886,9 +4895,25 @@ bool PluginManager::ReloadPackages(const std::vector<std::string>& package_names
 }
 
 void PluginManager::PollForChanges() {
-    const std::vector<std::string> changed =
-        file_watcher_.PollForTests(std::chrono::steady_clock::now());
+    std::vector<std::string> changed;
+    {
+        std::scoped_lock lock(pending_package_changes_mutex_);
+        changed.swap(pending_package_changes_);
+    }
+    std::sort(changed.begin(), changed.end());
+    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
     if (!changed.empty()) static_cast<void>(ReloadPackages(changed));
+}
+
+void PluginManager::QueuePackageChanges(
+    std::vector<std::string> package_names) noexcept {
+    try {
+        std::scoped_lock lock(pending_package_changes_mutex_);
+        for (std::string& package_name : package_names) {
+            pending_package_changes_.push_back(std::move(package_name));
+        }
+    } catch (...) {
+    }
 }
 
 void PluginManager::Draw(void* imgui_context) {

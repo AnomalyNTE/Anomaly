@@ -56,10 +56,25 @@ PluginFileWatcher::~PluginFileWatcher() { Stop(); }
 bool PluginFileWatcher::Start(Callback callback) {
     std::scoped_lock lock(mutex_);
     if (worker_.joinable() || !callback) return false;
-    callback_ = std::move(callback);
-    observations_.clear();
-    initialized_ = false;
-    worker_ = std::jthread([this](std::stop_token token) { Run(token); });
+    const HANDLE change = FindFirstChangeNotificationW(
+        plugin_root_.c_str(), TRUE,
+        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+            FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE |
+            FILE_NOTIFY_CHANGE_CREATION);
+    if (change == INVALID_HANDLE_VALUE) return false;
+    try {
+        observations_.clear();
+        initialized_ = false;
+        static_cast<void>(PollLocked(Clock::now()));
+        callback_ = std::move(callback);
+        worker_ = std::jthread([this, change](std::stop_token token) {
+            Run(token, change);
+        });
+    } catch (...) {
+        static_cast<void>(FindCloseChangeNotification(change));
+        callback_ = {};
+        return false;
+    }
     return true;
 }
 
@@ -149,8 +164,18 @@ std::vector<std::string> PluginFileWatcher::PollForTests(Clock::time_point now) 
     return PollLocked(now);
 }
 
-void PluginFileWatcher::Run(std::stop_token stop_token) {
-    while (!stop_token.stop_requested()) {
+void PluginFileWatcher::Run(std::stop_token stop_token, void* change_handle) {
+    const HANDLE change = static_cast<HANDLE>(change_handle);
+    const HANDLE stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (stop_event == nullptr) {
+        static_cast<void>(FindCloseChangeNotification(change));
+        return;
+    }
+    std::stop_callback stop_callback(stop_token, [stop_event] {
+        static_cast<void>(SetEvent(stop_event));
+    });
+    const HANDLE events[]{stop_event, change};
+    const auto publish_scan = [this] {
         std::vector<std::string> changed;
         Callback callback;
         {
@@ -159,9 +184,49 @@ void PluginFileWatcher::Run(std::stop_token stop_token) {
             callback = callback_;
         }
         if (!changed.empty() && callback) callback(std::move(changed));
-        const auto deadline = Clock::now() + options_.poll_interval;
-        while (!stop_token.stop_requested() && Clock::now() < deadline) Sleep(10);
+    };
+    const auto wait_timeout = [](const Clock::duration remaining) {
+        if (remaining <= Clock::duration::zero()) return DWORD{};
+        const auto rounded = std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
+        return static_cast<DWORD>((std::min)(
+            rounded, static_cast<std::int64_t>(INFINITE - 1)));
+    };
+
+    bool running = true;
+    while (running) {
+        const DWORD signaled = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+        if (signaled == WAIT_OBJECT_0) break;
+        if (signaled != WAIT_OBJECT_0 + 1) break;
+        publish_scan();
+        if (FindNextChangeNotification(change) == FALSE) break;
+
+        auto deadline = Clock::now() +
+            (std::max)(options_.debounce, std::chrono::milliseconds::zero());
+        while (running) {
+            const DWORD settled = WaitForMultipleObjects(
+                2, events, FALSE, wait_timeout(deadline - Clock::now()));
+            if (settled == WAIT_OBJECT_0) {
+                running = false;
+                break;
+            }
+            if (settled == WAIT_OBJECT_0 + 1) {
+                publish_scan();
+                if (FindNextChangeNotification(change) == FALSE) {
+                    running = false;
+                    break;
+                }
+                deadline = Clock::now() +
+                    (std::max)(options_.debounce, std::chrono::milliseconds::zero());
+                continue;
+            }
+            if (settled == WAIT_TIMEOUT) {
+                publish_scan();
+            }
+            break;
+        }
     }
+    static_cast<void>(FindCloseChangeNotification(change));
+    CloseHandle(stop_event);
 }
 
 }  // namespace anomaly

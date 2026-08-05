@@ -47,7 +47,7 @@ private:
 
     [[nodiscard]] std::unordered_map<std::string, std::string> Scan() const;
     [[nodiscard]] std::vector<std::string> PollLocked(Clock::time_point now);
-    void Run(std::stop_token stop_token);
+    void Run(std::stop_token stop_token, void* change_handle);
 
     std::filesystem::path plugin_root_;
     PluginFileWatcherOptions options_;

@@ -1,4 +1,5 @@
 #include "anomaly/host_ui_service.hpp"
+#include "anomaly/plugin_file_watcher.hpp"
 #include "pattern.hpp"
 #include "plugin_manager.hpp"
 
@@ -8,11 +9,14 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -57,7 +61,8 @@ constexpr std::uint64_t kDefaultPrivateGrowthBudgetBytes = 10ULL * 1024ULL * 102
 constexpr std::uint64_t kMaxPrivateGrowthBudgetBytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 
 void Usage() {
-    std::cerr << "usage: anomaly-test-host --plugin <package-or-root> [--reload N] [--ticks N] "
+    std::cerr << "usage: anomaly-test-host --watcher-fixture | "
+                 "--plugin <package-or-root> [--reload N] [--ticks N] "
                  "[--duration-seconds N] [--tick-interval-ms N] [--reload-every-ticks N] "
                  "[--private-growth-budget-bytes N]\n";
 }
@@ -103,10 +108,71 @@ bool VerifyPatternMatcher() {
         std::vector<std::size_t>{0, 1};
 }
 
+bool VerifyPluginFileWatcher() {
+    const auto root = std::filesystem::temp_directory_path() /
+        (L"anomaly-watcher-fixture-" + std::to_wstring(GetCurrentProcessId()));
+    const auto package = root / L"FixturePackage";
+    const auto manifest = package / L"manifest.json";
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    error.clear();
+    std::filesystem::create_directories(package, error);
+    if (error) return false;
+    {
+        std::ofstream output(manifest, std::ios::binary | std::ios::trunc);
+        output << "{}";
+        if (!output) return false;
+    }
+
+    std::mutex mutex;
+    std::condition_variable changed_condition;
+    std::vector<std::string> changed_packages;
+    anomaly::PluginFileWatcher watcher(
+        root, {std::chrono::milliseconds(20), std::chrono::milliseconds(100)});
+    if (!watcher.Start([&](std::vector<std::string> changed) {
+            {
+                std::scoped_lock lock(mutex);
+                changed_packages.insert(
+                    changed_packages.end(), changed.begin(), changed.end());
+            }
+            changed_condition.notify_all();
+        })) {
+        std::filesystem::remove_all(root, error);
+        return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    bool idle_silent{};
+    {
+        std::scoped_lock lock(mutex);
+        idle_silent = changed_packages.empty();
+    }
+    {
+        std::ofstream output(manifest, std::ios::binary | std::ios::app);
+        output << '\n';
+    }
+    bool delivered{};
+    {
+        std::unique_lock lock(mutex);
+        delivered = changed_condition.wait_for(lock, std::chrono::seconds(3), [&] {
+            return std::ranges::find(changed_packages, "FixturePackage") !=
+                changed_packages.end();
+        });
+    }
+    watcher.Stop();
+    std::filesystem::remove_all(root, error);
+    const bool valid = idle_silent && delivered;
+    if (!valid) {
+        std::cerr << "watcher fixture: idle_silent=" << (idle_silent ? 1 : 0)
+                  << " delivered=" << (delivered ? 1 : 0) << '\n';
+    }
+    return valid;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
     std::filesystem::path input;
+    bool watcher_fixture{};
     int reloads = 1;
     int ticks = 3;
     int duration_seconds = 0;
@@ -115,7 +181,8 @@ int wmain(int argc, wchar_t** argv) {
     std::uint64_t private_growth_budget_bytes = kDefaultPrivateGrowthBudgetBytes;
     for (int index = 1; index < argc; ++index) {
         const std::wstring_view argument(argv[index]);
-        if (argument == L"--plugin" && index + 1 < argc) input = argv[++index];
+        if (argument == L"--watcher-fixture") watcher_fixture = true;
+        else if (argument == L"--plugin" && index + 1 < argc) input = argv[++index];
         else if (argument == L"--reload" && index + 1 < argc) reloads = _wtoi(argv[++index]);
         else if (argument == L"--ticks" && index + 1 < argc) ticks = _wtoi(argv[++index]);
         else if (argument == L"--duration-seconds" && index + 1 < argc) duration_seconds = _wtoi(argv[++index]);
@@ -126,16 +193,24 @@ int wmain(int argc, wchar_t** argv) {
         }
         else { Usage(); return 1; }
     }
+    if (!VerifyPatternMatcher()) {
+        std::cerr << "pattern matcher fixture failed\n";
+        return 9;
+    }
+    if (watcher_fixture) {
+        if (!VerifyPluginFileWatcher()) {
+            std::cerr << "plugin file watcher fixture failed\n";
+            return 10;
+        }
+        std::cout << "ok plugin_file_watcher idle_silent=1 change_delivered=1\n";
+        return 0;
+    }
     if (input.empty() || reloads < 0 || ticks < 0 || duration_seconds < 0 ||
         duration_seconds > 7 * 24 * 60 * 60 || tick_interval_ms < 0 ||
         tick_interval_ms > 60000 || reload_every_ticks <= 0 ||
         private_growth_budget_bytes == 0 ||
         private_growth_budget_bytes > kMaxPrivateGrowthBudgetBytes) {
         Usage(); return 1;
-    }
-    if (!VerifyPatternMatcher()) {
-        std::cerr << "pattern matcher fixture failed\n";
-        return 9;
     }
     std::error_code error;
     input = std::filesystem::weakly_canonical(input, error);
