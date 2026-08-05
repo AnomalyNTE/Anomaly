@@ -14,6 +14,7 @@
 #include <dxgi1_4.h>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -26,6 +27,107 @@
 struct ImGuiContext;
 
 namespace ue5mem::embedded {
+
+enum class EmbeddedPerformanceStage : std::uint8_t {
+    PresentInterval,
+    PresentLease,
+    PresentRender,
+    PresentOriginal,
+    PresentTail,
+    ExecuteLease,
+    ExecuteCapture,
+    ExecuteOriginal,
+    RenderLockWait,
+    RenderSetup,
+    RenderFenceWait,
+    RenderFrameReset,
+    RenderUi,
+    RenderPrepareLockWait,
+    RenderPrepareLocked,
+    RenderFrameBegin,
+    RenderDrawLockWait,
+    RenderInput,
+    RenderPlatformUi,
+    RenderPluginDraw,
+    RenderCapture,
+    RenderFinalize,
+    RenderCommands,
+    RenderSubmit,
+    RenderTotal,
+    GamePump,
+    GamePluginLockWait,
+    GamePluginUpdate,
+    GameEscMenu,
+    GameTotal,
+    GameTickInterval,
+    WorkerPluginLockWait,
+    WorkerPluginMaintenance,
+    WorkerRetryServices,
+    WorkerPollChanges,
+    WorkerMaintenance,
+    WorkerPersist,
+    PlatformUiSubmissionLockWait,
+    PlatformUiOperationLockWait,
+    PlatformUiWindowState,
+    PlatformUiRefreshCatalog,
+    PlatformUiRuntimePlugins,
+    PlatformUiBuildSnapshot,
+    PlatformUiRepositorySnapshot,
+    PlatformUiServiceGraphSnapshot,
+    PlatformUiAdapterServicesSnapshot,
+    PlatformUiNteCompatibilitySnapshot,
+    PlatformUiModelPublish,
+    PlatformUiSettingsRefresh,
+    PlatformUiRefreshTotal,
+    PlatformUiFrameSetup,
+    PlatformUiManagementShell,
+    PlatformUiPopups,
+    PlatformUiWindowPersist,
+    Count,
+};
+
+struct EmbeddedPerformanceBucket {
+    std::atomic_uint64_t samples{};
+    std::atomic_uint64_t total_nanoseconds{};
+    std::atomic_uint64_t maximum_nanoseconds{};
+    std::atomic_uint64_t window_samples{};
+    std::atomic_uint64_t window_total_nanoseconds{};
+    std::atomic_uint64_t window_maximum_nanoseconds{};
+};
+
+class EmbeddedPerformanceProbe final {
+public:
+    void SetEnabled(bool enabled) noexcept;
+    [[nodiscard]] bool Enabled() const noexcept;
+    void ObservePresent() noexcept;
+    void ObserveExecute() noexcept;
+    [[nodiscard]] bool SampleRender() noexcept;
+    [[nodiscard]] bool SampleGameTick() noexcept;
+    void Record(
+        EmbeddedPerformanceStage stage,
+        std::chrono::steady_clock::duration elapsed) noexcept;
+    void RecordMaintenance(std::chrono::steady_clock::duration elapsed) noexcept;
+    void RecordPersistence(std::chrono::steady_clock::duration elapsed) noexcept;
+    void Publish(const std::shared_ptr<anomaly::StructuredLogger>& logger) noexcept;
+
+private:
+    std::array<
+        EmbeddedPerformanceBucket,
+        static_cast<std::size_t>(EmbeddedPerformanceStage::Count)> buckets_;
+    std::atomic_uint64_t present_calls_{};
+    std::atomic_uint64_t execute_calls_{};
+    std::atomic_uint64_t render_calls_{};
+    std::atomic_uint64_t game_tick_calls_{};
+    std::atomic_uint64_t maintenance_calls_{};
+    std::atomic_uint64_t persistence_calls_{};
+    std::atomic_uint64_t present_gap_over_25ms_{};
+    std::atomic_uint64_t present_gap_over_50ms_{};
+    std::atomic_int64_t last_present_nanoseconds_{};
+    std::atomic_int64_t last_game_tick_nanoseconds_{};
+    std::atomic_bool enabled_{};
+    std::atomic_bool reset_requested_{};
+    std::chrono::steady_clock::time_point last_publish_{};
+};
 
 template <typename T>
 void Release(T*& value) {
@@ -109,6 +211,7 @@ struct EmbeddedState {
     std::string imgui_ini_path;
     AnalyzerConfig config;
     PlatformDiagnostics diagnostics;
+    EmbeddedPerformanceProbe performance;
     // Borrowed from the RuntimeSession composition root. A quarantined UI
     // owner carries its own shared lifetime token; the renderer state itself
     // must not become a second PluginManager owner.

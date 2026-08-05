@@ -4642,14 +4642,32 @@ void PluginManager::SavePersistentUiWindowState(const bool force) noexcept {
 }
 
 void PluginManager::Maintenance() {
-    MaintenancePluginState();
+    static_cast<void>(MaintenancePluginState());
     PersistUiWindowState();
 }
 
-void PluginManager::MaintenancePluginState() {
+void PluginManager::SetPerformanceDiagnosticsEnabled(const bool enabled) noexcept {
+    performance_diagnostics_enabled_.store(enabled, std::memory_order_relaxed);
+    file_watcher_.SetDiagnosticsEnabled(enabled);
+}
+
+bool PluginManager::PerformanceDiagnosticsEnabled() const noexcept {
+    return performance_diagnostics_enabled_.load(std::memory_order_relaxed);
+}
+
+PluginMaintenanceTiming PluginManager::MaintenancePluginState() {
     const ScopedLogThreadDomain log_domain(anomaly::LogThreadDomain::Worker);
+    if (!PerformanceDiagnosticsEnabled()) {
+        RetryWaitingForAdapterServices();
+        PollForChanges();
+        return {};
+    }
+    const auto retry_started = std::chrono::steady_clock::now();
     RetryWaitingForAdapterServices();
+    const auto poll_started = std::chrono::steady_clock::now();
     PollForChanges();
+    const auto completed = std::chrono::steady_clock::now();
+    return {poll_started - retry_started, completed - poll_started};
 }
 
 void PluginManager::RetryWaitingForAdapterServices() {

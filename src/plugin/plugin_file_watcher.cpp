@@ -96,6 +96,27 @@ bool PluginFileWatcher::Running() const noexcept {
     return worker_.joinable();
 }
 
+void PluginFileWatcher::SetDiagnosticsEnabled(const bool enabled) noexcept {
+    if (diagnostics_enabled_.exchange(enabled, std::memory_order_acq_rel) == enabled ||
+        !enabled) {
+        return;
+    }
+    notifications_.store(0, std::memory_order_relaxed);
+    scans_.store(0, std::memory_order_relaxed);
+    changed_packages_.store(0, std::memory_order_relaxed);
+    total_scan_nanoseconds_.store(0, std::memory_order_relaxed);
+    maximum_scan_nanoseconds_.store(0, std::memory_order_relaxed);
+}
+
+PluginFileWatcherDiagnostics PluginFileWatcher::Diagnostics() const noexcept {
+    return {
+        notifications_.load(std::memory_order_relaxed),
+        scans_.load(std::memory_order_relaxed),
+        changed_packages_.load(std::memory_order_relaxed),
+        total_scan_nanoseconds_.load(std::memory_order_relaxed),
+        maximum_scan_nanoseconds_.load(std::memory_order_relaxed)};
+}
+
 void PluginFileWatcher::ResetBaseline() noexcept {
     std::scoped_lock lock(mutex_);
     observations_.clear();
@@ -103,6 +124,8 @@ void PluginFileWatcher::ResetBaseline() noexcept {
 }
 
 std::unordered_map<std::string, std::string> PluginFileWatcher::Scan() const {
+    const bool measure = diagnostics_enabled_.load(std::memory_order_relaxed);
+    const auto started = measure ? Clock::now() : Clock::time_point{};
     std::unordered_map<std::string, std::string> result;
     std::error_code error;
     for (std::filesystem::directory_iterator iterator(plugin_root_, error), end;
@@ -113,6 +136,17 @@ std::unordered_map<std::string, std::string> PluginFileWatcher::Scan() const {
             continue;
         }
         result.emplace(Utf8(iterator->path().filename()), PackageSignature(iterator->path()));
+    }
+    if (measure) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now() - started).count();
+        const auto value = static_cast<std::uint64_t>((std::max)(elapsed, std::int64_t{}));
+        total_scan_nanoseconds_.fetch_add(value, std::memory_order_relaxed);
+        std::uint64_t maximum = maximum_scan_nanoseconds_.load(std::memory_order_relaxed);
+        while (maximum < value && !maximum_scan_nanoseconds_.compare_exchange_weak(
+                   maximum, value, std::memory_order_relaxed, std::memory_order_relaxed)) {
+        }
+        scans_.fetch_add(1, std::memory_order_release);
     }
     return result;
 }
@@ -156,6 +190,9 @@ std::vector<std::string> PluginFileWatcher::PollLocked(Clock::time_point now) {
         ++iterator;
     }
     std::sort(changed.begin(), changed.end());
+    if (diagnostics_enabled_.load(std::memory_order_relaxed)) {
+        changed_packages_.fetch_add(changed.size(), std::memory_order_relaxed);
+    }
     return changed;
 }
 
@@ -197,6 +234,9 @@ void PluginFileWatcher::Run(std::stop_token stop_token, void* change_handle) {
         const DWORD signaled = WaitForMultipleObjects(2, events, FALSE, INFINITE);
         if (signaled == WAIT_OBJECT_0) break;
         if (signaled != WAIT_OBJECT_0 + 1) break;
+        if (diagnostics_enabled_.load(std::memory_order_relaxed)) {
+            notifications_.fetch_add(1, std::memory_order_relaxed);
+        }
         publish_scan();
         if (FindNextChangeNotification(change) == FALSE) break;
 
@@ -210,6 +250,9 @@ void PluginFileWatcher::Run(std::stop_token stop_token, void* change_handle) {
                 break;
             }
             if (settled == WAIT_OBJECT_0 + 1) {
+                if (diagnostics_enabled_.load(std::memory_order_relaxed)) {
+                    notifications_.fetch_add(1, std::memory_order_relaxed);
+                }
                 publish_scan();
                 if (FindNextChangeNotification(change) == FALSE) {
                     running = false;

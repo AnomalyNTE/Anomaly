@@ -19,6 +19,33 @@
 namespace ue5mem::embedded {
 namespace {
 
+class PerformanceTimer final {
+public:
+    PerformanceTimer(
+        EmbeddedPerformanceProbe& probe,
+        const EmbeddedPerformanceStage stage,
+        const bool active) noexcept
+        : probe_(active ? &probe : nullptr), stage_(stage),
+          started_(active ? std::chrono::steady_clock::now()
+                          : std::chrono::steady_clock::time_point{}) {}
+
+    ~PerformanceTimer() { Stop(); }
+
+    PerformanceTimer(const PerformanceTimer&) = delete;
+    PerformanceTimer& operator=(const PerformanceTimer&) = delete;
+
+    void Stop() noexcept {
+        if (probe_ == nullptr) return;
+        probe_->Record(stage_, std::chrono::steady_clock::now() - started_);
+        probe_ = nullptr;
+    }
+
+private:
+    EmbeddedPerformanceProbe* probe_{};
+    EmbeddedPerformanceStage stage_{};
+    std::chrono::steady_clock::time_point started_{};
+};
+
 void AllocateSrv(
     ImGui_ImplDX12_InitInfo* info,
     D3D12_CPU_DESCRIPTOR_HANDLE* cpu,
@@ -973,8 +1000,20 @@ bool ReleaseGraphics(
 void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     auto* state = g_state.load(std::memory_order_acquire);
     if (state == nullptr || (flags & DXGI_PRESENT_TEST) != 0) return;
+    const bool sampled = state->performance.SampleRender();
+    PerformanceTimer total_timer(
+        state->performance, EmbeddedPerformanceStage::RenderTotal, sampled);
     {
-    std::scoped_lock render_lock(state->render_mutex);
+    const auto lock_started = sampled ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
+    std::unique_lock render_lock(state->render_mutex);
+    if (sampled) {
+        state->performance.Record(
+            EmbeddedPerformanceStage::RenderLockWait,
+            std::chrono::steady_clock::now() - lock_started);
+    }
+    PerformanceTimer setup_timer(
+        state->performance, EmbeddedPerformanceStage::RenderSetup, sampled);
     const RendererLifecycle lifecycle = state->renderer.load();
     if (lifecycle == RendererLifecycle::ResizePending ||
         lifecycle == RendererLifecycle::Stopping || lifecycle == RendererLifecycle::Stopped) return;
@@ -1007,7 +1046,14 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     const std::uint64_t capture_generation = CaptureGeneration(*state);
     SynchronizeSmokeProbeCapture(state->pixel_probe.policy, capture_generation);
     static_cast<void>(CompletePixelProbe(*state, capture_generation));
-    if (!WaitForFrame(*state, frame)) return;
+    setup_timer.Stop();
+    PerformanceTimer fence_timer(
+        state->performance, EmbeddedPerformanceStage::RenderFenceWait, sampled);
+    const bool frame_ready = WaitForFrame(*state, frame);
+    fence_timer.Stop();
+    if (!frame_ready) return;
+    PerformanceTimer reset_timer(
+        state->performance, EmbeddedPerformanceStage::RenderFrameReset, sampled);
     if (FAILED(frame.allocator->Reset()) ||
         FAILED(state->command_list->Reset(frame.allocator, nullptr))) {
         static_cast<void>(ReleaseGraphics(*state, RendererLifecycle::DeviceLost));
@@ -1015,28 +1061,89 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     }
     const bool probing = capture_generation != 0 &&
         PreparePixelProbe(*state, frame, capture_generation);
+    reset_timer.Stop();
 
+    PerformanceTimer ui_timer(
+        state->performance, EmbeddedPerformanceStage::RenderUi, sampled);
     ImGui_ImplDX12_NewFrame();
     // NewFrame creates the ImGui font atlas first, reserving descriptor slot
     // zero before scoped texture uploads allocate from the shared heap.
+    const auto prepare_lock_started = sampled ? std::chrono::steady_clock::now()
+                                              : std::chrono::steady_clock::time_point{};
     {
-        std::scoped_lock plugin_lock(*state->plugin_mutex);
+        std::unique_lock plugin_lock(*state->plugin_mutex);
+        const auto prepare_started = sampled ? std::chrono::steady_clock::now()
+                                             : std::chrono::steady_clock::time_point{};
+        if (sampled) {
+            state->performance.Record(
+                EmbeddedPerformanceStage::RenderPrepareLockWait,
+                prepare_started - prepare_lock_started);
+        }
         SynchronizeHostFontScale(*state);
         state->plugins->PrepareUiResources();
         PreparePlatformUiResources();
+        if (sampled) {
+            state->performance.Record(
+                EmbeddedPerformanceStage::RenderPrepareLocked,
+                std::chrono::steady_clock::now() - prepare_started);
+        }
     }
+    const auto frame_begin_started = sampled ? std::chrono::steady_clock::now()
+                                             : std::chrono::steady_clock::time_point{};
     UpdateMenuCursor(*state, anomaly::HostUiMenusCaptureMouse());
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     anomaly::PrepareHostUiFrame();
-    bool input_frame_published{};
-    {
-        std::scoped_lock plugin_lock(*state->plugin_mutex);
-        input_frame_published = PublishEmbeddedInputFrame(*state);
-        DrawPlatformUi();
-        state->plugins->Draw(ImGui::GetCurrentContext());
-        if (input_frame_published) PublishEmbeddedUiCapture(*state);
+    if (sampled) {
+        state->performance.Record(
+            EmbeddedPerformanceStage::RenderFrameBegin,
+            std::chrono::steady_clock::now() - frame_begin_started);
     }
+    bool input_frame_published{};
+    const auto draw_lock_started = sampled ? std::chrono::steady_clock::now()
+                                           : std::chrono::steady_clock::time_point{};
+    {
+        std::unique_lock plugin_lock(*state->plugin_mutex);
+        auto phase_started = sampled ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
+        if (sampled) {
+            state->performance.Record(
+                EmbeddedPerformanceStage::RenderDrawLockWait,
+                phase_started - draw_lock_started);
+        }
+        input_frame_published = PublishEmbeddedInputFrame(*state);
+        if (sampled) {
+            const auto phase_completed = std::chrono::steady_clock::now();
+            state->performance.Record(
+                EmbeddedPerformanceStage::RenderInput,
+                phase_completed - phase_started);
+            phase_started = phase_completed;
+        }
+        DrawPlatformUi();
+        if (sampled) {
+            const auto phase_completed = std::chrono::steady_clock::now();
+            state->performance.Record(
+                EmbeddedPerformanceStage::RenderPlatformUi,
+                phase_completed - phase_started);
+            phase_started = phase_completed;
+        }
+        state->plugins->Draw(ImGui::GetCurrentContext());
+        if (sampled) {
+            const auto phase_completed = std::chrono::steady_clock::now();
+            state->performance.Record(
+                EmbeddedPerformanceStage::RenderPluginDraw,
+                phase_completed - phase_started);
+            phase_started = phase_completed;
+        }
+        if (input_frame_published) PublishEmbeddedUiCapture(*state);
+        if (sampled) {
+            state->performance.Record(
+                EmbeddedPerformanceStage::RenderCapture,
+                std::chrono::steady_clock::now() - phase_started);
+        }
+    }
+    const auto finalize_started = sampled ? std::chrono::steady_clock::now()
+                                          : std::chrono::steady_clock::time_point{};
     if (probing) {
         const ImVec2 origin = ImGui::GetMainViewport()->Pos;
         auto* marker = ImGui::GetForegroundDrawList();
@@ -1051,7 +1158,15 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     }
     ImGui::Render();
     NotifyRenderThread(*state, capture_generation);
+    if (sampled) {
+        state->performance.Record(
+            EmbeddedPerformanceStage::RenderFinalize,
+            std::chrono::steady_clock::now() - finalize_started);
+    }
+    ui_timer.Stop();
 
+    PerformanceTimer command_timer(
+        state->performance, EmbeddedPerformanceStage::RenderCommands, sampled);
     if (probing) {
         auto to_copy = Transition(
             frame.back_buffer, D3D12_RESOURCE_STATE_PRESENT,
@@ -1097,6 +1212,9 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
         static_cast<void>(ReleaseGraphics(*state, RendererLifecycle::DeviceLost));
         return;
     }
+    command_timer.Stop();
+    PerformanceTimer submit_timer(
+        state->performance, EmbeddedPerformanceStage::RenderSubmit, sampled);
     ID3D12CommandList* command_lists[]{state->command_list};
     ID3D12CommandQueue* queue = state->render_queue;
     if (queue == nullptr) {
@@ -1117,6 +1235,7 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
         state->renderer = RendererLifecycle::DeviceLost;
         return;
     }
+    submit_timer.Stop();
     }
     // Lifecycle mutations are submitted only after the render mutex and the
     // plugin draw lock have been released, so a slow reload cannot block

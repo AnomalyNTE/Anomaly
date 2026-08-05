@@ -28,6 +28,27 @@ namespace ue5mem {
 
 class PluginManager;
 
+enum class PlatformUiPerformanceStage : std::uint8_t {
+    SubmissionLockWait,
+    OperationLockWait,
+    WindowState,
+    RefreshCatalog,
+    RuntimePlugins,
+    BuildSnapshot,
+    RepositorySnapshot,
+    ServiceGraphSnapshot,
+    AdapterServicesSnapshot,
+    NteCompatibilitySnapshot,
+    ModelPublish,
+    SettingsRefresh,
+    RefreshTotal,
+    FrameSetup,
+    ManagementShell,
+    Popups,
+    WindowPersist,
+    Count,
+};
+
 struct PlatformDiagnostics {
     std::shared_ptr<const anomaly::Translator> translator;
     std::string runtime_version{ANOMALY_SDK_VERSION_STRING};
@@ -80,6 +101,10 @@ struct PlatformDiagnostics {
     // Called during UI teardown after new actions are gated. It waits for
     // lifecycle invocations that may have outlived their bounded caller.
     std::function<bool(std::chrono::milliseconds)> lifecycle_drain;
+    std::function<void(
+        PlatformUiPerformanceStage,
+        std::chrono::steady_clock::duration)> performance_probe;
+    std::function<bool()> performance_probe_enabled;
     std::shared_ptr<anomaly::StructuredLogger> logger;
 };
 

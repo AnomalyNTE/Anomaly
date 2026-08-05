@@ -289,6 +289,8 @@
     "settings.diagnostics.ring_capacity_hint": "设置内存中的诊断历史上限。",
     "settings.advanced.developer_mode": "开发者模式",
     "settings.advanced.developer_mode_hint": "显示开发者诊断和插件包信息。",
+    "settings.advanced.detailed_performance_diagnostics": "详细性能诊断",
+    "settings.advanced.detailed_performance_diagnostics_hint": "采集渲染、界面、游戏 Tick、后台任务和插件的高精度耗时数据。仅在排查性能问题时启用。",
     "settings.about.build_versions": "构建和 API 版本。",
     "settings.preview_until_saved": "保存更改前仅预览。",
     "common.clear_search": "清除搜索",

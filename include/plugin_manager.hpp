@@ -12,6 +12,7 @@
 #include "anomaly/ui_resource_registry.hpp"
 #include "anomaly/ui_resource_render_backend.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <chrono>
 #include <cstddef>
@@ -113,6 +114,11 @@ struct PluginCallbackBudgets {
     double draw_slow_milliseconds{4.0};
 };
 
+struct PluginMaintenanceTiming {
+    std::chrono::steady_clock::duration retry_waiting_for_services{};
+    std::chrono::steady_clock::duration poll_for_changes{};
+};
+
 enum class PluginCallbackEvidenceKind : std::uint8_t {
     Update,
     Draw,
@@ -183,9 +189,11 @@ public:
     // Combined worker/lifecycle maintenance for plugin generations and
     // persisted UI window state.
     void Maintenance();
+    void SetPerformanceDiagnosticsEnabled(bool enabled) noexcept;
+    [[nodiscard]] bool PerformanceDiagnosticsEnabled() const noexcept;
     // Worker/lifecycle maintenance that can mutate plugin generations. The
     // host must serialize this with GameUpdate and Draw.
-    void MaintenancePluginState();
+    PluginMaintenanceTiming MaintenancePluginState();
     // Worker-only window-state persistence. This uses the registry's own
     // synchronization, but callers must not hold a renderer/plugin gate: it
     // can perform filesystem I/O.
@@ -332,6 +340,7 @@ private:
     std::uint64_t observed_adapter_service_revision_{};
     anomaly::PluginShadowStore shadow_store_;
     anomaly::PluginFileWatcher file_watcher_;
+    std::atomic_bool performance_diagnostics_enabled_{};
     mutable std::mutex pending_package_changes_mutex_;
     std::vector<std::string> pending_package_changes_;
     anomaly::PluginEnablementStore enablement_store_;

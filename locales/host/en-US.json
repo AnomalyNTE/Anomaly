@@ -289,6 +289,8 @@
     "settings.diagnostics.ring_capacity_hint": "Sets the in-memory diagnostics history limit.",
     "settings.advanced.developer_mode": "Developer mode",
     "settings.advanced.developer_mode_hint": "Reveals developer diagnostics and plugin packages.",
+    "settings.advanced.detailed_performance_diagnostics": "Detailed performance diagnostics",
+    "settings.advanced.detailed_performance_diagnostics_hint": "Collects high-resolution render, UI, game tick, worker, and plugin timing data. Enable only while investigating performance issues.",
     "settings.about.build_versions": "Build and API versions.",
     "settings.preview_until_saved": "Previewed until changes are saved.",
     "common.clear_search": "Clear search",

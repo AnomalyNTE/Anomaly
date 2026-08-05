@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -15,6 +17,14 @@ namespace anomaly {
 struct PluginFileWatcherOptions {
     std::chrono::milliseconds poll_interval{100};
     std::chrono::milliseconds debounce{750};
+};
+
+struct PluginFileWatcherDiagnostics {
+    std::uint64_t notifications{};
+    std::uint64_t scans{};
+    std::uint64_t changed_packages{};
+    std::uint64_t total_scan_nanoseconds{};
+    std::uint64_t maximum_scan_nanoseconds{};
 };
 
 class PluginFileWatcher final {
@@ -33,6 +43,8 @@ public:
     bool Start(Callback callback);
     void Stop() noexcept;
     [[nodiscard]] bool Running() const noexcept;
+    void SetDiagnosticsEnabled(bool enabled) noexcept;
+    [[nodiscard]] PluginFileWatcherDiagnostics Diagnostics() const noexcept;
     void ResetBaseline() noexcept;
 
     // Deterministic seam used by tests and diagnostic hosts.
@@ -56,6 +68,12 @@ private:
     bool initialized_{};
     Callback callback_;
     std::jthread worker_;
+    std::atomic_bool diagnostics_enabled_{};
+    mutable std::atomic_uint64_t notifications_{};
+    mutable std::atomic_uint64_t scans_{};
+    mutable std::atomic_uint64_t changed_packages_{};
+    mutable std::atomic_uint64_t total_scan_nanoseconds_{};
+    mutable std::atomic_uint64_t maximum_scan_nanoseconds_{};
 };
 
 }  // namespace anomaly

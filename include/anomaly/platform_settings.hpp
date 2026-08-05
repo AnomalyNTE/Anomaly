@@ -45,6 +45,7 @@ struct PlatformSettingsValues final {
     PlatformMinimumLogLevel diagnostics_log_level{PlatformMinimumLogLevel::Info};
     std::uint32_t diagnostics_ring_capacity{10000};
     bool advanced_developer_mode{};
+    bool advanced_detailed_performance_diagnostics{};
 
     friend bool operator==(const PlatformSettingsValues&, const PlatformSettingsValues&) = default;
 };

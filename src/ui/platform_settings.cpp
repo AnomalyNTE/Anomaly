@@ -98,6 +98,8 @@ nlohmann::json Serialize(
             {"diagnostics.log_level", PlatformMinimumLogLevelName(values.diagnostics_log_level)},
             {"diagnostics.ring_capacity", values.diagnostics_ring_capacity},
             {"advanced.developer_mode", values.advanced_developer_mode},
+            {"advanced.detailed_performance_diagnostics",
+                values.advanced_detailed_performance_diagnostics},
         }},
     };
 }
@@ -222,6 +224,8 @@ public:
             ReadValue(values, "updates.include_disabled", snapshot_.values.updates_include_disabled);
             ReadValue(values, "diagnostics.ring_capacity", snapshot_.values.diagnostics_ring_capacity);
             ReadValue(values, "advanced.developer_mode", snapshot_.values.advanced_developer_mode);
+            ReadValue(values, "advanced.detailed_performance_diagnostics",
+                snapshot_.values.advanced_detailed_performance_diagnostics);
             snapshot_.values.input_capture_policy = ParseCapturePolicy(
                 values.value("input.capture_policy", std::string{"automatic"}));
             snapshot_.values.updates_channel = ParseUpdateChannel(

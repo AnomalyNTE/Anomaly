@@ -129,6 +129,7 @@ bool VerifyPluginFileWatcher() {
     std::vector<std::string> changed_packages;
     anomaly::PluginFileWatcher watcher(
         root, {std::chrono::milliseconds(20), std::chrono::milliseconds(100)});
+    watcher.SetDiagnosticsEnabled(true);
     if (!watcher.Start([&](std::vector<std::string> changed) {
             {
                 std::scoped_lock lock(mutex);
@@ -140,12 +141,11 @@ bool VerifyPluginFileWatcher() {
         std::filesystem::remove_all(root, error);
         return false;
     }
+    const std::uint64_t baseline_scans = watcher.Diagnostics().scans;
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const std::uint64_t settled_scans = watcher.Diagnostics().scans;
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    bool idle_silent{};
-    {
-        std::scoped_lock lock(mutex);
-        idle_silent = changed_packages.empty();
-    }
+    const bool idle_did_not_scan = watcher.Diagnostics().scans == settled_scans;
     {
         std::ofstream output(manifest, std::ios::binary | std::ios::app);
         output << '\n';
@@ -159,11 +159,18 @@ bool VerifyPluginFileWatcher() {
         });
     }
     watcher.Stop();
+    const auto diagnostics = watcher.Diagnostics();
     std::filesystem::remove_all(root, error);
-    const bool valid = idle_silent && delivered;
+    const bool valid = idle_did_not_scan && delivered && diagnostics.notifications != 0 &&
+        diagnostics.scans >= settled_scans + 2 && diagnostics.changed_packages != 0;
     if (!valid) {
-        std::cerr << "watcher fixture: idle_silent=" << (idle_silent ? 1 : 0)
-                  << " delivered=" << (delivered ? 1 : 0) << '\n';
+        std::cerr << "watcher diagnostics: baseline_scans=" << baseline_scans
+                  << " settled_scans=" << settled_scans
+                  << " idle_scans=" << (idle_did_not_scan ? 0 : 1)
+                  << " delivered=" << (delivered ? 1 : 0)
+                  << " notifications=" << diagnostics.notifications
+                  << " scans=" << diagnostics.scans
+                  << " changed_packages=" << diagnostics.changed_packages << '\n';
     }
     return valid;
 }
@@ -202,7 +209,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cerr << "plugin file watcher fixture failed\n";
             return 10;
         }
-        std::cout << "ok plugin_file_watcher idle_silent=1 change_delivered=1\n";
+        std::cout << "ok plugin_file_watcher idle_scans=0 change_delivered=1\n";
         return 0;
     }
     if (input.empty() || reloads < 0 || ticks < 0 || duration_seconds < 0 ||

@@ -763,16 +763,30 @@ public:
     }
 
     void Draw() {
+        const bool measure = PerformanceDiagnosticsEnabled();
+        auto phase_started = measure ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
         std::scoped_lock submission_lock(submission_mutex_);
+        RecordPerformance(
+            PlatformUiPerformanceStage::SubmissionLockWait, phase_started);
         {
             std::scoped_lock lock(lifetime_mutex_);
             if (closing_) return;
         }
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         std::scoped_lock operation_lock(operation_mutex_);
+        RecordPerformance(
+            PlatformUiPerformanceStage::OperationLockWait, phase_started);
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         const auto window = plugins_.UiResources().WindowState(
             management_window_scope_, management_window_);
+        RecordPerformance(PlatformUiPerformanceStage::WindowState, phase_started);
         if (!window || !window->open) return;
-        RefreshSnapshot();
+        RefreshSnapshot(measure);
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         UpdateStatusToast();
         const AnomalyUiServiceV1* ui = anomaly::HostUiServiceTable();
         if (ui == nullptr || ui->set_next_window_size == nullptr || ui->begin_window == nullptr ||
@@ -853,7 +867,13 @@ public:
             UpdateLayout();
             HandleShellShortcuts();
             const bool shell_was_collapsed = ManagementShellCollapsed();
+            RecordPerformance(PlatformUiPerformanceStage::FrameSetup, phase_started);
+            phase_started = measure ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
             DrawManagementShell();
+            RecordPerformance(PlatformUiPerformanceStage::ManagementShell, phase_started);
+            phase_started = measure ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
             if (!shell_was_collapsed && !ManagementShellCollapsed()) {
                 DrawConfirmationPopup();
                 DrawRepositoryUninstallPopup();
@@ -862,6 +882,9 @@ public:
                 DrawSettingsLeavePopup();
             }
             DrawStatusToast();
+            RecordPerformance(PlatformUiPerformanceStage::Popups, phase_started);
+            phase_started = measure ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
         }
         if (!shell_collapsed && !ManagementShellCollapsed()) {
             float width{};
@@ -877,6 +900,7 @@ public:
         management_shell_was_collapsed_ = shell_collapsed;
         ui->end_window(ui->user);
         ImGui::PopStyleVar();
+        RecordPerformance(PlatformUiPerformanceStage::WindowPersist, phase_started);
 
         // Mutations are flushed by FlushPlatformUiActions after the render
         // lock is released. Draw itself only consumes a snapshot and queues
@@ -1311,6 +1335,28 @@ private:
             model_.State().diagnostics_log_filter.c_str());
     }
 
+    void RecordPerformance(
+        const PlatformUiPerformanceStage stage,
+        const std::chrono::steady_clock::time_point started) const noexcept {
+        if (started == std::chrono::steady_clock::time_point{} ||
+            !diagnostics_.performance_probe) {
+            return;
+        }
+        try {
+            diagnostics_.performance_probe(stage, std::chrono::steady_clock::now() - started);
+        } catch (...) {
+        }
+    }
+
+    [[nodiscard]] bool PerformanceDiagnosticsEnabled() const noexcept {
+        if (!diagnostics_.performance_probe_enabled) return false;
+        try {
+            return diagnostics_.performance_probe_enabled();
+        } catch (...) {
+            return false;
+        }
+    }
+
     void RefreshCatalog() {
         std::shared_ptr<const CatalogCache> cached;
         {
@@ -1325,15 +1371,24 @@ private:
         catalog_ready_ = true;
     }
 
-    void RefreshSnapshot() {
+    void RefreshSnapshot(const bool measure) {
+        const auto refresh_started = measure ? std::chrono::steady_clock::now()
+                                             : std::chrono::steady_clock::time_point{};
+        auto phase_started = refresh_started;
         RefreshCatalog();
+        RecordPerformance(PlatformUiPerformanceStage::RefreshCatalog, phase_started);
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         const auto runtime_plugins = plugins_.Plugins();
+        RecordPerformance(PlatformUiPerformanceStage::RuntimePlugins, phase_started);
         std::map<std::string, anomaly::PluginEnablementDecision, std::less<>> enablement;
         for (const auto& plugin : runtime_plugins) {
             enablement.emplace(plugin.id, anomaly::PluginEnablementDecision{
                 plugin.enabled, true, plugin.enabled ? "enabled by runtime" : "disabled by configuration"});
         }
 
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         anomaly::PlatformUiSnapshot snapshot;
         if (catalog_ready_) {
             snapshot = anomaly::BuildPlatformUiSnapshot(
@@ -1342,24 +1397,36 @@ private:
         } else {
             snapshot = anomaly::BuildPlatformUiSnapshot(++revision_, runtime_plugins);
         }
+        RecordPerformance(PlatformUiPerformanceStage::BuildSnapshot, phase_started);
         snapshot.diagnostics.runtime_version = diagnostics_.runtime_version;
         snapshot.diagnostics.process_id = GetCurrentProcessId();
         snapshot.diagnostics.healthy = true;
         if (diagnostics_.repository_snapshot) {
+            phase_started = measure ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
             snapshot.repository = diagnostics_.repository_snapshot();
+            RecordPerformance(PlatformUiPerformanceStage::RepositorySnapshot, phase_started);
         }
         if (diagnostics_.service_graph) {
+            phase_started = measure ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
             const auto graph = diagnostics_.service_graph();
             snapshot.diagnostics.healthy = graph.error == ERROR_SUCCESS && graph.failures.empty();
             for (const auto& failure : graph.failures) {
                 snapshot.diagnostics.recent_faults.push_back(
                     failure.service_id + ": error " + std::to_string(failure.error));
             }
+            RecordPerformance(PlatformUiPerformanceStage::ServiceGraphSnapshot, phase_started);
         }
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         std::vector<anomaly::AvailableServiceVersion> services;
         for (const auto& service : anomaly::ProcessAdapterServices().Snapshot()) {
             services.push_back({service.id, service.version});
         }
+        RecordPerformance(PlatformUiPerformanceStage::AdapterServicesSnapshot, phase_started);
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         if (diagnostics_.nte_compatibility) {
             snapshot.nte_compatibility = diagnostics_.nte_compatibility();
             snapshot.nte_compatibility.services = std::move(services);
@@ -1369,11 +1436,19 @@ private:
             snapshot.nte_compatibility.reason =
                 "NTE compatibility provider is not published by this host";
         }
+        RecordPerformance(PlatformUiPerformanceStage::NteCompatibilitySnapshot, phase_started);
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         snapshot.operation_results = model_.Snapshot().operation_results;
         snapshot.operation_plans = model_.Snapshot().operation_plans;
         ResolveAwaitingBatch(snapshot);
         model_.Publish(std::move(snapshot));
+        RecordPerformance(PlatformUiPerformanceStage::ModelPublish, phase_started);
+        phase_started = measure ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
         RefreshSettingsState();
+        RecordPerformance(PlatformUiPerformanceStage::SettingsRefresh, phase_started);
+        RecordPerformance(PlatformUiPerformanceStage::RefreshTotal, refresh_started);
     }
 
     [[nodiscard]] bool SettingsDirty() const noexcept {
@@ -4439,6 +4514,13 @@ private:
                 Text(anomaly::MessageId::SettingsDeveloperModeHint),
                 "services hooks memory nte", [&] {
                     ImGui::Checkbox("##value", &values.advanced_developer_mode);
+                });
+            row("advanced.detailed_performance_diagnostics",
+                Text(anomaly::MessageId::SettingsDetailedPerformanceDiagnostics),
+                Text(anomaly::MessageId::SettingsDetailedPerformanceDiagnosticsHint),
+                "performance timing render ui tick worker plugin", [&] {
+                    ImGui::Checkbox(
+                        "##value", &values.advanced_detailed_performance_diagnostics);
                 });
             break;
         case SettingsSection::About:
