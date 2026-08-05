@@ -1671,6 +1671,17 @@ bool SymbolResolver::RevalidateDeferredCandidates(
     if (snapshot.profile_hash != profile.source_hash) {
         return false;
     }
+    const bool has_deferred_symbol = std::ranges::any_of(
+        snapshot.symbols, [](const auto& entry) {
+            const auto& symbol = entry.second;
+            return symbol.state == SymbolResolutionState::ValidationFailed &&
+                symbol.candidate_count == 1 && symbol.address != 0;
+        });
+    const bool has_deferred_feature = std::ranges::any_of(
+        snapshot.features, [](const auto& entry) {
+            return entry.second.deferred_validation;
+        });
+    if (!has_deferred_symbol && !has_deferred_feature) return false;
 
     const auto started = std::chrono::steady_clock::now();
     const auto previous_features = snapshot.features;
