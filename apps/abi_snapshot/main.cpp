@@ -220,6 +220,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_METRICS_SERVICE_V1_VERSION\": ");
@@ -230,6 +232,14 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY);
     output.append(",\n    \"ANOMALY_NTE_METRICS_V1_VALID\": ");
     AppendUnsigned(output, ANOMALY_NTE_METRICS_V1_VALID);
+    output.append(",\n    \"ANOMALY_NTE_PICKUP_V1_NONE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_PICKUP_V1_NONE);
+    output.append(",\n    \"ANOMALY_NTE_PICKUP_V1_VALID\": ");
+    AppendUnsigned(output, ANOMALY_NTE_PICKUP_V1_VALID);
+    output.append(",\n    \"ANOMALY_NTE_PICKUP_V1_CHECKING_FLAG\": ");
+    AppendUnsigned(output, ANOMALY_NTE_PICKUP_V1_CHECKING_FLAG);
+    output.append(",\n    \"ANOMALY_NTE_PICKUP_V1_HAS_UNCONFIRMED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_PICKUP_V1_HAS_UNCONFIRMED);
     output.append("\n  },\n");
 
     output.append("  \"enums\": {\n");
@@ -317,6 +327,16 @@ std::string BuildSnapshot() {
         alignof(AnomalyEspBoxFlagsV1),
         {{"ANOMALY_ESP_BOX_V1_NONE", ANOMALY_ESP_BOX_V1_NONE},
          {"ANOMALY_ESP_BOX_V1_OUTLINE", ANOMALY_ESP_BOX_V1_OUTLINE}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNtePickupStateV1",
+        sizeof(AnomalyNtePickupStateV1),
+        alignof(AnomalyNtePickupStateV1),
+        {{"ANOMALY_NTE_PICKUP_V1_IDLE", ANOMALY_NTE_PICKUP_V1_IDLE},
+         {"ANOMALY_NTE_PICKUP_V1_QUEUED", ANOMALY_NTE_PICKUP_V1_QUEUED},
+         {"ANOMALY_NTE_PICKUP_V1_CHECKING", ANOMALY_NTE_PICKUP_V1_CHECKING},
+         {"ANOMALY_NTE_PICKUP_V1_COMPLETE", ANOMALY_NTE_PICKUP_V1_COMPLETE}},
         false);
     AppendEnum(
         output,
@@ -1361,6 +1381,45 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyNtePickupRequestV1",
+        sizeof(AnomalyNtePickupRequestV1),
+        alignof(AnomalyNtePickupRequestV1),
+        {{"struct_size", offsetof(AnomalyNtePickupRequestV1, struct_size)},
+         {"flags", offsetof(AnomalyNtePickupRequestV1, flags)},
+         {"radius", offsetof(AnomalyNtePickupRequestV1, radius)},
+         {"maximum_items", offsetof(AnomalyNtePickupRequestV1, maximum_items)},
+         {"reserved", offsetof(AnomalyNtePickupRequestV1, reserved)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNtePickupSnapshotV1",
+        sizeof(AnomalyNtePickupSnapshotV1),
+        alignof(AnomalyNtePickupSnapshotV1),
+        {{"struct_size", offsetof(AnomalyNtePickupSnapshotV1, struct_size)},
+         {"flags", offsetof(AnomalyNtePickupSnapshotV1, flags)},
+         {"sequence", offsetof(AnomalyNtePickupSnapshotV1, sequence)},
+         {"state", offsetof(AnomalyNtePickupSnapshotV1, state)},
+         {"status", offsetof(AnomalyNtePickupSnapshotV1, status)},
+         {"nearby", offsetof(AnomalyNtePickupSnapshotV1, nearby)},
+         {"triggered", offsetof(AnomalyNtePickupSnapshotV1, triggered)},
+         {"confirmed", offsetof(AnomalyNtePickupSnapshotV1, confirmed)},
+         {"checking", offsetof(AnomalyNtePickupSnapshotV1, checking)},
+         {"unconfirmed", offsetof(AnomalyNtePickupSnapshotV1, unconfirmed)},
+         {"skipped", offsetof(AnomalyNtePickupSnapshotV1, skipped)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNtePickupServiceV1",
+        sizeof(AnomalyNtePickupServiceV1),
+        alignof(AnomalyNtePickupServiceV1),
+        {{"struct_size", offsetof(AnomalyNtePickupServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyNtePickupServiceV1, service_version)},
+         {"user", offsetof(AnomalyNtePickupServiceV1, user)},
+         {"request_nearby", offsetof(AnomalyNtePickupServiceV1, request_nearby)},
+         {"snapshot", offsetof(AnomalyNtePickupServiceV1, snapshot)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyNteEntityFrameV1",
         sizeof(AnomalyNteEntityFrameV1),
         alignof(AnomalyNteEntityFrameV1),
@@ -1599,6 +1658,8 @@ std::string BuildSnapshot() {
         ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION, "AnomalyNtePlayerTeleportServiceV1", false);
     AppendService(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
         ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION, "AnomalyNteNavigationServiceV1", false);
+    AppendService(output, ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
+        ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION, "AnomalyNtePickupServiceV1", false);
     AppendService(output, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
         ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION, "AnomalyNteEntitiesServiceV1", false);
     AppendService(output, ANOMALY_NTE_ACTORS_SERVICE_V1_ID,

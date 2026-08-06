@@ -16,6 +16,20 @@
 
 该插件只读取数据，不修改游戏状态。可以用它快速确认坐标和会话数据是否正常。
 
+## Nearby Pickup
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.local.nte-pickup-demo` |
+| **作用** | 点击一次拾取半径内的 `PropBox_`、`InteractBox_` 与随机物品 Actor，并显示 Host 确认状态。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.nte.pickup`（V1） |
+| **需要 Profile** | 是；拾取反射 ABI、对象/名称/玩家/实体布局必须通过 `nte-pickup-layout-v1`。 |
+
+界面中的 `nearby`、`triggered`、`confirmed`、`checking`、`unconfirmed` 和 `skipped` 均来自
+框架 ABI。`triggered` 只表示交互调用完成；确认窗口最多 2 秒，超时会保留 `OK` 并单独显示
+`unconfirmed`，不会把请求整体标为失败。确认期间按钮保持禁用；框架通过后续实体缓存或
+`bInteractFinish` 变化快速确认，只在截止时做一次最终可交互检查。
+
 ## Entity ESP
 
 | | |

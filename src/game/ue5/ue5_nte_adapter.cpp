@@ -583,8 +583,11 @@ struct Ue5NteAdapter::State {
     std::atomic_bool player_demand{};
     std::atomic_bool entity_demand{};
     std::atomic_bool navigation_demand{};
+    std::atomic_bool pickup_demand{};
     static constexpr std::size_t kSessionEventCapacity = 64;
     static constexpr std::uint32_t kEntityPageCapacity = 256;
+    static constexpr std::size_t kMaximumPickupParameterSize = 4096;
+    static constexpr std::size_t kMaximumPickupChoices = 128;
     struct SessionEvent {
         std::uint32_t kind{};
         std::uint64_t sequence{};
@@ -647,6 +650,29 @@ struct Ue5NteAdapter::State {
         bool available{};
         bool discovery_complete{};
     } navigation;
+    struct PendingPickupRequest {
+        double radius{};
+        std::uint32_t maximum_items{};
+        std::uint32_t attempts{};
+        bool queued{};
+    } pickup_request;
+    struct PickupConfirmationCandidate {
+        std::uintptr_t actor{};
+        std::uintptr_t controller{};
+        std::uintptr_t can_try_function{};
+        std::uint32_t object_index{};
+        std::uint32_t object_serial{};
+        std::uint64_t entity_sequence{};
+        std::int32_t interact_index{};
+        std::uint8_t baseline{};
+    };
+    struct PickupConfirmation {
+        std::vector<PickupConfirmationCandidate> candidates;
+        std::chrono::steady_clock::time_point next_check{};
+        std::chrono::steady_clock::time_point deadline{};
+    } pickup_confirmation;
+    AnomalyNtePickupSnapshotV1 pickup_snapshot{sizeof(AnomalyNtePickupSnapshotV1)};
+    std::uint64_t pickup_sequence{};
     enum class AhudFunctionKind : std::size_t {
         ReceiveDrawHud,
         Project,
@@ -1060,6 +1086,44 @@ struct Ue5NteAdapter::State {
             navigation_input_policy->Started();
     }
 
+    [[nodiscard]] bool NtePickupAvailable() const noexcept {
+        const auto* const process_event = resolution.FindSymbol(kUe5ProcessEventSymbol);
+        return static_cast<bool>(process_event_invoker) && process_event != nullptr &&
+            process_event->Available() && resolution.FeatureAvailable(kUe5ProcessEventFeature) &&
+            resolution.FeatureAvailable("nte.pickup") &&
+            resolution.FeatureAvailable("nte.player") &&
+            resolution.FeatureAvailable("nte.entities") &&
+            resolution.FeatureAvailable("ue5.names") &&
+            resolution.FeatureAvailable("ue5.objects") &&
+            NtePlayerLayoutAvailable() && NteEntityReflectionLayoutAvailable() &&
+            LayoutKeysAvailable(profile, {
+                "object.internalIndex", "object.class", "object.nameOffset", "object.outer",
+                "ustruct.superStruct", "ustruct.children", "ufield.next",
+                "ufunction.flags", "ufunction.nativeFlag", "ufunction.numParms",
+                "ufunction.parmsSize", "pickup.actor.interactFinish",
+                "pickup.trigger.numParms", "pickup.trigger.parmsSize",
+                "pickup.trigger.actor", "pickup.trigger.index",
+                "pickup.trigger.onlyClientSide", "pickup.canTry.controller",
+                "pickup.canTry.numParms", "pickup.canTry.parmsSize",
+                "pickup.canTry.index", "pickup.canTry.returnValue",
+                "pickup.entries.numParms", "pickup.entries.parmsSize",
+                "pickup.entries.controller", "pickup.entries.array",
+                "pickup.entries.maximumChoices",
+                "pickup.interactEntryStride", "pickup.interactEntryIndex"}) &&
+            FeatureDeclaresSymbol(
+                profile, kUe5ProcessEventFeature, kUe5ProcessEventSymbol) &&
+            FeatureDeclaresLayoutValidator(
+                profile, kUe5ProcessEventFeature, kUe5ProcessEventAbiValidator) &&
+            FeatureDeclaresDependency(profile, "nte.pickup", "nte.player") &&
+            FeatureDeclaresDependency(profile, "nte.pickup", "nte.entities") &&
+            FeatureDeclaresDependency(profile, "nte.pickup", "ue5.names") &&
+            FeatureDeclaresDependency(profile, "nte.pickup", "ue5.objects") &&
+            FeatureDeclaresDependency(
+                profile, "nte.pickup", kUe5ProcessEventFeature) &&
+            FeatureDeclaresLayoutValidator(
+                profile, "nte.pickup", "nte-pickup-layout-v1");
+    }
+
     [[nodiscard]] bool EnsureNavigationInputPolicyLocked() noexcept {
         if (navigation_input_policy == nullptr) return false;
         if (navigation_input_policy->Started()) return true;
@@ -1178,6 +1242,7 @@ struct Ue5NteAdapter::State {
                 NtePlayerTeleportAvailable();
         }
         if (feature == "nte.navigation") return NteNavigationAvailable();
+        if (feature == "nte.pickup") return NtePickupAvailable();
         if (feature == "nte.entities") {
             return NteEntitiesLayoutAvailable();
         }
@@ -1299,6 +1364,9 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.navigation");
         }
+        if (id == ANOMALY_NTE_PICKUP_SERVICE_V1_ID) {
+            return framework_hook_ready && SemanticFeatureAvailable("nte.pickup");
+        }
         if (id == ANOMALY_NTE_ENTITIES_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.entities");
         }
@@ -1377,6 +1445,7 @@ struct Ue5NteAdapter::State {
         if (feature == "nte.session" || feature == "nte.player" ||
             feature == "nte.player-esp" ||
             feature == "nte.player-teleport" || feature == "nte.navigation" ||
+            feature == "nte.pickup" ||
             feature == "nte.entities") {
             return SemanticFeatureAvailable(feature)
                 ? ANOMALY_FEATURE_V1_AVAILABLE
@@ -1431,6 +1500,19 @@ struct Ue5NteAdapter::State {
         ahud_discovery.object_generation = object_generation;
     }
 
+    void InvalidatePickupLocked(const std::uint32_t status) noexcept {
+        pickup_demand.store(false, std::memory_order_release);
+        pickup_request = {};
+        pickup_confirmation = {};
+        pickup_snapshot = {sizeof(pickup_snapshot)};
+        pickup_snapshot.sequence = pickup_sequence;
+        pickup_snapshot.state = pickup_sequence == 0
+            ? ANOMALY_NTE_PICKUP_V1_IDLE
+            : ANOMALY_NTE_PICKUP_V1_COMPLETE;
+        pickup_snapshot.status = status;
+        if (pickup_sequence != 0) pickup_snapshot.flags = ANOMALY_NTE_PICKUP_V1_VALID;
+    }
+
     void ResetForStartLocked() noexcept {
         session_event_start = 0;
         session_event_count = 0;
@@ -1448,6 +1530,8 @@ struct Ue5NteAdapter::State {
         object_registry = {};
         teleport = {};
         navigation = {};
+        pickup_sequence = 0;
+        InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
         InvalidateAhudBindingLocked();
         InvalidatePlayer();
         InvalidateEntities();
@@ -1457,6 +1541,7 @@ struct Ue5NteAdapter::State {
         player_demand.store(false, std::memory_order_release);
         entity_demand.store(false, std::memory_order_release);
         navigation_demand.store(false, std::memory_order_release);
+        pickup_demand.store(false, std::memory_order_release);
         ahud_demand.store(false, std::memory_order_release);
         ahud_frame_count.store(0, std::memory_order_release);
         ahud_process_event_call_count.store(0, std::memory_order_release);
@@ -1480,6 +1565,7 @@ struct Ue5NteAdapter::State {
         player_demand.store(false, std::memory_order_release);
         entity_demand.store(false, std::memory_order_release);
         navigation_demand.store(false, std::memory_order_release);
+        InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
         InvalidatePlayer();
         InvalidateEntities();
         InvalidateActors();
@@ -1528,6 +1614,7 @@ struct Ue5NteAdapter::State {
             InvalidatePlayer();
             InvalidateEntities();
             InvalidateActors();
+            InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
             world_pointer = next;
             ++world_generation;
             ++world_change_sequence;
@@ -1564,6 +1651,7 @@ struct Ue5NteAdapter::State {
             object_registry = {};
             teleport = {};
             navigation = {};
+            InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
             if (object_generation != previous_generation) {
                 InvalidateAhudBindingLocked();
             }
@@ -1577,10 +1665,12 @@ struct Ue5NteAdapter::State {
             ++object_generation;
             teleport = {};
             navigation = {};
+            InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
         }
         object_registry = next;
         if (object_generation != previous_generation) {
             InvalidateAhudBindingLocked();
+            InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
         }
     }
 
@@ -4567,6 +4657,596 @@ struct Ue5NteAdapter::State {
         return CopyString(name, destination, size);
     }
 
+    [[nodiscard]] bool FindPickupFunctionLocked(
+        const std::uintptr_t object_class,
+        const std::string_view requested_name,
+        const std::uint8_t expected_num_parms,
+        const std::uint16_t expected_parms_size,
+        std::uintptr_t& result) const noexcept {
+        result = 0;
+        try {
+            std::uintptr_t owner = object_class;
+            for (std::uint32_t depth{}; owner != 0 && depth < 64; ++depth) {
+                std::uintptr_t field{};
+                if (!ReadNullablePointerAt(
+                        *memory, owner, Layout(profile, "ustruct.children"), field)) {
+                    return false;
+                }
+                std::uint32_t field_count{};
+                for (; field != 0 && field_count < 4096; ++field_count) {
+                    std::uintptr_t next{};
+                    std::uintptr_t outer{};
+                    std::uintptr_t field_class{};
+                    std::uint8_t num_parms{};
+                    std::uint16_t parms_size{};
+                    std::string name;
+                    std::string class_name;
+                    if (!ReadNullablePointerAt(
+                            *memory, field, Layout(profile, "ufield.next"), next) ||
+                        !ReadPointerAt(*memory, field, Layout(profile, "object.outer"), outer) ||
+                        !ReadPointerAt(
+                            *memory, field, Layout(profile, "object.class"), field_class) ||
+                        !ReadReflectedObjectNameLocked(field, name) ||
+                        !ReadReflectedObjectNameLocked(field_class, class_name)) {
+                        return false;
+                    }
+                    if (outer == owner && name == requested_name && class_name == "Function" &&
+                        ReadValue(
+                            *memory, field + Layout(profile, "ufunction.numParms"), num_parms) &&
+                        ReadValue(
+                            *memory, field + Layout(profile, "ufunction.parmsSize"), parms_size) &&
+                        num_parms == expected_num_parms &&
+                        parms_size == expected_parms_size) {
+                        result = field;
+                        return true;
+                    }
+                    if (next == field) return false;
+                    field = next;
+                }
+                if (field != 0) return false;
+                std::uintptr_t super{};
+                if (!ReadNullablePointerAt(
+                        *memory, owner, Layout(profile, "ustruct.superStruct"), super) ||
+                    super == owner) {
+                    return false;
+                }
+                owner = super;
+            }
+        } catch (...) {
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool ReadPickupBoolLocked(
+        const EntityRecord& entity,
+        const std::string_view name,
+        bool& value) const noexcept {
+        value = false;
+        try {
+            ReflectedEntityProperty property;
+            std::uint8_t field_size{};
+            std::uint8_t byte_offset{};
+            std::uint8_t byte_mask{};
+            std::uint8_t field_mask{};
+            std::uint8_t packed{};
+            std::uintptr_t address{};
+            if (!FindReflectedEntityPropertyLocked(entity, name, property) ||
+                property.element_size != 1 ||
+                !ReadValue(
+                    *memory, property.field + Layout(profile, "fboolProperty.fieldSize"),
+                    field_size) ||
+                !ReadValue(
+                    *memory, property.field + Layout(profile, "fboolProperty.byteOffset"),
+                    byte_offset) ||
+                !ReadValue(
+                    *memory, property.field + Layout(profile, "fboolProperty.byteMask"),
+                    byte_mask) ||
+                !ReadValue(
+                    *memory, property.field + Layout(profile, "fboolProperty.fieldMask"),
+                    field_mask) ||
+                field_size == 0 || byte_offset >= field_size || byte_mask == 0 ||
+                field_mask == 0 || (byte_mask & field_mask) != byte_mask ||
+                !AddAddress(
+                    entity.actor,
+                    static_cast<std::int64_t>(property.offset) + byte_offset,
+                    address) ||
+                !ReadValue(*memory, address, packed)) {
+                return false;
+            }
+            value = (packed & byte_mask) != 0;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool PickupEntityStillCurrentLocked(
+        const EntityRecord& entity,
+        std::uintptr_t& object_class) const noexcept {
+        object_class = 0;
+        if (!entity.object_identity_available || object_registry.items == 0) return false;
+        std::uintptr_t actor{};
+        std::uint32_t serial{};
+        return ReadObjectSlot(
+                   *memory, object_registry, entity.object_index, actor, serial) &&
+            actor == entity.actor && serial == entity.object_serial &&
+            ReadPointerAt(*memory, actor, Layout(profile, "object.class"), object_class) &&
+            object_class == entity.class_object;
+    }
+
+    [[nodiscard]] bool InvokePickupRawLocked(
+        const std::uintptr_t receiver,
+        const std::uintptr_t function,
+        void* const parameters,
+        const std::size_t parameter_size) const noexcept {
+        if (!process_event_invoker) return false;
+        try {
+            return process_event_invoker(receiver, function, parameters, parameter_size);
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool InvokePickupNativeLocked(
+        const std::uintptr_t receiver,
+        const std::uintptr_t function,
+        void* const parameters,
+        const std::size_t parameter_size) const noexcept {
+        std::uintptr_t flags_address{};
+        std::uint32_t original_flags{};
+        const auto native_flag = Layout(profile, "ufunction.nativeFlag");
+        if (native_flag <= 0 ||
+            !AddAddress(function, Layout(profile, "ufunction.flags"), flags_address) ||
+            !ReadValue(*memory, flags_address, original_flags)) {
+            return false;
+        }
+        const auto invocation_flags = original_flags |
+            static_cast<std::uint32_t>(native_flag);
+        if (!memory->Write(
+                flags_address, &invocation_flags, sizeof(invocation_flags))) {
+            return false;
+        }
+        const bool invoked = InvokePickupRawLocked(
+            receiver, function, parameters, parameter_size);
+        const bool restored = memory->Write(
+            flags_address, &original_flags, sizeof(original_flags));
+        return invoked && restored;
+    }
+
+    [[nodiscard]] bool InvokeCanTryInteractLocked(
+        const std::uintptr_t actor,
+        const std::uintptr_t controller,
+        const std::int32_t interact_index,
+        const std::uintptr_t function,
+        bool& can_try) const noexcept {
+        const auto parameter_size = Layout(profile, "pickup.canTry.parmsSize");
+        if (parameter_size <= 0 ||
+            static_cast<std::size_t>(parameter_size) > kMaximumPickupParameterSize) {
+            return false;
+        }
+        std::array<std::uint8_t, kMaximumPickupParameterSize> parameters{};
+        const auto controller_offset = Layout(profile, "pickup.canTry.controller");
+        const auto index_offset = Layout(profile, "pickup.canTry.index");
+        const auto result_offset = Layout(profile, "pickup.canTry.returnValue");
+        if (controller_offset < 0 || index_offset < 0 || result_offset < 0 ||
+            static_cast<std::size_t>(controller_offset) + sizeof(controller) >
+                static_cast<std::size_t>(parameter_size) ||
+            static_cast<std::size_t>(index_offset) + sizeof(interact_index) >
+                static_cast<std::size_t>(parameter_size) ||
+            static_cast<std::size_t>(result_offset) >= static_cast<std::size_t>(parameter_size)) {
+            return false;
+        }
+        std::memcpy(parameters.data() + controller_offset, &controller, sizeof(controller));
+        std::memcpy(parameters.data() + index_offset, &interact_index, sizeof(interact_index));
+        if (!InvokePickupRawLocked(
+                actor, function, parameters.data(), static_cast<std::size_t>(parameter_size))) {
+            return false;
+        }
+        can_try = parameters[static_cast<std::size_t>(result_offset)] != 0;
+        return true;
+    }
+
+    [[nodiscard]] bool ReadInteractChoicesLocked(
+        const std::uintptr_t actor,
+        const std::uintptr_t controller,
+        const std::uintptr_t function,
+        std::array<std::int32_t, kMaximumPickupChoices>& choices,
+        std::size_t& count) const noexcept {
+        struct ArrayHeader {
+            std::uintptr_t data{};
+            std::int32_t count{};
+            std::int32_t capacity{};
+        };
+        static_assert(sizeof(ArrayHeader) == 16);
+        const auto parameter_size = Layout(profile, "pickup.entries.parmsSize");
+        if (parameter_size <= 0 ||
+            static_cast<std::size_t>(parameter_size) > kMaximumPickupParameterSize) {
+            return false;
+        }
+        std::array<std::uint8_t, kMaximumPickupParameterSize> parameters{};
+        const auto controller_offset = Layout(profile, "pickup.entries.controller");
+        const auto array_offset = Layout(profile, "pickup.entries.array");
+        if (controller_offset < 0 || array_offset < 0 ||
+            static_cast<std::size_t>(controller_offset) + sizeof(controller) >
+                static_cast<std::size_t>(parameter_size) ||
+            static_cast<std::size_t>(array_offset) + sizeof(ArrayHeader) >
+                static_cast<std::size_t>(parameter_size)) {
+            return false;
+        }
+        std::memcpy(parameters.data() + controller_offset, &controller, sizeof(controller));
+        if (!InvokePickupRawLocked(
+                actor, function, parameters.data(), static_cast<std::size_t>(parameter_size))) {
+            return false;
+        }
+        ArrayHeader entries;
+        std::memcpy(&entries, parameters.data() + array_offset, sizeof(entries));
+        choices = {};
+        count = 0;
+        const auto maximum_choices = Layout(profile, "pickup.entries.maximumChoices");
+        if (maximum_choices <= 0 ||
+            static_cast<std::size_t>(maximum_choices) > kMaximumPickupChoices) {
+            return false;
+        }
+        if (entries.count <= 0 || entries.data == 0 ||
+            entries.count > maximum_choices || entries.capacity < entries.count) {
+            return true;
+        }
+        const auto stride = Layout(profile, "pickup.interactEntryStride");
+        const auto index_offset = Layout(profile, "pickup.interactEntryIndex");
+        if (stride < static_cast<std::int64_t>(sizeof(std::int32_t)) ||
+            index_offset < 0 || index_offset + static_cast<std::int64_t>(sizeof(std::int32_t)) > stride) {
+            return false;
+        }
+        for (std::int32_t index{}; index < entries.count; ++index) {
+            std::uintptr_t address{};
+            if (!AddAddress(
+                    entries.data,
+                    static_cast<std::int64_t>(index) * stride + index_offset,
+                    address) ||
+                !ReadValue(*memory, address, choices[count])) {
+                choices = {};
+                count = 0;
+                return false;
+            }
+            ++count;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool InvokeTriggerInteractLocked(
+        const std::uintptr_t controller,
+        const std::uintptr_t actor,
+        const std::int32_t interact_index,
+        const std::uintptr_t function) const noexcept {
+        const auto parameter_size = Layout(profile, "pickup.trigger.parmsSize");
+        if (parameter_size <= 0 ||
+            static_cast<std::size_t>(parameter_size) > kMaximumPickupParameterSize) {
+            return false;
+        }
+        std::array<std::uint8_t, kMaximumPickupParameterSize> parameters{};
+        const auto actor_offset = Layout(profile, "pickup.trigger.actor");
+        const auto index_offset = Layout(profile, "pickup.trigger.index");
+        const auto client_offset = Layout(profile, "pickup.trigger.onlyClientSide");
+        if (actor_offset < 0 || index_offset < 0 || client_offset < 0 ||
+            static_cast<std::size_t>(actor_offset) + sizeof(actor) >
+                static_cast<std::size_t>(parameter_size) ||
+            static_cast<std::size_t>(index_offset) + sizeof(interact_index) >
+                static_cast<std::size_t>(parameter_size) ||
+            static_cast<std::size_t>(client_offset) >= static_cast<std::size_t>(parameter_size)) {
+            return false;
+        }
+        std::memcpy(parameters.data() + actor_offset, &actor, sizeof(actor));
+        std::memcpy(parameters.data() + index_offset, &interact_index, sizeof(interact_index));
+        parameters[static_cast<std::size_t>(client_offset)] = 0;
+        return InvokePickupNativeLocked(
+            controller, function, parameters.data(), static_cast<std::size_t>(parameter_size));
+    }
+
+    void CompletePickupLocked(const std::uint32_t status) noexcept {
+        pickup_request = {};
+        pickup_demand.store(false, std::memory_order_release);
+        pickup_snapshot.flags |= ANOMALY_NTE_PICKUP_V1_VALID;
+        pickup_snapshot.flags &= ~ANOMALY_NTE_PICKUP_V1_CHECKING_FLAG;
+        if (pickup_snapshot.unconfirmed != 0) {
+            pickup_snapshot.flags |= ANOMALY_NTE_PICKUP_V1_HAS_UNCONFIRMED;
+        }
+        pickup_snapshot.state = ANOMALY_NTE_PICKUP_V1_COMPLETE;
+        pickup_snapshot.status = status;
+        pickup_snapshot.checking = 0;
+    }
+
+    void RefreshPickupConfirmationLocked() noexcept {
+        if (pickup_confirmation.candidates.empty()) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now < pickup_confirmation.next_check) return;
+        const bool expired = now >= pickup_confirmation.deadline;
+        pickup_confirmation.next_check = now + std::chrono::milliseconds(100);
+        std::vector<PickupConfirmationCandidate> remaining;
+        remaining.reserve(pickup_confirmation.candidates.size());
+        for (const PickupConfirmationCandidate& candidate : pickup_confirmation.candidates) {
+            std::uintptr_t registered_actor{};
+            std::uint32_t registered_serial{};
+            const bool identity_read = object_registry.items != 0 && ReadObjectSlot(
+                *memory, object_registry, candidate.object_index,
+                registered_actor, registered_serial);
+            const bool identity_current = identity_read &&
+                registered_actor == candidate.actor &&
+                registered_serial == candidate.object_serial;
+            if (identity_read && !identity_current) {
+                ++pickup_snapshot.confirmed;
+                continue;
+            }
+            if (!identity_current) {
+                if (expired) ++pickup_snapshot.unconfirmed;
+                else remaining.push_back(candidate);
+                continue;
+            }
+            const auto cache = entity_frame_cache;
+            const bool cache_advanced = cache != nullptr &&
+                cache->sequence > candidate.entity_sequence;
+            const bool actor_still_present =
+                cache == nullptr || cache->partial || !cache_advanced ||
+                std::ranges::any_of(cache->entities, [&candidate](const EntityRecord& entity) {
+                    return entity.actor == candidate.actor &&
+                        entity.object_identity_available &&
+                        entity.object_index == candidate.object_index &&
+                        entity.object_serial == candidate.object_serial;
+                });
+            if (!actor_still_present) {
+                ++pickup_snapshot.confirmed;
+                continue;
+            }
+            std::uint8_t current{};
+            std::uintptr_t address{};
+            if (AddAddress(
+                    candidate.actor, Layout(profile, "pickup.actor.interactFinish"), address) &&
+                ReadValue(*memory, address, current) && current != candidate.baseline) {
+                ++pickup_snapshot.confirmed;
+                continue;
+            }
+            if (!expired) {
+                remaining.push_back(candidate);
+                continue;
+            }
+            bool can_try{};
+            if (InvokeCanTryInteractLocked(
+                    candidate.actor, candidate.controller, candidate.interact_index,
+                    candidate.can_try_function, can_try) && !can_try) {
+                ++pickup_snapshot.confirmed;
+            } else {
+                ++pickup_snapshot.unconfirmed;
+            }
+        }
+        pickup_confirmation.candidates = std::move(remaining);
+        pickup_snapshot.checking = static_cast<std::uint32_t>(
+            pickup_confirmation.candidates.size());
+        if (pickup_confirmation.candidates.empty()) {
+            CompletePickupLocked(ANOMALY_STATUS_V1_OK);
+        }
+    }
+
+    void PerformPickupLocked() noexcept {
+        if (!pickup_request.queued) return;
+        if (!SemanticFeatureRunning("nte.pickup")) {
+            CompletePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
+            return;
+        }
+        const auto cache = entity_frame_cache;
+        if (!cache || !player_available) {
+            if (++pickup_request.attempts < 3) {
+                pickup_demand.store(true, std::memory_order_release);
+                return;
+            }
+            CompletePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
+            return;
+        }
+        PlayerLocationSample live;
+        if (!ReadCurrentPlayerLocation(live) || live.controller != player_controller ||
+            live.pawn != player_pawn || live.root != player_root ||
+            !ObjectClassChainContainsLocked(live.controller, "HTPlayerController")) {
+            CompletePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
+            return;
+        }
+        std::uintptr_t controller_class{};
+        std::uintptr_t trigger_function{};
+        const auto trigger_num_parms = Layout(profile, "pickup.trigger.numParms");
+        const auto trigger_parms_size = Layout(profile, "pickup.trigger.parmsSize");
+        if (!ReadPointerAt(
+                *memory, live.controller, Layout(profile, "object.class"), controller_class) ||
+            !FindPickupFunctionLocked(
+                controller_class, "TriggerInteract",
+                static_cast<std::uint8_t>(trigger_num_parms),
+                static_cast<std::uint16_t>(trigger_parms_size), trigger_function)) {
+            CompletePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
+            return;
+        }
+
+        struct Candidate {
+            const EntityRecord* entity{};
+            double distance_squared{};
+        };
+        std::vector<Candidate> candidates;
+        const double radius_squared = pickup_request.radius * pickup_request.radius;
+        for (const EntityRecord& entity : cache->entities) {
+            const auto class_name = cache->class_names.find(entity.class_id);
+            if (class_name == cache->class_names.end() ||
+                (class_name->second != "HTRandomItemActor" &&
+                 !class_name->second.starts_with("PropBox_") &&
+                 !class_name->second.starts_with("InteractBox_"))) {
+                continue;
+            }
+            const double dx = entity.bounds_center[0] - live.position[0];
+            const double dy = entity.bounds_center[1] - live.position[1];
+            const double dz = entity.bounds_center[2] - live.position[2];
+            const double distance_squared = dx * dx + dy * dy + dz * dz;
+            if (!std::isfinite(distance_squared) || distance_squared > radius_squared) continue;
+            ++pickup_snapshot.nearby;
+            bool not_pickup{};
+            if (!ReadPickupBoolLocked(entity, "IsNotPickUp", not_pickup) || not_pickup) {
+                ++pickup_snapshot.skipped;
+                continue;
+            }
+            candidates.push_back({&entity, distance_squared});
+        }
+        std::ranges::sort(candidates, {}, &Candidate::distance_squared);
+        if (candidates.size() > pickup_request.maximum_items) {
+            pickup_snapshot.skipped += static_cast<std::uint32_t>(
+                candidates.size() - pickup_request.maximum_items);
+            candidates.resize(pickup_request.maximum_items);
+        }
+
+        std::vector<PickupConfirmationCandidate> confirmation;
+        confirmation.reserve(candidates.size());
+        for (const Candidate& candidate : candidates) {
+            std::uintptr_t actor_class{};
+            if (!PickupEntityStillCurrentLocked(*candidate.entity, actor_class)) {
+                ++pickup_snapshot.skipped;
+                continue;
+            }
+            std::uintptr_t can_try_function{};
+            std::uintptr_t entries_function{};
+            const auto can_num_parms = Layout(profile, "pickup.canTry.numParms");
+            const auto can_parms_size = Layout(profile, "pickup.canTry.parmsSize");
+            const auto entries_num_parms = Layout(profile, "pickup.entries.numParms");
+            const auto entries_parms_size = Layout(profile, "pickup.entries.parmsSize");
+            if (!FindPickupFunctionLocked(
+                    actor_class, "BPCanTryInteract",
+                    static_cast<std::uint8_t>(can_num_parms),
+                    static_cast<std::uint16_t>(can_parms_size), can_try_function) ||
+                !FindPickupFunctionLocked(
+                    actor_class, "BPGetInteractEntries",
+                    static_cast<std::uint8_t>(entries_num_parms),
+                    static_cast<std::uint16_t>(entries_parms_size), entries_function)) {
+                ++pickup_snapshot.skipped;
+                continue;
+            }
+            std::array<std::int32_t, kMaximumPickupChoices> choices{};
+            std::size_t choice_count{};
+            if (!ReadInteractChoicesLocked(
+                    candidate.entity->actor, live.controller, entries_function,
+                    choices, choice_count) || choice_count == 0) {
+                ++pickup_snapshot.skipped;
+                continue;
+            }
+            bool sent{};
+            for (std::size_t choice_index{}; choice_index < choice_count; ++choice_index) {
+                bool can_try{};
+                if (!InvokeCanTryInteractLocked(
+                        candidate.entity->actor, live.controller, choices[choice_index],
+                        can_try_function, can_try) || !can_try) {
+                    continue;
+                }
+                std::uint8_t baseline{};
+                std::uintptr_t baseline_address{};
+                const bool baseline_read = AddAddress(
+                    candidate.entity->actor,
+                    Layout(profile, "pickup.actor.interactFinish"), baseline_address) &&
+                    ReadValue(*memory, baseline_address, baseline);
+                if (!InvokeTriggerInteractLocked(
+                        live.controller, candidate.entity->actor, choices[choice_index],
+                        trigger_function)) {
+                    continue;
+                }
+                ++pickup_snapshot.triggered;
+                if (baseline_read) {
+                    confirmation.push_back({
+                        candidate.entity->actor, live.controller, can_try_function,
+                        candidate.entity->object_index, candidate.entity->object_serial,
+                        cache->sequence, choices[choice_index], baseline});
+                } else {
+                    ++pickup_snapshot.unconfirmed;
+                }
+                sent = true;
+                break;
+            }
+            if (!sent) ++pickup_snapshot.skipped;
+        }
+        pickup_request = {};
+        pickup_confirmation = {};
+        pickup_confirmation.candidates = std::move(confirmation);
+        if (pickup_snapshot.triggered == 0) {
+            CompletePickupLocked(
+                pickup_snapshot.nearby == 0
+                    ? ANOMALY_STATUS_V1_OK
+                    : ANOMALY_STATUS_V1_FAILED);
+            return;
+        }
+        if (pickup_confirmation.candidates.empty()) {
+            CompletePickupLocked(ANOMALY_STATUS_V1_OK);
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        pickup_confirmation.next_check = now + std::chrono::milliseconds(100);
+        pickup_confirmation.deadline = now + std::chrono::seconds(2);
+        pickup_snapshot.flags = ANOMALY_NTE_PICKUP_V1_VALID |
+            ANOMALY_NTE_PICKUP_V1_CHECKING_FLAG;
+        pickup_snapshot.state = ANOMALY_NTE_PICKUP_V1_CHECKING;
+        pickup_snapshot.status = ANOMALY_STATUS_V1_OK;
+        pickup_snapshot.checking = static_cast<std::uint32_t>(
+            pickup_confirmation.candidates.size());
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PickupRequestNearby(
+        void* user, const AnomalyNtePickupRequestV1* request) noexcept {
+        if (request == nullptr || request->struct_size < sizeof(*request) ||
+            request->flags != 0 || request->reserved != 0 ||
+            !std::isfinite(request->radius) || request->radius < 50.0 ||
+            request->radius > 5000.0 || request->maximum_items == 0 ||
+            request->maximum_items > 128) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        const DWORD expected = state.game_thread_id.load(std::memory_order_acquire);
+        if (expected == 0 || expected != GetCurrentThreadId() ||
+            g_active_tick_callback_state.Get() != &state) {
+            return Status(
+                ANOMALY_STATUS_V1_CONFLICT,
+                "pickup requests require the active Game callback domain");
+        }
+        std::scoped_lock lock(state.mutex);
+        if (!state.SemanticFeatureRunning("nte.pickup")) {
+            return Status(
+                ANOMALY_STATUS_V1_UNAVAILABLE,
+                "pickup is unavailable for the active Profile");
+        }
+        if (state.pickup_request.queued ||
+            !state.pickup_confirmation.candidates.empty()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "pickup request is already active");
+        }
+        ++state.pickup_sequence;
+        state.pickup_request = {
+            request->radius, request->maximum_items, 0, true};
+        state.pickup_confirmation = {};
+        state.pickup_snapshot = {sizeof(state.pickup_snapshot)};
+        state.pickup_snapshot.flags = ANOMALY_NTE_PICKUP_V1_VALID;
+        state.pickup_snapshot.sequence = state.pickup_sequence;
+        state.pickup_snapshot.state = ANOMALY_NTE_PICKUP_V1_QUEUED;
+        state.pickup_snapshot.status = ANOMALY_STATUS_V1_OK;
+        state.pickup_demand.store(true, std::memory_order_release);
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PickupSnapshot(
+        void* user, AnomalyNtePickupSnapshotV1* snapshot) noexcept {
+        if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot)) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        std::scoped_lock lock(state.mutex);
+        if (!state.SemanticFeatureRunning("nte.pickup")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "pickup service is unavailable");
+        }
+        const std::uint32_t struct_size = snapshot->struct_size;
+        *snapshot = state.pickup_snapshot;
+        snapshot->struct_size = struct_size;
+        if (snapshot->sequence == 0) {
+            snapshot->flags = ANOMALY_NTE_PICKUP_V1_VALID;
+            snapshot->state = ANOMALY_NTE_PICKUP_V1_IDLE;
+            snapshot->status = ANOMALY_STATUS_V1_OK;
+        }
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL MetricsSnapshot(
         void* user, AnomalyNteSnapshotMetricsV1* metrics) noexcept {
         if (metrics == nullptr || metrics->struct_size < sizeof(*metrics)) {
@@ -4662,6 +5342,10 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             sizeof(AnomalyNteNavigationServiceV1),
             ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
             this, MoveToLocationThunk, StopMovementThunk};
+        pickup_service = {
+            sizeof(AnomalyNtePickupServiceV1),
+            ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
+            this, PickupRequestNearbyThunk, PickupSnapshotThunk};
         entities_service = {
             sizeof(AnomalyNteEntitiesServiceV1), ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION,
             this, EntityFrameThunk, EntitySnapshotAtThunk, EntityClassNameThunk,
@@ -4705,6 +5389,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyNtePlayerServiceV1 player_service{};
     AnomalyNtePlayerTeleportServiceV1 player_teleport_service{};
     AnomalyNteNavigationServiceV1 navigation_service{};
+    AnomalyNtePickupServiceV1 pickup_service{};
     AnomalyNteEntitiesServiceV1 entities_service{};
     AnomalyNteActorsServiceV1 actors_service{};
     AnomalyNteMetricsServiceV1 metrics_service{};
@@ -4865,6 +5550,18 @@ private:
     static AnomalyStatusV1 ANOMALY_CALL StopMovementThunk(void* user) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::StopMovement(lease.User()) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PickupRequestNearbyThunk(
+        void* user, const AnomalyNtePickupRequestV1* request) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::PickupRequestNearby(lease.User(), request) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PickupSnapshotThunk(
+        void* user, AnomalyNtePickupSnapshotV1* snapshot) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::PickupSnapshot(lease.User(), snapshot) : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL EntityFrameThunk(
@@ -5595,6 +6292,24 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             semantic_lifetime)) {
         return false;
     }
+    if (framework_hook_ready && SemanticFeatureAvailable("nte.pickup") &&
+        !PublishIfMissing(
+            ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
+            ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
+            &endpoint->pickup_service,
+            [self, observer_endpoint] {
+                const auto locked = self.lock();
+                const auto observed = observer_endpoint.lock();
+                if (!locked || !observed ||
+                    locked->semantic_endpoint.load(std::memory_order_acquire) != observed) {
+                    return;
+                }
+                locked->player_demand.store(true, std::memory_order_release);
+                locked->entity_demand.store(true, std::memory_order_release);
+            },
+            semantic_lifetime)) {
+        return false;
+    }
     if (framework_hook_ready && NteActorsLayoutAvailable() &&
         !PublishIfMissing(
             ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
@@ -5901,12 +6616,16 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
             state->RefreshNavigationBindingLocked();
         }
         state->RefreshAhudBindingLocked();
+        state->RefreshPickupConfirmationLocked();
+        const bool pickup_requested = state->pickup_demand.exchange(
+            false, std::memory_order_acq_rel);
         const bool entity_requested = state->entity_demand.load(std::memory_order_acquire);
         const bool player_requested = state->player_demand.load(std::memory_order_acquire);
-        const bool entity_due = entity_requested && State::SamplingDue(
-            sequence, state->entity_attempt_sequence, state->sampling.entity_tick_interval);
-        const bool player_due = player_requested && State::SamplingDue(
-            sequence, state->player_attempt_sequence, state->sampling.player_tick_interval);
+        const bool entity_due = pickup_requested ||
+            (entity_requested && State::SamplingDue(
+                sequence, state->entity_attempt_sequence, state->sampling.entity_tick_interval));
+        const bool player_due = pickup_requested || (player_requested && State::SamplingDue(
+            sequence, state->player_attempt_sequence, state->sampling.player_tick_interval));
         if (entity_due || player_due) {
             state->RefreshPlayer(sequence);
             ++state->player_refresh_count;
@@ -5922,6 +6641,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         } else if (entity_requested) {
             ++state->entity_cache_hit_count;
         }
+        if (pickup_requested) state->PerformPickupLocked();
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - sampling_started).count();
         const auto elapsed_micros = static_cast<std::uint64_t>(

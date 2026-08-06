@@ -19,6 +19,8 @@
 #define ANOMALY_NTE_METRICS_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID "anomaly.nte.esc-menu-button"
 #define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_PICKUP_SERVICE_V1_ID "anomaly.nte.pickup"
+#define ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION 1u
 // Service tables belong to one Host lifecycle generation. A cached table from a stopped or
 // replaced generation remains callable only to report UNAVAILABLE (or zero for scalar queries);
 // it never resumes against a later Start generation.
@@ -167,6 +169,54 @@ typedef struct AnomalyNteNavigationServiceV1 {
         void* user, const double destination[3]);
     AnomalyStatusV1 (ANOMALY_CALL *stop_movement)(void* user);
 } AnomalyNteNavigationServiceV1;
+
+// Nearby pickup is a Host-owned interaction bridge. The request is accepted only from the
+// active Game callback domain; it never exposes UE object pointers, reflected functions, or
+// Profile offsets. Confirmation is reported independently from the interaction trigger.
+typedef struct AnomalyNtePickupRequestV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    double radius;
+    uint32_t maximum_items;
+    uint32_t reserved;
+} AnomalyNtePickupRequestV1;
+
+typedef enum AnomalyNtePickupStateV1 {
+    ANOMALY_NTE_PICKUP_V1_IDLE = 0,
+    ANOMALY_NTE_PICKUP_V1_QUEUED = 1,
+    ANOMALY_NTE_PICKUP_V1_CHECKING = 2,
+    ANOMALY_NTE_PICKUP_V1_COMPLETE = 3
+} AnomalyNtePickupStateV1;
+
+typedef uint32_t AnomalyNtePickupFlagsV1;
+#define ANOMALY_NTE_PICKUP_V1_NONE 0u
+#define ANOMALY_NTE_PICKUP_V1_VALID (1u << 0u)
+#define ANOMALY_NTE_PICKUP_V1_CHECKING_FLAG (1u << 1u)
+#define ANOMALY_NTE_PICKUP_V1_HAS_UNCONFIRMED (1u << 2u)
+
+typedef struct AnomalyNtePickupSnapshotV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint64_t sequence;
+    uint32_t state;
+    uint32_t status;
+    uint32_t nearby;
+    uint32_t triggered;
+    uint32_t confirmed;
+    uint32_t checking;
+    uint32_t unconfirmed;
+    uint32_t skipped;
+} AnomalyNtePickupSnapshotV1;
+
+typedef struct AnomalyNtePickupServiceV1 {
+    uint32_t struct_size;
+    uint32_t service_version;
+    void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *request_nearby)(
+        void* user, const AnomalyNtePickupRequestV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot)(
+        void* user, AnomalyNtePickupSnapshotV1* snapshot);
+} AnomalyNtePickupServiceV1;
 
 typedef enum AnomalyNteEntityFlagsV1 {
     ANOMALY_NTE_ENTITY_V1_NONE = 0,

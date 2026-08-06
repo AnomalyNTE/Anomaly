@@ -56,6 +56,8 @@ inline constexpr std::string_view kNavigationLayoutValidator =
     "nte-navigation-layout-v1";
 inline constexpr std::string_view kNavigationInputAbiValidator =
     "nte-navigation-input-abi-v1";
+inline constexpr std::string_view kPickupFeature = "nte.pickup";
+inline constexpr std::string_view kPickupLayoutValidator = "nte-pickup-layout-v1";
 
 template <std::size_t Size>
 bool MatchesBytes(
@@ -189,6 +191,131 @@ FeatureValidationResult ValidateNavigationLayout(
         if (value > 64U * 1024U * 1024U) {
             return {false, "navigation layout exceeds the supported bound"};
         }
+    }
+    return {true, {}};
+}
+
+FeatureValidationResult ValidatePickupLayout(
+    const BuildProfile& profile,
+    const std::string_view feature,
+    const ProfileResolutionSnapshot&,
+    const SymbolMemory&) {
+    if (feature != kPickupFeature) {
+        return {false, "pickup layout validator used by another feature"};
+    }
+    static constexpr std::array<std::string_view, 45> kRequiredLayout{
+        "world.gameInstance",
+        "gameInstance.localPlayers",
+        "localPlayer.controller",
+        "controller.pawn",
+        "actor.rootComponent",
+        "sceneComponent.location",
+        "object.internalIndex",
+        "object.class",
+        "object.nameOffset",
+        "object.outer",
+        "ustruct.superStruct",
+        "ustruct.children",
+        "ustruct.propertyLink",
+        "ufield.next",
+        "ufunction.flags",
+        "ufunction.nativeFlag",
+        "ufunction.numParms",
+        "ufunction.parmsSize",
+        "ffield.name",
+        "fproperty.arrayDim",
+        "fproperty.elementSize",
+        "fproperty.offsetInternal",
+        "fproperty.propertyLinkNext",
+        "fboolProperty.fieldSize",
+        "fboolProperty.byteOffset",
+        "fboolProperty.byteMask",
+        "fboolProperty.fieldMask",
+        "pickup.actor.interactFinish",
+        "pickup.trigger.numParms",
+        "pickup.trigger.parmsSize",
+        "pickup.trigger.actor",
+        "pickup.trigger.index",
+        "pickup.trigger.onlyClientSide",
+        "pickup.canTry.numParms",
+        "pickup.canTry.parmsSize",
+        "pickup.canTry.controller",
+        "pickup.canTry.index",
+        "pickup.canTry.returnValue",
+        "pickup.entries.numParms",
+        "pickup.entries.parmsSize",
+        "pickup.entries.controller",
+        "pickup.entries.array",
+        "pickup.entries.maximumChoices",
+        "pickup.interactEntryStride",
+        "pickup.interactEntryIndex"};
+    for (const std::string_view key : kRequiredLayout) {
+        std::uint64_t value{};
+        if (!ProfileLayoutValue(profile, key, &value)) {
+            return {false, "pickup layout is incomplete"};
+        }
+        if (value > 64U * 1024U * 1024U) {
+            return {false, "pickup layout exceeds the supported bound"};
+        }
+    }
+    std::uint64_t native_flag{};
+    std::uint64_t entry_stride{};
+    std::uint64_t entry_index{};
+    std::uint64_t trigger_actor{};
+    std::uint64_t trigger_index{};
+    std::uint64_t trigger_client{};
+    std::uint64_t trigger_num_parms{};
+    std::uint64_t trigger_parms_size{};
+    std::uint64_t can_controller{};
+    std::uint64_t can_index{};
+    std::uint64_t can_result{};
+    std::uint64_t can_num_parms{};
+    std::uint64_t can_parms_size{};
+    std::uint64_t entries_num_parms{};
+    std::uint64_t entries_parms_size{};
+    std::uint64_t entries_controller{};
+    std::uint64_t entries_array{};
+    std::uint64_t maximum_choices{};
+    if (!ProfileLayoutValue(profile, "ufunction.nativeFlag", &native_flag) ||
+        !ProfileLayoutValue(profile, "pickup.interactEntryStride", &entry_stride) ||
+        !ProfileLayoutValue(profile, "pickup.interactEntryIndex", &entry_index) ||
+        !ProfileLayoutValue(profile, "pickup.trigger.numParms", &trigger_num_parms) ||
+        !ProfileLayoutValue(profile, "pickup.trigger.parmsSize", &trigger_parms_size) ||
+        !ProfileLayoutValue(profile, "pickup.trigger.actor", &trigger_actor) ||
+        !ProfileLayoutValue(profile, "pickup.trigger.index", &trigger_index) ||
+        !ProfileLayoutValue(profile, "pickup.trigger.onlyClientSide", &trigger_client) ||
+        !ProfileLayoutValue(profile, "pickup.canTry.numParms", &can_num_parms) ||
+        !ProfileLayoutValue(profile, "pickup.canTry.parmsSize", &can_parms_size) ||
+        !ProfileLayoutValue(profile, "pickup.canTry.controller", &can_controller) ||
+        !ProfileLayoutValue(profile, "pickup.canTry.index", &can_index) ||
+        !ProfileLayoutValue(profile, "pickup.canTry.returnValue", &can_result) ||
+        !ProfileLayoutValue(profile, "pickup.entries.numParms", &entries_num_parms) ||
+        !ProfileLayoutValue(profile, "pickup.entries.parmsSize", &entries_parms_size) ||
+        !ProfileLayoutValue(profile, "pickup.entries.controller", &entries_controller) ||
+        !ProfileLayoutValue(profile, "pickup.entries.array", &entries_array) ||
+        !ProfileLayoutValue(profile, "pickup.entries.maximumChoices", &maximum_choices) ||
+        native_flag == 0 || native_flag > (std::numeric_limits<std::uint32_t>::max)() ||
+        trigger_num_parms == 0 ||
+        trigger_num_parms > (std::numeric_limits<std::uint8_t>::max)() ||
+        trigger_parms_size == 0 || trigger_parms_size > 4096 ||
+        can_num_parms == 0 ||
+        can_num_parms > (std::numeric_limits<std::uint8_t>::max)() ||
+        can_parms_size == 0 || can_parms_size > 4096 ||
+        entries_num_parms == 0 ||
+        entries_num_parms > (std::numeric_limits<std::uint8_t>::max)() ||
+        entries_parms_size == 0 || entries_parms_size > 4096 ||
+        maximum_choices == 0 || maximum_choices > 128 ||
+        entry_stride < sizeof(std::int32_t) || entry_stride > 4096 ||
+        entry_index + sizeof(std::int32_t) > entry_stride ||
+        trigger_actor + sizeof(std::uintptr_t) > trigger_parms_size ||
+        trigger_index + sizeof(std::int32_t) > trigger_parms_size ||
+        trigger_client >= trigger_parms_size ||
+        can_controller + sizeof(std::uintptr_t) > can_parms_size ||
+        can_index + sizeof(std::int32_t) > can_parms_size ||
+        can_result >= can_parms_size ||
+        entries_controller + sizeof(std::uintptr_t) > entries_parms_size ||
+        entries_array + 16 > entries_parms_size) {
+        return {false, "pickup reflected ABI layout is invalid"};
     }
     return {true, {}};
 }
@@ -463,6 +590,7 @@ FeatureLayoutValidatorRegistry NteFeatureLayoutValidators(
         std::string(kNavigationLayoutValidator), ValidateNavigationLayout);
     validators.Register(
         std::string(kNavigationInputAbiValidator), ValidateNavigationInputAbi);
+    validators.Register(std::string(kPickupLayoutValidator), ValidatePickupLayout);
     if (preserve_actor_process_event_abi) {
         validators.Register(
             std::string(kUe5ActorProcessEventAbiValidator), [](

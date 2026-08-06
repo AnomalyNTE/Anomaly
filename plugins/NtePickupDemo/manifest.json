@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte-pickup-demo",
+  "name": "Nearby Pickup",
+  "description": "Requests the framework NTE pickup service for nearby items and displays confirmation state.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "developer",
+  "version": "0.1.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.nte.pickup", "minVersion": 1}
+  ],
+  "capabilities": [
+    "ui", "nte-pickup"
+  ]
+}

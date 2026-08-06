@@ -19,6 +19,64 @@ typedef uint32_t AnomalyNteSnapshotFlagsV1;
 
 `VALID / STALE / PARTIAL` 与过期 generation 不可用于普通绘制。
 
+## `anomaly.nte.pickup`
+
+- **ID**：`"anomaly.nte.pickup"` · **版本** 1 · **capability** `nte-pickup`
+
+该服务把周围拾取和拾取确认固化在 Host 的 NTE Adapter 中。插件只提交半径与单次上限，
+不接触 UE 对象、UFunction、ProcessEvent、内存地址或 Profile 偏移。
+
+```c
+typedef struct AnomalyNtePickupRequestV1 {
+    uint32_t struct_size; uint32_t flags;
+    double radius; uint32_t maximum_items; uint32_t reserved;
+} AnomalyNtePickupRequestV1;
+
+typedef enum AnomalyNtePickupStateV1 {
+    ANOMALY_NTE_PICKUP_V1_IDLE = 0,
+    ANOMALY_NTE_PICKUP_V1_QUEUED = 1,
+    ANOMALY_NTE_PICKUP_V1_CHECKING = 2,
+    ANOMALY_NTE_PICKUP_V1_COMPLETE = 3
+} AnomalyNtePickupStateV1;
+
+typedef struct AnomalyNtePickupSnapshotV1 {
+    uint32_t struct_size; uint32_t flags; uint64_t sequence;
+    uint32_t state; uint32_t status;
+    uint32_t nearby; uint32_t triggered; uint32_t confirmed;
+    uint32_t checking; uint32_t unconfirmed; uint32_t skipped;
+} AnomalyNtePickupSnapshotV1;
+
+typedef struct AnomalyNtePickupServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *request_nearby)(
+        void* user, const AnomalyNtePickupRequestV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot)(
+        void* user, AnomalyNtePickupSnapshotV1* snapshot);
+} AnomalyNtePickupServiceV1;
+```
+
+`request_nearby` 只允许 Host 的 Game callback domain。返回 `OK` 表示请求已排队；实际候选
+扫描和交互发生在后续 Game tick，`snapshot` 可从 Render/UI 域读取。`radius` 合同为 50--5000，
+`maximum_items` 为 1--128，`flags` 与 `reserved` 必须为 0。
+服务可用且尚未提交请求时，快照为 `VALID + IDLE + OK`。
+
+`nearby` 是半径内的 `HTRandomItemActor`、`PropBox_` 或 `InteractBox_` 数量；`triggered`
+是成功调用 `TriggerInteract` 的数量；`confirmed` 由后续完整实体快照中的对象消失、
+`bInteractFinish` 变化，或截止时一次 `BPCanTryInteract == false` 得到；`checking` 是仍在确认
+窗口内的数量；`unconfirmed` 是窗口结束后仍可交互或最终状态不可读的数量；`skipped` 汇总
+不可读、不可拾取或未通过 `BPCanTryInteract` 的候选。
+
+确认路径只读取现有实体缓存和一个状态字节，最短间隔 100 ms；窗口内不重复调用反射函数。
+最多 2 秒后才执行一次最终 `BPCanTryInteract`。超时保持 `OK + unconfirmed`，不会把已触发
+请求改写为 `FAILED`，也不会让快照永久停留在 `CHECKING`。
+
+快照 `flags` 使用 `VALID`、`CHECKING_FLAG` 与 `HAS_UNCONFIRMED`。`sequence` 每次请求递增，
+World、对象注册表或 Host generation 变化会清理当前请求并返回 `UNAVAILABLE`。服务只有在
+活动 Profile 的 `nte-pickup-layout-v1`、UE5 ProcessEvent ABI、对象/名称/玩家/实体依赖均
+验证通过后才发布。`TriggerInteract`、`BPCanTryInteract`、`BPGetInteractEntries` 的
+`numParms`、`parmsSize`、全部参数偏移和 entry 布局都来自活动 Profile；Host 不使用插件侧
+常量补全这些布局。
+
 ---
 
 ## `anomaly.nte.build`

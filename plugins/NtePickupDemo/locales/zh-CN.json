@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "周围拾取",
+    "plugin.description": "调用框架拾取 ABI 拾取周围物品并显示确认状态。",
+    "window.title": "周围拾取",
+    "setting.radius": "拾取半径",
+    "setting.maximum": "单次上限",
+    "action.pickup": "拾取周围物品",
+    "status.idle": "拾取：空闲",
+    "status.queued": "拾取：等待执行",
+    "status.result": "拾取：{0} / 结果 {1} / 周围 {2} / 已触发 {3} / 已确认 {4} / 检查中 {5} / 未确认 {6} / 已跳过 {7}",
+    "status.error": "拾取：{0} - {1}"
+  }
+}

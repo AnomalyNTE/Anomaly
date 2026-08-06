@@ -164,6 +164,18 @@ capability ↔ service 对应关系见 [Manifest 与 capability · capability �
 > [!NOTE]
 > capability 机制约束服务可见性与资源归属，**不是**同进程 native 代码的安全沙箱。新插件应优先使用语义 NTE snapshot 服务，而不是自行读取游戏对象内存。
 
+### 周围拾取
+
+需要拾取周围 `PropBox_`、`InteractBox_` 或随机物品 Actor 时，声明 `nte-pickup` capability
+并查询 `anomaly.nte.pickup`。在 Game Update 中提交 `AnomalyNtePickupRequestV1`，在 Draw/UI
+中读取 `AnomalyNtePickupSnapshotV1`。请求只表示已排队，确认计数和 2 秒截止时间由 Host
+维护；`QUEUED` 或 `CHECKING` 时不应重复提交。
+
+插件不得自行扫描 GObjects/World、解析 `BPGetInteractEntries` 或 `BPCanTryInteract`，也不得
+直接调用 UE `ProcessEvent`、修改 UFunction flags 或读取 `bInteractFinish`。这些行为属于
+NTE Adapter 的 Profile gate 和线程域，避免实体 generation、对象生命周期和确认逻辑在插件间分叉。
+确认优先复用实体缓存和直接状态字节，仅在截止时调用一次 `BPCanTryInteract`。
+
 ## 7. 资源与所有权
 
 所有由 Platform / Interop / IPC 创建的 handle 都**绑定 plugin generation**：
