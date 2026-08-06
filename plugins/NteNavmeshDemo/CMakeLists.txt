@@ -23,7 +23,6 @@ anomaly_add_plugin(anomaly_nte_navmesh_demo
 
 target_compile_definitions(anomaly_nte_navmesh_demo PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(anomaly_nte_navmesh_demo PRIVATE ntdll)
 
 add_custom_command(TARGET anomaly_nte_navmesh_demo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -46,6 +46,7 @@
     "ANOMALY_NTE_SESSION_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION": 1,
+    "ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_METRICS_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION": 1,
@@ -1150,6 +1151,17 @@
         "teleport": 16
       }
     },
+    "AnomalyNteNavigationServiceV1": {
+      "size": 32,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "move_to_location": 16,
+        "stop_movement": 24
+      }
+    },
     "AnomalyNteEntityFrameV1": {
       "size": 88,
       "alignment": 8,
@@ -1355,6 +1367,7 @@
     { "id": "anomaly.nte.session", "version": 1, "table": "AnomalyNteSessionServiceV1" },
     { "id": "anomaly.nte.player", "version": 1, "table": "AnomalyNtePlayerServiceV1" },
     { "id": "anomaly.nte.player-teleport", "version": 1, "table": "AnomalyNtePlayerTeleportServiceV1" },
+    { "id": "anomaly.nte.navigation", "version": 1, "table": "AnomalyNteNavigationServiceV1" },
     { "id": "anomaly.nte.entities", "version": 1, "table": "AnomalyNteEntitiesServiceV1" },
     { "id": "anomaly.nte.actors", "version": 1, "table": "AnomalyNteActorsServiceV1" },
     { "id": "anomaly.nte.metrics", "version": 1, "table": "AnomalyNteMetricsServiceV1" },

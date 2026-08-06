@@ -2,11 +2,15 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "导航网格演示",
-    "plugin.description": "对输入的世界坐标发起一次原生 MoveToLocation 寻路请求。",
-    "window.title": "导航网格演示",
-    "window.hint": "输入世界坐标后请求角色使用原生寻路移动。",
+    "plugin.name": "寻路",
+    "plugin.description": "通过宿主 ABI 启动或终止原生 NTE 寻路。",
+    "window.title": "寻路",
     "action.move": "开始寻路",
-    "status.label": "状态"
+    "action.stop": "终止寻路",
+    "status.move_queued": "寻路：等待执行",
+    "status.stop_queued": "寻路：等待终止",
+    "status.idle": "寻路：空闲",
+    "status.result": "寻路：{0}",
+    "status.result_detail": "寻路：{0} - {1}"
   }
 }

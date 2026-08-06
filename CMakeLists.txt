@@ -400,6 +400,7 @@ add_library(anomaly_adapter_services STATIC
     src/game/ue5/ue5_process_event.cpp
     src/game/ue5/ue5_process_event_hook.cpp
     src/game/ue5/ue5_nte_adapter.cpp
+    src/game/nte/nte_navigation_input_policy.cpp
     src/game/ue5/game_tick_hook.cpp
     src/game/ue5/ue5_outbound_bit_count_probe.cpp)
 target_include_directories(anomaly_adapter_services PUBLIC include)
@@ -417,7 +418,8 @@ target_compile_definitions(
 target_compile_options(anomaly_websocket_server PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_websocket_server PUBLIC Ws2_32 bcrypt)
 
-add_library(anomaly_nte_profile_runtime STATIC src/game/nte/nte_profile_runtime.cpp)
+add_library(anomaly_nte_profile_runtime STATIC
+    src/game/nte/nte_profile_runtime.cpp)
 target_include_directories(anomaly_nte_profile_runtime PUBLIC include)
 target_compile_definitions(
     anomaly_nte_profile_runtime PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1016,6 +1018,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteTeleport/manifest.json
         PACKAGE_NAME NteTeleport
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
+    anomaly_add_plugin(anomaly_builtin_nte_navigation
+        SOURCES plugins/NteNavmeshDemo/plugin.cpp
+        MANIFEST plugins/NteNavmeshDemo/manifest.json
+        PACKAGE_NAME NteNavmeshDemo
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteNavmeshDemo")
     anomaly_add_plugin(anomaly_builtin_entity_esp
         SOURCES plugins/EntityESP/plugin.cpp
         MANIFEST plugins/EntityESP/manifest.json
@@ -1044,6 +1051,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
 
     foreach(builtin_target IN ITEMS
             anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+            anomaly_builtin_nte_navigation
             anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
             anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
         target_include_directories(${builtin_target} PRIVATE "${CMAKE_SOURCE_DIR}")
@@ -1060,12 +1068,14 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     endfunction()
     anomaly_copy_builtin_locales(anomaly_builtin_nte_position NtePosition)
     anomaly_copy_builtin_locales(anomaly_builtin_nte_teleport NteTeleport)
+    anomaly_copy_builtin_locales(anomaly_builtin_nte_navigation NteNavmeshDemo)
     anomaly_copy_builtin_locales(anomaly_builtin_entity_esp EntityESP)
     anomaly_copy_builtin_locales(anomaly_builtin_pink_paw_heist_esp PinkPawHeistESP)
     anomaly_copy_builtin_locales(anomaly_builtin_fake_uid FakeUID)
     anomaly_copy_builtin_locales(anomaly_builtin_camera_tools CameraTools)
     set_target_properties(anomaly_builtin_nte_position PROPERTIES PDB_NAME NtePosition)
     set_target_properties(anomaly_builtin_nte_teleport PROPERTIES PDB_NAME NteTeleport)
+    set_target_properties(anomaly_builtin_nte_navigation PROPERTIES PDB_NAME NteNavmeshDemo)
     set_target_properties(anomaly_builtin_entity_esp PROPERTIES PDB_NAME EntityESP)
     set_target_properties(anomaly_builtin_pink_paw_heist_esp PROPERTIES PDB_NAME PinkPawHeistESP)
     set_target_properties(anomaly_builtin_fake_uid PROPERTIES PDB_NAME FakeUID)
@@ -1075,10 +1085,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     endif()
     add_dependencies(anomaly_test_host
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+        anomaly_builtin_nte_navigation
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
     add_dependencies(anomaly-platform-preview
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+        anomaly_builtin_nte_navigation
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
 endif()
@@ -1107,6 +1119,7 @@ anomaly_stage_platform_preview_plugin(anomaly_example_reliable_config ReliableCo
 anomaly_stage_platform_preview_plugin(anomaly_example_nte_inspector NteInspector)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_position NtePosition)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_teleport NteTeleport)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_navigation NteNavmeshDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_entity_esp EntityESP)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_pink_paw_heist_esp PinkPawHeistESP)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_fake_uid FakeUID)
@@ -1203,6 +1216,7 @@ foreach(runtime_plugin_target IN ITEMS
         anomaly_example_hello_ui anomaly_example_tick_counter
         anomaly_example_reliable_config anomaly_example_nte_inspector
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+        anomaly_builtin_nte_navigation
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
     if(TARGET ${runtime_plugin_target})
@@ -1245,6 +1259,15 @@ if(TARGET anomaly_builtin_nte_teleport)
         DESTINATION Anomaly/plugins/NteTeleport COMPONENT GameRuntime)
     install(DIRECTORY plugins/NteTeleport/locales/
         DESTINATION Anomaly/plugins/NteTeleport/locales COMPONENT GameRuntime)
+endif()
+if(TARGET anomaly_builtin_nte_navigation)
+    install(TARGETS anomaly_builtin_nte_navigation
+        RUNTIME DESTINATION Anomaly/plugins/NteNavmeshDemo COMPONENT GameRuntime
+        LIBRARY DESTINATION Anomaly/plugins/NteNavmeshDemo COMPONENT GameRuntime)
+    install(FILES plugins/NteNavmeshDemo/manifest.json
+        DESTINATION Anomaly/plugins/NteNavmeshDemo COMPONENT GameRuntime)
+    install(DIRECTORY plugins/NteNavmeshDemo/locales/
+        DESTINATION Anomaly/plugins/NteNavmeshDemo/locales COMPONENT GameRuntime)
 endif()
 if(TARGET anomaly_builtin_entity_esp)
     install(TARGETS anomaly_builtin_entity_esp

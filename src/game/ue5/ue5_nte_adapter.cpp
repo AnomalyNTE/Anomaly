@@ -350,6 +350,15 @@ bool ReadPointerAt(
     return AddAddress(base, offset, address) && ReadValue(memory, address, result) && result != 0;
 }
 
+bool ReadNullablePointerAt(
+    const SymbolMemory& memory,
+    std::uintptr_t base,
+    std::int64_t offset,
+    std::uintptr_t& result) noexcept {
+    std::uintptr_t address{};
+    return AddAddress(base, offset, address) && ReadValue(memory, address, result);
+}
+
 bool AddUnsignedAddress(
     std::uintptr_t base,
     std::uint64_t offset,
@@ -573,6 +582,7 @@ struct Ue5NteAdapter::State {
     NteSnapshotSamplingOptions sampling;
     std::atomic_bool player_demand{};
     std::atomic_bool entity_demand{};
+    std::atomic_bool navigation_demand{};
     static constexpr std::size_t kSessionEventCapacity = 64;
     static constexpr std::uint32_t kEntityPageCapacity = 256;
     struct SessionEvent {
@@ -613,6 +623,30 @@ struct Ue5NteAdapter::State {
         bool available{};
         bool discovery_complete{};
     } teleport;
+    struct NavigationBinding {
+        std::uintptr_t move_to_point_by_transform{};
+        std::uintptr_t util_class{};
+        std::uint32_t move_object_index{};
+        std::uint32_t move_object_serial{};
+        std::uint16_t move_parms_size{};
+        std::uint16_t world_context_object_offset{};
+        std::uint16_t move_location_offset{};
+        std::uint16_t move_rotator_offset{};
+        ReflectedBoolParameter force_walk{};
+        ReflectedBoolParameter auto_control{};
+        ReflectedBoolParameter hide_ui{};
+        std::uint16_t protect_time_offset{};
+        ReflectedBoolParameter use_pathfinding{};
+        std::uintptr_t stop_movement{};
+        std::uint32_t stop_object_index{};
+        std::uint32_t stop_object_serial{};
+        std::uint16_t stop_parms_size{};
+        std::uintptr_t registry_items{};
+        std::uint64_t object_generation{};
+        std::uint32_t next_object_index{};
+        bool available{};
+        bool discovery_complete{};
+    } navigation;
     enum class AhudFunctionKind : std::size_t {
         ReceiveDrawHud,
         Project,
@@ -729,6 +763,7 @@ struct Ue5NteAdapter::State {
     std::uint64_t entity_page_cache_hit_count{};
     bool framework_hook_ready{};
     bool ahud_hook_ready{};
+    std::shared_ptr<NteNavigationInputPolicy> navigation_input_policy;
     std::uint64_t deferred_resolution_retry_sequence{1};
     std::vector<std::pair<std::string, const void*>> published;
     std::vector<std::pair<std::string, const void*>> pending_revocations;
@@ -969,6 +1004,71 @@ struct Ue5NteAdapter::State {
                 "nte-player-teleport-layout-v1");
     }
 
+    [[nodiscard]] bool NteNavigationReflectionAvailable() const noexcept {
+        const auto* const process_event = resolution.FindSymbol("ue5.ProcessEvent");
+        const auto* const input_policy = resolution.FindSymbol(
+            "nte.ClientIgnoreGameAndUiInput");
+        return static_cast<bool>(process_event_invoker) &&
+            process_event != nullptr && process_event->Available() &&
+            input_policy != nullptr && input_policy->Available() &&
+            resolution.FeatureAvailable(kUe5ProcessEventFeature) &&
+            resolution.FeatureAvailable("nte.navigation") &&
+            resolution.FeatureAvailable("nte.player") &&
+            resolution.FeatureAvailable("ue5.names") &&
+            resolution.FeatureAvailable("ue5.objects") &&
+            NtePlayerLayoutAvailable() && LayoutKeysAvailable(profile, {
+                "object.class",
+                "object.nameOffset",
+                "object.outer",
+                "uclass.classDefaultObject",
+                "ustruct.superStruct",
+                "ustruct.propertyLink",
+                "ufunction.numParms",
+                "ufunction.parmsSize",
+                "ufunction.returnValueOffset",
+                "ffield.class",
+                "ffield.name",
+                "ffieldClass.name",
+                "fproperty.arrayDim",
+                "fproperty.elementSize",
+                "fproperty.offsetInternal",
+                "fproperty.propertyLinkNext",
+                "fstructProperty.struct",
+                "fboolProperty.fieldSize",
+                "fboolProperty.byteOffset",
+                "fboolProperty.byteMask",
+                "fboolProperty.fieldMask",
+                "controller.controlRotation",
+                "controller.getPlayerCharacterVtableOffset",
+                "character.setCustomIgnoreMoveInputVtableOffset",
+                "character.setCustomLimitInputVtableOffset"}) &&
+            FeatureDeclaresSymbol(
+                profile, "nte.navigation", "nte.ClientIgnoreGameAndUiInput") &&
+            FeatureDeclaresDependency(profile, "nte.navigation", "nte.player") &&
+            FeatureDeclaresDependency(profile, "nte.navigation", "ue5.names") &&
+            FeatureDeclaresDependency(profile, "nte.navigation", "ue5.objects") &&
+            FeatureDeclaresDependency(
+                profile, "nte.navigation", kUe5ProcessEventFeature) &&
+            FeatureDeclaresLayoutValidator(
+                profile, "nte.navigation", "nte-navigation-layout-v1") &&
+            FeatureDeclaresLayoutValidator(
+                profile, "nte.navigation", "nte-navigation-input-abi-v1");
+    }
+
+    [[nodiscard]] bool NteNavigationAvailable() const noexcept {
+        return NteNavigationReflectionAvailable() && navigation_input_policy != nullptr &&
+            navigation_input_policy->Started();
+    }
+
+    [[nodiscard]] bool EnsureNavigationInputPolicyLocked() noexcept {
+        if (navigation_input_policy == nullptr) return false;
+        if (navigation_input_policy->Started()) return true;
+        if (!NteNavigationReflectionAvailable()) return false;
+        const auto* const target = resolution.FindSymbol("nte.ClientIgnoreGameAndUiInput");
+        if (target == nullptr || !target->Available()) return false;
+        return navigation_input_policy->Start(reinterpret_cast<void*>(target->address));
+    }
+
     [[nodiscard]] bool ObjectFindAvailable() const noexcept {
         return static_cast<bool>(object_lookup) &&
             resolution.FeatureAvailable(kUe5ObjectFindFeature) &&
@@ -1077,6 +1177,7 @@ struct Ue5NteAdapter::State {
             return resolution.FeatureAvailable("nte.player") &&
                 NtePlayerTeleportAvailable();
         }
+        if (feature == "nte.navigation") return NteNavigationAvailable();
         if (feature == "nte.entities") {
             return NteEntitiesLayoutAvailable();
         }
@@ -1195,6 +1296,9 @@ struct Ue5NteAdapter::State {
             return framework_hook_ready &&
                 SemanticFeatureAvailable("nte.player-teleport");
         }
+        if (id == ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID) {
+            return framework_hook_ready && SemanticFeatureAvailable("nte.navigation");
+        }
         if (id == ANOMALY_NTE_ENTITIES_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.entities");
         }
@@ -1245,6 +1349,7 @@ struct Ue5NteAdapter::State {
             const auto first_new_service = PublishedCount();
             const ProfileResolutionSnapshot previous = std::move(resolution);
             resolution = std::move(refreshed);
+            static_cast<void>(EnsureNavigationInputPolicyLocked());
             if (!PublishAvailableServices(self)) {
                 RevokePublishedFrom(first_new_service);
                 resolution = previous;
@@ -1271,7 +1376,8 @@ struct Ue5NteAdapter::State {
         }
         if (feature == "nte.session" || feature == "nte.player" ||
             feature == "nte.player-esp" ||
-            feature == "nte.player-teleport" || feature == "nte.entities") {
+            feature == "nte.player-teleport" || feature == "nte.navigation" ||
+            feature == "nte.entities") {
             return SemanticFeatureAvailable(feature)
                 ? ANOMALY_FEATURE_V1_AVAILABLE
                 : ANOMALY_FEATURE_V1_UNAVAILABLE;
@@ -1341,6 +1447,7 @@ struct Ue5NteAdapter::State {
         if (object_registry.items != 0) ++object_generation;
         object_registry = {};
         teleport = {};
+        navigation = {};
         InvalidateAhudBindingLocked();
         InvalidatePlayer();
         InvalidateEntities();
@@ -1349,6 +1456,7 @@ struct Ue5NteAdapter::State {
         player_attempt_sequence = 0;
         player_demand.store(false, std::memory_order_release);
         entity_demand.store(false, std::memory_order_release);
+        navigation_demand.store(false, std::memory_order_release);
         ahud_demand.store(false, std::memory_order_release);
         ahud_frame_count.store(0, std::memory_order_release);
         ahud_process_event_call_count.store(0, std::memory_order_release);
@@ -1371,6 +1479,7 @@ struct Ue5NteAdapter::State {
     void ClearSemanticStateForStopLocked() noexcept {
         player_demand.store(false, std::memory_order_release);
         entity_demand.store(false, std::memory_order_release);
+        navigation_demand.store(false, std::memory_order_release);
         InvalidatePlayer();
         InvalidateEntities();
         InvalidateActors();
@@ -1383,6 +1492,7 @@ struct Ue5NteAdapter::State {
         world_name_layout_available = false;
         world_name_readable = false;
         teleport = {};
+        navigation = {};
         framework_hook_ready = false;
         ahud_hook_ready = false;
         InvalidateAhudBindingLocked();
@@ -1453,6 +1563,7 @@ struct Ue5NteAdapter::State {
             if (object_registry.items != 0) ++object_generation;
             object_registry = {};
             teleport = {};
+            navigation = {};
             if (object_generation != previous_generation) {
                 InvalidateAhudBindingLocked();
             }
@@ -1465,6 +1576,7 @@ struct Ue5NteAdapter::State {
             next.chunk_signature != object_registry.chunk_signature) {
             ++object_generation;
             teleport = {};
+            navigation = {};
         }
         object_registry = next;
         if (object_generation != previous_generation) {
@@ -2767,6 +2879,304 @@ struct Ue5NteAdapter::State {
         }
     }
 
+    [[nodiscard]] bool BuildNavigationMoveBindingLocked(
+        const std::uintptr_t function,
+        NavigationBinding& result) const noexcept {
+        try {
+            std::string function_name;
+            std::uintptr_t class_object{};
+            std::uintptr_t outer_object{};
+            if (!ReadReflectedObjectNameLocked(function, function_name) ||
+                function_name != "MoveToPointByTransform" ||
+                !ReadPointerAt(*memory, function, Layout(profile, "object.class"), class_object) ||
+                !ReadPointerAt(*memory, function, Layout(profile, "object.outer"), outer_object)) {
+                return false;
+            }
+            std::string class_name;
+            std::string outer_name;
+            if (!ReadReflectedObjectNameLocked(class_object, class_name) ||
+                !ReadReflectedObjectNameLocked(outer_object, outer_name) ||
+                class_name != "Function" || outer_name != "HTUtil") {
+                return false;
+            }
+
+            std::uintptr_t property{};
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            std::uint16_t return_value_offset{};
+            if (!ReadPointerAt(
+                    *memory, function, Layout(profile, "ustruct.propertyLink"), property) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.numParms"), num_parms) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+                !ReadValue(
+                    *memory, function + Layout(profile, "ufunction.returnValueOffset"),
+                    return_value_offset) ||
+                num_parms != 8 || parms_size != 0x41 ||
+                return_value_offset != (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+
+            NavigationBinding candidate = result;
+            candidate.move_to_point_by_transform = function;
+            candidate.util_class = outer_object;
+            candidate.move_parms_size = parms_size;
+            std::array<bool, 8> found{};
+            std::size_t property_count{};
+            const auto read_bool = [&](const std::int32_t offset,
+                                       const std::int32_t element_size,
+                                       const std::int32_t array_dim,
+                                       ReflectedBoolParameter& output) {
+                std::uint8_t field_size{};
+                std::uint8_t byte_offset{};
+                std::uint8_t byte_mask{};
+                std::uint8_t field_mask{};
+                return array_dim == 1 && element_size == 1 && offset >= 0 &&
+                    ReadValue(*memory, property + Layout(profile, "fboolProperty.fieldSize"), field_size) &&
+                    ReadValue(*memory, property + Layout(profile, "fboolProperty.byteOffset"), byte_offset) &&
+                    ReadValue(*memory, property + Layout(profile, "fboolProperty.byteMask"), byte_mask) &&
+                    ReadValue(*memory, property + Layout(profile, "fboolProperty.fieldMask"), field_mask) &&
+                    field_size != 0 && byte_offset < field_size && byte_mask != 0 &&
+                    field_mask != 0 && (byte_mask & field_mask) == byte_mask &&
+                    static_cast<std::uint64_t>(offset) + byte_offset < parms_size &&
+                    ((output = {static_cast<std::uint16_t>(
+                                   static_cast<std::uint32_t>(offset) + byte_offset),
+                               field_mask, byte_mask}), true);
+            };
+
+            while (property != 0 && property_count < found.size()) {
+                std::uintptr_t next{};
+                std::uint32_t name_id{};
+                std::int32_t array_dim{};
+                std::int32_t element_size{};
+                std::int32_t offset{};
+                std::uintptr_t name_address{};
+                std::uintptr_t next_address{};
+                if (!AddAddress(property, Layout(profile, "ffield.name"), name_address) ||
+                    !AddAddress(property, Layout(profile, "fproperty.propertyLinkNext"), next_address) ||
+                    !ReadValue(*memory, name_address, name_id) ||
+                    !ReadValue(*memory, property + Layout(profile, "fproperty.arrayDim"), array_dim) ||
+                    !ReadValue(*memory, property + Layout(profile, "fproperty.elementSize"), element_size) ||
+                    !ReadValue(*memory, property + Layout(profile, "fproperty.offsetInternal"), offset) ||
+                    !ReadValue(*memory, next_address, next) || array_dim != 1 ||
+                    element_size <= 0 || offset < 0 ||
+                    static_cast<std::uint64_t>(offset) + element_size > parms_size) {
+                    return false;
+                }
+                const std::string name = ResolveNameSnapshotLocked(name_id);
+                std::size_t index = 8;
+                static constexpr std::array<std::string_view, 8> names{
+                    "WorldContextObject", "MoveLocation", "MoveRotator", "ForceWalk",
+                    "AutoControl", "bHideUI", "ProtectTime", "bUsingPathFinding"};
+                for (std::size_t candidate_index{}; candidate_index < names.size(); ++candidate_index) {
+                    if (name == names[candidate_index]) {
+                        index = candidate_index;
+                        break;
+                    }
+                }
+                if (index >= names.size() || found[index]) return false;
+                const auto field_class = [&]() {
+                    std::string value;
+                    return ReadReflectedFieldClassNameLocked(property, value) ? value : std::string{};
+                }();
+                if ((index == 0 && (element_size != 8 || field_class != "ObjectProperty")) ||
+                    (index == 1 && (element_size != 24 || field_class != "StructProperty")) ||
+                    (index == 2 && (element_size != 24 || field_class != "StructProperty")) ||
+                    ((index == 3 || index == 4 || index == 5 || index == 7) &&
+                     (element_size != 1 || field_class != "BoolProperty")) ||
+                    (index == 6 && (element_size != 4 || field_class != "FloatProperty"))) {
+                    return false;
+                }
+                if (index == 1 || index == 2) {
+                    std::uintptr_t structure{};
+                    std::string structure_name;
+                    if (!ReadPointerAt(
+                            *memory, property, Layout(profile, "fstructProperty.struct"), structure) ||
+                        !ReadReflectedObjectNameLocked(structure, structure_name) ||
+                        structure_name != (index == 1 ? "Vector" : "Rotator")) {
+                        return false;
+                    }
+                }
+                const auto field_offset = static_cast<std::uint16_t>(offset);
+                switch (index) {
+                case 0: candidate.world_context_object_offset = field_offset; break;
+                case 1: candidate.move_location_offset = field_offset; break;
+                case 2: candidate.move_rotator_offset = field_offset; break;
+                case 3:
+                    if (!read_bool(offset, element_size, array_dim, candidate.force_walk)) return false;
+                    break;
+                case 4:
+                    if (!read_bool(offset, element_size, array_dim, candidate.auto_control)) return false;
+                    break;
+                case 5:
+                    if (!read_bool(offset, element_size, array_dim, candidate.hide_ui)) return false;
+                    break;
+                case 6: candidate.protect_time_offset = field_offset; break;
+                case 7:
+                    if (!read_bool(offset, element_size, array_dim, candidate.use_pathfinding)) return false;
+                    break;
+                default: return false;
+                }
+                found[index] = true;
+                ++property_count;
+                property = next;
+            }
+            if (property != 0 || property_count != found.size() ||
+                !std::ranges::all_of(found, [](bool value) { return value; })) {
+                return false;
+            }
+            result = candidate;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool BuildNavigationStopBindingLocked(
+        const std::uintptr_t function,
+        NavigationBinding& result) const noexcept {
+        try {
+            std::string function_name;
+            std::uintptr_t class_object{};
+            std::uintptr_t outer_object{};
+            std::uintptr_t property{};
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            std::uint16_t return_value_offset{};
+            if (!ReadReflectedObjectNameLocked(function, function_name) ||
+                function_name != "StopMovement" ||
+                !ReadPointerAt(*memory, function, Layout(profile, "object.class"), class_object) ||
+                !ReadPointerAt(*memory, function, Layout(profile, "object.outer"), outer_object) ||
+                !ReadReflectedObjectNameLocked(class_object, function_name) || function_name != "Function" ||
+                !ReadReflectedObjectNameLocked(outer_object, function_name) || function_name != "Controller" ||
+                !ReadNullablePointerAt(
+                    *memory, function, Layout(profile, "ustruct.propertyLink"), property) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.numParms"), num_parms) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.returnValueOffset"), return_value_offset) ||
+                property != 0 || num_parms != 0 || parms_size != 0 ||
+                return_value_offset != (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+            result.stop_movement = function;
+            result.stop_parms_size = parms_size;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void RefreshNavigationBindingLocked() noexcept {
+        try {
+            if (!NteNavigationAvailable() || object_registry.items == 0 || object_registry.count == 0) {
+                navigation = {};
+                return;
+            }
+            if (navigation.object_generation != object_generation) {
+                navigation = {};
+                navigation.object_generation = object_generation;
+            }
+            if (navigation.available || navigation.discovery_complete) return;
+            constexpr std::uint32_t kDiscoveryBatch = 2048;
+            const std::uint32_t end = (std::min)(
+                object_registry.count, navigation.next_object_index + kDiscoveryBatch);
+            for (std::uint32_t index = navigation.next_object_index; index < end; ++index) {
+                std::uintptr_t object{};
+                std::uint32_t serial{};
+                if (!ReadObjectSlot(*memory, object_registry, index, object, serial) || object == 0) continue;
+                std::string name;
+                if (!ReadReflectedObjectNameLocked(object, name)) continue;
+                NavigationBinding candidate = navigation;
+                if (!candidate.move_to_point_by_transform && name == "MoveToPointByTransform") {
+                    static_cast<void>(BuildNavigationMoveBindingLocked(object, candidate));
+                }
+                if (!candidate.stop_movement && name == "StopMovement") {
+                    static_cast<void>(BuildNavigationStopBindingLocked(object, candidate));
+                }
+                candidate.next_object_index = index + 1U;
+                candidate.registry_items = object_registry.items;
+                candidate.object_generation = object_generation;
+                if (candidate.move_to_point_by_transform == object) {
+                    candidate.move_object_index = index;
+                    candidate.move_object_serial = serial;
+                }
+                if (candidate.stop_movement == object) {
+                    candidate.stop_object_index = index;
+                    candidate.stop_object_serial = serial;
+                }
+                navigation = candidate;
+                if (navigation.move_to_point_by_transform != 0 && navigation.stop_movement != 0) {
+                    navigation.available = true;
+                    return;
+                }
+            }
+            navigation.next_object_index = end;
+            if (end == object_registry.count) navigation.discovery_complete = true;
+        } catch (...) {
+            navigation.discovery_complete = true;
+        }
+    }
+
+    [[nodiscard]] bool NavigationBindingSlotMatchesLocked(
+        const NavigationBinding& binding) const noexcept {
+        if (!binding.available || binding.object_generation != object_generation ||
+            binding.registry_items != object_registry.items || object_registry.items == 0 ||
+            binding.move_to_point_by_transform == 0 || binding.stop_movement == 0) {
+            return false;
+        }
+        std::uintptr_t move_object{};
+        std::uint32_t move_serial{};
+        std::uintptr_t stop_object{};
+        std::uint32_t stop_serial{};
+        return ReadObjectSlot(
+                   *memory, object_registry, binding.move_object_index,
+                   move_object, move_serial) &&
+            move_object == binding.move_to_point_by_transform &&
+            move_serial == binding.move_object_serial &&
+            ReadObjectSlot(
+                *memory, object_registry, binding.stop_object_index,
+                stop_object, stop_serial) &&
+            stop_object == binding.stop_movement &&
+            stop_serial == binding.stop_object_serial;
+    }
+
+    [[nodiscard]] bool ResolveNavigationReceiverLocked(
+        const NavigationBinding& binding,
+        std::uintptr_t& receiver) const noexcept {
+        receiver = 0;
+        std::uintptr_t receiver_class{};
+        std::string receiver_name;
+        return binding.util_class != 0 &&
+            ReadPointerAt(
+                *memory, binding.util_class,
+                Layout(profile, "uclass.classDefaultObject"), receiver) &&
+            ReadReflectedObjectNameLocked(receiver, receiver_name) &&
+            receiver_name == "Default__HTUtil" &&
+            ReadPointerAt(*memory, receiver, Layout(profile, "object.class"), receiver_class) &&
+            receiver_class == binding.util_class;
+    }
+
+    [[nodiscard]] bool ObjectClassChainContainsLocked(
+        const std::uintptr_t object,
+        const std::string_view expected) const noexcept {
+        std::uintptr_t current{};
+        if (!ReadPointerAt(*memory, object, Layout(profile, "object.class"), current)) {
+            return false;
+        }
+        for (std::size_t depth{}; current != 0 && depth < 32; ++depth) {
+            std::string name;
+            if (!ReadReflectedObjectNameLocked(current, name)) return false;
+            if (name == expected) return true;
+            std::uintptr_t next{};
+            if (!ReadNullablePointerAt(
+                    *memory, current, Layout(profile, "ustruct.superStruct"), next) ||
+                next == current) {
+                return false;
+            }
+            current = next;
+        }
+        return false;
+    }
+
     AnomalyStatusV1 ResolveNameId(
         std::uint32_t name_id, char* destination, std::size_t* size) noexcept {
         std::scoped_lock lock(mutex);
@@ -3164,6 +3574,190 @@ struct Ue5NteAdapter::State {
             }
         }
         return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL MoveToLocation(
+        void* user,
+        const double destination[3]) noexcept {
+        if (destination == nullptr ||
+            !std::ranges::all_of(
+                std::span(destination, 3),
+                [](const double value) { return std::isfinite(value); })) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        const DWORD bound_game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (bound_game_thread == 0 || bound_game_thread != GetCurrentThreadId()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "navigation requires the Game thread");
+        }
+
+        NavigationBinding binding;
+        Ue5NteAdapter::ProcessEventInvoker invoker;
+        std::shared_ptr<NteNavigationInputPolicy> input_policy;
+        std::uintptr_t receiver{};
+        std::uintptr_t world{};
+        std::array<double, 3> rotation{};
+        {
+            std::scoped_lock lock(state.mutex);
+            if (!state.SemanticFeatureRunning("nte.navigation")) {
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "navigation is unavailable for the active Profile");
+            }
+            if (!state.navigation.available ||
+                !state.NavigationBindingSlotMatchesLocked(state.navigation)) {
+                state.navigation = {};
+                state.navigation.object_generation = state.object_generation;
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "navigation reflection is not ready");
+            }
+            if (!state.process_event_invoker || state.navigation_input_policy == nullptr ||
+                !state.navigation_input_policy->Started()) {
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "navigation invocation policy is unavailable");
+            }
+            PlayerLocationSample live;
+            if (!state.ReadCurrentPlayerLocation(live) ||
+                !state.ObjectClassChainContainsLocked(live.controller, "HTPlayerController") ||
+                !state.ResolveNavigationReceiverLocked(state.navigation, receiver)) {
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "local navigation objects are unavailable");
+            }
+            std::uintptr_t rotation_address{};
+            if (!AddAddress(
+                    live.controller, Layout(state.profile, "controller.controlRotation"),
+                    rotation_address) ||
+                !ReadValue(*state.memory, rotation_address, rotation) ||
+                !std::ranges::all_of(
+                    rotation, [](const double value) { return std::isfinite(value); })) {
+                return Status(
+                    ANOMALY_STATUS_V1_FAILED,
+                    "controller rotation is unreadable");
+            }
+            binding = state.navigation;
+            invoker = state.process_event_invoker;
+            input_policy = state.navigation_input_policy;
+            world = state.world_pointer;
+        }
+
+        constexpr std::size_t kMoveParametersSize = 0x41;
+        if (binding.move_parms_size != kMoveParametersSize || world == 0 || receiver == 0 ||
+            binding.world_context_object_offset + sizeof(world) > kMoveParametersSize ||
+            binding.move_location_offset + sizeof(double) * 3U > kMoveParametersSize ||
+            binding.move_rotator_offset + sizeof(rotation) > kMoveParametersSize ||
+            binding.protect_time_offset + sizeof(float) > kMoveParametersSize) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "navigation parameter layout changed");
+        }
+
+        alignas(std::uint64_t) std::array<std::uint8_t, kMoveParametersSize> parameters{};
+        std::memcpy(
+            parameters.data() + binding.world_context_object_offset,
+            &world, sizeof(world));
+        std::memcpy(
+            parameters.data() + binding.move_location_offset,
+            destination, sizeof(double) * 3U);
+        std::memcpy(
+            parameters.data() + binding.move_rotator_offset,
+            rotation.data(), sizeof(rotation));
+        constexpr float kProtectTime = 0.0F;
+        std::memcpy(
+            parameters.data() + binding.protect_time_offset,
+            &kProtectTime, sizeof(kProtectTime));
+        const auto set_bool = [&parameters](
+                                  const ReflectedBoolParameter& parameter,
+                                  const bool value) noexcept {
+            if (parameter.byte_offset >= parameters.size() ||
+                parameter.field_mask == 0 || parameter.byte_mask == 0 ||
+                (parameter.byte_mask & parameter.field_mask) != parameter.byte_mask) {
+                return false;
+            }
+            auto& byte = parameters[parameter.byte_offset];
+            byte = static_cast<std::uint8_t>(
+                (byte & ~parameter.field_mask) |
+                (value ? parameter.byte_mask : 0U));
+            return true;
+        };
+        if (!set_bool(binding.force_walk, false) ||
+            !set_bool(binding.auto_control, true) ||
+            !set_bool(binding.hide_ui, false) ||
+            !set_bool(binding.use_pathfinding, true)) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "navigation bool layout changed");
+        }
+
+        class InputPolicyScope final {
+        public:
+            explicit InputPolicyScope(std::shared_ptr<NteNavigationInputPolicy> policy) noexcept
+                : policy_(std::move(policy)), previous_(policy_->Enter()) {}
+            ~InputPolicyScope() { policy_->Leave(previous_); }
+            InputPolicyScope(const InputPolicyScope&) = delete;
+            InputPolicyScope& operator=(const InputPolicyScope&) = delete;
+        private:
+            std::shared_ptr<NteNavigationInputPolicy> policy_;
+            void* previous_{};
+        } input_scope(std::move(input_policy));
+
+        try {
+            return invoker(
+                       receiver,
+                       binding.move_to_point_by_transform,
+                       parameters.data(),
+                       binding.move_parms_size)
+                ? Status(ANOMALY_STATUS_V1_OK)
+                : Status(ANOMALY_STATUS_V1_FAILED, "navigation dispatch failed");
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "navigation invocation failed");
+        }
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL StopMovement(void* user) noexcept {
+        auto& state = *static_cast<State*>(user);
+        const DWORD bound_game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (bound_game_thread == 0 || bound_game_thread != GetCurrentThreadId()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "navigation requires the Game thread");
+        }
+
+        NavigationBinding binding;
+        Ue5NteAdapter::ProcessEventInvoker invoker;
+        std::uintptr_t controller{};
+        {
+            std::scoped_lock lock(state.mutex);
+            if (!state.SemanticFeatureRunning("nte.navigation")) {
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "navigation is unavailable for the active Profile");
+            }
+            if (!state.navigation.available ||
+                !state.NavigationBindingSlotMatchesLocked(state.navigation)) {
+                state.navigation = {};
+                state.navigation.object_generation = state.object_generation;
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "navigation reflection is not ready");
+            }
+            PlayerLocationSample live;
+            if (!state.ReadCurrentPlayerLocation(live) ||
+                !state.ObjectClassChainContainsLocked(live.controller, "HTPlayerController")) {
+                return Status(
+                    ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "local player controller is unavailable");
+            }
+            binding = state.navigation;
+            invoker = state.process_event_invoker;
+            controller = live.controller;
+        }
+
+        try {
+            return invoker && invoker(
+                       controller, binding.stop_movement, nullptr,
+                       binding.stop_parms_size)
+                ? Status(ANOMALY_STATUS_V1_OK)
+                : Status(ANOMALY_STATUS_V1_FAILED, "navigation stop failed");
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "navigation stop invocation failed");
+        }
     }
 
     static AnomalyStatusV1 ANOMALY_CALL PlayerSnapshot(
@@ -4064,6 +4658,10 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             sizeof(AnomalyNtePlayerTeleportServiceV1),
             ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION,
             this, TeleportThunk};
+        navigation_service = {
+            sizeof(AnomalyNteNavigationServiceV1),
+            ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
+            this, MoveToLocationThunk, StopMovementThunk};
         entities_service = {
             sizeof(AnomalyNteEntitiesServiceV1), ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION,
             this, EntityFrameThunk, EntitySnapshotAtThunk, EntityClassNameThunk,
@@ -4106,6 +4704,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyNteSessionServiceV1 session_service{};
     AnomalyNtePlayerServiceV1 player_service{};
     AnomalyNtePlayerTeleportServiceV1 player_teleport_service{};
+    AnomalyNteNavigationServiceV1 navigation_service{};
     AnomalyNteEntitiesServiceV1 entities_service{};
     AnomalyNteActorsServiceV1 actors_service{};
     AnomalyNteMetricsServiceV1 metrics_service{};
@@ -4254,6 +4853,18 @@ private:
         const AnomalyNtePlayerTeleportRequestV1* request) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::Teleport(lease.User(), request) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
+        void* user,
+        const double destination[3]) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::MoveToLocation(lease.User(), destination) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL StopMovementThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::StopMovement(lease.User()) : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL EntityFrameThunk(
@@ -4948,6 +5559,24 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             semantic_lifetime)) {
         return false;
     }
+    if (framework_hook_ready && SemanticFeatureAvailable("nte.navigation") &&
+        !PublishIfMissing(
+            ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
+            ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
+            &endpoint->navigation_service,
+            [self, observer_endpoint] {
+                const auto locked = self.lock();
+                const auto observed = observer_endpoint.lock();
+                if (!locked || !observed ||
+                    locked->semantic_endpoint.load(std::memory_order_acquire) != observed) {
+                    return;
+                }
+                locked->player_demand.store(true, std::memory_order_release);
+                locked->navigation_demand.store(true, std::memory_order_release);
+            },
+            semantic_lifetime)) {
+        return false;
+    }
     if (framework_hook_ready && SemanticFeatureAvailable("nte.entities") &&
         !PublishIfMissing(
             ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
@@ -4986,7 +5615,8 @@ Ue5NteAdapter::Ue5NteAdapter(
     NteSnapshotSamplingOptions sampling,
     FeatureLayoutValidatorRegistry feature_layout_validators,
     ProcessEventInvoker process_event_invoker,
-    ObjectLookup object_lookup)
+    ObjectLookup object_lookup,
+    std::shared_ptr<NteNavigationInputPolicy> navigation_input_policy)
     : state_(std::make_shared<State>()) {
     state_->fingerprint = std::move(fingerprint);
     state_->profile = std::move(profile);
@@ -4996,6 +5626,7 @@ Ue5NteAdapter::Ue5NteAdapter(
     state_->services = &services;
     state_->process_event_invoker = std::move(process_event_invoker);
     state_->object_lookup = std::move(object_lookup);
+    state_->navigation_input_policy = std::move(navigation_input_policy);
     state_->sampling.player_tick_interval = (std::max)(1U, sampling.player_tick_interval);
     state_->sampling.entity_tick_interval = (std::max)(1U, sampling.entity_tick_interval);
 }
@@ -5034,6 +5665,9 @@ bool Ue5NteAdapter::Start(bool framework_hook_ready, bool ahud_hook_ready) {
     state->ResetForStartLocked();
     state->framework_hook_ready = framework_hook_ready;
     state->ahud_hook_ready = ahud_hook_ready;
+    if (framework_hook_ready) {
+        static_cast<void>(state->EnsureNavigationInputPolicyLocked());
+    }
     state->semantic_endpoint.store(
         std::make_shared<State::SemanticServiceEndpoint>(state),
         std::memory_order_release);
@@ -5059,6 +5693,9 @@ bool Ue5NteAdapter::Start(bool framework_hook_ready, bool ahud_hook_ready) {
     if (failed_callback_endpoint) failed_callback_endpoint->Close();
     if (failed_ahud_endpoint) failed_ahud_endpoint->Close();
     state->RevokePublishedFrom(first_service);
+    if (state->navigation_input_policy != nullptr) {
+        static_cast<void>(state->navigation_input_policy->Stop());
+    }
     return false;
 }
 
@@ -5154,6 +5791,20 @@ bool Ue5NteAdapter::Stop(std::chrono::milliseconds timeout) noexcept {
     if (callback_endpoint && !callback_endpoint->DrainUntil(deadline)) return false;
     if (semantic_endpoint && !semantic_endpoint->DrainUntil(deadline)) return false;
 
+    const auto navigation_policy_timeout = [&]() noexcept {
+        if (deadline == std::chrono::steady_clock::time_point::max()) {
+            return std::chrono::milliseconds::max();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        return now >= deadline
+            ? std::chrono::milliseconds::zero()
+            : std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    }();
+    if (state->navigation_input_policy != nullptr &&
+        !state->navigation_input_policy->Stop(navigation_policy_timeout)) {
+        return false;
+    }
+
     std::unique_lock<std::timed_mutex> final_lifecycle_lock(
         state->lifecycle_mutex, std::defer_lock);
     if (!LockUntil(final_lifecycle_lock, deadline)) return false;
@@ -5245,6 +5896,10 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->RefreshWorld(sequence);
         state->RefreshObjects();
         state->RefreshTeleportBindingLocked();
+        if (state->navigation_demand.load(std::memory_order_acquire)) {
+            static_cast<void>(state->EnsureNavigationInputPolicyLocked());
+            state->RefreshNavigationBindingLocked();
+        }
         state->RefreshAhudBindingLocked();
         const bool entity_requested = state->entity_demand.load(std::memory_order_acquire);
         const bool player_requested = state->player_demand.load(std::memory_order_acquire);

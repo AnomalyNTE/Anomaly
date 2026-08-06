@@ -8,7 +8,7 @@
       "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
       "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
       "validators": ["readable", "world-shape-v1"],
-      "requiredBy": ["anomaly.ue5.world", "anomaly.ue5.actors", "anomaly.nte.session", "anomaly.nte.player", "anomaly.nte.player-esp", "anomaly.nte.entities"]
+      "requiredBy": ["anomaly.ue5.world", "anomaly.ue5.actors", "anomaly.nte.session", "anomaly.nte.player", "anomaly.nte.player-esp", "anomaly.nte.entities", "anomaly.nte.navigation"]
     },
     "ue5.GObjects": {
       "module": "HTGame.exe",
@@ -16,7 +16,7 @@
       "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1",
       "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
       "validators": ["readable", "object-registry-v1"],
-      "requiredBy": ["anomaly.ue5.objects", "anomaly.ue5.functions"]
+      "requiredBy": ["anomaly.ue5.objects", "anomaly.ue5.functions", "anomaly.nte.navigation"]
     },
     "ue5.FNamePool": {
       "module": "HTGame.exe",
@@ -24,7 +24,7 @@
       "pattern": "FNAME_POOL_PATTERN",
       "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
       "validators": ["readable", "name-pool-v1"],
-      "requiredBy": ["anomaly.ue5.names", "anomaly.ue5.actors", "anomaly.ue5.functions"]
+      "requiredBy": ["anomaly.ue5.names", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.navigation"]
     },
     "ue5.GameTick": {
       "module": "HTGame.exe",
@@ -32,7 +32,7 @@
       "pattern": "GAME_TICK_PATTERN",
       "resolve": { "kind": "direct" },
       "validators": ["address-in-module", "tick-anchor-v1"],
-      "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.actors", "anomaly.ue5.functions"]
+      "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.navigation"]
     },
     "ue5.ProcessEvent": {
       "module": "HTGame.exe",
@@ -40,7 +40,15 @@
       "pattern": "PROCESS_EVENT_PATTERN",
       "resolve": { "kind": "direct" },
       "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.ahud"]
+      "requiredBy": ["anomaly.ue5.ahud", "anomaly.nte.navigation"]
+    },
+    "nte.ClientIgnoreGameAndUiInput": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "CLIENT_IGNORE_GAME_AND_UI_INPUT_PATTERN",
+      "resolve": { "kind": "direct" },
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.nte.navigation"]
     },
     "ue5.AActorProcessEvent": {
       "module": "HTGame.exe",
@@ -63,10 +71,11 @@
     "ue5.ahud": [],
     "nte.session": ["ue5.GWorld", "ue5.GameTick"],
     "nte.player": ["ue5.GWorld", "ue5.GameTick"],
+    "nte.navigation": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent", "nte.ClientIgnoreGameAndUiInput"],
     "nte.player-esp": ["ue5.GWorld", "ue5.GameTick"],
     "nte.entities": ["ue5.GWorld", "ue5.GameTick"]
   },
-  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.process-event", "ue5.actor-process-event", "ue5.ahud", "nte.player-esp"],
+  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.process-event", "ue5.actor-process-event", "ue5.ahud", "nte.player-esp", "nte.navigation"],
   "featureLayoutValidators": {
     "ue5.actors": ["ue5-actors-reflection-v1"],
     "ue5.functions": ["ue5-functions-reflection-v1"],
@@ -75,6 +84,7 @@
     "ue5.ahud": ["ue5-ahud-reflection-v1"],
     "nte.player": ["nte-player-layout-v1"],
     "nte.player-esp": ["nte-player-esp-layout-v1"],
+    "nte.navigation": ["nte-navigation-layout-v1", "nte-navigation-input-abi-v1"],
     "nte.entities": ["nte-entities-layout-v1"]
   },
   "featureDependencies": {
@@ -82,7 +92,8 @@
     "ue5.functions": ["ue5.objects", "ue5.names"],
     "ue5.actor-process-event": ["ue5.process-event"],
     "ue5.ahud": ["ue5.functions", "ue5.actor-process-event"],
-    "nte.player-esp": ["nte.player"]
+    "nte.player-esp": ["nte.player"],
+    "nte.navigation": ["nte.player", "ue5.names", "ue5.objects", "ue5.process-event"]
   },
   "layout": {
     "world.gameInstance": 560,
@@ -90,6 +101,8 @@
     "level.actors": 160,
     "gameInstance.localPlayers": 56,
     "localPlayer.controller": 48,
+    "controller.controlRotation": 832,
+    "controller.getPlayerCharacterVtableOffset": 5168,
     "controller.pawn": 776,
     "controller.cameraManager": 896,
     "actor.rootComponent": 456,
@@ -97,6 +110,8 @@
     "object.class": 16,
     "object.nameOffset": 24,
     "object.outer": 32,
+    "uclass.classDefaultObject": 272,
+    "ustruct.superStruct": 64,
     "ufunction.numParms": 180,
     "ufunction.parmsSize": 182,
     "ufunction.returnValueOffset": 184,
@@ -113,6 +128,8 @@
     "fboolProperty.byteOffset": 113,
     "fboolProperty.byteMask": 114,
     "fboolProperty.fieldMask": 115,
+    "character.setCustomIgnoreMoveInputVtableOffset": 4016,
+    "character.setCustomLimitInputVtableOffset": 4072,
     "names.blocksOffset": 16,
     "names.blockBits": 16,
     "names.entryStride": 2,

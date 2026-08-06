@@ -8,6 +8,8 @@
 #define ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID "anomaly.nte.player-teleport"
 #define ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID "anomaly.nte.navigation"
+#define ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_ID "anomaly.nte.entities"
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ACTORS_SERVICE_V1_ID "anomaly.nte.actors"
@@ -155,6 +157,16 @@ typedef struct AnomalyNtePlayerTeleportServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *teleport)(void* user,
         const AnomalyNtePlayerTeleportRequestV1* request);
 } AnomalyNtePlayerTeleportServiceV1;
+
+// Native NTE navigation is exposed through the Host's verified ProcessEvent
+// bridge. Calls are valid only from the Game thread and operate on the current
+// local player controller; no UE object pointers cross the ABI boundary.
+typedef struct AnomalyNteNavigationServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *move_to_location)(
+        void* user, const double destination[3]);
+    AnomalyStatusV1 (ANOMALY_CALL *stop_movement)(void* user);
+} AnomalyNteNavigationServiceV1;
 
 typedef enum AnomalyNteEntityFlagsV1 {
     ANOMALY_NTE_ENTITY_V1_NONE = 0,

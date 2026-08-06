@@ -175,6 +175,24 @@ typedef struct AnomalyNtePlayerTeleportServiceV1 {
 
 ---
 
+## `anomaly.nte.navigation`
+
+- **ID**：`"anomaly.nte.navigation"` · **版本** 1 · **capability** `nte-navigation`
+
+```c
+typedef struct AnomalyNteNavigationServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *move_to_location)(
+        void* user, const double destination[3]);
+    AnomalyStatusV1 (ANOMALY_CALL *stop_movement)(void* user);
+} AnomalyNteNavigationServiceV1;
+```
+
+> [!CAUTION]
+> 这是**修改**类服务，两个调用仅在 Game 回调域内有效。`move_to_location` 使用当前本地 Controller 的 `ControlRotation` 调用原生 `HTUtil.MoveToPointByTransform`，固定传入 `ForceWalk=false`、`AutoControl=true`、`bHideUI=false`、`ProtectTime=0` 与 `bUsingPathFinding=true`。宿主仅在该调用期间改写 Patrol 输入捕获，使角色保留原生转向、移动和动作，同时不锁定鼠标或 UI。`stop_movement` 调用当前 Controller 的原生 `StopMovement`。宿主不暴露 UE 对象指针；服务只有在 ProcessEvent、反射布局、输入函数 ABI 与所有依赖同时验证后才发布。
+
+---
+
 ## `anomaly.nte.entities`
 
 - **ID**：`"anomaly.nte.entities"` · **版本** 1 · **capability** `nte-entity-snapshot`

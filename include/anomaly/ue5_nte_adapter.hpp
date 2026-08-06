@@ -5,6 +5,7 @@
 #include "anomaly/symbol_resolver.hpp"
 #include "anomaly/ue5_object_lookup.hpp"
 #include "anomaly/ue5_process_event.hpp"
+#include "anomaly/nte_navigation_input_policy.hpp"
 
 #include <Windows.h>
 
@@ -44,7 +45,8 @@ public:
         // Mutation services remain default-deny until the current module's ABI
         // and reflection validators supply an invocation bridge.
         ProcessEventInvoker process_event_invoker = {},
-        ObjectLookup object_lookup = {});
+        ObjectLookup object_lookup = {},
+        std::shared_ptr<NteNavigationInputPolicy> navigation_input_policy = {});
     ~Ue5NteAdapter();
 
     Ue5NteAdapter(const Ue5NteAdapter&) = delete;

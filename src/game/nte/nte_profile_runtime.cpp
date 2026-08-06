@@ -1,5 +1,6 @@
 #include "anomaly/nte_profile_runtime.hpp"
 
+#include "anomaly/nte_navigation_input_policy.hpp"
 #include "anomaly/ue5_object_lookup.hpp"
 #include "anomaly/ue5_outbound_bit_count_probe.hpp"
 #include "anomaly/ue5_process_event.hpp"
@@ -48,6 +49,13 @@ inline constexpr std::string_view kHandleButtonClickedSymbol =
     "nte.CommonButtonBase.HandleButtonClicked";
 inline constexpr std::string_view kButtonClickedSymbol =
     "nte.CommonButtonBase.BP_OnClicked";
+inline constexpr std::string_view kNavigationFeature = "nte.navigation";
+inline constexpr std::string_view kNavigationInputSymbol =
+    "nte.ClientIgnoreGameAndUiInput";
+inline constexpr std::string_view kNavigationLayoutValidator =
+    "nte-navigation-layout-v1";
+inline constexpr std::string_view kNavigationInputAbiValidator =
+    "nte-navigation-input-abi-v1";
 
 template <std::size_t Size>
 bool MatchesBytes(
@@ -89,6 +97,36 @@ bool ProfileLayoutValue(
     return true;
 }
 
+std::shared_ptr<NteNavigationInputPolicy> CreateNavigationInputPolicy(
+    const BuildProfile& profile) {
+    std::uint64_t get_player_character{};
+    std::uint64_t set_ignore_move{};
+    std::uint64_t set_limit_input{};
+    if (!ProfileLayoutValue(
+            profile, "controller.getPlayerCharacterVtableOffset",
+            &get_player_character) ||
+        !ProfileLayoutValue(
+            profile, "character.setCustomIgnoreMoveInputVtableOffset",
+            &set_ignore_move) ||
+        !ProfileLayoutValue(
+            profile, "character.setCustomLimitInputVtableOffset",
+            &set_limit_input) ||
+        get_player_character > (std::numeric_limits<std::uint32_t>::max)() ||
+        set_ignore_move > (std::numeric_limits<std::uint32_t>::max)() ||
+        set_limit_input > (std::numeric_limits<std::uint32_t>::max)()) {
+        return {};
+    }
+    try {
+        return std::make_shared<NteNavigationInputPolicy>(
+            CreateMinHookBackend(),
+            static_cast<std::uint32_t>(get_player_character),
+            static_cast<std::uint32_t>(set_ignore_move),
+            static_cast<std::uint32_t>(set_limit_input));
+    } catch (...) {
+        return {};
+    }
+}
+
 bool ResolveRel32Target(
     const SymbolMemory& memory,
     const std::uintptr_t instruction,
@@ -106,6 +144,128 @@ bool ResolveRel32Target(
     if (resolved <= 0) return false;
     *target = static_cast<std::uintptr_t>(resolved);
     return true;
+}
+
+FeatureValidationResult ValidateNavigationLayout(
+    const BuildProfile& profile,
+    const std::string_view feature,
+    const ProfileResolutionSnapshot&,
+    const SymbolMemory&) {
+    if (feature != kNavigationFeature ||
+        !FeatureRequires(profile, feature, kNavigationInputSymbol)) {
+        return {false, "profile does not declare the NTE navigation topology"};
+    }
+    static constexpr std::array<std::string_view, 25> kRequiredLayout{
+        "object.class",
+        "object.nameOffset",
+        "object.outer",
+        "uclass.classDefaultObject",
+        "ustruct.superStruct",
+        "ustruct.propertyLink",
+        "ufunction.numParms",
+        "ufunction.parmsSize",
+        "ufunction.returnValueOffset",
+        "ffield.class",
+        "ffield.name",
+        "ffieldClass.name",
+        "fproperty.arrayDim",
+        "fproperty.elementSize",
+        "fproperty.offsetInternal",
+        "fproperty.propertyLinkNext",
+        "fstructProperty.struct",
+        "fboolProperty.fieldSize",
+        "fboolProperty.byteOffset",
+        "fboolProperty.byteMask",
+        "fboolProperty.fieldMask",
+        "controller.controlRotation",
+        "controller.getPlayerCharacterVtableOffset",
+        "character.setCustomIgnoreMoveInputVtableOffset",
+        "character.setCustomLimitInputVtableOffset"};
+    for (const std::string_view key : kRequiredLayout) {
+        std::uint64_t value{};
+        if (!ProfileLayoutValue(profile, key, &value)) {
+            return {false, "navigation layout is incomplete"};
+        }
+        if (value > 64U * 1024U * 1024U) {
+            return {false, "navigation layout exceeds the supported bound"};
+        }
+    }
+    return {true, {}};
+}
+
+FeatureValidationResult ValidateNavigationInputAbi(
+    const BuildProfile& profile,
+    const std::string_view feature,
+    const ProfileResolutionSnapshot& snapshot,
+    const SymbolMemory& memory) {
+    if (feature != kNavigationFeature ||
+        !FeatureRequires(profile, feature, kNavigationInputSymbol)) {
+        return {false, "profile does not declare the NTE navigation input target"};
+    }
+    const auto* const target = snapshot.FindSymbol(kNavigationInputSymbol);
+    if (target == nullptr || !target->Available()) {
+        return {false, "navigation input target is unavailable"};
+    }
+    const auto module = memory.FindModule(target->module);
+    if (!module || !HasMatchingUnwindEntry(*module, *target)) {
+        return {false, "navigation input target has no matching unwind entry"};
+    }
+
+    constexpr auto kPrologue = std::to_array<std::uint8_t>({
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
+        0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
+        0x48, 0x83, 0xEC, 0x20});
+    constexpr auto kPatchedPrologueSuffix = std::to_array<std::uint8_t>({
+        0x18, 0x57, 0x48, 0x83, 0xEC, 0x20});
+    constexpr auto kGetPlayerCharacterCall = std::to_array<std::uint8_t>({
+        0x48, 0x8B, 0x03, 0x48, 0x8B, 0xCB, 0xFF, 0x90,
+        0x30, 0x14, 0x00, 0x00, 0x48, 0x8B, 0xD8});
+    constexpr auto kIgnoreMoveCall = std::to_array<std::uint8_t>({
+        0x4C, 0x8B, 0x10, 0x44, 0x0F, 0xB6, 0xCE, 0x41,
+        0xB0, 0x01, 0x40, 0x0F, 0xB6, 0xD7, 0x48, 0x8B,
+        0xC8, 0x41, 0xFF, 0x92, 0xB0, 0x0F, 0x00, 0x00});
+    constexpr auto kLimitInputCall = std::to_array<std::uint8_t>({
+        0x48, 0x8B, 0x03, 0x44, 0x0F, 0xB6, 0xCE, 0x41,
+        0xB0, 0x01, 0x40, 0x0F, 0xB6, 0xD7, 0x48, 0x8B,
+        0xCB, 0xFF, 0x90, 0xE8, 0x0F, 0x00, 0x00});
+    if ((!MatchesBytes(memory, target->address, kPrologue) &&
+         !MatchesBytes(memory, target->address + 0x0EU, kPatchedPrologueSuffix)) ||
+        !MatchesBytes(memory, target->address + 0x2EU, kGetPlayerCharacterCall) ||
+        !MatchesBytes(memory, target->address + 0x47U, kIgnoreMoveCall) ||
+        !MatchesBytes(memory, target->address + 0x5FU, kLimitInputCall)) {
+        return {false, "navigation input ABI instruction contract changed"};
+    }
+
+    std::uint32_t get_player_character{};
+    std::uint32_t set_ignore_move{};
+    std::uint32_t set_limit_input{};
+    std::uint64_t declared_get_player_character{};
+    std::uint64_t declared_set_ignore_move{};
+    std::uint64_t declared_set_limit_input{};
+    if (!memory.Read(
+            target->address + 0x36U,
+            &get_player_character, sizeof(get_player_character)) ||
+        !memory.Read(
+            target->address + 0x5BU,
+            &set_ignore_move, sizeof(set_ignore_move)) ||
+        !memory.Read(
+            target->address + 0x72U,
+            &set_limit_input, sizeof(set_limit_input)) ||
+        !ProfileLayoutValue(
+            profile, "controller.getPlayerCharacterVtableOffset",
+            &declared_get_player_character) ||
+        !ProfileLayoutValue(
+            profile, "character.setCustomIgnoreMoveInputVtableOffset",
+            &declared_set_ignore_move) ||
+        !ProfileLayoutValue(
+            profile, "character.setCustomLimitInputVtableOffset",
+            &declared_set_limit_input) ||
+        get_player_character != declared_get_player_character ||
+        set_ignore_move != declared_set_ignore_move ||
+        set_limit_input != declared_set_limit_input) {
+        return {false, "navigation input vtable offsets changed"};
+    }
+    return {true, {}};
 }
 
 FeatureValidationResult ValidateOutgoingTransformAbi(
@@ -299,6 +459,10 @@ FeatureLayoutValidatorRegistry NteFeatureLayoutValidators(
     validators.Register(
         std::string(kOutgoingTransformAbiValidator), ValidateOutgoingTransformAbi);
     validators.Register(std::string(kEscMenuHooksValidator), ValidateEscMenuHooks);
+    validators.Register(
+        std::string(kNavigationLayoutValidator), ValidateNavigationLayout);
+    validators.Register(
+        std::string(kNavigationInputAbiValidator), ValidateNavigationInputAbi);
     if (preserve_actor_process_event_abi) {
         validators.Register(
             std::string(kUe5ActorProcessEventAbiValidator), [](
@@ -682,7 +846,9 @@ public:
             profile_ ? CreateUe5ProcessEventInvoker(*profile_, *resolution_, *memory_)
                      : Ue5NteAdapter::ProcessEventInvoker{},
             profile_ ? CreateUe5ObjectLookup(*profile_, *resolution_, *memory_)
-                     : Ue5NteAdapter::ObjectLookup{});
+                     : Ue5NteAdapter::ObjectLookup{},
+            profile_ ? CreateNavigationInputPolicy(*profile_)
+                     : std::shared_ptr<NteNavigationInputPolicy>{});
         bool hook_ready{};
         const auto* tick = resolution_->FindSymbol("ue5.GameTick");
         if (tick != nullptr && tick->Available() &&

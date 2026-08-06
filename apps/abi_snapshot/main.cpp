@@ -218,6 +218,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_METRICS_SERVICE_V1_VERSION\": ");
@@ -1346,6 +1348,19 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyNteNavigationServiceV1",
+        sizeof(AnomalyNteNavigationServiceV1),
+        alignof(AnomalyNteNavigationServiceV1),
+        {{"struct_size", offsetof(AnomalyNteNavigationServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyNteNavigationServiceV1, service_version)},
+         {"user", offsetof(AnomalyNteNavigationServiceV1, user)},
+         {"move_to_location",
+          offsetof(AnomalyNteNavigationServiceV1, move_to_location)},
+         {"stop_movement",
+          offsetof(AnomalyNteNavigationServiceV1, stop_movement)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyNteEntityFrameV1",
         sizeof(AnomalyNteEntityFrameV1),
         alignof(AnomalyNteEntityFrameV1),
@@ -1582,6 +1597,8 @@ std::string BuildSnapshot() {
         ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION, "AnomalyNtePlayerServiceV1", false);
     AppendService(output, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
         ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION, "AnomalyNtePlayerTeleportServiceV1", false);
+    AppendService(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
+        ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION, "AnomalyNteNavigationServiceV1", false);
     AppendService(output, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
         ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION, "AnomalyNteEntitiesServiceV1", false);
     AppendService(output, ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
