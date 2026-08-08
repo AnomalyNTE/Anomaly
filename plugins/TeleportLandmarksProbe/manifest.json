@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.builtin.teleport-landmarks-probe",
+  "name": "Teleport Landmarks Probe",
+  "description": "Developer UI for the framework map-landmark catalog and transfer bridge.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "developer",
+  "version": "0.1.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.nte.map-landmarks", "minVersion": 1}
+  ],
+  "capabilities": ["ui", "nte-map-landmarks"]
+}

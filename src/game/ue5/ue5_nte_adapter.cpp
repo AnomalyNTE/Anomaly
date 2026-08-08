@@ -626,6 +626,31 @@ struct Ue5NteAdapter::State {
         bool available{};
         bool discovery_complete{};
     } teleport;
+    struct MapLandmarkBinding {
+        std::uintptr_t function{};
+        std::uint16_t parms_size{};
+        std::uint16_t teleport_id_offset{};
+        std::uint16_t transfer_mode_offset{};
+        std::uint64_t object_generation{};
+        bool available{};
+    } map_landmark_binding;
+    struct MapLandmarkRecord {
+        std::string teleport_id;
+        std::string world;
+        std::array<double, 3> world_position{};
+        std::array<double, 3> destination{};
+        std::uint32_t point_type{};
+        std::int32_t floor{};
+        bool destination_overridden{};
+    };
+    struct MapLandmarkCatalog {
+        std::vector<MapLandmarkRecord> entries;
+        std::uint64_t sequence{};
+        std::uint64_t object_generation{};
+    };
+    std::shared_ptr<const MapLandmarkCatalog> map_landmark_catalog;
+    std::uint64_t map_landmark_catalog_sequence{};
+    std::uint64_t map_landmark_next_refresh_sequence{};
     struct NavigationBinding {
         std::uintptr_t move_to_point_by_transform{};
         std::uintptr_t util_class{};
@@ -1030,6 +1055,59 @@ struct Ue5NteAdapter::State {
                 "nte-player-teleport-layout-v1");
     }
 
+    [[nodiscard]] bool NteMapLandmarksAvailable() const noexcept {
+        const auto* const process_event = resolution.FindSymbol("ue5.ProcessEvent");
+        return static_cast<bool>(process_event_invoker) && ObjectFindAvailable() &&
+            process_event != nullptr && process_event->Available() &&
+            resolution.FeatureAvailable("nte.map-landmarks") &&
+            SemanticFeatureAvailable("nte.player") &&
+            resolution.FeatureAvailable("ue5.names") &&
+            resolution.FeatureAvailable("ue5.objects") &&
+            resolution.FeatureAvailable(kUe5ProcessEventFeature) && LayoutKeysAvailable(profile, {
+                "object.internalIndex",
+                "object.class",
+                "object.nameOffset",
+                "object.outer",
+                "controller.playerState",
+                "uclass.classDefaultObject",
+                "ustruct.propertyLink",
+                "ufunction.numParms",
+                "ufunction.parmsSize",
+                "ufunction.returnValueOffset",
+                "ffield.name",
+                "fproperty.arrayDim",
+                "fproperty.elementSize",
+                "fproperty.offsetInternal",
+                "fproperty.propertyLinkNext",
+                "gameData.teleportPointDataTable",
+                "dataTable.rowStruct",
+                "dataTable.rowMap",
+                "dataTable.rowMapData",
+                "dataTable.rowMapNum",
+                "dataTable.rowMapMax",
+                "dataTable.rowMapElementStride",
+                "dataTable.rowMapRowOffset",
+                "dataTable.rowMapInlineFlags",
+                "dataTable.rowMapFlagsData",
+                "dataTable.rowMapFlagsNum",
+                "dataTable.rowMapFlagsMax",
+                "dataTable.maxRows",
+                "teleportPoint.belongsLevel",
+                "teleportPoint.floor",
+                "teleportPoint.transformTranslation",
+                "teleportPoint.type",
+                "teleportPoint.canTeleport",
+                "teleportPoint.overrideTransform",
+                "teleportPoint.overrideTranslation"}) &&
+            FeatureDeclaresDependency(profile, "nte.map-landmarks", "nte.player") &&
+            FeatureDeclaresDependency(profile, "nte.map-landmarks", "ue5.names") &&
+            FeatureDeclaresDependency(profile, "nte.map-landmarks", "ue5.objects") &&
+            FeatureDeclaresDependency(profile, "nte.map-landmarks", "ue5.object-find") &&
+            FeatureDeclaresDependency(profile, "nte.map-landmarks", kUe5ProcessEventFeature) &&
+            FeatureDeclaresLayoutValidator(
+                profile, "nte.map-landmarks", "nte-map-landmarks-layout-v1");
+    }
+
     [[nodiscard]] bool NteNavigationReflectionAvailable() const noexcept {
         const auto* const process_event = resolution.FindSymbol("ue5.ProcessEvent");
         const auto* const input_policy = resolution.FindSymbol(
@@ -1241,6 +1319,7 @@ struct Ue5NteAdapter::State {
             return resolution.FeatureAvailable("nte.player") &&
                 NtePlayerTeleportAvailable();
         }
+        if (feature == "nte.map-landmarks") return NteMapLandmarksAvailable();
         if (feature == "nte.navigation") return NteNavigationAvailable();
         if (feature == "nte.pickup") return NtePickupAvailable();
         if (feature == "nte.entities") {
@@ -1360,6 +1439,9 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID) {
             return framework_hook_ready &&
                 SemanticFeatureAvailable("nte.player-teleport");
+        }
+        if (id == ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID) {
+            return framework_hook_ready && SemanticFeatureAvailable("nte.map-landmarks");
         }
         if (id == ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.navigation");
@@ -1529,6 +1611,9 @@ struct Ue5NteAdapter::State {
         if (object_registry.items != 0) ++object_generation;
         object_registry = {};
         teleport = {};
+        map_landmark_binding = {};
+        map_landmark_catalog.reset();
+        map_landmark_next_refresh_sequence = 0;
         navigation = {};
         pickup_sequence = 0;
         InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
@@ -1578,6 +1663,9 @@ struct Ue5NteAdapter::State {
         world_name_layout_available = false;
         world_name_readable = false;
         teleport = {};
+        map_landmark_binding = {};
+        map_landmark_catalog.reset();
+        map_landmark_next_refresh_sequence = 0;
         navigation = {};
         framework_hook_ready = false;
         ahud_hook_ready = false;
@@ -1650,6 +1738,9 @@ struct Ue5NteAdapter::State {
             if (object_registry.items != 0) ++object_generation;
             object_registry = {};
             teleport = {};
+            map_landmark_binding = {};
+            map_landmark_catalog.reset();
+            map_landmark_next_refresh_sequence = 0;
             navigation = {};
             InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
             if (object_generation != previous_generation) {
@@ -1664,6 +1755,9 @@ struct Ue5NteAdapter::State {
             next.chunk_signature != object_registry.chunk_signature) {
             ++object_generation;
             teleport = {};
+            map_landmark_binding = {};
+            map_landmark_catalog.reset();
+            map_landmark_next_refresh_sequence = 0;
             navigation = {};
             InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
         }
@@ -2170,6 +2264,343 @@ struct Ue5NteAdapter::State {
         }
         name = ResolveNameSnapshotLocked(name_id);
         return !name.empty();
+    }
+
+    [[nodiscard]] bool FindExactObjectLocked(
+        const wchar_t* const path,
+        std::uintptr_t& object) const noexcept {
+        object = 0;
+        if (path == nullptr || !ObjectFindAvailable() || object_registry.items == 0) return false;
+        object = object_lookup(path);
+        if (object == 0) return false;
+
+        std::uintptr_t index_address{};
+        std::int32_t internal_index{-1};
+        if (!AddAddress(object, Layout(profile, "object.internalIndex"), index_address) ||
+            !ReadValue(*memory, index_address, internal_index) || internal_index < 0 ||
+            static_cast<std::uint64_t>(internal_index) >= object_registry.count) {
+            object = 0;
+            return false;
+        }
+        std::uintptr_t slot_object{};
+        std::uint32_t serial{};
+        if (!ReadObjectSlot(*memory, object_registry, static_cast<std::uint32_t>(internal_index),
+                slot_object, serial) || slot_object != object) {
+            object = 0;
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool DecodeUtf16StringLocked(
+        const NativeUtf16StringHeader& native,
+        std::string& value) const {
+        value.clear();
+        if (native.count == 0) return true;
+        if (native.data == nullptr || native.count < 1 || native.count > 512 ||
+            native.capacity < native.count || native.capacity > 4096) {
+            return false;
+        }
+        std::vector<wchar_t> storage(static_cast<std::size_t>(native.count));
+        if (!memory->Read(
+                reinterpret_cast<std::uintptr_t>(native.data),
+                storage.data(), storage.size() * sizeof(wchar_t))) {
+            return false;
+        }
+        std::size_t length = storage.size();
+        if (length != 0 && storage[length - 1] == L'\0') --length;
+        if (length == 0) return true;
+        const int required = WideCharToMultiByte(
+            CP_UTF8, WC_ERR_INVALID_CHARS, storage.data(), static_cast<int>(length),
+            nullptr, 0, nullptr, nullptr);
+        if (required <= 0 || required >
+                static_cast<int>(ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES)) {
+            return false;
+        }
+        value.resize(static_cast<std::size_t>(required));
+        return WideCharToMultiByte(
+                   CP_UTF8, WC_ERR_INVALID_CHARS, storage.data(), static_cast<int>(length),
+                   value.data(), required, nullptr, nullptr) == required;
+    }
+
+    [[nodiscard]] bool ResolveFNameLocked(
+        const std::uint32_t comparison_index,
+        const std::uint32_t number,
+        std::string& value) const {
+        if (comparison_index == 0) {
+            value = "None";
+            return true;
+        }
+        value = ResolveNameSnapshotLocked(comparison_index);
+        if (value.empty()) return false;
+        if (number != 0) {
+            value += '_';
+            value += std::to_string(number - 1U);
+        }
+        return value.size() <= ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES;
+    }
+
+    [[nodiscard]] bool BuildMapLandmarkBindingLocked(
+        const std::uintptr_t function,
+        MapLandmarkBinding& binding) const {
+        try {
+            std::string name;
+            std::uintptr_t class_object{};
+            std::uintptr_t outer_object{};
+            if (!ReadReflectedObjectNameLocked(function, name) || name != "MapIconTransfer" ||
+                !ReadPointerAt(*memory, function, Layout(profile, "object.class"), class_object) ||
+                !ReadPointerAt(*memory, function, Layout(profile, "object.outer"), outer_object) ||
+                !ReadReflectedObjectNameLocked(class_object, name) || name != "Function" ||
+                !ReadReflectedObjectNameLocked(outer_object, name) || name != "HTPlayerState") {
+                return false;
+            }
+
+            std::uintptr_t property{};
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            std::uint16_t return_value_offset{};
+            if (!ReadPointerAt(*memory, function, Layout(profile, "ustruct.propertyLink"), property) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.numParms"), num_parms) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.returnValueOffset"),
+                    return_value_offset) ||
+                num_parms != 2 || parms_size < 17 || parms_size > 128 ||
+                return_value_offset != (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+
+            MapLandmarkBinding candidate;
+            candidate.function = function;
+            candidate.parms_size = parms_size;
+            candidate.object_generation = object_generation;
+            bool found_id{};
+            bool found_mode{};
+            for (std::uint32_t count{}; property != 0 && count < 4; ++count) {
+                std::uint32_t property_name_id{};
+                std::int32_t array_dim{};
+                std::int32_t element_size{};
+                std::int32_t offset{};
+                std::uintptr_t next{};
+                if (!ReadValue(*memory, property + Layout(profile, "ffield.name"), property_name_id) ||
+                    !ReadValue(*memory, property + Layout(profile, "fproperty.arrayDim"), array_dim) ||
+                    !ReadValue(*memory, property + Layout(profile, "fproperty.elementSize"), element_size) ||
+                    !ReadValue(*memory, property + Layout(profile, "fproperty.offsetInternal"), offset) ||
+                    !ReadValue(*memory, property + Layout(profile, "fproperty.propertyLinkNext"), next) ||
+                    array_dim != 1 || element_size <= 0 || offset < 0 ||
+                    static_cast<std::uint64_t>(offset) +
+                            static_cast<std::uint64_t>(element_size) >
+                        parms_size) {
+                    return false;
+                }
+                const std::string property_name = ResolveNameSnapshotLocked(property_name_id);
+                if (property_name == "TeleportID" && element_size == 16 && !found_id) {
+                    candidate.teleport_id_offset = static_cast<std::uint16_t>(offset);
+                    found_id = true;
+                } else if (property_name == "InIconTransferFunc" && element_size == 1 && !found_mode) {
+                    candidate.transfer_mode_offset = static_cast<std::uint16_t>(offset);
+                    found_mode = true;
+                } else {
+                    return false;
+                }
+                property = next;
+            }
+            if (property != 0 || !found_id || !found_mode) return false;
+            candidate.available = true;
+            binding = candidate;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool ResolveGameDataLocked(std::uintptr_t& game_data) const {
+        game_data = 0;
+        std::uintptr_t function{};
+        std::uintptr_t class_object{};
+        std::uintptr_t class_default_object{};
+        std::uint8_t num_parms{};
+        std::uint16_t parms_size{};
+        std::uint16_t return_value_offset{};
+        if (!FindExactObjectLocked(L"/Script/HTGame.HTGameData.GetGameData", function) ||
+            !ReadPointerAt(*memory, function, Layout(profile, "object.outer"), class_object) ||
+            !ReadPointerAt(*memory, class_object, Layout(profile, "uclass.classDefaultObject"),
+                class_default_object) ||
+            !ReadValue(*memory, function + Layout(profile, "ufunction.numParms"), num_parms) ||
+            !ReadValue(*memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+            !ReadValue(*memory, function + Layout(profile, "ufunction.returnValueOffset"),
+                return_value_offset) ||
+            num_parms != 1 || parms_size < sizeof(std::uintptr_t) || parms_size > 64 ||
+            return_value_offset > parms_size - sizeof(std::uintptr_t) || !process_event_invoker) {
+            return false;
+        }
+        std::array<std::uint8_t, 64> parameters{};
+        try {
+            if (!process_event_invoker(
+                    class_default_object, function, parameters.data(), parms_size)) {
+                return false;
+            }
+        } catch (...) {
+            return false;
+        }
+        std::memcpy(&game_data, parameters.data() + return_value_offset, sizeof(game_data));
+        return game_data != 0;
+    }
+
+    [[nodiscard]] bool ScanMapLandmarksLocked(MapLandmarkCatalog& catalog) {
+        std::uintptr_t map_function{};
+        if (!FindExactObjectLocked(
+                L"/Script/HTGame.HTPlayerState.MapIconTransfer", map_function) ||
+            !BuildMapLandmarkBindingLocked(map_function, map_landmark_binding)) {
+            return false;
+        }
+
+        std::uintptr_t game_data{};
+        std::uintptr_t table{};
+        std::uintptr_t row_struct{};
+        std::string row_struct_name;
+        if (!ResolveGameDataLocked(game_data) ||
+            !ReadPointerAt(*memory, game_data, Layout(profile, "gameData.teleportPointDataTable"), table) ||
+            !ReadPointerAt(*memory, table, Layout(profile, "dataTable.rowStruct"), row_struct) ||
+            !ReadReflectedObjectNameLocked(row_struct, row_struct_name) ||
+            row_struct_name != "TeleportPoint") {
+            return false;
+        }
+
+        const auto row_map = static_cast<std::uintptr_t>(Layout(profile, "dataTable.rowMap"));
+        std::uintptr_t data{};
+        std::int32_t num{};
+        std::int32_t max{};
+        std::uintptr_t flags_data{};
+        std::int32_t flags_num{};
+        std::int32_t flags_max{};
+        if (!ReadValue(*memory, table + row_map + Layout(profile, "dataTable.rowMapData"), data) ||
+            !ReadValue(*memory, table + row_map + Layout(profile, "dataTable.rowMapNum"), num) ||
+            !ReadValue(*memory, table + row_map + Layout(profile, "dataTable.rowMapMax"), max) ||
+            !ReadValue(*memory, table + row_map + Layout(profile, "dataTable.rowMapFlagsData"), flags_data) ||
+            !ReadValue(*memory, table + row_map + Layout(profile, "dataTable.rowMapFlagsNum"), flags_num) ||
+            !ReadValue(*memory, table + row_map + Layout(profile, "dataTable.rowMapFlagsMax"), flags_max) ||
+            data == 0 || num <= 0 || max < num || flags_num < num || flags_max < flags_num ||
+            max > Layout(profile, "dataTable.maxRows")) {
+            return false;
+        }
+
+        const auto word_count = static_cast<std::size_t>((flags_num + 31) / 32);
+        if (word_count == 0 || word_count > 128) return false;
+        std::vector<std::uint32_t> flags(word_count);
+        if (flags_data != 0) {
+            if (!memory->Read(flags_data, flags.data(), flags.size() * sizeof(std::uint32_t))) return false;
+        } else if (word_count > 4 || !memory->Read(
+                       table + row_map + Layout(profile, "dataTable.rowMapInlineFlags"),
+                       flags.data(), flags.size() * sizeof(std::uint32_t))) {
+            return false;
+        }
+
+        const auto row_stride = static_cast<std::size_t>(Layout(profile, "dataTable.rowMapElementStride"));
+        const auto row_offset = static_cast<std::size_t>(Layout(profile, "dataTable.rowMapRowOffset"));
+        const auto belongs_level = static_cast<std::size_t>(Layout(profile, "teleportPoint.belongsLevel"));
+        const auto floor_offset = static_cast<std::size_t>(Layout(profile, "teleportPoint.floor"));
+        const auto position_offset = static_cast<std::size_t>(Layout(profile, "teleportPoint.transformTranslation"));
+        const auto type_offset = static_cast<std::size_t>(Layout(profile, "teleportPoint.type"));
+        const auto can_teleport_offset = static_cast<std::size_t>(Layout(profile, "teleportPoint.canTeleport"));
+        const auto override_offset = static_cast<std::size_t>(Layout(profile, "teleportPoint.overrideTransform"));
+        const auto destination_offset = static_cast<std::size_t>(Layout(profile, "teleportPoint.overrideTranslation"));
+        const auto row_bytes = (std::max)({belongs_level + sizeof(NativeUtf16StringHeader),
+            floor_offset + sizeof(std::int32_t), position_offset + sizeof(double) * 3U,
+            type_offset + sizeof(std::uint32_t), can_teleport_offset + sizeof(std::uint8_t),
+            override_offset + sizeof(std::uint8_t), destination_offset + sizeof(double) * 3U});
+        if (row_stride < row_offset + sizeof(std::uintptr_t) || row_stride > 256 ||
+            row_bytes > 4096) {
+            return false;
+        }
+
+        const auto slot_count = static_cast<std::size_t>(num);
+        std::vector<std::uint8_t> elements(slot_count * row_stride);
+        if (!memory->Read(data, elements.data(), elements.size())) return false;
+
+        catalog.entries.clear();
+        catalog.entries.reserve(slot_count);
+        std::vector<std::uint8_t> row(row_bytes);
+        for (std::int32_t index{}; index < num; ++index) {
+            if ((flags[static_cast<std::size_t>(index) / 32U] &
+                    (1U << (static_cast<std::uint32_t>(index) & 31U))) == 0) {
+                continue;
+            }
+            const auto* const element = elements.data() + static_cast<std::size_t>(index) * row_stride;
+            std::uint32_t comparison_index{};
+            std::uint32_t number{};
+            std::uintptr_t row_address{};
+            std::memcpy(&comparison_index, element, sizeof(comparison_index));
+            std::memcpy(&number, element + sizeof(comparison_index), sizeof(number));
+            std::memcpy(&row_address, element + row_offset, sizeof(row_address));
+            if (row_address == 0 || !memory->Read(row_address, row.data(), row.size())) continue;
+
+            std::uint8_t can_teleport{};
+            std::uint8_t destination_overridden{};
+            MapLandmarkRecord record;
+            NativeUtf16StringHeader native_world{};
+            std::memcpy(&can_teleport, row.data() + can_teleport_offset, sizeof(can_teleport));
+            std::memcpy(&destination_overridden, row.data() + override_offset,
+                sizeof(destination_overridden));
+            if (can_teleport == 0) continue;
+            std::memcpy(&native_world, row.data() + belongs_level, sizeof(native_world));
+            std::memcpy(&record.floor, row.data() + floor_offset, sizeof(record.floor));
+            std::memcpy(record.world_position.data(), row.data() + position_offset,
+                sizeof(record.world_position));
+            std::memcpy(&record.point_type, row.data() + type_offset, sizeof(record.point_type));
+            if (!ResolveFNameLocked(comparison_index, number, record.teleport_id) ||
+                !DecodeUtf16StringLocked(native_world, record.world) ||
+                !std::ranges::all_of(record.world_position,
+                    [](const double value) { return std::isfinite(value); })) {
+                continue;
+            }
+            record.destination = record.world_position;
+            record.destination_overridden = destination_overridden != 0;
+            if (record.destination_overridden) {
+                std::memcpy(record.destination.data(), row.data() + destination_offset,
+                    sizeof(record.destination));
+                if (!std::ranges::all_of(record.destination,
+                        [](const double value) { return std::isfinite(value); })) {
+                    continue;
+                }
+            }
+            catalog.entries.push_back(std::move(record));
+        }
+        std::ranges::sort(catalog.entries, [](const MapLandmarkRecord& left,
+                                              const MapLandmarkRecord& right) {
+            return left.world == right.world ? left.teleport_id < right.teleport_id
+                                             : left.world < right.world;
+        });
+        catalog.object_generation = object_generation;
+        return true;
+    }
+
+    void RefreshMapLandmarksLocked(const std::uint64_t sequence) noexcept {
+        try {
+            if (!NteMapLandmarksAvailable()) {
+                map_landmark_binding = {};
+                map_landmark_catalog.reset();
+                map_landmark_next_refresh_sequence = sequence + 120U;
+                return;
+            }
+            if (map_landmark_catalog &&
+                map_landmark_catalog->object_generation == object_generation) {
+                return;
+            }
+            if (sequence < map_landmark_next_refresh_sequence) return;
+
+            auto catalog = std::make_shared<MapLandmarkCatalog>();
+            if (!ScanMapLandmarksLocked(*catalog)) {
+                map_landmark_next_refresh_sequence = sequence + 120U;
+                return;
+            }
+            ++map_landmark_catalog_sequence;
+            if (map_landmark_catalog_sequence == 0) ++map_landmark_catalog_sequence;
+            catalog->sequence = map_landmark_catalog_sequence;
+            map_landmark_catalog = std::move(catalog);
+            map_landmark_next_refresh_sequence = 0;
+        } catch (...) {
+            map_landmark_next_refresh_sequence = sequence + 120U;
+        }
     }
 
     [[nodiscard]] bool ReadReflectedFieldClassNameLocked(
@@ -3664,6 +4095,122 @@ struct Ue5NteAdapter::State {
             }
         }
         return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    static std::uint64_t ANOMALY_CALL MapLandmarkSequence(void* user) noexcept {
+        auto& state = *static_cast<State*>(user);
+        std::scoped_lock lock(state.mutex);
+        return state.SemanticFeatureRunning("nte.map-landmarks") && state.map_landmark_catalog
+            ? state.map_landmark_catalog->sequence
+            : 0;
+    }
+
+    static std::uint32_t ANOMALY_CALL MapLandmarkCount(void* user) noexcept {
+        auto& state = *static_cast<State*>(user);
+        std::scoped_lock lock(state.mutex);
+        if (!state.SemanticFeatureRunning("nte.map-landmarks") || !state.map_landmark_catalog) {
+            return 0;
+        }
+        return static_cast<std::uint32_t>(state.map_landmark_catalog->entries.size());
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL MapLandmarkSnapshotAt(
+        void* user,
+        const std::uint32_t index,
+        AnomalyNteMapLandmarkSnapshotV1* snapshot) noexcept {
+        if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot)) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        std::scoped_lock lock(state.mutex);
+        if (!state.SemanticFeatureRunning("nte.map-landmarks")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "map landmark service is unavailable");
+        }
+        const auto catalog = state.map_landmark_catalog;
+        if (!catalog) return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "map landmark catalog is not ready");
+        if (index >= catalog->entries.size()) return Status(ANOMALY_STATUS_V1_NOT_FOUND);
+
+        const MapLandmarkRecord& record = catalog->entries[index];
+        if (record.teleport_id.size() > ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES ||
+            record.world.size() > ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "map landmark text exceeds the SDK limit");
+        }
+        *snapshot = {};
+        snapshot->struct_size = sizeof(*snapshot);
+        snapshot->flags = ANOMALY_NTE_MAP_LANDMARK_V1_VALID |
+            (record.destination_overridden
+                 ? ANOMALY_NTE_MAP_LANDMARK_V1_DESTINATION_OVERRIDDEN
+                 : 0U);
+        snapshot->sequence = catalog->sequence;
+        snapshot->point_type = record.point_type;
+        snapshot->floor = record.floor;
+        std::ranges::copy(record.world_position, snapshot->world_position);
+        std::ranges::copy(record.destination, snapshot->destination);
+        std::memcpy(snapshot->teleport_id, record.teleport_id.data(), record.teleport_id.size());
+        std::memcpy(snapshot->world, record.world.data(), record.world.size());
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL MapLandmarkTeleport(
+        void* user,
+        const AnomalyNteMapLandmarkTeleportRequestV1* request) noexcept {
+        if (request == nullptr || request->struct_size < sizeof(*request) || request->flags != 0 ||
+            request->mode > ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_SELLING_INDULGENCES) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        const DWORD bound_game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (bound_game_thread == 0 || bound_game_thread != GetCurrentThreadId()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "map landmark teleport requires the Game thread");
+        }
+
+        MapLandmarkBinding binding;
+        Ue5NteAdapter::ProcessEventInvoker invoker;
+        std::string teleport_id;
+        std::uintptr_t player_state{};
+        {
+            std::scoped_lock lock(state.mutex);
+            if (!state.SemanticFeatureRunning("nte.map-landmarks")) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "map landmark service is unavailable");
+            }
+            const auto catalog = state.map_landmark_catalog;
+            if (!catalog || request->sequence != catalog->sequence ||
+                request->index >= catalog->entries.size()) {
+                return Status(ANOMALY_STATUS_V1_NOT_FOUND, "map landmark catalog entry is stale");
+            }
+            if (!state.map_landmark_binding.available ||
+                state.map_landmark_binding.object_generation != state.object_generation ||
+                !state.process_event_invoker) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "map landmark transfer reflection is not ready");
+            }
+            PlayerLocationSample player;
+            if (!state.ReadCurrentPlayerLocation(player) ||
+                !ReadPointerAt(*state.memory, player.controller,
+                    Layout(state.profile, "controller.playerState"), player_state)) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "local player state is unavailable");
+            }
+            binding = state.map_landmark_binding;
+            invoker = state.process_event_invoker;
+            teleport_id = catalog->entries[request->index].teleport_id;
+        }
+
+        try {
+            std::vector<wchar_t> storage;
+            NativeUtf16StringHeader native_id;
+            const AnomalyStringViewV1 id_view{teleport_id.data(), teleport_id.size()};
+            if (!EncodeAhudText(id_view, storage, native_id)) {
+                return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "map landmark id is invalid UTF-8");
+            }
+            std::vector<std::uint8_t> parameters(binding.parms_size, 0);
+            std::memcpy(parameters.data() + binding.teleport_id_offset, &native_id, sizeof(native_id));
+            parameters[binding.transfer_mode_offset] = static_cast<std::uint8_t>(request->mode);
+            return invoker(player_state, binding.function, parameters.data(), binding.parms_size)
+                ? Status(ANOMALY_STATUS_V1_OK)
+                : Status(ANOMALY_STATUS_V1_FAILED, "map landmark transfer failed");
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "map landmark transfer invocation failed");
+        }
     }
 
     static AnomalyStatusV1 ANOMALY_CALL MoveToLocation(
@@ -5338,6 +5885,11 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             sizeof(AnomalyNtePlayerTeleportServiceV1),
             ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION,
             this, TeleportThunk};
+        map_landmarks_service = {
+            sizeof(AnomalyNteMapLandmarksServiceV1),
+            ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION,
+            this, MapLandmarkSequenceThunk, MapLandmarkCountThunk,
+            MapLandmarkSnapshotAtThunk, MapLandmarkTeleportThunk};
         navigation_service = {
             sizeof(AnomalyNteNavigationServiceV1),
             ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
@@ -5388,6 +5940,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyNteSessionServiceV1 session_service{};
     AnomalyNtePlayerServiceV1 player_service{};
     AnomalyNtePlayerTeleportServiceV1 player_teleport_service{};
+    AnomalyNteMapLandmarksServiceV1 map_landmarks_service{};
     AnomalyNteNavigationServiceV1 navigation_service{};
     AnomalyNtePickupServiceV1 pickup_service{};
     AnomalyNteEntitiesServiceV1 entities_service{};
@@ -5538,6 +6091,31 @@ private:
         const AnomalyNtePlayerTeleportRequestV1* request) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::Teleport(lease.User(), request) : StoppedStatus();
+    }
+
+    static std::uint64_t ANOMALY_CALL MapLandmarkSequenceThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::MapLandmarkSequence(lease.User()) : 0;
+    }
+
+    static std::uint32_t ANOMALY_CALL MapLandmarkCountThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::MapLandmarkCount(lease.User()) : 0;
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL MapLandmarkSnapshotAtThunk(
+        void* user,
+        std::uint32_t index,
+        AnomalyNteMapLandmarkSnapshotV1* snapshot) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::MapLandmarkSnapshotAt(lease.User(), index, snapshot) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL MapLandmarkTeleportThunk(
+        void* user,
+        const AnomalyNteMapLandmarkTeleportRequestV1* request) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::MapLandmarkTeleport(lease.User(), request) : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
@@ -6256,6 +6834,14 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             semantic_lifetime)) {
         return false;
     }
+    if (framework_hook_ready && SemanticFeatureAvailable("nte.map-landmarks") &&
+        !PublishIfMissing(
+            ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID,
+            ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION,
+            &endpoint->map_landmarks_service,
+            {}, semantic_lifetime)) {
+        return false;
+    }
     if (framework_hook_ready && SemanticFeatureAvailable("nte.navigation") &&
         !PublishIfMissing(
             ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
@@ -6611,6 +7197,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->RefreshWorld(sequence);
         state->RefreshObjects();
         state->RefreshTeleportBindingLocked();
+        state->RefreshMapLandmarksLocked(sequence);
         if (state->navigation_demand.load(std::memory_order_acquire)) {
             static_cast<void>(state->EnsureNavigationInputPolicyLocked());
             state->RefreshNavigationBindingLocked();

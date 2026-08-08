@@ -46,6 +46,9 @@
     "ANOMALY_NTE_SESSION_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION": 1,
+    "ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION": 1,
+    "ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES": 128,
+    "ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES": 2048,
     "ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION": 1,
     "ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION": 1,
@@ -107,6 +110,22 @@
         "ANOMALY_NTE_SESSION_EVENT_V1_WORLD_READY": 1,
         "ANOMALY_NTE_SESSION_EVENT_V1_WORLD_CHANGED": 2,
         "ANOMALY_NTE_SESSION_EVENT_V1_WORLD_UNAVAILABLE": 3
+      }
+    },
+    "AnomalyNteMapLandmarkFlagsV1": {
+      "size": 4,
+      "alignment": 4,
+      "values": {
+        "ANOMALY_NTE_MAP_LANDMARK_V1_VALID": 1,
+        "ANOMALY_NTE_MAP_LANDMARK_V1_DESTINATION_OVERRIDDEN": 2
+      }
+    },
+    "AnomalyNteMapLandmarkTransferModeV1": {
+      "size": 4,
+      "alignment": 4,
+      "values": {
+        "ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_NORMAL": 0,
+        "ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_SELLING_INDULGENCES": 1
       }
     },
     "AnomalyNteEscMenuButtonFlagsV1": {
@@ -1166,6 +1185,45 @@
         "teleport": 16
       }
     },
+    "AnomalyNteMapLandmarkSnapshotV1": {
+      "size": 2256,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "flags": 4,
+        "sequence": 8,
+        "point_type": 16,
+        "floor": 20,
+        "world_position": 24,
+        "destination": 48,
+        "teleport_id": 72,
+        "world": 201
+      }
+    },
+    "AnomalyNteMapLandmarkTeleportRequestV1": {
+      "size": 24,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "mode": 4,
+        "sequence": 8,
+        "index": 16,
+        "flags": 20
+      }
+    },
+    "AnomalyNteMapLandmarksServiceV1": {
+      "size": 48,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "sequence": 16,
+        "count": 24,
+        "snapshot_at": 32,
+        "teleport": 40
+      }
+    },
     "AnomalyNteNavigationServiceV1": {
       "size": 32,
       "alignment": 8,
@@ -1421,6 +1479,7 @@
     { "id": "anomaly.nte.session", "version": 1, "table": "AnomalyNteSessionServiceV1" },
     { "id": "anomaly.nte.player", "version": 1, "table": "AnomalyNtePlayerServiceV1" },
     { "id": "anomaly.nte.player-teleport", "version": 1, "table": "AnomalyNtePlayerTeleportServiceV1" },
+    { "id": "anomaly.nte.map-landmarks", "version": 1, "table": "AnomalyNteMapLandmarksServiceV1" },
     { "id": "anomaly.nte.navigation", "version": 1, "table": "AnomalyNteNavigationServiceV1" },
     { "id": "anomaly.nte.pickup", "version": 1, "table": "AnomalyNtePickupServiceV1" },
     { "id": "anomaly.nte.entities", "version": 1, "table": "AnomalyNteEntitiesServiceV1" },

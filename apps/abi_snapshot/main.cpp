@@ -218,6 +218,12 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES\": ");
+    AppendUnsigned(output, ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES);
+    output.append(",\n    \"ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES\": ");
+    AppendUnsigned(output, ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES);
     output.append(",\n    \"ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION\": ");
@@ -292,6 +298,25 @@ std::string BuildSnapshot() {
          {"ANOMALY_NTE_SESSION_EVENT_V1_WORLD_READY", ANOMALY_NTE_SESSION_EVENT_V1_WORLD_READY},
          {"ANOMALY_NTE_SESSION_EVENT_V1_WORLD_CHANGED", ANOMALY_NTE_SESSION_EVENT_V1_WORLD_CHANGED},
          {"ANOMALY_NTE_SESSION_EVENT_V1_WORLD_UNAVAILABLE", ANOMALY_NTE_SESSION_EVENT_V1_WORLD_UNAVAILABLE}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteMapLandmarkFlagsV1",
+        sizeof(AnomalyNteMapLandmarkFlagsV1),
+        alignof(AnomalyNteMapLandmarkFlagsV1),
+        {{"ANOMALY_NTE_MAP_LANDMARK_V1_VALID", ANOMALY_NTE_MAP_LANDMARK_V1_VALID},
+         {"ANOMALY_NTE_MAP_LANDMARK_V1_DESTINATION_OVERRIDDEN",
+             ANOMALY_NTE_MAP_LANDMARK_V1_DESTINATION_OVERRIDDEN}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteMapLandmarkTransferModeV1",
+        sizeof(AnomalyNteMapLandmarkTransferModeV1),
+        alignof(AnomalyNteMapLandmarkTransferModeV1),
+        {{"ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_NORMAL",
+             ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_NORMAL},
+         {"ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_SELLING_INDULGENCES",
+             ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_SELLING_INDULGENCES}},
         false);
     AppendEnum(
         output,
@@ -1368,6 +1393,45 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyNteMapLandmarkSnapshotV1",
+        sizeof(AnomalyNteMapLandmarkSnapshotV1),
+        alignof(AnomalyNteMapLandmarkSnapshotV1),
+        {{"struct_size", offsetof(AnomalyNteMapLandmarkSnapshotV1, struct_size)},
+         {"flags", offsetof(AnomalyNteMapLandmarkSnapshotV1, flags)},
+         {"sequence", offsetof(AnomalyNteMapLandmarkSnapshotV1, sequence)},
+         {"point_type", offsetof(AnomalyNteMapLandmarkSnapshotV1, point_type)},
+         {"floor", offsetof(AnomalyNteMapLandmarkSnapshotV1, floor)},
+         {"world_position", offsetof(AnomalyNteMapLandmarkSnapshotV1, world_position)},
+         {"destination", offsetof(AnomalyNteMapLandmarkSnapshotV1, destination)},
+         {"teleport_id", offsetof(AnomalyNteMapLandmarkSnapshotV1, teleport_id)},
+         {"world", offsetof(AnomalyNteMapLandmarkSnapshotV1, world)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteMapLandmarkTeleportRequestV1",
+        sizeof(AnomalyNteMapLandmarkTeleportRequestV1),
+        alignof(AnomalyNteMapLandmarkTeleportRequestV1),
+        {{"struct_size", offsetof(AnomalyNteMapLandmarkTeleportRequestV1, struct_size)},
+         {"mode", offsetof(AnomalyNteMapLandmarkTeleportRequestV1, mode)},
+         {"sequence", offsetof(AnomalyNteMapLandmarkTeleportRequestV1, sequence)},
+         {"index", offsetof(AnomalyNteMapLandmarkTeleportRequestV1, index)},
+         {"flags", offsetof(AnomalyNteMapLandmarkTeleportRequestV1, flags)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteMapLandmarksServiceV1",
+        sizeof(AnomalyNteMapLandmarksServiceV1),
+        alignof(AnomalyNteMapLandmarksServiceV1),
+        {{"struct_size", offsetof(AnomalyNteMapLandmarksServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyNteMapLandmarksServiceV1, service_version)},
+         {"user", offsetof(AnomalyNteMapLandmarksServiceV1, user)},
+         {"sequence", offsetof(AnomalyNteMapLandmarksServiceV1, sequence)},
+         {"count", offsetof(AnomalyNteMapLandmarksServiceV1, count)},
+         {"snapshot_at", offsetof(AnomalyNteMapLandmarksServiceV1, snapshot_at)},
+         {"teleport", offsetof(AnomalyNteMapLandmarksServiceV1, teleport)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyNteNavigationServiceV1",
         sizeof(AnomalyNteNavigationServiceV1),
         alignof(AnomalyNteNavigationServiceV1),
@@ -1656,6 +1720,8 @@ std::string BuildSnapshot() {
         ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION, "AnomalyNtePlayerServiceV1", false);
     AppendService(output, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
         ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION, "AnomalyNtePlayerTeleportServiceV1", false);
+    AppendService(output, ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID,
+        ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION, "AnomalyNteMapLandmarksServiceV1", false);
     AppendService(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
         ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION, "AnomalyNteNavigationServiceV1", false);
     AppendService(output, ANOMALY_NTE_PICKUP_SERVICE_V1_ID,

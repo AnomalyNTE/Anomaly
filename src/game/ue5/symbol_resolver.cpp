@@ -378,6 +378,56 @@ FeatureValidationResult ValidateNtePlayerTeleport(
     return {true, {}};
 }
 
+FeatureValidationResult ValidateNteMapLandmarks(
+    const BuildProfile& profile,
+    const ProfileResolutionSnapshot&,
+    const SymbolMemory&) {
+    constexpr std::array<std::string_view, 35> kRequiredLayout{
+        "object.internalIndex",
+        "object.class",
+        "object.nameOffset",
+        "object.outer",
+        "controller.playerState",
+        "uclass.classDefaultObject",
+        "ustruct.propertyLink",
+        "ufunction.numParms",
+        "ufunction.parmsSize",
+        "ufunction.returnValueOffset",
+        "ffield.name",
+        "fproperty.arrayDim",
+        "fproperty.elementSize",
+        "fproperty.offsetInternal",
+        "fproperty.propertyLinkNext",
+        "gameData.teleportPointDataTable",
+        "dataTable.rowStruct",
+        "dataTable.rowMap",
+        "dataTable.rowMapData",
+        "dataTable.rowMapNum",
+        "dataTable.rowMapMax",
+        "dataTable.rowMapElementStride",
+        "dataTable.rowMapRowOffset",
+        "dataTable.rowMapInlineFlags",
+        "dataTable.rowMapFlagsData",
+        "dataTable.rowMapFlagsNum",
+        "dataTable.rowMapFlagsMax",
+        "dataTable.maxRows",
+        "teleportPoint.belongsLevel",
+        "teleportPoint.floor",
+        "teleportPoint.transformTranslation",
+        "teleportPoint.type",
+        "teleportPoint.overrideTransform",
+        "teleportPoint.overrideTranslation",
+        "teleportPoint.canTeleport"};
+    std::string error;
+    for (const std::string_view key : kRequiredLayout) {
+        std::uint64_t value{};
+        if (!SemanticLayoutValue(profile, key, value, error)) {
+            return FeatureFailure(std::move(error));
+        }
+    }
+    return {true, {}};
+}
+
 FeatureValidationResult ValidateUe5ActorsReflection(
     const BuildProfile& profile,
     const ProfileResolutionSnapshot& snapshot,
@@ -1424,6 +1474,13 @@ FeatureLayoutValidatorRegistry::FeatureLayoutValidatorRegistry() {
         const ProfileResolutionSnapshot& snapshot,
         const SymbolMemory& memory) {
         return ValidateNtePlayerTeleport(profile, snapshot, memory);
+    });
+    Register("nte-map-landmarks-layout-v1", [](
+        const BuildProfile& profile,
+        std::string_view,
+        const ProfileResolutionSnapshot& snapshot,
+        const SymbolMemory& memory) {
+        return ValidateNteMapLandmarks(profile, snapshot, memory);
     });
     Register("nte-player-esp-layout-v1", [](
         const BuildProfile& profile,

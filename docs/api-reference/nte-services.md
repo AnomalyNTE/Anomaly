@@ -233,6 +233,59 @@ typedef struct AnomalyNtePlayerTeleportServiceV1 {
 
 ---
 
+## `anomaly.nte.map-landmarks`
+
+- **ID**：`"anomaly.nte.map-landmarks"` · **版本** 1 · **capability** `nte-map-landmarks`
+- **ID 上限**：`ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES` = 128 UTF-8 bytes
+- **世界名上限**：`ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES` = 2048 UTF-8 bytes
+
+```c
+typedef uint32_t AnomalyNteMapLandmarkFlagsV1;
+#define ANOMALY_NTE_MAP_LANDMARK_V1_VALID                  (1u << 0u)
+#define ANOMALY_NTE_MAP_LANDMARK_V1_DESTINATION_OVERRIDDEN (1u << 1u)
+
+typedef enum AnomalyNteMapLandmarkTransferModeV1 {
+    ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_NORMAL = 0,
+    ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_SELLING_INDULGENCES = 1
+} AnomalyNteMapLandmarkTransferModeV1;
+
+typedef struct AnomalyNteMapLandmarkSnapshotV1 {
+    uint32_t struct_size; uint32_t flags; uint64_t sequence;
+    uint32_t point_type; int32_t floor;
+    double world_position[3]; double destination[3];
+    char teleport_id[ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES + 1u];
+    char world[ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES + 1u];
+} AnomalyNteMapLandmarkSnapshotV1;
+
+typedef struct AnomalyNteMapLandmarkTeleportRequestV1 {
+    uint32_t struct_size; uint32_t mode;
+    uint64_t sequence; uint32_t index; uint32_t flags;
+} AnomalyNteMapLandmarkTeleportRequestV1;
+
+typedef struct AnomalyNteMapLandmarksServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    uint64_t (ANOMALY_CALL *sequence)(void* user);
+    uint32_t (ANOMALY_CALL *count)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot_at)(
+        void* user, uint32_t index, AnomalyNteMapLandmarkSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *teleport)(
+        void* user, const AnomalyNteMapLandmarkTeleportRequestV1* request);
+} AnomalyNteMapLandmarksServiceV1;
+```
+
+宿主从活动 Profile 验证的 `TeleportPoint` DataTable 构造目录，只枚举 `CanTeleport` 为真的地标。每条快照包含 DataTable 行的 `TeleportID`、所属世界 `BelongsLevel`、世界坐标、楼层和点类型；`DESTINATION_OVERRIDDEN` 置位时，`destination` 是覆盖坐标，否则与 `world_position` 相同。两个文本数组始终以 NUL 结尾。
+
+目录构建在 Game 线程使用经过 ABI 校验的 `StaticFindObject` 精确解析 `GetGameData` 和 `MapIconTransfer`，不会逐 tick 线性扫描 GObjects。成功目录会被缓存，仅在对象注册表 generation 变化后重建；读取 `sequence()`、`count()` 或 `snapshot_at()` 不触发重新扫描。
+
+目录在同一个非零 `sequence` 内不可变。消费方先读取 `sequence()` 与 `count()`，再按 `[0, count)` 调用 `snapshot_at()`；快照自身的 `sequence` 必须与开始读取时相同。若读取期间序列变化，应丢弃这批结果并重新枚举。`sequence() == 0` 表示目录尚未就绪或 Feature 不可用。
+
+> [!CAUTION]
+> `teleport` 是修改调用且仅在 Game 回调域内有效。请求必须回传当前目录的 `sequence` 和索引，过期序列或越界索引返回 `NOT_FOUND`；`flags` 必须为 0，`mode` 只能取上述两个枚举值。宿主在当前目录中重新解析 `TeleportID`，并通过已验证的 `HTPlayerState.MapIconTransfer` / `ProcessEvent` 桥接执行。插件不得跨 ABI 传递 UE 对象指针、原始 DataTable 行地址或自行输入的传送 ID。
+
+该服务依赖 `nte.player`、`ue5.names`、`ue5.objects`、`ue5.object-find` 与 `ue5.process-event`，并受 `nte-map-landmarks-layout-v1` 校验。任一依赖或反射合同不成立时，服务保持 `UNAVAILABLE`。
+
+---
+
 ## `anomaly.nte.navigation`
 
 - **ID**：`"anomaly.nte.navigation"` · **版本** 1 · **capability** `nte-navigation`

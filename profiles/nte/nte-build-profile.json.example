@@ -8,7 +8,7 @@
       "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
       "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
       "validators": ["readable", "world-shape-v1"],
-      "requiredBy": ["anomaly.ue5.world", "anomaly.ue5.actors", "anomaly.nte.session", "anomaly.nte.player", "anomaly.nte.player-esp", "anomaly.nte.entities", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "requiredBy": ["anomaly.ue5.world", "anomaly.ue5.actors", "anomaly.nte.session", "anomaly.nte.player", "anomaly.nte.player-esp", "anomaly.nte.entities", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
     },
     "ue5.GObjects": {
       "module": "HTGame.exe",
@@ -16,7 +16,7 @@
       "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1",
       "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
       "validators": ["readable", "object-registry-v1"],
-      "requiredBy": ["anomaly.ue5.objects", "anomaly.ue5.functions", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "requiredBy": ["anomaly.ue5.objects", "anomaly.ue5.functions", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
     },
     "ue5.FNamePool": {
       "module": "HTGame.exe",
@@ -24,7 +24,15 @@
       "pattern": "FNAME_POOL_PATTERN",
       "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
       "validators": ["readable", "name-pool-v1"],
-      "requiredBy": ["anomaly.ue5.names", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "requiredBy": ["anomaly.ue5.names", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+    },
+    "ue5.StaticFindObject": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "STATIC_FIND_OBJECT_PATTERN",
+      "resolve": { "kind": "direct" },
+      "validators": ["address-in-module", "executable"],
+      "requiredBy": ["anomaly.ue5.objects", "anomaly.nte.map-landmarks"]
     },
     "ue5.GameTick": {
       "module": "HTGame.exe",
@@ -32,7 +40,7 @@
       "pattern": "GAME_TICK_PATTERN",
       "resolve": { "kind": "direct" },
       "validators": ["address-in-module", "tick-anchor-v1"],
-      "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
     },
     "ue5.ProcessEvent": {
       "module": "HTGame.exe",
@@ -40,7 +48,7 @@
       "pattern": "PROCESS_EVENT_PATTERN",
       "resolve": { "kind": "direct" },
       "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.ahud", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "requiredBy": ["anomaly.ue5.ahud", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
     },
     "nte.ClientIgnoreGameAndUiInput": {
       "module": "HTGame.exe",
@@ -64,6 +72,7 @@
     "ue5.world": ["ue5.GWorld", "ue5.GameTick"],
     "ue5.names": ["ue5.FNamePool"],
     "ue5.objects": ["ue5.GObjects", "ue5.GameTick"],
+    "ue5.object-find": ["ue5.StaticFindObject"],
     "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.process-event": ["ue5.ProcessEvent"],
@@ -71,20 +80,23 @@
     "ue5.ahud": [],
     "nte.session": ["ue5.GWorld", "ue5.GameTick"],
     "nte.player": ["ue5.GWorld", "ue5.GameTick"],
+    "nte.map-landmarks": ["ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent", "ue5.StaticFindObject"],
     "nte.navigation": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent", "nte.ClientIgnoreGameAndUiInput"],
     "nte.player-esp": ["ue5.GWorld", "ue5.GameTick"],
     "nte.entities": ["ue5.GWorld", "ue5.GameTick"],
     "nte.pickup": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent"]
   },
-  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.process-event", "ue5.actor-process-event", "ue5.ahud", "nte.player-esp", "nte.navigation", "nte.pickup"],
+  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.object-find", "ue5.process-event", "ue5.actor-process-event", "ue5.ahud", "nte.player-esp", "nte.map-landmarks", "nte.navigation", "nte.pickup"],
   "featureLayoutValidators": {
     "ue5.actors": ["ue5-actors-reflection-v1"],
     "ue5.functions": ["ue5-functions-reflection-v1"],
+    "ue5.object-find": ["ue5-static-find-object-abi-v1"],
     "ue5.process-event": ["ue5-process-event-abi-v1"],
     "ue5.actor-process-event": ["ue5-actor-process-event-abi-v1"],
     "ue5.ahud": ["ue5-ahud-reflection-v1"],
     "nte.player": ["nte-player-layout-v1"],
     "nte.player-esp": ["nte-player-esp-layout-v1"],
+    "nte.map-landmarks": ["nte-map-landmarks-layout-v1"],
     "nte.navigation": ["nte-navigation-layout-v1", "nte-navigation-input-abi-v1"],
     "nte.entities": ["nte-entities-layout-v1"],
     "nte.pickup": ["nte-pickup-layout-v1"]
@@ -92,9 +104,11 @@
   "featureDependencies": {
     "ue5.actors": ["ue5.world", "ue5.names"],
     "ue5.functions": ["ue5.objects", "ue5.names"],
+    "ue5.object-find": ["ue5.objects"],
     "ue5.actor-process-event": ["ue5.process-event"],
     "ue5.ahud": ["ue5.functions", "ue5.actor-process-event"],
     "nte.player-esp": ["nte.player"],
+    "nte.map-landmarks": ["nte.player", "ue5.names", "ue5.objects", "ue5.object-find", "ue5.process-event"],
     "nte.navigation": ["nte.player", "ue5.names", "ue5.objects", "ue5.process-event"],
     "nte.pickup": ["nte.player", "nte.entities", "ue5.names", "ue5.objects", "ue5.process-event"]
   },
@@ -107,6 +121,7 @@
     "controller.controlRotation": 832,
     "controller.getPlayerCharacterVtableOffset": 5168,
     "controller.pawn": 776,
+    "controller.playerState": 720,
     "controller.cameraManager": 896,
     "actor.rootComponent": 456,
     "object.internalIndex": 12,
@@ -158,6 +173,26 @@
     "objects.itemStride": 24,
     "objects.objectOffset": 0,
     "objects.serialOffset": 16,
+    "dataTable.rowMap": 48,
+    "dataTable.rowMapElementStride": 24,
+    "dataTable.rowMapRowOffset": 8,
+    "dataTable.rowStruct": 40,
+    "dataTable.rowMapData": 0,
+    "dataTable.rowMapNum": 8,
+    "dataTable.rowMapMax": 12,
+    "dataTable.rowMapInlineFlags": 16,
+    "dataTable.rowMapFlagsData": 32,
+    "dataTable.rowMapFlagsNum": 40,
+    "dataTable.rowMapFlagsMax": 44,
+    "dataTable.maxRows": 4096,
+    "gameData.teleportPointDataTable": 400,
+    "teleportPoint.belongsLevel": 8,
+    "teleportPoint.floor": 40,
+    "teleportPoint.transformTranslation": 96,
+    "teleportPoint.type": 184,
+    "teleportPoint.canTeleport": 216,
+    "teleportPoint.overrideTransform": 217,
+    "teleportPoint.overrideTranslation": 256,
     "pickup.actor.interactFinish": 976,
     "pickup.trigger.numParms": 3,
     "pickup.trigger.parmsSize": 13,

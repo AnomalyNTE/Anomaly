@@ -176,6 +176,48 @@ capability ↔ service 对应关系见 [Manifest 与 capability · capability �
 NTE Adapter 的 Profile gate 和线程域，避免实体 generation、对象生命周期和确认逻辑在插件间分叉。
 确认优先复用实体缓存和直接状态字节，仅在截止时调用一次 `BPCanTryInteract`。
 
+### 地图地标传送
+
+需要显示地图上所有可传送地标时，声明 `nte-map-landmarks` capability，并查询
+`anomaly.nte.map-landmarks`。地标目录由 Host 从活动 Profile 验证的 `TeleportPoint`
+DataTable 构造；插件只消费 `TeleportID`、所属世界、世界坐标、有效目的坐标、楼层和类型，
+不自行扫描 GObjects、解析 DataTable 或调用 `ProcessEvent`。
+
+目录用 `sequence` 标识不可变版本。插件缓存一次完整枚举；仅在 `sequence()` 变化时重新读取，
+并确认每个 `snapshot_at()` 返回的 `snapshot.sequence` 仍等于目标序列。选择状态保存
+`sequence + index`，不要保存 UE 指针或把 UI 文本重新解释为 ID：
+
+```cpp
+const auto sequence = service->sequence(service->user);
+if (sequence != 0 && sequence != cached_sequence) {
+    std::vector<AnomalyNteMapLandmarkSnapshotV1> next;
+    const auto count = service->count(service->user);
+    next.reserve(count);
+    bool complete = true;
+    for (std::uint32_t index = 0; index < count; ++index) {
+        AnomalyNteMapLandmarkSnapshotV1 item{sizeof(item)};
+        const auto status = service->snapshot_at(service->user, index, &item);
+        if (status.code != ANOMALY_STATUS_V1_OK || item.sequence != sequence) {
+            complete = false;
+            break;
+        }
+        next.push_back(item);
+    }
+    if (complete && service->sequence(service->user) == sequence) {
+        landmarks = std::move(next);
+        cached_sequence = sequence;
+    }
+}
+```
+
+`on_draw` 属于 Render 域，只负责显示选项并把所选 `sequence`、`index` 和 mode 放入插件自己的
+待处理状态；`on_update` 属于 Game 域，在开发者模式确认后构造
+`AnomalyNteMapLandmarkTeleportRequestV1` 并调用 `teleport`。若目录已刷新，旧请求返回
+`NOT_FOUND`，插件刷新列表并要求重新选择，不用猜测新的索引。
+
+仓库内的 `plugins/TeleportLandmarksProbe` 是该模式的开发者调试实现：它只依赖 `anomaly.ui`
+和 `anomaly.nte.map-landmarks`，不包含签名、偏移、原始内存读取或 UE 调用逻辑。
+
 ## 7. 资源与所有权
 
 所有由 Platform / Interop / IPC 创建的 handle 都**绑定 plugin generation**：

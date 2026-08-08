@@ -1051,6 +1051,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CameraTools/manifest.json
         PACKAGE_NAME CameraTools
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CameraTools")
+    anomaly_add_plugin(anomaly_builtin_teleport_landmarks_probe
+        SOURCES plugins/TeleportLandmarksProbe/plugin.cpp
+        MANIFEST plugins/TeleportLandmarksProbe/manifest.json
+        PACKAGE_NAME TeleportLandmarksProbe
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/TeleportLandmarksProbe")
     target_link_libraries(anomaly_builtin_fake_uid PRIVATE nlohmann_json::nlohmann_json)
     target_link_libraries(anomaly_builtin_camera_tools PRIVATE nlohmann_json::nlohmann_json)
 
@@ -1058,7 +1063,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             anomaly_builtin_nte_position anomaly_builtin_nte_teleport
             anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
             anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-            anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
+            anomaly_builtin_fake_uid anomaly_builtin_camera_tools
+            anomaly_builtin_teleport_landmarks_probe)
         target_include_directories(${builtin_target} PRIVATE "${CMAKE_SOURCE_DIR}")
         target_compile_definitions(${builtin_target} PRIVATE
             UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1087,6 +1093,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     set_target_properties(anomaly_builtin_pink_paw_heist_esp PROPERTIES PDB_NAME PinkPawHeistESP)
     set_target_properties(anomaly_builtin_fake_uid PROPERTIES PDB_NAME FakeUID)
     set_target_properties(anomaly_builtin_camera_tools PROPERTIES PDB_NAME CameraTools)
+    set_target_properties(anomaly_builtin_teleport_landmarks_probe PROPERTIES PDB_NAME TeleportLandmarksProbe)
     if(MSVC)
         target_compile_options(anomaly_builtin_pink_paw_heist_esp PRIVATE /utf-8)
     endif()
@@ -1094,7 +1101,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
         anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-        anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
+        anomaly_builtin_fake_uid anomaly_builtin_camera_tools
+        anomaly_builtin_teleport_landmarks_probe)
     add_dependencies(anomaly-platform-preview
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
         anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
@@ -1132,6 +1140,8 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_entity_esp EntityESP)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_pink_paw_heist_esp PinkPawHeistESP)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_fake_uid FakeUID)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_camera_tools CameraTools)
+anomaly_stage_platform_preview_plugin(
+    anomaly_builtin_teleport_landmarks_probe TeleportLandmarksProbe)
 
 add_custom_command(TARGET anomaly-platform-preview POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
@@ -1321,6 +1331,13 @@ if(TARGET anomaly_builtin_camera_tools)
         DESTINATION Anomaly/plugins/CameraTools COMPONENT GameRuntime)
     install(DIRECTORY plugins/CameraTools/locales/
         DESTINATION Anomaly/plugins/CameraTools/locales COMPONENT GameRuntime)
+endif()
+if(TARGET anomaly_builtin_teleport_landmarks_probe)
+    install(TARGETS anomaly_builtin_teleport_landmarks_probe
+        RUNTIME DESTINATION Anomaly/plugins/TeleportLandmarksProbe COMPONENT GameRuntime
+        LIBRARY DESTINATION Anomaly/plugins/TeleportLandmarksProbe COMPONENT GameRuntime)
+    install(FILES plugins/TeleportLandmarksProbe/manifest.json
+        DESTINATION Anomaly/plugins/TeleportLandmarksProbe COMPONENT GameRuntime)
 endif()
 install(FILES CONTACT config/anomaly.ini config/repository.json config/plugin-repositories.json
     DESTINATION Anomaly COMPONENT GameRuntime)

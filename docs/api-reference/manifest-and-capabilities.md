@@ -120,6 +120,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | `anomaly.nte.metrics` | `nte-snapshot-metrics` |
 | `anomaly.nte.player` | `nte-player-snapshot` |
 | `anomaly.nte.player-teleport` | `nte-player-teleport` |
+| `anomaly.nte.map-landmarks` | `nte-map-landmarks` |
 | `anomaly.nte.navigation` | `nte-navigation` |
 | `anomaly.nte.pickup` | `nte-pickup` |
 | `anomaly.nte.entities` | `nte-entity-snapshot` |

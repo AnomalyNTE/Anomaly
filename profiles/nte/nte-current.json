@@ -14,6 +14,7 @@
         "anomaly.nte.session",
         "anomaly.nte.player",
         "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
         "anomaly.nte.navigation",
         "anomaly.nte.player-esp",
         "anomaly.nte.entities",
@@ -31,6 +32,7 @@
         "anomaly.ue5.actors",
         "anomaly.ue5.functions",
         "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
         "anomaly.nte.navigation",
         "anomaly.nte.esc-menu-button",
         "anomaly.nte.entities",
@@ -47,6 +49,7 @@
         "anomaly.ue5.objects",
         "anomaly.ue5.functions",
         "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
         "anomaly.nte.navigation",
         "anomaly.nte.esc-menu-button",
         "anomaly.nte.pickup"
@@ -58,7 +61,7 @@
       "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B E9 41 0F B6 D9 33 C9 49 8B F8 48 8B F2",
       "resolve": {"kind": "direct"},
       "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.objects"]
+      "requiredBy": ["anomaly.ue5.objects", "anomaly.nte.map-landmarks"]
     },
     "ue5.GameTick": {
       "module": "HTGame.exe",
@@ -75,6 +78,7 @@
         "anomaly.nte.session",
         "anomaly.nte.player",
         "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
         "anomaly.nte.navigation",
         "anomaly.nte.player-esp",
         "anomaly.nte.esc-menu-button",
@@ -88,7 +92,7 @@
       "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
       "resolve": {"kind": "direct"},
       "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.ahud", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.ahud", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
     },
     "nte.ClientIgnoreGameAndUiInput": {
       "module": "HTGame.exe",
@@ -167,6 +171,13 @@
       "ue5.FNamePool",
       "ue5.GObjects"
     ],
+    "nte.map-landmarks": [
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.ProcessEvent",
+      "ue5.StaticFindObject"
+    ],
     "nte.esc-menu-button": [
       "ue5.GameTick",
       "ue5.FNamePool",
@@ -188,6 +199,7 @@
     "ue5.ahud",
     "nte.player-esp",
     "nte.player-teleport",
+    "nte.map-landmarks",
     "nte.navigation",
     "nte.esc-menu-button",
     "nte.pickup"
@@ -202,6 +214,7 @@
     "nte.player": ["nte-player-layout-v1"],
     "nte.player-esp": ["nte-player-esp-layout-v1"],
     "nte.player-teleport": ["nte-player-teleport-layout-v1"],
+    "nte.map-landmarks": ["nte-map-landmarks-layout-v1"],
     "nte.navigation": ["nte-navigation-layout-v1", "nte-navigation-input-abi-v1"],
     "nte.esc-menu-button": ["nte-esc-menu-hooks-v1"],
     "nte.entities": ["nte-entities-layout-v2"],
@@ -218,6 +231,13 @@
       "nte.player",
       "ue5.names",
       "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.map-landmarks": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.object-find",
       "ue5.process-event"
     ],
     "nte.navigation": [
@@ -277,7 +297,23 @@
     "dataTable.rowMap": 48,
     "dataTable.rowMapElementStride": 24,
     "dataTable.rowMapRowOffset": 8,
+    "dataTable.rowStruct": 40,
+    "dataTable.rowMapData": 0,
+    "dataTable.rowMapNum": 8,
+    "dataTable.rowMapMax": 12,
+    "dataTable.rowMapInlineFlags": 16,
+    "dataTable.rowMapFlagsData": 32,
+    "dataTable.rowMapFlagsNum": 40,
+    "dataTable.rowMapFlagsMax": 44,
     "dataTable.maxRows": 4096,
+    "gameData.teleportPointDataTable": 400,
+    "teleportPoint.belongsLevel": 8,
+    "teleportPoint.floor": 40,
+    "teleportPoint.transformTranslation": 96,
+    "teleportPoint.type": 184,
+    "teleportPoint.canTeleport": 216,
+    "teleportPoint.overrideTransform": 217,
+    "teleportPoint.overrideTranslation": 256,
     "names.blocksOffset": 16,
     "names.blockBits": 16,
     "names.entryStride": 2,

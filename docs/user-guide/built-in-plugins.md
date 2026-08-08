@@ -83,6 +83,15 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 额外视距默认为 `0`，即完全使用游戏默认视距；插件不设置人为上限。自由相机和“场景跟随相机加载”默认关闭，激活键为 `F6`。启用该选项后，插件只在自由相机已激活时让场景按本地 PlayerController 的自由相机位置和旋转加载；关闭时完全保留游戏原始加载位置。
 
+## 开发者模式调试插件
+
+启用会话开发者模式后，插件列表还会显示 `Teleport Landmarks Probe`
+（`anomaly.builtin.teleport-landmarks-probe`）。它枚举框架提供的全部可传送地标，逐项显示
+`TeleportID`、所属世界、世界坐标、楼层、类型和覆盖目的坐标，并允许从选项中提交
+`Normal` 或 `SellingIndulgences` 传送。该插件只消费
+`anomaly.nte.map-landmarks`，不保存签名或偏移，也不自行扫描对象、解析 DataTable 或调用
+UE `ProcessEvent`；关闭开发者模式后不会出现在已安装插件视图中，也不会执行传送请求。
+
 ## 管理插件
 
 在 **Plugins** 页你可以：

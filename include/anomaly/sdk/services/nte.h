@@ -8,6 +8,10 @@
 #define ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID "anomaly.nte.player-teleport"
 #define ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID "anomaly.nte.map-landmarks"
+#define ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES 128u
+#define ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES 2048u
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID "anomaly.nte.navigation"
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_ID "anomaly.nte.entities"
@@ -159,6 +163,39 @@ typedef struct AnomalyNtePlayerTeleportServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *teleport)(void* user,
         const AnomalyNtePlayerTeleportRequestV1* request);
 } AnomalyNtePlayerTeleportServiceV1;
+
+// Enumerates the active map's transferable landmarks and executes the game's map-icon transfer
+// bridge. A plugin must declare the explicit nte-map-landmarks capability. Landmark snapshots
+// are immutable for their sequence; a request with an obsolete sequence or index is rejected.
+typedef uint32_t AnomalyNteMapLandmarkFlagsV1;
+#define ANOMALY_NTE_MAP_LANDMARK_V1_VALID (1u << 0u)
+#define ANOMALY_NTE_MAP_LANDMARK_V1_DESTINATION_OVERRIDDEN (1u << 1u)
+typedef enum AnomalyNteMapLandmarkTransferModeV1 {
+    ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_NORMAL = 0,
+    ANOMALY_NTE_MAP_LANDMARK_TRANSFER_V1_SELLING_INDULGENCES = 1
+} AnomalyNteMapLandmarkTransferModeV1;
+typedef struct AnomalyNteMapLandmarkSnapshotV1 {
+    uint32_t struct_size; uint32_t flags; uint64_t sequence;
+    uint32_t point_type; int32_t floor;
+    double world_position[3]; double destination[3];
+    char teleport_id[ANOMALY_NTE_MAP_LANDMARK_V1_ID_MAX_BYTES + 1u];
+    char world[ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES + 1u];
+} AnomalyNteMapLandmarkSnapshotV1;
+typedef struct AnomalyNteMapLandmarkTeleportRequestV1 {
+    uint32_t struct_size; uint32_t mode;
+    uint64_t sequence; uint32_t index; uint32_t flags;
+} AnomalyNteMapLandmarkTeleportRequestV1;
+typedef struct AnomalyNteMapLandmarksServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    uint64_t (ANOMALY_CALL *sequence)(void* user);
+    uint32_t (ANOMALY_CALL *count)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot_at)(
+        void* user, uint32_t index, AnomalyNteMapLandmarkSnapshotV1* snapshot);
+    // Valid only from the Game callback domain. The Host resolves the requested item from the
+    // current immutable catalog; no UE object pointer or raw map identifier crosses the ABI.
+    AnomalyStatusV1 (ANOMALY_CALL *teleport)(
+        void* user, const AnomalyNteMapLandmarkTeleportRequestV1* request);
+} AnomalyNteMapLandmarksServiceV1;
 
 // Native NTE navigation is exposed through the Host's verified ProcessEvent
 // bridge. Calls are valid only from the Game thread and operate on the current

@@ -15,7 +15,7 @@
 | [WebSocket 广播](websocket.md) | `anomaly.websocket` |
 | [UI 服务](ui-services.md) | `anomaly.ui`、`window`、`font`、`texture`、`input` |
 | [UE5 服务](ue5-services.md) | `ue5.build`、`ahud`、`framework`、`names`、`objects`、`world` |
-| [NTE 服务](nte-services.md) | `nte.build`、`session`、`player`、`player-teleport`、`navigation`、`pickup`、`entities`、`actors`、`metrics` |
+| [NTE 服务](nte-services.md) | `nte.build`、`session`、`player`、`player-teleport`、`map-landmarks`、`navigation`、`pickup`、`entities`、`actors`、`metrics` |
 | [Manifest 与 capability](manifest-and-capabilities.md) | Manifest v2 schema、capability 映射、状态码 |
 
 ## ABI 约定
@@ -133,6 +133,7 @@ void*    user;             // 调用每个函数时作为第一个参数回传
 | `anomaly.nte.session` | 1 | `nte-session-snapshot` | [nte.session](nte-services.md#anomalyntesession) |
 | `anomaly.nte.player` | 1 | `nte-player-snapshot` | [nte.player](nte-services.md#anomalynteplayer) |
 | `anomaly.nte.player-teleport` | 1 | `nte-player-teleport` | [nte.player-teleport](nte-services.md#anomalynteplayer-teleport) |
+| `anomaly.nte.map-landmarks` | 1 | `nte-map-landmarks` | [nte.map-landmarks](nte-services.md#anomalyntemap-landmarks) |
 | `anomaly.nte.navigation` | 1 | `nte-navigation` | [nte.navigation](nte-services.md#anomalyntenavigation) |
 | `anomaly.nte.pickup` | 1 | `nte-pickup` | [nte.pickup](nte-services.md#anomalyntepickup) |
 | `anomaly.nte.entities` | 1 | `nte-entity-snapshot` | [nte.entities](nte-services.md#anomalynteentities) |
