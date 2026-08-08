@@ -49,7 +49,7 @@ AddressSanitizer 使用：`cmake --preset windows-asan`、
 | `diagnose_nte_profile.ps1`、`rescan_profile_signatures.ps1`、`scan_nte_entities.ps1` | 检查实时 NTE 目标和活动 Profile | 必须有明确请求、正确 PID/Profile；生成数据分享前需审查 |
 | `start-coordinate-tracker.ps1` | 启动常驻后台 tracker | 仅在明确请求时使用；结束前必须运行 `stop-coordinate-tracker.ps1` |
 | `collect_diagnostics.ps1` | 生成脱敏诊断包 | 用 `pwsh -NoProfile -File` 启动；检查输入 Runtime 和输出路径，dump 必须人工审查 |
-| `package_release.ps1` | staging、审计并覆盖发布输出 | 用 `pwsh -NoProfile -File` 启动；仅在干净标准构建后，且指定明确版本/输出目录时运行 |
+| `package_release.ps1` | staging、生成发布资料并覆盖发布输出 | 用 `pwsh -NoProfile -File` 启动；仅在干净标准构建后，且指定明确版本/输出目录时运行 |
 | `run_stability_suite.ps1` | 显式 opt-in 的 soak 证据 | 用 `pwsh -NoProfile -File` 启动；`-Quick` 只用于脚本冒烟，不是发布证据 |
 
 所有工具脚本默认使用 `.build/windows-vs2022` 和其中的 `RelWithDebInfo` 二进制。只在有意使用

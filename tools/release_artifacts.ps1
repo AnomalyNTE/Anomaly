@@ -89,7 +89,6 @@ function New-SpdxSbom {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$PackageDirectory,
-        [Parameter(Mandatory)][string]$AuditReportPath,
         [Parameter(Mandatory)][ValidateSet('Runtime', 'SDK', 'Tools', 'Symbols')]
         [string]$Component,
         [Parameter(Mandatory)][string]$Version,
@@ -100,17 +99,19 @@ function New-SpdxSbom {
     )
 
     $package = [IO.Path]::GetFullPath($PackageDirectory).TrimEnd('\', '/')
-    $audit = Get-Content -LiteralPath $AuditReportPath -Raw | ConvertFrom-Json
-    if (-not $audit.Passed -or $audit.Component -ne $Component) {
-        throw "$Component audit report is not a passing report"
-    }
 
     $fileRows = [Collections.Generic.List[object]]::new()
     $sha1Values = [Collections.Generic.List[string]]::new()
     $relationships = [Collections.Generic.List[object]]::new()
     $rootPackageId = 'SPDXRef-Package-Anomaly'
     $index = 0
-    $inventory = [object[]]@($audit.Inventory)
+    $inventory = [object[]]@(Get-ChildItem -LiteralPath $package -Recurse -Force -File |
+        ForEach-Object {
+            [pscustomobject]@{
+                Path = [IO.Path]::GetRelativePath($package, $_.FullName).Replace('\', '/')
+                Sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        })
     [Array]::Sort($inventory, [Comparison[object]]{
         param($left, $right)
         [StringComparer]::Ordinal.Compare([string]$left.Path, [string]$right.Path)

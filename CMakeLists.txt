@@ -1236,7 +1236,8 @@ foreach(runtime_plugin_target IN ITEMS
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
         anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-        anomaly_builtin_fake_uid anomaly_builtin_camera_tools)
+        anomaly_builtin_fake_uid anomaly_builtin_camera_tools
+        anomaly_builtin_teleport_landmarks_probe)
     if(TARGET ${runtime_plugin_target})
         list(APPEND ANOMALY_RELEASE_PE_TARGETS ${runtime_plugin_target})
     endif()

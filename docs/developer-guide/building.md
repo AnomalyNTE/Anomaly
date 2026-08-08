@@ -54,7 +54,7 @@ cmake --build --preset windows-asan --parallel
 
 ## 发布打包
 
-正式组件包由同一构建树生成并逐包审计：
+正式组件包由同一构建树生成：
 
 ```powershell
 pwsh -NoProfile -File .\tools\package_release.ps1 `
@@ -63,7 +63,7 @@ pwsh -NoProfile -File .\tools\package_release.ps1 `
   -OutputDirectory .build\release\1.0.0
 ```
 
-输出确定性组装的四个 ZIP 与校验 / 审计文件：
+输出确定性组装的四个 ZIP 与校验文件：
 
 | 组件 ZIP | 内容 |
 | --- | --- |
@@ -72,8 +72,8 @@ pwsh -NoProfile -File .\tools\package_release.ps1 `
 | **Tools** | 六个正式命令行工具 |
 | **Symbols** | 与全部发布 PE 双向核对的 PDB |
 
-以及 `SHA256SUMS.txt`、`release-manifest.json`、四份 `audit/*.json` 与四份 SPDX 2.3 `sbom/*.spdx.json`。
-这些文件和 Symbols ZIP 用于 CI 内部的完整性与发布策略检查；tag workflow 仅发布 Runtime、SDK、
+以及 `SHA256SUMS.txt`、`release-manifest.json` 与四份 SPDX 2.3 `sbom/*.spdx.json`。
+这些文件和 Symbols ZIP 用于 CI 内部的完整性检查；tag workflow 仅发布 Runtime、SDK、
 Tools 三个 ZIP，并为这三个归档生成 GitHub build provenance attestation。
 
 ## 命令行工具

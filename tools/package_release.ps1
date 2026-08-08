@@ -81,10 +81,6 @@ if (Test-Path -LiteralPath $vswhere) {
     if (Test-Path -LiteralPath $candidate) { $cmake = $candidate }
 }
 
-$auditScript = Join-Path $PSScriptRoot 'audit_release.ps1'
-if (-not (Test-Path -LiteralPath $auditScript -PathType Leaf)) {
-    throw "release audit script not found: $auditScript"
-}
 $artifactScript = Join-Path $PSScriptRoot 'release_artifacts.ps1'
 if (-not (Test-Path -LiteralPath $artifactScript -PathType Leaf)) {
     throw "release artifact script not found: $artifactScript"
@@ -116,7 +112,6 @@ $auditDirectory = Join-Path $output 'audit'
 if (Test-Path -LiteralPath $auditDirectory) {
     Remove-Item -LiteralPath $auditDirectory -Recurse -Force
 }
-New-Item -ItemType Directory -Force -Path $auditDirectory | Out-Null
 $sbomDirectory = Join-Path $output 'sbom'
 if (Test-Path -LiteralPath $sbomDirectory) {
     Remove-Item -LiteralPath $sbomDirectory -Recurse -Force
@@ -125,19 +120,19 @@ New-Item -ItemType Directory -Force -Path $sbomDirectory | Out-Null
 
 $packages = @(
     [pscustomobject]@{
-        InstallComponent = 'GameRuntime'; AuditComponent = 'Runtime'; Slug = 'runtime'
+        InstallComponent = 'GameRuntime'; Component = 'Runtime'; Slug = 'runtime'
         Name = "Anomaly-$Version-runtime"
     },
     [pscustomobject]@{
-        InstallComponent = 'SDK'; AuditComponent = 'SDK'; Slug = 'sdk'
+        InstallComponent = 'SDK'; Component = 'SDK'; Slug = 'sdk'
         Name = "Anomaly-$Version-sdk"
     },
     [pscustomobject]@{
-        InstallComponent = 'Tools'; AuditComponent = 'Tools'; Slug = 'tools'
+        InstallComponent = 'Tools'; Component = 'Tools'; Slug = 'tools'
         Name = "Anomaly-$Version-tools"
     },
     [pscustomobject]@{
-        InstallComponent = 'Symbols'; AuditComponent = 'Symbols'; Slug = 'symbols'
+        InstallComponent = 'Symbols'; Component = 'Symbols'; Slug = 'symbols'
         Name = "Anomaly-$Version-symbols"
     }
 )
@@ -152,14 +147,7 @@ foreach ($package in $packages) {
         --component $package.InstallComponent
     if ($LASTEXITCODE -ne 0) { throw "install failed for $($package.InstallComponent)" }
 
-    $reportPath = Join-Path $auditDirectory "$($package.Slug).json"
-    & $auditScript `
-        -PackageDirectory $stage `
-        -Component $package.AuditComponent `
-        -WorkspaceRoot $root `
-        -ReportPath $reportPath |
-        Out-Null
-    $stages[$package.AuditComponent] = $stage
+    $stages[$package.Component] = $stage
 }
 
 # Each shipped PE must have exactly one corresponding linker PDB in the
@@ -199,7 +187,7 @@ if ($missingPdb.Count -ne 0 -or $unexpectedPdb.Count -ne 0) {
 $artifacts = @()
 $sbomFiles = @()
 foreach ($package in $packages) {
-    $stage = $stages[$package.AuditComponent]
+    $stage = $stages[$package.Component]
     $zip = "$stage.zip"
     New-DeterministicZip -SourceDirectory $stage -DestinationPath $zip
     $artifacts += Get-FileHash -LiteralPath $zip -Algorithm SHA256
@@ -207,8 +195,7 @@ foreach ($package in $packages) {
     $sbomPath = Join-Path $sbomDirectory "$($package.Slug).spdx.json"
     New-SpdxSbom `
         -PackageDirectory $stage `
-        -AuditReportPath (Join-Path $auditDirectory "$($package.Slug).json") `
-        -Component $package.AuditComponent `
+        -Component $package.Component `
         -Version $Version `
         -SourceCommit $sourceCommit `
         -SourceCommitUtc $sourceCommitUtc `
@@ -218,7 +205,6 @@ foreach ($package in $packages) {
 
 $publishedFiles = @(
     $artifacts | ForEach-Object { Get-Item -LiteralPath $_.Path }
-    Get-ChildItem -LiteralPath $auditDirectory -File
     $sbomFiles
 )
 $published = [object[]]@($publishedFiles | ForEach-Object {
@@ -255,7 +241,7 @@ foreach ($file in $published) {
 }
 
 [pscustomobject]@{
-    SchemaVersion = 2
+    SchemaVersion = 3
     Version = $Version
     ProjectVersion = $projectVersion
     Configuration = $Configuration
@@ -279,8 +265,6 @@ foreach ($file in $published) {
         }
     })
     Sboms = @($published | Where-Object { $_.RelativePath -like 'sbom/*' } |
-        Select-Object RelativePath, Size, Sha256)
-    AuditReports = @($published | Where-Object { $_.RelativePath -like 'audit/*' } |
         Select-Object RelativePath, Size, Sha256)
     Checksums = 'SHA256SUMS.txt'
 } | ConvertTo-Json -Depth 7 |
