@@ -31,7 +31,7 @@ Anomaly\
   assets\
   locales\
   profiles\
-  plugins\                   随包提供的五个内建插件
+  plugins\                   随包提供的六个内建插件
 ```
 
 从源码构建时，等价的目录位于 `.build\windows-vs2022\game-package`。具体步骤见[从源码构建](../developer-guide/building.md)。

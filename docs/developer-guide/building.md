@@ -67,7 +67,7 @@ pwsh -NoProfile -File .\tools\package_release.ps1 `
 
 | 组件 ZIP | 内容 |
 | --- | --- |
-| **Runtime** | 代理、Core、配置、bundled Profile、五个内建插件 |
+| **Runtime** | 代理、Core、配置、bundled Profile、六个内建插件 |
 | **SDK** | 头文件、CMake 包、四个示例（源码 + 独立 CMake 工程） |
 | **Tools** | 六个正式命令行工具 |
 | **Symbols** | 与全部发布 PE 双向核对的 PDB |

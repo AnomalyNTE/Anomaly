@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "粉爪战利品显示",
-    "plugin.description": "显示粉爪大劫案的战利品与撤离点，并提供价值筛选、传送和拾取操作。",
+    "plugin.description": "显示粉爪大劫案的战利品与撤离点，并提供价值筛选和拾取操作。",
     "option.enabled": "启用显示",
     "option.draw_loot_boxes": "绘制物品框",
     "option.draw_extractions": "绘制撤离点",

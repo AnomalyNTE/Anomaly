@@ -1,9 +1,9 @@
 # 内建插件
 
-运行包默认提供五个面向用户的内建插件。它们和第三方插件一样，都是独立的目录包（`manifest.json` + `plugin.dll`），可以在 **Plugins** 页启停、重载与查看状态。
+运行包默认提供六个面向用户的内建插件。它们和第三方插件一样，都是独立的目录包（`manifest.json` + `plugin.dll`），可以在 **Plugins** 页启停、重载与查看状态。
 
 > [!NOTE]
-> 坐标、实体和传送等功能都依赖 [Profile](nte-profiles.md)。活动 Profile 缺少签名、偏移或校验未通过时，插件仍然可以加载，但对应功能会显示为不可用。
+> 坐标、实体 ESP 和 WalletCollector 等功能都依赖 [Profile](nte-profiles.md)。活动 Profile 缺少签名、偏移或校验未通过时，插件仍然可以加载，但对应功能会显示为不可用。
 
 ## Coordinate Display
 
@@ -48,7 +48,7 @@
 | **ID** | `anomaly.builtin.pink-paw-heist-esp` |
 | **作用** | 显示粉爪大劫案中的战利品和撤离点，战利品可按最低价值筛选。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.config`、`anomaly.interop.signature`、`anomaly.ue5.framework`、`anomaly.ue5.ahud`、`anomaly.ue5.names`；`anomaly.websocket`、`anomaly.nte.session/player/player-teleport/entities/actors`、`anomaly.font`、`anomaly.texture`（均为 V1，可选） |
-| **需要 Profile** | 是；物品与撤离点绘制需要已验证的 `ue5.ahud`，通用会话、玩家、实体、Actor 与传送服务也由 Profile 控制；Pink Paw 专用拾取签名和布局由插件自带 |
+| **需要 Profile** | 是；物品与撤离点绘制需要已验证的 `ue5.ahud`，通用会话、玩家、实体与 Actor 服务也由 Profile 控制；Pink Paw 专用拾取签名和布局由插件自带 |
 
 插件窗口和设置菜单继续使用 ImGui；物品边框、标签与撤离点改由 UE 原生 AHUD 绘制，即使管理菜单
 折叠也会显示。窗口中仍会列出物品名称、价值、坐标和撤离点状态。RobBank 可拾取判定和 native
@@ -82,6 +82,19 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 | **需要 Profile** | 否（相机签名和布局由插件自带，并在加载时校验） |
 
 额外视距默认为 `0`，即完全使用游戏默认视距；插件不设置人为上限。自由相机和“场景跟随相机加载”默认关闭，激活键为 `F6`。启用该选项后，插件只在自由相机已激活时让场景按本地 PlayerController 的自由相机位置和旋转加载；关闭时完全保留游戏原始加载位置。
+
+## WalletCollector
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.local.nte-interactbox-collector` |
+| **作用** | 扫描当前地图的钱包刷新点，按目标数量规划路线，自动移动到各点并通过拾取服务确认钱包已收集。 |
+| **依赖服务** | `anomaly.core`、`anomaly.ui`、`anomaly.localization`、`anomaly.nte.player`、`anomaly.nte.pickup`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`；`anomaly.nte.session`、`anomaly.nte.navigation`、`anomaly.nte.map-landmarks`、`anomaly.ue5.framework`（均为 V1，可选） |
+| **需要 Profile** | 是；玩家、拾取、寻路和地图地标服务由活动 Profile 的 Feature Gate 提供，钱包点签名与 UE5 对象 / 数据表布局还会在插件运行时校验。 |
+
+窗口中的 **目标钱包数量** 默认是 `10`，可在 `1` 到 `500` 之间调整。点击 **开始捡钱包** 后，插件会等待扫描完成，以玩家当前位置为起点规划路线，逐点移动、等待交互并验证拾取结果；寻路停滞时会尝试其他接近方向，拾取未确认时会自动重试，仍未确认的点会计入“跳过”。**停止** 会停止当前移动并清空未完成路线。
+
+默认使用 **寻路捡钱包**。地图地标服务可用时，插件会利用它优化跨区路线；服务不可用时按常规寻路继续处理。
 
 ## 开发者模式调试插件
 

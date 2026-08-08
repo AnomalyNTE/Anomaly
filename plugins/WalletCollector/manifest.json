@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "anomaly.local.nte-interactbox-collector",
   "name": "WalletCollector",
-  "description": "Plans a route and collects the configured number of wallets by navigation or teleport.",
+  "description": "Plans a route and collects the configured number of wallets by navigation.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "user",

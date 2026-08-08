@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "plugin.name": "自动捡钱包",
-    "plugin.description": "自动扫描钱包刷新点，可选择寻路或传送并捡取设定数量的钱包。",
+    "plugin.description": "自动扫描钱包刷新点，规划路线并捡取设定数量的钱包。",
     "window.title": "自动捡钱包",
     "setting.wallet_count": "目标钱包数量",
     "setting.mode": "捡取模式",
