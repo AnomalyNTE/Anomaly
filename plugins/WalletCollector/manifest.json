@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte-interactbox-collector",
+  "name": "WalletCollector",
+  "description": "Plans a route and collects the configured number of wallets by navigation or teleport.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "user",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player", "minVersion": 1},
+    {"id": "anomaly.nte.navigation", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.pickup", "minVersion": 1},
+    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.map-landmarks", "minVersion": 1, "optional": true},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.ue5.framework", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.ue5.objects", "minVersion": 1}
+  ],
+  "capabilities": [
+    "ui", "nte-session-snapshot", "nte-player-snapshot", "nte-navigation",
+    "nte-pickup", "nte-player-teleport", "nte-map-landmarks", "interop-signature", "memory-read", "ue5-names",
+    "ue5-objects"
+  ]
+}
