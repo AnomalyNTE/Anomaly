@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstring>
 #include <cwctype>
@@ -20,7 +21,9 @@
 #include <set>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 extern "C" void AnomalyRemoteBootstrapBegin();
 extern "C" void AnomalyRemoteBootstrapEnd();
@@ -136,10 +139,6 @@ Handle OpenProcessWithAccess(
 }
 
 Handle OpenProcessForAttach(DWORD process_id, DWORD& error) noexcept {
-    return OpenProcessWithAccess(process_id, kAttachProcessAccess, error);
-}
-
-Handle OpenProcessForCapture(DWORD process_id, DWORD& error) noexcept {
     return OpenProcessWithAccess(process_id, kAttachProcessAccess, error);
 }
 
@@ -370,6 +369,193 @@ std::filesystem::path ProcessPath(HANDLE process, DWORD& error) {
     path.resize(size);
     error = ERROR_SUCCESS;
     return path;
+}
+
+DWORD NtStatusToWin32(NTSTATUS status) noexcept {
+    using RtlNtStatusToDosErrorFn = ULONG(WINAPI*)(NTSTATUS);
+    const auto convert = reinterpret_cast<RtlNtStatusToDosErrorFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError"));
+    return convert != nullptr ? convert(status) : ERROR_GEN_FAILURE;
+}
+
+class ScopedCaptureThreadPriority final {
+public:
+    ScopedCaptureThreadPriority() noexcept
+        : previous_(GetThreadPriority(GetCurrentThread())),
+          applied_(SetThreadPriority(
+              GetCurrentThread(), THREAD_PRIORITY_HIGHEST) != FALSE) {}
+
+    ~ScopedCaptureThreadPriority() {
+        if (applied_ && previous_ != THREAD_PRIORITY_ERROR_RETURN) {
+            static_cast<void>(SetThreadPriority(GetCurrentThread(), previous_));
+        }
+    }
+
+private:
+    int previous_{THREAD_PRIORITY_ERROR_RETURN};
+    bool applied_{};
+};
+
+struct FastTargetCaptureResult final {
+    Handle process;
+    std::filesystem::path path;
+    DWORD process_id{};
+    DWORD error{ERROR_NOT_READY};
+};
+
+bool QueryMatchingProcessIds(
+    std::wstring_view requested_name,
+    std::vector<std::byte>& buffer,
+    std::vector<DWORD>& process_ids,
+    DWORD& error) {
+    using NtQuerySystemInformationFn = NTSTATUS(NTAPI*)(
+        SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+    static const auto query = reinterpret_cast<NtQuerySystemInformationFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+    if (query == nullptr) {
+        error = ERROR_PROC_NOT_FOUND;
+        return false;
+    }
+
+    constexpr NTSTATUS kStatusInfoLengthMismatch =
+        static_cast<NTSTATUS>(0xC0000004UL);
+    ULONG returned{};
+    NTSTATUS status{};
+    for (;;) {
+        status = query(
+            SystemProcessInformation, buffer.data(),
+            static_cast<ULONG>(buffer.size()), &returned);
+        if (status != kStatusInfoLengthMismatch) break;
+        const std::size_t next_size = returned > buffer.size()
+            ? static_cast<std::size_t>(returned) + 64 * 1024
+            : buffer.size() * 2;
+        if (next_size > 32 * 1024 * 1024) {
+            error = ERROR_NOT_ENOUGH_MEMORY;
+            return false;
+        }
+        buffer.resize(next_size);
+    }
+    if (status < 0) {
+        error = NtStatusToWin32(status);
+        return false;
+    }
+
+    process_ids.clear();
+    const std::size_t available = returned == 0
+        ? buffer.size() : static_cast<std::size_t>(returned);
+    std::size_t offset{};
+    while (offset + sizeof(SYSTEM_PROCESS_INFORMATION) <= available) {
+        const auto* process = reinterpret_cast<const SYSTEM_PROCESS_INFORMATION*>(
+            buffer.data() + offset);
+        const std::size_t name_length =
+            static_cast<std::size_t>(process->ImageName.Length) / sizeof(wchar_t);
+        if (process->ImageName.Buffer != nullptr &&
+            name_length == requested_name.size() &&
+            _wcsnicmp(
+                process->ImageName.Buffer, requested_name.data(), name_length) == 0) {
+            const auto process_id = static_cast<DWORD>(
+                reinterpret_cast<std::uintptr_t>(process->UniqueProcessId));
+            if (process_id != 0) process_ids.push_back(process_id);
+        }
+        if (process->NextEntryOffset == 0) break;
+        if (process->NextEntryOffset < sizeof(*process) ||
+            process->NextEntryOffset > available - offset) {
+            error = ERROR_BAD_LENGTH;
+            return false;
+        }
+        offset += process->NextEntryOffset;
+    }
+    error = ERROR_SUCCESS;
+    return true;
+}
+
+bool QueryGrantedAccess(HANDLE handle, ACCESS_MASK& access, DWORD& error) noexcept {
+    using NtQueryObjectFn = NTSTATUS(NTAPI*)(
+        HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+    static const auto query = reinterpret_cast<NtQueryObjectFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryObject"));
+    if (query == nullptr) {
+        error = ERROR_PROC_NOT_FOUND;
+        return false;
+    }
+
+    PUBLIC_OBJECT_BASIC_INFORMATION basic{};
+    const NTSTATUS status = query(
+        handle, ObjectBasicInformation, &basic, sizeof(basic), nullptr);
+    if (status < 0) {
+        error = NtStatusToWin32(status);
+        return false;
+    }
+    access = basic.GrantedAccess;
+    error = ERROR_SUCCESS;
+    return true;
+}
+
+FastTargetCaptureResult CaptureTargetByFastPolling(
+    std::wstring_view requested_target,
+    const std::set<DWORD>& existing_targets,
+    std::chrono::steady_clock::time_point deadline,
+    std::atomic_bool& ready,
+    std::stop_token stop) {
+    FastTargetCaptureResult result;
+    result.error = ERROR_TIMEOUT;
+    ScopedCaptureThreadPriority priority;
+    std::vector<std::byte> buffer(1024 * 1024);
+    std::vector<DWORD> process_ids;
+    process_ids.reserve(4);
+    std::set<DWORD> rejected;
+    ready.store(true, std::memory_order_release);
+
+    while (!stop.stop_requested() &&
+        std::chrono::steady_clock::now() < deadline) {
+        DWORD query_error{};
+        if (!QueryMatchingProcessIds(
+                requested_target, buffer, process_ids, query_error)) {
+            result.error = query_error;
+            return result;
+        }
+
+        for (const DWORD process_id : process_ids) {
+            if (existing_targets.contains(process_id) || rejected.contains(process_id)) {
+                continue;
+            }
+
+            DWORD open_error{};
+            Handle candidate = OpenProcessWithAccess(
+                process_id, kAttachProcessAccess, open_error);
+            if (!candidate) {
+                result.process_id = process_id;
+                result.error = open_error;
+                return result;
+            }
+
+            ACCESS_MASK granted_access{};
+            DWORD access_error{};
+            if (!QueryGrantedAccess(candidate.Get(), granted_access, access_error) ||
+                (granted_access & kAttachProcessAccess) != kAttachProcessAccess) {
+                result.process_id = process_id;
+                result.error = access_error == ERROR_SUCCESS
+                    ? ERROR_ACCESS_DENIED : access_error;
+                return result;
+            }
+
+            DWORD inspection_error{};
+            const auto path = ProcessPath(candidate.Get(), inspection_error);
+            if (inspection_error != ERROR_SUCCESS ||
+                Fold(path.filename().wstring()) != requested_target) {
+                rejected.insert(process_id);
+                continue;
+            }
+
+            result.process = std::move(candidate);
+            result.path = path;
+            result.process_id = process_id;
+            result.error = ERROR_SUCCESS;
+            return result;
+        }
+        static_cast<void>(SwitchToThread());
+    }
+    return result;
 }
 
 RemoteModuleMap SnapshotModules(HANDLE process, DWORD& error) {
@@ -1599,6 +1785,27 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             return result;
         }
 
+        const std::wstring requested_target = Fold(options.target_executable_name);
+        const auto discovery_timeout = std::clamp<std::int64_t>(
+            options.target_timeout.count(), 1, std::chrono::minutes(10).count() * 60'000LL);
+        const auto discovery_deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(discovery_timeout);
+        FastTargetCaptureResult captured;
+        std::atomic_bool capture_ready{};
+        std::jthread capture_thread([&](std::stop_token stop) noexcept {
+            try {
+                captured = CaptureTargetByFastPolling(
+                    requested_target, existing_targets, discovery_deadline,
+                    capture_ready, stop);
+            } catch (...) {
+                captured.error = ERROR_UNHANDLED_EXCEPTION;
+                capture_ready.store(true, std::memory_order_release);
+            }
+        });
+        while (!capture_ready.load(std::memory_order_acquire)) {
+            static_cast<void>(SwitchToThread());
+        }
+
         STARTUPINFOW startup{.cb = sizeof(startup)};
         PROCESS_INFORMATION created{};
         constexpr DWORD incompatible_flags =
@@ -1607,8 +1814,11 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
                 launcher.c_str(), command_line.data(), nullptr, nullptr, FALSE,
                 options.creation_flags & ~incompatible_flags,
                 nullptr, working_directory.c_str(), &startup, &created) == FALSE) {
+            const DWORD launch_error = GetLastError();
+            capture_thread.request_stop();
+            capture_thread.join();
             result.mapping = Failure(
-                ManualMapError::ProcessLaunchFailure, GetLastError(),
+                ManualMapError::ProcessLaunchFailure, launch_error,
                 "official launcher could not be started for target capture");
             return result;
         }
@@ -1616,99 +1826,49 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         Handle launcher_process(created.hProcess);
         Handle launcher_thread(created.hThread);
 
-        const std::wstring requested_target = Fold(options.target_executable_name);
-        const auto discovery_timeout = std::clamp<std::int64_t>(
-            options.target_timeout.count(), 1, std::chrono::minutes(10).count() * 60'000LL);
-        const auto discovery_deadline = std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(discovery_timeout);
-        Handle target_process;
+        capture_thread.join();
+        Handle target_process = std::move(captured.process);
         Handle target_cleanup;
         AttachableProcess target;
-        std::set<DWORD> rejected_targets;
-        ManualMapResult deferred_failure;
-        DWORD deferred_failure_process{};
-        while (std::chrono::steady_clock::now() < discovery_deadline) {
-            DWORD discovery_error{};
-            const auto observed_targets = SnapshotProcessIds(
-                options.target_executable_name, discovery_error);
-            if (discovery_error != ERROR_SUCCESS) {
-                result.mapping = Failure(
-                    ManualMapError::ProcessControlFailure, discovery_error,
-                    "new target processes could not be inspected after launch");
-                break;
-            }
-
-            for (const DWORD process_id : observed_targets) {
-                if (existing_targets.contains(process_id) ||
-                    rejected_targets.contains(process_id)) {
-                    continue;
-                }
-
-                DWORD open_error{};
-                Handle candidate = OpenProcessForCapture(process_id, open_error);
-                if (!candidate) {
-                    if (open_error == ERROR_ACCESS_DENIED) {
-                        deferred_failure_process = process_id;
-                        deferred_failure = Failure(
-                            ManualMapError::AccessDenied, open_error,
-                            "new target process could not retain mapping access; use Proxy mode "
-                            "if the game protects process handles at creation");
-                        continue;
-                    }
-                    rejected_targets.insert(process_id);
-                    continue;
-                }
-
-                DWORD inspection_error{};
-                const auto path = ProcessPath(candidate.Get(), inspection_error);
-                if (inspection_error != ERROR_SUCCESS ||
-                    Fold(path.filename().wstring()) != requested_target) {
-                    rejected_targets.insert(process_id);
-                    continue;
-                }
-
-                target_process = std::move(candidate);
-                DWORD cleanup_error{};
-                target_cleanup = OpenProcessWithAccess(
-                    process_id, PROCESS_TERMINATE | SYNCHRONIZE, cleanup_error);
-                target.process_id = process_id;
-                target.executable_path = path;
-                target.executable_name = path.filename().wstring();
-                target.owned_by_current_user = SameUser(
-                    target_process.Get(), inspection_error);
-                target.x64 = inspection_error == ERROR_SUCCESS &&
-                    IsX64Process(target_process.Get(), inspection_error);
-                target.inspection_error = inspection_error;
-                result.process_id = target.process_id;
-                if (inspection_error != ERROR_SUCCESS ||
-                    !target.owned_by_current_user || !target.x64) {
-                    result.mapping = Failure(
-                        !target.owned_by_current_user
-                            ? ManualMapError::DifferentUser
-                            : ManualMapError::IncompatibleArchitecture,
-                        inspection_error != ERROR_SUCCESS ? inspection_error
-                            : !target.owned_by_current_user ? ERROR_ACCESS_DENIED
-                                                            : ERROR_BAD_EXE_FORMAT,
-                        "captured target process is not a compatible x64 process");
-                }
-                break;
-            }
-            if (target_process || result.mapping.error != ManualMapError::None) break;
-            Sleep(1);
-        }
+        result.process_id = captured.process_id;
 
         if (!target_process) {
-            if (result.mapping.error == ManualMapError::None) {
-                if (deferred_failure.error != ManualMapError::None) {
-                    result.process_id = deferred_failure_process;
-                    result.mapping = std::move(deferred_failure);
-                } else {
-                    result.mapping = Failure(
-                        ManualMapError::ProcessLaunchFailure, ERROR_TIMEOUT,
-                        "official launcher did not create a new target process before the timeout");
-                }
-            }
+            result.mapping = Failure(
+                captured.error == ERROR_ACCESS_DENIED
+                    ? ManualMapError::AccessDenied
+                    : captured.error == ERROR_TIMEOUT
+                        ? ManualMapError::ProcessLaunchFailure
+                        : ManualMapError::ProcessControlFailure,
+                captured.error,
+                captured.error == ERROR_ACCESS_DENIED
+                    ? "new target process was detected after mapping access was filtered"
+                    : captured.error == ERROR_TIMEOUT
+                        ? "official launcher did not create a new target process before the timeout"
+                        : "low-latency target capture failed");
             return result;
+        }
+
+        DWORD cleanup_error{};
+        target_cleanup = OpenProcessWithAccess(
+            captured.process_id, PROCESS_TERMINATE | SYNCHRONIZE, cleanup_error);
+        target.process_id = captured.process_id;
+        target.executable_path = captured.path;
+        target.executable_name = captured.path.filename().wstring();
+        DWORD inspection_error{};
+        target.owned_by_current_user = SameUser(target_process.Get(), inspection_error);
+        target.x64 = inspection_error == ERROR_SUCCESS &&
+            IsX64Process(target_process.Get(), inspection_error);
+        target.inspection_error = inspection_error;
+        if (inspection_error != ERROR_SUCCESS ||
+            !target.owned_by_current_user || !target.x64) {
+            result.mapping = Failure(
+                !target.owned_by_current_user
+                    ? ManualMapError::DifferentUser
+                    : ManualMapError::IncompatibleArchitecture,
+                inspection_error != ERROR_SUCCESS ? inspection_error
+                    : !target.owned_by_current_user ? ERROR_ACCESS_DENIED
+                                                    : ERROR_BAD_EXE_FORMAT,
+                "captured target process is not a compatible x64 process");
         }
 
         bool mapping_started{};
