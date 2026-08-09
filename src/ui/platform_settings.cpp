@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <mutex>
 #include <span>
@@ -76,6 +77,30 @@ PlatformMinimumLogLevel ParseLogLevel(const std::string_view value) noexcept {
     return PlatformMinimumLogLevel::Info;
 }
 
+nlohmann::json SerializeColor(const PlatformUiColor& color) {
+    return nlohmann::json::array({color.red, color.green, color.blue});
+}
+
+void ReadColorValue(
+    const nlohmann::json& values, const char* id, PlatformUiColor& output) {
+    const auto found = values.find(id);
+    if (found == values.end()) return;
+    if (!found->is_array() || found->size() != 3U) {
+        throw std::invalid_argument("custom palette color must contain three channels");
+    }
+    output = {
+        found->at(0).get<float>(),
+        found->at(1).get<float>(),
+        found->at(2).get<float>(),
+        1.0f};
+}
+
+bool IsValidColor(const PlatformUiColor& color) noexcept {
+    return std::isfinite(color.red) && color.red >= 0.0f && color.red <= 1.0f &&
+        std::isfinite(color.green) && color.green >= 0.0f && color.green <= 1.0f &&
+        std::isfinite(color.blue) && color.blue >= 0.0f && color.blue <= 1.0f;
+}
+
 nlohmann::json Serialize(
     const PlatformSettingsValues& values,
     const std::uint64_t revision,
@@ -85,6 +110,14 @@ nlohmann::json Serialize(
         {"revision", revision},
         {"lastRoute", last_route},
         {"values", {
+            {"interface.palette", ue5mem::ToString(values.interface_palette)},
+            {"interface.custom_accent", SerializeColor(values.interface_custom_colors.accent)},
+            {"interface.custom_text", SerializeColor(values.interface_custom_colors.text)},
+            {"interface.custom_window_background",
+                SerializeColor(values.interface_custom_colors.window_background)},
+            {"interface.custom_child_background",
+                SerializeColor(values.interface_custom_colors.child_background)},
+            {"interface.custom_border", SerializeColor(values.interface_custom_colors.border)},
             {"interface.scale_percent", values.interface_scale_percent},
             {"interface.opacity_percent", values.interface_opacity_percent},
             {"interface.reduced_motion", values.interface_reduced_motion},
@@ -123,6 +156,18 @@ std::vector<PlatformSettingsValidationError> ValidatePlatformSettings(
         errors.push_back({"interface.language",
             "Choose auto, en-US, or zh-CN."});
     }
+    const auto validate_color = [&](const char* id, const PlatformUiColor& color) {
+        if (!IsValidColor(color)) {
+            errors.push_back({id, "Use RGB channels from 0.0 to 1.0."});
+        }
+    };
+    validate_color("interface.custom_accent", values.interface_custom_colors.accent);
+    validate_color("interface.custom_text", values.interface_custom_colors.text);
+    validate_color("interface.custom_window_background",
+        values.interface_custom_colors.window_background);
+    validate_color("interface.custom_child_background",
+        values.interface_custom_colors.child_background);
+    validate_color("interface.custom_border", values.interface_custom_colors.border);
     const auto range_step = [&](const char* id, const std::uint32_t value,
                                 const std::uint32_t minimum, const std::uint32_t maximum,
                                 const std::uint32_t step, const char* message) {
@@ -214,6 +259,18 @@ public:
                     302, "platform settings document has an unsupported shape", &document);
             }
             const nlohmann::json& values = document.at("values");
+            snapshot_.values.interface_palette = ue5mem::ParsePlatformUiPalette(
+                values.value("interface.palette", std::string{"anomalyhub"}));
+            ReadColorValue(values, "interface.custom_accent",
+                snapshot_.values.interface_custom_colors.accent);
+            ReadColorValue(values, "interface.custom_text",
+                snapshot_.values.interface_custom_colors.text);
+            ReadColorValue(values, "interface.custom_window_background",
+                snapshot_.values.interface_custom_colors.window_background);
+            ReadColorValue(values, "interface.custom_child_background",
+                snapshot_.values.interface_custom_colors.child_background);
+            ReadColorValue(values, "interface.custom_border",
+                snapshot_.values.interface_custom_colors.border);
             ReadValue(values, "interface.scale_percent", snapshot_.values.interface_scale_percent);
             ReadValue(values, "interface.opacity_percent", snapshot_.values.interface_opacity_percent);
             ReadValue(values, "interface.reduced_motion", snapshot_.values.interface_reduced_motion);

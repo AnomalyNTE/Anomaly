@@ -1,4 +1,5 @@
 #include "anomaly/host_ui_service.hpp"
+#include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/thread_local_value.hpp"
 
 #include <imgui.h>
@@ -160,6 +161,14 @@ ImU32 ToU32(const ImVec4& color) noexcept {
     return ImGui::ColorConvertFloat4ToU32(color);
 }
 
+ImVec4 ThemeColor(const PlatformUiColor& color) noexcept {
+    return {color.red, color.green, color.blue, color.alpha};
+}
+
+ImVec4 ThemeColorWithAlpha(const PlatformUiColor& color, const float alpha) noexcept {
+    return {color.red, color.green, color.blue, alpha};
+}
+
 const char* PluginWindowChromeGlyphText(const PluginWindowChromeGlyph glyph) noexcept {
     switch (glyph) {
     case PluginWindowChromeGlyph::ChevronDown: return "\xEE\x9C\x8D";
@@ -210,14 +219,15 @@ bool DrawPluginWindowChromeButton(
         hovered = ImGui::IsMouseHoveringRect(bounds.Min, bounds.Max);
     }
 
-    const ImVec4 raised(0.137F, 0.165F, 0.192F, 1.0F);
-    const ImVec4 active(0.180F, 0.220F, 0.250F, 1.0F);
-    const ImVec4 accent(0.345F, 0.718F, 0.647F, 1.0F);
+    const auto& theme = PlatformUiTheme();
+    const ImVec4 raised = ThemeColor(theme.button_hovered);
+    const ImVec4 active = ThemeColor(theme.button_active);
+    const ImVec4 accent = ThemeColor(theme.accent);
     const ImVec4 transparent(0.0F, 0.0F, 0.0F, 0.0F);
     const ImVec4 background = held ? active : hovered ? raised
-        : selected ? ImVec4(accent.x, accent.y, accent.z, 0.16F) : transparent;
-    const ImVec4 text = !enabled ? ImVec4(0.451F, 0.490F, 0.533F, 1.0F)
-        : selected ? accent : ImVec4(0.667F, 0.698F, 0.737F, 1.0F);
+        : selected ? ThemeColorWithAlpha(theme.accent, 0.16F) : transparent;
+    const ImVec4 text = !enabled ? ThemeColor(theme.text_muted)
+        : selected ? accent : ThemeColor(theme.text_muted);
     ImDrawList* const draw_list = window.DrawList;
     draw_list->AddRectFilled(bounds.Min, bounds.Max, ToU32(background), 3.0F);
     const char* const glyph_text = PluginWindowChromeGlyphText(glyph);
@@ -254,11 +264,12 @@ bool DrawPluginWindowChrome(
     const ImVec2 size = window.Size;
     ImDrawList* const draw_list = window.DrawList;
     const ImRect header(origin, Offset(origin, size.x, kPluginWindowHeaderHeight));
-    draw_list->AddRectFilled(header.Min, header.Max, ToU32(ImVec4(0.086F, 0.102F, 0.118F, 1.0F)));
+    const auto& theme = PlatformUiTheme();
+    draw_list->AddRectFilled(header.Min, header.Max, ToU32(ThemeColor(theme.header_background)));
     draw_list->AddLine(
         Offset(origin, 0.0F, kPluginWindowHeaderHeight - 1.0F),
         Offset(origin, size.x, kPluginWindowHeaderHeight - 1.0F),
-        ToU32(ImVec4(0.204F, 0.235F, 0.271F, 1.0F)));
+        ToU32(ThemeColor(theme.border)));
 
     const float close_x = size.x - kPluginWindowActionRightInset - kPluginWindowActionSize;
     const float pin_x = close_x - kPluginWindowActionGap - kPluginWindowActionSize;
@@ -268,7 +279,7 @@ bool DrawPluginWindowChrome(
     const std::string visible_title = EllipsizeWindowTitle(
         id_marker == std::string_view::npos ? title : title.substr(0U, id_marker), title_width);
     draw_list->AddText(Offset(origin, kPluginWindowBodyPadding, 13.0F),
-        ToU32(ImVec4(0.949F, 0.957F, 0.965F, 1.0F)), visible_title.c_str());
+        ToU32(ThemeColor(theme.text)), visible_title.c_str());
 
     ImGui::PushClipRect(header.Min, header.Max, true);
     DrawPluginWindowDragRegion(window,
@@ -437,11 +448,16 @@ int ANOMALY_CALL BeginWindow(
     }
     bool visible = open == nullptr || *open != 0;
     if (!management_shell) {
+        ImGui::PushStyleColor(
+            ImGuiCol_WindowBg, ThemeColor(PlatformUiTheme().child_background));
         ImGui::PushStyleVar(
             ImGuiStyleVar_WindowPadding, ImVec2(kPluginWindowBodyPadding, kPluginWindowBodyPadding));
     }
     const bool result = ImGui::Begin(text.c_str(), open == nullptr ? nullptr : &visible, window_flags);
-    if (!management_shell) ImGui::PopStyleVar();
+    if (!management_shell) {
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+    }
     g_host_ui_window_scopes.Get().emplace_back();
     if (open != nullptr) *open = visible ? 1 : 0;
     const bool window_available = UpdateHostUiWindowState();

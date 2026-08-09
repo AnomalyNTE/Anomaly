@@ -3,12 +3,14 @@
 #include "config.hpp"
 #include "platform_host.hpp"
 #include "plugin_manager.hpp"
+#include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/platform_settings.hpp"
 
 #include <Windows.h>
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -19,9 +21,32 @@ std::filesystem::path ExecutableDirectory() {
     return std::filesystem::path(path).parent_path();
 }
 
+std::string PreviewPaletteArgument() {
+    const std::wstring command_line = GetCommandLineW();
+    constexpr std::wstring_view prefix = L"--palette=";
+    const std::size_t start = command_line.find(prefix);
+    if (start == std::wstring::npos) return "anomalyhub";
+    const std::size_t value_start = start + prefix.size();
+    const std::size_t value_end = command_line.find_first_of(L" \t\r\n", value_start);
+    const std::wstring value = command_line.substr(
+        value_start, value_end == std::wstring::npos ? std::wstring::npos : value_end - value_start);
+    std::string result;
+    result.reserve(value.size());
+    for (const wchar_t character : value) {
+        if (character >= L'A' && character <= L'Z') {
+            result.push_back(static_cast<char>(character - L'A' + L'a'));
+        } else if (character >= L'a' && character <= L'z') {
+            result.push_back(static_cast<char>(character));
+        }
+    }
+    return result.empty() ? "anomalyhub" : result;
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    const auto palette = ue5mem::ParsePlatformUiPalette(PreviewPaletteArgument());
+    ue5mem::SetPlatformUiPalette(palette);
     const auto root = ExecutableDirectory() / L"Anomaly";
     auto config = ue5mem::AnalyzerConfig::Load(root / L"anomaly.ini");
     const auto locale = anomaly::ResolveUserLocale(config.platform_language);

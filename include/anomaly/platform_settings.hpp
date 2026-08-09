@@ -1,6 +1,7 @@
 #pragma once
 
 #include "anomaly/i18n.hpp"
+#include "anomaly/platform_ui_theme.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -32,6 +33,8 @@ enum class PlatformMinimumLogLevel : std::uint8_t {
 
 struct PlatformSettingsValues final {
     LanguagePreference interface_language{LanguagePreference::Auto};
+    PlatformUiPalette interface_palette{PlatformUiPalette::AnomalyHub};
+    PlatformUiCustomColors interface_custom_colors;
     std::uint32_t interface_scale_percent{100};
     std::uint32_t interface_opacity_percent{100};
     bool interface_reduced_motion{};

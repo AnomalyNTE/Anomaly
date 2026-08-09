@@ -1150,15 +1150,16 @@ private:
     }
 
     static ImVec4 StateColor(anomaly::PlatformUiPluginState state) noexcept {
+        const auto& theme = anomaly::PlatformUiTheme();
         switch (state) {
         case anomaly::PlatformUiPluginState::Active:
-            return ImVec4(0.25f, 0.83f, 0.52f, 1.0f);
+            return ThemeColor(theme.success);
         case anomaly::PlatformUiPluginState::Disabled:
-            return ImVec4(0.66f, 0.68f, 0.70f, 1.0f);
+            return ThemeColor(theme.text_muted);
         case anomaly::PlatformUiPluginState::Loaded:
-            return ImVec4(0.35f, 0.70f, 0.90f, 1.0f);
+            return ThemeColor(theme.info);
         default:
-            return ImVec4(0.95f, 0.61f, 0.24f, 1.0f);
+            return ThemeColor(theme.warning);
         }
     }
 
@@ -1539,6 +1540,21 @@ private:
     void ApplySettingsPreview() {
         if (!settings_draft_) return;
         const auto& values = *settings_draft_;
+        const bool custom_colors_changed =
+            anomaly::GetPlatformUiCustomColors() != values.interface_custom_colors;
+        if (custom_colors_changed) {
+            anomaly::SetPlatformUiCustomColors(values.interface_custom_colors);
+        }
+        const bool palette_changed =
+            anomaly::GetPlatformUiPalette() != values.interface_palette;
+        if (palette_changed) {
+            anomaly::SetPlatformUiPalette(values.interface_palette);
+        }
+        if (palette_changed ||
+            (values.interface_palette == anomaly::PlatformUiPalette::Custom &&
+                custom_colors_changed)) {
+            ApplyPlatformUiStyle();
+        }
         SetDeveloperMode(values.advanced_developer_mode);
         anomaly::SetHostUiInputCapturePolicy(values.input_capture_policy);
         ImGuiIO& io = ImGui::GetIO();
@@ -1548,14 +1564,29 @@ private:
         else io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
     }
 
-    static ImVec4 AccentColor() noexcept { return {0.345f, 0.718f, 0.647f, 1.0f}; }
-    static ImVec4 SuccessColor() noexcept { return {0.380f, 0.788f, 0.545f, 1.0f}; }
-    static ImVec4 WarningColor() noexcept { return {0.882f, 0.675f, 0.322f, 1.0f}; }
-    static ImVec4 ErrorColor() noexcept { return {0.898f, 0.435f, 0.447f, 1.0f}; }
-    static ImVec4 InfoColor() noexcept { return {0.431f, 0.659f, 0.996f, 1.0f}; }
-    static ImVec4 SurfaceColor() noexcept { return {0.106f, 0.125f, 0.145f, 1.0f}; }
-    static ImVec4 RaisedColor() noexcept { return {0.137f, 0.165f, 0.192f, 1.0f}; }
-    static ImVec4 NavColor() noexcept { return {0.063f, 0.075f, 0.090f, 1.0f}; }
+    static ImVec4 ThemeColor(const anomaly::PlatformUiColor& color) noexcept {
+        return {color.red, color.green, color.blue, color.alpha};
+    }
+
+    static ImVec4 ThemeColorWithAlpha(
+        const anomaly::PlatformUiColor& color, const float alpha) noexcept {
+        return {color.red, color.green, color.blue, alpha};
+    }
+
+    static ImVec4 AccentColor() noexcept { return ThemeColor(anomaly::PlatformUiTheme().accent); }
+    static ImVec4 SuccessColor() noexcept { return ThemeColor(anomaly::PlatformUiTheme().success); }
+    static ImVec4 WarningColor() noexcept { return ThemeColor(anomaly::PlatformUiTheme().warning); }
+    static ImVec4 ErrorColor() noexcept { return ThemeColor(anomaly::PlatformUiTheme().danger); }
+    static ImVec4 InfoColor() noexcept { return ThemeColor(anomaly::PlatformUiTheme().info); }
+    static ImVec4 SurfaceColor() noexcept {
+        return ThemeColor(anomaly::PlatformUiTheme().child_background);
+    }
+    static ImVec4 RaisedColor() noexcept {
+        return ThemeColor(anomaly::PlatformUiTheme().popup_background);
+    }
+    static ImVec4 NavColor() noexcept {
+        return ThemeColor(anomaly::PlatformUiTheme().navigation_background);
+    }
 
     [[nodiscard]] const char* DisplayPluginState(
         const anomaly::PlatformUiPluginState state) const noexcept {
@@ -1635,7 +1666,8 @@ private:
         case anomaly::PlatformUiPluginState::Quarantined:
         case anomaly::PlatformUiPluginState::Rejected:
             return ErrorColor();
-        case anomaly::PlatformUiPluginState::Disabled: return {0.451f, 0.490f, 0.533f, 1.0f};
+        case anomaly::PlatformUiPluginState::Disabled:
+            return ThemeColor(anomaly::PlatformUiTheme().text_muted);
         default: return WarningColor();
         }
     }
@@ -1726,7 +1758,7 @@ private:
         case anomaly::PlatformUiOperationState::Failed: return ErrorColor();
         case anomaly::PlatformUiOperationState::PartiallyFailed: return WarningColor();
         case anomaly::PlatformUiOperationState::Cancelled:
-            return ImVec4(0.451f, 0.490f, 0.533f, 1.0f);
+            return ThemeColor(anomaly::PlatformUiTheme().text_muted);
         case anomaly::PlatformUiOperationState::Idle:
         case anomaly::PlatformUiOperationState::Submitted:
         case anomaly::PlatformUiOperationState::Running:
@@ -1787,18 +1819,20 @@ private:
     }
 
     [[nodiscard]] bool PrimaryButton(const char* label, ImVec2 size = {}) const {
+        const auto& theme = anomaly::PlatformUiTheme();
         ImGui::PushStyleColor(ImGuiCol_Button, AccentColor());
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.390f, 0.790f, 0.700f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.270f, 0.610f, 0.540f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ThemeColor(theme.accent_hovered));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColor(theme.accent_active));
         const bool pressed = ImGui::Button(label, size);
         ImGui::PopStyleColor(3);
         return pressed;
     }
 
     [[nodiscard]] bool DestructiveButton(const char* label, ImVec2 size = {}) const {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.650f, 0.220f, 0.220f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.760f, 0.270f, 0.270f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.560f, 0.170f, 0.170f, 1.0f));
+        const auto& theme = anomaly::PlatformUiTheme();
+        ImGui::PushStyleColor(ImGuiCol_Button, ThemeColorWithAlpha(theme.danger, 0.72f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ThemeColor(theme.danger));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColorWithAlpha(theme.danger, 0.60f));
         const bool pressed = ImGui::Button(label, size);
         ImGui::PopStyleColor(3);
         return pressed;
@@ -1812,14 +1846,16 @@ private:
 
     [[nodiscard]] bool DrawShellIconButton(const char* id, const ShellGlyph glyph,
         const char* tooltip, const bool enabled = true, const bool selected = false) const {
+        const auto& theme = anomaly::PlatformUiTheme();
         ImGui::PushID(id);
         ImGui::PushStyleColor(ImGuiCol_Button,
-            selected ? ImVec4(0.345f, 0.718f, 0.647f, 0.16f) : ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            selected ? ThemeColorWithAlpha(theme.accent, 0.16f)
+                    : ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-            selected ? ImVec4(0.345f, 0.718f, 0.647f, 0.26f) : RaisedColor());
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.180f, 0.220f, 0.250f, 1.0f));
+            selected ? ThemeColorWithAlpha(theme.accent, 0.26f) : RaisedColor());
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColor(theme.button_active));
         ImGui::PushStyleColor(ImGuiCol_Text, selected ? AccentColor()
-            : ImVec4(0.667f, 0.698f, 0.737f, 1.0f));
+            : ThemeColor(theme.text_muted));
         ImGui::BeginDisabled(!enabled);
         const bool pressed = ImGui::Button(ShellGlyphText(glyph), ImVec2(30.0f, 30.0f));
         ImGui::EndDisabled();
@@ -1833,17 +1869,16 @@ private:
     [[nodiscard]] bool DrawShellCommandButton(const char* id, const char* label,
         const ShellGlyph glyph, const bool primary = false, const bool enabled = true,
         const ImVec2 size = {}) const {
+        const auto& theme = anomaly::PlatformUiTheme();
         const std::string text = std::string(ShellGlyphText(glyph)) + "  " + label;
         ImGui::PushID(id);
         ImGui::PushStyleColor(ImGuiCol_Button, primary ? AccentColor() : SurfaceColor());
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-            primary ? ImVec4(0.415f, 0.773f, 0.706f, 1.0f) : RaisedColor());
+            primary ? ThemeColor(theme.accent_hovered) : RaisedColor());
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-            primary ? ImVec4(0.290f, 0.635f, 0.570f, 1.0f)
-                    : ImVec4(0.180f, 0.220f, 0.250f, 1.0f));
+            primary ? ThemeColor(theme.accent_active) : ThemeColor(theme.button_active));
         ImGui::PushStyleColor(ImGuiCol_Text,
-            primary ? ImVec4(0.063f, 0.129f, 0.122f, 1.0f)
-                    : ImVec4(0.667f, 0.698f, 0.737f, 1.0f));
+            primary ? ThemeColor(theme.inverse_text) : ThemeColor(theme.text_muted));
         ImGui::BeginDisabled(!enabled);
         const bool pressed = ImGui::Button(text.c_str(), size.x > 0.0f ? size : ImVec2(0.0f, 30.0f));
         ImGui::EndDisabled();
@@ -1874,7 +1909,10 @@ private:
         const ShellGlyph glyph = control == ShellHeaderControl::Collapse
             ? (active ? ShellGlyph::ChevronUp : ShellGlyph::ChevronDown)
             : control == ShellHeaderControl::Lock ? ShellGlyph::Pin : ShellGlyph::Close;
-        return DrawShellIconButton(id, glyph, tooltip, !disabled, active);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        const bool pressed = DrawShellIconButton(id, glyph, tooltip, !disabled, active);
+        ImGui::PopStyleVar();
+        return pressed;
     }
 
     [[nodiscard]] static std::string Ellipsize(std::string_view text, const float width) {
@@ -1898,15 +1936,16 @@ private:
     }
 
     static void DrawGenericPluginIcon(const ImVec2 position, const float size) {
+        const auto& theme = anomaly::PlatformUiTheme();
         ImDrawList* const draw_list = ImGui::GetWindowDrawList();
-        const ImU32 border = ImGui::ColorConvertFloat4ToU32({0.306f, 0.349f, 0.396f, 1.0f});
-        const ImU32 fill = ImGui::ColorConvertFloat4ToU32({0.125f, 0.149f, 0.173f, 1.0f});
+        const ImU32 border = ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.icon_border));
+        const ImU32 fill = ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.icon_fill));
         draw_list->AddRectFilled(position, Offset(position, size, size), fill, 4.0f);
         draw_list->AddRect(position, Offset(position, size, size), border, 4.0f);
         const ImVec2 glyph_size = ImGui::CalcTextSize(ShellGlyphText(ShellGlyph::Package));
         draw_list->AddText(Offset(position, (size - glyph_size.x) * 0.5f,
             (size - glyph_size.y) * 0.5f - 1.0f),
-            ImGui::ColorConvertFloat4ToU32({0.667f, 0.698f, 0.737f, 1.0f}),
+            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text_muted)),
             ShellGlyphText(ShellGlyph::Package));
     }
 
@@ -2034,7 +2073,8 @@ private:
     }
 
     void DrawShellHeader() {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.086f, 0.102f, 0.118f, 1.0f));
+        const auto& theme = anomaly::PlatformUiTheme();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.header_background));
         ImGui::BeginChild("PlatformGlobalHeader", ImVec2(0.0f, kPlatformHeaderHeight), true,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 origin = ImGui::GetWindowPos();
@@ -2048,7 +2088,7 @@ private:
         if (!logo_drawn) ImGui::Dummy(ImVec2(kPlatformHeaderLogoSize, kPlatformHeaderLogoSize));
         ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.35f,
             Offset(origin, 56.0f, 16.0f),
-            ImGui::ColorConvertFloat4ToU32({0.949f, 0.957f, 0.965f, 1.0f}),
+            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)),
             Text(anomaly::MessageId::ApplicationTitle));
         if (!ManagementShellGloballyCollapsed()) {
             ImGui::SetCursorScreenPos(
@@ -2060,6 +2100,7 @@ private:
     }
 
     void DrawShellNavigation() {
+        const auto& theme = anomaly::PlatformUiTheme();
         constexpr std::array<Route, 3> routes{
             Route::Plugins, Route::Diagnostics, Route::Settings};
         const bool collapsed = NavigationCollapsed();
@@ -2072,7 +2113,7 @@ private:
             std::string item_id{"##nav-"};
             item_id += anomaly::ToString(route);
             ImGui::PushStyleColor(ImGuiCol_Header, selected
-                ? ImVec4(0.345f, 0.718f, 0.647f, 0.16f) : ImVec4(0, 0, 0, 0));
+                ? ThemeColorWithAlpha(theme.accent, 0.16f) : ImVec4(0, 0, 0, 0));
             const bool clicked = ImGui::Selectable(item_id.c_str(), selected, 0,
                 ImVec2(std::max(0.0f, width - 16.0f), 40.0f));
             ImGui::PopStyleColor();
@@ -2085,8 +2126,7 @@ private:
                     ImGui::ColorConvertFloat4ToU32(AccentColor()), 2.0f);
             }
             const ImU32 primary_text = ImGui::ColorConvertFloat4ToU32(selected
-                ? ImVec4(0.949f, 0.957f, 0.965f, 1.0f)
-                : ImVec4(0.667f, 0.698f, 0.737f, 1.0f));
+                ? ThemeColor(theme.text) : ThemeColor(theme.text_muted));
             const char* const glyph = ShellGlyphText(RouteGlyph(route));
             // Keep the route icons on one left-aligned grid when the rail changes width.
             const float icon_x = 12.0f;
@@ -2136,7 +2176,8 @@ private:
     void DrawShellPageHeader(
         const char* title, const std::string_view subtitle, DrawActions&& actions,
         const float title_inset = 0.0f) {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f, 0.090f, 0.102f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,
+            ThemeColor(anomaly::PlatformUiTheme().window_background));
         ImGui::BeginChild("PlatformPageHeader", ImVec2(0.0f, 48.0f), true,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 origin = ImGui::GetWindowPos();
@@ -2459,17 +2500,20 @@ private:
 
     void DrawPluginTabs() {
         const std::size_t installed = model_.Snapshot().runtime_summary.installed;
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.090f, 0.106f, 0.122f, 1.0f));
+        const auto& theme = anomaly::PlatformUiTheme();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.toolbar_background));
         ImGui::BeginChild("PlatformPluginTabs", ImVec2(0.0f, 36.0f), true,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 origin = ImGui::GetWindowPos();
         float x = IsCompact() ? 8.0f : 16.0f;
-        const auto draw_tab = [this, &origin, &x](const Tab tab, const std::string& label) {
+        const auto draw_tab = [this, &origin, &x, &theme](
+            const Tab tab, const std::string& label) {
             const bool selected = model_.State().plugin_tab == tab;
             const float width = ImGui::CalcTextSize(label.c_str()).x + 20.0f;
             ImGui::SetCursorScreenPos(Offset(origin, x, 3.0f));
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.949f, 0.957f, 0.965f, 0.03f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                ThemeColorWithAlpha(theme.text, 0.08f));
             const std::string stable_label = anomaly::StableDisplayLabel(
                 label, "plugin-tab-" + std::to_string(static_cast<unsigned>(tab)));
             if (ImGui::Button(stable_label.c_str(), ImVec2(width, 30.0f))) {
@@ -2498,7 +2542,8 @@ private:
 
     void DrawPluginToolbar() {
         const float toolbar_height = layout_mode_ == LayoutMode::Wide ? 46.0f : 84.0f;
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f, 0.090f, 0.102f, 1.0f));
+        const auto& theme = anomaly::PlatformUiTheme();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.window_background));
         ImGui::BeginChild("PlatformPluginToolbar", ImVec2(0.0f, toolbar_height), true,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         auto& state = model_.State();
@@ -2522,7 +2567,7 @@ private:
         ImGui::PopStyleVar();
         const ImVec2 search_min = ImGui::GetItemRectMin();
         ImGui::GetWindowDrawList()->AddText(Offset(search_min, 8.0f, 7.0f),
-            ImGui::ColorConvertFloat4ToU32({0.667f, 0.698f, 0.737f, 1.0f}),
+            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text_muted)),
             ShellGlyphText(ShellGlyph::Search));
         ImGui::SetCursorScreenPos(Offset(origin, padding + search_width + 8.0f, 8.0f));
         if (DrawShellIconButton("clear-plugin-search", ShellGlyph::Close,
@@ -2579,7 +2624,8 @@ private:
             const bool selected = state.plugin_filter == filter;
             const char* const label = FilterLabel(filter);
             ImGui::PushStyleColor(ImGuiCol_Button, selected
-                ? ImVec4(0.345f, 0.718f, 0.647f, 0.18f) : SurfaceColor());
+                ? ThemeColorWithAlpha(anomaly::PlatformUiTheme().accent, 0.18f)
+                : SurfaceColor());
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, RaisedColor());
             ImGui::PushID(static_cast<int>(filter));
             if (ImGui::Button(label, ImVec2(ImGui::CalcTextSize(label).x + 18.0f, 30.0f))) {
@@ -2684,7 +2730,8 @@ private:
         ImGui::GetWindowDrawList()->AddLine(
             ImVec2(splitter_origin.x + 2.5f, splitter_origin.y),
             ImVec2(splitter_origin.x + 2.5f, splitter_origin.y + ImGui::GetItemRectSize().y),
-            ImGui::ColorConvertFloat4ToU32({0.204f, 0.235f, 0.271f, 1.0f}));
+            ImGui::ColorConvertFloat4ToU32(
+                ThemeColor(anomaly::PlatformUiTheme().border)));
         ImGui::SameLine(0.0f, 0.0f);
         ImGui::BeginChild("PlatformPluginDetail", ImVec2(0.0f, 0.0f), true,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -2797,8 +2844,9 @@ private:
             ImGui::OpenPopup("Platform plugin context");
         }
 
-        const ImVec4 background = selected ? ImVec4(0.345f, 0.718f, 0.647f, 0.14f)
-            : (row_hovered ? ImVec4(0.125f, 0.149f, 0.173f, 1.0f) : SurfaceColor());
+        const auto& theme = anomaly::PlatformUiTheme();
+        const ImVec4 background = selected ? ThemeColorWithAlpha(theme.accent, 0.14f)
+            : (row_hovered ? ThemeColor(theme.row_hovered) : SurfaceColor());
         ImDrawList* const draw_list = ImGui::GetWindowDrawList();
         draw_list->AddRectFilled(origin, Offset(origin, width, height),
             ImGui::ColorConvertFloat4ToU32(background));
@@ -2812,7 +2860,7 @@ private:
         const float text_width = std::max(20.0f, origin.x + status_x - text_x - 8.0f);
         const std::string name = Ellipsize(plugin.name.empty() ? plugin.id : plugin.name, text_width);
         draw_list->AddText(ImVec2(text_x, origin.y + 12.0f),
-            ImGui::ColorConvertFloat4ToU32({0.949f, 0.957f, 0.965f, 1.0f}), name.c_str());
+            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)), name.c_str());
         if (!plugin.author.empty() || !plugin.version.empty()) {
             std::string metadata;
             if (!plugin.author.empty()) metadata = plugin.author;
@@ -2822,7 +2870,7 @@ private:
             }
             metadata = Ellipsize(metadata, text_width);
             draw_list->AddText(ImVec2(text_x, origin.y + 33.0f),
-                ImGui::ColorConvertFloat4ToU32({0.667f, 0.698f, 0.737f, 1.0f}), metadata.c_str());
+                ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text_muted)), metadata.c_str());
         }
         draw_list->AddText(Offset(origin, status_x,
                 (height - ImGui::GetTextLineHeight()) * 0.5f),
@@ -2839,10 +2887,10 @@ private:
             model_.State().selected_plugin_id = plugin.id;
             SubmitPluginToggle(plugin);
         }
-        const ImVec4 toggle_background = plugin.enabled ? ImVec4(0.345f, 0.718f, 0.647f, 0.35f)
-            : ImVec4(0.094f, 0.114f, 0.133f, 1.0f);
+        const ImVec4 toggle_background = plugin.enabled
+            ? ThemeColorWithAlpha(theme.accent, 0.35f) : ThemeColor(theme.toggle_off);
         const ImVec4 toggle_border = plugin.enabled ? AccentColor()
-            : ImVec4(0.298f, 0.337f, 0.380f, 1.0f);
+            : ThemeColor(theme.toggle_off_border);
         draw_list->AddRectFilled(toggle_position, Offset(toggle_position, 32.0f, 18.0f),
             ImGui::ColorConvertFloat4ToU32(toggle_background), 9.0f);
         draw_list->AddRect(toggle_position, Offset(toggle_position, 32.0f, 18.0f),
@@ -2850,8 +2898,7 @@ private:
         const float knob_x = plugin.enabled ? 23.0f : 9.0f;
         draw_list->AddCircleFilled(Offset(toggle_position, knob_x, 9.0f), 6.0f,
             ImGui::ColorConvertFloat4ToU32(plugin.enabled
-                ? ImVec4(0.851f, 0.973f, 0.945f, 1.0f)
-                : ImVec4(0.667f, 0.698f, 0.737f, 1.0f)));
+                ? ThemeColor(theme.toggle_on_knob) : ThemeColor(theme.text_muted)));
         if (current_toggle_hovered && !toggle_allowed) {
             const std::string reason = PluginToggleDisabledReason(plugin);
             ImGui::SetTooltip("%s", reason.c_str());
@@ -2943,7 +2990,8 @@ private:
     void DrawPluginPublicDetail(const anomaly::InstalledPluginView& plugin) {
         ImGui::PushID(plugin.id.c_str());
         const float height = IsCompact() ? 84.0f : 96.0f;
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.118f, 0.141f, 0.165f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,
+            ThemeColor(anomaly::PlatformUiTheme().panel_background));
         ImGui::BeginChild("PlatformPluginDetailHeader", ImVec2(0.0f, height), true,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 origin = ImGui::GetWindowPos();
@@ -3655,7 +3703,8 @@ private:
         for (const DeveloperPanel panel : panels) {
             const bool selected = developer_panel_ == panel;
             ImGui::PushStyleColor(ImGuiCol_Header, selected
-                ? ImVec4(0.345f, 0.718f, 0.647f, 0.16f) : ImVec4(0, 0, 0, 0));
+                ? ThemeColorWithAlpha(anomaly::PlatformUiTheme().accent, 0.16f)
+                : ImVec4(0, 0, 0, 0));
             ImGui::PushID(static_cast<int>(panel));
             if (ImGui::Selectable(
                     DeveloperPanelLabel(panel), selected, 0, ImVec2(0.0f, 32.0f))) {
@@ -4053,6 +4102,11 @@ private:
         if (id == "diagnostics.ring_capacity") {
             return Text(anomaly::MessageId::SettingsValidationRingCapacity);
         }
+        if (id == "interface.custom_accent" || id == "interface.custom_text" ||
+            id == "interface.custom_window_background" ||
+            id == "interface.custom_child_background" || id == "interface.custom_border") {
+            return Text(anomaly::MessageId::SettingsValidationColor);
+        }
         return found->message.c_str();
     }
 
@@ -4135,6 +4189,24 @@ private:
             return Text(anomaly::MessageId::SettingsSimplifiedChinese);
         }
         return Text(anomaly::MessageId::CommonUnknown);
+    }
+
+    [[nodiscard]] const char* PaletteLabel(
+        const anomaly::PlatformUiPalette value) noexcept {
+        switch (value) {
+        case anomaly::PlatformUiPalette::Moss:
+            return Text(anomaly::MessageId::SettingsPaletteMoss);
+        case anomaly::PlatformUiPalette::Aurora:
+            return Text(anomaly::MessageId::SettingsPaletteAurora);
+        case anomaly::PlatformUiPalette::Ember:
+            return Text(anomaly::MessageId::SettingsPaletteEmber);
+        case anomaly::PlatformUiPalette::Paper:
+            return Text(anomaly::MessageId::SettingsPalettePaper);
+        case anomaly::PlatformUiPalette::AnomalyHub: return "AnomalyHub";
+        case anomaly::PlatformUiPalette::Custom:
+            return Text(anomaly::MessageId::SettingsPaletteCustom);
+        }
+        return "AnomalyHub";
     }
 
     [[nodiscard]] const char* MinimumLogLevelLabel(
@@ -4396,6 +4468,68 @@ private:
                         ImGui::EndCombo();
                     }
                 }, Text(anomaly::MessageId::SettingsRestartRequired));
+            row("interface.palette", Text(anomaly::MessageId::SettingsPalette),
+                Text(anomaly::MessageId::SettingsPaletteHint),
+                "palette theme color moss aurora ember paper anomalyhub custom", [&] {
+                    if (ImGui::BeginCombo("##value", PaletteLabel(values.interface_palette))) {
+                        constexpr std::array<anomaly::PlatformUiPalette, 6> options{
+                            anomaly::PlatformUiPalette::Moss,
+                            anomaly::PlatformUiPalette::Aurora,
+                            anomaly::PlatformUiPalette::Ember,
+                            anomaly::PlatformUiPalette::Paper,
+                            anomaly::PlatformUiPalette::AnomalyHub,
+                            anomaly::PlatformUiPalette::Custom};
+                        constexpr std::array<std::string_view, 6> ids{
+                            "palette-moss", "palette-aurora", "palette-ember",
+                            "palette-paper", "palette-anomalyhub", "palette-custom"};
+                        for (std::size_t index = 0; index < options.size(); ++index) {
+                            const std::string option = anomaly::StableDisplayLabel(
+                                PaletteLabel(options[index]), ids[index]);
+                            if (ImGui::Selectable(option.c_str(),
+                                    values.interface_palette == options[index])) {
+                                values.interface_palette = options[index];
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                });
+            if (values.interface_palette == anomaly::PlatformUiPalette::Custom) {
+                const auto color_row = [&](const char* id, const anomaly::MessageId label,
+                                           const anomaly::MessageId hint, const char* keywords,
+                                           anomaly::PlatformUiColor& color) {
+                    row(id, Text(label), Text(hint), keywords, [&] {
+                        std::array channels{color.red, color.green, color.blue};
+                        if (ImGui::ColorEdit3("##value", channels.data())) {
+                            color = {channels[0], channels[1], channels[2], 1.0f};
+                        }
+                    });
+                };
+                color_row("interface.custom_accent",
+                    anomaly::MessageId::SettingsCustomAccent,
+                    anomaly::MessageId::SettingsCustomAccentHint,
+                    "custom palette accent highlight selection color",
+                    values.interface_custom_colors.accent);
+                color_row("interface.custom_text",
+                    anomaly::MessageId::SettingsCustomText,
+                    anomaly::MessageId::SettingsCustomTextHint,
+                    "custom palette text foreground color",
+                    values.interface_custom_colors.text);
+                color_row("interface.custom_window_background",
+                    anomaly::MessageId::SettingsCustomWindowBackground,
+                    anomaly::MessageId::SettingsCustomWindowBackgroundHint,
+                    "custom palette window navigation background color",
+                    values.interface_custom_colors.window_background);
+                color_row("interface.custom_child_background",
+                    anomaly::MessageId::SettingsCustomChildBackground,
+                    anomaly::MessageId::SettingsCustomChildBackgroundHint,
+                    "custom palette content panel control background color",
+                    values.interface_custom_colors.child_background);
+                color_row("interface.custom_border",
+                    anomaly::MessageId::SettingsCustomBorder,
+                    anomaly::MessageId::SettingsCustomBorderHint,
+                    "custom palette border outline separator color",
+                    values.interface_custom_colors.border);
+            }
             row("interface.scale_percent", Text(anomaly::MessageId::SettingsInterfaceScale),
                 Text(anomaly::MessageId::SettingsInterfaceScaleHint),
                 "dpi font size zoom", [&] {
@@ -4814,16 +4948,17 @@ private:
         const ImVec2 position = Offset(origin, size.x - width - kPlatformToastBottomMargin,
             size.y - kPlatformToastHeight - kPlatformToastBottomMargin);
         const ImVec4 color = toast_failure_ ? ErrorColor() : SuccessColor();
+        const auto& theme = anomaly::PlatformUiTheme();
         ImDrawList* const draw_list = ImGui::GetForegroundDrawList();
         draw_list->AddRectFilled(position, Offset(position, width, kPlatformToastHeight),
-            ImGui::ColorConvertFloat4ToU32(ImVec4(0.118f, 0.141f, 0.165f, 0.98f)), 4.0f);
+            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.toast_background)), 4.0f);
         draw_list->AddRect(position, Offset(position, width, kPlatformToastHeight),
             ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.42f)), 4.0f);
         draw_list->AddText(Offset(position, 12.0f, 11.0f),
             ImGui::ColorConvertFloat4ToU32(color),
             ShellGlyphText(toast_failure_ ? ShellGlyph::Warning : ShellGlyph::Check));
         draw_list->AddText(Offset(position, 34.0f, 11.0f),
-            ImGui::ColorConvertFloat4ToU32(ImVec4(0.949f, 0.957f, 0.965f, 1.0f)),
+            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)),
             Ellipsize(toast_status_, width - 46.0f).c_str());
     }
 
@@ -6181,6 +6316,13 @@ bool InitializePlatformUi(
         }
     }
 
+    if (diagnostics.settings_snapshot) {
+        const anomaly::PlatformSettingsSnapshot settings = diagnostics.settings_snapshot();
+        if (settings.ready) {
+            anomaly::SetPlatformUiCustomColors(settings.values.interface_custom_colors);
+            anomaly::SetPlatformUiPalette(settings.values.interface_palette);
+        }
+    }
     ApplyPlatformUiStyle();
     anomaly::PlatformUiState state;
     {
