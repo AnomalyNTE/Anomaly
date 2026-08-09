@@ -12,6 +12,11 @@
 
 namespace anomaly {
 
+inline constexpr std::uint32_t kPlatformInterfaceScaleMinimumPercent = 100;
+inline constexpr std::uint32_t kPlatformInterfaceScaleMaximumPercent = 200;
+inline constexpr std::uint32_t kPlatformInterfaceScaleStepPercent = 5;
+inline constexpr std::uint32_t kPlatformInterfaceScaleDefaultPercent = 125;
+
 enum class PlatformInputCapturePolicy : std::uint8_t {
     Automatic,
     MenuOpen,
@@ -35,7 +40,7 @@ struct PlatformSettingsValues final {
     LanguagePreference interface_language{LanguagePreference::Auto};
     PlatformUiPalette interface_palette{PlatformUiPalette::AnomalyHub};
     PlatformUiCustomColors interface_custom_colors;
-    std::uint32_t interface_scale_percent{100};
+    std::uint32_t interface_scale_percent{kPlatformInterfaceScaleDefaultPercent};
     std::uint32_t interface_opacity_percent{100};
     bool interface_reduced_motion{};
     bool interface_remember_last_route{true};

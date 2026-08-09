@@ -171,7 +171,8 @@ PlatformUiThemeColors g_platform_ui_custom_theme =
 std::atomic<PlatformUiPalette> g_platform_ui_palette{PlatformUiPalette::AnomalyHub};
 
 constexpr float kPlatformFontSizePixels = 13.0f;
-constexpr std::array kPlatformFontBakeScales{1.0f, 1.25f, 1.70f};
+constexpr std::array kPlatformFontBakeScales{
+    1.00f, 1.25f, 1.50f, 1.75f, 2.00f};
 constexpr std::string_view kPlatformFontNamePrefix{"Anomaly host "};
 
 const std::vector<unsigned char>* CachedFontBytes(
@@ -331,6 +332,11 @@ ImVec4 ImGuiColor(const PlatformUiColor& color) noexcept {
 
 void ApplyPlatformUiStyle() noexcept {
     ImGuiStyle& style = ImGui::GetStyle();
+    style = ImGuiStyle{};
+    const float scale = std::isfinite(ImGui::GetIO().FontGlobalScale) &&
+            ImGui::GetIO().FontGlobalScale > 0.0f
+        ? ImGui::GetIO().FontGlobalScale
+        : 1.0f;
     const PlatformUiThemeColors& theme = PlatformUiTheme();
     style.WindowRounding = 4.0f;
     style.ChildRounding = 0.0f;
@@ -389,6 +395,7 @@ void ApplyPlatformUiStyle() noexcept {
     colors[ImGuiCol_TableBorderStrong] = colors[ImGuiCol_Border];
     colors[ImGuiCol_TableBorderLight] = ImVec4(
         theme.border.red, theme.border.green, theme.border.blue, 0.55f);
+    style.ScaleAllSizes(scale);
 }
 
 bool ConfigurePlatformUiFontAtlas(const std::filesystem::path& runtime_root) noexcept {
@@ -445,13 +452,11 @@ bool ApplyPlatformUiFontScale(const float scale) noexcept {
     if (!std::isfinite(scale) || scale <= 0.0f) return false;
     ImGuiIO& io = ImGui::GetIO();
     if (io.Fonts == nullptr) return false;
-    float selected_scale = kPlatformFontBakeScales.front();
-    float smallest_distance = (std::numeric_limits<float>::max)();
+    float selected_scale = kPlatformFontBakeScales.back();
     for (const float baked_scale : kPlatformFontBakeScales) {
-        const float distance = std::abs(scale - baked_scale);
-        if (distance < smallest_distance) {
+        if (baked_scale >= scale) {
             selected_scale = baked_scale;
-            smallest_distance = distance;
+            break;
         }
     }
     ImFont* selected = io.FontDefault != nullptr &&
@@ -472,6 +477,7 @@ bool ApplyPlatformUiFontScale(const float scale) noexcept {
         ? kPlatformFontSizePixels / selected->FontSize
         : 1.0f / selected_scale;
     io.FontGlobalScale = scale;
+    ApplyPlatformUiStyle();
     return true;
 }
 

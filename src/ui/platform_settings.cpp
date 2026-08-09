@@ -20,6 +20,7 @@ namespace {
 constexpr std::wstring_view kSettingsPath = L"config/platform-settings.json";
 constexpr std::wstring_view kAnalyzerConfigPath = L"anomaly.ini";
 constexpr std::size_t kMaximumSettingsBytes = 64U * 1024U;
+constexpr std::uint32_t kLegacyInterfaceScaleMinimumPercent = 75;
 
 LanguagePreference ReadLanguagePreference(const std::filesystem::path& path) noexcept {
     std::array<wchar_t, 32> buffer{};
@@ -176,7 +177,9 @@ std::vector<PlatformSettingsValidationError> ValidatePlatformSettings(
         }
     };
     range_step("interface.scale_percent", values.interface_scale_percent,
-        75, 200, 5, "Use a value from 75 to 200 in steps of 5.");
+        kPlatformInterfaceScaleMinimumPercent, kPlatformInterfaceScaleMaximumPercent,
+        kPlatformInterfaceScaleStepPercent,
+        "Use a value from 100 to 200 in steps of 5.");
     range_step("interface.opacity_percent", values.interface_opacity_percent,
         10, 100, 5, "Use a value from 10 to 100 in steps of 5.");
     if (!IsMenuKeyValid(values.input_menu_toggle)) {
@@ -272,6 +275,16 @@ public:
             ReadColorValue(values, "interface.custom_border",
                 snapshot_.values.interface_custom_colors.border);
             ReadValue(values, "interface.scale_percent", snapshot_.values.interface_scale_percent);
+            if (snapshot_.values.interface_scale_percent >=
+                    kLegacyInterfaceScaleMinimumPercent &&
+                snapshot_.values.interface_scale_percent <
+                    kPlatformInterfaceScaleMinimumPercent &&
+                (snapshot_.values.interface_scale_percent -
+                    kLegacyInterfaceScaleMinimumPercent) %
+                        kPlatformInterfaceScaleStepPercent == 0) {
+                snapshot_.values.interface_scale_percent =
+                    kPlatformInterfaceScaleMinimumPercent;
+            }
             ReadValue(values, "interface.opacity_percent", snapshot_.values.interface_opacity_percent);
             ReadValue(values, "interface.reduced_motion", snapshot_.values.interface_reduced_motion);
             ReadValue(values, "interface.remember_last_route", snapshot_.values.interface_remember_last_route);
