@@ -57,14 +57,14 @@ constexpr float kProxyActionLeftPadding = 4.0f;
 constexpr float kLauncherFontScale = 15.0f / 13.0f;
 constexpr float kDefaultDpi = 96.0f;
 
-const ImVec4 kAccent{0.345f, 0.718f, 0.647f, 1.0f};
-const ImVec4 kAccentHover{0.415f, 0.773f, 0.706f, 1.0f};
-const ImVec4 kSurface{0.106f, 0.125f, 0.145f, 1.0f};
-const ImVec4 kRaised{0.137f, 0.165f, 0.192f, 1.0f};
-const ImVec4 kMuted{0.667f, 0.698f, 0.737f, 1.0f};
-const ImVec4 kSuccess{0.333f, 0.733f, 0.482f, 1.0f};
-const ImVec4 kWarning{0.941f, 0.706f, 0.314f, 1.0f};
-const ImVec4 kDanger{0.910f, 0.365f, 0.365f, 1.0f};
+ImVec4 ThemeColor(const ue5mem::PlatformUiColor& color) noexcept {
+    return {color.red, color.green, color.blue, color.alpha};
+}
+
+ImVec4 ThemeColorWithAlpha(
+    const ue5mem::PlatformUiColor& color, const float alpha) noexcept {
+    return {color.red, color.green, color.blue, alpha};
+}
 
 enum class LauncherMode : std::uint8_t { Proxy, Attach };
 enum class MessageKind : std::uint8_t { Neutral, Success, Error };
@@ -902,16 +902,18 @@ bool CommandButton(
         text = Ellipsize(text,
             (std::max)(0.0f, scaled_size.x - ImGui::GetStyle().FramePadding.x * 2.0f));
     }
+    const auto& theme = ue5mem::PlatformUiTheme();
     ImGui::PushID(id);
-    ImGui::PushStyleColor(ImGuiCol_Button, primary ? kAccent : kSurface);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, primary ? kAccentHover : kRaised);
+    ImGui::PushStyleColor(ImGuiCol_Button,
+        ThemeColor(primary ? theme.accent : theme.button));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+        ThemeColor(primary ? theme.accent_hovered : theme.button_hovered));
     ImGui::PushStyleColor(
         ImGuiCol_ButtonActive,
-        primary ? ImVec4(0.290f, 0.635f, 0.570f, 1.0f)
-                : ImVec4(0.180f, 0.220f, 0.250f, 1.0f));
+        ThemeColor(primary ? theme.accent_active : theme.button_active));
     ImGui::PushStyleColor(
         ImGuiCol_Text,
-        primary ? ImVec4(0.063f, 0.129f, 0.122f, 1.0f) : kMuted);
+        ThemeColor(primary ? theme.inverse_text : theme.text_muted));
     ImGui::BeginDisabled(!enabled);
     const bool pressed = ImGui::Button(text.c_str(), scaled_size);
     ImGui::EndDisabled();
@@ -921,16 +923,19 @@ bool CommandButton(
 }
 
 bool ModeButton(const char* id, const char* label, bool selected, float width) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     const ImVec2 size(Scale(width), ButtonHeight(30.0f));
     const std::string text = Ellipsize(label,
         (std::max)(0.0f, size.x - ImGui::GetStyle().FramePadding.x * 2.0f));
     ImGui::PushID(id);
     ImGui::PushStyleColor(
         ImGuiCol_Button,
-        selected ? ImVec4(0.345f, 0.718f, 0.647f, 0.16f) : ImVec4(0, 0, 0, 0));
+        selected ? ThemeColorWithAlpha(theme.accent, 0.16f) : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-        selected ? ImVec4(0.345f, 0.718f, 0.647f, 0.26f) : kRaised);
-    ImGui::PushStyleColor(ImGuiCol_Text, selected ? kAccent : kMuted);
+        selected ? ThemeColorWithAlpha(theme.accent, 0.26f)
+                 : ThemeColor(theme.button_hovered));
+    ImGui::PushStyleColor(ImGuiCol_Text,
+        ThemeColor(selected ? theme.accent : theme.text_muted));
     const bool pressed = ImGui::Button(text.c_str(), size);
     ImGui::PopStyleColor(3);
     ImGui::PopID();
@@ -970,22 +975,24 @@ std::string RenderMessage(
 }
 
 ImVec4 ProxyStateColor(anomaly::launcher::ProxyInstallationState state) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     using State = anomaly::launcher::ProxyInstallationState;
     switch (state) {
-    case State::Enabled: return kSuccess;
-    case State::UpdateAvailable: return kWarning;
+    case State::Enabled: return ThemeColor(theme.success);
+    case State::UpdateAvailable: return ThemeColor(theme.warning);
     case State::Disabled:
-    case State::NotInstalled: return kMuted;
+    case State::NotInstalled: return ThemeColor(theme.text_muted);
     case State::Conflict:
-    case State::Unavailable: return kDanger;
+    case State::Unavailable: return ThemeColor(theme.danger);
     }
-    return kMuted;
+    return ThemeColor(theme.text_muted);
 }
 
 void DrawHeader(
     Graphics& graphics, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.086f, 0.102f, 0.118f, 1.0f));
+    const auto& theme = ue5mem::PlatformUiTheme();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.header_background));
     ImGui::BeginChild(
         "LauncherHeader", ImVec2(0.0f, Scale(kHeaderHeight)), ImGuiChildFlags_None);
     ImGui::SetCursorPos(Scale(16.0f, 13.0f));
@@ -1003,14 +1010,16 @@ void DrawHeader(
     const ImVec2 state_size = ImGui::CalcTextSize(state);
     ImGui::SetCursorPos(ImVec2(
         ImGui::GetWindowWidth() - state_size.x - Scale(18.0f), Scale(19.0f)));
-    ImGui::TextColored(snapshot.busy ? kWarning : kSuccess, "%s", state);
+    ImGui::TextColored(snapshot.busy ? ThemeColor(theme.warning) : ThemeColor(theme.success),
+        "%s", state);
     ImGui::EndChild();
     ImGui::PopStyleColor();
 }
 
 void DrawModes(LauncherMode& mode, const anomaly::Translator& translator) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 9.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f, 0.090f, 0.102f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.toolbar_background));
     ImGui::BeginChild(
         "LauncherModes", ImVec2(0.0f, Scale(kModeHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -1063,6 +1072,7 @@ void DrawRecoveryAxis(
 void DrawRecoveryState(
     LauncherController& controller, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     const bool active = snapshot.recovery && snapshot.recovery->safe_mode.Active();
     if (!active && snapshot.recovery_message.empty()) return;
 
@@ -1072,17 +1082,17 @@ void DrawRecoveryState(
     ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionRecovery));
     if (!snapshot.recovery_message.empty()) {
         ImGui::PushTextWrapPos();
-        ImGui::TextColored(kDanger, "%s", snapshot.recovery_message.c_str());
+        ImGui::TextColored(ThemeColor(theme.danger), "%s", snapshot.recovery_message.c_str());
         ImGui::PopTextWrapPos();
         return;
     }
 
     const auto& safe_mode = snapshot.recovery->safe_mode;
-    ImGui::TextColored(kWarning, "%s",
+    ImGui::TextColored(ThemeColor(theme.warning), "%s",
         Text(translator, anomaly::MessageId::LauncherRecoverySafeModeActive));
     if (!safe_mode.reason.empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(kMuted, "%s", safe_mode.reason.c_str());
+        ImGui::TextColored(ThemeColor(theme.text_muted), "%s", safe_mode.reason.c_str());
     }
     if (ImGui::BeginTable(
             "RecoveryAxes", 2, ImGuiTableFlags_SizingStretchProp,
@@ -1122,6 +1132,7 @@ void DrawRecoveryState(
 void DrawProxyMode(
     HWND window, LauncherController& controller, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     using State = anomaly::launcher::ProxyInstallationState;
 
     ImGui::TextDisabled("%s",
@@ -1146,12 +1157,12 @@ void DrawProxyMode(
         Text(translator, ProxyStateMessageId(snapshot.proxy.state)));
     if (snapshot.proxy.state == State::UpdateAvailable) {
         ImGui::PushTextWrapPos();
-        ImGui::TextColored(kMuted, "%s", Text(
+        ImGui::TextColored(ThemeColor(theme.text_muted), "%s", Text(
             translator, anomaly::MessageId::LauncherProxyUpdateDescription));
         ImGui::PopTextWrapPos();
     } else if (!snapshot.proxy.message.empty()) {
         ImGui::PushTextWrapPos();
-        ImGui::TextColored(kMuted, "%s", snapshot.proxy.message.c_str());
+        ImGui::TextColored(ThemeColor(theme.text_muted), "%s", snapshot.proxy.message.c_str());
         ImGui::PopTextWrapPos();
     }
 
@@ -1216,6 +1227,7 @@ void DrawProxyMode(
 void DrawAttachMode(
     HWND window, LauncherController& controller, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     ImGui::TextDisabled("%s",
         Text(translator, anomaly::MessageId::LauncherSectionNteLauncher));
     DrawReadOnlyPath(
@@ -1233,11 +1245,11 @@ void DrawAttachMode(
 
     ImGui::Spacing();
     if (snapshot.runtime_version.empty()) {
-        ImGui::TextColored(kMuted, "%s", snapshot.runtime_message.c_str());
+        ImGui::TextColored(ThemeColor(theme.text_muted), "%s", snapshot.runtime_message.c_str());
     } else {
         const std::string runtime = Format(translator,
             anomaly::MessageId::LauncherRuntimeVersion, {snapshot.runtime_version});
-        ImGui::TextColored(kMuted, "%s", runtime.c_str());
+        ImGui::TextColored(ThemeColor(theme.text_muted), "%s", runtime.c_str());
     }
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionProcesses));
@@ -1292,7 +1304,9 @@ void DrawAttachMode(
                 : !process.x64 ? anomaly::MessageId::LauncherProcessStateNotX64
                                : anomaly::MessageId::LauncherProcessStateUnavailable;
             ImGui::TextColored(
-                attached ? kSuccess : process.Compatible() ? kMuted : kDanger,
+                attached ? ThemeColor(theme.success)
+                         : process.Compatible() ? ThemeColor(theme.text_muted)
+                                                 : ThemeColor(theme.danger),
                 "%s", Text(translator, state));
         }
         ImGui::EndTable();
@@ -1310,13 +1324,17 @@ void DrawAttachMode(
 
 void DrawFooter(
     const LauncherSnapshot& snapshot, const anomaly::Translator& translator) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 11.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.063f, 0.075f, 0.090f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.navigation_background));
     ImGui::BeginChild(
         "LauncherFooter", ImVec2(0.0f, Scale(kFooterHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding);
-    const ImVec4 color = snapshot.message_kind == MessageKind::Success ? kSuccess
-        : snapshot.message_kind == MessageKind::Error ? kDanger : kMuted;
+    const ImVec4 color = snapshot.message_kind == MessageKind::Success
+        ? ThemeColor(theme.success)
+        : snapshot.message_kind == MessageKind::Error
+            ? ThemeColor(theme.danger)
+            : ThemeColor(theme.text_muted);
     const char32_t icon = snapshot.message_kind == MessageKind::Success ? 0xe73e
         : snapshot.message_kind == MessageKind::Error ? 0xe7ba : 0xe72c;
     ImGui::TextColored(color, "%s", Glyph(icon));
@@ -1333,6 +1351,7 @@ void DrawFooter(
 void DrawLauncher(
     HWND window, Graphics& graphics, LauncherController& controller, LauncherMode& mode,
     const anomaly::Translator& translator) {
+    const auto& theme = ue5mem::PlatformUiTheme();
     const LauncherSnapshot snapshot = controller.Snapshot();
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
@@ -1346,7 +1365,7 @@ void DrawLauncher(
     DrawHeader(graphics, snapshot, translator);
     DrawModes(mode, translator);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 16.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f, 0.090f, 0.102f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.window_background));
     ImGui::BeginChild(
         "LauncherBody", ImVec2(0.0f, -Scale(kFooterHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -1460,9 +1479,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         ImGui::NewFrame();
         DrawLauncher(window, graphics, controller, mode, *translator);
         ImGui::Render();
-        constexpr float clear[]{0.078f, 0.090f, 0.102f, 1.0f};
+        const ImVec4 clear = ThemeColor(ue5mem::PlatformUiTheme().window_background);
         graphics.context->OMSetRenderTargets(1, graphics.render_target.GetAddressOf(), nullptr);
-        graphics.context->ClearRenderTargetView(graphics.render_target.Get(), clear);
+        graphics.context->ClearRenderTargetView(graphics.render_target.Get(),
+            &clear.x);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         graphics.swap_chain->Present(1, 0);
     }
