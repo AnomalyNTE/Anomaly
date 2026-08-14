@@ -563,7 +563,7 @@ DWORD PrepareNteProfile(
     options.game_id = context->config.game_id;
     options.game_module = context->game_module;
     options.memory_services = context->memory_services;
-    options.section_readiness_timeout = std::chrono::seconds(5);
+    options.section_readiness_timeout = std::chrono::seconds(20);
     options.snapshot_sampling.player_tick_interval = static_cast<std::uint32_t>((std::min)(
         context->config.player_snapshot_tick_interval,
         static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())));
