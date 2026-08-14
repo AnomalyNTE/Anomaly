@@ -16,7 +16,13 @@ namespace {
 
 constexpr std::uint64_t kMaximumConfigurationBytes = 64U * 1024U;
 constexpr std::wstring_view kGameExecutableName = L"HTGame.exe";
-constexpr std::wstring_view kLauncherExecutableName = L"NTELauncher.exe";
+constexpr std::wstring_view kMainlandLauncherExecutableName = L"NTELauncher.exe";
+constexpr std::wstring_view kGlobalLauncherExecutableName = L"NTEGlobalLauncher.exe";
+
+std::wstring_view LauncherExecutableName(const NteClient client) noexcept {
+    return client == NteClient::Global
+        ? kGlobalLauncherExecutableName : kMainlandLauncherExecutableName;
+}
 
 class RegistryKey final {
 public:
@@ -160,17 +166,21 @@ std::filesystem::path ExecutableFromCommand(std::wstring value) {
 bool LooksLikeNte(const std::wstring_view value) {
     const std::wstring folded = Fold(std::wstring(value));
     return folded.find(L"neverness") != std::wstring::npos ||
+        folded.find(L"ntegloballauncher") != std::wstring::npos ||
+        folded.find(L"nte global launcher") != std::wstring::npos ||
         folded.find(L"ntelauncher") != std::wstring::npos ||
         folded.find(L"nte launcher") != std::wstring::npos;
 }
 
 void CollectAppPath(
-    SystemLocations& result, const HKEY hive, const REGSAM registry_view) {
+    SystemLocations& result, const HKEY hive, const REGSAM registry_view,
+    const NteClient client) {
     RegistryKey key;
+    const std::wstring subkey =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" +
+        std::wstring(LauncherExecutableName(client));
     if (RegOpenKeyExW(
-            hive,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\NTELauncher.exe",
-            0, KEY_READ | registry_view, key.Put()) != ERROR_SUCCESS) {
+            hive, subkey.c_str(), 0, KEY_READ | registry_view, key.Put()) != ERROR_SUCCESS) {
         return;
     }
     if (const auto executable = ReadRegistryString(key.Get(), nullptr)) {
@@ -182,7 +192,8 @@ void CollectAppPath(
 }
 
 void CollectUninstallLocations(
-    SystemLocations& result, const HKEY hive, const REGSAM registry_view) {
+    SystemLocations& result, const HKEY hive, const REGSAM registry_view,
+    const NteClient client) {
     RegistryKey uninstall;
     if (RegOpenKeyExW(
             hive, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall", 0,
@@ -213,7 +224,7 @@ void CollectUninstallLocations(
         }
         if (display_icon) {
             const auto executable = ExecutableFromCommand(*display_icon);
-            if (NameEquals(executable, kLauncherExecutableName)) {
+            if (NameEquals(executable, LauncherExecutableName(client))) {
                 result.launcher_executables.push_back(executable);
             } else if (!executable.empty()) {
                 result.roots.push_back(executable.parent_path());
@@ -248,13 +259,13 @@ void AddNamedRoots(
     for (const auto name : names) roots.push_back(parent / name);
 }
 
-SystemLocations CollectSystemLocations() {
+SystemLocations CollectSystemLocations(const NteClient client) {
     SystemLocations result;
     for (const HKEY hive : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
-        CollectAppPath(result, hive, KEY_WOW64_64KEY);
-        CollectAppPath(result, hive, KEY_WOW64_32KEY);
-        CollectUninstallLocations(result, hive, KEY_WOW64_64KEY);
-        CollectUninstallLocations(result, hive, KEY_WOW64_32KEY);
+        CollectAppPath(result, hive, KEY_WOW64_64KEY, client);
+        CollectAppPath(result, hive, KEY_WOW64_32KEY, client);
+        CollectUninstallLocations(result, hive, KEY_WOW64_64KEY, client);
+        CollectUninstallLocations(result, hive, KEY_WOW64_32KEY, client);
     }
     for (const wchar_t* variable : {L"ProgramFiles", L"ProgramFiles(x86)", L"LOCALAPPDATA"}) {
         if (const auto parent = EnvironmentPath(variable)) AddNamedRoots(result.roots, *parent);
@@ -316,18 +327,19 @@ std::optional<std::filesystem::path> FindGameDirectory(
 }
 
 std::optional<std::filesystem::path> FindLauncherExecutable(
-    const std::vector<std::filesystem::path>& roots) {
-    constexpr std::array<std::wstring_view, 7> candidates{
-        L"NTELauncher.exe", L"Launcher\\NTELauncher.exe",
-        L"NevernessToEverness\\NTELauncher.exe",
-        L"Neverness to Everness\\NTELauncher.exe", L"NTE\\NTELauncher.exe",
-        L"Games\\NevernessToEverness\\NTELauncher.exe",
-        L"Games\\Neverness to Everness\\NTELauncher.exe",
+    const std::vector<std::filesystem::path>& roots, const NteClient client) {
+    constexpr std::array<std::wstring_view, 7> parents{
+        L"", L"Launcher", L"NevernessToEverness", L"Neverness to Everness",
+        L"NTE", L"Games\\NevernessToEverness", L"Games\\Neverness to Everness",
     };
     for (const auto& root : roots) {
-        for (const auto relative : candidates) {
-            const auto executable = root / relative;
-            if (IsNteLauncherExecutable(executable)) return executable.lexically_normal();
+        for (const auto parent : parents) {
+            const auto executable = parent.empty()
+                ? root / LauncherExecutableName(client)
+                : root / parent / LauncherExecutableName(client);
+            if (IsNteLauncherExecutable(executable, client)) {
+                return executable.lexically_normal();
+            }
         }
     }
     return std::nullopt;
@@ -364,16 +376,36 @@ LauncherConfigurationLoadResult LoadLauncherConfiguration(
             return result;
         }
         const auto document = nlohmann::json::parse(text);
-        if (!document.is_object() || document.value("schemaVersion", 0) != 1 ||
-            !document.contains("proxy") || !document.at("proxy").is_object() ||
-            !document.contains("attach") || !document.at("attach").is_object()) {
+        if (!document.is_object()) {
             throw std::invalid_argument("unsupported launcher configuration shape");
         }
-        const std::string game = document.at("proxy").value("gameDirectory", std::string{});
-        const std::string launcher =
-            document.at("attach").value("launcherExecutable", std::string{});
-        result.configuration.game_directory = Utf8Wide(game);
-        result.configuration.launcher_executable = Utf8Wide(launcher);
+        const int schema_version = document.value("schemaVersion", 0);
+        if (schema_version == 1 && document.contains("proxy") &&
+            document.at("proxy").is_object() && document.contains("attach") &&
+            document.at("attach").is_object()) {
+            result.configuration.mainland_china.game_directory = Utf8Wide(
+                document.at("proxy").value("gameDirectory", std::string{}));
+            result.configuration.mainland_china.launcher_executable = Utf8Wide(
+                document.at("attach").value("launcherExecutable", std::string{}));
+        } else if (schema_version == 2 && document.contains("clients") &&
+                   document.at("clients").is_object()) {
+            const auto& clients = document.at("clients");
+            const auto read_client = [&](const char* key, LauncherClientConfiguration& client) {
+                if (!clients.contains(key) || !clients.at(key).is_object()) return;
+                const auto& value = clients.at(key);
+                client.game_directory = Utf8Wide(
+                    value.value("gameDirectory", std::string{}));
+                client.launcher_executable = Utf8Wide(
+                    value.value("launcherExecutable", std::string{}));
+            };
+            read_client("mainlandChina", result.configuration.mainland_china);
+            read_client("global", result.configuration.global);
+            result.configuration.selected_client =
+                document.value("selectedClient", std::string{}) == "global"
+                    ? NteClient::Global : NteClient::MainlandChina;
+        } else {
+            throw std::invalid_argument("unsupported launcher configuration shape");
+        }
         result.loaded = true;
         result.message = "launcher configuration loaded";
     } catch (const std::exception& error) {
@@ -406,11 +438,20 @@ LauncherConfigurationSaveResult SaveLauncherConfiguration(
             result.message = "launcher configuration directory could not be created";
             return result;
         }
+        const auto client_document = [](const LauncherClientConfiguration& client) {
+            return nlohmann::json{
+                {"gameDirectory", WideUtf8(client.game_directory.wstring())},
+                {"launcherExecutable", WideUtf8(client.launcher_executable.wstring())},
+            };
+        };
         const nlohmann::json document{
-            {"schemaVersion", 1},
-            {"proxy", {{"gameDirectory", WideUtf8(configuration.game_directory.wstring())}}},
-            {"attach", {{"launcherExecutable", WideUtf8(
-                configuration.launcher_executable.wstring())}}},
+            {"schemaVersion", 2},
+            {"selectedClient", configuration.selected_client == NteClient::Global
+                ? "global" : "mainlandChina"},
+            {"clients", {
+                {"mainlandChina", client_document(configuration.mainland_china)},
+                {"global", client_document(configuration.global)},
+            }},
         };
         const std::string text = document.dump(2) + '\n';
         temporary = path.wstring() + L".tmp-" + std::to_wstring(GetCurrentProcessId()) +
@@ -462,22 +503,24 @@ bool IsNteGameDirectory(const std::filesystem::path& directory) noexcept {
     }
 }
 
-bool IsNteLauncherExecutable(const std::filesystem::path& executable) noexcept {
+bool IsNteLauncherExecutable(
+    const std::filesystem::path& executable, const NteClient client) noexcept {
     try {
-        return NameEquals(executable, kLauncherExecutableName) && IsRegularFile(executable);
+        return NameEquals(executable, LauncherExecutableName(client)) &&
+            IsRegularFile(executable);
     } catch (...) {
         return false;
     }
 }
 
-LauncherConfiguration DiscoverLauncherConfiguration(
-    const LauncherConfiguration& preferred,
+LauncherClientConfiguration DiscoverLauncherConfiguration(
+    const LauncherClientConfiguration& preferred,
     const LauncherDiscoveryOptions& options) {
-    LauncherConfiguration result;
+    LauncherClientConfiguration result;
     if (IsNteGameDirectory(preferred.game_directory)) {
         result.game_directory = preferred.game_directory.lexically_normal();
     }
-    if (IsNteLauncherExecutable(preferred.launcher_executable)) {
+    if (IsNteLauncherExecutable(preferred.launcher_executable, options.client)) {
         result.launcher_executable = preferred.launcher_executable.lexically_normal();
     }
 
@@ -489,7 +532,7 @@ LauncherConfiguration DiscoverLauncherConfiguration(
     AddAncestors(roots, options.payload_root);
 
     if (options.include_system_locations) {
-        SystemLocations system = CollectSystemLocations();
+        SystemLocations system = CollectSystemLocations(options.client);
         for (auto& root : system.roots) AddUnique(roots, std::move(root));
         for (auto& executable : system.launcher_executables) {
             launcher_executables.push_back(std::move(executable));
@@ -505,7 +548,7 @@ LauncherConfiguration DiscoverLauncherConfiguration(
         }
     }
     for (const auto& executable : launcher_executables) {
-        if (IsNteLauncherExecutable(executable)) {
+        if (IsNteLauncherExecutable(executable, options.client)) {
             if (result.launcher_executable.empty()) {
                 result.launcher_executable = executable.lexically_normal();
             }
@@ -516,13 +559,20 @@ LauncherConfiguration DiscoverLauncherConfiguration(
     AddAncestors(roots, result.launcher_executable.parent_path());
 
     if (result.game_directory.empty()) {
-        if (const auto discovered = FindGameDirectory(roots)) {
+        std::vector<std::filesystem::path> launcher_roots;
+        AddAncestors(launcher_roots, result.launcher_executable.parent_path());
+        if (const auto discovered = FindGameDirectory(launcher_roots)) {
             result.game_directory = *discovered;
             AddAncestors(roots, result.game_directory);
+        } else if (options.allow_unpaired_game_discovery) {
+            if (const auto searched = FindGameDirectory(roots)) {
+                result.game_directory = *searched;
+                AddAncestors(roots, result.game_directory);
+            }
         }
     }
     if (result.launcher_executable.empty()) {
-        if (const auto discovered = FindLauncherExecutable(roots)) {
+        if (const auto discovered = FindLauncherExecutable(roots, options.client)) {
             result.launcher_executable = *discovered;
         }
     }

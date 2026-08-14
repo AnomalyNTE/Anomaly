@@ -76,6 +76,8 @@ struct LauncherMessage final {
 };
 
 struct LauncherSnapshot final {
+    anomaly::launcher::NteClient selected_client{
+        anomaly::launcher::NteClient::MainlandChina};
     std::filesystem::path game_directory;
     std::filesystem::path launcher_executable;
     anomaly::launcher::ProxyInstallationStatus proxy;
@@ -188,6 +190,19 @@ std::string PathUtf8(const std::filesystem::path& path) {
     return WideUtf8(value);
 }
 
+bool PathsEqual(
+    const std::filesystem::path& left, const std::filesystem::path& right) noexcept {
+    try {
+        const std::wstring left_value = left.lexically_normal().wstring();
+        const std::wstring right_value = right.lexically_normal().wstring();
+        return !left_value.empty() && !right_value.empty() &&
+            CompareStringOrdinal(
+                left_value.c_str(), -1, right_value.c_str(), -1, TRUE) == CSTR_EQUAL;
+    } catch (...) {
+        return false;
+    }
+}
+
 std::string EncodeUtf8(char32_t codepoint) {
     std::string result;
     if (codepoint <= 0x7fU) {
@@ -298,6 +313,7 @@ public:
             std::scoped_lock lock(state_mutex_);
             if (state_.busy) return;
             state_.game_directory = std::move(directory);
+            configuration_.Selected().game_directory = state_.game_directory;
         }
         Queue(anomaly::MessageId::LauncherStatusInspectingProxy, [this] {
             ReconcileRelatedPathsImpl();
@@ -359,10 +375,38 @@ public:
             std::scoped_lock lock(state_mutex_);
             if (state_.busy) return;
             state_.launcher_executable = std::move(executable);
+            configuration_.Selected().launcher_executable = state_.launcher_executable;
         }
         Queue(anomaly::MessageId::LauncherStatusScanningLocal, [this] {
             ReconcileRelatedPathsImpl();
             const auto saved = PersistConfigurationImpl();
+            RefreshProcessesImpl();
+            if (!saved.Ok()) {
+                PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
+                    MessageKind::Error, saved.message);
+            }
+        });
+    }
+
+    void SelectClient(const anomaly::launcher::NteClient client) {
+        {
+            std::scoped_lock lock(state_mutex_);
+            if (state_.busy || configuration_.selected_client == client) return;
+            configuration_.selected_client = client;
+            const auto& selected = configuration_.Selected();
+            state_.selected_client = client;
+            state_.game_directory = selected.game_directory;
+            state_.launcher_executable = selected.launcher_executable;
+            state_.proxy = {};
+            state_.recovery.reset();
+            state_.recovery_message.clear();
+            state_.attached_process = 0;
+        }
+        Queue(anomaly::MessageId::LauncherStatusScanningLocal, [this] {
+            ReconcileRelatedPathsImpl();
+            const auto saved = PersistConfigurationImpl();
+            RefreshProxyImpl();
+            RefreshRecoveryImpl();
             RefreshProcessesImpl();
             if (!saved.Ok()) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
@@ -552,26 +596,47 @@ private:
     void InitializePathsImpl() {
         const auto loaded = anomaly::launcher::LoadLauncherConfiguration(configuration_path_);
         const auto game_processes = anomaly::launcher::EnumerateAttachableProcesses();
-        const auto launcher_processes =
+        const auto mainland_launcher_processes =
             anomaly::launcher::EnumerateAttachableProcesses(L"NTELauncher.exe");
-        anomaly::launcher::LauncherDiscoveryOptions options;
-        options.payload_root = payload_root_;
-        for (const auto& process : game_processes) {
-            if (!process.executable_path.empty()) {
-                options.running_game_executables.push_back(process.executable_path);
+        const auto global_launcher_processes =
+            anomaly::launcher::EnumerateAttachableProcesses(L"NTEGlobalLauncher.exe");
+        auto configuration = loaded.configuration;
+        const auto discover = [this, &game_processes, &configuration](
+                                  const anomaly::launcher::NteClient client,
+                                  const auto& launcher_processes) {
+            anomaly::launcher::LauncherDiscoveryOptions options;
+            options.client = client;
+            options.payload_root = payload_root_;
+            options.allow_unpaired_game_discovery =
+                configuration.selected_client == client;
+            if (configuration.selected_client == client) {
+                for (const auto& process : game_processes) {
+                    if (!process.executable_path.empty()) {
+                        options.running_game_executables.push_back(process.executable_path);
+                    }
+                }
             }
-        }
-        for (const auto& process : launcher_processes) {
-            if (!process.executable_path.empty()) {
-                options.running_launcher_executables.push_back(process.executable_path);
+            for (const auto& process : launcher_processes) {
+                if (!process.executable_path.empty()) {
+                    options.running_launcher_executables.push_back(process.executable_path);
+                }
             }
-        }
-        const auto discovered = anomaly::launcher::DiscoverLauncherConfiguration(
-            loaded.configuration, options);
+            return anomaly::launcher::DiscoverLauncherConfiguration(
+                client == anomaly::launcher::NteClient::Global
+                    ? configuration.global : configuration.mainland_china,
+                options);
+        };
+        configuration.mainland_china = discover(
+            anomaly::launcher::NteClient::MainlandChina, mainland_launcher_processes);
+        configuration.global = discover(
+            anomaly::launcher::NteClient::Global, global_launcher_processes);
         {
             std::scoped_lock lock(state_mutex_);
-            state_.game_directory = discovered.game_directory;
-            state_.launcher_executable = discovered.launcher_executable;
+            configuration_ = std::move(configuration);
+            const auto& selected = configuration_.Selected();
+            state_.selected_client = configuration_.selected_client;
+            state_.game_directory = selected.game_directory;
+            state_.launcher_executable = selected.launcher_executable;
         }
         const auto saved = PersistConfigurationImpl();
         RefreshProxyImpl();
@@ -584,17 +649,22 @@ private:
     }
 
     void ReconcileRelatedPathsImpl() {
-        anomaly::launcher::LauncherConfiguration preferred;
+        anomaly::launcher::LauncherClientConfiguration preferred;
+        anomaly::launcher::NteClient client{};
         {
             std::scoped_lock lock(state_mutex_);
             preferred.game_directory = state_.game_directory;
             preferred.launcher_executable = state_.launcher_executable;
+            client = configuration_.selected_client;
         }
         anomaly::launcher::LauncherDiscoveryOptions options;
+        options.client = client;
         options.payload_root = payload_root_;
+        options.allow_unpaired_game_discovery = true;
         const auto discovered = anomaly::launcher::DiscoverLauncherConfiguration(
             preferred, options);
         std::scoped_lock lock(state_mutex_);
+        configuration_.Selected() = discovered;
         state_.game_directory = discovered.game_directory;
         state_.launcher_executable = discovered.launcher_executable;
     }
@@ -604,8 +674,7 @@ private:
         anomaly::launcher::LauncherConfiguration configuration;
         {
             std::scoped_lock lock(state_mutex_);
-            configuration.game_directory = state_.game_directory;
-            configuration.launcher_executable = state_.launcher_executable;
+            configuration = configuration_;
         }
         return anomaly::launcher::SaveLauncherConfiguration(
             configuration_path_, configuration);
@@ -613,6 +682,13 @@ private:
 
     void RefreshProcessesImpl(bool announce = true) {
         auto processes = anomaly::launcher::EnumerateAttachableProcesses();
+        const auto game_directory = GameDirectory();
+        if (!game_directory.empty()) {
+            std::erase_if(processes, [&game_directory](const auto& process) {
+                return process.executable_path.empty() ||
+                    !PathsEqual(process.executable_path.parent_path(), game_directory);
+            });
+        }
         const auto runtime = ResolveAttachRuntime();
         const bool core_available = runtime.Ok();
         std::scoped_lock lock(state_mutex_);
@@ -652,6 +728,7 @@ private:
     anomaly::launcher::ProxyInstallationSource source_;
     std::filesystem::path configuration_path_;
     mutable std::mutex state_mutex_;
+    anomaly::launcher::LauncherConfiguration configuration_;
     LauncherSnapshot state_;
     std::mutex queue_mutex_;
     std::condition_variable_any queue_changed_;
@@ -832,7 +909,7 @@ std::optional<std::filesystem::path> ChooseGameDirectory(
 
 std::optional<std::filesystem::path> ChooseLauncherExecutable(
     HWND owner, const std::filesystem::path& current,
-    const anomaly::Translator& translator) {
+    const anomaly::launcher::NteClient client, const anomaly::Translator& translator) {
     ComPtr<IFileOpenDialog> dialog;
     if (FAILED(CoCreateInstance(
             CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
@@ -846,8 +923,12 @@ std::optional<std::filesystem::path> ChooseLauncherExecutable(
     }
     const std::wstring executable_filter = Utf8Wide(
         translator.Text(anomaly::MessageId::LauncherDialogExecutableFilter));
+    const wchar_t* launcher_name = client == anomaly::launcher::NteClient::Global
+        ? L"NTEGlobalLauncher.exe" : L"NTELauncher.exe";
+    const wchar_t* launcher_label = client == anomaly::launcher::NteClient::Global
+        ? L"NTE Global Launcher" : L"NTE Launcher";
     const COMDLG_FILTERSPEC filters[]{
-        {L"NTE Launcher", L"NTELauncher.exe"},
+        {launcher_label, launcher_name},
         {executable_filter.c_str(), L"*.exe"},
     };
     static_cast<void>(dialog->SetFileTypes(
@@ -1016,23 +1097,45 @@ void DrawHeader(
     ImGui::PopStyleColor();
 }
 
-void DrawModes(LauncherMode& mode, const anomaly::Translator& translator) {
+void DrawModes(
+    LauncherController& controller, const LauncherSnapshot& snapshot,
+    LauncherMode& mode, const anomaly::Translator& translator) {
     const auto& theme = ue5mem::PlatformUiTheme();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 9.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.toolbar_background));
     ImGui::BeginChild(
         "LauncherModes", ImVec2(0.0f, Scale(kModeHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding);
-    if (ModeButton("proxy-install", Text(translator,
-            anomaly::MessageId::LauncherModeProxyInstall),
-            mode == LauncherMode::Proxy, 126.0f)) {
-        mode = LauncherMode::Proxy;
-    }
-    ImGui::SameLine();
-    if (ModeButton("live-attach", Text(translator,
-            anomaly::MessageId::LauncherModeLiveAttach),
-            mode == LauncherMode::Attach, 126.0f)) {
-        mode = LauncherMode::Attach;
+    if (ImGui::BeginTable("LauncherToolbar", 2, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Modes", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Client", ImGuiTableColumnFlags_WidthFixed, Scale(190.0f));
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (ModeButton("proxy-install", Text(translator,
+                anomaly::MessageId::LauncherModeProxyInstall),
+                mode == LauncherMode::Proxy, 126.0f)) {
+            mode = LauncherMode::Proxy;
+        }
+        ImGui::SameLine();
+        if (ModeButton("live-attach", Text(translator,
+                anomaly::MessageId::LauncherModeLiveAttach),
+                mode == LauncherMode::Attach, 126.0f)) {
+            mode = LauncherMode::Attach;
+        }
+        ImGui::TableSetColumnIndex(1);
+        ImGui::BeginDisabled(snapshot.busy);
+        if (ModeButton("client-cn", "CN",
+                snapshot.selected_client == anomaly::launcher::NteClient::MainlandChina,
+                72.0f)) {
+            controller.SelectClient(anomaly::launcher::NteClient::MainlandChina);
+        }
+        ImGui::SameLine();
+        if (ModeButton("client-global", "Global",
+                snapshot.selected_client == anomaly::launcher::NteClient::Global, 96.0f)) {
+            controller.SelectClient(anomaly::launcher::NteClient::Global);
+        }
+        ImGui::EndDisabled();
+        ImGui::EndTable();
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
@@ -1238,7 +1341,7 @@ void DrawAttachMode(
             Text(translator, anomaly::MessageId::LauncherChooseNteLauncher),
             !snapshot.busy)) {
         if (const auto selected = ChooseLauncherExecutable(
-                window, snapshot.launcher_executable, translator)) {
+                window, snapshot.launcher_executable, snapshot.selected_client, translator)) {
             controller.SelectLauncherExecutable(*selected);
         }
     }
@@ -1363,7 +1466,7 @@ void DrawLauncher(
             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoBringToFrontOnFocus);
     DrawHeader(graphics, snapshot, translator);
-    DrawModes(mode, translator);
+    DrawModes(controller, snapshot, mode, translator);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 16.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.window_background));
     ImGui::BeginChild(

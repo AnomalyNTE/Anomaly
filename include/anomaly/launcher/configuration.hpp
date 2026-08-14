@@ -2,15 +2,35 @@
 
 #include <Windows.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 namespace anomaly::launcher {
 
-struct LauncherConfiguration final {
+enum class NteClient : std::uint8_t {
+    MainlandChina,
+    Global,
+};
+
+struct LauncherClientConfiguration final {
     std::filesystem::path game_directory;
     std::filesystem::path launcher_executable;
+};
+
+struct LauncherConfiguration final {
+    NteClient selected_client{NteClient::MainlandChina};
+    LauncherClientConfiguration mainland_china;
+    LauncherClientConfiguration global;
+
+    [[nodiscard]] LauncherClientConfiguration& Selected() noexcept {
+        return selected_client == NteClient::Global ? global : mainland_china;
+    }
+
+    [[nodiscard]] const LauncherClientConfiguration& Selected() const noexcept {
+        return selected_client == NteClient::Global ? global : mainland_china;
+    }
 };
 
 struct LauncherConfigurationLoadResult final {
@@ -28,11 +48,13 @@ struct LauncherConfigurationSaveResult final {
 };
 
 struct LauncherDiscoveryOptions final {
+    NteClient client{NteClient::MainlandChina};
     std::filesystem::path payload_root;
     std::vector<std::filesystem::path> running_game_executables;
     std::vector<std::filesystem::path> running_launcher_executables;
     std::vector<std::filesystem::path> search_roots;
     bool include_system_locations{true};
+    bool allow_unpaired_game_discovery{};
 };
 
 [[nodiscard]] std::filesystem::path LauncherConfigurationPath(
@@ -46,9 +68,9 @@ struct LauncherDiscoveryOptions final {
 [[nodiscard]] bool IsNteGameDirectory(
     const std::filesystem::path& directory) noexcept;
 [[nodiscard]] bool IsNteLauncherExecutable(
-    const std::filesystem::path& executable) noexcept;
-[[nodiscard]] LauncherConfiguration DiscoverLauncherConfiguration(
-    const LauncherConfiguration& preferred,
+    const std::filesystem::path& executable, NteClient client) noexcept;
+[[nodiscard]] LauncherClientConfiguration DiscoverLauncherConfiguration(
+    const LauncherClientConfiguration& preferred,
     const LauncherDiscoveryOptions& options);
 
 }  // namespace anomaly::launcher
