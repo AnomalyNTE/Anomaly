@@ -1276,15 +1276,7 @@ bool PassesItemFilters(
     const LootEntity& entry,
     const DisplaySettings& settings) noexcept {
     return entry.rob_bank.item_resolved &&
-        (entry.rob_bank.fons_value >= settings.minimum_value ||
-         (settings.always_show_access_cards && entry.rob_bank.is_access_card));
-}
-
-bool IsAlwaysVisibleAccessCard(
-    const LootEntity& entry,
-    const DisplaySettings& settings) noexcept {
-    return settings.always_show_access_cards && entry.rob_bank.item_resolved &&
-        entry.rob_bank.is_access_card;
+        entry.rob_bank.fons_value >= settings.minimum_value;
 }
 
 bool IsPickable(const LootEntity& entry) noexcept {
@@ -1295,7 +1287,11 @@ bool IsPickable(const LootEntity& entry) noexcept {
 bool IsVisibleLoot(
     const LootEntity& entry,
     const DisplaySettings& settings) noexcept {
-    return IsAlwaysVisibleAccessCard(entry, settings) ||
+    if (!pink_paw_heist_esp::PassesAccessCardVisibility(
+            entry.rob_bank.is_access_card, settings.always_show_access_cards)) {
+        return false;
+    }
+    return entry.rob_bank.is_access_card ||
         (PassesItemFilters(entry, settings) &&
         pink_paw_heist_esp::PassesPickabilityFilter(
             entry.rob_bank.pickability, settings.show_pickable_only));
@@ -1332,7 +1328,9 @@ std::string BuildWorldCoordinates(const LootEntity& entry) {
 }
 
 std::string LootDisplayName(const LootEntity& entry) {
-    return entry.rob_bank.name_utf8;
+    return entry.rob_bank.name_utf8.empty()
+        ? entry.class_name
+        : entry.rob_bank.name_utf8;
 }
 
 std::string FonsValueText(const LootEntity& entry) {
@@ -1347,7 +1345,7 @@ std::string PinkPawCoinValueText(const LootEntity& entry) {
 
 std::string BuildLootLabel(const LootEntity& entry) {
     const std::string coordinates = BuildWorldCoordinates(entry);
-    if (!entry.rob_bank.item_resolved) return {};
+    if (!entry.rob_bank.item_resolved && !entry.rob_bank.is_access_card) return {};
     const std::string name = LootDisplayName(entry);
     if (entry.rob_bank.is_access_card) {
         const std::array arguments{
@@ -1392,8 +1390,8 @@ std::uint32_t RainbowColor(const std::uint64_t phase_offset) noexcept {
 }
 
 std::uint32_t LootColor(const LootEntity& entry) noexcept {
-    if (!entry.rob_bank.item_resolved) return ANOMALY_RGBA_V1(170, 170, 170, 255);
     if (entry.rob_bank.is_access_card) return ANOMALY_RGBA_V1(255, 102, 0, 255);
+    if (!entry.rob_bank.item_resolved) return ANOMALY_RGBA_V1(170, 170, 170, 255);
     if (entry.rob_bank.fons_value == kEternalHeartValue) {
         return RainbowColor(entry.snapshot.entity_id);
     }
@@ -2592,7 +2590,7 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         const bool changed_pickable_only = Checkbox(
             ui, pickable_only, &g_context.show_pickable_only);
         const std::string access_cards = g_context.localizer.Label(
-            "option.always_show_access_cards", "Always show access cards",
+            "option.always_show_access_cards", "Show access cards",
             "always-show-access-cards");
         const bool changed_access_cards = Checkbox(
             ui, access_cards, &g_context.always_show_access_cards);

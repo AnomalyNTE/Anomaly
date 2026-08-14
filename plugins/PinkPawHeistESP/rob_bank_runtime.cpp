@@ -73,13 +73,13 @@ constexpr std::uint32_t kObjectItemStride = 24;
 constexpr std::uint32_t kObjectPointerOffset = 0;
 constexpr std::uint32_t kObjectSerialOffset = 16;
 
-constexpr std::ptrdiff_t kRobBankCanInteractOffset = 3064;
+constexpr std::ptrdiff_t kRobBankCanInteractOffset = 3088;
 constexpr std::uint8_t kRobBankCanInteractMask = 1;
-constexpr std::ptrdiff_t kRobBankDelayInteractOffset = 3136;
+constexpr std::ptrdiff_t kRobBankDelayInteractOffset = 3160;
 constexpr std::uint8_t kRobBankDelayInteractMask = 1;
-constexpr std::ptrdiff_t kRobBankPointUidOffset = 2944;
+constexpr std::ptrdiff_t kRobBankPointUidOffset = 2968;
 constexpr std::ptrdiff_t kRobBankPointKeyDoorIdOffset = 196;
-constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3048;
+constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3072;
 constexpr std::ptrdiff_t kRobBankCloneDataAssetItemOffset = 104;
 constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 36928;
 constexpr std::int32_t kMaximumKeyDoors = 4096;

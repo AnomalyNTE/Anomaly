@@ -51,6 +51,16 @@ private:
     return !pickable_only || pickability != RobBankPickability::blocked;
 }
 
+[[nodiscard]] constexpr bool PassesAccessCardVisibility(
+    const bool is_access_card,
+    const bool show_access_cards) noexcept {
+    return !is_access_card || show_access_cards;
+}
+
+static_assert(PassesAccessCardVisibility(false, false));
+static_assert(PassesAccessCardVisibility(true, true));
+static_assert(!PassesAccessCardVisibility(true, false));
+
 enum class KnownLootValidationAction {
     unchanged,
     updated,
