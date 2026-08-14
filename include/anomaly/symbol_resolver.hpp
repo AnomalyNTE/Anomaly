@@ -112,7 +112,6 @@ private:
 
 enum class SymbolResolutionState : std::uint8_t {
     Unavailable,
-    CacheTrusted,
     Resolved,
     ModuleMissing,
     SectionMissing,
@@ -134,8 +133,7 @@ struct ResolvedSymbol {
     std::vector<std::string> diagnostics;
 
     [[nodiscard]] bool Available() const noexcept {
-        return state == SymbolResolutionState::CacheTrusted ||
-            state == SymbolResolutionState::Resolved;
+        return state == SymbolResolutionState::Resolved;
     }
 };
 
@@ -162,8 +160,6 @@ struct ProfileResolutionSnapshot {
     ProfileResolutionState state{ProfileResolutionState::NoProfile};
     std::string build_id;
     std::string profile_hash;
-    bool cache_loaded{};
-    bool cache_written{};
     std::chrono::microseconds duration{};
     std::map<std::string, ResolvedSymbol, std::less<>> symbols;
     std::map<std::string, FeatureResolution, std::less<>> features;
@@ -213,11 +209,10 @@ public:
 
     [[nodiscard]] ProfileResolutionSnapshot Resolve(
         const BuildFingerprint& fingerprint,
-        const BuildProfile* profile,
-        const SymbolCache* cache = nullptr) const;
+        const BuildProfile* profile) const;
 
     // Retries validators for an already unique, resolved candidate without
-    // scanning module text or touching the on-disk cache. This supports UE
+    // scanning module text. This supports UE
     // globals whose storage is allocated after the initial profile startup.
     [[nodiscard]] bool RevalidateDeferredCandidates(
         const BuildProfile& profile,

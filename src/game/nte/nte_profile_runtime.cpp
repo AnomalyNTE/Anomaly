@@ -744,7 +744,6 @@ std::string_view ResolutionStateName(ProfileResolutionState state) noexcept {
 std::string_view SymbolStateName(SymbolResolutionState state) noexcept {
     switch (state) {
     case SymbolResolutionState::Unavailable: return "unavailable";
-    case SymbolResolutionState::CacheTrusted: return "cache-trusted";
     case SymbolResolutionState::Resolved: return "resolved";
     case SymbolResolutionState::ModuleMissing: return "module-missing";
     case SymbolResolutionState::SectionMissing: return "section-missing";
@@ -938,16 +937,15 @@ public:
         adapter_context.module = module_path_.filename().wstring();
         adapter_context.canonical_path_tail = adapter_context.module;
         diagnostics_.push_back(
-            "runtime PE fingerprint disabled; active Profile and RVA cache are trusted");
+            "runtime PE fingerprint disabled; active Profile signatures are authoritative");
 
         if (selected && !WaitForProfileSections(*selected, stop_token)) {
             return false;
         }
 
         SymbolResolver resolver(memory_, {}, {}, NteFeatureLayoutValidators(false));
-        SymbolCache cache(options_.runtime_root / L"state" / L"profile-symbol-cache.json");
         ProfileResolutionSnapshot resolved =
-            resolver.Resolve(adapter_context, selected ? &*selected : nullptr, &cache);
+            resolver.Resolve(adapter_context, selected ? &*selected : nullptr);
         if (!selected) {
             resolution_ = std::make_shared<ProfileResolutionSnapshot>(std::move(resolved));
             diagnostics_.push_back("no active profile recipe for game " + options_.game_id);
@@ -1275,8 +1273,6 @@ public:
             resolution ? resolution->profile_hash : std::string{});
         json += ",\"profileChannel\":" + Quote(profile_ ? profile_->source_channel : std::string{});
         json += ",\"profileSource\":" + Quote(profile_ ? profile_->source.string() : std::string{});
-        json += ",\"cacheLoaded\":" +
-            std::string(resolution && resolution->cache_loaded ? "true" : "false");
         json += ",\"adapterStarted\":" +
             std::string(adapter_ && adapter_->Started() ? "true" : "false");
         json += ",\"profileQuarantined\":" +

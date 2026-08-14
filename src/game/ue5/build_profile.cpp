@@ -90,12 +90,6 @@ std::string ToLowerAscii(std::string value) {
     return value;
 }
 
-bool EqualWideInsensitive(std::wstring_view left, std::wstring_view right) noexcept {
-    return CompareStringOrdinal(
-        left.data(), static_cast<int>(left.size()),
-        right.data(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
-}
-
 std::wstring WideUtf8(const std::string& value) {
     if (value.empty()) return {};
     const int size = MultiByteToWideChar(
@@ -105,19 +99,6 @@ std::wstring WideUtf8(const std::string& value) {
     MultiByteToWideChar(
         CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
         result.data(), size);
-    return result;
-}
-
-std::string Utf8Wide(std::wstring_view value) {
-    if (value.empty()) return {};
-    const int size = WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (size <= 0) return {};
-    std::string result(static_cast<std::size_t>(size), '\0');
-    WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-        result.data(), size, nullptr, nullptr);
     return result;
 }
 
@@ -576,17 +557,6 @@ public:
     std::vector<std::pair<std::string, std::string>> errors;
 };
 
-std::string CacheJson(const SymbolCacheRecord& record) {
-    Json document;
-    document["schemaVersion"] = 1;
-    Json symbols = Json::object();
-    for (const auto& [id, symbol] : record.symbols) {
-        symbols[id] = {{"module", Utf8Wide(symbol.module)}, {"rva", symbol.rva}};
-    }
-    document["symbols"] = std::move(symbols);
-    return document.dump(2) + "\n";
-}
-
 }  // namespace
 
 std::optional<BuildFingerprint> FingerprintPeFile(
@@ -850,70 +820,6 @@ BuildProfileCatalogSnapshot BuildProfileCatalog::ScanLayered(
         }
     }
     return snapshot;
-}
-
-SymbolCache::SymbolCache(std::filesystem::path file)
-    : file_(std::filesystem::absolute(std::move(file))) {}
-
-std::optional<SymbolCacheRecord> SymbolCache::Load() const {
-    const auto text = ReadText(file_, kMaximumBuildProfileBytes);
-    if (!text) return std::nullopt;
-    try {
-        const Json document = Json::parse(*text);
-        if (document.value("schemaVersion", 0U) != 1 ||
-            !document.contains("symbols") || !document.at("symbols").is_object()) {
-            return std::nullopt;
-        }
-        SymbolCacheRecord record;
-        for (auto iterator = document.at("symbols").begin();
-             iterator != document.at("symbols").end(); ++iterator) {
-            if (!iterator.value().is_object() ||
-                !iterator.value().contains("module") ||
-                !iterator.value().contains("rva")) return std::nullopt;
-            CachedSymbol symbol;
-            symbol.module = WideUtf8(iterator.value().at("module").get<std::string>());
-            symbol.rva = iterator.value().at("rva").get<std::uint64_t>();
-            record.symbols.emplace(iterator.key(), std::move(symbol));
-        }
-        return record;
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-bool SymbolCache::Store(
-    const SymbolCacheRecord& record,
-    std::string* error) const {
-    const auto fail = [&](std::string message) {
-        if (error != nullptr) *error = std::move(message);
-        return false;
-    };
-    const auto& target = file_;
-    std::error_code filesystem_error;
-    if (!target.parent_path().empty()) {
-        std::filesystem::create_directories(target.parent_path(), filesystem_error);
-    }
-    if (filesystem_error) return fail(filesystem_error.message());
-    const auto temporary = target.wstring() + L".tmp-" + std::to_wstring(GetCurrentProcessId()) +
-        L"-" + std::to_wstring(GetTickCount64());
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) return fail("failed to create temporary cache");
-        output << CacheJson(record);
-        output.flush();
-        if (!output) {
-            std::filesystem::remove(temporary, filesystem_error);
-            return fail("failed to write temporary cache");
-        }
-    }
-    if (MoveFileExW(
-            temporary.c_str(), target.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-        const DWORD code = GetLastError();
-        std::filesystem::remove(temporary, filesystem_error);
-        return fail("failed to atomically replace cache: " + std::to_string(code));
-    }
-    return true;
 }
 
 }  // namespace anomaly

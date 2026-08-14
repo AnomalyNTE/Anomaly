@@ -136,27 +136,4 @@ public:
         std::vector<BuildProfileCatalogLayer> layers) const;
 };
 
-struct CachedSymbol {
-    std::wstring module;
-    std::uint64_t rva{};
-};
-
-struct SymbolCacheRecord {
-    std::map<std::string, CachedSymbol, std::less<>> symbols;
-};
-
-class SymbolCache final {
-public:
-    explicit SymbolCache(std::filesystem::path file);
-
-    [[nodiscard]] std::optional<SymbolCacheRecord> Load() const;
-    [[nodiscard]] bool Store(
-        const SymbolCacheRecord& record,
-        std::string* error = nullptr) const;
-    [[nodiscard]] const std::filesystem::path& File() const noexcept { return file_; }
-
-private:
-    std::filesystem::path file_;
-};
-
 }  // namespace anomaly

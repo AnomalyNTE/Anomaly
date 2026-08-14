@@ -49,12 +49,6 @@ bool Contains(
     return address - base <= size - bytes;
 }
 
-bool EqualWideInsensitive(std::wstring_view left, std::wstring_view right) noexcept {
-    return CompareStringOrdinal(
-        left.data(), static_cast<int>(left.size()),
-        right.data(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
-}
-
 SymbolValidationResult ReadableAddress(
     std::uintptr_t address,
     const SymbolMemory& memory) {
@@ -1569,8 +1563,7 @@ SymbolResolver::SymbolResolver(
 
 ProfileResolutionSnapshot SymbolResolver::Resolve(
     const BuildFingerprint& fingerprint,
-    const BuildProfile* profile,
-    const SymbolCache* cache) const {
+    const BuildProfile* profile) const {
     const auto started = std::chrono::steady_clock::now();
     ProfileResolutionSnapshot snapshot;
     snapshot.build_id = fingerprint.id;
@@ -1581,9 +1574,6 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
     }
     snapshot.state = ProfileResolutionState::ProfileLoaded;
     snapshot.profile_hash = profile->source_hash;
-    const auto cached = cache == nullptr ? std::optional<SymbolCacheRecord>{} : cache->Load();
-    snapshot.cache_loaded = cached.has_value();
-    SymbolCacheRecord next_cache;
 
     for (const auto& [id, definition] : profile->symbols) {
         ResolvedSymbol symbol;
@@ -1602,24 +1592,6 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
             })) {
             symbol.state = SymbolResolutionState::SectionMissing;
             symbol.diagnostics.push_back("section is unavailable");
-            snapshot.symbols.emplace(id, std::move(symbol));
-            continue;
-        }
-
-        bool accepted_cache{};
-        if (cached) {
-            const auto cached_symbol = cached->symbols.find(id);
-            if (cached_symbol != cached->symbols.end() &&
-                EqualWideInsensitive(cached_symbol->second.module, module->name) &&
-                cached_symbol->second.rva < module->size) {
-                symbol.state = SymbolResolutionState::CacheTrusted;
-                symbol.address = module->base + cached_symbol->second.rva;
-                symbol.rva = cached_symbol->second.rva;
-                next_cache.symbols.emplace(id, CachedSymbol{module->name, symbol.rva});
-                accepted_cache = true;
-            }
-        }
-        if (accepted_cache) {
             snapshot.symbols.emplace(id, std::move(symbol));
             continue;
         }
@@ -1704,19 +1676,15 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
         symbol.address = valid.front().address;
         if (symbol.address < module->base || symbol.address - module->base >= module->size) {
             symbol.state = SymbolResolutionState::ValidationFailed;
-            symbol.diagnostics.push_back("resolved address cannot be cached as an RVA");
+            symbol.diagnostics.push_back("resolved address is outside the declared module");
             snapshot.symbols.emplace(id, std::move(symbol));
             continue;
         }
         symbol.rva = symbol.address - module->base;
-        next_cache.symbols.emplace(id, CachedSymbol{module->name, symbol.rva});
         snapshot.symbols.emplace(id, std::move(symbol));
     }
 
     ResolveFeatures(*profile, snapshot, *memory_, feature_layout_validators_);
-    if (cache != nullptr && !next_cache.symbols.empty()) {
-        snapshot.cache_written = cache->Store(next_cache);
-    }
     snapshot.duration = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started);
     return snapshot;
@@ -1780,7 +1748,6 @@ bool SymbolResolver::RevalidateDeferredCandidates(
         FeatureResolutionsEqual(previous_features, snapshot.features)) {
         return false;
     }
-    snapshot.cache_written = false;
     snapshot.duration += std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started);
     return true;

@@ -114,7 +114,6 @@ Game\Binaries\Win64\
     state\repository\            插件频道列表与签名 Index cache
     .anomaly-plugin-transactions\ 插件安装的 staging / rollback 临时状态
     state\update-rollback\       插件与 Profile 的上一可用 generation
-    state\profile-symbol-cache.json  未绑定 fingerprint / Profile hash 的 RVA cache
     config\plugin-enablement.json    全局插件启用默认值与逐插件 override
     config\plugins\              anomaly.config 管理的插件 JSON 设置
     plugins\                     独立插件包、资源与进程隔离缓存

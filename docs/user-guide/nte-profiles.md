@@ -21,11 +21,8 @@ Runtime 按 `local override > repository > bundled` 的优先级选择**一个**
 > [!IMPORTANT]
 > Runtime 启动时不计算游戏 PE fingerprint，也不用 Build identity 选择 Profile。但在需要扫描签名时，仍会读取 Profile 指定的 `.text` 等节区。
 
-- Resolver 会先读取 `state\profile-symbol-cache.json`。某条记录的模块名相同且 RVA 没超出模块大小时，就直接复用该地址，不重新扫描，也不重跑该符号的 validator。
-- cache 缺少某个符号或记录不可用时，Resolver 才按活动 Profile 扫描该符号，通过校验后写回 cache。
+- Resolver 每次启动都按活动 Profile 扫描符号，并对每个解析结果运行 Profile 声明的 validator。
 - 符号组装完成后，Feature 仍要满足 Profile 声明的依赖、布局 validator、ABI 和线程条件。
-
-Runtime 不能自动判断 RVA cache 是否属于旧版游戏。游戏更新后如果相关功能异常，应先更新 Profile，并删除 `profile-symbol-cache.json` 强制重新扫描。
 
 ## Feature 降级
 
