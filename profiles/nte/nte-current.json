@@ -113,7 +113,7 @@
     "nte.HTUI_MenuExtension.AddMenuPage": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "40 55 57 48 83 EC 38 83 B9 00 0F 00 00 00 8B EA 48 8B F9 0F 84 ?? ?? ?? ?? 48 8B 89 10 0F 00 00 48 85 C9 0F 84 ?? ?? ?? ?? 39 91 B0 06 00 00 0F 8E ?? ?? ?? ?? 4C 89 6C 24 60",
+      "pattern": "40 55 57 48 83 EC 38 83 B9 80 0F 00 00 00 8B EA 48 8B F9 0F 84 ?? ?? ?? ?? 48 8B 89 90 0F 00 00 48 85 C9 0F 84 ?? ?? ?? ?? 39 91 B0 06 00 00 0F 8E ?? ?? ?? ?? 4C 89 6C 24 60",
       "resolve": {"kind": "direct"},
       "validators": ["address-in-module", "executable"],
       "requiredBy": ["anomaly.nte.esc-menu-button"]
@@ -121,7 +121,7 @@
     "nte.HTUI_MenuExtension.execAddMenuPage": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? ?? ?? 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 6D D7 87 01",
+      "pattern": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? ?? ?? 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 DD 1C AB 01",
       "resolve": {"kind": "direct"},
       "validators": ["address-in-module", "executable"],
       "requiredBy": ["anomaly.nte.esc-menu-button"]
