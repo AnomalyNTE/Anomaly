@@ -81,7 +81,7 @@ constexpr std::array<FunctionSpec, static_cast<std::size_t>(BridgeFunction::Coun
 
 // These indices belong to the v1 NTE build and are always validated before use.
 constexpr std::array<std::uint32_t, 8> kExactBuildObjectIndices{
-    12863U, 12745U, 12748U, 12749U, 12750U, 12754U, 36134U, 13642U};
+    13302U, 12745U, 12748U, 12749U, 12750U, 12754U, 36134U, 13642U};
 
 struct FNameValue final {
     std::uint32_t comparison_index{};
