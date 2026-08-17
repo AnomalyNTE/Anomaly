@@ -97,7 +97,7 @@
     "nte.ClientIgnoreGameAndUiInput": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 30 14 00 00",
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 68 14 00 00",
       "resolve": {"kind": "direct"},
       "validators": ["address-in-module", "executable"],
       "requiredBy": ["anomaly.nte.navigation"]
@@ -260,7 +260,7 @@
     "gameInstance.localPlayers": 56,
     "localPlayer.controller": 48,
     "controller.controlRotation": 832,
-    "controller.getPlayerCharacterVtableOffset": 5168,
+    "controller.getPlayerCharacterVtableOffset": 5224,
     "controller.pawn": 776,
     "controller.playerState": 720,
     "controller.cameraManager": 896,
@@ -292,8 +292,8 @@
     "fboolProperty.byteOffset": 113,
     "fboolProperty.byteMask": 114,
     "fboolProperty.fieldMask": 115,
-    "character.setCustomIgnoreMoveInputVtableOffset": 4016,
-    "character.setCustomLimitInputVtableOffset": 4072,
+    "character.setCustomIgnoreMoveInputVtableOffset": 4032,
+    "character.setCustomLimitInputVtableOffset": 4088,
     "dataTable.rowMap": 48,
     "dataTable.rowMapElementStride": 24,
     "dataTable.rowMapRowOffset": 8,
