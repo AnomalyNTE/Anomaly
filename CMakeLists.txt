@@ -952,6 +952,45 @@ target_compile_options(anomaly_render_fixture PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
     anomaly_render_fixture PRIVATE anomaly_runtime_kernel d3d12 dxgi dxguid)
 
+# Exercises the Present interception path against a D3D11 swap chain, which is
+# what a title using the D3D11 RHI presents. Nothing covered that path before,
+# which is how an overlay that only knew how to draw with D3D12 could sit in a
+# D3D11 game reporting nothing but "waiting for a command queue". The fixture
+# owns the window, device and swap chain; everything above it is the real
+# embedded platform, hooks included.
+add_executable(anomaly_d3d11_fixture
+    apps/render_fixture/d3d11_embedded_fixture.cpp
+    src/ui/platform_host.cpp
+    "${PLATFORM_UI_RESOURCES_RC}"
+    src/render/dx12/embedded_bridge.cpp
+    src/render/dx12/embedded_discovery.cpp
+    src/render/dx12/embedded_input.cpp
+    src/render/dx12/embedded_renderer.cpp
+    src/render/dx12/embedded_ui_resource_render_backend.cpp
+    src/ui/embedded_ui.cpp
+    src/game/nte/nte_esc_menu_bridge.cpp
+    src/plugin/plugin_manager.cpp)
+set_target_properties(anomaly_d3d11_fixture PROPERTIES OUTPUT_NAME "anomaly-d3d11-fixture")
+target_include_directories(anomaly_d3d11_fixture PRIVATE include src "${GENERATED_DIR}")
+target_compile_definitions(
+    anomaly_d3d11_fixture PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_d3d11_fixture PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(
+    anomaly_d3d11_fixture PRIVATE
+    ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
+    anomaly_platform_ui_model
+    anomaly_platform_settings
+    anomaly_scoped_platform
+    anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
+    anomaly_nte_profile_runtime
+    anomaly_websocket_server
+    anomaly_repository_coordinator
+    anomaly_crash_reporter anomaly_runtime_crash_coordinator
+    anomaly_structured_logger anomaly_ui_resources anomaly_i18n
+    anomaly_adapter_services anomaly_plugin_runtime
+    nlohmann_json::nlohmann_json d3d11 d3d12 dxgi dxguid)
+add_dependencies(anomaly_d3d11_fixture anomaly_stage_nte_profiles)
+
 option(ANOMALY_BUILD_SDK_EXAMPLES "Build the Anomaly 1.0 SDK example plugins" ON)
 option(ANOMALY_BUILD_BUILTIN_PLUGINS "Build Anomaly bundled plugins" ON)
 set(ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS

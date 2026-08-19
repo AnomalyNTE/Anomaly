@@ -490,12 +490,37 @@ void PublishEmbeddedUiCapture(EmbeddedState& state) noexcept {
 }
 
 bool InstallEmbeddedInput(EmbeddedState& state) noexcept {
+    state.input_installed = false;
+    state.input_install_error = ERROR_SUCCESS;
+    if (state.window == nullptr || !IsWindow(state.window)) {
+        state.input_install_error = ERROR_INVALID_WINDOW_HANDLE;
+        return false;
+    }
     SetLastError(ERROR_SUCCESS);
     const LONG_PTR previous = SetWindowLongPtrW(
         state.window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(EmbeddedWindowProc));
-    if (previous == 0 && GetLastError() != ERROR_SUCCESS) return false;
+    if (previous == 0) {
+        const DWORD error = GetLastError();
+        state.input_install_error = error == ERROR_SUCCESS ? ERROR_NOT_SUPPORTED : error;
+        if (error != ERROR_SUCCESS) {
+            // The exchange was refused, so the game still owns its procedure and
+            // there is nothing to undo.
+            return false;
+        }
+        // The exchange went through but produced no forwarding target. Leaving
+        // this procedure installed would route every game message to
+        // DefWindowProc and the window would stop responding, so put the
+        // window back the only way still available and report the failure.
+        if (GetWindowLongPtrW(state.window, GWLP_WNDPROC) ==
+            reinterpret_cast<LONG_PTR>(EmbeddedWindowProc)) {
+            SetLastError(ERROR_SUCCESS);
+            static_cast<void>(SetWindowLongPtrW(state.window, GWLP_WNDPROC, previous));
+        }
+        return false;
+    }
     state.original_window_proc = reinterpret_cast<WNDPROC>(previous);
-    return state.original_window_proc != nullptr;
+    state.input_installed = true;
+    return true;
 }
 
 void RestoreEmbeddedInput(EmbeddedState& state) noexcept {
@@ -504,6 +529,7 @@ void RestoreEmbeddedInput(EmbeddedState& state) noexcept {
         ClearInputMailbox(state.input_mailbox, anomaly::InputResetReason::FocusLost);
     } catch (...) {
     }
+    state.input_installed = false;
     if (state.original_window_proc == nullptr || !IsWindow(state.window)) {
         state.original_window_proc = nullptr;
         return;

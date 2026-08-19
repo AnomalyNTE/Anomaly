@@ -7,17 +7,91 @@
 #include "embedded_ui_resource_render_backend.hpp"
 
 #include <imgui.h>
+#include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_dx12.h>
 #include <backends/imgui_impl_win32.h>
 
+#include <array>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <limits>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <utility>
 
 namespace ue5mem::embedded {
 namespace {
+
+// Says why the overlay is not on screen.
+//
+// Embedded start-up used to be entirely silent: a dozen separate conditions
+// could each abandon the frame with a bare `return`, so a user whose overlay
+// never appeared had nothing to go on and neither did anyone reading a bug
+// report. Every abandoned start-up now names its reason exactly once per
+// reason, which keeps a per-frame path from turning into a log flood while
+// still surfacing the first cause and any later change of cause.
+void ReportEmbeddedGate(
+        const EmbeddedState& state, const char* reason, const std::string& detail = {},
+        const char* prefix = "embedded overlay not started: ") noexcept {
+    try {
+        static std::mutex mutex;
+        static std::set<std::string> reported;
+        const std::string key = std::string(reason) + '|' + detail;
+        {
+            std::scoped_lock lock(mutex);
+            if (!reported.insert(key).second) return;
+        }
+        std::string message = std::string(prefix) + reason;
+        if (!detail.empty()) message += " (" + detail + ")";
+        std::ofstream(state.root / L"anomaly-platform.log", std::ios::app)
+            << "pid=" << GetCurrentProcessId() << ' ' << message << std::endl;
+        if (state.diagnostics.logger != nullptr) {
+            anomaly::LogDetails details;
+            details.thread_domain = anomaly::LogThreadDomain::Render;
+            details.event_id = "embedded.gate";
+            static_cast<void>(state.diagnostics.logger->Log(
+                anomaly::LogLevel::Warning, "embedded-renderer", message, std::move(details)));
+        }
+    } catch (...) {
+    }
+}
+
+// Drives the overlay from polled device state.
+//
+// Used only when the game window's procedure could not be exchanged. ImGui
+// normally learns about input from window messages, so without that hook the
+// overlay would draw but ignore the mouse entirely, which is barely better than
+// not drawing at all. Polling is coarser -- no character input, no scroll
+// accumulation between frames -- but it restores pointing and clicking, which is
+// what the panels actually need.
+void FeedPolledInput(const EmbeddedState& state) noexcept {
+    if (state.window == nullptr) return;
+    ImGuiIO& io = ImGui::GetIO();
+    POINT cursor{};
+    if (GetCursorPos(&cursor) && ScreenToClient(state.window, &cursor)) {
+        io.AddMousePosEvent(static_cast<float>(cursor.x), static_cast<float>(cursor.y));
+    }
+    const bool foreground = GetForegroundWindow() == state.window;
+    io.AddFocusEvent(foreground);
+    if (!foreground) return;
+    struct PolledButton {
+        int virtual_key;
+        int imgui_button;
+    };
+    static constexpr std::array<PolledButton, 3> buttons{{
+        {VK_LBUTTON, 0}, {VK_RBUTTON, 1}, {VK_MBUTTON, 2}}};
+    for (const PolledButton& button : buttons) {
+        const bool down = (GetAsyncKeyState(button.virtual_key) & 0x8000) != 0;
+        io.AddMouseButtonEvent(button.imgui_button, down);
+    }
+}
+
+std::string LastErrorDetail(const char* label, unsigned long error) {
+    return std::string(label) + "=" + std::to_string(error);
+}
+
 
 class PerformanceTimer final {
 public:
@@ -346,6 +420,9 @@ void CopyBackBuffer(
 }
 
 bool ReleaseBackBuffersForResize(EmbeddedState& state) {
+    // ResizeBuffers fails while anything still references a back buffer, and on
+    // D3D11 the overlay's render target view is that reference.
+    Release(state.d3d11_render_target);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     for (auto& frame : state.frames) {
         const auto now = std::chrono::steady_clock::now();
@@ -531,6 +608,29 @@ bool ReconfigureFramesAfterResize(
 
 bool RebuildBackBuffersAfterResize(
     EmbeddedState& state, bool force_renderer_reconfigure = false) {
+    if (state.render_api == EmbeddedRenderApi::D3D11) {
+        // Only the render target view needs rebuilding; there is no descriptor
+        // heap and no per-frame context to reconfigure.
+        if (state.source_swap_chain == nullptr || state.d3d11_device == nullptr) return false;
+        ID3D11Texture2D* back_buffer{};
+        if (FAILED(state.source_swap_chain->GetBuffer(0, IID_PPV_ARGS(&back_buffer))) ||
+            back_buffer == nullptr) {
+            Release(back_buffer);
+            return false;
+        }
+        const HRESULT created = state.d3d11_device->CreateRenderTargetView(
+            back_buffer, nullptr, &state.d3d11_render_target);
+        Release(back_buffer);
+        if (FAILED(created) || state.d3d11_render_target == nullptr) return false;
+        RECT output_rect{};
+        if (state.window != nullptr && GetClientRect(state.window, &output_rect)) {
+            const LONG width = (std::max)(0L, output_rect.right - output_rect.left);
+            const LONG height = (std::max)(0L, output_rect.bottom - output_rect.top);
+            state.selected_area =
+                static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height);
+        }
+        return true;
+    }
     if (state.source_swap_chain == nullptr || state.device == nullptr ||
         state.render_target_heap == nullptr) return false;
     DXGI_SWAP_CHAIN_DESC description{};
@@ -616,11 +716,49 @@ bool PreferSwapChain(const EmbeddedState& state, IDXGISwapChain* candidate) {
     return candidate_area > state.selected_area + state.selected_area / 4;
 }
 
-bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
+// Names the graphics API behind a swap chain.
+//
+// The Present hook lives in DXGI, which every Direct3D version shares, so it
+// fires for a D3D11 swap chain exactly as it does for a D3D12 one. Everything
+// downstream of it here is D3D12 only. When the device query fails there is no
+// way to tell "wrong API" from "device query failed" without asking, so ask.
+std::string DescribeSwapChainApi(IDXGISwapChain* swap_chain) {
+    if (swap_chain == nullptr) return "swapChain=null";
+    std::string description = "api=";
+    void* probe{};
+    const auto query = [&](const IID& id) {
+        probe = nullptr;
+        return SUCCEEDED(swap_chain->GetDevice(id, &probe)) && probe != nullptr;
+    };
+    if (query(__uuidof(ID3D12Device))) {
+        description += "d3d12";
+    } else if (query(IID{0xdb6f6ddb, 0xac77, 0x4e88, {0x82, 0x53, 0x81, 0x9d, 0xf9, 0xbb, 0xf1, 0x40}})) {
+        // ID3D11Device, spelled out so this file does not have to pull in d3d11.h.
+        description += "d3d11";
+    } else if (query(IID{0x9b7e4c0f, 0x342c, 0x4106, {0xa1, 0x9f, 0x4f, 0x27, 0x04, 0xf6, 0x89, 0xf0}})) {
+        // ID3D10Device1.
+        description += "d3d10";
+    } else {
+        description += "unknown";
+    }
+    if (probe != nullptr) static_cast<IUnknown*>(probe)->Release();
+    DXGI_SWAP_CHAIN_DESC layout{};
+    if (SUCCEEDED(swap_chain->GetDesc(&layout))) {
+        description += " buffers=" + std::to_string(layout.BufferCount) +
+            " format=" + std::to_string(static_cast<int>(layout.BufferDesc.Format)) +
+            " windowed=" + std::to_string(layout.Windowed ? 1 : 0);
+    }
+    return description;
+}
+
+bool CompleteGraphicsInitialization(EmbeddedState& state);
+
+bool InitializeGraphicsD3D12(EmbeddedState& state, IDXGISwapChain* swap_chain) {
     if (state.plugins == nullptr || state.quarantined_plugin_owner != nullptr ||
         PlatformUiQuarantined(state.plugins)) {
         // A retained owner is a generation fence. Do not allocate another
         // ImGui/device generation until the prior UI callbacks have drained.
+        ReportEmbeddedGate(state, "plugin host unavailable or quarantined");
         return false;
     }
     // A previous device generation may have stopped accepting UI work but
@@ -638,6 +776,29 @@ bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
         if (queue != nullptr) queue->AddRef();
     }
     if (queue == nullptr) {
+        // Normal for the first frames, permanent if the submission hook never
+        // delivers. Repeat with the live evidence so the two cases can be told
+        // apart: the counters say whether the hook ran at all, the target
+        // description says whether the detour is still the one installed here,
+        // and the swap chain description says which API it belongs to.
+        static std::atomic<long long> next_report{};
+        const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        long long expected = next_report.load(std::memory_order_relaxed);
+        if (now >= expected &&
+            next_report.compare_exchange_strong(
+                expected, now + std::chrono::steady_clock::duration(
+                    std::chrono::seconds(5)).count())) {
+            std::ostringstream detail;
+            detail << "submissionHookCalls="
+                   << state.execute_hook_calls.load(std::memory_order_relaxed)
+                   << " directQueues="
+                   << state.execute_direct_queues.load(std::memory_order_relaxed)
+                   << " queueTypeMask=0x" << std::hex
+                   << state.observed_queue_types.load(std::memory_order_relaxed) << std::dec
+                   << ' ' << DescribeEmbeddedSubmissionTarget()
+                   << ' ' << DescribeSwapChainApi(swap_chain);
+            ReportEmbeddedGate(state, "no direct command queue captured yet", detail.str());
+        }
         state.renderer = RendererLifecycle::Cold;
         return false;
     }
@@ -649,6 +810,9 @@ bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
         FAILED(swap_chain->GetDevice(IID_PPV_ARGS(&device))) ||
         FAILED(swap_chain->GetDesc(&description)) || description.BufferCount == 0 ||
         description.OutputWindow == nullptr) {
+        ReportEmbeddedGate(
+            state, "swap chain is not a usable D3D12 target "
+            "(no IDXGISwapChain3, no ID3D12Device, or no output window)");
         Release(queue);
         Release(device);
         Release(swap_chain3);
@@ -663,6 +827,11 @@ bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
     const LONG height = output_rect.bottom - output_rect.top;
     if (output_process != GetCurrentProcessId() || !IsWindowVisible(description.OutputWindow) ||
         width < 640 || height < 360) {
+        ReportEmbeddedGate(
+            state, "output window rejected",
+            "process=" + std::to_string(output_process) +
+                " visible=" + std::to_string(IsWindowVisible(description.OutputWindow) ? 1 : 0) +
+                " size=" + std::to_string(width) + "x" + std::to_string(height));
         Release(queue);
         Release(device);
         Release(swap_chain3);
@@ -782,9 +951,23 @@ bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
     state.render_queue = queue;
     state.render_target_format = description.BufferDesc.Format;
     state.dx12_initialized = true;
+    state.render_api = EmbeddedRenderApi::D3D12;
+    return CompleteGraphicsInitialization(state);
+}
+
+// Everything after the device objects exist, which is identical whichever
+// Direct3D version owns the back buffer. The resource backend serves both, so
+// plugin fonts and icons work the same way on each.
+bool CompleteGraphicsInitialization(EmbeddedState& state) {
     if (!InstallEmbeddedInput(state)) {
-        static_cast<void>(ReleaseGraphics(state, RendererLifecycle::DeviceLost));
-        return false;
+        // Losing the window procedure costs interactivity, not the overlay.
+        // Tearing the renderer down here is what turned a recoverable input
+        // problem into a completely dead platform: no UI service reaches the
+        // plugins, so nothing renders and the hotkey never runs either.
+        ReportEmbeddedGate(
+            state, "window procedure could not be hooked; overlay stays visible but "
+            "will not accept mouse or keyboard",
+            LastErrorDetail("error", state.input_install_error));
     }
     {
         std::scoped_lock plugin_lock(*state.plugin_mutex);
@@ -875,7 +1058,134 @@ bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
         static_cast<void>(state.diagnostics.logger->Log(
             anomaly::LogLevel::Info, "render", message.str(), std::move(details)));
     }
+    // Also written to the plain platform log, which is where every abandoned
+    // start-up above reports, so a successful one is visible in the same place.
+    {
+        std::ostringstream ready;
+        ready << "api=" << (state.render_api == EmbeddedRenderApi::D3D11 ? "d3d11" : "d3d12")
+              << " hwnd=0x" << std::hex << reinterpret_cast<std::uintptr_t>(state.window)
+              << std::dec << " toggleKey=" << state.config.platform_toggle_key
+              << " inputHooked=" << (state.input_installed ? 1 : 0);
+        ReportEmbeddedGate(state, "ready", ready.str(), "embedded overlay: ");
+    }
     return true;
+}
+
+// Binds a render target view to back buffer zero.
+//
+// Split out because the view has to be dropped before ResizeBuffers and rebuilt
+// afterwards; holding a reference to a back buffer is what makes a resize fail.
+bool CreateD3D11RenderTarget(EmbeddedState& state) {
+    if (state.d3d11_device == nullptr || state.source_swap_chain == nullptr) return false;
+    ID3D11Texture2D* back_buffer{};
+    if (FAILED(state.source_swap_chain->GetBuffer(0, IID_PPV_ARGS(&back_buffer))) ||
+        back_buffer == nullptr) {
+        Release(back_buffer);
+        return false;
+    }
+    const HRESULT created = state.d3d11_device->CreateRenderTargetView(
+        back_buffer, nullptr, &state.d3d11_render_target);
+    Release(back_buffer);
+    return SUCCEEDED(created) && state.d3d11_render_target != nullptr;
+}
+
+void ReleaseD3D11RenderTarget(EmbeddedState& state) noexcept {
+    Release(state.d3d11_render_target);
+}
+
+// Brings the overlay up on a swap chain owned by a D3D11 device.
+//
+// Far smaller than the D3D12 path because the immediate context is the entire
+// submission model: no command queue to capture, no allocators, no fences, no
+// resource barriers, and one render target view instead of a descriptor heap.
+bool InitializeGraphicsD3D11(EmbeddedState& state, IDXGISwapChain* swap_chain) {
+    if (state.plugins == nullptr || state.quarantined_plugin_owner != nullptr ||
+        PlatformUiQuarantined(state.plugins)) {
+        ReportEmbeddedGate(state, "plugin host unavailable or quarantined");
+        return false;
+    }
+    if (state.platform_ui_initialized &&
+        !ReleaseGraphics(state, RendererLifecycle::Cold)) {
+        return false;
+    }
+    state.renderer = RendererLifecycle::Discovering;
+    ID3D11Device* device{};
+    DXGI_SWAP_CHAIN_DESC description{};
+    if (FAILED(swap_chain->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr ||
+        FAILED(swap_chain->GetDesc(&description)) || description.BufferCount == 0 ||
+        description.OutputWindow == nullptr) {
+        Release(device);
+        ReportEmbeddedGate(
+            state, "swap chain is not a usable D3D11 target",
+            DescribeSwapChainApi(swap_chain));
+        state.renderer = RendererLifecycle::Cold;
+        return false;
+    }
+    DWORD output_process{};
+    GetWindowThreadProcessId(description.OutputWindow, &output_process);
+    RECT output_rect{};
+    GetClientRect(description.OutputWindow, &output_rect);
+    const LONG width = output_rect.right - output_rect.left;
+    const LONG height = output_rect.bottom - output_rect.top;
+    if (output_process != GetCurrentProcessId() || !IsWindowVisible(description.OutputWindow) ||
+        width < 640 || height < 360) {
+        Release(device);
+        ReportEmbeddedGate(
+            state, "output window rejected",
+            "process=" + std::to_string(output_process) +
+                " visible=" + std::to_string(IsWindowVisible(description.OutputWindow) ? 1 : 0) +
+                " size=" + std::to_string(width) + "x" + std::to_string(height));
+        state.renderer = RendererLifecycle::Cold;
+        return false;
+    }
+    state.d3d11_device = device;
+    device->GetImmediateContext(&state.d3d11_context);
+    swap_chain->AddRef();
+    state.source_swap_chain = swap_chain;
+    state.window = description.OutputWindow;
+    state.render_target_format = description.BufferDesc.Format;
+    state.selected_area = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height);
+    if (state.d3d11_context == nullptr || !CreateD3D11RenderTarget(state)) {
+        ReportEmbeddedGate(state, "could not bind a render target to the D3D11 back buffer");
+        static_cast<void>(ReleaseGraphics(state, RendererLifecycle::DeviceLost));
+        return false;
+    }
+    IMGUI_CHECKVERSION();
+    state.imgui_context = ImGui::CreateContext();
+    if (state.imgui_context == nullptr) {
+        static_cast<void>(ReleaseGraphics(state, RendererLifecycle::DeviceLost));
+        return false;
+    }
+    static_cast<void>(ConfigurePlatformUiFontAtlas(state.root));
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NoMouseCursorChange;
+    state.imgui_ini_path = (state.root / L"anomaly-imgui.ini").string();
+    io.IniFilename = state.imgui_ini_path.c_str();
+    if (!ImGui_ImplWin32_Init(state.window)) {
+        static_cast<void>(ReleaseGraphics(state, RendererLifecycle::DeviceLost));
+        return false;
+    }
+    state.win32_initialized = true;
+    if (!ImGui_ImplDX11_Init(state.d3d11_device, state.d3d11_context)) {
+        static_cast<void>(ReleaseGraphics(state, RendererLifecycle::DeviceLost));
+        return false;
+    }
+    state.dx11_initialized = true;
+    state.render_api = EmbeddedRenderApi::D3D11;
+    return CompleteGraphicsInitialization(state);
+}
+
+bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
+    if (swap_chain == nullptr) return false;
+    // Asking the swap chain settles which API owns the back buffer. Guessing
+    // wrong here is what left the overlay waiting forever for a command queue
+    // that a D3D11 title never creates.
+    ID3D12Device* probe{};
+    const bool is_d3d12 =
+        SUCCEEDED(swap_chain->GetDevice(IID_PPV_ARGS(&probe))) && probe != nullptr;
+    Release(probe);
+    return is_d3d12 ? InitializeGraphicsD3D12(state, swap_chain)
+                    : InitializeGraphicsD3D11(state, swap_chain);
 }
 
 }  // namespace
@@ -964,6 +1274,10 @@ bool ReleaseGraphics(
         ImGui_ImplDX12_Shutdown();
         state.dx12_initialized = false;
     }
+    if (state.dx11_initialized) {
+        ImGui_ImplDX11_Shutdown();
+        state.dx11_initialized = false;
+    }
     state.shader_descriptors.Reset();
     if (state.win32_initialized) {
         ImGui_ImplWin32_Shutdown();
@@ -987,6 +1301,10 @@ bool ReleaseGraphics(
     Release(state.shader_heap);
     Release(state.render_target_heap);
     Release(state.device);
+    ReleaseD3D11RenderTarget(state);
+    Release(state.d3d11_context);
+    Release(state.d3d11_device);
+    state.render_api = EmbeddedRenderApi::None;
     ClearPendingResizeQueue(state);
     Release(state.render_queue);
     Release(state.swap_chain);
@@ -1036,36 +1354,58 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     const int toggle_state = GetAsyncKeyState(static_cast<int>(toggle_key));
     if (anomaly::ShouldTogglePlatformMenus(
             PlatformUiCapturingHotkey(), toggle_state)) {
-        anomaly::SetHostUiMenusCollapsed(!anomaly::HostUiMenusCollapsed());
+        const bool expanding = anomaly::HostUiMenusCollapsed();
+        anomaly::SetHostUiMenusCollapsed(!expanding);
+        // The shell's own close button marks the management window closed, and
+        // that state is persisted. Collapsing is not the same as closing, so a
+        // hotkey that only flipped the collapse flag could never bring a closed
+        // shell back -- not in that session and not in any later one, because
+        // start-up reads the persisted state and collapses again. Reopening here
+        // is what makes the hotkey a way back in.
+        if (expanding) static_cast<void>(RevealPlatformUi());
     }
     static_cast<void>(ApplyHostUiManagementExpansionRequest());
 
-    const UINT index = state->swap_chain->GetCurrentBackBufferIndex();
-    if (index >= state->frames.size()) return;
-    auto& frame = state->frames[index];
-    const std::uint64_t capture_generation = CaptureGeneration(*state);
-    SynchronizeSmokeProbeCapture(state->pixel_probe.policy, capture_generation);
-    static_cast<void>(CompletePixelProbe(*state, capture_generation));
-    setup_timer.Stop();
-    PerformanceTimer fence_timer(
-        state->performance, EmbeddedPerformanceStage::RenderFenceWait, sampled);
-    const bool frame_ready = WaitForFrame(*state, frame);
-    fence_timer.Stop();
-    if (!frame_ready) return;
-    PerformanceTimer reset_timer(
-        state->performance, EmbeddedPerformanceStage::RenderFrameReset, sampled);
-    if (FAILED(frame.allocator->Reset()) ||
-        FAILED(state->command_list->Reset(frame.allocator, nullptr))) {
-        static_cast<void>(ReleaseGraphics(*state, RendererLifecycle::DeviceLost));
-        return;
+    // D3D11 submits through the immediate context, so none of the back buffer
+    // index, fence wait, allocator reset or pixel probe below applies to it.
+    const bool immediate_mode = state->render_api == EmbeddedRenderApi::D3D11;
+    FrameContext* frame_context{};
+    std::uint64_t capture_generation{};
+    bool probing = false;
+    if (immediate_mode) {
+        setup_timer.Stop();
+    } else {
+        const UINT index = state->swap_chain->GetCurrentBackBufferIndex();
+        if (index >= state->frames.size()) return;
+        frame_context = &state->frames[index];
+        capture_generation = CaptureGeneration(*state);
+        SynchronizeSmokeProbeCapture(state->pixel_probe.policy, capture_generation);
+        static_cast<void>(CompletePixelProbe(*state, capture_generation));
+        setup_timer.Stop();
+        PerformanceTimer fence_timer(
+            state->performance, EmbeddedPerformanceStage::RenderFenceWait, sampled);
+        const bool frame_ready = WaitForFrame(*state, *frame_context);
+        fence_timer.Stop();
+        if (!frame_ready) return;
+        PerformanceTimer reset_timer(
+            state->performance, EmbeddedPerformanceStage::RenderFrameReset, sampled);
+        if (FAILED(frame_context->allocator->Reset()) ||
+            FAILED(state->command_list->Reset(frame_context->allocator, nullptr))) {
+            static_cast<void>(ReleaseGraphics(*state, RendererLifecycle::DeviceLost));
+            return;
+        }
+        probing = capture_generation != 0 &&
+            PreparePixelProbe(*state, *frame_context, capture_generation);
+        reset_timer.Stop();
     }
-    const bool probing = capture_generation != 0 &&
-        PreparePixelProbe(*state, frame, capture_generation);
-    reset_timer.Stop();
 
     PerformanceTimer ui_timer(
         state->performance, EmbeddedPerformanceStage::RenderUi, sampled);
-    ImGui_ImplDX12_NewFrame();
+    if (immediate_mode) {
+        ImGui_ImplDX11_NewFrame();
+    } else {
+        ImGui_ImplDX12_NewFrame();
+    }
     // NewFrame creates the ImGui font atlas first, reserving descriptor slot
     // zero before scoped texture uploads allocate from the shared heap.
     const auto prepare_lock_started = sampled ? std::chrono::steady_clock::now()
@@ -1092,6 +1432,7 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
                                              : std::chrono::steady_clock::time_point{};
     UpdateMenuCursor(*state, anomaly::HostUiMenusCaptureMouse());
     ImGui_ImplWin32_NewFrame();
+    if (!state->input_installed) FeedPolledInput(*state);
     ImGui::NewFrame();
     anomaly::PrepareHostUiFrame();
     if (sampled) {
@@ -1165,9 +1506,37 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     }
     ui_timer.Stop();
 
-    PerformanceTimer command_timer(
-        state->performance, EmbeddedPerformanceStage::RenderCommands, sampled);
-    if (probing) {
+    if (immediate_mode) {
+        PerformanceTimer command_timer(
+            state->performance, EmbeddedPerformanceStage::RenderCommands, sampled);
+        if (state->d3d11_context == nullptr || state->d3d11_render_target == nullptr) {
+            static_cast<void>(ReleaseGraphics(*state, RendererLifecycle::DeviceLost));
+            return;
+        }
+        // The game leaves its own targets bound. Binding the back buffer for the
+        // overlay draw and nothing else is the whole of the D3D11 submission:
+        // the immediate context is already ordered behind the game's work.
+        //
+        // ImGui's D3D11 backend restores whatever was bound when it was entered,
+        // which by then is the overlay's own target, so the game's binding has
+        // to be saved and put back here instead.
+        ID3D11RenderTargetView* previous_targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+        ID3D11DepthStencilView* previous_depth{};
+        state->d3d11_context->OMGetRenderTargets(
+            D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, previous_targets, &previous_depth);
+        ID3D11RenderTargetView* targets[]{state->d3d11_render_target};
+        state->d3d11_context->OMSetRenderTargets(1, targets, nullptr);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        state->d3d11_context->OMSetRenderTargets(
+            D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, previous_targets, previous_depth);
+        for (auto* previous : previous_targets) Release(previous);
+        Release(previous_depth);
+        command_timer.Stop();
+    } else {
+        auto& frame = *frame_context;
+        PerformanceTimer command_timer(
+            state->performance, EmbeddedPerformanceStage::RenderCommands, sampled);
+        if (probing) {
         auto to_copy = Transition(
             frame.back_buffer, D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1236,6 +1605,7 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
         return;
     }
     submit_timer.Stop();
+    }
     }
     // Lifecycle mutations are submitted only after the render mutex and the
     // plugin draw lock have been released, so a slow reload cannot block
@@ -1320,8 +1690,16 @@ void FinishResizeEvidenceHandoff(bool successful) noexcept {
 
 void CaptureCommandQueue(ID3D12CommandQueue* queue) {
     auto* state = g_state.load(std::memory_order_acquire);
-    if (state == nullptr || queue == nullptr ||
-        queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return;
+    if (state == nullptr) return;
+    state->execute_hook_calls.fetch_add(1, std::memory_order_relaxed);
+    if (queue == nullptr) return;
+    const D3D12_COMMAND_LIST_TYPE type = queue->GetDesc().Type;
+    if (type >= 0 && type < 31) {
+        state->observed_queue_types.fetch_or(
+            1u << static_cast<unsigned>(type), std::memory_order_relaxed);
+    }
+    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) return;
+    state->execute_direct_queues.fetch_add(1, std::memory_order_relaxed);
     std::scoped_lock lock(state->queue_mutex);
     if (state->captured_queue == queue) return;
     queue->AddRef();

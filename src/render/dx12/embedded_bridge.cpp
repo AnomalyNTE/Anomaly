@@ -8,12 +8,39 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <functional>
+#include <iomanip>
+#include <sstream>
 #include <stop_token>
 #include <thread>
 
 namespace ue5mem::embedded {
+
+namespace {
+
+// Names a code address as module plus offset, for log lines that have to say
+// which component owns a byte range.
+std::string DescribeCodeAddress(void* address) {
+    if (address == nullptr) return "null";
+    HMODULE module{};
+    wchar_t path[MAX_PATH]{};
+    std::ostringstream text;
+    if (GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            static_cast<LPCWSTR>(static_cast<void*>(address)), &module) != 0 &&
+        GetModuleFileNameW(module, path, MAX_PATH) != 0) {
+        const std::filesystem::path leaf = std::filesystem::path(path).filename();
+        text << leaf.string() << "+0x" << std::hex
+             << (static_cast<unsigned char*>(address) - reinterpret_cast<unsigned char*>(module));
+        return text.str();
+    }
+    text << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(address) << "(unmapped)";
+    return text.str();
+}
+
+}  // namespace
 
 std::atomic<EmbeddedState*> g_state{};
 PresentFn g_present{};
@@ -21,6 +48,9 @@ Present1Fn g_present1{};
 ResizeBuffersFn g_resize_buffers{};
 ResizeBuffers1Fn g_resize_buffers1{};
 ExecuteCommandListsFn g_execute_command_lists{};
+// Kept so a stalled start-up can report whether the detour installed here is
+// still the one in place. Internal linkage: nothing outside this file reads it.
+static void* g_execute_command_lists_target{};
 std::unique_ptr<anomaly::HookManager> g_hooks;
 std::atomic_bool g_performance_diagnostics_enabled{};
 
@@ -433,6 +463,7 @@ bool InstallHooks() {
     if (g_hooks != nullptr) return false;
     const HookTargets targets = DiscoverD3D12HookTargets();
     if (!targets) return false;
+    g_execute_command_lists_target = targets.execute_command_lists;
     g_hooks = std::make_unique<anomaly::HookManager>(anomaly::CreateMinHookBackend());
     return g_hooks->Create(
                std::string(kRendererHookOwner), kRendererHookGeneration, "execute-command-lists",
@@ -490,10 +521,36 @@ bool InstallHooks() {
     g_resize_buffers = nullptr;
     g_resize_buffers1 = nullptr;
     g_execute_command_lists = nullptr;
+    g_execute_command_lists_target = nullptr;
     return true;
 }
 
 }  // namespace
+
+std::string DescribeEmbeddedSubmissionTarget() {
+    void* const target = g_execute_command_lists_target;
+    if (target == nullptr) return "target=none";
+    std::ostringstream description;
+    const auto* bytes = static_cast<const unsigned char*>(target);
+    description << "target=" << DescribeCodeAddress(target) << " bytes=";
+    for (int index = 0; index < 5; ++index) {
+        description << std::hex << std::setw(2) << std::setfill('0')
+                    << static_cast<unsigned>(bytes[index]);
+    }
+    description << std::dec;
+    // A five byte relative jump is what every trampoline hook on x64 leaves
+    // behind. Naming the module it lands in separates "our detour is in effect"
+    // from "something else overwrote it", which the call counters alone cannot.
+    if (bytes[0] == 0xE9) {
+        std::int32_t displacement{};
+        std::memcpy(&displacement, bytes + 1, sizeof(displacement));
+        void* const destination = const_cast<unsigned char*>(bytes) + 5 + displacement;
+        description << " jumpsTo=" << DescribeCodeAddress(destination);
+    } else {
+        description << " notAJump";
+    }
+    return description.str();
+}
 
 }  // namespace ue5mem::embedded
 
