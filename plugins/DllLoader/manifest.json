@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.builtin.dll-loader",
+  "name": "DLL Loader",
+  "description": "Loads a configured native DLL from this plugin package while the game is running.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "developer",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.config", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1}
+  ],
+  "capabilities": ["configuration", "ui"]
+}

@@ -15,5 +15,6 @@
 - `NteNavmeshDemo`
 - `NtePickupDemo`
 - `TeleportLandmarksProbe`
+- `DllLoader`
 
-SDK 教学插件属于 `examples/`，不安装进游戏运行时。诊断插件源码留在 `tools/`；其 manifest 使用 `"audience": "developer"`，因此管理界面仅在会话开发者模式启用时才把它们纳入已安装插件视图。
+SDK 教学插件属于 `examples/`，不安装进游戏运行时。诊断插件源码留在 `tools/`；调试插件的 manifest 使用 `"audience": "developer"`，因此管理界面仅在会话开发者模式启用时才把它们纳入已安装插件视图。

@@ -105,6 +105,17 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 `anomaly.nte.map-landmarks`，不保存签名或偏移，也不自行扫描对象、解析 DataTable 或调用
 UE `ProcessEvent`；关闭开发者模式后不会出现在已安装插件视图中，也不会执行传送请求。
 
+### DLL Loader
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.builtin.dll-loader` |
+| **作用** | 在插件启用或重载时加载指定的原生 DLL，并在插件停用或重载时释放该 DLL 的加载引用。 |
+| **依赖服务** | `anomaly.config`、`anomaly.ui` |
+| **需要 Profile** | 否 |
+
+默认目标为 `dumper-7.dll`。把目标 DLL 放进 `Anomaly\plugins\DllLoader\` 后启用该插件即可加载；也可以在插件窗口输入包内相对路径或绝对路径。路径修改在渲染回调中只保存在内存，随后从 **Plugins** 页重载该插件，生命周期会先保存设置、释放旧 DLL，再加载新路径。将路径清空并重载可禁用 DLL 加载。
+
 ## 管理插件
 
 在 **Plugins** 页你可以：
