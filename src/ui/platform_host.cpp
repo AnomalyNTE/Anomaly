@@ -13,6 +13,7 @@
 
 #include <Windows.h>
 #include <d3d11.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 
 #include <imgui.h>
@@ -50,6 +51,13 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 namespace ue5mem {
 namespace {
 
+// Fully transparent clear colour. Composition takes the swap chain's alpha
+// literally, so clearing to zero alpha leaves the desktop showing through
+// everywhere the panels do not draw. A layered window cannot be used for this:
+// WS_EX_LAYERED redirects the window to a surface the D3D swap chain never
+// reaches, which paints an opaque rectangle instead.
+constexpr float kHostClearColor[4]{0.0f, 0.0f, 0.0f, 0.0f};
+
 struct HostWindow {
     HWND window{};
     HWND target{};
@@ -59,6 +67,13 @@ struct HostWindow {
     ID3D11RenderTargetView* render_target{};
     ID3D11ShaderResourceView* header_logo{};
     std::shared_ptr<std::string> imgui_ini_path;
+    // Whether the compositor honoured the swap chain's alpha. Placement depends
+    // on it: a window that failed to become transparent must stay a small panel
+    // rather than an opaque sheet over the whole game.
+    bool alpha_composited{};
+    // The panel rectangles the window region was last built from. Rebuilding it
+    // every frame would be wasted work; this is what says when it changed.
+    std::vector<std::array<LONG, 4>> region_panels;
     // Keeps the composition-root owner mapped if an in-flight game tick
     // exceeds the bounded host shutdown handoff.
     std::shared_ptr<PluginManager> plugin_owner;
@@ -143,6 +158,56 @@ HWND FindProcessWindow() {
     return candidate.window;
 }
 
+// Restricts the window to the rectangles the overlay actually draws into.
+//
+// A window spanning the whole client area would otherwise swallow every click,
+// including the ones meant for the game. WS_EX_TRANSPARENT looks like the answer
+// but only passes mouse events through for layered windows, and layering
+// redirects the window to a surface a D3D swap chain never presents into. A
+// window region clips hit-testing as well as painting on an ordinary window, so
+// whatever the overlay leaves empty belongs to the game again.
+//
+// Drags survive this because the backend takes the mouse capture on button
+// down, and a captured window keeps receiving input regardless of its region.
+void UpdateHostWindowRegion(HostWindow& host) {
+    if (!host.attached) return;
+    const ImGuiContext* context = ImGui::GetCurrentContext();
+    if (context == nullptr) return;
+    std::vector<std::array<LONG, 4>> panels;
+    for (const ImGuiWindow* window : context->Windows) {
+        if (window == nullptr || !window->WasActive || window->Hidden) continue;
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0) continue;
+        const ImRect bounds = window->Rect();
+        const std::array<LONG, 4> panel{
+            static_cast<LONG>(std::floor(bounds.Min.x)),
+            static_cast<LONG>(std::floor(bounds.Min.y)),
+            static_cast<LONG>(std::ceil(bounds.Max.x)),
+            static_cast<LONG>(std::ceil(bounds.Max.y))};
+        if (panel[2] <= panel[0] || panel[3] <= panel[1]) continue;
+        panels.push_back(panel);
+    }
+    if (panels == host.region_panels) return;
+    host.region_panels = panels;
+    if (panels.empty()) {
+        // Nothing is being drawn. An empty region would make the window vanish
+        // in a way that also drops the swap chain's output, so keep a single
+        // pixel and leave the rest of the client area to the game.
+        SetWindowRgn(host.window, CreateRectRgn(0, 0, 1, 1), TRUE);
+        return;
+    }
+    HRGN region = CreateRectRgn(panels[0][0], panels[0][1], panels[0][2], panels[0][3]);
+    if (region == nullptr) return;
+    for (std::size_t index = 1; index < panels.size(); ++index) {
+        const auto& panel = panels[index];
+        HRGN addition = CreateRectRgn(panel[0], panel[1], panel[2], panel[3]);
+        if (addition == nullptr) continue;
+        CombineRgn(region, region, addition, RGN_OR);
+        DeleteObject(addition);
+    }
+    // The window manager owns the region from here, so it must not be deleted.
+    if (SetWindowRgn(host.window, region, TRUE) == 0) DeleteObject(region);
+}
+
 bool PlaceAttachedWindow(HostWindow& host) {
     if (!host.attached) return true;
     if (!IsWindow(host.target)) return false;
@@ -152,10 +217,17 @@ bool PlaceAttachedWindow(HostWindow& host) {
     const int client_width = client.right - client.left;
     const int client_height = client.bottom - client.top;
     if (client_width <= 0 || client_height <= 0) return true;
-    const int width = std::max(320, std::min(1080, client_width - 32));
-    const int height = std::max(240, std::min(720, client_height - 32));
-    const int left = origin.x + (client_width - width) / 2;
-    const int top = origin.y + (client_height - height) / 2;
+    // Cover the whole client area once the window is transparent, so panels can
+    // be moved anywhere over the game. Clamping to a centred box was what
+    // confined the panels to one rectangle, which only made sense while the
+    // window was an opaque sheet that would otherwise have hidden the game.
+    const bool full_client = host.alpha_composited;
+    const int width = full_client
+        ? client_width : std::max(320, std::min(1080, client_width - 32));
+    const int height = full_client
+        ? client_height : std::max(240, std::min(720, client_height - 32));
+    const int left = full_client ? origin.x : origin.x + (client_width - width) / 2;
+    const int top = full_client ? origin.y : origin.y + (client_height - height) / 2;
     return SetWindowPos(
                host.window, HWND_TOP, left, top, width, height,
                SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW) != FALSE;
@@ -218,6 +290,34 @@ LRESULT WINAPI WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpara
 }
 
 void DestroyDevice(HostWindow& host);
+
+// Asks the desktop compositor to honour the swap chain's alpha channel.
+//
+// An empty blur region is the long-standing way to get per-pixel alpha on an
+// ordinary window. The alternative, WS_EX_LAYERED, cannot be used here: it
+// redirects the window onto a surface that a D3D swap chain never presents
+// into, which shows up as an opaque rectangle where the overlay should be.
+//
+// Resolved at run time because the process may be running against the
+// framework's own forwarding dwmapi, and because losing transparency is not
+// worth failing over.
+bool EnableHostWindowTransparency(HWND window) noexcept {
+    if (window == nullptr) return false;
+    using EnableBlurBehind = HRESULT(WINAPI*)(HWND, const DWM_BLURBEHIND*);
+    const HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+    if (dwm == nullptr) return false;
+    const auto enable_blur_behind =
+        reinterpret_cast<EnableBlurBehind>(GetProcAddress(dwm, "DwmEnableBlurBehindWindow"));
+    if (enable_blur_behind == nullptr) return false;
+    const HRGN region = CreateRectRgn(0, 0, -1, -1);
+    DWM_BLURBEHIND blur{};
+    blur.dwFlags = DWM_BB_ENABLE | DWM_BB_BLURREGION;
+    blur.fEnable = TRUE;
+    blur.hRgnBlur = region;
+    const HRESULT result = enable_blur_behind(window, &blur);
+    if (region != nullptr) DeleteObject(region);
+    return SUCCEEDED(result);
+}
 
 bool CreateDevice(HostWindow& host) {
     DXGI_SWAP_CHAIN_DESC description{};
@@ -832,10 +932,24 @@ public:
         // Keep a consistent margin around the responsive product surface and
         // scale both the viewport bounds and the persisted logical size.
         const float shell_margin = Scaled(kPlatformShellViewportMargin);
-        const float maximum_shell_width = Scaled(kPlatformMaximumShellWidth);
-        const float maximum_shell_height = Scaled(kPlatformMaximumShellHeight);
-        const float minimum_shell_width = Scaled(kPlatformMinimumShellWidth);
-        const float minimum_shell_height = Scaled(kPlatformMinimumShellHeight);
+        // The bounds have to answer to the viewport, not only to the DPI scale.
+        // A 1180x700 surface at 125% asks for 1475x875, which overflows a
+        // 1280x720 client area, and the overflow is silently clipped -- the
+        // shell then looks confined to a box no matter how large the window is.
+        const float available_width =
+            std::max(io.DisplaySize.x - shell_margin * 2.0f, 1.0f);
+        const float available_height =
+            std::max(io.DisplaySize.y - shell_margin * 2.0f, 1.0f);
+        const float maximum_shell_width =
+            std::min(Scaled(kPlatformMaximumShellWidth), available_width);
+        const float maximum_shell_height =
+            std::min(Scaled(kPlatformMaximumShellHeight), available_height);
+        // Kept below the maxima above: a viewport smaller than the minimum
+        // would otherwise hand std::clamp an inverted range.
+        const float minimum_shell_width =
+            std::min(Scaled(kPlatformMinimumShellWidth), maximum_shell_width);
+        const float minimum_shell_height =
+            std::min(Scaled(kPlatformMinimumShellHeight), maximum_shell_height);
         ImVec2 logical_expanded_size = management_shell_expanded_size_;
         if (logical_expanded_size.x <= 0.0f || logical_expanded_size.y <= 0.0f) {
             logical_expanded_size = {
@@ -6829,10 +6943,16 @@ void RunPlatform(
             << "platform window/device creation failed: " << GetLastError() << '\n';
         return;
     }
+    // Makes the desktop compositor honour the swap chain's alpha, so the frame
+    // stops being an opaque rectangle over the game. Failure only costs
+    // transparency, so it is recorded rather than treated as fatal.
+    host.alpha_composited = EnableHostWindowTransparency(host.window);
+    const bool alpha_composited = host.alpha_composited;
     {
         std::ofstream log(root / L"anomaly-platform.log", std::ios::app);
         log << "pid=" << GetCurrentProcessId() << " window=" << host.window
-            << " attached=" << (host.attached ? 1 : 0) << " target=" << host.target << '\n';
+            << " attached=" << (host.attached ? 1 : 0) << " target=" << host.target
+            << " alphaComposited=" << (alpha_composited ? 1 : 0) << '\n';
     }
 
     IMGUI_CHECKVERSION();
@@ -6932,8 +7052,22 @@ void RunPlatform(
                 if (host.attached) PlaceAttachedWindow(host);
                 ShowWindow(host.window, host.attached ? SW_SHOWNOACTIVATE : SW_SHOW);
                 anomaly::SetHostUiMenusCollapsed(false);
+                // The shell's own close button marks the management window
+                // closed and that state is persisted, so without reopening it
+                // here the hotkey would show an empty window forever -- in this
+                // session and in every later one.
+                static_cast<void>(RevealPlatformUi());
+            } else if (!anomaly::HostUiMenusCollapsed()) {
+                anomaly::SetHostUiMenusCollapsed(true);
             } else {
-                anomaly::SetHostUiMenusCollapsed(!anomaly::HostUiMenusCollapsed());
+                // Third state: the window is up but collapsed, so the only thing
+                // left on screen is its own opaque background sitting over the
+                // game. This used to be a dead end -- the hotkey could collapse
+                // the menus but never take the window back down, so the window
+                // stayed on top of the game until it was closed by hand. The
+                // hotkey now completes the cycle.
+                host.visible = false;
+                ShowWindow(host.window, SW_HIDE);
             }
         }
         if (ApplyHostUiManagementExpansionRequest() && !host.visible) {
@@ -6978,9 +7112,9 @@ void RunPlatform(
             plugins.Draw(ImGui::GetCurrentContext());
         }
         ImGui::Render();
-        constexpr float clear_color[4]{0.06f, 0.065f, 0.07f, 1.0f};
+        UpdateHostWindowRegion(host);
         host.context->OMSetRenderTargets(1, &host.render_target, nullptr);
-        host.context->ClearRenderTargetView(host.render_target, clear_color);
+        host.context->ClearRenderTargetView(host.render_target, kHostClearColor);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         host.swap_chain->Present(1, 0);
         FlushPlatformUiActions();

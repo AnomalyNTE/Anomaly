@@ -10,6 +10,7 @@
 #include "plugin_manager.hpp"
 
 #include <Windows.h>
+#include <d3d11.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
 
@@ -193,6 +194,13 @@ enum class RendererLifecycle : std::uint8_t {
     Stopped,
 };
 
+// Which Direct3D version the intercepted swap chain belongs to.
+//
+// The Present hook lives in DXGI, which every Direct3D version shares, so the
+// overlay gets called for a D3D11 title exactly as it does for a D3D12 one and
+// has to draw with whichever API the back buffer actually belongs to.
+enum class EmbeddedRenderApi : std::uint8_t { None, D3D12, D3D11 };
+
 struct HookTargets {
     void* execute_command_lists{};
     void* present{};
@@ -205,6 +213,11 @@ struct HookTargets {
             present1 != nullptr && resize_buffers != nullptr && resize_buffers1 != nullptr;
     }
 };
+
+// Reports what the submission target's first bytes currently look like and,
+// when they are a jump, which module it lands in. Distinguishes a detour that
+// is still ours from one that was overwritten by another hook.
+[[nodiscard]] std::string DescribeEmbeddedSubmissionTarget();
 
 struct EmbeddedState {
     std::filesystem::path root;
@@ -238,6 +251,15 @@ struct EmbeddedState {
     ID3D12Fence* fence{};
     HANDLE fence_event{};
     std::vector<FrameContext> frames;
+    // Set once the swap chain's API is known, and the switch every per-frame
+    // path branches on. D3D11 needs none of the queue, fence, allocator or
+    // descriptor-heap machinery above it: the immediate context is the whole
+    // submission model.
+    EmbeddedRenderApi render_api{EmbeddedRenderApi::None};
+    ID3D11Device* d3d11_device{};
+    ID3D11DeviceContext* d3d11_context{};
+    ID3D11RenderTargetView* d3d11_render_target{};
+    bool dx11_initialized{};
     DXGI_FORMAT render_target_format{DXGI_FORMAT_UNKNOWN};
     UINT64 next_fence_value{1};
     bool submission_unfenced{};
@@ -245,6 +267,18 @@ struct EmbeddedState {
     HWND window{};
     ImGuiContext* imgui_context{};
     WNDPROC original_window_proc{};
+    // Set when the window procedure could not be exchanged. The overlay still
+    // renders in that case, so the reason has to survive for diagnostics.
+    unsigned long input_install_error{};
+    bool input_installed{};
+    // Evidence about the command-queue handover, which only a D3D12 title
+    // performs. The overlay submits onto the game's own direct queue so its
+    // draws stay ordered against the game's frame, which means a missing queue
+    // stops the overlay entirely. These counters separate "the submission hook
+    // never fires" from "it fires but never with a direct queue" in a log.
+    std::atomic<std::uint64_t> execute_hook_calls{};
+    std::atomic<std::uint64_t> execute_direct_queues{};
+    std::atomic<std::uint32_t> observed_queue_types{};
     HWND previous_capture{};
     RECT previous_cursor_clip{};
     bool cursor_clip_saved{};

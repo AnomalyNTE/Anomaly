@@ -6,6 +6,7 @@
 #include "anomaly/ui_resource_render_backend.hpp"
 
 #include <imgui.h>
+#include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_dx12.h>
 
 #include <wrl/client.h>
@@ -32,10 +33,16 @@ constexpr std::uint64_t kUiTextureCacheBudgetBytes = 128ULL * 1024ULL * 1024ULL;
 
 // Texture cache admission accounts for the logical RGBA texture and the
 // temporary row-pitch-padded upload resource. The latter is returned once its
-// copy submission fence completes.
+// copy submission fence completes. D3D11 has no such staging resource: the
+// pixels are handed to CreateTexture2D directly, so it accounts for nothing.
 [[nodiscard]] bool EstimateTextureUploadBytes(
-    const anomaly::UiTextureRequest& request, std::uint64_t* upload_bytes) noexcept {
+    const anomaly::UiTextureRequest& request, std::uint64_t* upload_bytes,
+    const bool immediate_upload) noexcept {
     if (upload_bytes == nullptr || request.width == 0 || request.height == 0) return false;
+    if (immediate_upload) {
+        *upload_bytes = 0;
+        return true;
+    }
     constexpr std::uint64_t pitch_alignment = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
     constexpr std::uint64_t placement_alignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
     const std::uint64_t row_bytes = static_cast<std::uint64_t>(request.width) * 4U;
@@ -81,6 +88,17 @@ struct TextureEntry final {
     std::vector<LeaseReference> leases;
     Microsoft::WRL::ComPtr<ID3D12Resource> texture;
     Microsoft::WRL::ComPtr<ID3D12Resource> upload;
+    // D3D11 keeps the texture and its view instead; the view pointer is what
+    // ImGui draws with, standing in for the D3D12 descriptor below.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11_texture;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> d3d11_view;
+
+    // Whether this entry already holds something drawable. Which member proves
+    // that differs by API, and testing the wrong one silently turns the
+    // "already uploaded" check into a miss, re-uploading every single frame.
+    [[nodiscard]] bool Resident(const bool immediate) const noexcept {
+        return immediate ? d3d11_view != nullptr : gpu.ptr != 0;
+    }
     D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
     D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
     std::uint64_t byte_size{};
@@ -159,7 +177,12 @@ public:
                 return false;
             }
             const auto found = textures_.find(resource->resource_id);
-            if (found == textures_.end() || found->second.gpu.ptr == 0 ||
+            const ImTextureID texture_id = ImmediateMode()
+                ? reinterpret_cast<ImTextureID>(found == textures_.end()
+                      ? nullptr : found->second.d3d11_view.Get())
+                : static_cast<ImTextureID>(
+                      found == textures_.end() ? 0 : found->second.gpu.ptr);
+            if (found == textures_.end() || texture_id == ImTextureID{} ||
                 found->second.device_generation != device_generation_) {
                 return false;
             }
@@ -177,7 +200,7 @@ public:
                 static_cast<float>((tint_rgba >> 16U) & 0xffU) / 255.0F,
                 static_cast<float>((tint_rgba >> 24U) & 0xffU) / 255.0F);
             ImGui::ImageWithBg(
-                static_cast<ImTextureID>(found->second.gpu.ptr),
+                texture_id,
                 ImVec2(resolved_width, resolved_height), ImVec2(0.0F, 0.0F),
                 ImVec2(1.0F, 1.0F), ImVec4(0.0F, 0.0F, 0.0F, 0.0F), tint);
             return true;
@@ -258,7 +281,9 @@ public:
         const std::shared_ptr<anomaly::PluginScope>& scope,
         const anomaly::UiResourceHandle handle) noexcept override {
         try {
-            if (scope == nullptr || !handle || !CanUploadTexture()) return;
+            if (scope == nullptr || !handle || !CanUploadTexture()) {
+                return;
+            }
             const auto resource = registry.ResourceState(scope, handle);
             if (!resource || resource->kind != anomaly::UiResourceKind::Texture ||
                 resource->resource_id == 0) {
@@ -274,7 +299,8 @@ public:
             const std::uint64_t generation = registry.DeviceGeneration();
             if (resource->state == anomaly::UiResourceState::Ready &&
                 resource->device_generation == generation && existing != textures_.end() &&
-                existing->second.device_generation == generation && existing->second.gpu.ptr != 0) {
+                existing->second.device_generation == generation &&
+                existing->second.Resident(ImmediateMode())) {
                 return;
             }
             if (resource->state != anomaly::UiResourceState::Queued &&
@@ -292,7 +318,8 @@ public:
             }
             const std::uint64_t byte_size = state->request.encoded_bytes.size();
             std::uint64_t maximum_upload_bytes{};
-            if (!EstimateTextureUploadBytes(state->request, &maximum_upload_bytes)) {
+            if (!EstimateTextureUploadBytes(
+                    state->request, &maximum_upload_bytes, ImmediateMode())) {
                 static_cast<void>(registry.MarkTextureFailed(scope, handle));
                 return;
             }
@@ -386,20 +413,36 @@ public:
     }
 
 private:
+    // True while the overlay draws through the immediate context, which is the
+    // whole of D3D11 submission: no queue, no fences, no descriptor heaps, and
+    // therefore none of the deferral the D3D12 paths below need.
+    [[nodiscard]] bool ImmediateMode() const noexcept {
+        return state_.render_api == EmbeddedRenderApi::D3D11;
+    }
+
     [[nodiscard]] bool CanTouchImGui() const noexcept {
+        if (state_.imgui_context == nullptr ||
+            ImGui::GetCurrentContext() != state_.imgui_context) {
+            return false;
+        }
+        if (ImmediateMode()) {
+            return state_.dx11_initialized && state_.d3d11_device != nullptr;
+        }
         return state_.dx12_initialized && state_.device != nullptr &&
-            state_.shader_heap != nullptr && state_.imgui_context != nullptr &&
-            ImGui::GetCurrentContext() == state_.imgui_context;
+            state_.shader_heap != nullptr;
     }
 
     [[nodiscard]] bool CanUploadTexture() const noexcept {
-        return CanTouchImGui() && state_.command_list != nullptr &&
-            state_.shader_descriptors.Available() != 0;
+        if (!CanTouchImGui()) return false;
+        if (ImmediateMode()) return true;
+        return state_.command_list != nullptr && state_.shader_descriptors.Available() != 0;
     }
 
     [[nodiscard]] bool CanRebuildFontAtlas() const noexcept {
-        if (!CanTouchImGui() || state_.fence == nullptr ||
-            FAILED(state_.device->GetDeviceRemovedReason())) {
+        if (!CanTouchImGui()) return false;
+        // Nothing is in flight to wait for when submission is immediate.
+        if (ImmediateMode()) return true;
+        if (state_.fence == nullptr || FAILED(state_.device->GetDeviceRemovedReason())) {
             return false;
         }
         const std::uint64_t completed = state_.fence->GetCompletedValue();
@@ -520,15 +563,54 @@ private:
         return marked;
     }
 
+    // Creates an immutable texture directly from the decoded pixels. There is
+    // no staging resource to account for, no copy to record and no fence to
+    // wait on before the view can be drawn with.
+    [[nodiscard]] bool CreateTextureD3D11(
+        TextureEntry& entry, const anomaly::UiTextureRequest& request) noexcept {
+        if (state_.d3d11_device == nullptr) return false;
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = request.width;
+        description.Height = request.height;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_IMMUTABLE;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA data{};
+        data.pSysMem = request.encoded_bytes.data();
+        data.SysMemPitch = request.width * 4U;
+        if (FAILED(state_.d3d11_device->CreateTexture2D(
+                &description, &data, entry.d3d11_texture.ReleaseAndGetAddressOf()))) {
+            return false;
+        }
+        D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        view.Texture2D.MipLevels = 1;
+        if (FAILED(state_.d3d11_device->CreateShaderResourceView(
+                entry.d3d11_texture.Get(), &view,
+                entry.d3d11_view.ReleaseAndGetAddressOf()))) {
+            entry.d3d11_texture.Reset();
+            return false;
+        }
+        entry.upload_byte_size = 0;
+        entry.release_fence = 0;
+        entry.upload_fence = 0;
+        return true;
+    }
+
     [[nodiscard]] bool CreateTexture(
         TextureEntry& entry, const anomaly::UiTextureRequest& request,
         const std::uint64_t maximum_upload_bytes) noexcept {
-        if (state_.device == nullptr || state_.command_list == nullptr || request.width == 0 ||
-            request.height == 0 || request.encoded_bytes.empty() ||
+        if (request.width == 0 || request.height == 0 || request.encoded_bytes.empty() ||
             static_cast<std::uint64_t>(request.width) * request.height * 4U !=
                 request.encoded_bytes.size()) {
             return false;
         }
+        if (ImmediateMode()) return CreateTextureD3D11(entry, request);
+        if (state_.device == nullptr || state_.command_list == nullptr) return false;
 
         D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
         D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
@@ -637,7 +719,12 @@ private:
         if (!font_atlas_dirty_ || !CanRebuildFontAtlas()) return;
 
         ImGuiIO& io = ImGui::GetIO();
-        ImGui_ImplDX12_InvalidateDeviceObjects();
+        const bool immediate = ImmediateMode();
+        if (immediate) {
+            ImGui_ImplDX11_InvalidateDeviceObjects();
+        } else {
+            ImGui_ImplDX12_InvalidateDeviceObjects();
+        }
         static_cast<void>(ConfigurePlatformUiFontAtlas(state_.root));
         bool device_objects_ready = true;
         for (auto& [resource_id, entry] : fonts_) {
@@ -658,7 +745,9 @@ private:
                 entry.failed = false;
             }
         }
-        if (!ImGui_ImplDX12_CreateDeviceObjects()) device_objects_ready = false;
+        const bool created = immediate ? ImGui_ImplDX11_CreateDeviceObjects()
+                                       : ImGui_ImplDX12_CreateDeviceObjects();
+        if (!created) device_objects_ready = false;
         if (device_objects_ready) {
             const std::uint64_t generation = registry.DeviceGeneration();
             device_generation_ = generation;
@@ -681,11 +770,13 @@ private:
     }
 
     [[nodiscard]] bool IsFenceComplete(const TextureEntry& entry) const noexcept {
+        if (ImmediateMode()) return true;
         return entry.release_fence == 0 ||
             (state_.fence != nullptr && state_.fence->GetCompletedValue() >= entry.release_fence);
     }
 
     [[nodiscard]] bool IsUploadFenceComplete(const TextureEntry& entry) const noexcept {
+        if (ImmediateMode()) return true;
         return entry.upload_fence == 0 ||
             (state_.fence != nullptr && state_.fence->GetCompletedValue() >= entry.upload_fence);
     }
@@ -764,6 +855,8 @@ private:
     }
 
     void ReleaseTexture(TextureEntry& entry) noexcept {
+        entry.d3d11_view.Reset();
+        entry.d3d11_texture.Reset();
         if (entry.cpu.ptr != 0 || entry.gpu.ptr != 0) {
             static_cast<void>(state_.shader_descriptors.Free(entry.cpu, entry.gpu));
             entry.cpu = {};
