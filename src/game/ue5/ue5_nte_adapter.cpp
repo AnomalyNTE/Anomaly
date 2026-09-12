@@ -1183,6 +1183,11 @@ struct Ue5NteAdapter::State {
         float camera_horizontal_fov{};
         bool partial{};
     };
+    // FName 的 comparison index 在进程内稳定，同一 name_id 永远对应同一个字符串。
+    // 全关卡 actor 扫描会为每个 actor 解析一次实体名（数千次），逐次解码宽字符名
+    // 的代价要一秒以上；记忆化后只有首次扫描需要真正解码。失败结果不缓存，
+    // 因为那通常意味着布局尚未就绪，之后的扫描应当重试。
+    mutable std::unordered_map<std::uint32_t, std::string> name_snapshot_cache;
     std::shared_ptr<const EntityFrameCache> entity_frame_cache;
     std::shared_ptr<const EntityFrameCache> previous_entity_frame_cache;
     std::uint64_t entity_generation{};
@@ -1190,6 +1195,9 @@ struct Ue5NteAdapter::State {
     std::shared_ptr<const EntityFrameCache> actor_frame_cache;
     std::uint64_t actor_generation{};
     std::uint64_t actor_world_generation{};
+    // 全部关卡 actor 快照按 tick 节流重扫：只在 World 变化时刷新会让快照永久冻结，
+    // 死掉的 actor 留在列表里、新生成的 actor 永远不可见（大世界全程是同一个 World）。
+    std::uint64_t actor_attempt_sequence{};
     std::uint64_t snapshot_tick_count{};
     std::uint64_t latest_snapshot_cost_micros{};
     std::uint64_t total_snapshot_cost_micros{};
@@ -2232,6 +2240,7 @@ struct Ue5NteAdapter::State {
         if (actor_frame_cache) ++actor_generation;
         actor_frame_cache.reset();
         actor_world_generation = 0;
+        actor_attempt_sequence = 0;
     }
 
     void InvalidateCombatSnapshot() noexcept {
@@ -5981,13 +5990,13 @@ struct Ue5NteAdapter::State {
                         : static_cast<std::uint64_t>(entity.class_name_id) + 1;
 
                     if (entity.class_name_id != 0 && !class_names.contains(entity.class_id)) {
-                        if (std::string name = ResolveNameSnapshotLocked(entity.class_name_id);
+                        if (std::string name = ResolveNameForScanLocked(entity.class_name_id);
                             !name.empty()) {
                             class_names.emplace(entity.class_id, std::move(name));
                         }
                     }
                     if (entity.entity_name_id != 0 && !entity_names.contains(entity.entity_id)) {
-                        if (std::string name = ResolveNameSnapshotLocked(entity.entity_name_id);
+                        if (std::string name = ResolveNameForScanLocked(entity.entity_name_id);
                             !name.empty()) {
                             entity_names.emplace(entity.entity_id, std::move(name));
                         }
@@ -6162,6 +6171,21 @@ struct Ue5NteAdapter::State {
             return {};
         }
         value.resize(size - 1);
+        return value;
+    }
+
+    // 仅供全量扫描使用：FName 的 comparison index 在进程内稳定，同一 name_id 永远对应
+    // 同一个字符串，因此把解码结果记下来。全关卡扫描会为每个 actor 解析一次实体名
+    // （数千个互不相同的 name_id），逐次解码宽字符名的总代价超过一秒；记忆化之后只有
+    // 首次扫描需要真正解码。失败结果不缓存，那通常意味着布局尚未就绪，应当重试。
+    std::string ResolveNameForScanLocked(std::uint32_t name_id) const {
+        if (name_id == 0) return {};
+        if (const auto cached = name_snapshot_cache.find(name_id);
+            cached != name_snapshot_cache.end()) {
+            return cached->second;
+        }
+        std::string value = ResolveNameSnapshotLocked(name_id);
+        if (!value.empty()) name_snapshot_cache.emplace(name_id, value);
         return value;
     }
 
@@ -9821,16 +9845,22 @@ struct Ue5NteAdapter::State {
             if (!state.NteActorsLayoutAvailable()) {
                 return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "NTE actors service is unavailable");
             }
-            if (!state.actor_frame_cache ||
-                state.actor_world_generation != state.world_generation) {
+            const std::uint64_t tick = state.tick_sequence.load(std::memory_order_acquire);
+            const bool world_changed =
+                state.actor_world_generation != state.world_generation;
+            if (!state.actor_frame_cache || world_changed ||
+                State::SamplingDue(
+                    tick, state.actor_attempt_sequence, state.sampling.actor_tick_interval)) {
                 const DWORD expected = state.game_thread_id.load(std::memory_order_acquire);
-                if (expected == 0 || expected != GetCurrentThreadId() ||
-                    g_active_tick_callback_state.Get() != &state) {
+                if (expected != 0 && expected == GetCurrentThreadId() &&
+                    g_active_tick_callback_state.Get() == &state) {
+                    state.actor_attempt_sequence = tick;
+                    state.RefreshActors(tick);
+                } else if (!state.actor_frame_cache || world_changed) {
                     return Status(
                         ANOMALY_STATUS_V1_UNAVAILABLE,
                         "actor discovery requires the active Game callback domain");
                 }
-                state.RefreshActors(state.tick_sequence.load(std::memory_order_acquire));
             }
             cache = state.actor_frame_cache;
         }
@@ -13092,6 +13122,7 @@ Ue5NteAdapter::Ue5NteAdapter(
     state_->sampling.entity_tick_interval = (std::max)(1U, sampling.entity_tick_interval);
     state_->sampling.combat_tick_interval = (std::max)(1U, sampling.combat_tick_interval);
     state_->sampling.skill_tick_interval = (std::max)(1U, sampling.skill_tick_interval);
+    state_->sampling.actor_tick_interval = (std::max)(1U, sampling.actor_tick_interval);
 }
 
 Ue5NteAdapter::~Ue5NteAdapter() {

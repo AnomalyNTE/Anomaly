@@ -139,9 +139,20 @@ struct NormalAttackBinding {
     std::array<std::uint8_t, 8> released_value{};
 };
 
+// 大世界怪死后尸体仍留在实体/角色快照里（位置、类名都不变），会被每轮重新选为
+// "最近的怪"，导致对着空气一直打。框架没有暴露死亡位，因此改用唯一可靠的信号：
+// 玩家打出的伤害流。在攻击距离内持续打不出伤害，就把该目标判为尸体并拉黑一段时间，
+// 让选靶跳过它，直到它真正从快照里消失。
+struct AutoCombatDeadTarget {
+    AnomalyGenerationHandleV1 handle{};
+    double pos[3]{};
+    std::chrono::steady_clock::time_point until{};
+};
+
 struct Context {
     const AnomalyHostApiV1* host{};
     const AnomalyCoreServiceV1* core{};
+    const AnomalyUiServiceV1* ui{};
     const AnomalyInputServiceV1* input{};
     const AnomalySignatureServiceV1* signature{};
     const AnomalyUe5NamesServiceV1* names{};
@@ -155,6 +166,7 @@ struct Context {
     const AnomalyNteSkillsServiceV1* skills{};
     const AnomalyNteSkillInvocationServiceV1* skill_invocation{};
     const AnomalyNteNavigationServiceV1* navigation{};
+    const AnomalyNtePlayerTeleportServiceV1* teleport{};
     const AnomalyNtePickupServiceV1* pickup{};
     std::string cache_path;
     std::uintptr_t g_objects_address{};
@@ -231,6 +243,7 @@ struct Context {
     std::atomic_bool claim_double_pending{};
     std::atomic_bool chest_choices_pending{};
     std::atomic_bool chest_funcs_pending{};
+    std::atomic_bool developer_mode{};
     std::atomic_bool reward_params_pending{};
     std::atomic_bool award_funcs_pending{};
     std::atomic_bool award_ui_funcs_pending{};
@@ -255,8 +268,24 @@ struct Context {
     bool target_valid{false};
     std::atomic_uint32_t combat_search_radius_m{50};
     bool combat_scan_valid{false};
+    std::chrono::steady_clock::time_point auto_combat_nav_retry_at{};
     bool auto_combat_moving{false};
     std::chrono::steady_clock::time_point next_target_update{};
+    // 尸体判定：当前目标句柄、玩家句柄、伤害流游标、最近一次玩家造成伤害的时刻、
+    // 进入攻击距离的时刻，以及已拉黑的尸体列表。
+    AnomalyGenerationHandleV1 auto_combat_target_handle{};
+    std::uint64_t auto_combat_player_handle{0};
+    std::uint64_t auto_combat_damage_cursor{0};
+    std::chrono::steady_clock::time_point auto_combat_last_player_hit_at{};
+    std::chrono::steady_clock::time_point auto_combat_attack_since{};
+    // 当前目标锁定期间是否至少命中过一次。命中的目标被打死用短拉黑，
+    // 从头到尾打不中的目标（道具）用长拉黑。
+    bool auto_combat_target_hit{false};
+    std::vector<AutoCombatDeadTarget> auto_combat_dead_targets;
+    // 领奖窗口扫描失败是概率性的，重试很密集：这条诊断按 2 秒节流。
+    std::chrono::steady_clock::time_point next_reward_scan_diag{};
+    // 同上，「打开领奖窗口」失败的诊断也按 2 秒节流。
+    std::chrono::steady_clock::time_point next_reward_open_diag{};
     std::uint64_t monster_class_id{0};
     std::vector<std::uint32_t> monster_class_name_ids;
     std::chrono::steady_clock::time_point next_class_rescan{};
@@ -296,9 +325,17 @@ struct Context {
     std::uint64_t auto_claim_clone_id{};
     std::int32_t auto_claim_phase{0};
     std::int32_t auto_claim_retries{0};
-    std::chrono::steady_clock::time_point auto_claim_deadline{};
+    // 领取流程的时限按"采样次数"计，而不是墙钟：状态机靠被调用推进，
+    // 游戏 tick 一旦停摆（失焦/加载/卡顿），墙钟 deadline 会在恢复调用的第一刻
+    // 立刻判超时，于是变成概率性失败。按次数计则等价于"观察够 N 次才放弃"。
+    std::uint32_t auto_claim_polls{0};
+    std::uint32_t auto_claim_deadline_polls{0};
+    std::uint32_t auto_claim_limit_polls{0};
+    // 本次交互用的宝箱 actor：窗口没出现时需要重发交互。
+    std::uintptr_t auto_claim_chest{0};
+    // 已经为了交互而接近宝箱的轮数（有上限，避免落点不可达时卡在接近阶段）。
+    std::uint32_t auto_claim_approach_polls{0};
     std::chrono::steady_clock::time_point auto_claim_poll{};
-    std::chrono::steady_clock::time_point auto_claim_limit{};
     std::chrono::steady_clock::time_point auto_claim_nav_issue{};
     std::chrono::steady_clock::time_point auto_claim_nav_deadline{};
     bool one_key_active{false};
@@ -348,6 +385,14 @@ bool InputReady(const AnomalyInputServiceV1* s) noexcept {
                s, offsetof(AnomalyInputServiceV1, release_hotkey)) &&
         s->was_pressed != nullptr && s->register_hotkey != nullptr &&
         s->release_hotkey != nullptr;
+}
+
+bool DeveloperModeEnabled(const AnomalyUiServiceV1* ui) noexcept {
+    return HasField<AnomalyUiServiceV1,
+               decltype(AnomalyUiServiceV1::developer_mode_enabled)>(
+               ui, offsetof(AnomalyUiServiceV1, developer_mode_enabled)) &&
+        ui->developer_mode_enabled != nullptr &&
+        ui->developer_mode_enabled(ui->user) != 0;
 }
 
 bool ValidHotkey(const std::uint32_t key) noexcept {
@@ -4102,77 +4147,46 @@ bool InvokeNormalAttack(Context& context) {
 }
 
 
+void LogRewardDiagnostic(Context& context, const std::string& message);
+
 bool IsMonsterClassName(const std::string& name) noexcept {
-    if (name.rfind("mon_", 0) != 0 && name.rfind("boss_", 0) != 0 &&
-        name.rfind("Boss_", 0) != 0) return false;
+    // 以怪物前缀开头是最强信号，直接认定，不参与下面的辅助对象排除：
+    // 例如 mon_038_BP_World_CityEvent_Passive_01_C 名字里带 World/Passive，
+    // 但它确实是怪物，按关键词+排除词会被误杀。
+    if (name.rfind("mon_", 0) == 0 || name.rfind("boss", 0) == 0 ||
+        name.rfind("Boss_", 0) == 0) {
+        return true;
+    }
+    // 其余命名（大世界/事件怪等）按关键词命中识别，再排除同名族里的辅助对象。
+    // "mon_" 必须落在名字段边界上：Common_ 里也含 "mon_"，但 BP_MB_Graffiti_Decal_Common_C
+    // 是涂鸦贴花而不是怪，直接 find 会把它当成怪物。
+    bool candidate = false;
+    for (std::size_t at = name.find("mon_"); at != std::string::npos;
+         at = name.find("mon_", at + 1)) {
+        if (at == 0 || name[at - 1] == '_') {
+            candidate = true;
+            break;
+        }
+    }
+    if (!candidate) {
+        for (const char* kw : {"Monster", "monster", "boss", "Boss",
+                               "RainMan", "Enemy", "enemy"}) {
+            if (name.find(kw) != std::string::npos) {
+                candidate = true;
+                break;
+            }
+        }
+    }
+    if (!candidate) return false;
     for (const char* kw : {"Controller", "bullet", "World", "Vision", "FX",
-                           "Child", "summon", "Body", "anim", "back", "act",
-                           "begin", "Dead", "Play", "Hide", "Open", "Passive",
-                           "Skin", "Weapon", "Montage", "Material", "Texture"}) {
+                           "Child", "summon", "Body", "anim", "back", "begin",
+                           "Dead", "Play", "Hide", "Open", "Passive", "Skin",
+                           "Weapon", "Montage", "Material", "Texture",
+                           "LogicBox", "Spawn", "Manager"}) {
         if (name.find(kw) != std::string::npos) return false;
     }
     return true;
 }
-
-bool FindMonsterClassIds(Context& context) noexcept {
-    const auto now = std::chrono::steady_clock::now();
-    if (!context.monster_class_name_ids.empty() && now < context.next_class_rescan) return true;
-    std::vector<std::uint32_t> next_ids;
-    std::FILE* fp = std::fopen("D:\\monster-classids.txt", "w");
-    const auto* ents = context.entities;
-    if (ents == nullptr || ents->frame == nullptr || ents->page == nullptr ||
-        ents->class_name_utf8 == nullptr) {
-        if (fp != nullptr) std::fclose(fp);
-        return false;
-    }
-    AnomalyNteEntityFrameV1 frame{sizeof(frame)};
-    if (ents->frame(ents->user, &frame).code != ANOMALY_STATUS_V1_OK) {
-        if (fp != nullptr) std::fclose(fp);
-        return false;
-    }
-    std::array<AnomalyNteEntitySnapshotV1, 256> buf{};
-    for (auto& s : buf) s.struct_size = sizeof(s);
-    std::uint32_t offset = 0;
-    while (true) {
-        AnomalyNteEntityPageRequestV1 req{sizeof(req)};
-        req.generation = frame.generation;
-        req.offset = offset;
-        req.capacity = 256;
-        AnomalyNteEntityPageResultV1 res{sizeof(res)};
-        if (ents->page(ents->user, &req, buf.data(), &res).code != ANOMALY_STATUS_V1_OK) {
-            if (fp != nullptr) std::fclose(fp);
-            return false;
-        }
-        for (std::uint32_t j = 0; j < res.returned; ++j) {
-            const auto& snap = buf[j];
-            std::size_t sz = 0;
-            if (ents->class_name_utf8(ents->user, snap.class_id, nullptr, &sz).code !=
-                    ANOMALY_STATUS_V1_OK || sz == 0) continue;
-            std::string cn(sz, '\0');
-            if (ents->class_name_utf8(ents->user, snap.class_id, cn.data(), &sz).code !=
-                ANOMALY_STATUS_V1_OK) continue;
-            cn.resize(sz - 1);
-            if (!IsMonsterClassName(cn)) continue;
-            bool exists = false;
-            for (const std::uint32_t id : next_ids) {
-                if (id == snap.class_name_id) { exists = true; break; }
-            }
-            if (!exists) {
-                next_ids.push_back(snap.class_name_id);
-                if (fp != nullptr) {
-                    std::fprintf(fp, "%s class_name_id=%u\n", cn.c_str(), snap.class_name_id);
-                }
-            }
-        }
-        if (res.next_offset == 0 || res.next_offset >= res.total_matches) break;
-        offset = res.next_offset;
-    }
-    if (fp != nullptr) std::fclose(fp);
-    context.monster_class_name_ids = std::move(next_ids);
-    context.next_class_rescan = now + std::chrono::seconds(5);
-    return true;
-}
-
 
 bool TryGetCurrentCloneId(Context& context, std::uint64_t& id) noexcept {
     if (!GetPlayerState(context)) return false;
@@ -4212,6 +4226,10 @@ void ResetAutoCombatTarget(Context& context) noexcept {
     context.target_valid = false;
     context.combat_scan_valid = false;
     context.next_target_update = {};
+    // 计时必须跟着目标一起清掉：否则同一只怪离开半径后再回来时，
+    // 会继承上一轮的进入时刻，一锁定就被判成尸体。
+    context.auto_combat_attack_since = {};
+    context.auto_combat_target_hit = false;
 }
 
 double CombatDistanceSquared(const double* from, const double* to) noexcept {
@@ -4220,6 +4238,234 @@ double CombatDistanceSquared(const double* from, const double* to) noexcept {
     const double dz = to[2] - from[2];
     return dx * dx + dy * dy + dz * dz;
 }
+
+// 进入攻击距离后，玩家在这么长时间里一次伤害都没打出来，就认定目标无效。
+constexpr auto kAutoCombatNoDamageGrace = std::chrono::seconds(3);
+// 打死之后的尸体：拉黑到它从快照消失即可。
+constexpr auto kAutoCombatDeadTargetTtl = std::chrono::seconds(45);
+// 从头到尾一次都没打中过的目标（雨人的湖面/底座这类道具）：拉黑久一些，
+// 否则它会一直是最"近"的目标，让你反复对着空气挥。
+constexpr auto kAutoCombatNeverHitTargetTtl = std::chrono::seconds(120);
+// 大世界里带 RainMan/mon_ 字样却不是怪的道具（湖面、底座、贴花）实测最大边只有约 42cm，
+// 真正的怪都在 74cm 以上，因此按尺寸做一道物理预筛，三条边都小于阈值就不算怪物候选。
+constexpr double kAutoCombatMinimumExtentCm = 60.0;
+// 判定"同一具尸体"的位置容差（厘米）。
+constexpr double kAutoCombatDeadPosTolerance = 150.0;
+// 攻击分支使用的距离阈值（厘米）。
+constexpr double kAutoCombatAttackRangeCm = 600.0;
+
+// 实体快照句柄与伤害参与者句柄不在同一 ID 空间，句柄和位置任一命中都算同一具尸体。
+bool IsDeadAutoCombatTarget(
+    const Context& context, const AnomalyNteEntitySnapshotV1& snap,
+    const std::chrono::steady_clock::time_point now) noexcept {
+    for (const auto& dead : context.auto_combat_dead_targets) {
+        if (now >= dead.until) continue;
+        if (dead.handle.id != 0 && dead.handle.id == snap.handle.id &&
+            dead.handle.generation == snap.handle.generation) {
+            return true;
+        }
+        if (CombatDistanceSquared(dead.pos, snap.bounds_center) <=
+            kAutoCombatDeadPosTolerance * kAutoCombatDeadPosTolerance) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void BlacklistAutoCombatTarget(
+    Context& context, const AnomalyGenerationHandleV1& handle, const double* pos,
+    const std::chrono::steady_clock::time_point now, bool ever_hit) noexcept {
+    std::erase_if(context.auto_combat_dead_targets,
+        [now](const AutoCombatDeadTarget& dead) { return now >= dead.until; });
+    AutoCombatDeadTarget dead;
+    dead.handle = handle;
+    dead.pos[0] = pos[0];
+    dead.pos[1] = pos[1];
+    dead.pos[2] = pos[2];
+    dead.until = now +
+        (ever_hit ? kAutoCombatDeadTargetTtl : kAutoCombatNeverHitTargetTtl);
+    context.auto_combat_dead_targets.push_back(dead);
+}
+
+// entities 与 actors 两个服务的读取接口完全一致（frame/page/class_name_utf8），
+// 因此用模板统一处理：同一份逻辑同时覆盖两个实体来源。
+// 二者覆盖面不同——例如 boss18_* 只出现在 actors 服务，雨人只出现在 entities 服务。
+struct CombatTargetPick {
+    bool valid{};
+    double pos[3]{};
+    double best_distance_squared{};
+    AnomalyGenerationHandleV1 handle{};
+    std::uint32_t class_name_id{};
+};
+
+template <typename Service>
+bool CollectMonsterClassIdsFrom(
+    Service* service,
+    std::vector<std::uint32_t>& ids) {
+    if (service == nullptr || service->frame == nullptr || service->page == nullptr ||
+        service->class_name_utf8 == nullptr) {
+        return false;
+    }
+    AnomalyNteEntityFrameV1 frame{sizeof(frame)};
+    if (service->frame(service->user, &frame).code != ANOMALY_STATUS_V1_OK) return false;
+    std::array<AnomalyNteEntitySnapshotV1, 256> buf{};
+    for (auto& s : buf) s.struct_size = sizeof(s);
+    std::uint32_t offset = 0;
+    while (true) {
+        AnomalyNteEntityPageRequestV1 req{sizeof(req)};
+        req.generation = frame.generation;
+        req.offset = offset;
+        req.capacity = 256;
+        AnomalyNteEntityPageResultV1 res{sizeof(res)};
+        if (service->page(service->user, &req, buf.data(), &res).code !=
+            ANOMALY_STATUS_V1_OK) {
+            return false;
+        }
+        for (std::uint32_t j = 0; j < res.returned; ++j) {
+            const auto& snap = buf[j];
+            std::size_t sz = 0;
+            if (service->class_name_utf8(service->user, snap.class_id, nullptr, &sz).code !=
+                    ANOMALY_STATUS_V1_OK || sz == 0) {
+                continue;
+            }
+            std::string cn(sz, '\0');
+            if (service->class_name_utf8(service->user, snap.class_id, cn.data(), &sz).code !=
+                ANOMALY_STATUS_V1_OK) {
+                continue;
+            }
+            cn.resize(sz - 1);
+            if (!IsMonsterClassName(cn)) continue;
+            bool exists = false;
+            for (const std::uint32_t id : ids) {
+                if (id == snap.class_name_id) { exists = true; break; }
+            }
+            if (!exists) ids.push_back(snap.class_name_id);
+        }
+        if (res.next_offset == 0 || res.next_offset >= res.total_matches) break;
+        offset = res.next_offset;
+    }
+    return true;
+}
+
+template <typename Service, typename Skip>
+bool PickNearestMonsterFrom(
+    Service* service,
+    const std::vector<std::uint32_t>& ids,
+    const double* player_pos,
+    const double radius_squared,
+    Skip&& skip,
+    CombatTargetPick& pick) {
+    if (service == nullptr || service->frame == nullptr || service->page == nullptr ||
+        service->class_name_utf8 == nullptr) {
+        return false;
+    }
+    AnomalyNteEntityFrameV1 frame{sizeof(frame)};
+    if (service->frame(service->user, &frame).code != ANOMALY_STATUS_V1_OK) return false;
+    // 缓冲区在类名循环外复用：一次调用只初始化一份，而不是每个类名各一份
+    // （256 × sizeof(snapshot) ≈ 24KB，按类名数翻倍放大）。
+    std::array<AnomalyNteEntitySnapshotV1, 256> buf{};
+    for (auto& s : buf) s.struct_size = sizeof(s);
+    for (const std::uint32_t cid : ids) {
+        std::uint32_t offset = 0;
+        while (true) {
+            AnomalyNteEntityPageRequestV1 req{sizeof(req)};
+            req.generation = frame.generation;
+            req.offset = offset;
+            req.capacity = 256;
+            req.class_name_id = cid;
+            req.excluded_flags = ANOMALY_NTE_ENTITY_V1_LOCAL_PLAYER;
+            AnomalyNteEntityPageResultV1 res{sizeof(res)};
+            if (service->page(service->user, &req, buf.data(), &res).code !=
+                ANOMALY_STATUS_V1_OK) {
+                return false;
+            }
+            for (std::uint32_t j = 0; j < res.returned; ++j) {
+                const auto& snap = buf[j];
+                if (skip(snap)) continue;
+                // 物理预筛：三条边都小于阈值的不是怪物体型（雨人湖面/底座这类道具）。
+                const double largest_extent = (std::max)({snap.bounds_extent[0],
+                    snap.bounds_extent[1], snap.bounds_extent[2]});
+                if (!(largest_extent >= kAutoCombatMinimumExtentCm)) continue;
+                const double d2 = CombatDistanceSquared(player_pos, snap.bounds_center);
+                if (!std::isfinite(d2) || d2 > radius_squared) continue;
+                if (!pick.valid || d2 < pick.best_distance_squared) {
+                    pick.best_distance_squared = d2;
+                    pick.pos[0] = snap.bounds_center[0];
+                    pick.pos[1] = snap.bounds_center[1];
+                    pick.pos[2] = snap.bounds_center[2];
+                    pick.valid = true;
+                    pick.handle = snap.handle;
+                    pick.class_name_id = cid;
+                }
+            }
+            if (res.next_offset == 0 || res.next_offset >= res.total_matches) break;
+            offset = res.next_offset;
+        }
+    }
+    return true;
+}
+
+// 同时扫描 entities 与 actors 两个来源。二者覆盖面确实不同：entities 只覆盖
+// world.persistentLevel，包含大世界怪物的 actors 只在全部关卡的扫描里出现。
+bool FindMonsterClassIds(Context& context) noexcept {
+    const auto now = std::chrono::steady_clock::now();
+    if (!context.monster_class_name_ids.empty() && now < context.next_class_rescan) return true;
+    std::vector<std::uint32_t> next_ids;
+    const bool entities_ok = CollectMonsterClassIdsFrom(context.entities, next_ids);
+    const bool actors_ok = CollectMonsterClassIdsFrom(context.actors, next_ids);
+    if (!entities_ok && !actors_ok) return false;
+    context.monster_class_name_ids = std::move(next_ids);
+    context.next_class_rescan = now + std::chrono::seconds(5);
+    return true;
+}
+
+// 伤害流是否可用。不可用时不能做尸体判定，否则会误把所有目标判成尸体。
+bool CombatStreamAvailable(const Context& context) noexcept {
+    return context.combat != nullptr &&
+        context.combat->latest_damage_sequence != nullptr &&
+        context.combat->next_damage_event != nullptr;
+}
+
+// 消费战斗伤害流，记录"玩家最近一次打出了伤害"的时刻。
+// 该时刻是判断当前目标是否还能打的依据：尸体和道具类目标仍在快照里，但打不出任何伤害。
+void PumpAutoCombatCombatStream(Context& context) noexcept {
+    const auto now = std::chrono::steady_clock::now();
+    if (context.combat == nullptr) return;
+    if (context.combat->current_combatant != nullptr) {
+        AnomalyNteCombatantSnapshotV1 combatant{sizeof(combatant)};
+        if (context.combat->current_combatant(context.combat->user, &combatant).code ==
+            ANOMALY_STATUS_V1_OK) {
+            context.auto_combat_player_handle = combatant.character.id;
+        }
+    }
+    if (!CombatStreamAvailable(context)) return;
+    const std::uint64_t latest =
+        context.combat->latest_damage_sequence(context.combat->user);
+    // 首次进入或序列被重置时，从当前序列起步，避免把历史伤害当成刚刚命中。
+    if (context.auto_combat_damage_cursor == 0 ||
+        context.auto_combat_damage_cursor > latest) {
+        context.auto_combat_damage_cursor = latest;
+        return;
+    }
+    int drained = 0;
+    while (context.auto_combat_damage_cursor < latest && drained < 64) {
+        AnomalyNteDamageEventV1 event{sizeof(event)};
+        if (context.combat->next_damage_event(
+                context.combat->user, context.auto_combat_damage_cursor, &event).code !=
+            ANOMALY_STATUS_V1_OK) {
+            break;
+        }
+        if (event.sequence <= context.auto_combat_damage_cursor) break;
+        context.auto_combat_damage_cursor = event.sequence;
+        ++drained;
+        if (context.auto_combat_player_handle != 0 &&
+            event.attacker.id == context.auto_combat_player_handle) {
+            context.auto_combat_last_player_hit_at = now;
+        }
+    }
+}
+
+bool TeleportToPosition(Context& context, const double (&position)[3]) noexcept;
 
 void AutoCombatTick(Context& context) noexcept {
     if (context.navigation == nullptr || context.navigation->move_to_location == nullptr ||
@@ -4237,6 +4483,7 @@ void AutoCombatTick(Context& context) noexcept {
         return;
     }
     const auto now = std::chrono::steady_clock::now();
+    PumpAutoCombatCombatStream(context);
     const double radius_cm = static_cast<double>(context.combat_search_radius_m.load(
         std::memory_order_acquire)) * 100.0;
     const double radius_squared = radius_cm * radius_cm;
@@ -4254,56 +4501,62 @@ void AutoCombatTick(Context& context) noexcept {
         const double cached_distance = CombatDistanceSquared(player_pos, context.target_pos);
         if (!std::isfinite(cached_distance) || cached_distance > radius_squared) {
             ResetAutoCombatTarget(context);
+        } else if (cached_distance <=
+                   kAutoCombatAttackRangeCm * kAutoCombatAttackRangeCm) {
+            // 已经在打它了。若连着 kAutoCombatNoDamageGrace 一点伤害都没打出来，
+            // 说明这个目标打不动：可能是还留在快照里的尸体，也可能是类名像怪、
+            // 实际是道具的对象。拉黑并重新选靶。
+            if (context.auto_combat_attack_since.time_since_epoch().count() == 0) {
+                context.auto_combat_attack_since = now;
+            }
+            const bool hit_recent =
+                context.auto_combat_last_player_hit_at.time_since_epoch().count() != 0 &&
+                now - context.auto_combat_last_player_hit_at <= kAutoCombatNoDamageGrace;
+            if (hit_recent) context.auto_combat_target_hit = true;
+            if (!hit_recent && CombatStreamAvailable(context) &&
+                now - context.auto_combat_attack_since > kAutoCombatNoDamageGrace) {
+                BlacklistAutoCombatTarget(context, context.auto_combat_target_handle,
+                    context.target_pos, now, context.auto_combat_target_hit);
+                ResetAutoCombatTarget(context);
+            }
+        } else {
+            context.auto_combat_attack_since = {};
         }
     }
-    // 每秒重新找一次最近的怪
-    if (!context.target_valid || now >= context.next_target_update) {
+    // 每秒重新找一次最近的怪。这里不能再用 !target_valid 做条件：没有目标时它会让
+    // 整段扫描每帧都跑（两个服务 × 每个类名一次分页，每帧几十次分页调用），
+    // 这正是"开了自动战斗就掉帧"的来源。目标释放一律走 ResetAutoCombatTarget，
+    // 而它会清空 next_target_update，所以"释放后立刻重新选靶"的行为不受影响。
+    if (now >= context.next_target_update) {
         context.target_valid = false;
         context.combat_scan_valid = false;
-        const auto* ents = context.entities;
-        if (ents != nullptr && ents->frame != nullptr && ents->page != nullptr) {
-            AnomalyNteEntityFrameV1 frame{sizeof(frame)};
-            if (ents->frame(ents->user, &frame).code == ANOMALY_STATUS_V1_OK &&
-                FindMonsterClassIds(context)) {
-                bool complete = true;
-                double best_distance_squared = radius_squared;
-                for (const std::uint32_t cid : context.monster_class_name_ids) {
-                    std::array<AnomalyNteEntitySnapshotV1, 256> buf{};
-                    for (auto& s : buf) s.struct_size = sizeof(s);
-                    std::uint32_t offset = 0;
-                    while (true) {
-                        AnomalyNteEntityPageRequestV1 req{sizeof(req)};
-                        req.generation = frame.generation;
-                        req.offset = offset;
-                        req.capacity = 256;
-                        req.class_name_id = cid;
-                        req.excluded_flags = ANOMALY_NTE_ENTITY_V1_LOCAL_PLAYER;
-                        AnomalyNteEntityPageResultV1 res{sizeof(res)};
-                        if (ents->page(ents->user, &req, buf.data(), &res).code !=
-                            ANOMALY_STATUS_V1_OK) {
-                            complete = false;
-                            break;
-                        }
-                        for (std::uint32_t j = 0; j < res.returned; ++j) {
-                            const auto& snap = buf[j];
-                            const double distance_squared = CombatDistanceSquared(
-                                player_pos, snap.bounds_center);
-                            if (!std::isfinite(distance_squared) || distance_squared > radius_squared) continue;
-                            if (!context.target_valid || distance_squared < best_distance_squared) {
-                                best_distance_squared = distance_squared;
-                                context.target_pos[0] = snap.bounds_center[0];
-                                context.target_pos[1] = snap.bounds_center[1];
-                                context.target_pos[2] = snap.bounds_center[2];
-                                context.target_valid = true;
-                            }
-                        }
-                        if (res.next_offset == 0 || res.next_offset >= res.total_matches) break;
-                        offset = res.next_offset;
-                    }
-                    if (!complete) break;
+        if (FindMonsterClassIds(context)) {
+            CombatTargetPick pick;
+            pick.best_distance_squared = radius_squared;
+            // 同一份逻辑扫两个来源，取二者中更近的那个。
+            const auto skip_dead =
+                [&context, now](const AnomalyNteEntitySnapshotV1& snap) {
+                    return IsDeadAutoCombatTarget(context, snap, now);
+                };
+            const bool entities_ok = PickNearestMonsterFrom(
+                context.entities, context.monster_class_name_ids, player_pos,
+                radius_squared, skip_dead, pick);
+            const bool actors_ok = PickNearestMonsterFrom(
+                context.actors, context.monster_class_name_ids, player_pos,
+                radius_squared, skip_dead, pick);
+            context.combat_scan_valid = entities_ok || actors_ok;
+            if (pick.valid) {
+                context.target_pos[0] = pick.pos[0];
+                context.target_pos[1] = pick.pos[1];
+                context.target_pos[2] = pick.pos[2];
+                context.target_valid = true;
+                if (context.auto_combat_target_handle.id != pick.handle.id ||
+                    context.auto_combat_target_handle.generation !=
+                        pick.handle.generation) {
+                    context.auto_combat_target_handle = pick.handle;
+                    context.auto_combat_attack_since = {};
+                    context.auto_combat_target_hit = false;
                 }
-                context.combat_scan_valid = complete;
-                if (!complete) context.target_valid = false;
             }
         }
         context.next_target_update = now + std::chrono::milliseconds(1000);
@@ -4323,7 +4576,10 @@ void AutoCombatTick(Context& context) noexcept {
             }
         }
     }
-    if (!context.target_valid) return;
+    if (!context.target_valid) {
+        context.auto_combat_attack_since = {};
+        return;
+    }
     const double dx = context.target_pos[0] - player_pos[0];
     const double dy = context.target_pos[1] - player_pos[1];
     const double dz = context.target_pos[2] - player_pos[2];
@@ -4331,10 +4587,30 @@ void AutoCombatTick(Context& context) noexcept {
     char status[128]{};
     std::snprintf(status, sizeof(status), "目标 %.1f米", dist / 100.0);
     context.combat_status = status;
-    if (dist > 600.0) {
-        if (context.navigation->move_to_location(
-                context.navigation->user, context.target_pos).code == ANOMALY_STATUS_V1_OK) {
-            context.auto_combat_moving = true;
+    if (dist > kAutoCombatAttackRangeCm) {
+        // 怪物包围盒中心常常无法直接寻路抵达（悬空/湖面/特殊地形），游戏导航会原地不动。
+        // 开发者模式下改用传送接近，绕过不可达的寻路；抬高 200cm 避免落进地面。
+        if (context.developer_mode.load(std::memory_order_acquire)) {
+            double tp_target[3] = {
+                context.target_pos[0], context.target_pos[1],
+                context.target_pos[2] + 200.0};
+            if (TeleportToPosition(context, tp_target)) {
+                StopAutoCombatMovement(context);
+                return;
+            }
+        }
+        // 寻路只取水平位置，高度用玩家当前高度。
+        double nav_target[3] = {
+            context.target_pos[0], context.target_pos[1], player_pos[2]};
+        // 游戏原生寻路被每帧重复下发会反复重置（角色原地不动），
+        // 因此按间隔先 stop 再下发，与 BoxAuto 的成熟做法一致。
+        if (now >= context.auto_combat_nav_retry_at) {
+            context.auto_combat_nav_retry_at = now + std::chrono::seconds(2);
+            StopAutoCombatMovement(context);
+            if (context.navigation->move_to_location(
+                    context.navigation->user, nav_target).code == ANOMALY_STATUS_V1_OK) {
+                context.auto_combat_moving = true;
+            }
         }
     } else {
         StopAutoCombatMovement(context);
@@ -4363,7 +4639,6 @@ void AutoCombatTick(Context& context) noexcept {
         }
     }
 }
-
 
 void DumpCombatTarget(Context& context) noexcept {
     std::FILE* fp = std::fopen("D:\\combat-target.txt", "w");
@@ -4709,11 +4984,13 @@ struct RewardWindows {
     bool complete{};
     std::uint32_t scanned{};
     std::uint32_t candidates{};
+    std::uint32_t skipped{};
     const char* reason{"not started"};
 };
 
 RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
     RewardWindows result;
+    const auto now = std::chrono::steady_clock::now();
     const auto finish = [&](const char* reason) {
         result.reason = reason;
         if (diagnose) {
@@ -4723,9 +5000,20 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
                 " registry=" + address +
                 " scanned=" + std::to_string(result.scanned) +
                 " candidates=" + std::to_string(result.candidates) +
+                " skipped=" + std::to_string(result.skipped) +
                 " award=" + std::to_string(result.award != 0) +
                 " settlement=" + std::to_string(result.settlement != 0) +
                 " ambiguous=" + std::to_string(result.ambiguous));
+        } else if (!result.complete && now >= context.next_reward_scan_diag) {
+            // 这条路径是按 500ms 轮询的，失败是概率性的：按 2 秒节流留一条线索，
+            // 否则"找不到领奖窗口"只能看到结论、看不到原因。
+            context.next_reward_scan_diag = now + std::chrono::seconds(2);
+            LogRewardDiagnostic(context, "reward-window scan incomplete: " + std::string(reason) +
+                " scanned=" + std::to_string(result.scanned) +
+                " candidates=" + std::to_string(result.candidates) +
+                " skipped=" + std::to_string(result.skipped) +
+                " award=" + std::to_string(result.award != 0) +
+                " settlement=" + std::to_string(result.settlement != 0));
         }
         return result;
     };
@@ -4768,10 +5056,11 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
         if (inserted) {
             const std::string name = ResolveName(context.names, class_name_id);
             if (name.empty()) {
+                // 扫描整个对象注册表时，个别条目读到撕裂的 class 指针是正常现象。
+                // 跳过它即可：一个无关对象不能让整次扫描作废（否则会变成概率性失败）。
                 context.reward_class_kinds.erase(entry);
-                if (diagnose) LogRewardDiagnostic(context, "reward-window unresolved class_name_id=" +
-                    std::to_string(class_name_id));
-                return finish("class name unresolved");
+                ++result.skipped;
+                continue;
             }
             if (name.find("CombatAwardReceive") != std::string::npos) entry->second = 1;
             else if (name.find("CloneSystemAwards") != std::string::npos) entry->second = 2;
@@ -4781,9 +5070,15 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
         ++result.candidates;
         AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
         if (context.objects->snapshot_at(context.objects->user, static_cast<std::uint32_t>(i),
-                &snapshot).code != ANOMALY_STATUS_V1_OK) return finish("candidate snapshot unavailable");
+                &snapshot).code != ANOMALY_STATUS_V1_OK) {
+            ++result.skipped;
+            continue;
+        }
         const auto object_name = ResolveName(context.names, snapshot.name_id);
-        if (object_name.empty()) return finish("candidate name unresolved");
+        if (object_name.empty()) {
+            ++result.skipped;
+            continue;
+        }
         if (object_name.starts_with("Default__") || !IsActiveRewardWidget(context, object, diagnose)) continue;
         auto& selected = entry->second == 2 ? result.settlement : result.award;
         if (selected != 0) result.ambiguous = true;
@@ -4792,6 +5087,11 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
             result.award_button = "Button_Single";
             result.award_double_button = "Button_Double";
         }
+    }
+    // 有条目读失败时不能断言"没有窗口"：标记为不完整，让调用方下一轮重试，
+    // 而不是把一次瞬时读取失败变成"未发现领奖窗口"。
+    if (result.award == 0 && result.settlement == 0 && result.skipped != 0) {
+        return finish("skipped unreadable registry entries");
     }
     result.complete = true;
     return finish("complete");
@@ -6131,6 +6431,8 @@ void StopAutoClaim(Context& context, const std::string& reason) noexcept {
     context.auto_claim_active = false;
     context.auto_claim_succeeded = false;
     context.combat_status = reason;
+    // 临时诊断：自动领取终止只写 UI 状态，日志里只剩"没打开窗口"这个结论。
+    LogRewardDiagnostic(context, "autoclaim stop: " + reason);
 }
 
 void StartAutoClaim(Context& context) noexcept {
@@ -6138,21 +6440,38 @@ void StartAutoClaim(Context& context) noexcept {
     context.auto_claim_succeeded = false;
     context.auto_claim_phase = 0;
     context.auto_claim_retries = 0;
-    context.auto_claim_deadline = {};
+    context.auto_claim_polls = 0;
+    context.auto_claim_deadline_polls = 0;
+    context.auto_claim_limit_polls = 90;
+    context.auto_claim_chest = 0;
+    context.auto_claim_approach_polls = 0;
     context.auto_claim_poll = {};
-    context.auto_claim_limit = std::chrono::steady_clock::now() + std::chrono::seconds(90);
     context.auto_claim_nav_issue = {};
     context.auto_claim_nav_deadline = {};
     context.combat_status = "自动领取：开始";
 }
 
-bool TriggerRewardChest(Context& context, std::uintptr_t chest) noexcept {
+bool TriggerRewardChest(Context& context, std::uintptr_t chest,
+                        const char** reason = nullptr) noexcept {
+    const auto fail = [reason](const char* text) {
+        if (reason != nullptr) *reason = text;
+        return false;
+    };
     std::uintptr_t cls{}, fn{};
-    if (chest == 0 || !Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cls) ||
-        !FindFunction(context.names, cls, "TriggerInteract", 3, 13, fn)) return false;
+    if (chest == 0) return fail("chest handle is null");
+    if (!Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cls) ||
+        cls == 0) return fail("controller class unreadable");
+    if (!FindFunction(context.names, cls, "TriggerInteract", 3, 13, fn)) {
+        return fail("TriggerInteract not found on the controller class hierarchy");
+    }
     std::array<std::uint8_t, 13> parameters{};
     std::memcpy(parameters.data(), &chest, sizeof(chest));
-    return Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(fn), parameters.data());
+    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(fn),
+                parameters.data())) {
+        return fail("TriggerInteract process-event call failed");
+    }
+    if (reason != nullptr) *reason = "ok";
+    return true;
 }
 
 void OpenRewardWindow(Context& context) {
@@ -6178,8 +6497,20 @@ void OpenRewardWindow(Context& context) {
         return;
     }
     const auto windows = FindRewardWindows(context);
+    // 这条路径原本失败时只写 UI 状态，"打开窗口失败"就查不出原因。按 2 秒节流记录分支。
+    const auto report_failure = [&context](const std::string& text) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < context.next_reward_open_diag) return;
+        context.next_reward_open_diag = now + std::chrono::seconds(2);
+        LogRewardDiagnostic(context, "open-reward-window failed: " + text);
+    };
     if (!windows.complete || windows.ambiguous) {
         context.combat_status = "打开领奖窗口：窗口状态不可用";
+        report_failure("window state unavailable complete=" +
+            std::to_string(windows.complete ? 1 : 0) + " ambiguous=" +
+            std::to_string(windows.ambiguous ? 1 : 0) + " reason=" + windows.reason +
+            " scanned=" + std::to_string(windows.scanned) + " candidates=" +
+            std::to_string(windows.candidates) + " skipped=" + std::to_string(windows.skipped));
         return;
     }
     if (windows.award != 0 || windows.settlement != 0) {
@@ -6190,6 +6521,7 @@ void OpenRewardWindow(Context& context) {
     const auto chest = FindChestActor(context, chest_position);
     if (chest == 0) {
         context.combat_status = "打开领奖窗口：未找到宝箱";
+        report_failure("chest actor not found in the entity snapshot");
         return;
     }
     std::string distance = "距离未知";
@@ -6201,18 +6533,68 @@ void OpenRewardWindow(Context& context) {
             distance = text;
         }
     }
-    context.combat_status = TriggerRewardChest(context, chest)
+    const char* reason = "not attempted";
+    const bool triggered = TriggerRewardChest(context, chest, &reason);
+    context.combat_status = triggered
         ? "已请求打开领奖窗口，" + distance : "宝箱交互调用失败，" + distance;
+    if (!triggered) report_failure("chest interaction failed: " + std::string(reason));
 }
+
+// 宝箱原点偏低，传送落点抬高一些，避免落进地面/箱体里。
+constexpr double kTeleportChestZOffset = 200.0;
+
+// 开发者模式下代替寻路：直接传送到目标点。world/player 句柄取自当前快照，
+// 过期句柄由 Host 拒绝，不暴露 UE 对象指针。
+bool TeleportToPosition(Context& context, const double (&position)[3]) noexcept {
+    if (context.session == nullptr) {
+        // session 服务可能晚于插件加载才发布（加载时世界还没初始化），惰性重试。
+        context.session = anomaly::sdk::Host(context.host)
+            .Query<AnomalyNteSessionServiceV1>(
+                ANOMALY_NTE_SESSION_SERVICE_V1_ID,
+                ANOMALY_NTE_SESSION_SERVICE_V1_VERSION).get();
+    }
+    if (context.session == nullptr || context.player == nullptr ||
+        context.teleport == nullptr || context.teleport->teleport == nullptr) {
+        return false;
+    }
+    AnomalyNteSessionSnapshotV1 session_snapshot{sizeof(session_snapshot)};
+    AnomalyNtePlayerSnapshotV1 player_snapshot{sizeof(player_snapshot)};
+    if (context.session->snapshot(context.session->user, &session_snapshot).code !=
+            ANOMALY_STATUS_V1_OK ||
+        context.player->snapshot(context.player->user, &player_snapshot).code !=
+            ANOMALY_STATUS_V1_OK) {
+        return false;
+    }
+    if (session_snapshot.world.id == 0 || player_snapshot.handle.id == 0) return false;
+    AnomalyNtePlayerTeleportRequestV1 request{sizeof(request)};
+    request.flags = 0;
+    request.world = session_snapshot.world;
+    request.player = player_snapshot.handle;
+    request.position[0] = position[0];
+    request.position[1] = position[1];
+    request.position[2] = position[2] + kTeleportChestZOffset;
+    return context.teleport->teleport(context.teleport->user, &request).code ==
+        ANOMALY_STATUS_V1_OK;
+}
+
+// 宝箱交互的实际有效距离。实测从 4.3~10.8 米外调用 TriggerInteract，每次都返回成功
+// 但游戏不开窗；贴到约 2 米（坐标 z 抬高 200cm 后）再交互才会生效。原先接近阈值写成
+// 1200cm，导致从未执行接近动作、一直从远处交互。这里统一成一个常量。
+constexpr double kAutoClaimApproachRangeCm = 300.0;
+// 等待窗口状态变化的采样次数上限。实测有一次成功的领取用了约 13 次采样才等到结算窗口，
+// 原先的 15 次余量太薄，所以放宽。
+constexpr std::uint32_t kAutoClaimWaitPolls = 25;
 
 void AutoClaimTick(Context& context) noexcept {
     if (!context.auto_claim_active) return;
     const auto now = std::chrono::steady_clock::now();
-    if (now >= context.auto_claim_limit) {
+    // 时限按采样次数判定：游戏 tick 停摆时不会把"没被调用"算成"等待超时"。
+    if (context.auto_claim_polls >= context.auto_claim_limit_polls) {
         StopAutoClaim(context, "自动领取停止：等待玩家/窗口超时");
         return;
     }
-    if (context.auto_claim_phase != 0 && now >= context.auto_claim_deadline) {
+    if (context.auto_claim_phase != 0 &&
+        context.auto_claim_polls >= context.auto_claim_deadline_polls) {
         StopAutoClaim(context, context.auto_claim_phase == 3 ?
             "自动领取停止：退出后未确认离开副本" : "自动领取停止：未观察到预期的领奖/结算窗口");
         return;
@@ -6220,6 +6602,7 @@ void AutoClaimTick(Context& context) noexcept {
     if (!GetPlayerState(context)) { context.combat_status = "自动领取：等待玩家"; return; }
     if (now < context.auto_claim_poll) return;
     context.auto_claim_poll = now + std::chrono::seconds(1);
+    ++context.auto_claim_polls;
     if (context.auto_claim_phase == 3) {
         std::uint64_t clone_id{};
         const bool left_clone = context.auto_claim_clone_id != 0 &&
@@ -6247,15 +6630,15 @@ void AutoClaimTick(Context& context) noexcept {
         context.auto_claim_clone_id = GetCurrentCloneId(context);
         if (windows.award != 0 || windows.settlement != 0) {
             context.auto_claim_phase = windows.award != 0 ? 1 : 2;
-            context.auto_claim_deadline = now + std::chrono::seconds(15);
+            context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
             return;
         }
-        if (now < context.auto_claim_deadline) return;
+        if (context.auto_claim_polls < context.auto_claim_deadline_polls) return;
         const std::uintptr_t chest = FindChestActor(context);
         if (chest == 0) {
             ++context.auto_claim_retries;
             if (context.auto_claim_retries < 20) {
-                context.auto_claim_deadline = now + std::chrono::milliseconds(500);
+                context.auto_claim_deadline_polls = context.auto_claim_polls;
                 context.combat_status = "自动领取：等待宝箱加载";
             } else {
                 StopAutoClaim(context, "自动领取：找不到宝箱");
@@ -6273,27 +6656,42 @@ void AutoClaimTick(Context& context) noexcept {
                     const double dy = chest_pos[1] - player_pos[1];
                     const double dz = chest_pos[2] - player_pos[2];
                     const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                    const bool nav_timed_out =
-                        context.auto_claim_nav_deadline !=
-                            std::chrono::steady_clock::time_point{} &&
-                        now >= context.auto_claim_nav_deadline;
-                    if (dist > 1200.0 &&
-                        context.navigation != nullptr &&
-                        context.navigation->move_to_location != nullptr &&
-                        !nav_timed_out) {
-                        if (now >= context.auto_claim_nav_issue) {
-                            static_cast<void>(context.navigation->move_to_location(
-                                context.navigation->user, chest_pos));
-                            context.auto_claim_nav_issue = now + std::chrono::seconds(4);
-                            if (context.auto_claim_nav_deadline ==
-                                std::chrono::steady_clock::time_point{}) {
-                                context.auto_claim_nav_deadline =
-                                    now + std::chrono::seconds(10);
+                    // 开发者模式：交互前一律先传送到宝箱，不按距离判断。
+                    // 实测"只是靠近"不够 —— 玩家距宝箱约 1 米时交互调用照样返回成功
+                    // 但游戏不开窗；同一批 10 次成功全部是"刚传送过去再交互"。
+                    // 插件算出的距离用的是包围盒中心，并不等于到可交互点的真实距离，
+                    // 所以不能用它决定要不要传送。
+                    if (context.developer_mode.load(std::memory_order_acquire) &&
+                        context.auto_claim_approach_polls < 5 &&
+                        TeleportToPosition(context, chest_pos)) {
+                        ++context.auto_claim_approach_polls;
+                        context.combat_status = "自动领取：传送到宝箱";
+                        // 不 return：本轮紧接着交互，保持实测有效的先后顺序。
+                    } else if (dist > kAutoClaimApproachRangeCm &&
+                               context.auto_claim_approach_polls < 5) {
+                        // 非开发者模式（或传送不可用）：按距离先靠近再交互。
+                        const bool nav_timed_out =
+                            context.auto_claim_nav_deadline !=
+                                std::chrono::steady_clock::time_point{} &&
+                            now >= context.auto_claim_nav_deadline;
+                        if (context.navigation != nullptr &&
+                            context.navigation->move_to_location != nullptr &&
+                            !nav_timed_out) {
+                            ++context.auto_claim_approach_polls;
+                            if (now >= context.auto_claim_nav_issue) {
+                                static_cast<void>(context.navigation->move_to_location(
+                                    context.navigation->user, chest_pos));
+                                context.auto_claim_nav_issue = now + std::chrono::seconds(4);
+                                if (context.auto_claim_nav_deadline ==
+                                    std::chrono::steady_clock::time_point{}) {
+                                    context.auto_claim_nav_deadline =
+                                        now + std::chrono::seconds(10);
+                                }
                             }
+                            context.combat_status = "自动领取：移动向宝箱";
+                            context.auto_claim_deadline_polls = context.auto_claim_polls;
+                            return;
                         }
-                        context.combat_status = "自动领取：移动向宝箱";
-                        context.auto_claim_deadline = now + std::chrono::milliseconds(500);
-                        return;
                     }
                 }
             }
@@ -6305,21 +6703,41 @@ void AutoClaimTick(Context& context) noexcept {
                 chest_cls != 0 ? ObjectName(context.names, chest_cls) : std::string();
             context.auto_claim_is_weekly =
                 chest_cls_name.find("Weekly") != std::string::npos;
+            // 临时诊断：交互时玩家离宝箱多远，是区分"距离不够导致游戏忽略交互"与
+            // "宝箱本身不可交互"的关键数据。
+            double log_chest[3]{}, log_player[3]{};
+            const bool have_chest = FindChestPos(context, log_chest);
+            const bool have_player = SnapshotPlayerPosition(context, log_player);
+            const double dist_cm = (have_chest && have_player)
+                ? std::sqrt(CombatDistanceSquared(log_player, log_chest))
+                : -1.0;
+            LogRewardDiagnostic(context, "autoclaim chest: class=" + chest_cls_name +
+                " handle=0x" + [&chest] {
+                    char text[24]{};
+                    std::snprintf(text, sizeof(text), "%llX",
+                        static_cast<unsigned long long>(chest));
+                    return std::string(text);
+                }() + " dist_cm=" + std::to_string(static_cast<long long>(dist_cm)) +
+                " chest_pos_ok=" + std::to_string(have_chest ? 1 : 0) +
+                " player_ok=" + std::to_string(have_player ? 1 : 0));
         }
-        if (!TriggerRewardChest(context, chest)) {
-            StopAutoClaim(context, "自动领取停止：宝箱交互调用失败");
+        context.auto_claim_chest = chest;
+        const char* chest_reason = "not attempted";
+        if (!TriggerRewardChest(context, chest, &chest_reason)) {
+            StopAutoClaim(context,
+                "自动领取停止：宝箱交互调用失败（" + std::string(chest_reason) + "）");
             return;
         }
         context.auto_claim_phase = 1;
         context.auto_claim_poll = now + std::chrono::milliseconds(2500);
-        context.auto_claim_deadline = now + std::chrono::seconds(15);
+        context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
         context.combat_status = "自动领取：打开窗口中";
         return;
     }
     case 1: {
         if (windows.settlement != 0 && windows.award == 0) {
             context.auto_claim_phase = 2;
-            context.auto_claim_deadline = now + std::chrono::seconds(15);
+            context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
             return;
         }
         if (windows.award != 0 && windows.settlement == 0) {
@@ -6332,9 +6750,43 @@ void AutoClaimTick(Context& context) noexcept {
                 return;
             }
             context.auto_claim_phase = 2;
-            context.auto_claim_deadline = now + std::chrono::seconds(15);
+            context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
             context.combat_status = std::string_view(button) == windows.award_double_button
                 ? "已调用双倍领取，等待奖励列表" : "已调用普通领取，等待奖励列表";
+            return;
+        }
+        // 两个窗口都不在：交互调用虽然被接受，游戏却可能没真的开窗（UI 未生效时会吞掉这次交互，
+        // 上手实测过整整 15 秒 award=0 settlement=0 然后被判超时）。被动等只会误判失败，
+        // 这里按节拍重发交互，让它在 UI 可用后生效；重发次数受剩余预算约束。
+        const std::uint32_t left_polls = context.auto_claim_deadline_polls >
+                context.auto_claim_polls
+            ? context.auto_claim_deadline_polls - context.auto_claim_polls
+            : 0;
+        if (context.auto_claim_chest != 0 && left_polls > 0 &&
+            context.auto_claim_polls % 3 == 0) {
+            // 窗口没出现时不要只重发交互：先把玩家重新贴回宝箱再交互。
+            // 游戏很可能按"玩家是否在交互范围内"决定是否真的响应。
+            double again_chest[3]{}, again_player[3]{};
+            const bool again_have_chest = FindChestPos(context, again_chest);
+            const bool again_have_player = SnapshotPlayerPosition(context, again_player);
+            const double again_dist = (again_have_chest && again_have_player)
+                ? std::sqrt(CombatDistanceSquared(again_player, again_chest))
+                : -1.0;
+            bool teleported = false;
+            if (again_have_chest &&
+                context.developer_mode.load(std::memory_order_acquire)) {
+                // 与主路径一致：先传送再交互，不按距离判断（实测这是唯一稳定有效的顺序）。
+                teleported = TeleportToPosition(context, again_chest);
+            }
+            const char* again_reason = "not attempted";
+            const bool accepted =
+                TriggerRewardChest(context, context.auto_claim_chest, &again_reason);
+            LogRewardDiagnostic(context, "autoclaim retrigger: polls=" +
+                std::to_string(context.auto_claim_polls) + " left=" +
+                std::to_string(left_polls) + " dist_cm=" +
+                std::to_string(static_cast<long long>(again_dist)) + " teleported=" +
+                std::to_string(teleported ? 1 : 0) + " accepted=" +
+                std::to_string(accepted ? 1 : 0) + " reason=" + again_reason);
         }
         return;
     }
@@ -6347,7 +6799,7 @@ void AutoClaimTick(Context& context) noexcept {
                 return;
             }
             context.auto_claim_phase = 3;
-            context.auto_claim_deadline = now + std::chrono::seconds(20);
+            context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
             context.combat_status = "已显示奖励并调用退出，等待离开副本";
         }
         return;
@@ -6532,6 +6984,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     LoadExitConfig(*context);
     LoadWeeklyConfig(*context);
     const auto view = anomaly::sdk::Host(host);
+    context->ui = view.Query<AnomalyUiServiceV1>(
+        ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION).get();
     context->signature = view.Query<AnomalySignatureServiceV1>(
         ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).get();
     context->names = view.Query<AnomalyUe5NamesServiceV1>(
@@ -6555,6 +7009,10 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION).get();
     context->pickup = view.Query<AnomalyNtePickupServiceV1>(
         ANOMALY_NTE_PICKUP_SERVICE_V1_ID, ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION).get();
+    // 开发者模式下用于代替寻路到宝箱；未发布时为 null，自动回退到寻路。
+    context->teleport = view.Query<AnomalyNtePlayerTeleportServiceV1>(
+        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
+        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION).get();
     context->core = view.Query<AnomalyCoreServiceV1>(
         ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION).get();
     context->input = view.Query<AnomalyInputServiceV1>(
@@ -6636,6 +7094,12 @@ void ANOMALY_CALL Unload(void* plugin_context) {
 void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
     if (!plugin_context) return;
     auto& context = *static_cast<Context*>(plugin_context);
+    // 开发者模式在 on_draw/on_update 期间有效；但 on_draw 只在插件窗口可见时被框架
+    // 调用，所以必须在这里（每帧都执行的 on_update）刷新，否则窗口关着时检测不到。
+    if (context.ui != nullptr) {
+        context.developer_mode.store(
+            DeveloperModeEnabled(context.ui), std::memory_order_release);
+    }
     if (context.open_reward_pending.exchange(false, std::memory_order_acq_rel)) {
         OpenRewardWindow(context);
         return;
@@ -7034,6 +7498,8 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
                  .get();
     }
     if (ui == nullptr || ui->text == nullptr || ui->button == nullptr) return;
+    // 开发者模式仅在 on_draw/on_update 期间可查询，这里缓存供 Update 的自动领取使用。
+    context.developer_mode.store(DeveloperModeEnabled(ui), std::memory_order_release);
     int open = 1;
     anomaly::sdk::UiWindow window(ui, "自动副本", &open);
     if (!window) return;

@@ -570,6 +570,9 @@ DWORD PrepareNteProfile(
     options.snapshot_sampling.entity_tick_interval = static_cast<std::uint32_t>((std::min)(
         context->config.entity_snapshot_tick_interval,
         static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())));
+    options.snapshot_sampling.actor_tick_interval = static_cast<std::uint32_t>((std::min)(
+        context->config.actor_snapshot_tick_interval,
+        static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())));
     bool override_candidate{};
     if (options.profile_overrides_enabled) {
         const auto has_files = [](const std::filesystem::path& path) {

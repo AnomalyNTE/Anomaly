@@ -5,7 +5,7 @@
   "description": "Enter clone dungeons and kill nearby monsters.",
   "author": "CCYellowStar",
   "license": "MIT",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -26,8 +26,9 @@
     {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.skill-invocation", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.navigation", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.pickup", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.entities", "minVersion": 1, "optional": true}
   ],
-  "capabilities": ["ui", "input", "memory-read", "memory-write", "interop-signature", "ue5-names", "ue5-objects", "nte-actor-snapshot", "nte-map-landmarks", "nte-player-snapshot", "nte-combat-read", "nte-skills-read", "nte-skill-invocation", "nte-navigation", "nte-pickup", "nte-entity-snapshot"]
+  "capabilities": ["ui", "input", "memory-read", "memory-write", "interop-signature", "ue5-names", "ue5-objects", "nte-actor-snapshot", "nte-session-snapshot", "nte-map-landmarks", "nte-player-snapshot", "nte-combat-read", "nte-skills-read", "nte-skill-invocation", "nte-navigation", "nte-player-teleport", "nte-pickup", "nte-entity-snapshot"]
 }

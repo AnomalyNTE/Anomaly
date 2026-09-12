@@ -343,7 +343,9 @@ typedef struct AnomalyNteEntitiesServiceV1 {
 } AnomalyNteEntitiesServiceV1;
 
 // Actor discovery is intentionally separate from the high-frequency Entity snapshot. The first
-// frame request in a World scans every loaded UWorld level and caches the result for that World.
+// frame request in a World scans every loaded UWorld level; the result is then re-scanned on the
+// Host's actor sampling interval (and immediately whenever the World changes), so entries for
+// destroyed actors do not linger and newly spawned actors become visible.
 // Reflected reads are valid only from the Host's Game callback domain.
 typedef struct AnomalyNteActorsServiceV1 {
     uint32_t struct_size; uint32_t service_version; void* user;

@@ -23,6 +23,7 @@ UpdateSlowMilliseconds=2
 DrawSlowMilliseconds=4
 PlayerSnapshotTickInterval=1
 EntitySnapshotTickInterval=1
+ActorSnapshotTickInterval=60
 
 [Profiles]
 Game=nte
@@ -58,6 +59,7 @@ ManagedDirectory=state/profiles/managed
 | `DrawSlowMilliseconds` | 判定插件 `on_draw` 回调为"慢"的阈值（毫秒）。 |
 | `PlayerSnapshotTickInterval` | 玩家快照的采样间隔（tick）。 |
 | `EntitySnapshotTickInterval` | 实体快照的采样间隔（tick）。 |
+| `ActorSnapshotTickInterval` | 全关卡 actor 快照的重扫间隔（tick，默认 60）。调大减少扫描开销，调小让销毁/新生成的 actor 更快反映到快照。 |
 
 ### [Profiles]
 

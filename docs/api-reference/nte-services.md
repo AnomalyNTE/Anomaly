@@ -375,7 +375,9 @@ typedef struct AnomalyNteEntitiesServiceV1 {
 
 - **ID**：`"anomaly.nte.actors"` · **版本** 1 · **capability** `nte-actor-snapshot`
 
-`AnomalyNteActorsServiceV1` 与 `AnomalyNteEntitiesServiceV1` 具有相同函数形状，但用于 **Actor discovery**。某个 World 的首次 `frame` 请求会扫描所有已加载 UWorld level 并为该 World 缓存结果；反射读同样仅在 Game 回调域内有效。
+`AnomalyNteActorsServiceV1` 与 `AnomalyNteEntitiesServiceV1` 具有相同函数形状，但用于 **Actor discovery**。某个 World 的首次 `frame` 请求会扫描所有已加载 UWorld level，之后按宿主 actor 采样间隔（`Performance/ActorSnapshotTickInterval`，默认 60 tick）重扫，World 变化时立即重扫；反射读同样仅在 Game 回调域内有效。
+
+重扫是必要的：如果只在 World 变化时扫描，大世界这种全程同一个 World 的场景会让快照永久冻结——已销毁 actor 的条目一直残留，新生成的 actor 永远不可见。
 
 Actor discovery 有意与高频的 Entity 快照分离——前者面向全量枚举，后者面向每帧采样。
 

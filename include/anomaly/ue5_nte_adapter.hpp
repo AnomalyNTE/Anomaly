@@ -26,6 +26,7 @@ struct NteSnapshotSamplingOptions {
     std::uint32_t entity_tick_interval{1};
     std::uint32_t combat_tick_interval{6};
     std::uint32_t skill_tick_interval{6};
+    std::uint32_t actor_tick_interval{60};
 };
 
 struct NteCombatDiagnosticsSnapshot {

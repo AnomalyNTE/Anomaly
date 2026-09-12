@@ -1801,6 +1801,8 @@ public:
             std::to_string(options_.snapshot_sampling.combat_tick_interval);
         json += ",\"skillSnapshotTickInterval\":" +
             std::to_string(options_.snapshot_sampling.skill_tick_interval);
+        json += ",\"actorSnapshotTickInterval\":" +
+            std::to_string(options_.snapshot_sampling.actor_tick_interval);
         json += ",\"outgoingTransformMetadataProbe\":";
         AppendOutgoingTransformProbeSnapshot(json, outgoing_transform_probe_.get());
         json += ",\"optionalFeatures\":";

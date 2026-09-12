@@ -40,6 +40,9 @@ struct AnalyzerConfig {
     double draw_slow_milliseconds{4.0};
     std::size_t player_snapshot_tick_interval{1};
     std::size_t entity_snapshot_tick_interval{1};
+    // 全部关卡 actor 扫描远重于持久化关卡扫描，因此按 tick 节流而不是每帧重扫；
+    // 默认约一秒一次，足以跟上大世界的刷怪与清怪。
+    std::size_t actor_snapshot_tick_interval{60};
     std::string game_id{"nte"};
     std::filesystem::path profile_directory{L"profiles"};
     std::filesystem::path local_profile_directory{L"profiles-local"};

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
@@ -15,11 +16,64 @@
 namespace ue5mem {
 namespace {
 
+// HasRange 的 VirtualQuery 是每次读取一次内核调用。全量实体/actor 扫描每帧要做上万次
+// 读取，光这一项就吃掉几百毫秒帧时间。这里把"已验证可读（可写）"的区域按线程缓存：
+// 命中即放行，未命中仍走原来的 VirtualQuery 校验并记录结果。条目带 TTL，过期后重建，
+// 因此最坏情况只是某次读取越过校验、由 ReadProcessMemory 自己失败返回，
+// 与该地址校验失败的结果一致，安全性不变。
+struct CachedRange {
+    std::uintptr_t base{};
+    std::uintptr_t end{};
+    bool writable{};
+};
+
+constexpr auto kRangeCacheTtl = std::chrono::seconds(1);
+
+std::vector<CachedRange>& RangeCache() noexcept {
+    static thread_local std::vector<CachedRange> cache;
+    return cache;
+}
+
+std::chrono::steady_clock::time_point& RangeCacheStamp() noexcept {
+    static thread_local std::chrono::steady_clock::time_point stamp{};
+    return stamp;
+}
+
+void RangeCacheRemember(
+    std::vector<CachedRange>& cache, std::uintptr_t base, std::uintptr_t end,
+    bool writable) {
+    const auto position = std::lower_bound(
+        cache.begin(), cache.end(), base,
+        [](const CachedRange& range, std::uintptr_t value) { return range.base < value; });
+    if (position != cache.end() && position->base == base) {
+        position->writable = position->writable || writable;
+        position->end = (std::max)(position->end, end);
+        return;
+    }
+    cache.insert(position, CachedRange{base, end, writable});
+}
+
 bool HasRange(std::uintptr_t address, std::size_t size, bool write) {
     if (address == 0 || size == 0 || address > std::numeric_limits<std::uintptr_t>::max() - size) {
         return false;
     }
     const auto end = address + size;
+    auto& cache = RangeCache();
+    auto& stamp = RangeCacheStamp();
+    const auto now = std::chrono::steady_clock::now();
+    if (stamp.time_since_epoch().count() == 0 || now - stamp > kRangeCacheTtl) {
+        cache.clear();
+        stamp = now;
+    }
+    const auto covering = std::upper_bound(
+        cache.begin(), cache.end(), address,
+        [](std::uintptr_t value, const CachedRange& range) { return value < range.base; });
+    if (covering != cache.begin()) {
+        const auto& range = *(covering - 1);
+        if (address >= range.base && end <= range.end && (!write || range.writable)) {
+            return true;
+        }
+    }
     auto cursor = address;
     while (cursor < end) {
         MEMORY_BASIC_INFORMATION info{};
@@ -34,8 +88,10 @@ bool HasRange(std::uintptr_t address, std::size_t size, bool write) {
         const bool writable = base == PAGE_READWRITE || base == PAGE_WRITECOPY ||
                               base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
         if (!readable || (write && !writable)) return false;
-        const auto region_end = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+        const auto region_base = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
+        const auto region_end = region_base + info.RegionSize;
         if (region_end <= cursor) return false;
+        if (readable) RangeCacheRemember(cache, region_base, region_end, writable);
         cursor = std::min(region_end, end);
     }
     return true;
