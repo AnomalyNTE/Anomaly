@@ -71,6 +71,31 @@ inline constexpr std::uint32_t kCharacterMeshOffset = 0x348;
 // ACharacter::AnimRootMotionTranslationScale.
 inline constexpr std::uint32_t kCharacterAnimRootMotionScaleOffset = 0x468;
 
+// Camera path. The view-point getter belongs to the free-camera plugin: its detour stub now
+// sits at the function's first bytes, and the hook service refuses a second hook on the same
+// target. What is available instead is the manager's cached POV -- the struct that getter
+// copies its result from, and the same layout the active Profile names as
+// cameraManager.location / cameraManager.rotation. Writing it composes with the other
+// plugin's transparent passthrough (its detour calls the original and only replaces the
+// result while its own free camera is on) instead of fighting it for the hook.
+inline constexpr std::uint32_t kControllerCameraManagerOffset = 0x380;
+// The manager's vtable slot holding the view-point getter. That getter is hooked by the
+// free-camera plugin, but its body names the accessor this plugin hooks instead, so the slot is
+// read to locate the getter's code and follow that call.
+inline constexpr std::uint32_t kCameraViewPointVtableOffset = 0x850;
+// Where the getter reads the two vectors out of the POV it copies: location at +0 and rotation
+// at +0x18 (three doubles each, measured from the getter's own movups/movsd offsets).
+inline constexpr std::uint32_t kCameraPovRotationOffset = 0x18;
+// FMinimalViewInfo::FOV follows the two vectors, and reads 80 in game (the same value the camera
+// cache reports at cameraManager.fov).
+inline constexpr std::uint32_t kCameraPovFovOffset = 0x30;
+// USkinnedMeshComponent's world FBoxSphereBounds {Origin, BoxExtent}: the active Profile names
+// these as sceneComponent.boundsOrigin / boundsExtent, and reading them live gives a
+// character-sized box (origin near the actor, extent.z = 84.7 for a 169 cm character), which is
+// what the camera aims at.
+inline constexpr std::uint32_t kCharacterBoundsOriginOffset = 0x118;
+inline constexpr std::uint32_t kCharacterBoundsExtentOffset = 0x130;
+
 // USkeletalMeshComponent animation state.
 inline constexpr std::uint32_t kMeshAnimClassOffset = 0x930;
 inline constexpr std::uint32_t kMeshAnimScriptInstanceOffset = 0x938;
