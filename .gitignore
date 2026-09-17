@@ -9,3 +9,7 @@ snapshot-*.json
 /output/
 /imgui.ini
 /.local/
+/plugins/*/build/
+/.dsh-inbox/
+__pycache__/
+*.pyc
