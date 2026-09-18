@@ -581,8 +581,7 @@ struct Context final {
     std::vector<PoseProbe> pose_probes;
     std::uintptr_t poseable_component{};
     bool poseable_active{};
-    bool poseable_original_hidden{};
-    bool poseable_original_hidden_saved{};
+    bool poseable_source_visibility_changed{};
     bool poseable_attempted{};
     std::uint32_t poseable_socket_bone{(std::numeric_limits<std::uint32_t>::max)()};
     std::array<double, 12> poseable_socket_relative{};
@@ -1630,8 +1629,6 @@ bool WritePoseableAccessoryPose(Context &context,
 void DestroyPoseableAccessories(Context &context) noexcept;
 void DestroyStalePoseableComponent(Context &context,
                                    std::uintptr_t component) noexcept;
-void RestoreAccessoryVisibility(Context &context,
-                                std::uintptr_t component) noexcept;
 
 bool ReleasePoseTickHook(Context &context) noexcept {
   if (!HookReady(context.hook) || context.tick_hook.id == 0)
@@ -3702,11 +3699,17 @@ bool EnsurePoseableAccessory(Context &context,
   if (!context.poseable_prototype_enabled || extra.asset == 0 ||
       context.runtime.character == 0 || extra.poseable_attempted)
     return extra.poseable_active;
+  // Hidden costume pieces must not acquire a visible replacement. Query before
+  // our own SetVisibility(false), and leave them eligible if the game shows them later.
+  std::string detail;
+  std::uint8_t visible{};
+  if (!CallVirtualUFunction(context, extra.object, kFunctionSceneIsVisiblePath,
+                            &visible, sizeof(visible), detail, &visible) || visible == 0)
+    return false;
   extra.poseable_attempted = true;
 
   // Preserve the actual socket contract, not a fuzzy match to a hair-chain
   // bone. The observed accessories attach directly to Head/Pelvis bones.
-  std::string detail;
   std::uintptr_t source_parent{};
   std::array<std::uint8_t, 8> socket_parameters{}, socket_name{};
   if (!ReadPointerAt(context, extra.object, kMeshAttachParentOffset, source_parent) ||
@@ -3908,13 +3911,12 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
     }
     extra.poseable_bind_written = true;
   }
-  if (!extra.poseable_original_hidden_saved) {
+  if (!extra.poseable_source_visibility_changed) {
     const std::array<std::uint8_t, 2> hidden{0, 0};
     if (!CallVirtualUFunction(context, extra.object, kFunctionSceneSetVisibilityPath,
                               hidden.data(), hidden.size(), detail))
       return false;
-    extra.poseable_original_hidden = true;
-    extra.poseable_original_hidden_saved = true;
+    extra.poseable_source_visibility_changed = true;
   }
   return true;
 }
@@ -3924,8 +3926,10 @@ void DestroyPoseableAccessories(Context &context) noexcept {
     if (extra.poseable_component == 0)
       continue;
     std::string detail;
-    if (extra.poseable_original_hidden_saved) {
-      const std::array<std::uint8_t, 2> visible_parameters{1, 1};
+    if (extra.poseable_source_visibility_changed) {
+      // Only visible sources are replaced. Restore only the flag we changed;
+      // do not alter HiddenInGame or propagate into independently hidden children.
+      const std::array<std::uint8_t, 2> visible_parameters{1, 0};
       static_cast<void>(CallVirtualUFunction(
           context, extra.object, kFunctionSceneSetVisibilityPath,
           visible_parameters.data(), visible_parameters.size(), detail));
@@ -3941,7 +3945,7 @@ void DestroyPoseableAccessories(Context &context) noexcept {
                            " result=" + detail);
     extra.poseable_component = 0;
     extra.poseable_active = false;
-    extra.poseable_original_hidden_saved = false;
+    extra.poseable_source_visibility_changed = false;
     extra.poseable_attempted = false;
     extra.poseable_bind_written = false;
     extra.poseable_last_write_ok = false;
@@ -3960,17 +3964,6 @@ void DestroyStalePoseableComponent(Context &context,
       &component, sizeof(component), detail);
   LogDiagnostic(context, "betterpose poseable stale destroy self=" + Hex(component) +
                            " called=" + (called ? "1" : "0") + " result=" + detail);
-}
-
-void RestoreAccessoryVisibility(Context &context,
-                                const std::uintptr_t component) noexcept {
-  if (component == 0)
-    return;
-  const std::array<std::uint8_t, 2> parameters{1, 1};
-  std::string detail;
-  static_cast<void>(CallVirtualUFunction(
-      context, component, kFunctionSceneSetVisibilityPath,
-      parameters.data(), parameters.size(), detail));
 }
 
 bool ReadBoneTransformForMesh(Context &context, const std::uintptr_t mesh,
@@ -4948,7 +4941,6 @@ void BuildExtraMeshes(Context &context) noexcept {
       DestroyStalePoseableComponent(context, object);
       continue;
     }
-    RestoreAccessoryVisibility(context, object);
     // Layout sanity check before we ever save or write this component: the first
     // transform must start with a plausible unit quaternion. It costs one read
     // and it is what keeps a mis-identified object from being scribbled on.

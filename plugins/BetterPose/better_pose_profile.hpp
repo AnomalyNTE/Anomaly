@@ -76,6 +76,10 @@ inline constexpr std::string_view kFunctionSceneSetRelativeTransformPath =
     "/Script/Engine.SceneComponent.K2_SetRelativeTransform";
 inline constexpr std::string_view kFunctionSceneSetVisibilityPath =
     "/Script/Engine.SceneComponent.SetVisibility";
+// Verified reflected signature: one byte ReturnValue at offset 0. The current
+// skinned-component override also rejects components hidden in game.
+inline constexpr std::string_view kFunctionSceneIsVisiblePath =
+    "/Script/Engine.SceneComponent.IsVisible";
 inline constexpr std::string_view kFunctionActorComponentDestroyPath =
     "/Script/Engine.ActorComponent.K2_DestroyComponent";
 inline constexpr std::string_view kFunctionSetBoneLocationByNamePath =
