@@ -1,4 +1,5 @@
 #include "motion_builder.hpp"
+#include "../secondary_rules.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -113,7 +114,7 @@ const Quat kAxisChange{0.7071067811865476, 0.0, 0.0, 0.7071067811865476};
 // 0.30 / 0.45 / 0.60 / 1.00 on 浔's rig (D:\xun.skeleton.json, 54 sleeve bones) and 残虹's
 // (D:\canhong.skeleton.json, 71 after the 裙 exclusion): see the sleeve share column of the
 // conversion report for the hem angle each value produced.
-constexpr double kSleeveGravityWeight = 0.45;
+using secondary::kSleeveGravityWeight;
 
 // Strand collision proxies. The converter has no mesh, so the volumes come from the rig's own
 // bones: capsules along the torso for hair, along the legs for anything hanging off the waist.
@@ -122,16 +123,16 @@ constexpr double kSleeveGravityWeight = 0.45;
 // every frame, and penetration shallower than the slack is left alone so the cloth keeps its drape.
 // Measured on 浔's rig before this existed: hair came as close as 0.8 cm to the *spine axis* on the
 // worst frames, i.e. straight through the middle of the torso.
-constexpr double kTorsoCollisionRadiusCm = 8.0;
-constexpr double kTorsoCollisionSlackCm = 2.0;
+using secondary::kTorsoCollisionRadiusCm;
+using secondary::kTorsoCollisionSlackCm;
 // The leg volumes take their radius from the rig itself (see `leg_floors`): a guessed 7.0/5.5 cm
 // minus a 2.0 cm slack let a skirt bone sit 5.0/3.5 cm from the leg axis, which is 3-6 cm closer to
 // the leg than the model's own skirt hangs at rest -- so the correction was holding the cloth
 // *inside* the leg and the skirt still clipped. The slack is now only the solver's working room;
 // the radius carries the clearance.
-constexpr double kLegCollisionSlackCm = 0.5;
-constexpr std::uint8_t kCollideTorso = 1;
-constexpr std::uint8_t kCollideLegs = 2;
+using secondary::kLegCollisionSlackCm;
+using secondary::kCollideTorso;
+using secondary::kCollideLegs;
 
 // ------------------------------------------------------------------- binary reading
 //
@@ -1763,57 +1764,15 @@ Result BuildMotion(const Input &input) {
   // through a spring-damper on its own axis. With no movement the spring settles exactly
   // on the rigid pose, so this can only add life -- it cannot change the silhouette at
   // rest (mmd2bip.py:993-1031).
-  const auto is_secondary = [](const std::string &name) {
-    std::string low = name;
-    for (char &c : low)
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (low.find("twist") != std::string::npos ||
-        low.find("finger") != std::string::npos || low.find("ik") != std::string::npos)
-      return false;
-    // A tail is not a strand: it is a thick appendage hanging right next to the body, so a
-    // spring's lag throws it *through* the body on every turn instead of reading as sway.
-    // Measured on 热爱105℃的你.vmd before this rule: the tip crossed the pelvis's front plane in
-    // 77 of 3061 frames, up to 27.5 cm ahead of it. A tail just follows the body.
-    if (low.find("tail") != std::string::npos)
-      return false;
-    if (name.rfind("Bn_", 0) == 0)
-      return true;
-    // `tail` is deliberately absent from this list and excluded above: it is the one accessory
-    // the spring must not drive on this rig.
-    for (const char *key : {"hair", "qun", "cloth", "piao", "gongpai", "lalian",
-                            "xiong", "tie", "skirt", "ribbon"}) {
-      if (low.find(key) != std::string::npos)
-        return true;
-    }
-    return false;
-  };
+  const auto is_secondary = secondary::IsSecondary;
   // Hard ornaments stay rigid: a head ring dragged around by the spring is the one thing
   // the spring must never do (mmd2bip.py:HEAD_ORNAMENT_BONES, spec 5.2).
   // Matched case-insensitively, like the reference does (it lowercases the name and every
   // entry). "hat" is 九原's big hat: a hat bone the spring drives waves on top of the head.
-  const auto is_ornament = [](const std::string &name) {
-    std::string low = name;
-    for (char &c : low)
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    for (const char *token : {"bn_m_headprop", "bn_m_headproa", "bn_m_headprob",
-                              "bn_m_headlinea", "bn_m_headlineb", "hat"}) {
-      if (low.find(token) != std::string::npos)
-        return true;
-    }
-    return false;
-  };
+  const auto is_ornament = secondary::IsOrnament;
   // Hair sways but does not spin: the spring bends a strand a few degrees and rolls it
   // tens, and the roll is what reads as turning in place (spec 5.1).
-  const auto is_swing_only = [](const std::string &name) {
-    std::string low = name;
-    for (char &c : low)
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    for (const char *key : {"hair", "hairline", "hari", "kami"}) {
-      if (low.find(key) != std::string::npos)
-        return true;
-    }
-    return false;
-  };
+  const auto is_swing_only = secondary::IsSwingOnly;
   const auto twist_about = [](const Quat &q, const Vec3 &axis) {
     const double d = q.x * axis.x + q.y * axis.y + q.z * axis.z;
     const double n = std::sqrt(d * d + q.w * q.w);
@@ -1828,18 +1787,8 @@ Result BuildMotion(const Input &input) {
   // i.e. they are skirt panels. Matching a bare `xiu` would have weighted a skirt like a sleeve;
   // 浔's rig has no such name, and neither one has an `xiu` chain under the pelvis after the
   // exclusion (54/54 and 71/75 bones, all hanging off the arm).
-  const auto is_sleeve = [](const std::string &name) {
-    std::string low = name;
-    for (char &c : low)
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return low.find("xiu") != std::string::npos && low.find("qun") == std::string::npos;
-  };
-  const auto is_hair = [](const std::string &name) {
-    std::string low = name;
-    for (char &c : low)
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return low.find("hair") != std::string::npos;
-  };
+  const auto is_sleeve = secondary::IsSleeve;
+  const auto is_hair = secondary::IsHair;
   struct SecondaryBone {
     std::uint32_t index = 0;
     std::string name;
@@ -1928,8 +1877,7 @@ Result BuildMotion(const Input &input) {
         ancestor = parent_name;
         break;
       }
-      if (ancestor.find("Pelvis") != std::string::npos ||
-          ancestor.find("Thigh") != std::string::npos)
+      if (secondary::IsLegAttachment(ancestor))
         entry.collide |= kCollideLegs;
     }
     secondary.push_back(entry);
@@ -1955,17 +1903,7 @@ Result BuildMotion(const Input &input) {
   // inside the leg at all (0 of 150 frames), where capping the radius at half the separation to make
   // the constraint exactly satisfiable leaves 23 samples inside on 7 frames. On 浔 the cap wins one
   // chain (0.71 cm on 3 frames) but loses the deepest one (1.24 cm on 1 frame).
-  struct LegVolume {
-    const char *first;
-    const char *second;
-    double fraction;               // where the capsule starts along the bone (0 = the joint itself)
-    const char *key;               // "first->second", the name the document reports it under
-  };
-  static constexpr LegVolume kLegVolumes[] = {
-      {"Bip001-L-Thigh", "Bip001-L-Calf", 0.33, "Bip001-L-Thigh->Bip001-L-Calf"},
-      {"Bip001-L-Calf", "Bip001-L-Foot", 0.0, "Bip001-L-Calf->Bip001-L-Foot"},
-      {"Bip001-R-Thigh", "Bip001-R-Calf", 0.33, "Bip001-R-Thigh->Bip001-R-Calf"},
-      {"Bip001-R-Calf", "Bip001-R-Foot", 0.0, "Bip001-R-Calf->Bip001-R-Foot"}};
+  using secondary::kLegVolumes;
   // 0.0 = no leg strand on this rig, which leaves the volume out entirely.
   double leg_radius_cm[4] = {0.0, 0.0, 0.0, 0.0};
   double leg_clearance_cm = 0.0;   // the tightest of the four, for the report
@@ -2768,7 +2706,7 @@ Result BuildMotion(const Input &input) {
           sim_position[bone.index] = head;
           // Gravity is always part of the hanging target; only the acceleration term needs
           // two earlier samples (mmd2bip.py:1229-1250).
-          Vec3 gravity_down{0.0, 0.0, -981.0};
+          Vec3 gravity_down{0.0, 0.0, -secondary::kGravity};
           if (sim_frames[bone.index] >= 2 && dt > 1e-9) {
             Vec3 accel{(head.x - 2.0 * previous.x + older.x) / (dt * dt),
                        (head.y - 2.0 * previous.y + older.y) / (dt * dt),
@@ -2776,13 +2714,13 @@ Result BuildMotion(const Input &input) {
             // Cap at 3 g: the centre track is sparse and its second difference spikes
             // (mmd2bip.py:1234-1244).
             const double magnitude = Length(accel);
-            const double limit = 3.0 * 981.0;
+            const double limit = 3.0 * secondary::kGravity;
             if (magnitude > limit) {
               accel.x *= limit / magnitude;
               accel.y *= limit / magnitude;
               accel.z *= limit / magnitude;
             }
-            gravity_down = Vec3{-0.5 * accel.x, -0.5 * accel.y, -981.0 - 0.5 * accel.z};
+            gravity_down = Vec3{-0.5 * accel.x, -0.5 * accel.y, -secondary::kGravity - 0.5 * accel.z};
           }
           const Vec3 hang = Unit(gravity_down);
           if (Length(hang) > 0.5) {
@@ -2790,7 +2728,7 @@ Result BuildMotion(const Input &input) {
             // replaces "follow the bone it hangs on". Hair and skirts want to stay close to the
             // body; a sleeve wants its hem down.
             const double gravity_share =
-                is_sleeve(spring->name) ? kSleeveGravityWeight : 0.15;
+                is_sleeve(spring->name) ? kSleeveGravityWeight : secondary::kGravityWeight;
             const Vec3 blended{axis_world.x * (1.0 - gravity_share) + hang.x * gravity_share,
                                axis_world.y * (1.0 - gravity_share) + hang.y * gravity_share,
                                axis_world.z * (1.0 - gravity_share) + hang.z * gravity_share};
@@ -2798,6 +2736,8 @@ Result BuildMotion(const Input &input) {
               target = Unit(blended);
           }
         }
+        const bool hair_swing = is_swing_only(bone.name);
+        const auto spring_settings = secondary::SpringFor(hair_swing);
         // Four substeps: one explicit step at 30 fps with stiffness 200 is only marginally
         // stable (mmd2bip.py:1253-1271).
         const int substeps = 4;
@@ -2806,9 +2746,9 @@ Result BuildMotion(const Input &input) {
           const Vec3 cross{direction.y * target.z - direction.z * target.y,
                            direction.z * target.x - direction.x * target.z,
                            direction.x * target.y - direction.y * target.x};
-          velocity.x += (200.0 * cross.x - 16.0 * velocity.x) * h;
-          velocity.y += (200.0 * cross.y - 16.0 * velocity.y) * h;
-          velocity.z += (200.0 * cross.z - 16.0 * velocity.z) * h;
+          velocity.x += (spring_settings.stiffness * cross.x - spring_settings.damping * velocity.x) * h;
+          velocity.y += (spring_settings.stiffness * cross.y - spring_settings.damping * velocity.y) * h;
+          velocity.z += (spring_settings.stiffness * cross.z - spring_settings.damping * velocity.z) * h;
           const Vec3 movement{velocity.x * h, velocity.y * h, velocity.z * h};
           direction = Unit(Vec3{
               direction.x + movement.y * direction.z - movement.z * direction.y,
@@ -2819,8 +2759,8 @@ Result BuildMotion(const Input &input) {
         }
         const double alignment = (std::max)(-1.0, (std::min)(1.0, Dot(direction, target)));
         const double lag = std::acos(alignment) * 180.0 / 3.14159265358979323846;
-        if (lag > 25.0) {
-          const double t = 25.0 / lag;
+        if (lag > spring_settings.lag_degrees) {
+          const double t = spring_settings.lag_degrees / lag;
           direction = Unit(Vec3{direction.x + (target.x - direction.x) * t,
                                 direction.y + (target.y - direction.y) * t,
                                 direction.z + (target.z - direction.z) * t});
@@ -2835,7 +2775,7 @@ Result BuildMotion(const Input &input) {
         const Vec3 local_axis = Unit(Rotate(Conjugate(component_parent), direction));
         Quat local = Multiply(Swing(spring->axis, local_axis),
                               twist_about(spring->local, spring->axis));
-        if (is_swing_only(bone.name)) {
+        if (hair_swing) {
           // Keep where the strand points, hold its roll at the rigid pose (spec 5.1).
           const Quat deviation = Multiply(local, Conjugate(spring->local));
           const Quat roll = twist_about(deviation, Rotate(spring->local, spring->axis));

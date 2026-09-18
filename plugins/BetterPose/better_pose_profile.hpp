@@ -29,7 +29,10 @@ inline constexpr std::uint32_t kObjectNumChunksOffset = 44;
 inline constexpr std::uint32_t kObjectChunkSize = 65536;
 inline constexpr std::uint32_t kObjectItemStride = 24;
 inline constexpr std::uint32_t kProcessEventVtableSlot = 0x4C;
-inline constexpr std::size_t kMaximumUFunctionParameterBytes = 256;
+// K2_SetRelativeTransform's FHitResult parameter extends the reflected call to
+// 369 bytes on the active UE build. Keep the shared ProcessEvent scratch space
+// large enough for that verified signature as well as the smaller functions.
+inline constexpr std::size_t kMaximumUFunctionParameterBytes = 512;
 
 // Prebuilt UFunction actions demonstrated through the plugin-local ProcessEvent
 // bridge until the framework exposes a raw reflection invocation service.
@@ -55,6 +58,26 @@ inline constexpr std::string_view kFunctionSetForcedLodPath =
     "/Script/Engine.SkinnedMeshComponent.SetForcedLOD";
 inline constexpr std::string_view kFunctionSetAnimationModePath =
     "/Script/Engine.SkeletalMeshComponent.SetAnimationMode";
+inline constexpr std::string_view kFunctionActorAddComponentByClassPath =
+    "/Script/Engine.Actor.AddComponentByClass";
+inline constexpr std::string_view kFunctionSetSkeletalMeshAssetPath =
+    "/Script/Engine.SkeletalMeshComponent.SetSkeletalMeshAsset";
+inline constexpr std::string_view kFunctionPoseableSetBoneTransformByNamePath =
+    "/Script/Engine.PoseableMeshComponent.SetBoneTransformByName";
+inline constexpr std::string_view kFunctionSceneAttachComponentPath =
+    "/Script/Engine.SceneComponent.K2_AttachToComponent";
+inline constexpr std::string_view kFunctionSceneGetRelativeTransformPath =
+    "/Script/Engine.SceneComponent.GetRelativeTransform";
+inline constexpr std::string_view kFunctionSceneGetAttachSocketNamePath =
+    "/Script/Engine.SceneComponent.GetAttachSocketName";
+inline constexpr std::string_view kFunctionSceneGetComponentTransformPath =
+    "/Script/Engine.SceneComponent.K2_GetComponentToWorld";
+inline constexpr std::string_view kFunctionSceneSetRelativeTransformPath =
+    "/Script/Engine.SceneComponent.K2_SetRelativeTransform";
+inline constexpr std::string_view kFunctionSceneSetVisibilityPath =
+    "/Script/Engine.SceneComponent.SetVisibility";
+inline constexpr std::string_view kFunctionActorComponentDestroyPath =
+    "/Script/Engine.ActorComponent.K2_DestroyComponent";
 inline constexpr std::string_view kFunctionSetBoneLocationByNamePath =
     "/Script/Engine.PoseableMeshComponent.SetBoneLocationByName";
 inline constexpr std::string_view kFunctionSetBoneRotationByNamePath =
@@ -101,11 +124,12 @@ inline constexpr std::uint32_t kMeshAnimClassOffset = 0x930;
 inline constexpr std::uint32_t kMeshAnimScriptInstanceOffset = 0x938;
 inline constexpr std::uint32_t kMeshCachedBoneSpaceTransformsOffset = 0x9E8;
 inline constexpr std::uint32_t kMeshCachedComponentSpaceTransformsOffset = 0x9F8;
-// USkinnedMeshComponent keeps the authoritative, per-frame pose buffers here.
-// The SkeletalMeshComponent "Cached*" arrays above are empty in this build and
-// are only used as a read-only fallback.
-inline constexpr std::uint32_t kMeshBoneSpaceTransformsOffset = 0x628;
-inline constexpr std::uint32_t kMeshComponentSpaceTransformsOffset = 0x638;
+// Two component-space buffers, not a local/component pair. The live bone getter
+// and rendering-data packer both select 0x628 + 0x10 * CurrentReadIndex.
+// Cached* above remains a read-only fallback. The legacy RuntimeState field
+// names bone_space_data/component_space_data refer to buffer 0/1 respectively.
+inline constexpr std::uint32_t kMeshComponentSpaceBuffer0Offset = 0x628;
+inline constexpr std::uint32_t kMeshComponentSpaceBuffer1Offset = 0x638;
 inline constexpr std::uint32_t kMeshLocalSpaceTransformsOffset = 0x968;
 inline constexpr std::uint32_t kMeshGlobalAnimRateScaleOffset = 0xAA8;
 inline constexpr std::uint32_t kMeshForcedLodModelOffset = 0x7A0;
@@ -113,7 +137,9 @@ inline constexpr std::uint32_t kMeshAnimationModeOffset = 0xAAF;
 inline constexpr std::uint32_t kMeshForceMeshObjectUpdateOffset = 0x7FA;
 inline constexpr std::uint32_t kMeshForceMeshObjectUpdateBit = 6;
 inline constexpr std::uint32_t kMeshAnimationFlagsOffset = 0xAC0;
-inline constexpr std::uint32_t kRefreshBoneTransformsVtableSlot = 113;
+// Do not call the unexposed component virtuals from the plugin. The current
+// build's submission path was inspected read-only, but invoking its slot is not
+// part of the validated plugin contract.
 inline constexpr std::uint32_t kSkeletalMeshTickVtableSlot = 128;
 
 // EAnimationMode values relevant to the pose override. Switching the

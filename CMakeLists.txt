@@ -1128,6 +1128,9 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_link_libraries(anomaly_mmd2bip_converter PUBLIC nlohmann_json::nlohmann_json)
     target_link_libraries(anomaly_builtin_better_pose PRIVATE anomaly_mmd2bip_converter winmm)
     target_compile_options(anomaly_builtin_better_pose PRIVATE /utf-8)
+    add_executable(anomaly_better_pose_accessory_fixture
+        plugins/BetterPose/tests/accessory_dynamics_test.cpp)
+    target_compile_options(anomaly_better_pose_accessory_fixture PRIVATE /W4 /permissive- /EHsc)
     # The in-game conversion needs the reference MMD bone table next to the plugin.
     add_custom_command(TARGET anomaly_builtin_better_pose POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_directory

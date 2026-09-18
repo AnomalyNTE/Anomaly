@@ -18,6 +18,7 @@ using Microsoft::WRL::ComPtr;
 #include "anomaly/sdk/services/ui.h"
 #include <nlohmann/json.hpp>
 #include "better_pose_profile.hpp"
+#include "accessory_dynamics.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -56,18 +57,10 @@ constexpr std::uint32_t kObjectNameOffset = 0x18;
 // UObject::OuterPrivate. A component's outer is its owning actor, which is how
 // the scan narrows the whole world down to the local player's own components.
 constexpr std::uint32_t kObjectOuterOffset = 0x20;
-// Where a leader/master-pose follower keeps the component it copies its pose from (measured at
-// 0xD8; the body mesh itself is the master and has none). Read-only: everything about *setting* it
-// is off limits (see the note beside ResyncExtraMeshes).
-constexpr std::uint32_t kMeshLeaderPoseOffset = 0xD8;
-// The extra components hold a pointer to the body mesh (measured at 0xD8 -- and
-// the one probe that failed to resolve is the body mesh itself, which is the
-// master and therefore has none). The engine copies the master's bones only
-// inside its own refresh, which our external buffer writes bypass; re-asking it
-// to redo that copy was tried through SetMasterPoseComponent /
-// SetLeaderPoseComponent and crashed the game both with force=true and with the
-// same leader, so the binding is never touched. Detection only, see
-// ResyncExtraMeshes.
+// USceneComponent::AttachParent. This is read-only: it identifies the scene
+// component an accessory is attached to; it is not a leader/master-pose
+// binding and must never be written by this plugin.
+constexpr std::uint32_t kMeshAttachParentOffset = 0xD8;
 // Extra components are only bone-driven when their bones can be matched to the
 // body skeleton this closely (mean position error, cm). Measured on a real
 // character: name mapping 6/222 and positional error ~9.9 cm even while both
@@ -532,22 +525,23 @@ struct Context final {
   // components: using that one as the "already scanned" marker made the scan
   // restart forever whenever it found nothing.
   std::uintptr_t mesh_scan_owner{};
+  ULONGLONG next_mesh_scan_retry_ms{};
   std::map<std::uintptr_t, std::string> mesh_scan_class_cache;
   std::vector<std::string> mesh_scan_class_names;
   std::vector<std::uintptr_t> skeleton_meshes;
 
   // Extra skeletal mesh components owned by the same pawn (hair layers,
-  // accessories, cloth). They carry their own small skeletons whose bones share
-  // names with the body skeleton, and the engine keeps them in sync through a
-  // leader pose -- but only while it refreshes the body mesh internally. Our
-  // external buffer writes are invisible to them, which is why a long haired
-  // character's outer hair layer stayed frozen while the body danced.
+  // accessories, cloth). They carry their own small skeletons and may have
+  // independent animation and budget scheduling; the diagnostic path records
+  // their pose arrays without assuming a leader-pose relationship.
   struct ExtraMesh {
     std::uintptr_t object{};
+    std::uintptr_t asset{};
     std::uint32_t bone_count{};
     std::uintptr_t component_space_data{};
     std::uintptr_t bone_space_data{};
     std::vector<std::uint32_t> bone_map;   // its bone -> body bone (max = none)
+    std::vector<std::array<std::uint8_t, 8>> bone_fnames;
     std::vector<std::uint32_t> position_map;
     double position_match_cm{};
     bool used_position{};
@@ -575,11 +569,29 @@ struct Context final {
     bool used_hierarchy{};
     std::uint32_t anchor_extra{};
     std::uint32_t anchor_body{};
-    // Diagnostics: per-mesh log throttle, and the rotation we wrote last frame so a
-    // read-back can tell whether something else overwrote it.
-    std::uint32_t log_tick{};
-    std::array<double, 4> last_written{};
-    bool last_written_valid{};
+    struct PoseProbe {
+      std::uint32_t bone{};
+      std::string name;
+      std::array<double, 12> expected_component{};
+      std::array<double, 12> last_buffer0{};
+      bool write0_ok{};
+      bool write1_ok{};
+      bool has_expected{};
+    };
+    std::vector<PoseProbe> pose_probes;
+    std::uintptr_t poseable_component{};
+    bool poseable_active{};
+    bool poseable_original_hidden{};
+    bool poseable_original_hidden_saved{};
+    bool poseable_attempted{};
+    std::uint32_t poseable_socket_bone{(std::numeric_limits<std::uint32_t>::max)()};
+    std::array<double, 12> poseable_socket_relative{};
+    std::array<double, 12> poseable_expected_relative{};
+    bool poseable_bind_written{};
+    bool poseable_last_write_ok{};
+    better_pose::accessory::Dynamics accessory_dynamics;
+    std::vector<std::array<double, 12>> poseable_expected_pose;
+    bool buffers_modified{};
     std::vector<std::uint8_t> saved_component;
     std::vector<std::uint8_t> saved_bone;
   };
@@ -587,6 +599,8 @@ struct Context final {
   std::vector<ExtraMesh> extra_meshes;
   std::uintptr_t extra_mesh_owner{};
   std::uint32_t extra_mesh_mapped{};
+  ULONGLONG next_extra_pose_probe_ms{};
+  bool poseable_prototype_enabled{true};
 };
 
 std::atomic<Context *> g_active{};
@@ -1050,9 +1064,9 @@ bool ReadPoseArrays(Context &context) noexcept {
   std::uintptr_t local_space_data{};
   std::uint32_t local_space_count{};
   const bool authoritative =
-      ReadArrayHeader(context, mesh + kMeshBoneSpaceTransformsOffset,
+      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
                       bone_space_data, bone_space_count) &&
-      ReadArrayHeader(context, mesh + kMeshComponentSpaceTransformsOffset,
+      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer1Offset,
                       component_space_data, component_space_count) &&
       ReadArrayHeader(context, mesh + kMeshLocalSpaceTransformsOffset,
                       local_space_data, local_space_count) &&
@@ -1594,6 +1608,10 @@ void PublishRootOffsets(Context &context, const double applied[3],
 void MaybeRefreshBoneNames(Context &context) noexcept;
 bool GetBoneNameForMesh(Context &context, std::uintptr_t mesh,
                         std::uint32_t bone_index, std::string &name) noexcept;
+bool GetBoneFNameForMesh(Context &context, std::uintptr_t mesh,
+                         std::uint32_t bone_index,
+                         std::array<std::uint8_t, 8> &fname,
+                         std::string &name) noexcept;
 bool TryAssetReferencePose(Context &context, std::uintptr_t asset) noexcept;
 bool FindReferencePose(Context &context) noexcept;
 Transformd TransformInverse(const Transformd &value) noexcept;
@@ -1605,6 +1623,15 @@ void WriteExtraMeshes(Context &context,
                       const std::vector<PackedTransform> &packed) noexcept;
 bool RestoreExtraMeshes(Context &context) noexcept;
 bool DropExtraMeshes(Context &context) noexcept;
+bool EnsurePoseableAccessory(Context &context, Context::ExtraMesh &extra) noexcept;
+bool WritePoseableAccessoryPose(Context &context,
+                                Context::ExtraMesh &extra,
+                                const std::vector<PackedTransform> &components) noexcept;
+void DestroyPoseableAccessories(Context &context) noexcept;
+void DestroyStalePoseableComponent(Context &context,
+                                   std::uintptr_t component) noexcept;
+void RestoreAccessoryVisibility(Context &context,
+                                std::uintptr_t component) noexcept;
 
 bool ReleasePoseTickHook(Context &context) noexcept {
   if (!HookReady(context.hook) || context.tick_hook.id == 0)
@@ -2792,13 +2819,8 @@ void ApplyPoseOverridesDirect(Context &context) noexcept {
     packed[bone].translation[1] += root_offset[1];
     packed[bone].translation[2] += root_offset[2];
   }
-  // Both arrays receive the component-space data on purpose. The profile labels
-  // call 0x628 "bone space", but writing the true parent-relative locals there
-  // makes the character collapse towards the ground and flicker against the
-  // dance -- this build renders from what 0x628 holds, so the label cannot be
-  // trusted and the original behaviour is the one that works. Reverted after
-  // that was measured in game; do not "fix" the semantics here without a way to
-  // verify it live.
+  // Both arrays are component-space buffers selected by the engine's read index.
+  // The legacy state member bone_space_data names buffer 0, not local transforms.
   const auto *bytes = reinterpret_cast<const std::uint8_t *>(packed.data());
   const auto byte_count = packed.size() * sizeof(PackedTransform);
   static_cast<void>(WriteBytes(context, state.component_space_data, bytes,
@@ -3289,29 +3311,30 @@ void StepMeshScan(Context &context) noexcept {
         outer_name = ObjectNameOf(context, outer);
         outer_class = ClassNameOf(context, outer);
       }
-      std::string leader_name;
+      std::string attach_name;
       if (component) {
-        std::uintptr_t leader{};
-        if (ReadPointerAt(context, object, kMeshLeaderPoseOffset, leader) && leader != 0)
-          leader_name = ObjectNameOf(context, leader);
+        std::uintptr_t attach_parent{};
+        if (ReadPointerAt(context, object, kMeshAttachParentOffset,
+                          attach_parent) && attach_parent != 0)
+          attach_name = ObjectNameOf(context, attach_parent);
       }
       std::uint32_t bones{};
       if (component) {
         std::uintptr_t data{};
         std::uint32_t count{};
-        if (ReadArrayHeader(context, object + kMeshBoneSpaceTransformsOffset, data, count) &&
+        if (ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset, data, count) &&
             data != 0 && count <= 4096)
           bones = count;
       }
       char all_line[448]{};
       std::snprintf(all_line, sizeof(all_line),
-                    "betterpose mesh scan all %llu class %s name %s outer %s [%s] bones %u leader %s",
+                    "betterpose mesh scan all %llu class %s name %s outer %s [%s] bones %u attach %s",
                     static_cast<unsigned long long>(object), class_name.c_str(),
                     ObjectNameOf(context, object).c_str(),
                     outer_name.empty() ? "-" : outer_name.c_str(),
                     outer_class.empty() ? "-" : outer_class.c_str(),
                     static_cast<unsigned>(bones),
-                    leader_name.empty() ? "-" : leader_name.c_str());
+                    attach_name.empty() ? "-" : attach_name.c_str());
       LogDiagnostic(context, all_line);
     }
     // Mesh assets carry the bind pose. The scan already walks every object, so it
@@ -3334,7 +3357,7 @@ void StepMeshScan(Context &context) noexcept {
       std::uintptr_t probe_data{};
       std::uint32_t probe_count{};
       std::uintptr_t owner{};
-      if (ReadArrayHeader(context, object + kMeshBoneSpaceTransformsOffset, probe_data,
+      if (ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset, probe_data,
                           probe_count) &&
           probe_data != 0 && probe_count != 0 && probe_count <= 4096) {
         const bool owned = Read(context, object + kObjectOuterOffset, owner) &&
@@ -3365,7 +3388,7 @@ void StepMeshScan(Context &context) noexcept {
     // 262, a hair-only component would have its own much smaller one.
     std::uintptr_t data{};
     std::uint32_t count{};
-    if (!ReadArrayHeader(context, object + kMeshBoneSpaceTransformsOffset, data,
+    if (!ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset, data,
                          count) ||
         data == 0 || count == 0 || count > 4096)
       continue;
@@ -3465,8 +3488,9 @@ void StepMeshScan(Context &context) noexcept {
   if (done) {
     context.mesh_scan_requested.store(false, std::memory_order_release);
     context.mesh_scan_running = false;
-    // Mark this pawn as scanned whether or not anything was found, so the
-    // automatic rescan fires once per character change and not in a loop.
+    // Keep the owner for diagnostics. An empty result is only a snapshot of
+    // the current object registry: modular accessories can be created after
+    // the pawn and after this scan completes.
     context.mesh_scan_owner = context.runtime.mesh;
     // Deliberately tiny: only digits and commas, so screen readers and OCR get
     // it right. "counts" are the distinct bone counts of skinned components.
@@ -3480,7 +3504,7 @@ void StepMeshScan(Context &context) noexcept {
       list = "-";
     // Build the bone-name mapping for the extra components right away, and let
     // that report replace the plain count: "map <mapped>/<total> in <n>" tells
-    // us whether the leader-pose assumption (shared bone names) actually holds.
+    // us whether the accessory mapping keys actually line up.
     // Log the outcome: the panel text is not visible to anyone reading the log, and
     // "how many mesh assets were even seen" is the number that decides whether the
     // bind-pose read is worth retrying.
@@ -3647,6 +3671,347 @@ bool GetBoneNameForMesh(Context &context, const std::uintptr_t mesh,
   return false;
 }
 
+bool GetBoneFNameForMesh(Context &context, const std::uintptr_t mesh,
+                         const std::uint32_t bone_index,
+                         std::array<std::uint8_t, 8> &fname,
+                         std::string &name) noexcept {
+  fname.fill(0);
+  name.clear();
+  if (mesh == 0)
+    return false;
+  std::array<std::uint8_t, 12> parameters{};
+  const std::int32_t index = static_cast<std::int32_t>(bone_index);
+  std::memcpy(parameters.data(), &index, sizeof(index));
+  std::array<std::uint8_t, 12> output{};
+  std::string detail;
+  if (!CallVirtualUFunction(context, mesh, kFunctionGetBoneNamePath,
+                            parameters.data(), parameters.size(), detail,
+                            output.data()))
+    return false;
+  std::memcpy(fname.data(), output.data() + 4, fname.size());
+  std::uint32_t name_id{};
+  std::memcpy(&name_id, fname.data(), sizeof(name_id));
+  if (ResolveName(context, name_id, name))
+    return true;
+  name = "Bone_" + std::to_string(bone_index);
+  return false;
+}
+
+bool EnsurePoseableAccessory(Context &context,
+                             Context::ExtraMesh &extra) noexcept {
+  if (!context.poseable_prototype_enabled || extra.asset == 0 ||
+      context.runtime.character == 0 || extra.poseable_attempted)
+    return extra.poseable_active;
+  extra.poseable_attempted = true;
+
+  // Preserve the actual socket contract, not a fuzzy match to a hair-chain
+  // bone. The observed accessories attach directly to Head/Pelvis bones.
+  std::string detail;
+  std::uintptr_t source_parent{};
+  std::array<std::uint8_t, 8> socket_parameters{}, socket_name{};
+  if (!ReadPointerAt(context, extra.object, kMeshAttachParentOffset, source_parent) ||
+      source_parent != context.runtime.mesh ||
+      !CallVirtualUFunction(context, extra.object,
+                            kFunctionSceneGetAttachSocketNamePath,
+                            socket_parameters.data(), socket_parameters.size(),
+                            detail, socket_name.data())) {
+    LogDiagnostic(context, "betterpose poseable unavailable: source body socket " + detail);
+    return false;
+  }
+  std::array<std::uint8_t, 12> index_parameters{}, index_output{};
+  std::memcpy(index_parameters.data(), socket_name.data(), socket_name.size());
+  std::int32_t socket_bone{-1};
+  if (CallVirtualUFunction(context, context.runtime.mesh, kFunctionGetBoneIndexPath,
+                           index_parameters.data(), index_parameters.size(),
+                           detail, index_output.data()))
+    std::memcpy(&socket_bone, index_output.data() + 8, sizeof(socket_bone));
+  std::array<std::uint8_t, 96> relative_parameters{};
+  if (socket_bone < 0 ||
+      static_cast<std::size_t>(socket_bone) >= context.bone_names.size() ||
+      !CallVirtualUFunction(context, extra.object, kFunctionSceneGetRelativeTransformPath,
+                            relative_parameters.data(), relative_parameters.size(), detail,
+                            extra.poseable_socket_relative.data())) {
+    LogDiagnostic(context, "betterpose poseable unavailable: socket is not a body bone " + detail);
+    return false;
+  }
+  extra.poseable_socket_bone = static_cast<std::uint32_t>(socket_bone);
+  LogDiagnostic(context, "betterpose poseable socket source=" + Hex(extra.object) +
+                         " bone=" + context.bone_names[extra.poseable_socket_bone] +
+                         " mode=rigid-bind");
+
+  std::uintptr_t poseable_class{};
+  if (!FindObjectAddressByPath(context, "/Script/Engine.PoseableMeshComponent",
+                               poseable_class, &detail)) {
+    LogDiagnostic(context, "betterpose poseable create: class lookup failed " +
+                               detail);
+    return false;
+  }
+
+  // AddComponentByClass(TSubclassOf<UActorComponent>, bManualAttachment,
+  // FTransform RelativeTransform, bDeferredFinish), ReturnValue at +120.
+  std::array<std::uint8_t, 128> add_parameters{};
+  std::memcpy(add_parameters.data(), &poseable_class, sizeof(poseable_class));
+  add_parameters[8] = 1;
+  PackedTransform identity{};
+  identity.rotation[3] = 1.0;
+  identity.scale[0] = identity.scale[1] = identity.scale[2] = 1.0;
+  std::memcpy(add_parameters.data() + 16, &identity, sizeof(identity));
+  std::array<std::uint8_t, 128> add_output{};
+  if (!CallVirtualUFunction(
+          context, context.runtime.character,
+          kFunctionActorAddComponentByClassPath, add_parameters.data(),
+          add_parameters.size(), detail, add_output.data())) {
+    LogDiagnostic(context, "betterpose poseable create: AddComponentByClass failed " +
+                               detail);
+    return false;
+  }
+  std::memcpy(&extra.poseable_component, add_output.data() + 120,
+              sizeof(extra.poseable_component));
+  if (extra.poseable_component == 0) {
+    LogDiagnostic(context, "betterpose poseable create: returned null");
+    return false;
+  }
+
+  const std::array<std::uint8_t, 8> asset_parameters = [&] {
+    std::array<std::uint8_t, 8> value{};
+    std::memcpy(value.data(), &extra.asset, sizeof(extra.asset));
+    return value;
+  }();
+  if (!CallVirtualUFunction(context, extra.poseable_component,
+                            kFunctionSetSkeletalMeshAssetPath,
+                            asset_parameters.data(), asset_parameters.size(),
+                            detail)) {
+    LogDiagnostic(context, "betterpose poseable create: SetSkeletalMeshAsset failed " +
+                               detail);
+    return false;
+  }
+
+  // Attach without a socket: each pose update explicitly composes the body
+  // socket transform with the authored offset. Engine scene attachment ticks
+  // otherwise lag behind the body buffers overwritten by BetterPose.
+  std::array<std::uint8_t, 21> attach_parameters{};
+  std::memcpy(attach_parameters.data(), &context.runtime.mesh,
+              sizeof(context.runtime.mesh));
+  std::array<std::uint8_t, 21> attach_output{};
+  if (!CallVirtualUFunction(context, extra.poseable_component,
+                            kFunctionSceneAttachComponentPath,
+                            attach_parameters.data(), attach_parameters.size(),
+                            detail, attach_output.data()) ||
+      attach_output[20] == 0) {
+    LogDiagnostic(context, "betterpose poseable create: attach failed " + detail);
+    return false;
+  }
+
+  extra.poseable_active = true;
+  char message[256]{};
+  std::snprintf(message, sizeof(message),
+                "betterpose poseable created source=%llX component=%llX "
+                "asset=%llX bones=%u",
+                static_cast<unsigned long long>(extra.object),
+                static_cast<unsigned long long>(extra.poseable_component),
+                static_cast<unsigned long long>(extra.asset),
+                static_cast<unsigned>(extra.bone_count));
+  LogDiagnostic(context, message);
+  return true;
+}
+
+bool WritePoseableAccessoryPose(
+    Context &context, Context::ExtraMesh &extra,
+    const std::vector<PackedTransform> &components) noexcept {
+  if (!extra.poseable_active || extra.poseable_component == 0 ||
+      components.size() != extra.bone_count ||
+      extra.bone_fnames.size() != extra.bone_count)
+    return false;
+  bool all_ok = true;
+  for (std::uint32_t bone{}; bone != extra.bone_count; ++bone) {
+    std::array<std::uint8_t, 113> parameters{};
+    std::memcpy(parameters.data(), extra.bone_fnames[bone].data(), 8);
+    std::memcpy(parameters.data() + 16, &components[bone],
+                sizeof(PackedTransform));
+    // EBoneSpaces::ComponentSpace in this build (WorldSpace=0,
+    // ComponentSpace=1; there is no LocalSpace enum in this API).
+    parameters[112] = 1;
+    std::string detail;
+    if (!CallVirtualUFunction(context, extra.poseable_component,
+                              kFunctionPoseableSetBoneTransformByNamePath,
+                              parameters.data(), parameters.size(), detail))
+      all_ok = false;
+  }
+  return all_ok;
+}
+
+// Component placement remains socket-driven; the optional strand only changes
+// the replacement's own component-space bones.
+bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
+                            const std::vector<PackedTransform> &body_pose) noexcept {
+  if (extra.poseable_socket_bone >= body_pose.size())
+    return false;
+  PackedTransform authored{};
+  std::memcpy(&authored, extra.poseable_socket_relative.data(), sizeof(authored));
+  PackedTransform placement{};
+  PackTransform(TransformMultiply(UnpackTransform(body_pose[extra.poseable_socket_bone]),
+                                  UnpackTransform(authored)), placement);
+  std::memcpy(extra.poseable_expected_relative.data(), &placement, sizeof(placement));
+  std::array<std::uint8_t, 369> parameters{};
+  static_assert(parameters.size() <= kMaximumUFunctionParameterBytes);
+  std::memcpy(parameters.data(), &placement, sizeof(placement));
+  std::string detail;
+  if (!CallVirtualUFunction(context, extra.poseable_component,
+                            kFunctionSceneSetRelativeTransformPath,
+                            parameters.data(), parameters.size(), detail))
+    return false;
+  const bool was_dynamic = extra.accessory_dynamics.Moving();
+  const bool strand_enabled = extra.accessory_dynamics.DrivenBones() != 0;
+  const std::vector<std::array<double, 12>>* desired_pose = &extra.bind_world;
+  if (strand_enabled) {
+    std::array<std::uint8_t, 96> world_query{};
+    PackedTransform component_world{};
+    const bool world_ok = CallVirtualUFunction(
+        context, extra.poseable_component, kFunctionSceneGetComponentTransformPath,
+        world_query.data(), world_query.size(), detail, &component_world);
+    const auto& s = component_world.scale;
+    const bool uniform_scale = std::isfinite(s[0]) && s[0] > 1e-6 &&
+                               std::abs(s[0]-s[1]) < 1e-5 && std::abs(s[0]-s[2]) < 1e-5;
+    if (world_ok && uniform_scale) {
+      using namespace better_pose::accessory;
+      Frame frame{{component_world.translation[0],component_world.translation[1],component_world.translation[2]},
+                  {component_world.rotation[0],component_world.rotation[1],component_world.rotation[2],component_world.rotation[3]},s[0]};
+      const Frame placement_frame{
+          {placement.translation[0],placement.translation[1],placement.translation[2]},
+          {placement.rotation[0],placement.rotation[1],placement.rotation[2],placement.rotation[3]},placement.scale[0]};
+      const Frame body_world = Compose(frame, Inverse(placement_frame));
+      const auto capsules = extra.accessory_dynamics.BodyCapsules(body_pose.size(),
+          [&](int bone) { const auto& p=body_pose[bone].translation; return Vec{p[0],p[1],p[2]}; }, body_world);
+      desired_pose = &extra.accessory_dynamics.Sample(
+          frame, context.motion_seconds.load(std::memory_order_acquire),
+          context.motion_seek_serial.load(std::memory_order_acquire),
+          context.motion_loaded.load(std::memory_order_acquire) &&
+              context.motion_playing.load(std::memory_order_acquire), capsules);
+    } else {
+      extra.accessory_dynamics.Reset();
+    }
+  } else if (was_dynamic) {
+    extra.accessory_dynamics.Reset();
+  }
+  if (!extra.poseable_bind_written || strand_enabled || was_dynamic) {
+    if (extra.bind_world.size() != extra.bone_count)
+      return false;
+    std::vector<PackedTransform> submitted_pose(extra.bone_count);
+    for (std::size_t bone{}; bone != submitted_pose.size(); ++bone)
+      std::memcpy(&submitted_pose[bone], (*desired_pose)[bone].data(), sizeof(PackedTransform));
+    if (!WritePoseableAccessoryPose(context, extra, submitted_pose))
+      return false;
+    extra.poseable_expected_pose = *desired_pose;
+    for (auto &probe : extra.pose_probes) {
+      probe.expected_component = (*desired_pose)[probe.bone];
+      probe.has_expected = true;
+    }
+    extra.poseable_bind_written = true;
+  }
+  if (!extra.poseable_original_hidden_saved) {
+    const std::array<std::uint8_t, 2> hidden{0, 0};
+    if (!CallVirtualUFunction(context, extra.object, kFunctionSceneSetVisibilityPath,
+                              hidden.data(), hidden.size(), detail))
+      return false;
+    extra.poseable_original_hidden = true;
+    extra.poseable_original_hidden_saved = true;
+  }
+  return true;
+}
+
+void DestroyPoseableAccessories(Context &context) noexcept {
+  for (auto &extra : context.extra_meshes) {
+    if (extra.poseable_component == 0)
+      continue;
+    std::string detail;
+    if (extra.poseable_original_hidden_saved) {
+      const std::array<std::uint8_t, 2> visible_parameters{1, 1};
+      static_cast<void>(CallVirtualUFunction(
+          context, extra.object, kFunctionSceneSetVisibilityPath,
+          visible_parameters.data(), visible_parameters.size(), detail));
+    }
+    // K2_DestroyComponent(Object) permits the component itself or its owner.
+    // A null Object silently refuses destruction for these actor-owned meshes.
+    const auto destroy_caller = extra.poseable_component;
+    static_cast<void>(CallVirtualUFunction(
+        context, extra.poseable_component,
+        kFunctionActorComponentDestroyPath, &destroy_caller,
+        sizeof(destroy_caller), detail));
+    LogDiagnostic(context, "betterpose poseable destroy self=" + Hex(destroy_caller) +
+                           " result=" + detail);
+    extra.poseable_component = 0;
+    extra.poseable_active = false;
+    extra.poseable_original_hidden_saved = false;
+    extra.poseable_attempted = false;
+    extra.poseable_bind_written = false;
+    extra.poseable_last_write_ok = false;
+    extra.accessory_dynamics.Reset();
+    extra.poseable_expected_pose.clear();
+  }
+}
+
+void DestroyStalePoseableComponent(Context &context,
+                                   const std::uintptr_t component) noexcept {
+  if (component == 0)
+    return;
+  std::string detail;
+  const bool called = CallVirtualUFunction(
+      context, component, kFunctionActorComponentDestroyPath,
+      &component, sizeof(component), detail);
+  LogDiagnostic(context, "betterpose poseable stale destroy self=" + Hex(component) +
+                           " called=" + (called ? "1" : "0") + " result=" + detail);
+}
+
+void RestoreAccessoryVisibility(Context &context,
+                                const std::uintptr_t component) noexcept {
+  if (component == 0)
+    return;
+  const std::array<std::uint8_t, 2> parameters{1, 1};
+  std::string detail;
+  static_cast<void>(CallVirtualUFunction(
+      context, component, kFunctionSceneSetVisibilityPath,
+      parameters.data(), parameters.size(), detail));
+}
+
+bool ReadBoneTransformForMesh(Context &context, const std::uintptr_t mesh,
+                              const std::uint32_t bone_index,
+                              PackedTransform &transform) noexcept {
+  transform = {};
+  if (mesh == 0)
+    return false;
+  std::array<std::uint8_t, 12> name_parameters{};
+  const std::int32_t index = static_cast<std::int32_t>(bone_index);
+  std::memcpy(name_parameters.data(), &index, sizeof(index));
+  std::array<std::uint8_t, 12> name_output{};
+  std::string detail;
+  if (!CallVirtualUFunction(context, mesh, kFunctionGetBoneNamePath,
+                            name_parameters.data(), name_parameters.size(),
+                            detail, name_output.data()))
+    return false;
+
+  // GetBoneTransform takes an FName and ERelativeTransformSpace. Space 2 is
+  // component space, matching the array that the plugin currently writes.
+  std::array<std::uint8_t, 112> parameters{};
+  std::memcpy(parameters.data(), name_output.data() + 4, sizeof(std::uint64_t));
+  parameters[8] = 2;
+  std::array<std::uint8_t, 112> output{};
+  if (!CallVirtualUFunction(context, mesh, kFunctionGetBoneTransformPath,
+                            parameters.data(), parameters.size(), detail,
+                            output.data()))
+    return false;
+  // UHT places the FTransform ReturnValue after the FName and enum inputs:
+  // FName (8) + enum/padding (8), then the 0x60-byte transform.
+  constexpr std::size_t kReturnValueOffset = 0x10;
+  std::memcpy(&transform, output.data() + kReturnValueOffset,
+              sizeof(transform));
+  const double norm =
+      std::sqrt(transform.rotation[0] * transform.rotation[0] +
+                transform.rotation[1] * transform.rotation[1] +
+                transform.rotation[2] * transform.rotation[2] +
+                transform.rotation[3] * transform.rotation[3]);
+  return norm > 0.5 && norm < 1.5;
+}
+
 bool GetBoneName(Context &context, const std::uint32_t bone_index,
                  std::string &name) noexcept {
   return GetBoneNameForMesh(context, context.runtime.mesh, bone_index, name);
@@ -3657,10 +4022,9 @@ bool GetBoneName(Context &context, const std::uint32_t bone_index,
 //
 // Discovered by StepMeshScan (owner == pawn, class name contains
 // "MeshComponent", readable bone array whose length differs from the body's).
-// Each of their bones is mapped to a body bone *by name*, which is exactly how
-// the engine's leader pose maps them, so copying the body's component transform
-// for the matching bone reproduces what the game does by itself -- it just never
-// gets the chance to, because our writes bypass the engine's refresh.
+// Each of their bones is mapped to a body bone by name, bind pose, or hierarchy.
+// The attach parent only establishes scene-component placement; it does not
+// establish a leader-pose relationship.
 // ---------------------------------------------------------------------------
 
 bool ReadBoneTranslations(Context &context, const std::uintptr_t array,
@@ -4312,6 +4676,168 @@ void LogDiagnostic(Context &context, const std::string &message) noexcept {
                     anomaly::sdk::StringView(message));
 }
 
+struct PoseDifference {
+  double translation_cm{-1.0};
+  double rotation_deg{-1.0};
+  double scale{-1.0};
+};
+
+PoseDifference ComparePoseSample(const PackedTransform &value,
+                                 const PackedTransform *reference) noexcept {
+  PoseDifference result;
+  if (reference == nullptr)
+    return result;
+  double translation_squared{}, scale_squared{};
+  double dot{}, value_norm{}, reference_norm{};
+  for (std::size_t axis{}; axis != 3; ++axis) {
+    const double t = value.translation[axis] - reference->translation[axis];
+    const double s = value.scale[axis] - reference->scale[axis];
+    translation_squared += t * t;
+    scale_squared += s * s;
+  }
+  for (std::size_t axis{}; axis != 4; ++axis) {
+    dot += value.rotation[axis] * reference->rotation[axis];
+    value_norm += value.rotation[axis] * value.rotation[axis];
+    reference_norm += reference->rotation[axis] * reference->rotation[axis];
+  }
+  result.translation_cm = std::sqrt(translation_squared);
+  result.scale = std::sqrt(scale_squared);
+  const double norm = std::sqrt(value_norm * reference_norm);
+  if (norm > 0.0 && std::isfinite(norm)) {
+    const double cosine = (std::min)(1.0, std::abs(dot) / norm);
+    result.rotation_deg = 2.0 * std::acos(cosine) * kCameraRadiansToDegrees;
+  }
+  return result;
+}
+
+// Samples the existing game-update boundary, not the rendering thread. The
+// before-write sample can reveal changes since the last body-tick/update write;
+// the after-write sample checks the two named non-root bones immediately.
+void TraceExtraMeshPose(Context &context, const char *phase) noexcept {
+  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
+  if (context.extra_mesh_owner != context.runtime.mesh)
+    return;
+  for (const auto &extra : context.extra_meshes) {
+    if (extra.pose_probes.empty())
+      continue;
+    if (extra.poseable_active) {
+      PackedTransform expected_relative{}, actual_relative{};
+      std::memcpy(&expected_relative, extra.poseable_expected_relative.data(),
+                  sizeof(expected_relative));
+      std::array<std::uint8_t, 96> query{};
+      std::string detail;
+      const bool relative_ok = CallVirtualUFunction(
+          context, extra.poseable_component, kFunctionSceneGetRelativeTransformPath,
+          query.data(), query.size(), detail, &actual_relative);
+      const auto relative_error = ComparePoseSample(
+          actual_relative, relative_ok && extra.poseable_last_write_ok ? &expected_relative : nullptr);
+      std::uint32_t read_count{};
+      double max_cm{}, max_deg{}, max_scale{};
+      for (std::uint32_t bone{}; bone != extra.bone_count; ++bone) {
+        PackedTransform actual{}, expected{};
+        if (!ReadBoneTransformForMesh(context, extra.poseable_component, bone, actual))
+          continue;
+        if (extra.poseable_expected_pose.size() != extra.bone_count)
+          continue;
+        std::memcpy(&expected, extra.poseable_expected_pose[bone].data(), sizeof(expected));
+        const auto error = ComparePoseSample(actual, &expected);
+        ++read_count;
+        max_cm = (std::max)(max_cm, error.translation_cm);
+        max_deg = (std::max)(max_deg, error.rotation_deg);
+        max_scale = (std::max)(max_scale, error.scale);
+      }
+      char message[512]{};
+      std::snprintf(message, sizeof(message),
+                    "betterpose poseable verify component=%llX phase=%s write=%d "
+                    "placement=%.4fcm/%.4fdeg/%.4fscale "
+                    "bones=%u/%u pose_max=%.4fcm/%.4fdeg/%.4fscale "
+                    "relative_t=%.3f,%.3f,%.3f dynamics=%d driven_bones=%zu length_error=%.6fcm",
+                    static_cast<unsigned long long>(extra.poseable_component), phase,
+                    extra.poseable_last_write_ok ? 1 : 0,
+                    relative_error.translation_cm, relative_error.rotation_deg,
+                    relative_error.scale, read_count, extra.bone_count,
+                    max_cm, max_deg, max_scale, actual_relative.translation[0],
+                    actual_relative.translation[1], actual_relative.translation[2],
+                    extra.accessory_dynamics.Moving() ? 1 : 0,
+                    extra.accessory_dynamics.DrivenBones(),
+                    extra.accessory_dynamics.LengthError());
+      LogDiagnostic(context, message);
+      continue;
+    }
+    const std::array<std::uint32_t, 3> offsets{
+        kMeshComponentSpaceBuffer0Offset, kMeshComponentSpaceBuffer1Offset,
+        kMeshLocalSpaceTransformsOffset};
+    std::array<std::uintptr_t, 3> arrays{};
+    std::array<std::uint32_t, 3> counts{};
+    std::array<bool, 3> readable{};
+    for (std::size_t slot{}; slot != arrays.size(); ++slot) {
+      readable[slot] = ReadArrayHeader(context, extra.object + offsets[slot],
+                                        arrays[slot], counts[slot]) &&
+                       arrays[slot] != 0 && counts[slot] == extra.bone_count;
+    }
+    char header[320]{};
+    std::snprintf(header, sizeof(header),
+                  "betterpose pose buffers %llX phase=%s "
+                  "buffer0=%llX/%u buffer1=%llX/%u local=%llX/%u "
+                  "write_targets=%llX,%llX",
+                  static_cast<unsigned long long>(extra.object), phase,
+                  static_cast<unsigned long long>(arrays[0]), counts[0],
+                  static_cast<unsigned long long>(arrays[1]), counts[1],
+                  static_cast<unsigned long long>(arrays[2]), counts[2],
+                  static_cast<unsigned long long>(extra.bone_space_data),
+                  static_cast<unsigned long long>(extra.component_space_data));
+    LogDiagnostic(context, header);
+    for (const auto &probe : extra.pose_probes) {
+      PackedTransform expected{}, last0{}, api{};
+      std::memcpy(&expected, probe.expected_component.data(), sizeof(expected));
+      std::memcpy(&last0, probe.last_buffer0.data(), sizeof(last0));
+      const bool api_ok =
+          ReadBoneTransformForMesh(context, extra.object, probe.bone, api);
+      const auto log_value = [&](const char *source, const bool ok,
+                                 const PackedTransform &value,
+                                 const PackedTransform *last_written) {
+        const auto desired_delta = ComparePoseSample(
+            value, ok && probe.has_expected ? &expected : nullptr);
+        const auto api_delta = ComparePoseSample(value, ok && api_ok ? &api : nullptr);
+        const auto last_delta = ComparePoseSample(value, ok ? last_written : nullptr);
+        char line[640]{};
+        std::snprintf(line, sizeof(line),
+                      "betterpose pose sample %llX phase=%s bone=%u name=%s "
+                      "source=%s ok=%d expected=%d writes=%d/%d "
+                      "t=%.3f,%.3f,%.3f q=%.5f,%.5f,%.5f,%.5f "
+                      "s=%.4f,%.4f,%.4f desired=%.4f/%.4f/%.4f "
+                      "api=%.4f/%.4f/%.4f last=%.4f/%.4f/%.4f",
+                      static_cast<unsigned long long>(extra.object), phase,
+                      probe.bone, probe.name.c_str(), source, ok ? 1 : 0,
+                      probe.has_expected ? 1 : 0, probe.write0_ok ? 1 : 0,
+                      probe.write1_ok ? 1 : 0, value.translation[0],
+                      value.translation[1], value.translation[2], value.rotation[0],
+                      value.rotation[1], value.rotation[2], value.rotation[3],
+                      value.scale[0], value.scale[1], value.scale[2],
+                      desired_delta.translation_cm, desired_delta.rotation_deg,
+                      desired_delta.scale, api_delta.translation_cm,
+                      api_delta.rotation_deg, api_delta.scale,
+                      last_delta.translation_cm, last_delta.rotation_deg,
+                      last_delta.scale);
+        LogDiagnostic(context, line);
+      };
+      log_value("api", api_ok, api, nullptr);
+      const std::array<const char *, 3> labels{"buffer0", "buffer1", "local"};
+      for (std::size_t slot{}; slot != arrays.size(); ++slot) {
+        PackedTransform value{};
+        const bool ok = readable[slot] &&
+                        Read(context, arrays[slot] + probe.bone * kTransformSize, value);
+        const PackedTransform *last_written = nullptr;
+        if (probe.has_expected && slot == 0 && probe.write0_ok)
+          last_written = &last0;
+        else if (probe.has_expected && slot == 1 && probe.write1_ok)
+          last_written = &expected;
+        log_value(labels[slot], ok, value, last_written);
+      }
+    }
+  }
+}
+
 void ResyncExtraMeshes(Context &context) noexcept {
   // Log the *state* even when this returns early: a silent no-op is what made the
   // previous test unreadable ("还是没有" told us nothing about which precondition
@@ -4322,20 +4848,19 @@ void ResyncExtraMeshes(Context &context) noexcept {
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
   if (context.extra_mesh_owner != context.runtime.mesh)
     return;
-  // Detection only. Everything that used to be tried here is off limits, measured
-  // twice and fatal both times (the hair was posed sideways, then the game
-  // crashed):
+  // Detection only. The old leader-pose setter experiment is off limits: it was
+  // measured twice and posed the hair sideways before crashing the game.
   //   * SetMasterPoseComponent / SetLeaderPoseComponent, with force=true and
   //     again with the same leader and force=false -- re-asserting the leader
   //     re-evaluates the binding instead of merely refreshing the copy, i.e. it
   //     makes a persistent change to game state;
-  //   * nudging the follower's animation mode (away -> back, every frame or
+  //   * nudging an accessory's animation mode (away -> back, every frame or
   //     every 30), holding it in Custom, applying the pose before and after the
   //     tick, writing the follower's own two buffers, writing the body's true
   //     locals, writing the (empty) cached transform pair. None of them made a
-  //     master-posed hair mesh follow, and two of them crashed the game.
+  //     independently animated accessory follow, and two of them crashed the game.
   // The mode byte is left exactly as the game set it. What is left is to count how
-  // many followers really hold the body pointer.
+  // many accessory components still have an attach parent.
   std::uint32_t attached{};
   for (const auto object : context.extra_targets) {
     std::uintptr_t parent{};
@@ -4365,37 +4890,6 @@ void ResyncExtraMeshes(Context &context) noexcept {
                   static_cast<unsigned>(context.extra_drop_count),
                   static_cast<unsigned>(attached));
     LogDiagnostic(context, state);
-  }
-  // Does anything drive the extra components' own skeletons? Their CPU bone buffer is the one place
-  // an outside writer could show up at all, and the two cases the earlier round could not tell apart
-  // look completely different here: a component whose own AnimBP feeds it changes every frame, while
-  // one that nothing feeds stays bit-identical while the body dances. Read-only, on the same two
-  // second gate, and only for the components the scan flagged (the modular hair and ribbon
-  // components: 39 and 38 bones against the body's 253).
-  for (const auto &candidate : context.mesh_scan_candidates) {
-    std::uintptr_t data{};
-    std::uint32_t count{};
-    if (!ReadArrayHeader(context, candidate.first + kMeshBoneSpaceTransformsOffset, data, count) ||
-        data == 0 || count == 0 || count > 4096)
-      continue;
-    double translation_sum = 0.0;
-    double rotation_sum = 0.0;
-    PackedTransform packed{};
-    for (std::uint32_t index{}; index != count; ++index) {
-      if (!Read(context, data + index * sizeof(PackedTransform), packed))
-        break;
-      translation_sum += std::abs(packed.translation[0]) +
-                         std::abs(packed.translation[1]) +
-                         std::abs(packed.translation[2]);
-      rotation_sum += std::abs(packed.rotation[0]) + std::abs(packed.rotation[1]) +
-                      std::abs(packed.rotation[2]) + std::abs(packed.rotation[3]);
-    }
-    char pose[160]{};
-    std::snprintf(pose, sizeof(pose),
-                  "betterpose attach pose %llu bones %u translation %.1f rotation %.3f",
-                  static_cast<unsigned long long>(candidate.first),
-                  static_cast<unsigned>(count), translation_sum, rotation_sum);
-    LogDiagnostic(context, pose);
   }
 }
 
@@ -4439,14 +4933,22 @@ void BuildExtraMeshes(Context &context) noexcept {
     std::uint32_t component_count{};
     std::uintptr_t bone_data{};
     std::uint32_t bone_array_count{};
-    if (!ReadArrayHeader(context, object + kMeshComponentSpaceTransformsOffset,
+    if (!ReadArrayHeader(context, object + kMeshComponentSpaceBuffer1Offset,
                          component_data, component_count) ||
-        !ReadArrayHeader(context, object + kMeshBoneSpaceTransformsOffset,
+        !ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset,
                          bone_data, bone_array_count))
       continue;
     if (component_data == 0 || bone_data == 0 || component_count < bone_count ||
         bone_array_count < bone_count)
       continue;
+    // Ignore poseable components created by an earlier plugin generation. They
+    // are additive prototypes, not source accessories for a new mapping pass.
+    const std::string candidate_class = ClassNameOf(context, object);
+    if (candidate_class == "PoseableMeshComponent") {
+      DestroyStalePoseableComponent(context, object);
+      continue;
+    }
+    RestoreAccessoryVisibility(context, object);
     // Layout sanity check before we ever save or write this component: the first
     // transform must start with a plausible unit quaternion. It costs one read
     // and it is what keeps a mis-identified object from being scribbled on.
@@ -4462,6 +4964,7 @@ void BuildExtraMeshes(Context &context) noexcept {
       continue;
     extra.component_space_data = component_data;
     extra.bone_space_data = bone_data;
+    extra.bone_fnames.assign(bone_count, std::array<std::uint8_t, 8>{});
     // Save the untouched buffers so unloading can put them back: without this
     // the components keep our last written pose and only a relog fixes them.
     const auto byte_count =
@@ -4483,10 +4986,14 @@ void BuildExtraMeshes(Context &context) noexcept {
       continue;
     extra.bone_map.assign(bone_count, (std::numeric_limits<std::uint32_t>::max)());
     std::string first_name;
+    std::vector<std::string> extra_names(bone_count);
     for (std::uint32_t bone{}; bone != bone_count; ++bone) {
       std::string name;
-      if (!GetBoneNameForMesh(context, object, bone, name) || name.empty())
+      if (!GetBoneFNameForMesh(context, object, bone, extra.bone_fnames[bone],
+                               name) ||
+          name.empty())
         continue;
+      extra_names[bone] = name;
       if (bone == 0)
         first_name = name;
       ++bone_total;
@@ -4584,6 +5091,7 @@ void BuildExtraMeshes(Context &context) noexcept {
       extra_asset = asset_candidate;
       break;
     }
+    extra.asset = extra_asset;
     if (extra_asset != 0 && !context.ref_locals.empty() &&
         context.bone_parents.size() == context.ref_locals.size()) {
       std::vector<std::array<double, 12>> extra_locals;
@@ -4761,6 +5269,27 @@ void BuildExtraMeshes(Context &context) noexcept {
       position_total += position_mapped;
       mapped_total = mapped_total - name_mapped + position_mapped;
     }
+    // Diagnostic samples only; these names do not change the driving map.
+    const auto add_probe = [&](std::string_view name) {
+      const auto found = std::find(extra_names.begin(), extra_names.end(), name);
+      if (found == extra_names.end())
+        return false;
+      Context::ExtraMesh::PoseProbe probe;
+      probe.bone = static_cast<std::uint32_t>(found - extra_names.begin());
+      probe.name = *found;
+      extra.pose_probes.push_back(std::move(probe));
+      return true;
+    };
+    if (!add_probe("pelvis_adjust"))
+      static_cast<void>(add_probe("head_adjust"));
+    if (!add_probe("Bone_hairBR00"))
+      static_cast<void>(add_probe("B_ribbon_00"));
+    if (extra.used_hierarchy) {
+      const bool configured = extra.accessory_dynamics.Configure(extra.bind_world, extra.parents, extra_names);
+      LogDiagnostic(context, "betterpose accessory dynamics source=" + Hex(extra.object) +
+                             " rules=body-secondary configured=" + std::to_string(configured) + " driven_bones=" +
+                             std::to_string(extra.accessory_dynamics.DrivenBones()));
+    }
     built.push_back(std::move(extra));
   }
   {
@@ -4798,6 +5327,30 @@ void WriteExtraMeshes(Context &context,
   for (auto &extra : context.extra_meshes) {
     if (extra.component_space_data == 0 || extra.bone_count == 0)
       continue;
+    if (context.poseable_prototype_enabled && extra.used_hierarchy) {
+      const bool ready = EnsurePoseableAccessory(context, extra);
+      if (ready && !extra.accessory_dynamics.CollisionsConfigured() &&
+          extra.poseable_socket_bone < body_bind.size()) {
+        std::vector<better_pose::accessory::Bone> collision_bind(body_bind.size());
+        for (std::size_t i{}; i != body_bind.size(); ++i) {
+          PackedTransform bone{};
+          PackTransform(body_bind[i], bone);
+          std::memcpy(collision_bind[i].data(), &bone, sizeof(bone));
+        }
+        PackedTransform authored{}, bind_placement{};
+        std::memcpy(&authored, extra.poseable_socket_relative.data(), sizeof(authored));
+        PackTransform(TransformMultiply(body_bind[extra.poseable_socket_bone],
+                                        UnpackTransform(authored)), bind_placement);
+        better_pose::accessory::Bone placement_raw{};
+        std::memcpy(placement_raw.data(), &bind_placement, sizeof(bind_placement));
+        extra.accessory_dynamics.ConfigureCollisions(collision_bind, context.bone_names,
+            better_pose::accessory::Transform(placement_raw), context.bone_names[extra.poseable_socket_bone]);
+      }
+      extra.poseable_last_write_ok = ready && DrivePoseableSocketPose(context, extra, packed);
+      // The prototype owns the replacement only. Do not deform the hidden
+      // source as well, or reapply a second body delta to individual hair bones.
+      continue;
+    }
     if (extra.used_hierarchy && extra.bind_locals.size() == extra.bone_count &&
         extra.parents.size() == extra.bone_count &&
         extra.bind_world.size() == extra.bone_count &&
@@ -4809,11 +5362,10 @@ void WriteExtraMeshes(Context &context,
       // its own body bone, so the hair follows the head rather than the whole mesh
       // following whichever attach bone had the most descendants.
       out.assign(extra.bone_count, PackedTransform{});
-      // Bone space gets its own array: writing the component transform into BOTH
-      // buffers (what this code did until now) leaves the local buffer full of
-      // component data, so anything that recomputes components from locals -- the
-      // engine, a skin-cache refresh -- reads garbage and nothing moves. Data only:
-      // no calls into the game, so this cannot crash it.
+       // Both destinations are component-space buffers. The engine selects one
+       // with CurrentReadIndex, so both must receive the same component-space
+       // pose. locals_out remains a diagnostic reference for the separately
+       // authored hierarchy, but it is not written into a render buffer.
       std::vector<PackedTransform> locals_out(extra.bone_count);
       std::vector<Transformd> world(extra.bone_count);
       for (std::uint32_t bone{}; bone != extra.bone_count; ++bone) {
@@ -4873,50 +5425,22 @@ void WriteExtraMeshes(Context &context,
           PackTransform(want, locals_out[bone]);
       }
       extra.lag_ready = true;
-      // Did anything overwrite what we wrote last frame? Read the first bone back
-      // before writing over it: if the game re-evaluated this mesh after us, the dot
-      // of the two rotations will not be +/-1.
-      std::array<double, 4> previous{};
-      bool overwritten = false;
-      if (extra.last_written_valid && !out.empty() &&
-          Read(context, extra.component_space_data, previous)) {
-        double dot = 0.0;
-        for (std::size_t k{}; k != 4; ++k)
-          dot += previous[k] * extra.last_written[k];
-        overwritten = std::fabs(std::fabs(dot) - 1.0) > 0.01;
-      }
-      if (!out.empty()) {
-        for (std::size_t k{}; k != 4; ++k)
-          extra.last_written[k] = out[0].rotation[k];
-        extra.last_written_valid = true;
-      }
+      extra.buffers_modified = true;
       const auto *mesh_bytes = reinterpret_cast<const std::uint8_t *>(out.data());
       const auto mesh_size = out.size() * sizeof(PackedTransform);
-      const bool wrote_component = WriteBytes(context, extra.component_space_data,
-                                              mesh_bytes, mesh_size);      const auto *local_bytes =
-          reinterpret_cast<const std::uint8_t *>(locals_out.data());
-      static_cast<void>(WriteBytes(context, extra.bone_space_data, local_bytes,
-                                   mesh_size));
-      // The body needs this flag for the renderer to pick the buffer up, and the
-      // extra components are the same class, so they need it too: without it the
-      // write lands in memory and nothing on screen changes.
-      const bool refreshed = ForceMeshObjectUpdate(context, extra.object);
-      if (++extra.log_tick >= 240) {
-        extra.log_tick = 0;
-        std::uint32_t attached{};
-        for (std::uint32_t bone{}; bone != extra.bone_count; ++bone) {
-          if (extra.bone_map[bone] != (std::numeric_limits<std::uint32_t>::max)())
-            ++attached;
-        }
-        char message[256]{};
-        std::snprintf(message, sizeof(message),
-                      "betterpose extra mesh write %llX bones %u attached %u "
-                      "wrote %d refreshed %d overwritten %d",
-                      static_cast<unsigned long long>(extra.object),
-                      static_cast<unsigned>(extra.bone_count),
-                      static_cast<unsigned>(attached), wrote_component ? 1 : 0,
-                      refreshed ? 1 : 0, overwritten ? 1 : 0);
-        LogDiagnostic(context, message);
+      const bool wrote_component =
+          WriteBytes(context, extra.component_space_data, mesh_bytes, mesh_size);
+       const bool wrote_bone =
+           WriteBytes(context, extra.bone_space_data, mesh_bytes, mesh_size);
+       static_cast<void>(ForceMeshObjectUpdate(context, extra.object));
+      for (auto &probe : extra.pose_probes) {
+        std::memcpy(probe.expected_component.data(), &out[probe.bone],
+                    sizeof(PackedTransform));
+         std::memcpy(probe.last_buffer0.data(), &out[probe.bone],
+                     sizeof(PackedTransform));
+        probe.write0_ok = wrote_bone;
+        probe.write1_ok = wrote_component;
+        probe.has_expected = true;
       }
       continue;
     }
@@ -4939,6 +5463,7 @@ void WriteExtraMeshes(Context &context,
     }
     const auto *bytes = reinterpret_cast<const std::uint8_t *>(out.data());
     const auto byte_count = out.size() * sizeof(PackedTransform);
+    extra.buffers_modified = true;
     static_cast<void>(
         WriteBytes(context, extra.component_space_data, bytes, byte_count));
     static_cast<void>(
@@ -4951,15 +5476,22 @@ void WriteExtraMeshes(Context &context,
 
 bool RestoreExtraMeshes(Context &context) noexcept {
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
+  DestroyPoseableAccessories(context);
   for (auto &extra : context.extra_meshes) {
-    if (extra.component_space_data != 0 && !extra.saved_component.empty())
+    if (extra.buffers_modified && extra.component_space_data != 0 && !extra.saved_component.empty())
       static_cast<void>(WriteBytes(context, extra.component_space_data,
                                    extra.saved_component.data(),
                                    extra.saved_component.size()));
-    if (extra.bone_space_data != 0 && !extra.saved_bone.empty())
+    if (extra.buffers_modified && extra.bone_space_data != 0 && !extra.saved_bone.empty())
       static_cast<void>(WriteBytes(context, extra.bone_space_data,
                                    extra.saved_bone.data(),
                                    extra.saved_bone.size()));
+    extra.buffers_modified = false;
+    for (auto &probe : extra.pose_probes) {
+      probe.has_expected = false;
+      probe.write0_ok = false;
+      probe.write1_ok = false;
+    }
   }
   return true;
 }
@@ -6684,9 +7216,14 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
       !context.mesh_scan_running &&
       !context.mesh_scan_requested.load(std::memory_order_acquire) &&
       !context.attach_scan_requested.load(std::memory_order_acquire)) {
-    if (context.mesh_scan_owner != context.runtime.mesh)
+    const auto now = GetTickCount64();
+    const bool empty_scan = context.mesh_scan_candidates.empty();
+    const bool retry_empty =
+        empty_scan && now >= context.next_mesh_scan_retry_ms;
+    if (context.mesh_scan_owner != context.runtime.mesh || retry_empty) {
       context.mesh_scan_requested.store(true, std::memory_order_release);
-    else if (context.attach_parent_offset == 0)
+      context.next_mesh_scan_retry_ms = now + 1000;
+    } else if (context.attach_parent_offset == 0)
       context.attach_scan_requested.store(true, std::memory_order_release);
   }
 
@@ -6804,11 +7341,19 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     static_cast<void>(RestoreExtraMeshes(context));
     static_cast<void>(ReleasePoseTickHook(context));
   }
+  const auto probe_now = GetTickCount64();
+  const bool probe_due = probe_now >= context.next_extra_pose_probe_ms;
+  if (probe_due) {
+    context.next_extra_pose_probe_ms = probe_now + 2000;
+    TraceExtraMeshPose(context, pose_requested ? "before-update-write" : "idle");
+  }
   if (pose_requested) {
     if (motion_active)
       ApplyMotionPoseDirect(context);
     else
       ApplyPoseOverridesDirect(context);
+    if (probe_due)
+      TraceExtraMeshPose(context, "after-update-write");
     ResyncExtraMeshes(context);
   }
   if (context.motion_loaded.load(std::memory_order_acquire)) {
@@ -7497,7 +8042,6 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_loop_label),
                    &motion_loop) != 0)
     context->motion_loop.store(motion_loop != 0, std::memory_order_release);
-  ui->same_line(ui->user, 0.0F, 6.0F);
   int motion_root =
       context->motion_apply_root.load(std::memory_order_acquire) ? 1 : 0;
   const std::string motion_root_label =
