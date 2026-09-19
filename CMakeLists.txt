@@ -1137,6 +1137,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_include_directories(anomaly_better_pose_visibility_fixture PRIVATE include)
     target_link_libraries(anomaly_better_pose_visibility_fixture PRIVATE
         anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+    add_executable(anomaly_better_pose_character_switch_fixture
+        plugins/BetterPose/tests/character_switch_test.cpp)
+    target_compile_options(anomaly_better_pose_character_switch_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_include_directories(anomaly_better_pose_character_switch_fixture PRIVATE include)
+    target_link_libraries(anomaly_better_pose_character_switch_fixture PRIVATE
+        anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
     # The in-game conversion needs the reference MMD bone table next to the plugin.
     add_custom_command(TARGET anomaly_builtin_better_pose POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_directory

@@ -109,6 +109,9 @@ constexpr std::string_view kPoseSettingsSchema = R"json(
 
 struct RuntimeState {
   std::uintptr_t g_world_address{};
+  // Restoration ownership survives a transient frame with no resolved pawn.
+  std::uintptr_t bound_character{};
+  std::uintptr_t bound_mesh{};
   std::uintptr_t character{};
   std::uintptr_t mesh{};
   std::uintptr_t anim_instance{};
@@ -382,6 +385,9 @@ struct Context final {
   };
   std::mutex motion_mutex;
   MotionTrack motion;
+  // Guarded by motion_mutex: a worker started before unload/switch cannot
+  // publish a conversion made for the previous skeleton afterwards.
+  std::uint64_t motion_load_epoch{};
   std::atomic_bool motion_loaded{};
   std::atomic_bool motion_playing{};
   std::atomic_bool motion_loop{true};
@@ -607,6 +613,8 @@ std::atomic<Context *> g_active{};
 // Declared early because the mesh resolution path (which runs long before the
 // extra mesh helpers are defined) has to drop them when the pawn changes.
 bool DropExtraMeshes(Context &context) noexcept;
+void BindRuntimeCharacter(Context &context, std::uintptr_t character,
+                          std::uintptr_t mesh) noexcept;
 
 AnomalyStatusV1 Status(const std::uint32_t code,
                        const std::string_view message = {}) noexcept {
@@ -990,24 +998,8 @@ bool ResolveLocalCharacter(Context &context) noexcept {
       !ReadPointerAt(context, character, kCharacterMeshOffset, mesh)) {
     return false;
   }
+  BindRuntimeCharacter(context, character, mesh);
   context.runtime.character = character;
-  // The reference pose belongs to one character's mesh asset. Switching characters
-  // must not leave the previous one's bind pose in place: two characters can share a
-  // bone count, which is the only thing the size check compares.
-  if (context.ref_pose_character != character) {
-    context.ref_pose_character = character;
-    context.ref_locals.clear();
-    context.ref_pose_object = 0;
-    context.ref_pose_status = "character changed";
-    context.ref_pose_attempted = false;
-  }
-  // Only a *different, valid* mesh invalidates the extra components. Comparing
-  // against a transient zero (runtime.mesh is cleared on frames where the local
-  // character cannot be resolved) made every flicker drop them again while the
-  // pending flag had already latched, so extra_mesh_owner stayed 0 forever and
-  // the attach resync never ran.
-  if (mesh != 0 && context.runtime.mesh != 0 && context.runtime.mesh != mesh)
-    static_cast<void>(DropExtraMeshes(context));
   context.runtime.mesh = mesh;
   if (context.extra_mesh_owner != mesh &&
       context.mesh_scan_owner != mesh &&
@@ -3527,8 +3519,22 @@ void StepMeshScan(Context &context) noexcept {
   }
 }
 
+void UnloadMotion(Context &context) noexcept {
+  std::lock_guard<std::mutex> lock(context.motion_mutex);
+  ++context.motion_load_epoch;
+  context.motion_loaded.store(false, std::memory_order_release);
+  context.motion_playing.store(false, std::memory_order_release);
+  context.motion = Context::MotionTrack{};
+  context.motion_seconds.store(0.0, std::memory_order_release);
+  context.motion_display_seconds.store(0.0, std::memory_order_release);
+  context.motion_seek.store(-1.0, std::memory_order_release);
+  context.motion_seek_pending.store(false, std::memory_order_release);
+  context.motion_seek_immediate.store(false, std::memory_order_release);
+  context.motion_seek_serial.fetch_add(1, std::memory_order_release);
+}
+
 bool LoadMotionDocument(Context &context, const std::string &document,
-                        const std::string &path) {
+                        const std::string &path, const std::uint64_t load_epoch) {
   const auto json = nlohmann::json::parse(document);
   if (json.value("kind", std::string()) != "better-pose-motion")
     throw std::runtime_error("not a better-pose motion document");
@@ -3611,12 +3617,14 @@ bool LoadMotionDocument(Context &context, const std::string &document,
   }
   {
     std::lock_guard<std::mutex> lock(context.motion_mutex);
+    if (load_epoch != context.motion_load_epoch)
+      return false;
     context.motion = std::move(track);
+    context.motion_loaded.store(true, std::memory_order_release);
+    context.motion_playing.store(false, std::memory_order_release);
+    context.motion_seconds.store(0.0, std::memory_order_release);
+    context.motion_display_seconds.store(0.0, std::memory_order_release);
   }
-  context.motion_loaded.store(true, std::memory_order_release);
-  context.motion_playing.store(false, std::memory_order_release);
-  context.motion_seconds.store(0.0, std::memory_order_release);
-  context.motion_display_seconds.store(0.0, std::memory_order_release);
   return true;
 }
 
@@ -6383,8 +6391,15 @@ void StepMusic(Context &context, const double delta_seconds) noexcept {
   const double position = opened ? g_music.Position() : 0.0;
   const double length = opened ? g_music.Length() : 0.0;
   PublishMusicState(opened, playing, position, length);
-  if (!opened || !context.motion_loaded.load(std::memory_order_acquire))
+  if (!opened)
     return;
+  if (!context.motion_loaded.load(std::memory_order_acquire)) {
+    if (playing) {
+      static_cast<void>(g_music.Pause(&g_music_error));
+      PublishMusicState(opened, g_music.playing(), position, length);
+    }
+    return;
+  }
 
   // ---- follow -------------------------------------------------------------------------------
   const bool motion_plays = context.motion_playing.load(std::memory_order_acquire);
@@ -6512,6 +6527,7 @@ std::string FindSiblingAudio(const std::string &motion_path) {
 struct PoseFileTaskData final {
   Context *context{};
   std::uint32_t action{};
+  std::uint64_t motion_load_epoch{};
   std::string document;
   std::string path;
   // Action 5 (VMD -> motion) needs more than a path pair: the skeleton export is read on
@@ -6621,10 +6637,10 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
         SetReflectionStatus(*context, "motion load failed: unreadable file");
       } else {
         try {
-          if (LoadMotionDocument(*context, document, data->path))
+          if (LoadMotionDocument(*context, document, data->path, data->motion_load_epoch))
             SetReflectionStatus(*context, "motion loaded");
           else
-            SetReflectionStatus(*context, "motion load failed: invalid document");
+            SetReflectionStatus(*context, "motion load cancelled: unloaded or character changed");
         } catch (const std::exception &error) {
           SetReflectionStatus(*context,
                               std::string("motion load failed: ") + error.what());
@@ -6686,8 +6702,9 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
       }
       LogDiagnostic(*context, "betterpose convert " + result.report);
       try {
-        if (LoadMotionDocument(*context, result.motion_json, data->output_path)) {
-          context->motion_file = data->output_path;
+        if (LoadMotionDocument(*context, result.motion_json, data->output_path, data->motion_load_epoch)) {
+          // Keep the selected source VMD in the picker. Reloading after a character
+          // switch must convert against the new skeleton instead of loading old JSON.
           // Surface how many bones carry a per-frame translation: the re-solved legs and the
           // spine make three. A stale build or a document without them loads as 0/1, so the
           // status line alone tells which converter produced what is playing.
@@ -6700,7 +6717,7 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
                               "motion converted and loaded [off " +
                                   std::to_string(offset_tracks) + "]");
         } else {
-          SetReflectionStatus(*context, "motion convert failed: document rejected");
+          SetReflectionStatus(*context, "motion convert cancelled: unloaded or character changed");
         }
       } catch (const std::exception &error) {
         SetReflectionStatus(*context,
@@ -6923,6 +6940,10 @@ void ExecutePoseFileAction(Context &context) noexcept {
     if (dot != std::string::npos && (slash == std::string::npos || dot > slash))
       output = output.substr(0, dot);
     data->output_path = output + ".betterpose.json";
+  }
+  if (action == 4 || action == 5) {
+    std::lock_guard<std::mutex> lock(context.motion_mutex);
+    data->motion_load_epoch = ++context.motion_load_epoch;
   }
   AnomalyGenerationHandleV1 task{};
   const AnomalyStatusV1 status = context.scheduler->schedule(
@@ -7400,6 +7421,17 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
 }
 
 void RestoreAll(Context &context) noexcept {
+  auto& state = context.runtime;
+  const auto active_character = state.character;
+  const auto active_mesh = state.mesh;
+  const auto active_instance = state.anim_instance;
+  // Restore to the objects whose values we captured, even during a pawn gap.
+  if (state.bound_mesh != 0) {
+    state.character = state.bound_character;
+    state.mesh = state.bound_mesh;
+  }
+  if (state.saved_multi_threaded_update)
+    state.anim_instance = state.multi_threaded_update_instance;
   static_cast<void>(RestorePose(context));
   static_cast<void>(RestoreExtraMeshes(context));
   static_cast<void>(EnsurePoseAnimationMode(context, false));
@@ -7408,6 +7440,68 @@ void RestoreAll(Context &context) noexcept {
   static_cast<void>(RestoreRootMotion(context));
   static_cast<void>(RestoreRate(context));
   static_cast<void>(RestorePause(context));
+  state.character = active_character;
+  state.mesh = active_mesh;
+  state.anim_instance = active_instance;
+}
+
+void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
+                          const std::uintptr_t mesh) noexcept {
+  auto& state = context.runtime;
+  if (state.bound_character == character && state.bound_mesh == mesh)
+    return;
+  const auto previous_mesh = state.bound_mesh;
+  const auto g_world_address = state.g_world_address;
+  RestoreAll(context);
+  static_cast<void>(DropExtraMeshes(context));
+  state = RuntimeState{};
+  state.g_world_address = g_world_address;
+  state.bound_character = character;
+  state.bound_mesh = mesh;
+
+  // Converted rotations and offsets belong to one skeleton, even if another
+  // character has matching names/counts. Require an explicit load for the new rig.
+  if (previous_mesh != 0)
+    UnloadMotion(context);
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.pose_base_ready = false;
+    context.pose_base_mesh = 0;
+    context.pose_base_locals.clear();
+    context.ref_locals.clear();
+  }
+  context.bone_names.clear();
+  context.bone_names_mesh = 0;
+  context.bone_names_count = 0;
+  context.bone_names_attempted = false;
+  context.bone_parents.clear();
+  context.bone_parents_mesh = 0;
+  context.bone_parents_count = 0;
+  context.bone_parents_ready = false;
+  context.ref_pose_character = character;
+  context.ref_pose_object = 0;
+  context.ref_pose_status = "character changed";
+  context.ref_pose_attempted = false;
+  context.motion_baseline_logged.store(false, std::memory_order_release);
+  context.mmd_unit_cm.store(0, std::memory_order_release);
+  context.camera_anchored.store(false, std::memory_order_release);
+  const double no_offset[3]{};
+  PublishRootOffsets(context, no_offset, no_offset);
+
+  // An incremental scan must restart for the new pawn, not finish collecting
+  // candidates from the previous one and stamp them with the new mesh owner.
+  context.extra_targets.clear();
+  context.extra_build_pending = false;
+  context.mesh_scan_running = false;
+  context.mesh_scan_owner = 0;
+  context.mesh_scan_candidates.clear();
+  context.skeleton_meshes.clear();
+  context.next_mesh_scan_retry_ms = 0;
+  context.mesh_scan_requested.store(true, std::memory_order_release);
+  context.attach_scan_requested.store(false, std::memory_order_release);
+  if (previous_mesh != 0)
+    LogDiagnostic(context, "betterpose character rebound old_mesh=" + Hex(previous_mesh) +
+                           " new_mesh=" + Hex(mesh) + " takeover=reset motion=unloaded");
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
@@ -7701,12 +7795,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         context->localizer.Text("motion.unload", "Unload");
     if (ui->button(ui->user, anomaly::sdk::StringView(motion_unload_label), 70.0F,
                    0.0F) != 0) {
-      context->motion_loaded.store(false, std::memory_order_release);
-      context->motion_playing.store(false, std::memory_order_release);
-      {
-        std::lock_guard<std::mutex> lock(context->motion_mutex);
-        context->motion = Context::MotionTrack{};
-      }
+      UnloadMotion(*context);
       // Unloading hands the pose back to the game. Without this refresh the
       // character keeps the last driven frame, because nothing re-evaluates the
       // animation once the plugin stops writing the bone buffers.
