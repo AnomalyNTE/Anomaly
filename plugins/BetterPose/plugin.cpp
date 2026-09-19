@@ -6663,6 +6663,11 @@ void ExecutePoseFileAction(Context &context) noexcept {
       std::ifstream reference(Utf8ToWide(reference_path), std::ios::binary);
       if (!reference) {
         delete data;
+        // The path is what makes this diagnosable: an install that does not carry the
+        // plugin's `data/` directory fails exactly here.
+        LogDiagnostic(context,
+                      "betterpose motion convert: reference bone table missing at " +
+                          reference_path);
         SetReflectionStatus(context, "motion convert failed: reference bone table missing");
         return;
       }
