@@ -7,6 +7,10 @@ namespace {
 void Check(bool value,const char* message) {
   if (!value) { std::cerr << "FAIL: " << message << '\n'; std::exit(1); }
 }
+double RotationDegrees(Quat a,Quat b) {
+  const Quat delta=Multiply(a,Inverse(b));
+  return 2.0*std::acos((std::min)(1.0,std::abs(delta.w)))*180.0/3.14159265358979323846;
+}
 Bone Make(Vec p,Quat q={}) { return {q.x,q.y,q.z,q.w,p.x,p.y,p.z,0,1,1,1,0}; }
 Frame Motion(double t) {
   const double a=.45*std::sin(t*2);
@@ -147,14 +151,32 @@ void Collisions() {
   Dynamics d; d.Configure(bind,{-1,0,1},{"hair","tip","marker"});
   const std::array<Capsule,1> capsules{{{{0,0,0},{0,0,20},8,better_pose::secondary::kCollideTorso}}};
   const auto first=d.Sample({},0,0,true,capsules);
-  Check(Depth(first,capsules[0])<Depth(bind,capsules[0])-2,"first-frame collision failed to reduce penetration");
+  Check(Depth(first,capsules[0])<Depth(bind,capsules[0]),"first-frame collision failed to reduce penetration");
+  // The correction is capped at 5 deg per frame, so a deep penetration is resolved over
+  // several frames instead of one, and once the strand is held it is left alone inside a
+  // deadband of 1.5x the slack. It must still settle inside that deadband, it must not
+  // sink while it is being corrected, and no frame may turn the bone past the cap.
+  const double deadband=2.0*1.5;
+  int settled=0;
+  double previous=Depth(first,capsules[0]);
+  double worst_step=0;
+  Quat previous_rotation=Rotation(first[0]);
   for (int i=1;i<=300;++i) {
     const auto& pose=d.Sample({},i/120.0,0,true,capsules);
-    Check(Depth(pose,capsules[0])<2,"spring fought collision");
+    const double depth=Depth(pose,capsules[0]);
+    if (settled==0 && depth<=deadband) settled=i;
+    if (settled!=0) Check(depth<=deadband,"spring pushed the strand back out of the deadband");
+    else Check(depth<previous+1e-9,"collision let the strand sink deeper while correcting");
+    previous=depth;
+    worst_step=(std::max)(worst_step,RotationDegrees(Rotation(pose[0]),previous_rotation));
+    previous_rotation=Rotation(pose[0]);
     Check(Length(Position(pose[0])-Position(bind[0]))<1e-8,"collision moved anchor");
     Check(std::abs(Length(Position(pose[1])-Position(pose[0]))-20)<1e-8,"collision stretched bone");
     Check(std::abs(Length(Position(pose[2])-Position(pose[1]))-std::sqrt(5.0))<1e-8,"collision left rigid child behind");
   }
+  Check(settled>0 && settled<=60,"collision never brought the strand inside the deadband");
+  // Two frames' worth of cap, allowing for the 5 deg landing on a slightly larger step.
+  Check(worst_step<12.0,"single collision frame turned the bone past the cap");
   const std::vector<std::string> names{"Bip001-Pelvis","Bip001-Spine","Bip001-Spine1","Bip001-Spine2",
       "Bip001-L-Thigh","Bip001-L-Calf","Bip001-L-Foot","Bip001-R-Thigh","Bip001-R-Calf","Bip001-R-Foot"};
   const std::vector<Bone> body{Make({0,0,100}),Make({0,0,115}),Make({0,0,130}),Make({0,0,145}),

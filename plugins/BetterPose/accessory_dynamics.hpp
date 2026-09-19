@@ -162,7 +162,8 @@ class Dynamics {
         }
       }
       if (tightest>.5 && tightest<1e6)
-        body_volumes_.push_back({a,b,volume.fraction,cap>0 ? (std::min)(tightest,cap) : tightest,secondary::kCollideLegs});
+        body_volumes_.push_back({a,b,volume.fraction,
+            cap>0 ? (std::min)(tightest,cap) : tightest,tightest,secondary::kCollideLegs});
     }
   }
   bool CollisionsConfigured() const { return collisions_configured_; }
@@ -180,6 +181,24 @@ class Dynamics {
 
   void Reset() { seeded_=false; moving_=false; length_error_=0; pose_=bind_; }
   std::size_t DrivenBones() const { return driven_; }
+  // How many simulated bones actually collide against the given mask. A chain that
+  // only collides at its first bone cannot be pushed out by rotating that one bone.
+  std::size_t MaskedBones(std::uint8_t mask) const {
+    std::size_t count=0;
+    for (const auto& node:nodes_) if (node.active && (node.mask & mask)) ++count;
+    return count;
+  }
+  // The measured rest clearance of every collision volume, before the hip-separation
+  // cap. A radius equal to the cap means the true clearance is larger, so the strand
+  // sits outside the capsule at rest and only a swing brings it in.
+  std::vector<double> VolumeClearances() const {
+    std::vector<double> result;
+    for (const auto& volume:body_volumes_) result.push_back(volume.clearance);
+    return result;
+  }
+  // How often the collision actually corrected something. A strand that is merely
+  // swinging shows almost no hits; a strand fighting a capsule shows a hit nearly
+  // every frame.
   const std::vector<Bone>& Pose() const { return pose_; }
   bool Moving() const { return moving_; }
   double LengthError() const { return length_error_; }
@@ -214,7 +233,49 @@ class Dynamics {
         const double magnitude=Length(accel);
         if (magnitude>3*secondary::kGravity) accel=accel*(3*secondary::kGravity/magnitude);
         const Vec hang=Unit(Vec{0,0,-secondary::kGravity}-accel*.5);
-        const Vec target=Unit(axis*(1-n.gravity)+hang*n.gravity,axis);
+        Vec target=Unit(axis*(1-n.gravity)+hang*n.gravity,axis);
+        // Steer the spring's own target out of the collision volumes before integrating.
+        // Correcting only the delivered pose leaves the spring pulling the strand straight
+        // back in, and the two then trade the same few degrees every frame: measured in
+        // game, a bending ribbon was corrected 1.21 times per frame and reversed direction
+        // 1.38 times per frame, while a strand that never collides sits at 0.0 and 0.19.
+        if (n.mask && !capsules.empty()) {
+          const bool torso=(n.mask & secondary::kCollideTorso)!=0;
+          const auto mask=torso ? secondary::kCollideTorso : secondary::kCollideLegs;
+          const double slack=(torso ? secondary::kTorsoCollisionSlackCm
+                                    : secondary::kLegCollisionSlackCm)*frame.scale;
+          const auto target_depth=[&](Vec candidate,Vec* slide) {
+            double deepest=0;
+            for (double slot:{.5,.75,1.0}) {
+              const Vec point=head+candidate*(n.length*frame.scale*slot);
+              for (const auto& capsule:capsules) {
+                if (!(capsule.mask & mask)) continue;
+                const Vec closest=Closest(point,capsule.a,capsule.b);
+                const Vec out=point-closest;
+                const double distance=Length(out),depth=capsule.radius-distance;
+                if (depth>deepest && distance>.5*frame.scale) {
+                  deepest=depth;
+                  if (slide) *slide=closest+out*(capsule.radius/distance);
+                }
+              }
+            }
+            return deepest;
+          };
+          if (target_depth(target,nullptr)>slack) {
+            Vec candidate=target,best=target;
+            double best_depth=target_depth(target,nullptr);
+            for (int attempt=0;attempt<12;++attempt) {
+              Vec slide{};
+              const double depth=target_depth(candidate,&slide);
+              if (depth<=slack) { best=candidate; break; }
+              if (depth<best_depth) { best_depth=depth; best=candidate; }
+              const Vec aim=Unit(slide-head);
+              if (Length(aim)<.5) break;
+              candidate=Unit(candidate+(aim-candidate)*.5);
+            }
+            target=best;
+          }
+        }
         const auto spring=secondary::SpringFor(n.swing_only);
         const int steps=(std::max)(4,static_cast<int>(std::ceil(dt*120-1e-8)));
         const double h=dt/steps;
@@ -252,7 +313,7 @@ class Dynamics {
     std::uint8_t mask{};
     bool active{},swing_only{},held{};
   };
-  struct BodyVolume { int a,b; double fraction,radius; std::uint8_t mask; };
+  struct BodyVolume { int a,b; double fraction,radius,clearance; std::uint8_t mask; };
   Frame Parent(std::size_t i,Frame frame) const {
     return parents_[i]>=0 ? nodes_[static_cast<std::size_t>(parents_[i])].world : frame;
   }
@@ -270,7 +331,7 @@ class Dynamics {
     const bool torso=(n.mask & secondary::kCollideTorso)!=0;
     const auto mask=torso ? secondary::kCollideTorso : secondary::kCollideLegs;
     const double slack=(torso ? secondary::kTorsoCollisionSlackCm : secondary::kLegCollisionSlackCm)*frame.scale;
-    const double threshold=n.held ? slack*.5 : slack;
+    const double threshold=slack;
     const Vec head=n.world.position;
     const Vec direction=Rotate(n.world.rotation,n.axis);
     const auto measure=[&](Vec candidate,Vec* slide) {
@@ -292,6 +353,21 @@ class Dynamics {
     };
     Vec slid=direction,best=direction;
     const double initial=measure(direction,nullptr);
+    // Hysteresis band with separated edges: correct only once the strand is deeper than
+    // 1.5x the slack, and release the hold only once it is well clear at 0.5x. Measured in
+    // game, the ribbon hovers at 0.0-0.59 cm against a 0.5 cm slack, so a single threshold
+    // there restarts the correction every other frame - that is the buzz.
+    const double engage=slack*1.5;
+    const double release=slack*0.5;
+    if (initial<=release) {
+      n.held=false;
+      n.direction=direction;
+      return;
+    }
+    if (n.held && initial<=engage) {
+      n.direction=direction;
+      return;
+    }
     double best_depth=initial;
     for (int attempt=0;attempt<12;++attempt) {
       Vec slide{};
@@ -304,8 +380,19 @@ class Dynamics {
     }
     n.held=best_depth<initial;
     if (n.held) {
-      const Quat correction=Swing(Unit(Rotate(Inverse(parent.rotation),direction)),
-                                  Unit(Rotate(Inverse(parent.rotation),best)));
+      // A correction is a nudge, not a snap: cap how much of it lands in one frame and
+      // let the following frames finish the job. Measured in game, a bending ribbon was
+      // corrected 347 times a second by 12.1 deg on average and by up to 82.2 deg in a
+      // single frame, which reads as a constant shake.
+      constexpr double kMaxCorrectionDegrees=5.0;
+      const Vec local_direction=Unit(Rotate(Inverse(parent.rotation),direction));
+      Vec local_best=Unit(Rotate(Inverse(parent.rotation),best));
+      const double sweep=std::acos(std::clamp(Dot(local_direction,local_best),-1.0,1.0))*
+                         180.0/3.14159265358979323846;
+      if (sweep>kMaxCorrectionDegrees)
+        local_best=Unit(local_direction+
+                        (local_best-local_direction)*(kMaxCorrectionDegrees/sweep));
+      const Quat correction=Swing(local_direction,local_best);
       n.local=Normalize(Multiply(correction,n.local));
       n.world.rotation=Normalize(Multiply(parent.rotation,n.local));
       const Vec normal=Rotate(parent.rotation,Unit({correction.x,correction.y,correction.z}));
@@ -321,7 +408,9 @@ class Dynamics {
     for (std::size_t i=0;i<nodes_.size();++i) {
       auto& n=nodes_[i]; const Frame parent=Parent(i,frame);
       n.world=Compose(parent,{n.offset,n.local,1});
-      if (n.active && n.mask && !capsules.empty()) Collide(n,parent,frame,capsules);
+      if (n.active && n.mask && !capsules.empty()) {
+        Collide(n,parent,frame,capsules);
+      }
       // Inertia must use the delivered heads, including corrections inherited
       // from parents, rather than mixing corrected positions with old velocities.
       if (n.active) {
