@@ -114,6 +114,10 @@ constexpr double kTargetActorMaxDistanceCentimeters = 400.0;
 constexpr std::uint32_t kPickupMaximumItems = 1;
 constexpr double kPickupTimeoutSeconds = 8.0;
 constexpr std::uint32_t kPickupMaximumRetries = 3;
+// How long a scan for the target actor is retried before the point is re-teleported,
+// and again after that: one poll a second, so this is also the seconds waited. Both
+// pickup paths use it, so a point that is simply not there costs the same either way.
+constexpr std::uint32_t kActorLoadWaitSeconds = 7;
 constexpr double kFallbackVerifyRadiusCentimeters = 600.0;
 constexpr double kShopSafePoint[3]{-129487.089561, 166235.911261, 6708.454053};
 constexpr std::string_view kShopExcludedPointB018 = "HTTargetPoint_StealGoods_Item_B_018";
@@ -125,6 +129,10 @@ constexpr std::uint32_t kShopSafeMaximumTransferAttempts = 3;
 constexpr double kShopExitRecoveryDistance = 1800.0;
 constexpr std::chrono::milliseconds kShopExitRecoverySettle{1200};
 constexpr std::uint32_t kShopExitRecoveryAttempts = 3;
+// How many times one shop point may restart its scan before it is skipped. The entry
+// retry loop and the still-stealth loop each restart their own counters, so this is the
+// only ceiling on the point as a whole.
+constexpr std::uint32_t kShopRescanCycles = 3;
 
 struct RawName final {
     std::int32_t comparison_index{};
@@ -247,6 +255,7 @@ struct Context final {
     std::chrono::steady_clock::time_point shop_safe_deadline{};
     std::chrono::steady_clock::time_point shop_safe_retry_at{};
     std::uint32_t shop_take_retries{};
+    std::uint32_t shop_rescan_cycles{};
     bool shop_exit_recovery_active{};
     bool shop_exit_transfer_pending{};
     std::uint32_t shop_exit_transfer_attempts{};
@@ -471,6 +480,14 @@ void BeginShopExitRecovery(Context& context) noexcept {
     context.shop_exit_ready_at = std::chrono::steady_clock::time_point{};
 }
 
+// Spends one rescan of this point's budget. True means the budget is already gone, so the
+// caller skips the point instead of restarting the scan again.
+bool ShopRescanBudgetSpent(Context& context) noexcept {
+    if (context.shop_rescan_cycles >= kShopRescanCycles) return true;
+    ++context.shop_rescan_cycles;
+    return false;
+}
+
 void ResetPointState(Context& context) noexcept {
     context.teleported = false;
     context.moving = false;
@@ -493,6 +510,7 @@ void ResetPointState(Context& context) noexcept {
     context.pickup_retries = 0;
     context.interact_verify_deadline = std::chrono::steady_clock::time_point{};
     context.shop_take_retries = 0;
+    context.shop_rescan_cycles = 0;
 }
 
 // Caller must hold context.mutex.
@@ -2145,11 +2163,25 @@ bool CanTryInteract(Context& context, const std::uintptr_t actor,
     return true;
 }
 
-bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcept {
-    if (context.trigger_interact_fn == 0 || actor == 0) return false;
+// Why an interact attempt did or did not fire, and how many entries the game offered.
+// The shop path logs it: a `can_try` count that climbs over the retries means the entry is
+// armed late, while a flat zero means the standing spot never became valid.
+struct InteractProbe final {
+    const char* reason{"ok"};
+    int entries{};
+    int can_try{};
+};
+
+bool TriggerInteractPickup(Context& context, const std::uintptr_t actor,
+                           InteractProbe* probe = nullptr) noexcept {
+    if (context.trigger_interact_fn == 0 || actor == 0) {
+        if (probe != nullptr) probe->reason = "no-actor-or-trigger";
+        return false;
+    }
     std::uintptr_t cls{};
     if (!Read(reinterpret_cast<const void*>(actor + kObjectClassOffset), cls) ||
         cls == 0) {
+        if (probe != nullptr) probe->reason = "class-read-failed";
         return false;
     }
     std::uintptr_t entries_fn{};
@@ -2158,12 +2190,18 @@ bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcep
                       entries_fn) ||
         !FindFunction(context.names, cls, "BPCanTryInteract", 3, 13,
                       can_try_fn)) {
+        if (probe != nullptr) probe->reason = "interact-functions-missing";
         return false;
     }
     std::vector<std::int32_t> choices;
     if (!ReadInteractChoices(context, actor, context.controller, entries_fn,
-                             choices) ||
-        choices.empty()) {
+                             choices)) {
+        if (probe != nullptr) probe->reason = "entries-call-failed";
+        return false;
+    }
+    if (probe != nullptr) probe->entries = static_cast<int>(choices.size());
+    if (choices.empty()) {
+        if (probe != nullptr) probe->reason = "no-entries";
         return false;
     }
     for (const std::int32_t choice : choices) {
@@ -2173,6 +2211,7 @@ bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcep
             !can_try) {
             continue;
         }
+        if (probe != nullptr) ++probe->can_try;
         std::uint8_t params[13]{};
         std::memcpy(params + 0, &actor, sizeof(actor));
         std::memcpy(params + 8, &choice, sizeof(choice));
@@ -2180,9 +2219,12 @@ bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcep
         if (InvokeNative(context, reinterpret_cast<void*>(context.controller),
                          reinterpret_cast<void*>(context.trigger_interact_fn),
                          params)) {
+            if (probe != nullptr) probe->reason = "fired";
             return true;
         }
     }
+    if (probe != nullptr && probe->can_try == 0) probe->reason = "no-can-try";
+    else if (probe != nullptr) probe->reason = "trigger-refused";
     return false;
 }
 
@@ -2439,17 +2481,23 @@ bool ShopItemUsesBlueprint(Context& context, std::uintptr_t actor,
     return true;
 }
 
-ShopTakeResult TakeShopItem(Context& context, std::uintptr_t actor) {
-    if (!context.trigger_interact_fn) return ShopTakeResult::retry;
+ShopTakeResult TakeShopItem(Context& context, std::uintptr_t actor,
+                            InteractProbe* probe = nullptr) {
+    if (!context.trigger_interact_fn) {
+        if (probe != nullptr) probe->reason = "trigger-function-missing";
+        return ShopTakeResult::retry;
+    }
     bool use_blueprint{};
     if (!ShopItemUsesBlueprint(context, actor, use_blueprint)) {
+        if (probe != nullptr) probe->reason = "class-or-property";
         return ShopTakeResult::retry;
     }
     if (!use_blueprint) {
+        if (probe != nullptr) probe->reason = "not-stealth";
         LogShop(context, "shop item is not in stealth pickup state");
         return ShopTakeResult::not_stealth;
     }
-    return TriggerInteractPickup(context, actor)
+    return TriggerInteractPickup(context, actor, probe)
         ? ShopTakeResult::triggered
         : ShopTakeResult::retry;
 }
@@ -2768,7 +2816,7 @@ void TickFoodPickup(Context& context, const Point& p,
         }
         if (context.target_actor == 0) {
             ++context.retry_count;
-            if (context.retry_count < 15) {
+            if (context.retry_count <= kActorLoadWaitSeconds) {
                 context.due = now + std::chrono::milliseconds(1000);
                 context.status = "等待加载 " + p.row_name + " (" +
                     std::to_string(context.retry_count) + ")";
@@ -3354,7 +3402,7 @@ void Tick(Context& context) {
             p.category == "shop_steal" ? ActorPrefixForCategory(p.category) : context.type_prefix);
         if (context.target_actor == 0) {
             ++context.retry_count;
-            if (context.retry_count < 3) {
+            if (context.retry_count <= kActorLoadWaitSeconds) {
                 context.due = now + std::chrono::milliseconds(1000);
                 const std::string retry_str = std::to_string(context.retry_count);
                 const std::array waiting_args{
@@ -3476,8 +3524,10 @@ void Tick(Context& context) {
         std::uint8_t params[12]{};
         std::memcpy(params, &context.target_actor, sizeof(context.target_actor));
         ShopTakeResult shop_result = ShopTakeResult::retry;
+        InteractProbe shop_probe{};
         const bool triggered = p.category == "shop_steal"
-            ? (shop_result = TakeShopItem(context, context.target_actor),
+            ? (shop_result = TakeShopItem(context, context.target_actor,
+                                          &shop_probe),
                shop_result == ShopTakeResult::triggered)
             : Invoke(reinterpret_cast<void*>(context.controller),
                      reinterpret_cast<void*>(context.server_interact_fn), params);
@@ -3494,10 +3544,45 @@ void Tick(Context& context) {
                 if (shop_result == ShopTakeResult::retry) {
                     if (context.interact_retry < 5) {
                         ++context.interact_retry;
+                        // One line per attempt: an entry count that stays empty, or a
+                        // can_try count that climbs, is the difference between a bad
+                        // standing spot and an entry the game arms late.
+                        double probe_distance{-1.0};
+                        double probe_actor[3]{};
+                        double probe_player[3]{};
+                        if (ReadActorLocation(context, context.target_actor,
+                                              probe_actor) &&
+                            SnapshotPlayerPosition(context, probe_player)) {
+                            const double pdx = probe_player[0] - probe_actor[0];
+                            const double pdy = probe_player[1] - probe_actor[1];
+                            probe_distance = std::sqrt(pdx * pdx + pdy * pdy);
+                        }
+                        LogShop(context,
+                            "entry attempt=" + std::to_string(context.interact_retry) +
+                                " reason=" + shop_probe.reason +
+                                " entries=" + std::to_string(shop_probe.entries) +
+                                " can_try=" + std::to_string(shop_probe.can_try) +
+                                " dist=" + std::to_string(static_cast<long long>(
+                                    probe_distance)) + "cm point=" + p.row_name);
                         context.due = now + std::chrono::milliseconds(500);
                         context.status = context.localizer.Text(
                             "status.shop_interact_retry",
                             "隐身有效，等待拾取入口重试");
+                        return;
+                    }
+                    if (ShopRescanBudgetSpent(context)) {
+                        LogShop(context, "pickup entry never became ready point=" +
+                            p.row_name);
+                        const std::array exhausted_args{
+                            std::string_view(p.row_name)};
+                        context.status = context.localizer.Format(
+                            "status.shop_rescan_exhausted",
+                            "Shop pickup: retries exhausted, skip [{0}]",
+                            exhausted_args);
+                        ++context.skipped;
+                        ++context.current_index;
+                        ResetPointState(context);
+                        context.due = now;
                         return;
                     }
                     context.target_actor = 0;
@@ -3590,6 +3675,20 @@ void Tick(Context& context) {
             bool still_stealth{};
             if (ShopItemUsesBlueprint(context, context.target_actor, still_stealth) &&
                 still_stealth) {
+                if (ShopRescanBudgetSpent(context)) {
+                    LogShop(context, "take never confirmed point=" + p.row_name);
+                    const std::array exhausted_args{
+                        std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.shop_rescan_exhausted",
+                        "Shop pickup: retries exhausted, skip [{0}]",
+                        exhausted_args);
+                    ++context.skipped;
+                    ++context.current_index;
+                    ResetPointState(context);
+                    context.due = now;
+                    return;
+                }
                 context.interacted = false;
                 context.target_actor = 0;
                 context.interact_retry = 0;
@@ -3626,6 +3725,21 @@ void Tick(Context& context) {
                 context.due = now;
             }
         } else {
+            // Stealth can drop the moment a take is refused, and it used to be read only
+            // after the whole verification window had run out - which is what left a failed
+            // point sitting on "stealth still active" for half a minute. Look while waiting,
+            // but only after the completion predicates above, so a take that did land is
+            // still confirmed first. Expiring the deadline hands the point to the branch
+            // above on the next tick, which re-reads the uncollected catalog before it
+            // decides, so a slow confirmation is not mistaken for a failed take.
+            bool still_stealth{};
+            if (ShopItemUsesBlueprint(context, context.target_actor, still_stealth) &&
+                !still_stealth) {
+                LogShop(context, "stealth lost while verifying point=" + p.row_name);
+                context.interact_verify_deadline = {};
+                context.due = now;
+                return;
+            }
             context.due = now + std::chrono::milliseconds(300);
         }
         return;
