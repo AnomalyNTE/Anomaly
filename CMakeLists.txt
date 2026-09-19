@@ -1116,6 +1116,43 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/BetterPose/manifest.json
         PACKAGE_NAME BetterPose
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/BetterPose")
+    # MMD (VMD) -> Bip001 motion conversion. The Python converter in tools/mmd2bip is the
+    # reference implementation; this is its C++ port, kept in a library because both the
+    # BetterPose plugin (which converts in game) and the acceptance harness below need it.
+    add_library(anomaly_mmd2bip_converter STATIC
+        plugins/BetterPose/retarget/motion_builder.cpp)
+    target_include_directories(anomaly_mmd2bip_converter PUBLIC plugins/BetterPose/retarget)
+    target_compile_options(anomaly_mmd2bip_converter PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_compile_definitions(anomaly_mmd2bip_converter PRIVATE
+        WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(anomaly_mmd2bip_converter PUBLIC nlohmann_json::nlohmann_json)
+    target_link_libraries(anomaly_builtin_better_pose PRIVATE anomaly_mmd2bip_converter winmm)
+    target_compile_options(anomaly_builtin_better_pose PRIVATE /utf-8)
+    add_executable(anomaly_better_pose_accessory_fixture
+        plugins/BetterPose/tests/accessory_dynamics_test.cpp)
+    target_compile_options(anomaly_better_pose_accessory_fixture PRIVATE /W4 /permissive- /EHsc)
+    add_executable(anomaly_better_pose_visibility_fixture
+        plugins/BetterPose/tests/accessory_visibility_test.cpp)
+    target_compile_options(anomaly_better_pose_visibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_include_directories(anomaly_better_pose_visibility_fixture PRIVATE include)
+    target_link_libraries(anomaly_better_pose_visibility_fixture PRIVATE
+        anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+    add_executable(anomaly_better_pose_character_switch_fixture
+        plugins/BetterPose/tests/character_switch_test.cpp)
+    target_compile_options(anomaly_better_pose_character_switch_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_include_directories(anomaly_better_pose_character_switch_fixture PRIVATE include)
+    target_link_libraries(anomaly_better_pose_character_switch_fixture PRIVATE
+        anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+    # The in-game conversion needs the reference MMD bone table next to the plugin.
+    add_custom_command(TARGET anomaly_builtin_better_pose POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/plugins/BetterPose/data"
+                "$<TARGET_FILE_DIR:anomaly_builtin_better_pose>/data"
+        VERBATIM)
+    add_executable(anomaly_mmd2bip apps/mmd2bip/main.cpp)
+    set_target_properties(anomaly_mmd2bip PROPERTIES OUTPUT_NAME "anomaly-mmd2bip")
+    target_compile_options(anomaly_mmd2bip PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_mmd2bip PRIVATE anomaly_mmd2bip_converter)
     anomaly_add_plugin(anomaly_builtin_teleport_landmarks_probe
         SOURCES plugins/TeleportLandmarksProbe/plugin.cpp
         MANIFEST plugins/TeleportLandmarksProbe/manifest.json
