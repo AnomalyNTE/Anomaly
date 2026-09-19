@@ -1566,6 +1566,11 @@ if(TARGET anomaly_builtin_better_pose)
         DESTINATION Anomaly/plugins/BetterPose COMPONENT GameRuntime)
     install(DIRECTORY plugins/BetterPose/locales/
         DESTINATION Anomaly/plugins/BetterPose/locales COMPONENT GameRuntime)
+    # The in-game conversion reads its reference bone tables from `data/` next to the DLL.
+    # The POST_BUILD copy above only fills the build tree; without this rule a release
+    # install ships a plugin that cannot convert a motion.
+    install(DIRECTORY plugins/BetterPose/data/
+        DESTINATION Anomaly/plugins/BetterPose/data COMPONENT GameRuntime)
 endif()
 if(TARGET anomaly_builtin_teleport_landmarks_probe)
     install(TARGETS anomaly_builtin_teleport_landmarks_probe

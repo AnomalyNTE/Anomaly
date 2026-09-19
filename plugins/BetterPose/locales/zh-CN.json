@@ -71,6 +71,7 @@
     "filter.pelvis": "骨盆",
     "filter.all": "全部",
     "music.mute": "静音",
+    "music.volume": "音量",
     "camera.pick": "载入镜头 VMD",
     "camera.enable": "驱动镜头",
     "camera.follow": "跟随角色",
