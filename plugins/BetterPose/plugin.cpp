@@ -7593,299 +7593,6 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
 
   ui->separator(ui->user);
 
-  int freeze = context->freeze_enabled.load(std::memory_order_acquire) ? 1 : 0;
-  const std::string freeze_label =
-      context->localizer.Text("freeze", "Pause animation");
-  if (ui->checkbox(ui->user, anomaly::sdk::StringView(freeze_label), &freeze) !=
-      0) {
-    context->freeze_enabled.store(freeze != 0, std::memory_order_release);
-  }
-
-  int rate_enabled =
-      context->rate_override_enabled.load(std::memory_order_acquire) ? 1 : 0;
-  float rate = context->requested_rate_scale.load(std::memory_order_acquire);
-  const std::string rate_toggle =
-      context->localizer.Text("rate.toggle", "Override animation rate");
-  if (ui->checkbox(ui->user, anomaly::sdk::StringView(rate_toggle),
-                   &rate_enabled) != 0) {
-    context->rate_override_enabled.store(rate_enabled != 0,
-                                         std::memory_order_release);
-  }
-  const std::string rate_label =
-      context->localizer.Text("rate", "Rate scale");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(rate_label), &rate,
-                       0.0F, 3.0F) != 0) {
-    context->requested_rate_scale.store(rate, std::memory_order_release);
-  }
-
-  ui->separator(ui->user);
-
-  int pose_enabled =
-      context->pose_override_enabled.load(std::memory_order_acquire) ? 1 : 0;
-  const std::string pose_toggle =
-      context->localizer.Text("pose.toggle", "Override joint pose");
-  if (ui->checkbox(ui->user, anomaly::sdk::StringView(pose_toggle),
-                   &pose_enabled) != 0) {
-    context->pose_override_enabled.store(pose_enabled != 0,
-                                         std::memory_order_release);
-  }
-
-  auto bone = context->requested_bone_index.load(std::memory_order_acquire);
-  std::string selected_name = "None";
-  if (bone < snapshot.bone_names.size())
-    selected_name = snapshot.bone_names[bone];
-  const std::string selected_label =
-      context->localizer.Text("pose.bone.selected", "Selected bone");
-  const std::string selected_line =
-      selected_label + ": " + std::to_string(bone) + " " + selected_name;
-  ui->text(ui->user, anomaly::sdk::StringView(selected_line));
-  const std::string pose_status_line = std::string(snapshot.pose_status.data());
-  ui->text(ui->user, anomaly::sdk::StringView(pose_status_line));
-
-  const bool can_text_input =
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
-          ui, offsetof(AnomalyUiServiceV1, input_text)) &&
-      ui->input_text != nullptr;
-  const bool can_bone_list =
-      can_text_input &&
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
-          ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
-      ui->begin_child != nullptr &&
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
-          ui, offsetof(AnomalyUiServiceV1, end_child)) &&
-      ui->end_child != nullptr &&
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
-          ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
-      ui->filter_match != nullptr;
-
-  if (can_bone_list) {
-    const std::string filter_label =
-        context->localizer.Text("pose.filter", "Bone filter");
-    static_cast<void>(ui->input_text(
-        ui->user, anomaly::sdk::StringView(filter_label),
-        context->bone_filter.data(), context->bone_filter.size(),
-        ANOMALY_UI_TEXT_INPUT_V1_NONE));
-
-    const auto set_filter = [&](const char *value) {
-      std::snprintf(context->bone_filter.data(), context->bone_filter.size(),
-                    "%s", value);
-    };
-    int quick_button_index = 0;
-    const auto quick_button = [&](const char *value, const std::string &label) {
-      if (ui->button(ui->user, anomaly::sdk::StringView(label), 56.0F, 0.0F) != 0)
-        set_filter(value);
-      ++quick_button_index;
-      if (quick_button_index % 6 != 0)
-        ui->same_line(ui->user, 0.0F, 4.0F);
-    };
-    quick_button("arm", context->localizer.Text("filter.arm", "Arm"));
-    quick_button("forearm", context->localizer.Text("filter.elbow", "Elbow"));
-    quick_button("hand", context->localizer.Text("filter.hand", "Hand"));
-    quick_button("thigh", context->localizer.Text("filter.thigh", "Thigh"));
-    quick_button("calf", context->localizer.Text("filter.knee", "Knee"));
-    quick_button("foot", context->localizer.Text("filter.foot", "Foot"));
-    quick_button("clavicle", context->localizer.Text("filter.shoulder", "Shoulder"));
-    quick_button("neck", context->localizer.Text("filter.neck", "Neck"));
-    quick_button("head", context->localizer.Text("filter.head", "Head"));
-    quick_button("spine", context->localizer.Text("filter.spine", "Spine"));
-    quick_button("pelvis", context->localizer.Text("filter.pelvis", "Pelvis"));
-    quick_button("", context->localizer.Text("filter.all", "All"));
-
-    // The host pushes its Child stack entry when `begin_child` is called, whether or not ImGui
-    // culled the child, so `end_child` has to be called either way: skipping it when the child is
-    // scrolled out of view leaves the stack unbalanced and the host faults the whole plugin.
-    const int bone_child_open =
-        ui->begin_child(ui->user, anomaly::sdk::StringView("bone-list"), 0.0F, 240.0F, 0U);
-    if (bone_child_open != 0) {
-      if (snapshot.bone_names.empty()) {
-        const std::string empty_label = context->localizer.Text(
-            "pose.bones.empty", "Bone names not loaded; press Load Bones.");
-        ui->text(ui->user, anomaly::sdk::StringView(empty_label));
-      } else {
-        const std::string_view filter(context->bone_filter.data());
-        for (std::size_t index{}; index != snapshot.bone_names.size(); ++index) {
-          if (ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
-                               anomaly::sdk::StringView(
-                                   snapshot.bone_names[index])) == 0)
-            continue;
-          const std::string bone_item =
-              std::to_string(index) + " " + snapshot.bone_names[index];
-          if (ui->button(ui->user, anomaly::sdk::StringView(bone_item), 0.0F,
-                         0.0F) != 0) {
-            context->requested_bone_index.store(
-                static_cast<std::uint32_t>(index), std::memory_order_release);
-          }
-        }
-      }
-    }
-    ui->end_child(ui->user);
-  } else {
-    const std::string bone_label =
-        context->localizer.Text("pose.bone", "Bone index");
-    double bone_value = static_cast<double>(bone);
-    if (ui->input_double(ui->user, anomaly::sdk::StringView(bone_label),
-                         &bone_value, 1.0, 8.0) != 0) {
-      if (bone_value < 0.0)
-        bone_value = 0.0;
-      if (bone_value > static_cast<double>(kMaximumBoneIndex))
-        bone_value = static_cast<double>(kMaximumBoneIndex);
-      context->requested_bone_index.store(
-          static_cast<std::uint32_t>(bone_value), std::memory_order_release);
-    }
-  }
-
-  float pitch = 0.0F;
-  float yaw = 0.0F;
-  float roll = 0.0F;
-  {
-    std::lock_guard<std::mutex> lock(context->pose_angles_mutex);
-    if (bone < context->bone_angles.size()) {
-      pitch = static_cast<float>(context->bone_angles[bone][0]);
-      yaw = static_cast<float>(context->bone_angles[bone][1]);
-      roll = static_cast<float>(context->bone_angles[bone][2]);
-    }
-  }
-
-  bool apply_pose_now = false;
-  const auto changed_angle = [&]() {
-    context->pose_override_enabled.store(true, std::memory_order_release);
-    context->pose_settings_dirty.store(true, std::memory_order_release);
-    {
-      std::lock_guard<std::mutex> lock(context->pose_angles_mutex);
-      if (bone >= context->bone_angles.size())
-        context->bone_angles.resize(static_cast<std::size_t>(bone) + 1);
-      context->bone_angles[bone] = {pitch, yaw, roll};
-    }
-    apply_pose_now = true;
-  };
-
-  float root_x = static_cast<float>(
-      context->requested_root_offset[0].load(std::memory_order_acquire));
-  float root_y = static_cast<float>(
-      context->requested_root_offset[1].load(std::memory_order_acquire));
-  float root_z = static_cast<float>(
-      context->requested_root_offset[2].load(std::memory_order_acquire));
-  const auto changed_root_offset = [&]() {
-    context->pose_override_enabled.store(true, std::memory_order_release);
-    context->pose_settings_dirty.store(true, std::memory_order_release);
-    context->requested_root_offset[0].store(root_x, std::memory_order_release);
-    context->requested_root_offset[1].store(root_y, std::memory_order_release);
-    context->requested_root_offset[2].store(root_z, std::memory_order_release);
-    apply_pose_now = true;
-  };
-
-  const std::string pitch_label =
-      context->localizer.Text("pose.pitch", "Pitch");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(pitch_label), &pitch,
-                       -180.0F, 180.0F) != 0)
-    changed_angle();
-  ui->same_line(ui->user, 0.0F, 4.0F);
-  const std::string pitch_reset =
-      context->localizer.Label("pose.reset.pitch", "重置", "reset-pitch");
-  if (ui->button(ui->user, anomaly::sdk::StringView(pitch_reset), 42.0F,
-                 0.0F) != 0) {
-    pitch = 0.0F;
-    changed_angle();
-  }
-
-  const std::string yaw_label =
-      context->localizer.Text("pose.yaw", "Yaw");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(yaw_label), &yaw,
-                       -180.0F, 180.0F) != 0)
-    changed_angle();
-  ui->same_line(ui->user, 0.0F, 4.0F);
-  const std::string yaw_reset =
-      context->localizer.Label("pose.reset.yaw", "重置", "reset-yaw");
-  if (ui->button(ui->user, anomaly::sdk::StringView(yaw_reset), 42.0F,
-                 0.0F) != 0) {
-    yaw = 0.0F;
-    changed_angle();
-  }
-
-  const std::string roll_label =
-      context->localizer.Text("pose.roll", "Roll");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(roll_label), &roll,
-                       -180.0F, 180.0F) != 0)
-    changed_angle();
-  ui->same_line(ui->user, 0.0F, 4.0F);
-  const std::string roll_reset =
-      context->localizer.Label("pose.reset.roll", "重置", "reset-roll");
-  if (ui->button(ui->user, anomaly::sdk::StringView(roll_reset), 42.0F,
-                 0.0F) != 0) {
-    roll = 0.0F;
-    changed_angle();
-  }
-
-  ui->separator(ui->user);
-  const std::string body_x_label =
-      context->localizer.Text("pose.body.x", "X");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(body_x_label),
-                       &root_x, -1000.0F, 1000.0F) != 0)
-    changed_root_offset();
-  ui->same_line(ui->user, 0.0F, 4.0F);
-  const std::string body_x_reset =
-      context->localizer.Label("pose.reset.body.x", "重置", "reset-body-x");
-  if (ui->button(ui->user, anomaly::sdk::StringView(body_x_reset), 42.0F,
-                 0.0F) != 0) {
-    root_x = 0.0F;
-    changed_root_offset();
-  }
-
-  const std::string body_y_label =
-      context->localizer.Text("pose.body.y", "Y");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(body_y_label),
-                       &root_y, -1000.0F, 1000.0F) != 0)
-    changed_root_offset();
-  ui->same_line(ui->user, 0.0F, 4.0F);
-  const std::string body_y_reset =
-      context->localizer.Label("pose.reset.body.y", "重置", "reset-body-y");
-  if (ui->button(ui->user, anomaly::sdk::StringView(body_y_reset), 42.0F,
-                 0.0F) != 0) {
-    root_y = 0.0F;
-    changed_root_offset();
-  }
-
-  const std::string body_z_label =
-      context->localizer.Text("pose.body.z", "Z");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(body_z_label),
-                       &root_z, -1000.0F, 1000.0F) != 0)
-    changed_root_offset();
-  ui->same_line(ui->user, 0.0F, 4.0F);
-  const std::string body_z_reset =
-      context->localizer.Label("pose.reset.body.z", "重置", "reset-body-z");
-  if (ui->button(ui->user, anomaly::sdk::StringView(body_z_reset), 42.0F,
-                 0.0F) != 0) {
-    root_z = 0.0F;
-    changed_root_offset();
-  }
-
-  if (apply_pose_now)
-    ApplyPoseOverridesDirect(*context);
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string reset_label =
-      context->localizer.Text("pose.reset", "Reset All");
-  const bool can_confirm_popup =
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::open_popup)>(
-          ui, offsetof(AnomalyUiServiceV1, open_popup)) &&
-      ui->open_popup != nullptr &&
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_popup_modal)>(
-          ui, offsetof(AnomalyUiServiceV1, begin_popup_modal)) &&
-      ui->begin_popup_modal != nullptr &&
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_popup)>(
-          ui, offsetof(AnomalyUiServiceV1, end_popup)) &&
-      ui->end_popup != nullptr &&
-      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::close_current_popup)>(
-          ui, offsetof(AnomalyUiServiceV1, close_current_popup)) &&
-      ui->close_current_popup != nullptr;
-  if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 70.0F,
-                 0.0F) != 0) {
-    if (can_confirm_popup)
-      ui->open_popup(ui->user, anomaly::sdk::StringView("pose-reset-confirm"));
-    else
-      context->pose_reset_requested.store(true, std::memory_order_release);
-  }
-
-  ui->separator(ui->user);
   const std::string action_label =
       context->localizer.Text("action.status", "Action");
   const std::string action_text =
@@ -7902,411 +7609,750 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   if (ui->button(ui->user, anomaly::sdk::StringView(load_bones_label), 80.0F,
                  0.0F) != 0)
     context->reflection_action_requested.store(6, std::memory_order_release);
-  if (context->pose_export_name[0] == '\0') {
-    std::snprintf(context->pose_export_name.data(), context->pose_export_name.size(),
-                "pose.json");
-  }
-  ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  ui->input_text(ui->user, anomaly::sdk::StringView("##pose-export-name"),
-                 context->pose_export_name.data(),
-                 context->pose_export_name.size(), 0);
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string choose_folder_label =
-      context->localizer.Text("pose.choose.folder", "Choose folder");
-  if (ui->button(ui->user, anomaly::sdk::StringView(choose_folder_label), 90.0F,
-                 0.0F) != 0) {
-    const auto selected = ChooseFolder(context->pose_export_folder);
-    if (selected) {
-      const std::string folder_utf8 = WideToUtf8(selected->native());
-      if (!folder_utf8.empty())
-        context->pose_export_folder = folder_utf8;
-    }
-  }
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string export_label =
-      context->localizer.Text("pose.export", "Export");
-  if (ui->button(ui->user, anomaly::sdk::StringView(export_label), 60.0F,
-                 0.0F) != 0)
-    context->pose_file_action_requested.store(1, std::memory_order_release);
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string export_skeleton_label =
-      context->localizer.Text("pose.export.skeleton", "Export Skeleton");
-  if (ui->button(ui->user, anomaly::sdk::StringView(export_skeleton_label), 110.0F,
-                 0.0F) != 0)
-    context->pose_file_action_requested.store(3, std::memory_order_release);
 
-  ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.import.file", "Import file")));
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string choose_file_label =
-      context->localizer.Text("pose.choose.file", "Choose file");
-  if (ui->button(ui->user, anomaly::sdk::StringView(choose_file_label), 90.0F,
-                 0.0F) != 0) {
-    const auto selected = ChooseFile(context->pose_import_file);
-    if (selected) {
-      const std::string file_utf8 = WideToUtf8(selected->native());
-      if (!file_utf8.empty())
-        context->pose_import_file = file_utf8;
+  // Two pages: the MMD motion player and the joint-pose tool. Tab containers
+  // are tail members of the UI service, so a host that predates them keeps the
+  // single scrolling page.
+  const bool can_tabs =
+      HasField<AnomalyUiServiceV1,
+               decltype(AnomalyUiServiceV1::begin_tab_bar)>(
+          ui, offsetof(AnomalyUiServiceV1, begin_tab_bar)) &&
+      HasField<AnomalyUiServiceV1,
+               decltype(AnomalyUiServiceV1::begin_tab_item)>(
+          ui, offsetof(AnomalyUiServiceV1, begin_tab_item)) &&
+      HasField<AnomalyUiServiceV1,
+               decltype(AnomalyUiServiceV1::end_tab_item)>(
+          ui, offsetof(AnomalyUiServiceV1, end_tab_item)) &&
+      HasField<AnomalyUiServiceV1,
+               decltype(AnomalyUiServiceV1::end_tab_bar)>(
+          ui, offsetof(AnomalyUiServiceV1, end_tab_bar));
+  const std::string mmd_tab_label =
+      context->localizer.Text("tab.mmd", "MMD motion");
+  const std::string pose_tab_label =
+      context->localizer.Text("tab.pose", "Joint pose");
+  const bool use_tabs =
+      can_tabs &&
+      ui->begin_tab_bar(ui->user,
+                        anomaly::sdk::StringView("better-pose-pages"), 0U) != 0;
+  // The motion page is first, so it is the one the panel opens on.
+  const bool mmd_page =
+      !use_tabs ||
+      ui->begin_tab_item(ui->user, anomaly::sdk::StringView(mmd_tab_label),
+                         nullptr, 0U, 1) != 0;
+  if (mmd_page) {
+    // --- MMD motion playback -------------------------------------------------
+    const std::string motion_convert_label =
+        context->localizer.Text("motion.convert", "Convert VMD and load");
+    if (ui->button(ui->user, anomaly::sdk::StringView(motion_convert_label), 110.0F,
+                   0.0F) != 0) {
+      // One click from here: pick the VMD, export this character's skeleton on the game
+      // thread, convert with the shipped reference bone table, then load the result.
+      const auto selected = ChooseFile(context->motion_file, FileKind::Vmd);
+      if (selected) {
+        const std::string file_utf8 = WideToUtf8(selected->native());
+        if (!file_utf8.empty()) {
+          context->motion_file = file_utf8;
+          context->pose_file_action_requested.store(5, std::memory_order_release);
+        }
+      }
+    }  ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string motion_load_label =
+        context->localizer.Text("motion.load", "Load motion");
+    if (ui->button(ui->user, anomaly::sdk::StringView(motion_load_label), 100.0F,
+                   0.0F) != 0) {
+      // Two kinds of file answer to this button. A source VMD is converted again -- a converted
+      // document is built against *this* character's skeleton, so after a character switch the
+      // cached file has the right bone names but the wrong rest pose. An already-converted
+      // document is loaded as it is, which is also how a conversion made elsewhere (or with
+      // another reference model) gets played without redoing it here.
+      if (context->motion_file.empty()) {
+        const auto selected = ChooseFile(context->motion_file, FileKind::Motion);
+        if (selected) {
+          const std::string file_utf8 = WideToUtf8(selected->native());
+          if (!file_utf8.empty())
+            context->motion_file = file_utf8;
+        }
+      }
+      if (!context->motion_file.empty())
+        context->pose_file_action_requested.store(
+            PathIsConvertedMotion(context->motion_file) ? 4 : 5, std::memory_order_release);
     }
-  }
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string import_label =
-      context->localizer.Text("pose.import", "Import");
-  if (ui->button(ui->user, anomaly::sdk::StringView(import_label), 60.0F,
-                 0.0F) != 0)
-    context->pose_file_action_requested.store(2, std::memory_order_release);
 
-  // --- MMD motion playback -------------------------------------------------
-  ui->separator(ui->user);
-  const std::string motion_title =
-      context->localizer.Text("motion.title", "MMD motion");
-  ui->text(ui->user, anomaly::sdk::StringView(motion_title));
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string motion_convert_label =
-      context->localizer.Text("motion.convert", "Convert VMD and load");
-  if (ui->button(ui->user, anomaly::sdk::StringView(motion_convert_label), 110.0F,
-                 0.0F) != 0) {
-    // One click from here: pick the VMD, export this character's skeleton on the game
-    // thread, convert with the shipped reference bone table, then load the result.
-    const auto selected = ChooseFile(context->motion_file, FileKind::Vmd);
-    if (selected) {
-      const std::string file_utf8 = WideToUtf8(selected->native());
-      if (!file_utf8.empty()) {
-        context->motion_file = file_utf8;
-        context->pose_file_action_requested.store(5, std::memory_order_release);
+    const bool motion_loaded =
+        context->motion_loaded.load(std::memory_order_acquire);
+    const bool motion_playing =
+        context->motion_playing.load(std::memory_order_acquire);
+    const std::string motion_play_label = context->localizer.Text(
+        motion_playing ? "motion.pause" : "motion.play",
+        motion_playing ? "Pause" : "Play");
+    if (ui->button(ui->user, anomaly::sdk::StringView(motion_play_label), 60.0F,
+                   0.0F) != 0)
+      context->motion_playing.store(!motion_playing, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string motion_stop_label =
+        context->localizer.Text("motion.stop", "Stop");
+    if (ui->button(ui->user, anomaly::sdk::StringView(motion_stop_label), 55.0F,
+                   0.0F) != 0) {
+      context->motion_playing.store(false, std::memory_order_release);
+      context->motion_seek.store(0.0, std::memory_order_release);
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string motion_unload_label =
+        context->localizer.Text("motion.unload", "Unload");
+    if (ui->button(ui->user, anomaly::sdk::StringView(motion_unload_label), 70.0F,
+                   0.0F) != 0) {
+      context->motion_loaded.store(false, std::memory_order_release);
+      context->motion_playing.store(false, std::memory_order_release);
+      {
+        std::lock_guard<std::mutex> lock(context->motion_mutex);
+        context->motion = Context::MotionTrack{};
+      }
+      // Unloading hands the pose back to the game. Without this refresh the
+      // character keeps the last driven frame, because nothing re-evaluates the
+      // animation once the plugin stops writing the bone buffers.
+      context->reflection_action_requested.store(4, std::memory_order_release);
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    int motion_loop = context->motion_loop.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string motion_loop_label =
+        context->localizer.Text("motion.loop", "Loop");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_loop_label),
+                     &motion_loop) != 0)
+      context->motion_loop.store(motion_loop != 0, std::memory_order_release);
+    int motion_root =
+        context->motion_apply_root.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string motion_root_label =
+        context->localizer.Text("motion.root", "Root motion");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_root_label),
+                     &motion_root) != 0)
+      context->motion_apply_root.store(motion_root != 0, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    int motion_planar = context->motion_lock_planar.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string motion_planar_label =
+        context->localizer.Text("motion.planar", "Lock planar motion");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_planar_label), &motion_planar) != 0)
+      context->motion_lock_planar.store(motion_planar != 0, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    int motion_ref = context->motion_reference_unity.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string motion_ref_label =
+        context->localizer.Text("motion.ref", "Unity Miku reference");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_ref_label), &motion_ref) != 0)
+      context->motion_reference_unity.store(motion_ref != 0, std::memory_order_release);
+
+    // Music: pick a track and it follows the motion's own transport and playhead, so judging sync
+    // needs no manual transport (which only fought the follower). MP3/WAV go through the system
+    // codecs (MCI), nothing is shipped, and the game's own audio is untouched. Mute keeps the
+    // playhead running so unmuting stays in sync.
+    {
+      // The device belongs to the game tick thread (see StepMusic), because MCI does not share a
+      // device between threads. Everything here is a request or a display of published state -- this
+      // panel never issues a command itself.
+      const std::string music_pick_label =
+          context->localizer.Text("music.pick", "Load music");
+      if (ui->button(ui->user, anomaly::sdk::StringView(music_pick_label), 90.0F, 0.0F) != 0) {
+        const auto selected = ChooseFile(context->motion_file, FileKind::Audio);
+        if (selected.has_value()) {
+          std::lock_guard<std::mutex> lock(g_music_mutex);
+          g_music_request_path = WideToUtf8(selected->wstring());
+          g_music_paired_for = context->motion_file;  // do not also auto-pair over this choice
+        }
+      }
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      int music_mute = g_music_muted.load(std::memory_order_acquire) ? 1 : 0;
+      const std::string music_mute_label = context->localizer.Text("music.mute", "Mute music");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(music_mute_label), &music_mute) != 0) {
+        std::lock_guard<std::mutex> lock(g_music_mutex);
+        g_music_request_mute = music_mute != 0;
+        g_music_request_mute_pending = true;
+      }
+      {
+        // Published by the tick: name, position, length, error. No MCI call ever happens here.
+        std::string name;
+        std::string error;
+        {
+          std::lock_guard<std::mutex> lock(g_music_mutex);
+          name = g_music_name;
+          error = g_music_error;
+        }
+        const bool opened = g_music_opened.load(std::memory_order_acquire);
+        const double position = g_music_position.load(std::memory_order_acquire);
+        const double length = g_music_length.load(std::memory_order_acquire);
+        if (opened) {
+          char line[192]{};
+          std::snprintf(line, sizeof(line), "%s  %d:%04.1f / %d:%04.1f%s", name.c_str(),
+                        static_cast<int>(position / 60.0), position - 60.0 * (position / 60.0),
+                        static_cast<int>(length / 60.0), length - 60.0 * (length / 60.0),
+                        error.empty() ? "" : "  (error: see log)");
+          ui->text(ui->user, anomaly::sdk::StringView(std::string(line)));
+        } else if (!error.empty()) {
+          ui->text(ui->user,
+                   anomaly::sdk::StringView(context->localizer.Text("music.error", "music") +
+                                            ": " + error));
+        }
       }
     }
-  }  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string motion_load_label =
-      context->localizer.Text("motion.load", "Load motion");
-  if (ui->button(ui->user, anomaly::sdk::StringView(motion_load_label), 100.0F,
-                 0.0F) != 0) {
-    // Two kinds of file answer to this button. A source VMD is converted again -- a converted
-    // document is built against *this* character's skeleton, so after a character switch the
-    // cached file has the right bone names but the wrong rest pose. An already-converted
-    // document is loaded as it is, which is also how a conversion made elsewhere (or with
-    // another reference model) gets played without redoing it here.
-    if (context->motion_file.empty()) {
-      const auto selected = ChooseFile(context->motion_file, FileKind::Motion);
+
+    // The motion's progress bar sits with the track it follows rather than at the bottom of the panel:
+    // moving either one alone is what made "the music and the bar" hard to use together.
+    float motion_time = static_cast<float>(
+        context->motion_display_seconds.load(std::memory_order_acquire));
+    float motion_duration = 0.0F;
+    {
+      std::lock_guard<std::mutex> lock(context->motion_mutex);
+      motion_duration = static_cast<float>(MotionDuration(context->motion));
+    }
+    if (motion_duration <= 0.0F)
+      motion_duration = 1.0F;
+    if (motion_time > motion_duration)
+      motion_time = motion_duration;
+    const std::string motion_time_label =
+        context->localizer.Text("motion.time", "Time (s)");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(motion_time_label),
+                         &motion_time, 0.0F, motion_duration) != 0)
+      context->motion_seek.store(static_cast<double>(motion_time),
+                                 std::memory_order_release);
+    if (motion_loaded) {
+      const std::string motion_status(context->motion_status.data());
+      ui->text(ui->user, anomaly::sdk::StringView(motion_status));
+    }
+
+    // Camera VMD: load the file, then report the key range and the frame the motion is on. The
+    // camera itself is driven by the view-point hook below (ported from the free-camera plugin),
+    // which reads this track from the render thread.
+    {
+      const std::string camera_pick_label =
+          context->localizer.Text("camera.pick", "Load camera VMD");
+      if (ui->button(ui->user, anomaly::sdk::StringView(camera_pick_label), 110.0F, 0.0F) != 0) {
+        const auto selected = ChooseFile(context->camera_file, FileKind::Vmd);
+        if (selected.has_value()) {
+          std::ifstream file(selected->wstring().c_str(), std::ios::binary);
+          std::string error = "could not open the file";
+          if (file) {
+            std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(file)),
+                                            std::istreambuf_iterator<char>());
+            std::lock_guard<std::mutex> lock(context->camera_mutex);
+            if (context->camera.Load(bytes, WideToUtf8(selected->wstring()), &error)) {
+              context->camera_file = WideToUtf8(selected->wstring());
+              context->camera_loaded.store(true, std::memory_order_release);
+            } else {
+              context->camera_loaded.store(false, std::memory_order_release);
+            }
+          }
+          // Remember the choice: the next plugin (re)load restores it instead of asking again.
+          context->pose_settings_dirty.store(true, std::memory_order_release);
+          if (!context->camera_loaded.load(std::memory_order_acquire))
+            LogDiagnostic(*context, "betterpose camera vmd failed (" +
+                                        WideToUtf8(selected->wstring()) + "): " + error);
+        }
+      }
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      int camera_enabled =
+          context->camera_enabled.load(std::memory_order_acquire) ? 1 : 0;
+      const std::string camera_enable_label =
+          context->localizer.Text("camera.enable", "Drive camera");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(camera_enable_label),
+                       &camera_enabled) != 0) {
+        context->camera_enabled.store(camera_enabled != 0, std::memory_order_release);
+        context->pose_settings_dirty.store(true, std::memory_order_release);
+      }
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      int camera_follow = context->camera_follow.load(std::memory_order_acquire) ? 1 : 0;
+      const std::string camera_follow_label =
+          context->localizer.Text("camera.follow", "Follow the character");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(camera_follow_label),
+                       &camera_follow) != 0) {
+        context->camera_follow.store(camera_follow != 0, std::memory_order_release);
+        context->pose_settings_dirty.store(true, std::memory_order_release);
+      }
+      if (camera_follow != 0) {
+        // Only the two numbers the mode needs: distance back along the anchored direction, height
+        // above the character's feet. The aim (their chest) is taken from the character itself.
+        float follow_distance = static_cast<float>(
+            context->camera_follow_distance_cm.load(std::memory_order_acquire));
+        const std::string follow_distance_label =
+            context->localizer.Text("camera.follow_distance", "Follow distance (cm)");
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(follow_distance_label),
+                             &follow_distance, 100.0F, 1500.0F) != 0) {
+          context->camera_follow_distance_cm.store(static_cast<double>(follow_distance),
+                                                   std::memory_order_release);
+          context->pose_settings_dirty.store(true, std::memory_order_release);
+        }
+        float follow_height = static_cast<float>(
+            context->camera_follow_height_cm.load(std::memory_order_acquire));
+        const std::string follow_height_label =
+            context->localizer.Text("camera.follow_height", "Follow height (cm)");
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(follow_height_label),
+                             &follow_height, 0.0F, 300.0F) != 0) {
+          context->camera_follow_height_cm.store(static_cast<double>(follow_height),
+                                                 std::memory_order_release);
+          context->pose_settings_dirty.store(true, std::memory_order_release);
+        }
+        int follow_vertical =
+            context->camera_follow_vertical.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string follow_vertical_label =
+            context->localizer.Text("camera.follow_vertical", "Height follows the character");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(follow_vertical_label),
+                         &follow_vertical) != 0) {
+          context->camera_follow_vertical.store(follow_vertical != 0,
+                                               std::memory_order_release);
+          context->pose_settings_dirty.store(true, std::memory_order_release);
+        }
+      }
+      // The state line shows whenever a mode is on, even with no file: follow mode needs no file, and
+      // "why is nothing happening" has to be answerable from the panel.
+      if (context->camera_loaded.load(std::memory_order_acquire) || camera_follow != 0 ||
+          camera_enabled != 0) {
+        std::size_t count = 0;
+        double first = 0.0;
+        double last = 0.0;
+        std::string name;
+        if (context->camera_loaded.load(std::memory_order_acquire)) {
+          std::lock_guard<std::mutex> lock(context->camera_mutex);
+          count = context->camera.keys.size();
+          first = context->camera.first_frame;
+          last = context->camera.last_frame;
+          name = context->camera.file;
+        }
+        const double frame = context->camera_frame.load(std::memory_order_acquire);
+        // How far the dance has actually moved the character: this is the number the follow camera
+        // tracks, so it is the one to watch when asking "why is the shot not following".
+        double offset_cm = 0.0;
+        if (camera_follow != 0) {
+          const double dx =
+              context->motion_applied_offset[0].load(std::memory_order_acquire);
+          const double dy =
+              context->motion_applied_offset[1].load(std::memory_order_acquire);
+          offset_cm = std::sqrt(dx * dx + dy * dy);
+        }
+        std::string state;
+        if (camera_follow != 0)
+          state = context->localizer.Text("camera.state.following",
+                                          "following (the file above is ignored)");
+        else if (!motion_playing)
+          state = context->localizer.Text("camera.state.off", "off until the motion plays");
+        else if (camera_enabled != 0) {
+          if (!context->camera_manager_resolved.load(std::memory_order_acquire))
+            state = context->localizer.Text("camera.state.no_camera", "no view camera");
+          else if (!context->camera_hook_ready.load(std::memory_order_acquire))
+            state = context->localizer.Text("camera.state.no_hook", "no accessor hook");
+          else if (!context->camera_anchored.load(std::memory_order_acquire))
+            state = context->localizer.Text("camera.state.waiting",
+                                            "waiting for the first frame");
+          else
+            state = context->localizer.Text("camera.state.driving", "driving");
+        }
+        char line[320]{};
+        if (camera_follow != 0)
+          std::snprintf(line, sizeof(line), "%s  |  %s %.0f cm",
+                        context->localizer.Text("camera.state.follow_mode", "follow mode").c_str(),
+                        context->localizer
+                            .Text("camera.state.displaced", "the dance has moved them")
+                            .c_str(),
+                        offset_cm);
+        else if (name.empty())
+          std::snprintf(line, sizeof(line), "%s  %s",
+                        context->localizer.Text("camera.state.no_file", "no camera VMD loaded")
+                            .c_str(),
+                        state.c_str());
+        else
+          std::snprintf(line, sizeof(line), "%s  %zu keys  f%.0f..%.0f  now f%.0f  %s",
+                        name.substr(name.find_last_of("\\/") + 1).c_str(), count, first, last,
+                        frame, state.c_str());
+        ui->text(ui->user, anomaly::sdk::StringView(std::string(line)));
+      }
+    }
+    if (use_tabs)
+      ui->end_tab_item(ui->user);
+  }
+
+  const bool pose_page =
+      !use_tabs ||
+      ui->begin_tab_item(ui->user, anomaly::sdk::StringView(pose_tab_label),
+                         nullptr, 0U, 1) != 0;
+  if (pose_page) {
+    int freeze = context->freeze_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string freeze_label =
+        context->localizer.Text("freeze", "Pause animation");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(freeze_label), &freeze) !=
+        0) {
+      context->freeze_enabled.store(freeze != 0, std::memory_order_release);
+    }
+
+    int rate_enabled =
+        context->rate_override_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    float rate = context->requested_rate_scale.load(std::memory_order_acquire);
+    const std::string rate_toggle =
+        context->localizer.Text("rate.toggle", "Override animation rate");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(rate_toggle),
+                     &rate_enabled) != 0) {
+      context->rate_override_enabled.store(rate_enabled != 0,
+                                           std::memory_order_release);
+    }
+    const std::string rate_label =
+        context->localizer.Text("rate", "Rate scale");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(rate_label), &rate,
+                         0.0F, 3.0F) != 0) {
+      context->requested_rate_scale.store(rate, std::memory_order_release);
+    }
+
+    ui->separator(ui->user);
+
+    int pose_enabled =
+        context->pose_override_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string pose_toggle =
+        context->localizer.Text("pose.toggle", "Override joint pose");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(pose_toggle),
+                     &pose_enabled) != 0) {
+      context->pose_override_enabled.store(pose_enabled != 0,
+                                           std::memory_order_release);
+    }
+
+    auto bone = context->requested_bone_index.load(std::memory_order_acquire);
+    std::string selected_name = "None";
+    if (bone < snapshot.bone_names.size())
+      selected_name = snapshot.bone_names[bone];
+    const std::string selected_label =
+        context->localizer.Text("pose.bone.selected", "Selected bone");
+    const std::string selected_line =
+        selected_label + ": " + std::to_string(bone) + " " + selected_name;
+    ui->text(ui->user, anomaly::sdk::StringView(selected_line));
+    const std::string pose_status_line = std::string(snapshot.pose_status.data());
+    ui->text(ui->user, anomaly::sdk::StringView(pose_status_line));
+
+    const bool can_text_input =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
+            ui, offsetof(AnomalyUiServiceV1, input_text)) &&
+        ui->input_text != nullptr;
+    const bool can_bone_list =
+        can_text_input &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+        ui->begin_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
+            ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+        ui->end_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
+            ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
+        ui->filter_match != nullptr;
+
+    if (can_bone_list) {
+      const std::string filter_label =
+          context->localizer.Text("pose.filter", "Bone filter");
+      static_cast<void>(ui->input_text(
+          ui->user, anomaly::sdk::StringView(filter_label),
+          context->bone_filter.data(), context->bone_filter.size(),
+          ANOMALY_UI_TEXT_INPUT_V1_NONE));
+
+      const auto set_filter = [&](const char *value) {
+        std::snprintf(context->bone_filter.data(), context->bone_filter.size(),
+                      "%s", value);
+      };
+      int quick_button_index = 0;
+      const auto quick_button = [&](const char *value, const std::string &label) {
+        if (ui->button(ui->user, anomaly::sdk::StringView(label), 56.0F, 0.0F) != 0)
+          set_filter(value);
+        ++quick_button_index;
+        if (quick_button_index % 6 != 0)
+          ui->same_line(ui->user, 0.0F, 4.0F);
+      };
+      quick_button("arm", context->localizer.Text("filter.arm", "Arm"));
+      quick_button("forearm", context->localizer.Text("filter.elbow", "Elbow"));
+      quick_button("hand", context->localizer.Text("filter.hand", "Hand"));
+      quick_button("thigh", context->localizer.Text("filter.thigh", "Thigh"));
+      quick_button("calf", context->localizer.Text("filter.knee", "Knee"));
+      quick_button("foot", context->localizer.Text("filter.foot", "Foot"));
+      quick_button("clavicle", context->localizer.Text("filter.shoulder", "Shoulder"));
+      quick_button("neck", context->localizer.Text("filter.neck", "Neck"));
+      quick_button("head", context->localizer.Text("filter.head", "Head"));
+      quick_button("spine", context->localizer.Text("filter.spine", "Spine"));
+      quick_button("pelvis", context->localizer.Text("filter.pelvis", "Pelvis"));
+      quick_button("", context->localizer.Text("filter.all", "All"));
+
+      // The host pushes its Child stack entry when `begin_child` is called, whether or not ImGui
+      // culled the child, so `end_child` has to be called either way: skipping it when the child is
+      // scrolled out of view leaves the stack unbalanced and the host faults the whole plugin.
+      const int bone_child_open =
+          ui->begin_child(ui->user, anomaly::sdk::StringView("bone-list"), 0.0F, 240.0F, 0U);
+      if (bone_child_open != 0) {
+        if (snapshot.bone_names.empty()) {
+          const std::string empty_label = context->localizer.Text(
+              "pose.bones.empty", "Bone names not loaded; press Load Bones.");
+          ui->text(ui->user, anomaly::sdk::StringView(empty_label));
+        } else {
+          const std::string_view filter(context->bone_filter.data());
+          for (std::size_t index{}; index != snapshot.bone_names.size(); ++index) {
+            if (ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
+                                 anomaly::sdk::StringView(
+                                     snapshot.bone_names[index])) == 0)
+              continue;
+            const std::string bone_item =
+                std::to_string(index) + " " + snapshot.bone_names[index];
+            if (ui->button(ui->user, anomaly::sdk::StringView(bone_item), 0.0F,
+                           0.0F) != 0) {
+              context->requested_bone_index.store(
+                  static_cast<std::uint32_t>(index), std::memory_order_release);
+            }
+          }
+        }
+      }
+      ui->end_child(ui->user);
+    } else {
+      const std::string bone_label =
+          context->localizer.Text("pose.bone", "Bone index");
+      double bone_value = static_cast<double>(bone);
+      if (ui->input_double(ui->user, anomaly::sdk::StringView(bone_label),
+                           &bone_value, 1.0, 8.0) != 0) {
+        if (bone_value < 0.0)
+          bone_value = 0.0;
+        if (bone_value > static_cast<double>(kMaximumBoneIndex))
+          bone_value = static_cast<double>(kMaximumBoneIndex);
+        context->requested_bone_index.store(
+            static_cast<std::uint32_t>(bone_value), std::memory_order_release);
+      }
+    }
+
+    float pitch = 0.0F;
+    float yaw = 0.0F;
+    float roll = 0.0F;
+    {
+      std::lock_guard<std::mutex> lock(context->pose_angles_mutex);
+      if (bone < context->bone_angles.size()) {
+        pitch = static_cast<float>(context->bone_angles[bone][0]);
+        yaw = static_cast<float>(context->bone_angles[bone][1]);
+        roll = static_cast<float>(context->bone_angles[bone][2]);
+      }
+    }
+
+    bool apply_pose_now = false;
+    const auto changed_angle = [&]() {
+      context->pose_override_enabled.store(true, std::memory_order_release);
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+      {
+        std::lock_guard<std::mutex> lock(context->pose_angles_mutex);
+        if (bone >= context->bone_angles.size())
+          context->bone_angles.resize(static_cast<std::size_t>(bone) + 1);
+        context->bone_angles[bone] = {pitch, yaw, roll};
+      }
+      apply_pose_now = true;
+    };
+
+    float root_x = static_cast<float>(
+        context->requested_root_offset[0].load(std::memory_order_acquire));
+    float root_y = static_cast<float>(
+        context->requested_root_offset[1].load(std::memory_order_acquire));
+    float root_z = static_cast<float>(
+        context->requested_root_offset[2].load(std::memory_order_acquire));
+    const auto changed_root_offset = [&]() {
+      context->pose_override_enabled.store(true, std::memory_order_release);
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+      context->requested_root_offset[0].store(root_x, std::memory_order_release);
+      context->requested_root_offset[1].store(root_y, std::memory_order_release);
+      context->requested_root_offset[2].store(root_z, std::memory_order_release);
+      apply_pose_now = true;
+    };
+
+    const std::string pitch_label =
+        context->localizer.Text("pose.pitch", "Pitch");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(pitch_label), &pitch,
+                         -180.0F, 180.0F) != 0)
+      changed_angle();
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string pitch_reset =
+        context->localizer.Label("pose.reset.pitch", "重置", "reset-pitch");
+    if (ui->button(ui->user, anomaly::sdk::StringView(pitch_reset), 42.0F,
+                   0.0F) != 0) {
+      pitch = 0.0F;
+      changed_angle();
+    }
+
+    const std::string yaw_label =
+        context->localizer.Text("pose.yaw", "Yaw");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(yaw_label), &yaw,
+                         -180.0F, 180.0F) != 0)
+      changed_angle();
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string yaw_reset =
+        context->localizer.Label("pose.reset.yaw", "重置", "reset-yaw");
+    if (ui->button(ui->user, anomaly::sdk::StringView(yaw_reset), 42.0F,
+                   0.0F) != 0) {
+      yaw = 0.0F;
+      changed_angle();
+    }
+
+    const std::string roll_label =
+        context->localizer.Text("pose.roll", "Roll");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(roll_label), &roll,
+                         -180.0F, 180.0F) != 0)
+      changed_angle();
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string roll_reset =
+        context->localizer.Label("pose.reset.roll", "重置", "reset-roll");
+    if (ui->button(ui->user, anomaly::sdk::StringView(roll_reset), 42.0F,
+                   0.0F) != 0) {
+      roll = 0.0F;
+      changed_angle();
+    }
+
+    ui->separator(ui->user);
+    const std::string body_x_label =
+        context->localizer.Text("pose.body.x", "X");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(body_x_label),
+                         &root_x, -1000.0F, 1000.0F) != 0)
+      changed_root_offset();
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string body_x_reset =
+        context->localizer.Label("pose.reset.body.x", "重置", "reset-body-x");
+    if (ui->button(ui->user, anomaly::sdk::StringView(body_x_reset), 42.0F,
+                   0.0F) != 0) {
+      root_x = 0.0F;
+      changed_root_offset();
+    }
+
+    const std::string body_y_label =
+        context->localizer.Text("pose.body.y", "Y");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(body_y_label),
+                         &root_y, -1000.0F, 1000.0F) != 0)
+      changed_root_offset();
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string body_y_reset =
+        context->localizer.Label("pose.reset.body.y", "重置", "reset-body-y");
+    if (ui->button(ui->user, anomaly::sdk::StringView(body_y_reset), 42.0F,
+                   0.0F) != 0) {
+      root_y = 0.0F;
+      changed_root_offset();
+    }
+
+    const std::string body_z_label =
+        context->localizer.Text("pose.body.z", "Z");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(body_z_label),
+                         &root_z, -1000.0F, 1000.0F) != 0)
+      changed_root_offset();
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string body_z_reset =
+        context->localizer.Label("pose.reset.body.z", "重置", "reset-body-z");
+    if (ui->button(ui->user, anomaly::sdk::StringView(body_z_reset), 42.0F,
+                   0.0F) != 0) {
+      root_z = 0.0F;
+      changed_root_offset();
+    }
+
+    if (apply_pose_now)
+      ApplyPoseOverridesDirect(*context);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string reset_label =
+        context->localizer.Text("pose.reset", "Reset All");
+    const bool can_confirm_popup =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::open_popup)>(
+            ui, offsetof(AnomalyUiServiceV1, open_popup)) &&
+        ui->open_popup != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_popup_modal)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_popup_modal)) &&
+        ui->begin_popup_modal != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_popup)>(
+            ui, offsetof(AnomalyUiServiceV1, end_popup)) &&
+        ui->end_popup != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::close_current_popup)>(
+            ui, offsetof(AnomalyUiServiceV1, close_current_popup)) &&
+        ui->close_current_popup != nullptr;
+    if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 70.0F,
+                   0.0F) != 0) {
+      if (can_confirm_popup)
+        ui->open_popup(ui->user, anomaly::sdk::StringView("pose-reset-confirm"));
+      else
+        context->pose_reset_requested.store(true, std::memory_order_release);
+    }
+
+    ui->separator(ui->user);
+    if (context->pose_export_name[0] == '\0') {
+      std::snprintf(context->pose_export_name.data(), context->pose_export_name.size(),
+                  "pose.json");
+    }
+    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    ui->input_text(ui->user, anomaly::sdk::StringView("##pose-export-name"),
+                   context->pose_export_name.data(),
+                   context->pose_export_name.size(), 0);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string choose_folder_label =
+        context->localizer.Text("pose.choose.folder", "Choose folder");
+    if (ui->button(ui->user, anomaly::sdk::StringView(choose_folder_label), 90.0F,
+                   0.0F) != 0) {
+      const auto selected = ChooseFolder(context->pose_export_folder);
+      if (selected) {
+        const std::string folder_utf8 = WideToUtf8(selected->native());
+        if (!folder_utf8.empty())
+          context->pose_export_folder = folder_utf8;
+      }
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string export_label =
+        context->localizer.Text("pose.export", "Export");
+    if (ui->button(ui->user, anomaly::sdk::StringView(export_label), 60.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(1, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string export_skeleton_label =
+        context->localizer.Text("pose.export.skeleton", "Export Skeleton");
+    if (ui->button(ui->user, anomaly::sdk::StringView(export_skeleton_label), 110.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(3, std::memory_order_release);
+
+    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.import.file", "Import file")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string choose_file_label =
+        context->localizer.Text("pose.choose.file", "Choose file");
+    if (ui->button(ui->user, anomaly::sdk::StringView(choose_file_label), 90.0F,
+                   0.0F) != 0) {
+      const auto selected = ChooseFile(context->pose_import_file);
       if (selected) {
         const std::string file_utf8 = WideToUtf8(selected->native());
         if (!file_utf8.empty())
-          context->motion_file = file_utf8;
-      }
-    }
-    if (!context->motion_file.empty())
-      context->pose_file_action_requested.store(
-          PathIsConvertedMotion(context->motion_file) ? 4 : 5, std::memory_order_release);
-  }
-
-  const bool motion_loaded =
-      context->motion_loaded.load(std::memory_order_acquire);
-  const bool motion_playing =
-      context->motion_playing.load(std::memory_order_acquire);
-  const std::string motion_play_label = context->localizer.Text(
-      motion_playing ? "motion.pause" : "motion.play",
-      motion_playing ? "Pause" : "Play");
-  if (ui->button(ui->user, anomaly::sdk::StringView(motion_play_label), 60.0F,
-                 0.0F) != 0)
-    context->motion_playing.store(!motion_playing, std::memory_order_release);
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string motion_stop_label =
-      context->localizer.Text("motion.stop", "Stop");
-  if (ui->button(ui->user, anomaly::sdk::StringView(motion_stop_label), 55.0F,
-                 0.0F) != 0) {
-    context->motion_playing.store(false, std::memory_order_release);
-    context->motion_seek.store(0.0, std::memory_order_release);
-  }
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string motion_unload_label =
-      context->localizer.Text("motion.unload", "Unload");
-  if (ui->button(ui->user, anomaly::sdk::StringView(motion_unload_label), 70.0F,
-                 0.0F) != 0) {
-    context->motion_loaded.store(false, std::memory_order_release);
-    context->motion_playing.store(false, std::memory_order_release);
-    std::lock_guard<std::mutex> lock(context->motion_mutex);
-    context->motion = Context::MotionTrack{};
-  }
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  int motion_loop = context->motion_loop.load(std::memory_order_acquire) ? 1 : 0;
-  const std::string motion_loop_label =
-      context->localizer.Text("motion.loop", "Loop");
-  if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_loop_label),
-                   &motion_loop) != 0)
-    context->motion_loop.store(motion_loop != 0, std::memory_order_release);
-  int motion_root =
-      context->motion_apply_root.load(std::memory_order_acquire) ? 1 : 0;
-  const std::string motion_root_label =
-      context->localizer.Text("motion.root", "Root motion");
-  if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_root_label),
-                   &motion_root) != 0)
-    context->motion_apply_root.store(motion_root != 0, std::memory_order_release);
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  int motion_planar = context->motion_lock_planar.load(std::memory_order_acquire) ? 1 : 0;
-  const std::string motion_planar_label =
-      context->localizer.Text("motion.planar", "Lock planar motion");
-  if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_planar_label), &motion_planar) != 0)
-    context->motion_lock_planar.store(motion_planar != 0, std::memory_order_release);
-  ui->same_line(ui->user, 0.0F, 6.0F);
-  int motion_ref = context->motion_reference_unity.load(std::memory_order_acquire) ? 1 : 0;
-  const std::string motion_ref_label =
-      context->localizer.Text("motion.ref", "Unity Miku reference");
-  if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_ref_label), &motion_ref) != 0)
-    context->motion_reference_unity.store(motion_ref != 0, std::memory_order_release);
-
-  // Music: pick a track and it follows the motion's own transport and playhead, so judging sync
-  // needs no manual transport (which only fought the follower). MP3/WAV go through the system
-  // codecs (MCI), nothing is shipped, and the game's own audio is untouched. Mute keeps the
-  // playhead running so unmuting stays in sync.
-  {
-    // The device belongs to the game tick thread (see StepMusic), because MCI does not share a
-    // device between threads. Everything here is a request or a display of published state -- this
-    // panel never issues a command itself.
-    const std::string music_pick_label =
-        context->localizer.Text("music.pick", "Load music");
-    if (ui->button(ui->user, anomaly::sdk::StringView(music_pick_label), 90.0F, 0.0F) != 0) {
-      const auto selected = ChooseFile(context->motion_file, FileKind::Audio);
-      if (selected.has_value()) {
-        std::lock_guard<std::mutex> lock(g_music_mutex);
-        g_music_request_path = WideToUtf8(selected->wstring());
-        g_music_paired_for = context->motion_file;  // do not also auto-pair over this choice
+          context->pose_import_file = file_utf8;
       }
     }
     ui->same_line(ui->user, 0.0F, 6.0F);
-    int music_mute = g_music_muted.load(std::memory_order_acquire) ? 1 : 0;
-    const std::string music_mute_label = context->localizer.Text("music.mute", "Mute music");
-    if (ui->checkbox(ui->user, anomaly::sdk::StringView(music_mute_label), &music_mute) != 0) {
-      std::lock_guard<std::mutex> lock(g_music_mutex);
-      g_music_request_mute = music_mute != 0;
-      g_music_request_mute_pending = true;
-    }
-    {
-      // Published by the tick: name, position, length, error. No MCI call ever happens here.
-      std::string name;
-      std::string error;
-      {
-        std::lock_guard<std::mutex> lock(g_music_mutex);
-        name = g_music_name;
-        error = g_music_error;
-      }
-      const bool opened = g_music_opened.load(std::memory_order_acquire);
-      const double position = g_music_position.load(std::memory_order_acquire);
-      const double length = g_music_length.load(std::memory_order_acquire);
-      if (opened) {
-        char line[192]{};
-        std::snprintf(line, sizeof(line), "%s  %d:%04.1f / %d:%04.1f%s", name.c_str(),
-                      static_cast<int>(position / 60.0), position - 60.0 * (position / 60.0),
-                      static_cast<int>(length / 60.0), length - 60.0 * (length / 60.0),
-                      error.empty() ? "" : "  (error: see log)");
-        ui->text(ui->user, anomaly::sdk::StringView(std::string(line)));
-      } else if (!error.empty()) {
-        ui->text(ui->user,
-                 anomaly::sdk::StringView(context->localizer.Text("music.error", "music") +
-                                          ": " + error));
-      }
-    }
-  }
+    const std::string import_label =
+        context->localizer.Text("pose.import", "Import");
+    if (ui->button(ui->user, anomaly::sdk::StringView(import_label), 60.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(2, std::memory_order_release);
 
-  // The motion's progress bar sits with the track it follows rather than at the bottom of the panel:
-  // moving either one alone is what made "the music and the bar" hard to use together.
-  float motion_time = static_cast<float>(
-      context->motion_display_seconds.load(std::memory_order_acquire));
-  float motion_duration = 0.0F;
-  {
-    std::lock_guard<std::mutex> lock(context->motion_mutex);
-    motion_duration = static_cast<float>(MotionDuration(context->motion));
-  }
-  if (motion_duration <= 0.0F)
-    motion_duration = 1.0F;
-  if (motion_time > motion_duration)
-    motion_time = motion_duration;
-  const std::string motion_time_label =
-      context->localizer.Text("motion.time", "Time (s)");
-  if (ui->slider_float(ui->user, anomaly::sdk::StringView(motion_time_label),
-                       &motion_time, 0.0F, motion_duration) != 0)
-    context->motion_seek.store(static_cast<double>(motion_time),
-                               std::memory_order_release);
-  if (motion_loaded) {
-    const std::string motion_status(context->motion_status.data());
-    ui->text(ui->user, anomaly::sdk::StringView(motion_status));
-  }
-
-  // Camera VMD: load the file, then report the key range and the frame the motion is on. The
-  // camera itself is driven by the view-point hook below (ported from the free-camera plugin),
-  // which reads this track from the render thread.
-  {
-    const std::string camera_pick_label =
-        context->localizer.Text("camera.pick", "Load camera VMD");
-    if (ui->button(ui->user, anomaly::sdk::StringView(camera_pick_label), 110.0F, 0.0F) != 0) {
-      const auto selected = ChooseFile(context->camera_file, FileKind::Vmd);
-      if (selected.has_value()) {
-        std::ifstream file(selected->wstring().c_str(), std::ios::binary);
-        std::string error = "could not open the file";
-        if (file) {
-          std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(file)),
-                                          std::istreambuf_iterator<char>());
-          std::lock_guard<std::mutex> lock(context->camera_mutex);
-          if (context->camera.Load(bytes, WideToUtf8(selected->wstring()), &error)) {
-            context->camera_file = WideToUtf8(selected->wstring());
-            context->camera_loaded.store(true, std::memory_order_release);
-          } else {
-            context->camera_loaded.store(false, std::memory_order_release);
-          }
+    if (can_confirm_popup) {
+      int confirm_open = 1;
+      const std::string confirm_id = "pose-reset-confirm";
+      if (ui->begin_popup_modal(ui->user, anomaly::sdk::StringView(confirm_id),
+                                &confirm_open, 0U) != 0) {
+        const std::string confirm_text = context->localizer.Text(
+            "pose.reset.confirm", "Reset all bone and body offsets?");
+        ui->text(ui->user, anomaly::sdk::StringView(confirm_text));
+        const std::string confirm_yes =
+            context->localizer.Text("pose.reset.confirm.yes", "Reset");
+        if (ui->button(ui->user, anomaly::sdk::StringView(confirm_yes), 90.0F,
+                       0.0F) != 0) {
+          context->pose_reset_requested.store(true, std::memory_order_release);
+          ui->close_current_popup(ui->user);
         }
-        // Remember the choice: the next plugin (re)load restores it instead of asking again.
-        context->pose_settings_dirty.store(true, std::memory_order_release);
-        if (!context->camera_loaded.load(std::memory_order_acquire))
-          LogDiagnostic(*context, "betterpose camera vmd failed (" +
-                                      WideToUtf8(selected->wstring()) + "): " + error);
+        ui->same_line(ui->user, 0.0F, 6.0F);
+        const std::string confirm_cancel =
+            context->localizer.Text("pose.reset.confirm.cancel", "Cancel");
+        if (ui->button(ui->user, anomaly::sdk::StringView(confirm_cancel), 90.0F,
+                       0.0F) != 0)
+          ui->close_current_popup(ui->user);
+        ui->end_popup(ui->user);
       }
     }
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    int camera_enabled =
-        context->camera_enabled.load(std::memory_order_acquire) ? 1 : 0;
-    const std::string camera_enable_label =
-        context->localizer.Text("camera.enable", "Drive camera");
-    if (ui->checkbox(ui->user, anomaly::sdk::StringView(camera_enable_label),
-                     &camera_enabled) != 0) {
-      context->camera_enabled.store(camera_enabled != 0, std::memory_order_release);
-      context->pose_settings_dirty.store(true, std::memory_order_release);
+
+    if (!snapshot.pose_available) {
+      const std::string warning = context->localizer.Text(
+          "pose.unavailable", "Pose edit is inactive until the authoritative bone-space pose buffer is populated.");
+      ui->text(ui->user, anomaly::sdk::StringView(warning));
     }
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    int camera_follow = context->camera_follow.load(std::memory_order_acquire) ? 1 : 0;
-    const std::string camera_follow_label =
-        context->localizer.Text("camera.follow", "Follow the character");
-    if (ui->checkbox(ui->user, anomaly::sdk::StringView(camera_follow_label),
-                     &camera_follow) != 0) {
-      context->camera_follow.store(camera_follow != 0, std::memory_order_release);
-      context->pose_settings_dirty.store(true, std::memory_order_release);
-    }
-    if (camera_follow != 0) {
-      // Only the two numbers the mode needs: distance back along the anchored direction, height
-      // above the character's feet. The aim (their chest) is taken from the character itself.
-      float follow_distance = static_cast<float>(
-          context->camera_follow_distance_cm.load(std::memory_order_acquire));
-      const std::string follow_distance_label =
-          context->localizer.Text("camera.follow_distance", "Follow distance (cm)");
-      if (ui->slider_float(ui->user, anomaly::sdk::StringView(follow_distance_label),
-                           &follow_distance, 100.0F, 1500.0F) != 0) {
-        context->camera_follow_distance_cm.store(static_cast<double>(follow_distance),
-                                                 std::memory_order_release);
-        context->pose_settings_dirty.store(true, std::memory_order_release);
-      }
-      float follow_height = static_cast<float>(
-          context->camera_follow_height_cm.load(std::memory_order_acquire));
-      const std::string follow_height_label =
-          context->localizer.Text("camera.follow_height", "Follow height (cm)");
-      if (ui->slider_float(ui->user, anomaly::sdk::StringView(follow_height_label),
-                           &follow_height, 0.0F, 300.0F) != 0) {
-        context->camera_follow_height_cm.store(static_cast<double>(follow_height),
-                                               std::memory_order_release);
-        context->pose_settings_dirty.store(true, std::memory_order_release);
-      }
-      int follow_vertical =
-          context->camera_follow_vertical.load(std::memory_order_acquire) ? 1 : 0;
-      const std::string follow_vertical_label =
-          context->localizer.Text("camera.follow_vertical", "Height follows the character");
-      if (ui->checkbox(ui->user, anomaly::sdk::StringView(follow_vertical_label),
-                       &follow_vertical) != 0) {
-        context->camera_follow_vertical.store(follow_vertical != 0,
-                                             std::memory_order_release);
-        context->pose_settings_dirty.store(true, std::memory_order_release);
-      }
-    }
-    // The state line shows whenever a mode is on, even with no file: follow mode needs no file, and
-    // "why is nothing happening" has to be answerable from the panel.
-    if (context->camera_loaded.load(std::memory_order_acquire) || camera_follow != 0 ||
-        camera_enabled != 0) {
-      std::size_t count = 0;
-      double first = 0.0;
-      double last = 0.0;
-      std::string name;
-      if (context->camera_loaded.load(std::memory_order_acquire)) {
-        std::lock_guard<std::mutex> lock(context->camera_mutex);
-        count = context->camera.keys.size();
-        first = context->camera.first_frame;
-        last = context->camera.last_frame;
-        name = context->camera.file;
-      }
-      const double frame = context->camera_frame.load(std::memory_order_acquire);
-      // How far the dance has actually moved the character: this is the number the follow camera
-      // tracks, so it is the one to watch when asking "why is the shot not following".
-      double offset_cm = 0.0;
-      if (camera_follow != 0) {
-        const double dx =
-            context->motion_applied_offset[0].load(std::memory_order_acquire);
-        const double dy =
-            context->motion_applied_offset[1].load(std::memory_order_acquire);
-        offset_cm = std::sqrt(dx * dx + dy * dy);
-      }
-      std::string state;
-      if (camera_follow != 0)
-        state = context->localizer.Text("camera.state.following",
-                                        "following (the file above is ignored)");
-      else if (!motion_playing)
-        state = context->localizer.Text("camera.state.off", "off until the motion plays");
-      else if (camera_enabled != 0) {
-        if (!context->camera_manager_resolved.load(std::memory_order_acquire))
-          state = context->localizer.Text("camera.state.no_camera", "no view camera");
-        else if (!context->camera_hook_ready.load(std::memory_order_acquire))
-          state = context->localizer.Text("camera.state.no_hook", "no accessor hook");
-        else if (!context->camera_anchored.load(std::memory_order_acquire))
-          state = context->localizer.Text("camera.state.waiting",
-                                          "waiting for the first frame");
-        else
-          state = context->localizer.Text("camera.state.driving", "driving");
-      }
-      char line[320]{};
-      if (camera_follow != 0)
-        std::snprintf(line, sizeof(line), "%s  |  %s %.0f cm",
-                      context->localizer.Text("camera.state.follow_mode", "follow mode").c_str(),
-                      context->localizer
-                          .Text("camera.state.displaced", "the dance has moved them")
-                          .c_str(),
-                      offset_cm);
-      else if (name.empty())
-        std::snprintf(line, sizeof(line), "%s  %s",
-                      context->localizer.Text("camera.state.no_file", "no camera VMD loaded")
-                          .c_str(),
-                      state.c_str());
-      else
-        std::snprintf(line, sizeof(line), "%s  %zu keys  f%.0f..%.0f  now f%.0f  %s",
-                      name.substr(name.find_last_of("\\/") + 1).c_str(), count, first, last,
-                      frame, state.c_str());
-      ui->text(ui->user, anomaly::sdk::StringView(std::string(line)));
-    }
+    if (use_tabs)
+      ui->end_tab_item(ui->user);
   }
 
-  if (can_confirm_popup) {
-    int confirm_open = 1;
-    const std::string confirm_id = "pose-reset-confirm";
-    if (ui->begin_popup_modal(ui->user, anomaly::sdk::StringView(confirm_id),
-                              &confirm_open, 0U) != 0) {
-      const std::string confirm_text = context->localizer.Text(
-          "pose.reset.confirm", "Reset all bone and body offsets?");
-      ui->text(ui->user, anomaly::sdk::StringView(confirm_text));
-      const std::string confirm_yes =
-          context->localizer.Text("pose.reset.confirm.yes", "Reset");
-      if (ui->button(ui->user, anomaly::sdk::StringView(confirm_yes), 90.0F,
-                     0.0F) != 0) {
-        context->pose_reset_requested.store(true, std::memory_order_release);
-        ui->close_current_popup(ui->user);
-      }
-      ui->same_line(ui->user, 0.0F, 6.0F);
-      const std::string confirm_cancel =
-          context->localizer.Text("pose.reset.confirm.cancel", "Cancel");
-      if (ui->button(ui->user, anomaly::sdk::StringView(confirm_cancel), 90.0F,
-                     0.0F) != 0)
-        ui->close_current_popup(ui->user);
-      ui->end_popup(ui->user);
-    }
-  }
-
-  if (!snapshot.pose_available) {
-    const std::string warning = context->localizer.Text(
-        "pose.unavailable", "Pose edit is inactive until the authoritative bone-space pose buffer is populated.");
-    ui->text(ui->user, anomaly::sdk::StringView(warning));
-  }
+  if (use_tabs)
+    ui->end_tab_bar(ui->user);
 
   ui->end_window(ui->user);
 }
