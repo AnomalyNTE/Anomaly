@@ -515,13 +515,9 @@ struct Context final {
   std::uint32_t mesh_scan_same_class{};
   std::uint32_t mesh_scan_mesh_objects{};
   std::uint32_t mesh_scan_mesh_assets{};
-  std::uint32_t mesh_scan_world_logged{};
   std::uint32_t mesh_scan_skinned{};
-  // Every object whose class says "SkeletalMesh" gets one log line (see StepMeshScan); the bound
-  // keeps a huge registry from flooding the log. Read-only.
-  std::uint32_t mesh_scan_all_logged{};
-  // Likewise for the UFunction objects of the budgeted mesh classes (see StepMeshScan).
-  std::uint32_t mesh_scan_functions_logged{};
+  // Objects whose class says "SkeletalMesh": the scan summary reports the count.
+  std::uint32_t mesh_scan_skeletal{};
   std::vector<std::uint32_t> mesh_scan_bone_counts;
   std::uintptr_t mesh_scan_extra_address{};
   std::uint32_t mesh_scan_extra_count{};
@@ -532,6 +528,10 @@ struct Context final {
   // restart forever whenever it found nothing.
   std::uintptr_t mesh_scan_owner{};
   ULONGLONG next_mesh_scan_retry_ms{};
+  // How many times an empty scan has been retried for the current mesh. A character with
+  // no modular accessories legitimately finds nothing, so the retry - which exists for
+  // components that appear after the pawn - has to stop instead of rescanning forever.
+  std::uint32_t mesh_scan_empty_retries{};
   std::map<std::uintptr_t, std::string> mesh_scan_class_cache;
   std::vector<std::string> mesh_scan_class_names;
   std::vector<std::uintptr_t> skeleton_meshes;
@@ -584,8 +584,20 @@ struct Context final {
     std::array<double, 12> poseable_expected_relative{};
     bool poseable_bind_written{};
     bool poseable_last_write_ok{};
+    // Reflected entry points resolved once when the replacement is created.
+    // CallVirtualUFunction looks its function up by name on every call, and the
+    // accessory writer calls it once per bone per frame, so the lookup - not the
+    // event itself - is what makes a clothed character slow.
+    std::uintptr_t poseable_process_event{};
+    std::uintptr_t poseable_set_bone_function{};
+    std::uintptr_t poseable_set_relative_function{};
+    std::uintptr_t poseable_get_transform_function{};
+    // The pose last sent to the component: only the simulated bones move, so the rest
+    // are skipped instead of being re-sent every frame. PackedTransform is not declared
+    // yet at this point, so these hold its bytes.
+    std::vector<std::array<double, 12>> poseable_written_pose;
+    std::vector<std::array<double, 12>> poseable_scratch_pose;
     better_pose::accessory::Dynamics accessory_dynamics;
-    std::vector<std::array<double, 12>> poseable_expected_pose;
     bool buffers_modified{};
     std::vector<std::uint8_t> saved_component;
     std::vector<std::uint8_t> saved_bone;
@@ -1606,7 +1618,7 @@ bool DropExtraMeshes(Context &context) noexcept;
 bool EnsurePoseableAccessory(Context &context, Context::ExtraMesh &extra) noexcept;
 bool WritePoseableAccessoryPose(Context &context,
                                 Context::ExtraMesh &extra,
-                                const std::vector<PackedTransform> &components) noexcept;
+                                const std::vector<std::array<double, 12>> &components) noexcept;
 void DestroyPoseableAccessories(Context &context) noexcept;
 void DestroyStalePoseableComponent(Context &context,
                                    std::uintptr_t component) noexcept;
@@ -2521,6 +2533,68 @@ bool CallVirtualUFunction(Context &context, const std::uintptr_t object,
   return true;
 }
 
+// Resolve the entry points a hot path needs, once. CallVirtualUFunction looks the
+// function up by name (through the object registry, under a lock) on every single
+// call; the accessory writer calls it once per bone per frame, which is what makes a
+// character with more clothing slower.
+bool ResolvePoseableEntryPoints(Context &context,
+                                Context::ExtraMesh &extra) noexcept {
+  std::string detail;
+  if (!FindObjectAddressByPath(context, kFunctionPoseableSetBoneTransformByNamePath,
+                               extra.poseable_set_bone_function, &detail) ||
+      extra.poseable_set_bone_function == 0) {
+    LogDiagnostic(context, "betterpose poseable entry: set bone lookup failed " + detail);
+    return false;
+  }
+  if (!FindObjectAddressByPath(context, kFunctionSceneSetRelativeTransformPath,
+                               extra.poseable_set_relative_function, &detail) ||
+      extra.poseable_set_relative_function == 0) {
+    LogDiagnostic(context, "betterpose poseable entry: set relative lookup failed " + detail);
+    return false;
+  }
+  if (!FindObjectAddressByPath(context, kFunctionSceneGetComponentTransformPath,
+                               extra.poseable_get_transform_function, &detail) ||
+      extra.poseable_get_transform_function == 0) {
+    LogDiagnostic(context, "betterpose poseable entry: get transform lookup failed " + detail);
+    return false;
+  }
+  std::uintptr_t vtable{};
+  if (!Read(context, extra.poseable_component, vtable) || vtable == 0 ||
+      !Read(context,
+            vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) *
+                        sizeof(void *),
+            extra.poseable_process_event) ||
+      extra.poseable_process_event == 0) {
+    LogDiagnostic(context, "betterpose poseable entry: process event slot unreadable");
+    return false;
+  }
+  return true;
+}
+
+// The same call without the lookup: the caller resolved the function and the
+// component's ProcessEvent slot once. The parameter buffer is deliberately not
+// zero-initialised - only the bytes the function reads are ever copied in.
+bool CallResolvedUFunction(Context &context, const std::uintptr_t object,
+                           const std::uintptr_t function,
+                           const std::uintptr_t process_event,
+                           const void *parameters, const std::size_t parameter_size,
+                           void *output = nullptr) noexcept {
+  if (object == 0 || function == 0 || process_event == 0 ||
+      parameter_size > kMaximumUFunctionParameterBytes ||
+      (parameter_size != 0 && parameters == nullptr))
+    return false;
+  using ProcessEventFn = void(__fastcall *)(void *, void *, void *);
+  std::array<std::uint8_t, kMaximumUFunctionParameterBytes> buffer;
+  if (parameter_size != 0)
+    std::memcpy(buffer.data(), parameters, parameter_size);
+  reinterpret_cast<ProcessEventFn>(process_event)(
+      reinterpret_cast<void *>(object), reinterpret_cast<void *>(function),
+      parameter_size != 0 ? buffer.data() : nullptr);
+  if (output != nullptr && parameter_size != 0)
+    std::memcpy(output, buffer.data(), parameter_size);
+  return true;
+}
+
 bool GetBoneNameFName(Context &context, const std::uint32_t bone_index,
                       std::array<std::uint8_t, 8> &name) noexcept {
   name.fill(0);
@@ -3190,9 +3264,7 @@ void StepMeshScan(Context &context) noexcept {
     context.mesh_scan_skinned = 0;
     context.mesh_scan_mesh_objects = 0;
     context.mesh_scan_bone_counts.clear();
-    context.mesh_scan_world_logged = 0;
-    context.mesh_scan_all_logged = 0;
-    context.mesh_scan_functions_logged = 0;
+    context.mesh_scan_skeletal = 0;
     context.ref_locals.clear();
     if (!Read(context, context.runtime.mesh + kObjectClassOffset,
               context.mesh_scan_class))
@@ -3248,73 +3320,8 @@ void StepMeshScan(Context &context) noexcept {
     }
     if (class_name.empty())
       continue;
-    // Which UFunctions do the budgeted mesh classes really declare? Guessing the significance path
-    // already cost one round trip, so list them by name and declaring class instead: read-only, one
-    // line each, capped. A UFunction's class is "Function" and its outer is the UClass that declares
-    // it, which is exactly what a `/Script/Module.Class.Function` path is built from.
-    if (class_name == "Function" && context.mesh_scan_functions_logged < 80) {
-      std::uintptr_t owner{};
-      std::string owner_name;
-      std::string owner_class;
-      if (Read(context, object + kObjectOuterOffset, owner) && owner != 0) {
-        owner_name = ObjectNameOf(context, owner);
-        owner_class = ClassNameOf(context, owner);
-      }
-      const std::string function_name = ObjectNameOf(context, object);
-      if (function_name.find("Significan") != std::string::npos ||
-          function_name.find("Budget") != std::string::npos ||
-          owner_name.find("Budgeted") != std::string::npos) {
-        ++context.mesh_scan_functions_logged;
-        char function_line[320]{};
-        std::snprintf(function_line, sizeof(function_line),
-                      "betterpose mesh scan function %s declared by %s [%s]",
-                      function_name.c_str(), owner_name.empty() ? "-" : owner_name.c_str(),
-                      owner_class.empty() ? "-" : owner_class.c_str());
-        LogDiagnostic(context, function_line);
-      }
-    }
-    // Every object whose class says "SkeletalMesh", whatever owns it: the note's next step is to find
-    // out which object actually renders a modular hair piece. The passes below only log components
-    // whose outer *is* the local pawn and whose class contains "MeshComponent", so a custom hair
-    // component class, a component on another actor, or a mesh asset itself could never appear.
-    // Read-only, one line each, capped so a big registry cannot flood the log.
-    if (class_name.find("SkeletalMesh") != std::string::npos &&
-        context.mesh_scan_all_logged < 400) {
-      ++context.mesh_scan_all_logged;
-      const bool component = class_name.find("Component") != std::string::npos;
-      std::string outer_name;
-      std::string outer_class;
-      std::uintptr_t outer{};
-      if (Read(context, object + kObjectOuterOffset, outer) && outer != 0) {
-        outer_name = ObjectNameOf(context, outer);
-        outer_class = ClassNameOf(context, outer);
-      }
-      std::string attach_name;
-      if (component) {
-        std::uintptr_t attach_parent{};
-        if (ReadPointerAt(context, object, kMeshAttachParentOffset,
-                          attach_parent) && attach_parent != 0)
-          attach_name = ObjectNameOf(context, attach_parent);
-      }
-      std::uint32_t bones{};
-      if (component) {
-        std::uintptr_t data{};
-        std::uint32_t count{};
-        if (ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset, data, count) &&
-            data != 0 && count <= 4096)
-          bones = count;
-      }
-      char all_line[448]{};
-      std::snprintf(all_line, sizeof(all_line),
-                    "betterpose mesh scan all %llu class %s name %s outer %s [%s] bones %u attach %s",
-                    static_cast<unsigned long long>(object), class_name.c_str(),
-                    ObjectNameOf(context, object).c_str(),
-                    outer_name.empty() ? "-" : outer_name.c_str(),
-                    outer_class.empty() ? "-" : outer_class.c_str(),
-                    static_cast<unsigned>(bones),
-                    attach_name.empty() ? "-" : attach_name.c_str());
-      LogDiagnostic(context, all_line);
-    }
+    if (class_name.find("SkeletalMesh") != std::string::npos)
+      ++context.mesh_scan_skeletal;
     // Mesh assets carry the bind pose. The scan already walks every object, so it
     // is the cheapest place to pick that up; a success is logged and reused by the
     // skeleton export.
@@ -3327,33 +3334,6 @@ void StepMeshScan(Context &context) noexcept {
     if (class_name.find("MeshComponent") == std::string::npos)
       continue;
     ++context.mesh_scan_mesh_objects;
-    // Last diagnostic for the skirt question: list the skinned meshes that are NOT
-    // owned by the character, with their owner's class. An accessory attached to a
-    // socket (a skirt or coat mesh on its own actor) never appeared in the earlier
-    // logs because that pass only looked at components whose outer *is* the pawn.
-    if (context.mesh_scan_world_logged < 12) {
-      std::uintptr_t probe_data{};
-      std::uint32_t probe_count{};
-      std::uintptr_t owner{};
-      if (ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset, probe_data,
-                          probe_count) &&
-          probe_data != 0 && probe_count != 0 && probe_count <= 4096) {
-        const bool owned = Read(context, object + kObjectOuterOffset, owner) &&
-                           owner == context.runtime.character;
-        if (!owned) {
-          const std::string owner_class =
-              owner != 0 ? ClassNameOf(context, owner) : std::string();
-          ++context.mesh_scan_world_logged;
-          char message[256]{};
-          std::snprintf(message, sizeof(message),
-                        "betterpose mesh scan world %llu bones %u owner %s",
-                        static_cast<unsigned long long>(object),
-                        static_cast<unsigned>(probe_count),
-                        owner_class.empty() ? "-" : owner_class.c_str());
-          LogDiagnostic(context, message);
-        }
-      }
-    }
     // Only the local player's own components: the outer of a component is the
     // actor that owns it, so anything else in the world is filtered out here.
     std::uintptr_t outer{};
@@ -3381,86 +3361,6 @@ void StepMeshScan(Context &context) noexcept {
     if (count != context.runtime.bone_space_count &&
         context.mesh_scan_candidates.size() < 16)
       context.mesh_scan_candidates.emplace_back(object, count);
-    // Log every component that really owns a skeleton, body included: the earlier
-    // version only logged components whose bone count differed from the body's, and
-    // this character's second component shares the body's 298 bones, so it stayed
-    // invisible. The first bone names say what the component actually is.
-    {
-      std::string names;
-      for (std::uint32_t index{}; index != 3 && index < count; ++index) {
-        std::string bone;
-        if (GetBoneNameForMesh(context, object, index, bone) && !bone.empty()) {
-          if (!names.empty())
-            names += ",";
-          names += bone;
-        }
-      }
-      // Which asset is this component drawing? A modular hair mesh shows up here by
-      // name, which is what identifies the piece that never moves.
-      std::string asset_name;
-      for (std::uint32_t offset{}; offset + 8 <= 0x2000 && asset_name.empty();
-           offset += 8) {
-        std::uintptr_t candidate{};
-        if (!ReadPointerAt(context, object, offset, candidate) || candidate == 0)
-          continue;
-        const std::string candidate_class = ClassNameOf(context, candidate);
-        if (candidate_class.find("SkeletalMesh") == std::string::npos ||
-            candidate_class.find("Component") != std::string::npos)
-          continue;
-        asset_name = ObjectNameOf(context, candidate);
-      }
-      char message[384]{};
-      std::snprintf(message, sizeof(message),
-                    "betterpose mesh scan skinned %llu bones %u body %u asset %s "
-                    "first %s",
-                    static_cast<unsigned long long>(object),
-                    static_cast<unsigned>(count),
-                    static_cast<unsigned>(context.runtime.bone_space_count),
-                    asset_name.empty() ? "-" : asset_name.c_str(), names.c_str());
-      LogDiagnostic(context, message);
-      // Which animation mode is each component in? The plugin only forces the BODY
-      // into Custom (kAnimationModeCustom = 2) so MMD poses survive; if the hair
-      // component sits in Custom too, its own AnimBlueprint
-      // (nanally_fashion3_hair_AB_C) never evaluates and nothing feeds the follower.
-      // Read-only.
-      {
-        std::uint8_t animation_mode{};
-        std::uint8_t body_mode{};
-        if (Read(context, object + kMeshAnimationModeOffset, animation_mode)) {
-          static_cast<void>(Read(context, context.runtime.mesh +
-                                             kMeshAnimationModeOffset, body_mode));
-          char mode_line[192]{};
-          std::snprintf(mode_line, sizeof(mode_line),
-                        "betterpose mesh scan mode %llu animation %u (body %u)",
-                        static_cast<unsigned long long>(object),
-                        static_cast<unsigned>(animation_mode),
-                        static_cast<unsigned>(body_mode));
-          LogDiagnostic(context, mode_line);
-        }
-      }
-      // Where does this component keep its rendered skinning state? The body's path
-      // works and a modular hair mesh's does not, so diffing the two components'
-      // fields by the class they point at is the step that finds the buffer the hair
-      // actually reads. Capped, because a component has hundreds of pointers.
-      std::uint32_t logged{};
-      for (std::uint32_t offset{}; offset + 8 <= 0x3000 && logged < 48;
-           offset += 8) {
-        std::uintptr_t field{};
-        if (!ReadPointerAt(context, object, offset, field) || field == 0)
-          continue;
-        const std::string field_class = ClassNameOf(context, field);
-        if (field_class.empty())
-          continue;
-        char line[256]{};
-        std::snprintf(line, sizeof(line),
-                      "betterpose mesh scan field %llu off %X class %s name %s",
-                      static_cast<unsigned long long>(object),
-                      static_cast<unsigned>(offset), field_class.c_str(),
-                      ObjectNameOf(context, field).c_str());
-        LogDiagnostic(context, line);
-        ++logged;
-      }
-    }
   }
   const bool done = context.mesh_scan_cursor >= registry.count;
   if (done) {
@@ -3494,7 +3394,7 @@ void StepMeshScan(Context &context) noexcept {
                     static_cast<unsigned>(context.mesh_scan_mesh_objects),
                     static_cast<unsigned>(context.mesh_scan_mesh_assets),
                     static_cast<unsigned>(context.mesh_scan_skinned),
-                    static_cast<unsigned>(context.mesh_scan_all_logged),
+                    static_cast<unsigned>(context.mesh_scan_skeletal),
                     context.mesh_scan_candidates.size(),
                     context.ref_locals.empty() ? context.ref_pose_status.c_str()
                                                : "read");
@@ -3503,6 +3403,7 @@ void StepMeshScan(Context &context) noexcept {
     if (context.mesh_scan_candidates.empty()) {
       static_cast<void>(DropExtraMeshes(context));
     } else {
+      context.mesh_scan_empty_retries = 0;
       BuildExtraMeshes(context);
     }
   }
@@ -3802,6 +3703,12 @@ bool EnsurePoseableAccessory(Context &context,
     return false;
   }
 
+  if (!ResolvePoseableEntryPoints(context, extra)) {
+    LogDiagnostic(context, "betterpose poseable create: entry points unresolved");
+    return false;
+  }
+  extra.poseable_written_pose.clear();
+  extra.poseable_written_pose.resize(extra.bone_count);
   extra.poseable_active = true;
   char message[256]{};
   std::snprintf(message, sizeof(message),
@@ -3817,25 +3724,38 @@ bool EnsurePoseableAccessory(Context &context,
 
 bool WritePoseableAccessoryPose(
     Context &context, Context::ExtraMesh &extra,
-    const std::vector<PackedTransform> &components) noexcept {
+    const std::vector<std::array<double, 12>> &components) noexcept {
   if (!extra.poseable_active || extra.poseable_component == 0 ||
       components.size() != extra.bone_count ||
-      extra.bone_fnames.size() != extra.bone_count)
+      extra.bone_fnames.size() != extra.bone_count ||
+      extra.poseable_set_bone_function == 0 || extra.poseable_process_event == 0)
     return false;
+  // Only the simulated bones move; the rest hold their bind pose in component space, so
+  // after the first write they are skipped instead of being re-sent every frame. A
+  // clothed character is mostly rigid accessories, and each skipped bone is one
+  // reflected call saved.
+  if (extra.poseable_written_pose.size() != extra.bone_count)
+    extra.poseable_written_pose.assign(extra.bone_count, std::array<double, 12>{});
   bool all_ok = true;
+  std::array<std::uint8_t, 113> parameters{};
   for (std::uint32_t bone{}; bone != extra.bone_count; ++bone) {
-    std::array<std::uint8_t, 113> parameters{};
+    if (std::memcmp(extra.poseable_written_pose[bone].data(), components[bone].data(),
+                    sizeof(PackedTransform)) == 0)
+      continue;
+    std::memset(parameters.data(), 0, parameters.size());
     std::memcpy(parameters.data(), extra.bone_fnames[bone].data(), 8);
-    std::memcpy(parameters.data() + 16, &components[bone],
+    std::memcpy(parameters.data() + 16, components[bone].data(),
                 sizeof(PackedTransform));
     // EBoneSpaces::ComponentSpace in this build (WorldSpace=0,
     // ComponentSpace=1; there is no LocalSpace enum in this API).
     parameters[112] = 1;
-    std::string detail;
-    if (!CallVirtualUFunction(context, extra.poseable_component,
-                              kFunctionPoseableSetBoneTransformByNamePath,
-                              parameters.data(), parameters.size(), detail))
+    if (!CallResolvedUFunction(context, extra.poseable_component,
+                               extra.poseable_set_bone_function,
+                               extra.poseable_process_event, parameters.data(),
+                               parameters.size()))
       all_ok = false;
+    else
+      extra.poseable_written_pose[bone] = components[bone];
   }
   return all_ok;
 }
@@ -3855,10 +3775,11 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
   std::array<std::uint8_t, 369> parameters{};
   static_assert(parameters.size() <= kMaximumUFunctionParameterBytes);
   std::memcpy(parameters.data(), &placement, sizeof(placement));
-  std::string detail;
-  if (!CallVirtualUFunction(context, extra.poseable_component,
-                            kFunctionSceneSetRelativeTransformPath,
-                            parameters.data(), parameters.size(), detail))
+  if (extra.poseable_set_relative_function == 0 || extra.poseable_process_event == 0 ||
+      !CallResolvedUFunction(context, extra.poseable_component,
+                             extra.poseable_set_relative_function,
+                             extra.poseable_process_event, parameters.data(),
+                             parameters.size()))
     return false;
   const bool was_dynamic = extra.accessory_dynamics.Moving();
   const bool strand_enabled = extra.accessory_dynamics.DrivenBones() != 0;
@@ -3866,9 +3787,11 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
   if (strand_enabled) {
     std::array<std::uint8_t, 96> world_query{};
     PackedTransform component_world{};
-    const bool world_ok = CallVirtualUFunction(
-        context, extra.poseable_component, kFunctionSceneGetComponentTransformPath,
-        world_query.data(), world_query.size(), detail, &component_world);
+    const bool world_ok = extra.poseable_get_transform_function != 0 &&
+        CallResolvedUFunction(context, extra.poseable_component,
+                              extra.poseable_get_transform_function,
+                              extra.poseable_process_event, world_query.data(),
+                              world_query.size(), &component_world);
     const auto& s = component_world.scale;
     const bool uniform_scale = std::isfinite(s[0]) && s[0] > 1e-6 &&
                                std::abs(s[0]-s[1]) < 1e-5 && std::abs(s[0]-s[2]) < 1e-5;
@@ -3896,15 +3819,17 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
   if (!extra.poseable_bind_written || strand_enabled || was_dynamic) {
     if (extra.bind_world.size() != extra.bone_count)
       return false;
-    std::vector<PackedTransform> submitted_pose(extra.bone_count);
-    for (std::size_t bone{}; bone != submitted_pose.size(); ++bone)
-      std::memcpy(&submitted_pose[bone], (*desired_pose)[bone].data(), sizeof(PackedTransform));
-    if (!WritePoseableAccessoryPose(context, extra, submitted_pose))
+    // Reused, so a clothed character does not allocate one vector per accessory per frame.
+    if (extra.poseable_scratch_pose.size() != extra.bone_count)
+      extra.poseable_scratch_pose.assign(extra.bone_count, std::array<double, 12>{});
+    for (std::size_t bone{}; bone != extra.poseable_scratch_pose.size(); ++bone)
+      extra.poseable_scratch_pose[bone] = (*desired_pose)[bone];
+    if (!WritePoseableAccessoryPose(context, extra, extra.poseable_scratch_pose))
       return false;
-    extra.poseable_expected_pose = *desired_pose;
     extra.poseable_bind_written = true;
   }
   if (!extra.poseable_source_visibility_changed) {
+    std::string detail;
     const std::array<std::uint8_t, 2> hidden{0, 0};
     if (!CallVirtualUFunction(context, extra.object, kFunctionSceneSetVisibilityPath,
                               hidden.data(), hidden.size(), detail))
@@ -3942,8 +3867,12 @@ void DestroyPoseableAccessories(Context &context) noexcept {
     extra.poseable_attempted = false;
     extra.poseable_bind_written = false;
     extra.poseable_last_write_ok = false;
+    extra.poseable_process_event = 0;
+    extra.poseable_set_bone_function = 0;
+    extra.poseable_set_relative_function = 0;
+    extra.poseable_get_transform_function = 0;
     extra.accessory_dynamics.Reset();
-    extra.poseable_expected_pose.clear();
+    extra.poseable_written_pose.clear();
   }
 }
 
@@ -7038,9 +6967,16 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
       !context.attach_scan_requested.load(std::memory_order_acquire)) {
     const auto now = GetTickCount64();
     const bool empty_scan = context.mesh_scan_candidates.empty();
-    const bool retry_empty =
-        empty_scan && now >= context.next_mesh_scan_retry_ms;
+    // Three tries, then accept "this character has no accessories". Without the bound the
+    // scan re-ran every second forever on a character that has none, walking the whole
+    // object registry each time (measured: 227 scans, 6,406 mesh objects per scan).
+    const bool retry_empty = empty_scan && context.mesh_scan_empty_retries < 3 &&
+                             now >= context.next_mesh_scan_retry_ms;
     if (context.mesh_scan_owner != context.runtime.mesh || retry_empty) {
+      if (context.mesh_scan_owner != context.runtime.mesh)
+        context.mesh_scan_empty_retries = 0;
+      else
+        ++context.mesh_scan_empty_retries;
       context.mesh_scan_requested.store(true, std::memory_order_release);
       context.next_mesh_scan_retry_ms = now + 1000;
     } else if (context.attach_parent_offset == 0)

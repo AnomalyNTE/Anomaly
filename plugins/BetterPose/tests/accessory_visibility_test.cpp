@@ -4,7 +4,7 @@
 #include <iostream>
 
 namespace fixture {
-enum Function { IsVisible, SetVisibility, SetRelative, SetBone, Destroy, Count };
+enum Function { IsVisible, SetVisibility, SetRelative, SetBone, GetTransform, Destroy, Count };
 int functions[Count]{};
 bool visibility_query_available{true};
 struct Component {
@@ -50,7 +50,7 @@ AnomalyStatusV1 ANOMALY_CALL Find(void*,AnomalyStringViewV1 name,AnomalyGenerati
   const std::array<std::string_view,Count> paths{
       kFunctionSceneIsVisiblePath,kFunctionSceneSetVisibilityPath,
       kFunctionSceneSetRelativeTransformPath,kFunctionPoseableSetBoneTransformByNamePath,
-      kFunctionActorComponentDestroyPath};
+      kFunctionSceneGetComponentTransformPath,kFunctionActorComponentDestroyPath};
   for (std::size_t i=0;i<paths.size();++i) {
     if (path!=paths[i] || (i==IsVisible && !visibility_query_available)) continue;
     handle->id=i+1;
@@ -112,6 +112,9 @@ int main() {
   extra.bind_world.resize(1);
   std::memcpy(extra.bind_world[0].data(),&identity,sizeof(identity));
   std::memcpy(extra.poseable_socket_relative.data(),&identity,sizeof(identity));
+  // The writer resolves its reflected entry points once, when the replacement is created;
+  // a hand-built replacement has to do the same or it refuses to drive.
+  Check(ResolvePoseableEntryPoints(context,extra),"entry points were not resolved");
   Check(DrivePoseableSocketPose(context,extra,{identity}),"visible accessory pose failed");
   Check(!source.visible && replacement.visible && !source.child_visible,
         "replacement handoff changed a hidden child");
@@ -127,6 +130,9 @@ int main() {
   // HiddenInGame may change while playback owns bVisible. Restoration must not erase it.
   extra.poseable_component=reinterpret_cast<std::uintptr_t>(&replacement);
   extra.poseable_active=true; extra.poseable_attempted=true;
+  // Teardown drops the resolved entry points with the component, so a fresh replacement
+  // resolves them again - exactly what creation does.
+  Check(ResolvePoseableEntryPoints(context,extra),"second replacement kept stale entry points");
   Check(DrivePoseableSocketPose(context,extra,{identity}),"second handoff failed");
   source.hidden_in_game=true;
   RestoreExtraMeshes(context);
