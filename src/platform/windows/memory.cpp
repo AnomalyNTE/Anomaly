@@ -1,5 +1,7 @@
 #include "memory.hpp"
 
+#include "anomaly/thread_local_value.hpp"
+
 #include <Psapi.h>
 
 #include <algorithm>
@@ -29,15 +31,13 @@ struct CachedRange {
 
 constexpr auto kRangeCacheTtl = std::chrono::seconds(1);
 
-std::vector<CachedRange>& RangeCache() noexcept {
-    static thread_local std::vector<CachedRange> cache;
-    return cache;
-}
+struct RangeCacheState {
+    std::vector<CachedRange> ranges;
+    std::chrono::steady_clock::time_point stamp{};
+};
 
-std::chrono::steady_clock::time_point& RangeCacheStamp() noexcept {
-    static thread_local std::chrono::steady_clock::time_point stamp{};
-    return stamp;
-}
+// The core is manually mapped and cannot carry loader-managed static TLS.
+anomaly::ThreadLocalObject<RangeCacheState> g_range_cache;
 
 void RangeCacheRemember(
     std::vector<CachedRange>& cache, std::uintptr_t base, std::uintptr_t end,
@@ -58,12 +58,13 @@ bool HasRange(std::uintptr_t address, std::size_t size, bool write) {
         return false;
     }
     const auto end = address + size;
-    auto& cache = RangeCache();
-    auto& stamp = RangeCacheStamp();
+    auto& state = g_range_cache.Get();
+    auto& cache = state.ranges;
     const auto now = std::chrono::steady_clock::now();
-    if (stamp.time_since_epoch().count() == 0 || now - stamp > kRangeCacheTtl) {
+    if (state.stamp.time_since_epoch().count() == 0 ||
+        now - state.stamp > kRangeCacheTtl) {
         cache.clear();
-        stamp = now;
+        state.stamp = now;
     }
     const auto covering = std::upper_bound(
         cache.begin(), cache.end(), address,
