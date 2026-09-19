@@ -48,6 +48,16 @@ UID、新控件或控件刚完成构造时，会立即通过现有 `SetText` 路
 `CanvasPanel_0` 的另一个 TextBlock 子控件上恢复前缀。原始资产的该面板只有这两个 TextBlock，
 因此不需要放宽到其他 WidgetTree 或其他面板。
 
+值控件的模板 FName 也可能晚于引擎写入才就绪：冷启动时 `BPUI_RoleID` 蓝图尚未加载，HUD
+重建时新的对象 generation 会同时清空已解析的模板名与锚点，这两段窗口里按名称匹配的身份
+都不存在。原生 `SetText` 钩子在模板名未就绪期间改用「数字载荷 + 控件自身 FName 属于
+`TextBlock_RoleID` 族」识别值控件，使该次写入当场被替换而不是等到下一次对象扫描；学到的
+FName 会被缓存并沿用（FName 索引在同一进程会话内稳定），因此模板名就绪后重建出的新实例
+也按控件自身身份命中，模板名与实例名不一致时两者互为备用身份。缓存命中后不再解析名称，
+该探测不进入热路径；数字载荷限定为 6 到 20 位纯数字，而 `UID：` 前缀标签不以数字结尾，
+两者不会互相误判。模板名就绪后，值控件仍要求落在活动 RoleID 树内，与插件其余写入共用
+同一结构门。
+
 值控件始终以完整目标字符串覆盖，不再从当前文本提取并拼接“后缀”，因此中文和特殊字符
 在实时更新与周期校验中保持幂等。文本写入复用宿主 ESC 菜单已运行的反射路径：
 `KismetTextLibrary.Conv_StringToText -> ProcessEvent(TextBlock.SetText)`。不再手工构造/释放
@@ -86,6 +96,8 @@ cmake --build .build\windows-vs2022 --config RelWithDebInfo `
 - 旧配置没有 `hidePrefix` 时默认按 `true` 加载；
 - 勾选时隐藏 `UID：` 并自动左移，取消勾选时恢复前缀和原位置；
 - 点击 `Apply` 后当前 RoleID 立即更新；
+ - 冷启动（RoleID 蓝图尚在加载）与 HUD 重建期间不闪现原始 UID，包括只显示数字值、
+   不显示 `UID：` 前缀的情况；
 - 英文、数字、中文和特殊字符都能显示；
 - 按 `M` 打开大地图不产生新 UE 崩溃报告；
 - `Revert to original` 能恢复自动记录的数字 UID。

@@ -200,7 +200,14 @@ struct Context final {
     std::uintptr_t set_text_original{};
     std::uintptr_t set_text_target{};
     std::uint64_t text_override_revision{};
-    std::uint32_t value_name_id_hint{};
+    // Value-widget FName learned by the native SetText hook while the
+    // template-derived name is still unarmed. The RoleID HUD is built by the
+    // game thread at an arbitrary moment, and Update resolves the template
+    // path only on its own tick; a write that wins that race used to be
+    // forwarded verbatim, which is the raw UID the player sees. FName indexes
+    // are stable for the whole process session, so the hint also survives
+    // object generation resets.
+    std::atomic<std::uint32_t> hook_value_name_id{};
     std::atomic<std::shared_ptr<const SetTextHookSnapshot>> text_override;
     bool text_write_binding_diagnostic_emitted{};
     std::uintptr_t set_visibility_function{};
@@ -1626,23 +1633,63 @@ bool EnsureTextHookSnapshot(
     }
 }
 
+// The RoleID value widget carries the bare UID while the localized "UID" label
+// lives in a separate TextBlock. Only a numeric payload can be a value write,
+// which keeps the name lookup in ArmHookValueName off every unrelated
+// TextBlock the engine re-texts.
+bool LooksLikeUidValue(const std::wstring_view text) noexcept {
+    if (text.size() < 6 || text.size() > 20) return false;
+    for (const wchar_t character : text) {
+        if (character < L'0' || character > L'9') return false;
+    }
+    return true;
+}
+
+// Arms the hook from the widget's own FName. The template lookup in
+// ArmTargetWidgetNames only succeeds once the RoleID blueprint is loaded, and
+// a new object generation drops both the template name and the anchored tree,
+// so in either window a fresh RoleID layer can only be recognized by its own
+// name. FName indexes are stable for the whole process session, which lets one
+// cached index cover the replacement instances of a HUD rebuild while keeping
+// the string resolve off the hot path.
+bool ArmHookValueName(Context& context, const std::uintptr_t widget) noexcept {
+    std::uint32_t name_id = 0;
+    if (!ReadRoleIdObjectNameId(context, widget, name_id)) return false;
+    if (context.hook_value_name_id.load(std::memory_order_acquire) == name_id) {
+        return true;
+    }
+    if (!IsRoleIdValueObject(context, widget, name_id)) return false;
+    context.hook_value_name_id.store(name_id, std::memory_order_release);
+    return true;
+}
+
 bool IsHookTargetWidget(
     const Context& context, const std::uintptr_t widget,
     const SetTextHookSnapshot& override) noexcept {
+    // The template name and the name the hook learned from a live widget can
+    // disagree: the blueprint template is "TextBlock_RoleID" while a rebuilt
+    // HUD layer may carry the suffixed instance name. Either identity
+    // recognizes the value widget, so whichever is known first does not
+    // decide whether the other one still matches.
+    const std::uint32_t hook_name_id =
+        context.hook_value_name_id.load(std::memory_order_acquire);
     if (widget == 0 || context.set_text == nullptr ||
-        override.target_name_id == 0) {
+        (override.target_name_id == 0 && hook_name_id == 0)) {
         return false;
     }
     __try {
         const std::uintptr_t vtable =
             *reinterpret_cast<const std::uintptr_t*>(widget);
+        const std::uint32_t widget_name_id =
+            *reinterpret_cast<const std::uint32_t*>(
+                widget + fake_uid_profile::kObjectNameOffset);
         if (vtable == 0 ||
             *reinterpret_cast<const std::uintptr_t*>(
                 vtable + fake_uid_profile::kSetTextVtableOffset) !=
                 reinterpret_cast<std::uintptr_t>(context.set_text) ||
-            *reinterpret_cast<const std::uint32_t*>(
-                widget + fake_uid_profile::kObjectNameOffset) !=
-                override.target_name_id) {
+            widget_name_id == 0 ||
+            (widget_name_id != override.target_name_id &&
+             widget_name_id != hook_name_id)) {
             return false;
         }
         if (override.roleid_outer == 0 || override.roleid_panel == 0) {
@@ -1758,25 +1805,43 @@ void ANOMALY_CALL SetTextDetour(
             context->text_override.load(std::memory_order_acquire);
         const auto settings = context->settings.load(std::memory_order_acquire);
         const auto widget_address = reinterpret_cast<std::uintptr_t>(widget);
-        const bool is_value_widget = !forwarding && settings != nullptr &&
+        bool is_value_widget = !forwarding && settings != nullptr &&
             settings->enabled && override != nullptr &&
             IsHookTargetWidget(*context, widget_address, *override);
         bool is_hidden_prefix = !forwarding && settings != nullptr &&
             settings->enabled && settings->hide_prefix && override != nullptr &&
             IsHookPrefixWidget(*context, widget_address, *override);
+        // The prefix needs its text probe whenever its FName is unknown, and
+        // the value widget needs one while the template name is unarmed -- a
+        // cold start, or the object generation reset that a HUD rebuild
+        // performs. Once the template name is back the probe leaves the hot
+        // path and the value widget is matched by name instead.
+        const bool content_probe_needed = settings != nullptr &&
+            (settings->hide_prefix ||
+             (override != nullptr && override->target_name_id == 0));
         if (!is_hidden_prefix && !is_value_widget &&
             !forwarding && settings != nullptr && settings->enabled &&
-            settings->hide_prefix && override != nullptr) {
+            override != nullptr && content_probe_needed) {
             // TextBlock_90 is not guaranteed to be exposed as a named
             // variable. During a HUD rebuild its FName and slot can therefore
             // be unknown even though the engine is about to write the
             // localized prefix. The prefix text is the stable discriminator
-            // for this call; the value widget is excluded above so a complete
-            // "UID: <number>" value cannot be mistaken for the label.
+            // for this call; a numeric payload on a widget that names itself
+            // as the RoleID value widget is the other. The label never ends
+            // in a digit, so the two cannot be confused.
             std::wstring incoming_text;
-            is_hidden_prefix = text != nullptr &&
-                ReadUnrealText(*context, text, incoming_text) &&
-                LooksLikeUidPrefix(incoming_text);
+            if (text != nullptr &&
+                ReadUnrealText(*context, text, incoming_text)) {
+                is_hidden_prefix = settings->hide_prefix &&
+                    LooksLikeUidPrefix(incoming_text);
+                if (!is_hidden_prefix) {
+                    // The value write only reaches this probe while the
+                    // template name is unarmed, and the widget's own name is
+                    // then the only identity that a rebuilt HUD layer has.
+                    is_value_widget = LooksLikeUidValue(incoming_text) &&
+                        ArmHookValueName(*context, widget_address);
+                }
+            }
         }
         if (is_value_widget || is_hidden_prefix) {
             // FText owns shared engine data. Never retain a raw FText copy in
