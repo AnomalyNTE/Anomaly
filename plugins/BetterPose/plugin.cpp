@@ -89,6 +89,11 @@ constexpr std::string_view kPoseSettingsSchema = R"json(
       "maxItems": 3,
       "items": {"type": "number"}
     },
+    "musicVolume": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
     "bones": {
       "type": "array",
       "items": {
@@ -106,6 +111,13 @@ constexpr std::string_view kPoseSettingsSchema = R"json(
   }
 }
 )json";
+
+// Music volume, in percent. The panel and the saved settings publish a request; the game
+// tick applies it to the MCI device (MCI is not shared between threads, see StepMusic).
+// These live up here because the settings document is read and written above the player.
+std::atomic_int g_music_volume{100};
+std::atomic_int g_music_request_volume{100};
+std::atomic_bool g_music_request_volume_pending{false};
 
 struct RuntimeState {
   std::uintptr_t g_world_address{};
@@ -746,6 +758,17 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json) noexcept { 
         root_offset[index] = json.at("rootOffset").at(index).get<double>();
       }
     }
+    if (json.contains("musicVolume")) {
+      if (!json.at("musicVolume").is_number_integer())
+        return false;
+      const int volume = json.at("musicVolume").get<int>();
+      if (volume < 0 || volume > 100)
+        return false;
+      // Applied on the tick, like every other MCI change: the panel and this restore path
+      // only ever publish requests.
+      g_music_request_volume.store(volume, std::memory_order_release);
+      g_music_request_volume_pending.store(true, std::memory_order_release);
+    }
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
     context.bone_angles = std::move(loaded);
     context.requested_root_offset[0].store(root_offset[0], std::memory_order_release);
@@ -782,6 +805,7 @@ std::string BuildPoseDocument(Context &context) noexcept {
   root_offset[2] = context.requested_root_offset[2].load(std::memory_order_acquire);
   root["bones"] = std::move(bones);
   root["rootOffset"] = root_offset;
+  root["musicVolume"] = g_music_volume.load(std::memory_order_acquire);
   return root.dump();
 }
 
@@ -1616,8 +1640,7 @@ void WriteExtraMeshes(Context &context,
 bool RestoreExtraMeshes(Context &context) noexcept;
 bool DropExtraMeshes(Context &context) noexcept;
 bool EnsurePoseableAccessory(Context &context, Context::ExtraMesh &extra) noexcept;
-bool WritePoseableAccessoryPose(Context &context,
-                                Context::ExtraMesh &extra,
+bool WritePoseableAccessoryPose(Context::ExtraMesh &extra,
                                 const std::vector<std::array<double, 12>> &components) noexcept;
 void DestroyPoseableAccessories(Context &context) noexcept;
 void DestroyStalePoseableComponent(Context &context,
@@ -2574,7 +2597,7 @@ bool ResolvePoseableEntryPoints(Context &context,
 // The same call without the lookup: the caller resolved the function and the
 // component's ProcessEvent slot once. The parameter buffer is deliberately not
 // zero-initialised - only the bytes the function reads are ever copied in.
-bool CallResolvedUFunction(Context &context, const std::uintptr_t object,
+bool CallResolvedUFunction(const std::uintptr_t object,
                            const std::uintptr_t function,
                            const std::uintptr_t process_event,
                            const void *parameters, const std::size_t parameter_size,
@@ -3723,9 +3746,8 @@ bool EnsurePoseableAccessory(Context &context,
 }
 
 bool WritePoseableAccessoryPose(
-    Context &context, Context::ExtraMesh &extra,
-    const std::vector<std::array<double, 12>> &components) noexcept {
-  if (!extra.poseable_active || extra.poseable_component == 0 ||
+    Context::ExtraMesh &extra,
+    const std::vector<std::array<double, 12>> &components) noexcept {  if (!extra.poseable_active || extra.poseable_component == 0 ||
       components.size() != extra.bone_count ||
       extra.bone_fnames.size() != extra.bone_count ||
       extra.poseable_set_bone_function == 0 || extra.poseable_process_event == 0)
@@ -3749,7 +3771,7 @@ bool WritePoseableAccessoryPose(
     // EBoneSpaces::ComponentSpace in this build (WorldSpace=0,
     // ComponentSpace=1; there is no LocalSpace enum in this API).
     parameters[112] = 1;
-    if (!CallResolvedUFunction(context, extra.poseable_component,
+    if (!CallResolvedUFunction(extra.poseable_component,
                                extra.poseable_set_bone_function,
                                extra.poseable_process_event, parameters.data(),
                                parameters.size()))
@@ -3776,7 +3798,7 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
   static_assert(parameters.size() <= kMaximumUFunctionParameterBytes);
   std::memcpy(parameters.data(), &placement, sizeof(placement));
   if (extra.poseable_set_relative_function == 0 || extra.poseable_process_event == 0 ||
-      !CallResolvedUFunction(context, extra.poseable_component,
+      !CallResolvedUFunction(extra.poseable_component,
                              extra.poseable_set_relative_function,
                              extra.poseable_process_event, parameters.data(),
                              parameters.size()))
@@ -3788,7 +3810,7 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
     std::array<std::uint8_t, 96> world_query{};
     PackedTransform component_world{};
     const bool world_ok = extra.poseable_get_transform_function != 0 &&
-        CallResolvedUFunction(context, extra.poseable_component,
+        CallResolvedUFunction(extra.poseable_component,
                               extra.poseable_get_transform_function,
                               extra.poseable_process_event, world_query.data(),
                               world_query.size(), &component_world);
@@ -3824,7 +3846,7 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
       extra.poseable_scratch_pose.assign(extra.bone_count, std::array<double, 12>{});
     for (std::size_t bone{}; bone != extra.poseable_scratch_pose.size(); ++bone)
       extra.poseable_scratch_pose[bone] = (*desired_pose)[bone];
-    if (!WritePoseableAccessoryPose(context, extra, extra.poseable_scratch_pose))
+    if (!WritePoseableAccessoryPose(extra, extra.poseable_scratch_pose))
       return false;
     extra.poseable_bind_written = true;
   }
@@ -5178,11 +5200,9 @@ void WriteExtraMeshes(Context &context,
       extra.buffers_modified = true;
       const auto *mesh_bytes = reinterpret_cast<const std::uint8_t *>(out.data());
       const auto mesh_size = out.size() * sizeof(PackedTransform);
-      const bool wrote_component =
-          WriteBytes(context, extra.component_space_data, mesh_bytes, mesh_size);
-       const bool wrote_bone =
-           WriteBytes(context, extra.bone_space_data, mesh_bytes, mesh_size);
-       static_cast<void>(ForceMeshObjectUpdate(context, extra.object));
+      static_cast<void>(WriteBytes(context, extra.component_space_data, mesh_bytes, mesh_size));
+      static_cast<void>(WriteBytes(context, extra.bone_space_data, mesh_bytes, mesh_size));
+      static_cast<void>(ForceMeshObjectUpdate(context, extra.object));
       continue;
     }
     out.assign(extra.bone_count, PackedTransform{});
@@ -5758,8 +5778,12 @@ class MusicPlayer {
     std::wstring extension = path.extension().wstring();
     for (wchar_t &c : extension)
       c = static_cast<wchar_t>(::towlower(c));
-    // wav goes to the waveaudio device, everything else through the DirectShow-style codecs.
-    const std::wstring device = extension == L".wav" ? L"waveaudio" : L"mpegvideo";
+    // Everything goes through the DirectShow-style codecs. The waveaudio device refuses the
+    // whole `setaudio` family on this machine - measured: mute and volume both answer 261,
+    // "the driver does not recognise the command" - so a WAV opened there could not be muted
+    // or turned down. `mpegvideo` plays the same file with identical length/position
+    // readouts and supports both commands.
+    const std::wstring device = L"mpegvideo";
     // The alias namespace survives a hot reload (it lives as long as the process), so a previous
     // instance can still hold the name: close it first, and if it is somehow still taken fall back
     // to a numbered alias instead of leaving the panel dead with "alias already in use".
@@ -5785,6 +5809,9 @@ class MusicPlayer {
         std::string ignored_again;
         static_cast<void>(Command(L"set " + Utf8ToWide(alias_) + L" time format ms",
                                   &ignored_again));
+        // Re-apply the chosen volume: a fresh alias starts at the device default.
+        if (volume_percent_ != 100)
+          static_cast<void>(SetVolume(volume_percent_, &ignored_again));
         // The track's own frame table, and the rate the device believes in. Everything the player
         // asks for or reports goes through them (see Mp3FrameTable); without them it stays on the
         // device clock, which is what every non-MP3 file and every unparsable one does.
@@ -5887,6 +5914,21 @@ class MusicPlayer {
     muted_ = muted;
     return true;
   }
+
+  // Volume in percent. MCI takes 0..1000 on the same `setaudio` command the mute uses, and
+  // the DirectShow device reports it back through `status ... volume` (measured: 100 and
+  // 1000 round-trip exactly). The value is kept even when no track is open, so the panel can
+  // show it and the next Open re-applies it.
+  bool SetVolume(const int percent, std::string *error) {
+    const int clamped = (std::max)(0, (std::min)(100, percent));
+    volume_percent_ = clamped;
+    if (alias_.empty())
+      return true;
+    return Command(L"setaudio " + Utf8ToWide(alias_) + L" volume to " +
+                       std::to_wstring(clamped * 10),
+                   error);
+  }
+  int Volume() const { return volume_percent_; }
 
   double Position() const {
     long long milliseconds{};
@@ -5992,6 +6034,7 @@ class MusicPlayer {
   double origin_true_seconds_ = 0.0;
   long long origin_device_ms_ = 0;
   bool muted_{};
+  int volume_percent_ = 100;
 };
 
 // One player per plugin instance. **The game tick thread owns it**, because MCI does not share a
@@ -6100,6 +6143,15 @@ void StepMusic(Context &context, const double delta_seconds) noexcept {
     if (g_music.opened() &&
         !g_music.SetMuted(g_music_muted.load(std::memory_order_relaxed), &g_music_error))
       LogDiagnostic(context, "betterpose music mute failed: " + g_music_error);
+  }
+  if (g_music_request_volume_pending.exchange(false, std::memory_order_acquire)) {
+    const int volume = g_music_request_volume.load(std::memory_order_relaxed);
+    g_music_volume.store(volume, std::memory_order_release);
+    g_music_error.clear();
+    // SetVolume keeps the value even with no track open, so a volume chosen before picking a
+    // song is applied by the Open that follows.
+    if (!g_music.SetVolume(volume, &g_music_error))
+      LogDiagnostic(context, "betterpose music volume failed: " + g_music_error);
   }
   // The song belongs to the motion: whenever a *different* motion is loaded the track is replaced by
   // that motion's sibling audio, and one with no sibling goes silent. Waiting for an empty player
@@ -7593,6 +7645,18 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         std::lock_guard<std::mutex> lock(g_music_mutex);
         g_music_request_mute = music_mute != 0;
         g_music_request_mute_pending = true;
+      }
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      float music_volume =
+          static_cast<float>(g_music_volume.load(std::memory_order_acquire));
+      const std::string music_volume_label =
+          context->localizer.Text("music.volume", "Volume");
+      if (ui->slider_float(ui->user, anomaly::sdk::StringView(music_volume_label),
+                           &music_volume, 0.0F, 100.0F) != 0) {
+        g_music_request_volume.store(static_cast<int>(music_volume + 0.5F),
+                                     std::memory_order_release);
+        g_music_request_volume_pending.store(true, std::memory_order_release);
+        context->pose_settings_dirty.store(true, std::memory_order_release);
       }
       {
         // Published by the tick: name, position, length, error. No MCI call ever happens here.
