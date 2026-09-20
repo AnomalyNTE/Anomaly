@@ -259,6 +259,8 @@ struct Context final {
     std::unordered_set<std::string> food_spent_groups;
     // Regions learned to be empty during this run, and the current run of empty points.
     std::unordered_set<std::string> food_empty_groups;
+    // Groups already written to the log this run, so a decision is reported once.
+    std::unordered_set<std::string> food_skip_logged;
     // Panel setting: how many empty points in a row mark a region empty. Applies to both
     // kinds of food. Runtime state like the teleport offset, not persisted.
     std::atomic<std::uint32_t> food_empty_region_run{kFoodEmptyRegionRunDefault};
@@ -1805,6 +1807,11 @@ bool ReadRecordSelections(const std::uintptr_t record,
 
 // The row name carries the region and the kind: HTTargetPoint_PropBox_{Box|Item}_{REGION}_NNN.
 // The key ("Item|A") is what says whether a whole region is spent for the week.
+void LogBox(Context& context, const std::string& message) {
+    const auto* core = anomaly::sdk::Host(context.host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID, 1).get();
+    if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, anomaly::sdk::StringView("box-auto " + message));
+}
+
 bool FoodGroupOf(const std::string_view name, std::string& key) {
     constexpr std::string_view prefix = "HTTargetPoint_PropBox_";
     if (!name.starts_with(prefix)) return false;
@@ -1832,6 +1839,12 @@ bool FoodGroupOf(const std::string_view name, std::string& key) {
 
 // One food point in this region had no actor at all: enough of those in a row and the rest
 // of the region is skipped for this run.
+void NoteFoodRegionSkipped(Context& context, const std::string& key,
+                           const char* rule) {
+    if (!context.food_skip_logged.insert(key).second) return;
+    LogBox(context, std::string("food region skip group=") + key + " rule=" + rule);
+}
+
 void NoteFoodPointEmpty(Context& context, const std::string& name) noexcept {
     std::string key;
     if (!FoodGroupOf(name, key)) return;
@@ -1842,8 +1855,10 @@ void NoteFoodPointEmpty(Context& context, const std::string& name) noexcept {
     ++context.food_empty_run;
     const std::uint32_t threshold =
         context.food_empty_region_run.load(std::memory_order_relaxed);
-    if (threshold > 0 && context.food_empty_run >= threshold)
+    if (threshold > 0 && context.food_empty_run >= threshold) {
         context.food_empty_groups.insert(key);
+        NoteFoodRegionSkipped(context, key, "empty-run");
+    }
 }
 
 // A point in this region had something in it, so the region is not empty after all.
@@ -1866,8 +1881,10 @@ void RefreshFoodRegionState(Context& context) noexcept {
     }
     context.food_spent_groups.clear();
     for (const auto& entry : picked) {
-        if (entry.second >= static_cast<int>(kFoodRegionSpentPicks))
+        if (entry.second >= static_cast<int>(kFoodRegionSpentPicks)) {
             context.food_spent_groups.insert(entry.first);
+            NoteFoodRegionSkipped(context, entry.first, "quota");
+        }
     }
 }
 
@@ -2184,6 +2201,7 @@ void Begin(Context& context) {
     context.food_empty_groups.clear();
     context.food_empty_group.clear();
     context.food_empty_run = 0;
+    context.food_skip_logged.clear();
     context.skipped = 0;
     context.running = true;
     ResetPointState(context);
