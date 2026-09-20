@@ -137,6 +137,10 @@ constexpr std::uint32_t kShopRescanCycles = 3;
 // against a live week: A 39, B 42, C 39, D 40, while the regions with nothing spawned sat
 // at 0 - so the allowance is 40 and this leaves room for a few failures.
 constexpr std::uint32_t kFoodRegionSpentPicks = 35;
+// Consecutive food points in one region that turn out to have no actor at all before the
+// rest of that region is skipped for this run. Regions whose allowance is used up keep all
+// their remaining points in the table, and each one costs the whole actor-load wait.
+constexpr std::uint32_t kFoodEmptyRegionRun = 3;
 
 struct RawName final {
     std::int32_t comparison_index{};
@@ -254,6 +258,10 @@ struct Context final {
     std::atomic_bool dump_food_pending{};
     // Region keys ("Item|A") whose weekly food is spent, and when they were last recomputed.
     std::unordered_set<std::string> food_spent_groups;
+    // Regions learned to be empty during this run, and the current run of empty points.
+    std::unordered_set<std::string> food_empty_groups;
+    std::string food_empty_group;
+    std::uint32_t food_empty_run{};
     std::chrono::steady_clock::time_point food_state_refresh_at{};
     const AnomalyNteSkillsServiceV1* skills{};
     const AnomalyNteSkillInvocationServiceV1* skill_invocation{};
@@ -1843,6 +1851,27 @@ bool FoodGroupOf(const std::string_view name, std::string& key) {
     return true;
 }
 
+// One food point in this region had no actor at all: enough of those in a row and the rest
+// of the region is skipped for this run.
+void NoteFoodPointEmpty(Context& context, const std::string& name) noexcept {
+    std::string key;
+    if (!FoodGroupOf(name, key)) return;
+    if (key != context.food_empty_group) {
+        context.food_empty_group = key;
+        context.food_empty_run = 0;
+    }
+    if (++context.food_empty_run >= kFoodEmptyRegionRun)
+        context.food_empty_groups.insert(key);
+}
+
+// A point in this region had something in it, so the region is not empty after all.
+void NoteFoodPointFound(Context& context, const std::string& name) noexcept {
+    std::string key;
+    if (!FoodGroupOf(name, key) || key != context.food_empty_group) return;
+    context.food_empty_group.clear();
+    context.food_empty_run = 0;
+}
+
 // A region counts as spent once the game has recorded enough picks there. The picked
 // record is the only distance-independent signal: the available set holds what is near the
 // player, and the region being visited is by definition the near one, so it always shows
@@ -2170,6 +2199,9 @@ void Begin(Context& context) {
     context.current_index = context.start_index < context.filtered_points.size()
         ? context.start_index : 0;
     context.picked = 0;
+    context.food_empty_groups.clear();
+    context.food_empty_group.clear();
+    context.food_empty_run = 0;
     context.skipped = 0;
     context.running = true;
     ResetPointState(context);
@@ -2907,6 +2939,7 @@ void TickFoodPickup(Context& context, const Point& p,
                     ? "箱子未加载，重传 " + p.row_name
                     : "重传 " + p.row_name;
             } else {
+                NoteFoodPointEmpty(context, p.row_name);
                 ++context.skipped;
                 ++context.current_index;
                 ResetPointState(context);
@@ -3101,6 +3134,7 @@ void TickFoodPickup(Context& context, const Point& p,
             snapshot.sequence > context.pickup_baseline_sequence &&
             snapshot.state == ANOMALY_NTE_PICKUP_V1_COMPLETE) {
             if (snapshot.confirmed > 0) {
+                NoteFoodPointFound(context, p.row_name);
                 ++context.picked;
                 ++context.current_index;
                 ResetPointState(context);
@@ -3237,7 +3271,8 @@ void Tick(Context& context) {
     if (p.category == "box_food" || p.category == "item_food") {
         std::string food_key;
         if (FoodGroupOf(p.row_name, food_key) &&
-            context.food_spent_groups.find(food_key) != context.food_spent_groups.end()) {
+            (context.food_spent_groups.find(food_key) != context.food_spent_groups.end() ||
+             context.food_empty_groups.find(food_key) != context.food_empty_groups.end())) {
             const std::array args{std::string_view(p.row_name)};
             context.status = context.localizer.Format(
                 "status.region_spent", "Region already collected this week, skip [{0}]",
