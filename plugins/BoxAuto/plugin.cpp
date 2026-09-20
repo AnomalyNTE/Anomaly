@@ -1839,6 +1839,7 @@ void NoteFoodPointEmpty(Context& context, const std::string& name) noexcept {
         context.food_empty_group = key;
         context.food_empty_run = 0;
     }
+    ++context.food_empty_run;
     const std::uint32_t threshold =
         context.food_empty_region_run.load(std::memory_order_relaxed);
     if (threshold > 0 && context.food_empty_run >= threshold)
