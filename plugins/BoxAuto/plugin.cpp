@@ -133,10 +133,11 @@ constexpr std::uint32_t kShopExitRecoveryAttempts = 3;
 // retry loop and the still-stealth loop each restart their own counters, so this is the
 // only ceiling on the point as a whole.
 constexpr std::uint32_t kShopRescanCycles = 3;
-// Picks in one region+kind group that mean the region is spent for the week. Measured
-// against a live week: A 39, B 42, C 39, D 40, while the regions with nothing spawned sat
-// at 0 - so the allowance is 40 and this leaves room for a few failures.
-constexpr std::uint32_t kFoodRegionSpentPicks = 35;
+// Picks in one region+kind group that mean the region is spent for the week. Measured on a
+// live week the finished regions sit at A 39, B 42, C 39, D 40, so the bar is 39; 35 was too
+// eager (E06 sat at 35-39 with items still there) and 40 left A and C to the slower rule.
+// Everything below the bar falls to the rule that is verified by observation.
+constexpr std::uint32_t kFoodRegionSpentPicks = 39;
 // Default for the panel setting below: consecutive food points in one region that turn out
 // to have no actor at all before the rest of that region is skipped for this run. Regions
 // whose allowance is used up keep all their remaining points in the table, and each one
@@ -1840,9 +1841,9 @@ bool FoodGroupOf(const std::string_view name, std::string& key) {
 // One food point in this region had no actor at all: enough of those in a row and the rest
 // of the region is skipped for this run.
 void NoteFoodRegionSkipped(Context& context, const std::string& key,
-                           const char* rule) {
+                           const std::string& rule) {
     if (!context.food_skip_logged.insert(key).second) return;
-    LogBox(context, std::string("food region skip group=") + key + " rule=" + rule);
+    LogBox(context, "food region skip group=" + key + " rule=" + rule);
 }
 
 void NoteFoodPointEmpty(Context& context, const std::string& name) noexcept {
@@ -1883,7 +1884,9 @@ void RefreshFoodRegionState(Context& context) noexcept {
     for (const auto& entry : picked) {
         if (entry.second >= static_cast<int>(kFoodRegionSpentPicks)) {
             context.food_spent_groups.insert(entry.first);
-            NoteFoodRegionSkipped(context, entry.first, "quota");
+            NoteFoodRegionSkipped(
+                context, entry.first,
+                "quota count=" + std::to_string(entry.second));
         }
     }
 }
