@@ -246,6 +246,11 @@ struct Context final {
     char filter[128]{};
     std::string type_prefix;
     std::atomic_bool read_pending{};
+    // One-shot: the next table read also logs every food point with its records.
+    std::atomic_bool dump_food_pending{};
+    // Region keys ("Item|A") whose weekly food is spent, and when they were last recomputed.
+    std::unordered_set<std::string> food_spent_groups;
+    std::chrono::steady_clock::time_point food_state_refresh_at{};
     const AnomalyNteSkillsServiceV1* skills{};
     const AnomalyNteSkillInvocationServiceV1* skill_invocation{};
     bool shop_stealth_ready{};
@@ -1462,6 +1467,11 @@ void RebuildFilteredLocked(Context& context) noexcept {
     context.type_prefix = std::string(ActorPrefixForChoice(context.type_choice));
 }
 
+void LogBox(Context& context, const std::string& message) {
+    const auto* core = anomaly::sdk::Host(context.host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID, 1).get();
+    if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, anomaly::sdk::StringView("box-auto " + message));
+}
+
 void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
     void* table_object{};
     if (!ObjectsReady(context.objects)) return;
@@ -1538,6 +1548,24 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
         p.y = y;
         p.z = z;
         p.category = category;
+        if (context.dump_food_pending.load(std::memory_order_acquire) &&
+            (category == "box_food" || category == "item_food")) {
+            // Logged before the filters below: the point of the dump is to see the rows
+            // the filters would drop, and which record each one is in.
+            const bool picked = context.picked_up_valid &&
+                context.picked_up_points.find(p.row_name) !=
+                    context.picked_up_points.end();
+            const bool uncollected = context.uncollected_catalog_valid &&
+                context.uncollected_points.find(p.row_name) !=
+                    context.uncollected_points.end();
+            LogBox(context, "food point=" + p.row_name +
+                " cat=" + category +
+                " x=" + std::to_string(static_cast<long long>(x)) +
+                " y=" + std::to_string(static_cast<long long>(y)) +
+                " z=" + std::to_string(static_cast<long long>(z)) +
+                " picked=" + (picked ? "1" : "0") +
+                " uncollected=" + (uncollected ? "1" : "0"));
+        }
         if (context.picked_up_valid &&
             (category == "box_food" || category == "item_food" ||
              category == "prison")) {
@@ -1782,6 +1810,52 @@ bool ReadRecordSelections(const std::uintptr_t record,
         }
     }
     return true;
+}
+
+// The row name carries the region and the kind: HTTargetPoint_PropBox_{Box|Item}_{REGION}_NNN.
+// The key ("Item|A") is what says whether a whole region is spent for the week.
+bool FoodGroupOf(const std::string_view name, std::string& key) {
+    constexpr std::string_view prefix = "HTTargetPoint_PropBox_";
+    if (!name.starts_with(prefix)) return false;
+    const std::string_view rest = name.substr(prefix.size());
+    const std::size_t kind_end = rest.find('_');
+    if (kind_end == std::string_view::npos) return false;
+    const std::string_view kind = rest.substr(0, kind_end);
+    if (kind != "Box" && kind != "Item") return false;
+    std::string_view region = rest.substr(kind_end + 1);
+    const std::size_t number_start = region.find_last_of('_');
+    if (number_start != std::string_view::npos) {
+        const std::string_view number = region.substr(number_start + 1);
+        bool digits = !number.empty();
+        for (const char c : number) {
+            if (c < '0' || c > '9') digits = false;
+        }
+        if (digits) region = region.substr(0, number_start);
+    }
+    if (region.empty()) return false;
+    key.assign(kind);
+    key.push_back('|');
+    key.append(region);
+    return true;
+}
+
+// A region counts as spent when the game has recorded picks there and lists nothing left.
+// A region with neither is one that has not been visited this week, not one that is empty.
+void RefreshFoodRegionState(Context& context) noexcept {
+    std::unordered_map<std::string, int> picked;
+    std::unordered_map<std::string, int> available;
+    std::string key;
+    for (const auto& name : context.picked_up_points) {
+        if (FoodGroupOf(name, key)) ++picked[key];
+    }
+    for (const auto& name : context.uncollected_points) {
+        if (FoodGroupOf(name, key)) ++available[key];
+    }
+    context.food_spent_groups.clear();
+    for (const auto& entry : picked) {
+        if (entry.second > 0 && available.find(entry.first) == available.end())
+            context.food_spent_groups.insert(entry.first);
+    }
 }
 
 bool RefreshUncollectedCatalog(Context& context) noexcept {
@@ -3158,6 +3232,21 @@ void Tick(Context& context) {
         return;
     }
     const Point& p = context.filtered_points[context.current_index];
+    if (p.category == "box_food" || p.category == "item_food") {
+        std::string food_key;
+        if (FoodGroupOf(p.row_name, food_key) &&
+            context.food_spent_groups.find(food_key) != context.food_spent_groups.end()) {
+            const std::array args{std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                "status.region_spent", "Region already collected this week, skip [{0}]",
+                args);
+            ++context.skipped;
+            ++context.current_index;
+            ResetPointState(context);
+            context.due = now;
+            return;
+        }
+    }
     if (p.category == "shop_steal" && !context.shop_stealth_ready) {
         PrepareShopStealth(context, p, now);
         return;
@@ -3887,7 +3976,9 @@ void ANOMALY_CALL Update(void* plugin_context, const double delta_seconds) {
         GetPlayerController(context);
         RefreshUncollectedCatalog(context);
         RefreshPickedUpCatalog(context);
+        RefreshFoodRegionState(context);
         ReadTable(context);
+        context.dump_food_pending.store(false, std::memory_order_release);
         BuildClassMap(context);
     }
     if (context.begin_pending.exchange(false, std::memory_order_acq_rel)) {
@@ -4063,6 +4154,14 @@ void ANOMALY_CALL Update(void* plugin_context, const double delta_seconds) {
             }
         }
     }
+    if (context.running &&
+        std::chrono::steady_clock::now() >= context.food_state_refresh_at) {
+        context.food_state_refresh_at =
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        RefreshUncollectedCatalog(context);
+        RefreshPickedUpCatalog(context);
+        RefreshFoodRegionState(context);
+    }
     Tick(context);
     if (context.oracle != nullptr) {
         auto& oracle = *context.oracle;
@@ -4101,6 +4200,12 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     const std::string read_table_label =
         context.localizer.Text("action.read_table", "Read Table");
     if (ui->button(ui->user, anomaly::sdk::StringView(read_table_label), 0.0F, 0.0F) != 0) {
+        context.read_pending.store(true, std::memory_order_release);
+    }
+    const std::string dump_food_label =
+        context.localizer.Text("action.dump_food", "Dump food points");
+    if (ui->button(ui->user, anomaly::sdk::StringView(dump_food_label), 0.0F, 0.0F) != 0) {
+        context.dump_food_pending.store(true, std::memory_order_release);
         context.read_pending.store(true, std::memory_order_release);
     }
     const std::array<std::string, 12> type_names = {
