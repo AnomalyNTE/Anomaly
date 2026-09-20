@@ -133,6 +133,10 @@ constexpr std::uint32_t kShopExitRecoveryAttempts = 3;
 // retry loop and the still-stealth loop each restart their own counters, so this is the
 // only ceiling on the point as a whole.
 constexpr std::uint32_t kShopRescanCycles = 3;
+// Picks in one region+kind group that mean the region is spent for the week. Measured
+// against a live week: A 39, B 42, C 39, D 40, while the regions with nothing spawned sat
+// at 0 - so the allowance is 40 and this leaves room for a few failures.
+constexpr std::uint32_t kFoodRegionSpentPicks = 35;
 
 struct RawName final {
     std::int32_t comparison_index{};
@@ -1839,21 +1843,19 @@ bool FoodGroupOf(const std::string_view name, std::string& key) {
     return true;
 }
 
-// A region counts as spent when the game has recorded picks there and lists nothing left.
-// A region with neither is one that has not been visited this week, not one that is empty.
+// A region counts as spent once the game has recorded enough picks there. The picked
+// record is the only distance-independent signal: the available set holds what is near the
+// player, and the region being visited is by definition the near one, so it always shows
+// entries for a region that has just filled up.
 void RefreshFoodRegionState(Context& context) noexcept {
     std::unordered_map<std::string, int> picked;
-    std::unordered_map<std::string, int> available;
     std::string key;
     for (const auto& name : context.picked_up_points) {
         if (FoodGroupOf(name, key)) ++picked[key];
     }
-    for (const auto& name : context.uncollected_points) {
-        if (FoodGroupOf(name, key)) ++available[key];
-    }
     context.food_spent_groups.clear();
     for (const auto& entry : picked) {
-        if (entry.second > 0 && available.find(entry.first) == available.end())
+        if (entry.second >= static_cast<int>(kFoodRegionSpentPicks))
             context.food_spent_groups.insert(entry.first);
     }
 }
