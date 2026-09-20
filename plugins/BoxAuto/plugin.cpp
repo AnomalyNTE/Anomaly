@@ -137,10 +137,11 @@ constexpr std::uint32_t kShopRescanCycles = 3;
 // against a live week: A 39, B 42, C 39, D 40, while the regions with nothing spawned sat
 // at 0 - so the allowance is 40 and this leaves room for a few failures.
 constexpr std::uint32_t kFoodRegionSpentPicks = 35;
-// Consecutive food points in one region that turn out to have no actor at all before the
-// rest of that region is skipped for this run. Regions whose allowance is used up keep all
-// their remaining points in the table, and each one costs the whole actor-load wait.
-constexpr std::uint32_t kFoodEmptyRegionRun = 3;
+// Default for the panel setting below: consecutive food points in one region that turn out
+// to have no actor at all before the rest of that region is skipped for this run. Regions
+// whose allowance is used up keep all their remaining points in the table, and each one
+// costs the whole actor-load wait.
+constexpr std::uint32_t kFoodEmptyRegionRunDefault = 3;
 
 struct RawName final {
     std::int32_t comparison_index{};
@@ -254,12 +255,13 @@ struct Context final {
     char filter[128]{};
     std::string type_prefix;
     std::atomic_bool read_pending{};
-    // One-shot: the next table read also logs every food point with its records.
-    std::atomic_bool dump_food_pending{};
     // Region keys ("Item|A") whose weekly food is spent, and when they were last recomputed.
     std::unordered_set<std::string> food_spent_groups;
     // Regions learned to be empty during this run, and the current run of empty points.
     std::unordered_set<std::string> food_empty_groups;
+    // Panel setting: how many empty points in a row mark a region empty. Applies to both
+    // kinds of food. Runtime state like the teleport offset, not persisted.
+    std::atomic<std::uint32_t> food_empty_region_run{kFoodEmptyRegionRunDefault};
     std::string food_empty_group;
     std::uint32_t food_empty_run{};
     std::chrono::steady_clock::time_point food_state_refresh_at{};
@@ -1479,11 +1481,6 @@ void RebuildFilteredLocked(Context& context) noexcept {
     context.type_prefix = std::string(ActorPrefixForChoice(context.type_choice));
 }
 
-void LogBox(Context& context, const std::string& message) {
-    const auto* core = anomaly::sdk::Host(context.host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID, 1).get();
-    if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, anomaly::sdk::StringView("box-auto " + message));
-}
-
 void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
     void* table_object{};
     if (!ObjectsReady(context.objects)) return;
@@ -1560,24 +1557,6 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
         p.y = y;
         p.z = z;
         p.category = category;
-        if (context.dump_food_pending.load(std::memory_order_acquire) &&
-            (category == "box_food" || category == "item_food")) {
-            // Logged before the filters below: the point of the dump is to see the rows
-            // the filters would drop, and which record each one is in.
-            const bool picked = context.picked_up_valid &&
-                context.picked_up_points.find(p.row_name) !=
-                    context.picked_up_points.end();
-            const bool uncollected = context.uncollected_catalog_valid &&
-                context.uncollected_points.find(p.row_name) !=
-                    context.uncollected_points.end();
-            LogBox(context, "food point=" + p.row_name +
-                " cat=" + category +
-                " x=" + std::to_string(static_cast<long long>(x)) +
-                " y=" + std::to_string(static_cast<long long>(y)) +
-                " z=" + std::to_string(static_cast<long long>(z)) +
-                " picked=" + (picked ? "1" : "0") +
-                " uncollected=" + (uncollected ? "1" : "0"));
-        }
         if (context.picked_up_valid &&
             (category == "box_food" || category == "item_food" ||
              category == "prison")) {
@@ -1860,7 +1839,9 @@ void NoteFoodPointEmpty(Context& context, const std::string& name) noexcept {
         context.food_empty_group = key;
         context.food_empty_run = 0;
     }
-    if (++context.food_empty_run >= kFoodEmptyRegionRun)
+    const std::uint32_t threshold =
+        context.food_empty_region_run.load(std::memory_order_relaxed);
+    if (threshold > 0 && context.food_empty_run >= threshold)
         context.food_empty_groups.insert(key);
 }
 
@@ -4015,7 +3996,6 @@ void ANOMALY_CALL Update(void* plugin_context, const double delta_seconds) {
         RefreshPickedUpCatalog(context);
         RefreshFoodRegionState(context);
         ReadTable(context);
-        context.dump_food_pending.store(false, std::memory_order_release);
         BuildClassMap(context);
     }
     if (context.begin_pending.exchange(false, std::memory_order_acq_rel)) {
@@ -4239,12 +4219,6 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     if (ui->button(ui->user, anomaly::sdk::StringView(read_table_label), 0.0F, 0.0F) != 0) {
         context.read_pending.store(true, std::memory_order_release);
     }
-    const std::string dump_food_label =
-        context.localizer.Text("action.dump_food", "Dump food points");
-    if (ui->button(ui->user, anomaly::sdk::StringView(dump_food_label), 0.0F, 0.0F) != 0) {
-        context.dump_food_pending.store(true, std::memory_order_release);
-        context.read_pending.store(true, std::memory_order_release);
-    }
     const std::array<std::string, 12> type_names = {
         context.localizer.Text("type.all", "All"),
         context.localizer.Text("type.hunter", "Hunter Box"),
@@ -4301,6 +4275,14 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
                              &z_offset, 10.0, 100.0)) {
             context.teleport_z_offset.store(z_offset, std::memory_order_relaxed);
         }
+    }
+    const std::string empty_run_label =
+        context.localizer.Text("label.empty_run", "Empty points per region");
+    std::uint32_t empty_run =
+        context.food_empty_region_run.load(std::memory_order_relaxed);
+    if (ui->input_uint32(ui->user, anomaly::sdk::StringView(empty_run_label),
+                         &empty_run, 1, 20)) {
+        context.food_empty_region_run.store(empty_run, std::memory_order_relaxed);
     }
     const std::string start_index_label =
         context.localizer.Text("label.start_index", "Start Index");
