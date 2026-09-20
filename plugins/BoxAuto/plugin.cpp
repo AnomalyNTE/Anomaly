@@ -3255,9 +3255,16 @@ void Tick(Context& context) {
         if (FoodGroupOf(p.row_name, food_key) &&
             (context.food_spent_groups.find(food_key) != context.food_spent_groups.end() ||
              context.food_empty_groups.find(food_key) != context.food_empty_groups.end())) {
-            const std::array args{std::string_view(p.row_name)};
+            // The two rules mean very different things, so the line names the one that fired
+            // and the group key it fired for: a wrong skip has to be readable on sight.
+            const bool counted =
+                context.food_spent_groups.find(food_key) != context.food_spent_groups.end();
+            const std::array args{std::string_view(food_key),
+                                  std::string_view(p.row_name)};
             context.status = context.localizer.Format(
-                "status.region_spent", "Region already collected this week, skip [{0}]",
+                counted ? "status.region_spent_counted" : "status.region_spent_empty",
+                counted ? "Region quota reached ({0}), skip [{1}]"
+                        : "Region had only empty points ({0}), skip [{1}]",
                 args);
             ++context.skipped;
             ++context.current_index;
