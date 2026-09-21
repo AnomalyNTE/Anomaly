@@ -1572,6 +1572,12 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
         Point p;
         p.row_name = ResolveName(
             context.names, static_cast<std::uint32_t>(row_id.comparison_index));
+        // FName 的编号也可能写在 number 字段（如 InteractBox_B_124 ✗）：只取 comparison_index
+        // 会得到基名 ✗，和游戏记录里的名字对不上 ⇒ 钱包点被全量过滤 ✗。补上后缀 ✔。
+        if (!p.row_name.empty() && row_id.number != 0) {
+            p.row_name.push_back('_');
+            p.row_name += std::to_string(row_id.number - 1U);
+        }
         if (category == "shop_steal" && IsExcludedShopPoint(p.row_name)) continue;
         p.x = x;
         p.y = y;
@@ -1656,6 +1662,12 @@ void ReadTable(Context& context) {
         Point p;
         p.row_name = ResolveName(
             context.names, static_cast<std::uint32_t>(row_id.comparison_index));
+        // FName 的编号也可能写在 number 字段（如 InteractBox_B_124 ✗）：只取 comparison_index
+        // 会得到基名 ✗，和游戏记录里的名字对不上 ⇒ 钱包点被全量过滤 ✗。补上后缀 ✔。
+        if (!p.row_name.empty() && row_id.number != 0) {
+            p.row_name.push_back('_');
+            p.row_name += std::to_string(row_id.number - 1U);
+        }
         p.x = x;
         p.y = y;
         p.z = z;
