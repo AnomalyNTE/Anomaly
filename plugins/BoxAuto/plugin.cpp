@@ -100,9 +100,12 @@ constexpr double kProgressThresholdCentimeters = 80.0;
 constexpr double kReissueDelaySeconds = 4.0;
 constexpr std::uint32_t kNavigationMaxAttempts = 2;
 constexpr double kApproachRadiusCentimeters = 100.0;
-// 掉落阈值：自由落体 10 米约 1.4 秒，等掉满 10 米才重传就变成「传一次、掉两秒、再传」（用户
-// 实测）。调到 3 米，人一往下掉就立刻被拉回去。
-constexpr double kFallOutThresholdCentimeters = 300.0;
+// 掉落判据用「下降速度」而不是「比基准低多少」：走路下坡每秒只有几米，自由落体每秒十几米。
+// 高度差判据在两个方向都错过——阈值大（10 米）要掉两秒才重传，阈值小（3 米）又把走路
+// 下坡判成掉落（实测直接把食物流程弄成一步都走不了）。
+constexpr double kFallOutRateCentimetersPerSecond = 1500.0;
+// 另有两处（食物与通用拾取路径）仍按「比点位低这么多」判断，保留原值不动它们。
+constexpr double kFallOutThresholdCentimeters = 1000.0;
 // 地形加载慢时人会一直掉，所以要「立刻重传 + 次数宽松」；等待会摔死（用户实测）。
 constexpr std::uint32_t kFallOutMaximumRetries = 60;
 constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(150);
@@ -231,7 +234,10 @@ struct Context final {
     std::chrono::steady_clock::time_point food_nav_retry_at{};
     bool food_has_last_pos{};
     double food_last_pos[3]{};
+    // 掉落追踪：上次采样高度与时刻（`fallout_baseline_z == 0` 表示还没初始化）。
     double fallout_baseline_z{};
+    double fallout_last_z{};
+    std::chrono::steady_clock::time_point fallout_last_at{};
     std::uint32_t fallout_retries{};
     std::uint32_t retry_count{};
     std::uint32_t interact_retry{};
@@ -2214,7 +2220,11 @@ bool Teleport(Context& context, const Point& p) noexcept {
         ANOMALY_STATUS_V1_OK;
     // 传送后位置会变（安全点与点位高度不同），掉出世界的基准必须跟着重立，否则一到
     // 较低的安全点就会被判「掉下去了」，于是来回传（用户实测）。
-    if (sent) context.fallout_baseline_z = 0.0;
+    if (sent) {
+        context.fallout_baseline_z = 0.0;
+        context.fallout_last_z = 0.0;
+        context.fallout_last_at = {};
+    }
     return sent;
 }
 
@@ -3281,15 +3291,24 @@ void Tick(Context& context) {
         const bool shop_preparing =
             p.category == "shop_steal" && !context.shop_stealth_ready;
         double player_position[3]{};
+        bool fell = false;
         if (!shop_preparing && SnapshotPlayerPosition(context, player_position)) {
-            // 每个点第一次拿到位置时立基准；上升 1 米以上就跟着更新（传送回高处、走上台阶）。
+            const double z = player_position[2];
             if (context.fallout_baseline_z == 0.0) {
-                context.fallout_baseline_z = player_position[2];
+                // 进点或刚传送：只记录，不判定（否则传送本身的高度跳变会被当成掉落）。
+                context.fallout_baseline_z = z;
+                context.fallout_last_z = z;
+                context.fallout_last_at = now;
+            } else {
+                const double seconds = std::chrono::duration<double>(
+                    now - context.fallout_last_at).count();
+                if (seconds >= 0.05) {
+                    const double rate = (context.fallout_last_z - z) / seconds;
+                    context.fallout_last_z = z;
+                    context.fallout_last_at = now;
+                    fell = rate > kFallOutRateCentimetersPerSecond;
+                }
             }
-            const double gained = player_position[2] - context.fallout_baseline_z;
-            if (gained >= 100.0) context.fallout_baseline_z = player_position[2];
-            const bool fell = player_position[2] <
-                context.fallout_baseline_z - kFallOutThresholdCentimeters;
             if (fell) {
             if (context.fallout_retries < kFallOutMaximumRetries) {
                 ++context.fallout_retries;
