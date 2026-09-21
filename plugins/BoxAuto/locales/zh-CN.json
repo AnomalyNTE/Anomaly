@@ -22,7 +22,7 @@
     "mode.navigation": "寻路",
     "label.start_index": "起始索引",
     "label.z_offset": "高度偏移(厘米)",
-    "label.empty_run": "连续空点跳过阈值",
+    "label.empty_run": "食物：连续空点跳过阈值（区域）",
     "action.start": "开始自动拾取",
     "action.stop": "停止",
     "label.progress": "进度 {0}/{1}",
