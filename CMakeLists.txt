@@ -1183,6 +1183,22 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CloneEnter/manifest.json
         PACKAGE_NAME CloneEnter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CloneEnter")
+    # 共享自动战斗：插件是独立 DLL、不能互相调用，所以战斗逻辑放在静态库里由两边链接
+    # （同 anomaly_mmd2bip_converter 的模式：一份源码，两个使用方）。
+    add_library(anomaly_plugin_combat STATIC
+        plugins/common/combat/auto_combat.cpp)
+    target_include_directories(anomaly_plugin_combat PUBLIC plugins/common)
+    # SDK 头（anomaly/sdk/...）只随 Anomaly::sdk 的 INTERFACE 包含目录传播；静态库自己也要编。
+    target_link_libraries(anomaly_plugin_combat PUBLIC Anomaly::sdk)
+    target_compile_options(anomaly_plugin_combat PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_compile_definitions(anomaly_plugin_combat PRIVATE
+        WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(anomaly_builtin_clone_enter PRIVATE anomaly_plugin_combat)
+    target_link_libraries(anomaly_builtin_combat_box PRIVATE anomaly_plugin_combat)
+    add_executable(anomaly_combat_auto_fixture
+        plugins/common/combat/tests/auto_combat_test.cpp)
+    target_compile_options(anomaly_combat_auto_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_combat_auto_fixture PRIVATE anomaly_plugin_combat)
     anomaly_add_plugin(anomaly_builtin_dll_loader
         SOURCES plugins/DllLoader/plugin.cpp
         MANIFEST plugins/DllLoader/manifest.json
