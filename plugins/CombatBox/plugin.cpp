@@ -65,15 +65,20 @@ constexpr double kMovementTimeoutSeconds = 20.0;
 constexpr double kTeleportArrivalTimeoutSeconds = 5.0;
 // 掉出世界的判据与 BoxAuto 保持一致（plugins/BoxAuto/plugin.cpp 的
 // kFallOutThresholdCentimeters）：玩家 Z 比当前点低 10 米以上即视为掉出世界。
-constexpr double kFallOutThresholdCentimeters = 1000.0;
+// 掉落判据用「下降速度」而不是「比基准低多少」：走路下坡每秒几米，自由落体每秒十几米。
+// 基准式判据两边都错过 —— 用点位高度当基准会误报（点位在箱子/高台上），用「进战斗时自己的高度」
+// 当基准则在「一开始就在下面」（传送落到地图下 / 地形没加载）时永远不触发，人卡在下面找不到怪。
+constexpr double kFallOutRateCentimetersPerSecond = 1500.0;
+// 比**当前点位**低这么多就算掉出世界（用户定的：点位坐标在地面上，1 米足够）。
+constexpr double kFallOutBelowPointCentimeters = 100.0;
 // 掉出世界后的重传次数：一次能修掉绝大多数「传送落进洞里/被挤出地图」，给到 3 次覆盖
 // 地图流式加载抖动；再多只是拖时间——本点的收敛另有首次接敌超时与模块黑名单 TTL 兜底。
 // 高楼/新区域的地图常常还没流式加载完，玩家会真的往下掉。**不能等**：等下去会摔死
 // （用户实测），所以检测到就立刻重传，一直传到落地为止。次数只是防止真无解时死循环，
 // 见过怪之后计数会清零（已经站稳开打，不该被之前的掉落惩罚）。
-constexpr std::uint32_t kFallOutMaximumRetries = 60;
+constexpr std::uint32_t kFallOutMaximumRetries = 10;
 // 两次重传之间的最小间隔：只用来防止同一帧里反复下发传送。
-constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(250);
+constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(1200);
 constexpr double kProgressCheckIntervalSeconds = 3.0;
 constexpr double kProgressThresholdCentimeters = 80.0;
 constexpr double kReissueDelaySeconds = 4.0;
@@ -285,6 +290,9 @@ struct Context final {
     std::chrono::steady_clock::time_point combat_started_at{};
     // 进入战斗时玩家的高度：掉出世界用它作基准（点位高度常在箱子/高台上，不能当基准）。
     double combat_start_z{};
+    // 掉落追踪：上次采样的高度与时刻（`fallout_last_at` 为空表示还没初始化）。
+    double fallout_last_z{};
+    std::chrono::steady_clock::time_point fallout_last_at{};
     // 下一次允许重传的时刻（掉出世界后的等待间隔）。
     std::chrono::steady_clock::time_point fallout_retry_at{};
     // 最近一次「换了目标」的时刻与句柄：无伤害兜底要从这里重新计时，
@@ -299,7 +307,8 @@ struct Context final {
     std::atomic<double> search_radius_m{50.0};
     // 攻击策略：开 = 近战普攻为主 + 每 4 次放一次技能（模块据此才会把「打不动」置成 attack_failed，
     // 从而能立即跳过打不动的点）；关 = 只放技能，技能调用失败会被忽略。默认关，与一键副本一致。
-    std::atomic_bool melee_mode{false};
+    // 默认开：模块只在平A路径上报「打不动这个目标」，默认关会让那条判断形同虚设。
+    std::atomic_bool melee_mode{true};
     std::atomic_bool auto_start_pending{};
     std::atomic_bool auto_stop_pending{};
     // 掉出世界：本点已重传几次 + 「这次重传是不是同一点的重试」。
@@ -885,6 +894,9 @@ void StartPoint(Context& context, const Point& p,
     context.navigation_has_last_position = false;
     if (fallout_retry || context.developer_mode.load(std::memory_order_acquire)) {
         if (Teleport(context, p)) {
+            // 传送会带来巨大的高度跳变：重置掉落追踪，否则下一帧会把传送本身判成掉落。
+            context.fallout_last_z = 0.0;
+            context.fallout_last_at = {};
             context.teleport_arrival_wait = true;
             context.teleport_arrival_deadline = now + std::chrono::milliseconds(
                 static_cast<long long>(kTeleportArrivalTimeoutSeconds * 1000.0));
@@ -919,6 +931,8 @@ void StartPoint(Context& context, const Point& p,
 
 // 到达本点：清空模块状态，开始「首次接敌超时」计时；随后每 tick 由 TickCombat 驱动。
 void BeginCombat(Context& context, std::chrono::steady_clock::time_point now) {
+    // 新点位：清零掉落重传计数 ✗（它只在「见到怪」时清零 ✗，否则会跨点位累加 ✗）。
+    context.fallout_retries = 0;
     combat::Host host = MakeCombatHost(context);
     combat::Reset(host, context.combat_state);
     // Reset 不清黑名单表：换点必须自己清，否则上个点拉黑的目标会带到新点。
@@ -955,9 +969,21 @@ bool FellOutOfWorld(Context& context) {
     if (context.combat_state.target_valid) return false;
     double position[3]{};
     if (!SnapshotPlayerPosition(context, position)) return false;
-    // 基准用「进入战斗时自己的高度」而不是点位高度：点位坐标常常在箱子/高台上，
-    // 用点位高度当基准会把站在正常地面的情况判成掉出世界（日志实测大量误报）。
-    return position[2] < context.combat_start_z - kFallOutThresholdCentimeters;
+    const auto now = std::chrono::steady_clock::now();
+    if (context.fallout_last_at == std::chrono::steady_clock::time_point{}) {
+        context.fallout_last_z = position[2];
+        context.fallout_last_at = now;
+        return false;
+    }
+    const double seconds =
+        std::chrono::duration<double>(now - context.fallout_last_at).count();
+    if (seconds < 0.05) return false;
+    const double rate = (context.fallout_last_z - position[2]) / seconds;
+    context.fallout_last_z = position[2];
+    context.fallout_last_at = now;
+    if (rate > kFallOutRateCentimetersPerSecond) return true;
+    // 主要判据：比当前点位低 1 米（坑底速度归零也能触发）。
+    return position[2] < context.pending_target[2] - kFallOutBelowPointCentimeters;
 }
 
 // 掉出世界后重传当前点：走与出发同一条路径（StartPoint 的传送分支），不另写一套。
@@ -1047,7 +1073,10 @@ void TickCombat(Context& context, std::chrono::steady_clock::time_point now) {
     if (FellOutOfWorld(context)) {
         // 还没到下一次重传时刻就等着（地图可能正在加载），期间保持战斗阶段不动。
         if (now < context.fallout_retry_at) return;
-        context.fallout_retry_at = now + kFallOutRetryDelay;
+        // 重传也要重启「首次接敌超时」的计时器 ✗：否则重传消耗的是同一个 15 秒 ✗，
+    // 时间一到就会直接跳过（实测：传几次就跳过 ✗）。
+    context.combat_started_at = now;
+    context.fallout_retry_at = now + kFallOutRetryDelay;
         if (context.fallout_retries < kFallOutMaximumRetries) {
             ++context.fallout_retries;
             const std::string retries = std::to_string(context.fallout_retries);
