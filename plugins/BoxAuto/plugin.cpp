@@ -100,10 +100,12 @@ constexpr double kProgressThresholdCentimeters = 80.0;
 constexpr double kReissueDelaySeconds = 4.0;
 constexpr std::uint32_t kNavigationMaxAttempts = 2;
 constexpr double kApproachRadiusCentimeters = 100.0;
-constexpr double kFallOutThresholdCentimeters = 1000.0;
+// 掉落阈值：自由落体 10 米约 1.4 秒，等掉满 10 米才重传就变成「传一次、掉两秒、再传」（用户
+// 实测）。调到 3 米，人一往下掉就立刻被拉回去。
+constexpr double kFallOutThresholdCentimeters = 300.0;
 // 地形加载慢时人会一直掉，所以要「立刻重传 + 次数宽松」；等待会摔死（用户实测）。
 constexpr std::uint32_t kFallOutMaximumRetries = 60;
-constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(250);
+constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(150);
 constexpr double kScanActorRadiusCentimeters = 1500.0;
 constexpr std::string_view kLandmarkWorld = "XL_map_bigworld_test";
 constexpr double kLandmarkArrivalRadiusCentimeters = 500.0;
