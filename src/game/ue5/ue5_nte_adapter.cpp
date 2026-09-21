@@ -362,10 +362,14 @@ bool AddAddress(std::uintptr_t base, std::int64_t offset, std::uintptr_t& result
     void* const parameters,
     const std::size_t parameter_size,
     std::uint32_t* const fault_code = nullptr) noexcept {
-    // UE5 x64 objects and code in the active process are above the 4 GiB
-    // boundary. Rejecting low values also blocks stale/truncated FText data
-    // before it can become a virtual call target.
-    if (!invoker || receiver < 0x100000000ULL || function < 0x100000000ULL) {
+    // Code in the active process is above the 4 GiB boundary, so the function pointer keeps that
+    // floor. Objects are not: the local player controller is allocated low (measured 0x377F2070,
+    // about 931 MB on the current game build). Rejecting it made every pickup-service
+    // TriggerInteract fail while BPCanTryInteract on the same actor - which passes the actor as
+    // the receiver, and that one is above 4 GiB - succeeded, so every pickup-service item
+    // (food, wallet, random items) was skipped. The receiver only needs a sanity floor; the SEH
+    // wrapper below still catches a bad target.
+    if (!invoker || receiver < 0x10000ULL || function < 0x100000000ULL) {
         return false;
     }
 #if defined(_MSC_VER)
