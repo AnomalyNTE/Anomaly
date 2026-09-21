@@ -100,7 +100,15 @@ constexpr double kProgressThresholdCentimeters = 80.0;
 constexpr double kReissueDelaySeconds = 4.0;
 constexpr std::uint32_t kNavigationMaxAttempts = 2;
 constexpr double kApproachRadiusCentimeters = 100.0;
+// 掉落判据用「下降速度」而不是「比基准低多少」：走路下坡每秒只有几米，自由落体每秒十几米。
+// 高度差判据在两个方向都错过——阈值大（10 米）要掉两秒才重传，阈值小（3 米）又把走路
+// 下坡判成掉落（实测直接把食物流程弄成一步都走不了）。
+constexpr double kFallOutRateCentimetersPerSecond = 1500.0;
+// 另有两处（食物与通用拾取路径）仍按「比点位低这么多」判断，保留原值不动它们。
 constexpr double kFallOutThresholdCentimeters = 1000.0;
+// 地形加载慢时人会一直掉，所以要「立刻重传 + 次数宽松」；等待会摔死（用户实测）。
+constexpr std::uint32_t kFallOutMaximumRetries = 60;
+constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(150);
 constexpr double kScanActorRadiusCentimeters = 1500.0;
 constexpr std::string_view kLandmarkWorld = "XL_map_bigworld_test";
 constexpr double kLandmarkArrivalRadiusCentimeters = 500.0;
@@ -114,6 +122,10 @@ constexpr double kTargetActorMaxDistanceCentimeters = 400.0;
 constexpr std::uint32_t kPickupMaximumItems = 1;
 constexpr double kPickupTimeoutSeconds = 8.0;
 constexpr std::uint32_t kPickupMaximumRetries = 3;
+// How long a scan for the target actor is retried before the point is re-teleported,
+// and again after that: one poll a second, so this is also the seconds waited. Both
+// pickup paths use it, so a point that is simply not there costs the same either way.
+constexpr std::uint32_t kActorLoadWaitSeconds = 7;
 constexpr double kFallbackVerifyRadiusCentimeters = 600.0;
 constexpr double kShopSafePoint[3]{-129487.089561, 166235.911261, 6708.454053};
 constexpr std::string_view kShopExcludedPointB018 = "HTTargetPoint_StealGoods_Item_B_018";
@@ -125,6 +137,20 @@ constexpr std::uint32_t kShopSafeMaximumTransferAttempts = 3;
 constexpr double kShopExitRecoveryDistance = 1800.0;
 constexpr std::chrono::milliseconds kShopExitRecoverySettle{1200};
 constexpr std::uint32_t kShopExitRecoveryAttempts = 3;
+// How many times one shop point may restart its scan before it is skipped. The entry
+// retry loop and the still-stealth loop each restart their own counters, so this is the
+// only ceiling on the point as a whole.
+constexpr std::uint32_t kShopRescanCycles = 3;
+// Picks in one region+kind group that mean the region is spent for the week. Measured on a
+// live week the finished regions sit at A 39, B 42, C 39, D 40, so the bar is 39; 35 was too
+// eager (E06 sat at 35-39 with items still there) and 40 left A and C to the slower rule.
+// Everything below the bar falls to the rule that is verified by observation.
+constexpr std::uint32_t kFoodRegionSpentPicks = 39;
+// Default for the panel setting below: consecutive food points in one region that turn out
+// to have no actor at all before the rest of that region is skipped for this run. Regions
+// whose allowance is used up keep all their remaining points in the table, and each one
+// costs the whole actor-load wait.
+constexpr std::uint32_t kFoodEmptyRegionRunDefault = 3;
 
 struct RawName final {
     std::int32_t comparison_index{};
@@ -208,7 +234,10 @@ struct Context final {
     std::chrono::steady_clock::time_point food_nav_retry_at{};
     bool food_has_last_pos{};
     double food_last_pos[3]{};
+    // 掉落追踪：上次采样高度与时刻（`fallout_baseline_z == 0` 表示还没初始化）。
     double fallout_baseline_z{};
+    double fallout_last_z{};
+    std::chrono::steady_clock::time_point fallout_last_at{};
     std::uint32_t fallout_retries{};
     std::uint32_t retry_count{};
     std::uint32_t interact_retry{};
@@ -238,6 +267,24 @@ struct Context final {
     char filter[128]{};
     std::string type_prefix;
     std::atomic_bool read_pending{};
+    // Region keys ("Item|A") whose weekly food is spent, and when they were last recomputed.
+    std::unordered_set<std::string> food_spent_groups;
+    // Regions learned to be empty during this run, and the current run of empty points.
+    // 商店：本次运行里已经从哪些 actor 拿到过货。相邻点位可能共享一个 actor，拿走后它的入口
+    // 列表就空了，而扫描按「离点位最近」选，会一直选中它（日志实测同一地址反复失败）。
+    // 值 = 可以重新选它的时刻。用时限而不是永久拉黑：入口为空可能只是游戏武装晚了，
+    // 永久拉黑会让「该点唯一 actor」的点位永远拿不到。
+    std::unordered_map<std::uintptr_t, std::chrono::steady_clock::time_point>
+        shop_taken_actors;
+    std::unordered_set<std::string> food_empty_groups;
+    // Groups already written to the log this run, so a decision is reported once.
+    std::unordered_set<std::string> food_skip_logged;
+    // Panel setting: how many empty points in a row mark a region empty. Applies to both
+    // kinds of food. Runtime state like the teleport offset, not persisted.
+    std::atomic<std::uint32_t> food_empty_region_run{kFoodEmptyRegionRunDefault};
+    std::string food_empty_group;
+    std::uint32_t food_empty_run{};
+    std::chrono::steady_clock::time_point food_state_refresh_at{};
     const AnomalyNteSkillsServiceV1* skills{};
     const AnomalyNteSkillInvocationServiceV1* skill_invocation{};
     bool shop_stealth_ready{};
@@ -247,6 +294,7 @@ struct Context final {
     std::chrono::steady_clock::time_point shop_safe_deadline{};
     std::chrono::steady_clock::time_point shop_safe_retry_at{};
     std::uint32_t shop_take_retries{};
+    std::uint32_t shop_rescan_cycles{};
     bool shop_exit_recovery_active{};
     bool shop_exit_transfer_pending{};
     std::uint32_t shop_exit_transfer_attempts{};
@@ -471,6 +519,14 @@ void BeginShopExitRecovery(Context& context) noexcept {
     context.shop_exit_ready_at = std::chrono::steady_clock::time_point{};
 }
 
+// Spends one rescan of this point's budget. True means the budget is already gone, so the
+// caller skips the point instead of restarting the scan again.
+bool ShopRescanBudgetSpent(Context& context) noexcept {
+    if (context.shop_rescan_cycles >= kShopRescanCycles) return true;
+    ++context.shop_rescan_cycles;
+    return false;
+}
+
 void ResetPointState(Context& context) noexcept {
     context.teleported = false;
     context.moving = false;
@@ -493,6 +549,7 @@ void ResetPointState(Context& context) noexcept {
     context.pickup_retries = 0;
     context.interact_verify_deadline = std::chrono::steady_clock::time_point{};
     context.shop_take_retries = 0;
+    context.shop_rescan_cycles = 0;
 }
 
 // Caller must hold context.mutex.
@@ -1766,6 +1823,91 @@ bool ReadRecordSelections(const std::uintptr_t record,
     return true;
 }
 
+// The row name carries the region and the kind: HTTargetPoint_PropBox_{Box|Item}_{REGION}_NNN.
+// The key ("Item|A") is what says whether a whole region is spent for the week.
+void LogBox(Context& context, const std::string& message) {
+    const auto* core = anomaly::sdk::Host(context.host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID, 1).get();
+    if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, anomaly::sdk::StringView("box-auto " + message));
+}
+
+bool FoodGroupOf(const std::string_view name, std::string& key) {
+    constexpr std::string_view prefix = "HTTargetPoint_PropBox_";
+    if (!name.starts_with(prefix)) return false;
+    const std::string_view rest = name.substr(prefix.size());
+    const std::size_t kind_end = rest.find('_');
+    if (kind_end == std::string_view::npos) return false;
+    const std::string_view kind = rest.substr(0, kind_end);
+    if (kind != "Box" && kind != "Item") return false;
+    std::string_view region = rest.substr(kind_end + 1);
+    const std::size_t number_start = region.find_last_of('_');
+    if (number_start != std::string_view::npos) {
+        const std::string_view number = region.substr(number_start + 1);
+        bool digits = !number.empty();
+        for (const char c : number) {
+            if (c < '0' || c > '9') digits = false;
+        }
+        if (digits) region = region.substr(0, number_start);
+    }
+    if (region.empty()) return false;
+    key.assign(kind);
+    key.push_back('|');
+    key.append(region);
+    return true;
+}
+
+// One food point in this region had no actor at all: enough of those in a row and the rest
+// of the region is skipped for this run.
+void NoteFoodRegionSkipped(Context& context, const std::string& key,
+                           const std::string& rule) {
+    if (!context.food_skip_logged.insert(key).second) return;
+    LogBox(context, "food region skip group=" + key + " rule=" + rule);
+}
+
+void NoteFoodPointEmpty(Context& context, const std::string& name) noexcept {
+    std::string key;
+    if (!FoodGroupOf(name, key)) return;
+    if (key != context.food_empty_group) {
+        context.food_empty_group = key;
+        context.food_empty_run = 0;
+    }
+    ++context.food_empty_run;
+    const std::uint32_t threshold =
+        context.food_empty_region_run.load(std::memory_order_relaxed);
+    if (threshold > 0 && context.food_empty_run >= threshold) {
+        context.food_empty_groups.insert(key);
+        NoteFoodRegionSkipped(context, key, "empty-run");
+    }
+}
+
+// A point in this region had something in it, so the region is not empty after all.
+void NoteFoodPointFound(Context& context, const std::string& name) noexcept {
+    std::string key;
+    if (!FoodGroupOf(name, key) || key != context.food_empty_group) return;
+    context.food_empty_group.clear();
+    context.food_empty_run = 0;
+}
+
+// A region counts as spent once the game has recorded enough picks there. The picked
+// record is the only distance-independent signal: the available set holds what is near the
+// player, and the region being visited is by definition the near one, so it always shows
+// entries for a region that has just filled up.
+void RefreshFoodRegionState(Context& context) noexcept {
+    std::unordered_map<std::string, int> picked;
+    std::string key;
+    for (const auto& name : context.picked_up_points) {
+        if (FoodGroupOf(name, key)) ++picked[key];
+    }
+    context.food_spent_groups.clear();
+    for (const auto& entry : picked) {
+        if (entry.second >= static_cast<int>(kFoodRegionSpentPicks)) {
+            context.food_spent_groups.insert(entry.first);
+            NoteFoodRegionSkipped(
+                context, entry.first,
+                "quota count=" + std::to_string(entry.second));
+        }
+    }
+}
+
 bool RefreshUncollectedCatalog(Context& context) noexcept {
     if (!ResolveRandomItemRecords(context)) return false;
     context.uncollected_points.clear();
@@ -2034,6 +2176,16 @@ std::uintptr_t ScanForActor(Context& context, const Point& p,
         const double dz = bz - p.z;
         const double dist = dx * dx + dy * dy + dz * dz;
         if (dist < best_dist) {
+            // 商店：跳过还在排除期内的 actor（相邻点位共享 actor 的情况）。
+            // 注意前缀带下划线（ActorPrefixForCategory 返回 "ShopStealGoods_"）——比较写成不带下划线
+            // 会让排除永远不生效（日志实测：两次尝试拿到同一个 actor 地址）。
+            if (type_prefix == "ShopStealGoods_") {
+                const auto excluded = context.shop_taken_actors.find(object);
+                if (excluded != context.shop_taken_actors.end() &&
+                    std::chrono::steady_clock::now() < excluded->second) {
+                    continue;
+                }
+            }
             best = object;
             best_dist = dist;
         }
@@ -2064,8 +2216,16 @@ bool Teleport(Context& context, const Point& p) noexcept {
     request.position[0] = p.x;
     request.position[1] = p.y;
     request.position[2] = p.z + context.teleport_z_offset.load(std::memory_order_relaxed);
-    return context.teleport->teleport(context.teleport->user, &request).code ==
+    const bool sent = context.teleport->teleport(context.teleport->user, &request).code ==
         ANOMALY_STATUS_V1_OK;
+    // 传送后位置会变（安全点与点位高度不同），掉出世界的基准必须跟着重立，否则一到
+    // 较低的安全点就会被判「掉下去了」，于是来回传（用户实测）。
+    if (sent) {
+        context.fallout_baseline_z = 0.0;
+        context.fallout_last_z = 0.0;
+        context.fallout_last_at = {};
+    }
+    return sent;
 }
 
 bool HasShopStealthSkill(Context& context);
@@ -2076,6 +2236,10 @@ void Begin(Context& context) {
     context.current_index = context.start_index < context.filtered_points.size()
         ? context.start_index : 0;
     context.picked = 0;
+    context.food_empty_groups.clear();
+    context.food_empty_group.clear();
+    context.food_empty_run = 0;
+    context.food_skip_logged.clear();
     context.skipped = 0;
     context.running = true;
     ResetPointState(context);
@@ -2101,6 +2265,13 @@ struct InteractArrayHeader final {
     std::uintptr_t data{};
     std::int32_t count{};
     std::int32_t capacity{};
+};
+
+// armed late, while a flat zero means the standing spot never became valid.
+struct InteractProbe final {
+    const char* reason{"ok"};
+    int entries{};
+    int can_try{};
 };
 
 bool ReadInteractChoices(Context& context, const std::uintptr_t actor,
@@ -2145,11 +2316,19 @@ bool CanTryInteract(Context& context, const std::uintptr_t actor,
     return true;
 }
 
-bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcept {
-    if (context.trigger_interact_fn == 0 || actor == 0) return false;
+// Why an interact attempt did or did not fire, and how many entries the game offered.
+// The shop path logs it: a `can_try` count that climbs over the retries means the entry is
+
+bool TriggerInteractPickup(Context& context, const std::uintptr_t actor,
+                           InteractProbe* probe = nullptr) noexcept {
+    if (context.trigger_interact_fn == 0 || actor == 0) {
+        if (probe != nullptr) probe->reason = "no-actor-or-trigger";
+        return false;
+    }
     std::uintptr_t cls{};
     if (!Read(reinterpret_cast<const void*>(actor + kObjectClassOffset), cls) ||
         cls == 0) {
+        if (probe != nullptr) probe->reason = "class-read-failed";
         return false;
     }
     std::uintptr_t entries_fn{};
@@ -2158,12 +2337,18 @@ bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcep
                       entries_fn) ||
         !FindFunction(context.names, cls, "BPCanTryInteract", 3, 13,
                       can_try_fn)) {
+        if (probe != nullptr) probe->reason = "interact-functions-missing";
         return false;
     }
     std::vector<std::int32_t> choices;
     if (!ReadInteractChoices(context, actor, context.controller, entries_fn,
-                             choices) ||
-        choices.empty()) {
+                             choices)) {
+        if (probe != nullptr) probe->reason = "entries-call-failed";
+        return false;
+    }
+    if (probe != nullptr) probe->entries = static_cast<int>(choices.size());
+    if (choices.empty()) {
+        if (probe != nullptr) probe->reason = "no-entries";
         return false;
     }
     for (const std::int32_t choice : choices) {
@@ -2173,6 +2358,7 @@ bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcep
             !can_try) {
             continue;
         }
+        if (probe != nullptr) ++probe->can_try;
         std::uint8_t params[13]{};
         std::memcpy(params + 0, &actor, sizeof(actor));
         std::memcpy(params + 8, &choice, sizeof(choice));
@@ -2180,9 +2366,12 @@ bool TriggerInteractPickup(Context& context, const std::uintptr_t actor) noexcep
         if (InvokeNative(context, reinterpret_cast<void*>(context.controller),
                          reinterpret_cast<void*>(context.trigger_interact_fn),
                          params)) {
+            if (probe != nullptr) probe->reason = "fired";
             return true;
         }
     }
+    if (probe != nullptr && probe->can_try == 0) probe->reason = "no-can-try";
+    else if (probe != nullptr) probe->reason = "trigger-refused";
     return false;
 }
 
@@ -2439,17 +2628,23 @@ bool ShopItemUsesBlueprint(Context& context, std::uintptr_t actor,
     return true;
 }
 
-ShopTakeResult TakeShopItem(Context& context, std::uintptr_t actor) {
-    if (!context.trigger_interact_fn) return ShopTakeResult::retry;
+ShopTakeResult TakeShopItem(Context& context, std::uintptr_t actor,
+                            InteractProbe* probe = nullptr) {
+    if (!context.trigger_interact_fn) {
+        if (probe != nullptr) probe->reason = "trigger-function-missing";
+        return ShopTakeResult::retry;
+    }
     bool use_blueprint{};
     if (!ShopItemUsesBlueprint(context, actor, use_blueprint)) {
+        if (probe != nullptr) probe->reason = "class-or-property";
         return ShopTakeResult::retry;
     }
     if (!use_blueprint) {
+        if (probe != nullptr) probe->reason = "not-stealth";
         LogShop(context, "shop item is not in stealth pickup state");
         return ShopTakeResult::not_stealth;
     }
-    return TriggerInteractPickup(context, actor)
+    return TriggerInteractPickup(context, actor, probe)
         ? ShopTakeResult::triggered
         : ShopTakeResult::retry;
 }
@@ -2735,32 +2930,6 @@ void TickPickup(Context& context, const Point& p,
 void TickFoodPickup(Context& context, const Point& p,
                     const std::chrono::steady_clock::time_point now) {
     if (context.target_actor == 0) {
-        double player_pos[3]{};
-        if (SnapshotPlayerPosition(context, player_pos) &&
-            player_pos[2] < p.z - kFallOutThresholdCentimeters) {
-            if (context.fallout_retries == 0) {
-                context.fallout_baseline_z = player_pos[2];
-            }
-            const double gained = player_pos[2] - context.fallout_baseline_z;
-            if (gained >= 100.0) {
-                context.fallout_baseline_z = player_pos[2];
-            }
-            if (context.fallout_retries < 5) {
-                ++context.fallout_retries;
-                context.teleport_retry = 1;
-                context.teleported = false;
-                context.retry_count = 0;
-                context.due = now + std::chrono::milliseconds(2000);
-                context.status = "掉出世界，重传 " + p.row_name;
-            } else {
-                ++context.skipped;
-                ++context.current_index;
-                ResetPointState(context);
-                context.due = now;
-                context.status = "掉出世界，跳过 " + p.row_name;
-            }
-            return;
-        }
         context.target_actor =
             ScanForActor(context, p, ActorPrefixForCategory(p.category));
         if (context.target_actor == 0 && p.category == "prison") {
@@ -2768,7 +2937,7 @@ void TickFoodPickup(Context& context, const Point& p,
         }
         if (context.target_actor == 0) {
             ++context.retry_count;
-            if (context.retry_count < 15) {
+            if (context.retry_count <= kActorLoadWaitSeconds) {
                 context.due = now + std::chrono::milliseconds(1000);
                 context.status = "等待加载 " + p.row_name + " (" +
                     std::to_string(context.retry_count) + ")";
@@ -2783,6 +2952,7 @@ void TickFoodPickup(Context& context, const Point& p,
                     ? "箱子未加载，重传 " + p.row_name
                     : "重传 " + p.row_name;
             } else {
+                NoteFoodPointEmpty(context, p.row_name);
                 ++context.skipped;
                 ++context.current_index;
                 ResetPointState(context);
@@ -2977,6 +3147,7 @@ void TickFoodPickup(Context& context, const Point& p,
             snapshot.sequence > context.pickup_baseline_sequence &&
             snapshot.state == ANOMALY_NTE_PICKUP_V1_COMPLETE) {
             if (snapshot.confirmed > 0) {
+                NoteFoodPointFound(context, p.row_name);
                 ++context.picked;
                 ++context.current_index;
                 ResetPointState(context);
@@ -3110,6 +3281,91 @@ void Tick(Context& context) {
         return;
     }
     const Point& p = context.filtered_points[context.current_index];
+    // 掉出世界（地形没加载好时会真的往下掉）对所有类别统一处理：立刻重传，不等待——
+    // 等待会摔死（用户实测）。次数给得宽松，地形加载慢时也能撑过去。
+    // 判据只看**玩家自己**的高度变化，不看点位高度：点位 z 常在货架/箱子上，比人站的地面
+    // 高十几米，用点位当基准会「人已经到了还在传」（用户实测）。
+    {
+        // 商店在「准备阶段」（还没隐身就绪）时有自己的安全点重传/超时逻辑，这里不插手，
+        // 否则两边会互相把对方传回去（用户实测：传几次没上去又去安全点）。
+        const bool shop_preparing =
+            p.category == "shop_steal" && !context.shop_stealth_ready;
+        double player_position[3]{};
+        bool fell = false;
+        if (!shop_preparing && SnapshotPlayerPosition(context, player_position)) {
+            const double z = player_position[2];
+            if (context.fallout_baseline_z == 0.0) {
+                // 进点或刚传送：只记录，不判定（否则传送本身的高度跳变会被当成掉落）。
+                context.fallout_baseline_z = z;
+                context.fallout_last_z = z;
+                context.fallout_last_at = now;
+            } else {
+                const double seconds = std::chrono::duration<double>(
+                    now - context.fallout_last_at).count();
+                if (seconds >= 0.05) {
+                    const double rate = (context.fallout_last_z - z) / seconds;
+                    context.fallout_last_z = z;
+                    context.fallout_last_at = now;
+                    fell = rate > kFallOutRateCentimetersPerSecond;
+                }
+            }
+            if (fell) {
+            if (context.fallout_retries < kFallOutMaximumRetries) {
+                ++context.fallout_retries;
+                context.teleport_retry = 1;
+                context.teleported = false;
+                context.retry_count = 0;
+                // 不动商店的隐身/传送状态：那是它自己的流程，插手会互相打架。
+                context.interacted = false;
+                context.target_actor = 0;
+                // 直接下发传送：不能只设状态就 return——那样每 250 毫秒只是加计数，正常传送
+                // 路径永远没机会执行（用户实测「重传没反应」）。
+                Teleport(context, p);
+                const std::string retries = std::to_string(context.fallout_retries);
+                const std::string maximum = std::to_string(kFallOutMaximumRetries);
+                const std::array args{std::string_view(retries),
+                                      std::string_view(maximum),
+                                      std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.fallout_retry", "Fell out of world, re-teleport {0}/{1} [{2}]",
+                    args);
+                context.due = now + kFallOutRetryDelay;
+            } else {
+                ++context.skipped;
+                ++context.current_index;
+                ResetPointState(context);
+                context.due = now;
+                context.status = context.localizer.Format(
+                    "status.fallout_skip", "Fell out of world, skip [{0}]",
+                    std::array{std::string_view(p.row_name)});
+            }
+            return;
+        }
+    }
+    }
+    if (p.category == "box_food" || p.category == "item_food") {
+        std::string food_key;
+        if (FoodGroupOf(p.row_name, food_key) &&
+            (context.food_spent_groups.find(food_key) != context.food_spent_groups.end() ||
+             context.food_empty_groups.find(food_key) != context.food_empty_groups.end())) {
+            // The two rules mean very different things, so the line names the one that fired
+            // and the group key it fired for: a wrong skip has to be readable on sight.
+            const bool counted =
+                context.food_spent_groups.find(food_key) != context.food_spent_groups.end();
+            const std::array args{std::string_view(food_key),
+                                  std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                counted ? "status.region_spent_counted" : "status.region_spent_empty",
+                counted ? "Region quota reached ({0}), skip [{1}]"
+                        : "Region had only empty points ({0}), skip [{1}]",
+                args);
+            ++context.skipped;
+            ++context.current_index;
+            ResetPointState(context);
+            context.due = now;
+            return;
+        }
+    }
     if (p.category == "shop_steal" && !context.shop_stealth_ready) {
         PrepareShopStealth(context, p, now);
         return;
@@ -3354,7 +3610,7 @@ void Tick(Context& context) {
             p.category == "shop_steal" ? ActorPrefixForCategory(p.category) : context.type_prefix);
         if (context.target_actor == 0) {
             ++context.retry_count;
-            if (context.retry_count < 3) {
+            if (context.retry_count <= kActorLoadWaitSeconds) {
                 context.due = now + std::chrono::milliseconds(1000);
                 const std::string retry_str = std::to_string(context.retry_count);
                 const std::array waiting_args{
@@ -3476,14 +3732,20 @@ void Tick(Context& context) {
         std::uint8_t params[12]{};
         std::memcpy(params, &context.target_actor, sizeof(context.target_actor));
         ShopTakeResult shop_result = ShopTakeResult::retry;
+        InteractProbe shop_probe{};
         const bool triggered = p.category == "shop_steal"
-            ? (shop_result = TakeShopItem(context, context.target_actor),
+            ? (shop_result = TakeShopItem(context, context.target_actor,
+                                          &shop_probe),
                shop_result == ShopTakeResult::triggered)
             : Invoke(reinterpret_cast<void*>(context.controller),
                      reinterpret_cast<void*>(context.server_interact_fn), params);
         if (triggered) {
             context.interacted = true;
-            if (p.category == "shop_steal") LogShop(context, "shop interaction requested point=" + p.row_name);
+            if (p.category == "shop_steal") {
+                            // 记下成功时的 actor 地址：与失败时的地址对照，判断插件是不是一直握着
+                            // 旧的（已被拿走的）实例，而刷新出来的货是另一个新实例。
+                            LogShop(context, "shop interaction requested point=" + p.row_name);
+                        }
             context.interact_verify_deadline = now + std::chrono::seconds(p.category == "shop_steal" ? 30 : 8);
             context.due = now + std::chrono::milliseconds(3000);
             const std::array interacted_args{std::string_view(p.row_name)};
@@ -3494,10 +3756,71 @@ void Tick(Context& context) {
                 if (shop_result == ShopTakeResult::retry) {
                     if (context.interact_retry < 5) {
                         ++context.interact_retry;
+                        // One line per attempt: an entry count that stays empty, or a
+                        // can_try count that climbs, is the difference between a bad
+                        // standing spot and an entry the game arms late.
+                        double probe_distance{-1.0};
+                        double probe_actor[3]{};
+                        double probe_player[3]{};
+                        if (ReadActorLocation(context, context.target_actor,
+                                              probe_actor) &&
+                            SnapshotPlayerPosition(context, probe_player)) {
+                            const double pdx = probe_player[0] - probe_actor[0];
+                            const double pdy = probe_player[1] - probe_actor[1];
+                            probe_distance = std::sqrt(pdx * pdx + pdy * pdy);
+                        }
+                        LogShop(context,
+                            "entry attempt=" + std::to_string(context.interact_retry) +
+                                " reason=" + shop_probe.reason +
+                                " entries=" + std::to_string(shop_probe.entries) +
+                                " can_try=" + std::to_string(shop_probe.can_try) +
+                                " dist=" + std::to_string(static_cast<long long>(
+                                    probe_distance)) + "cm point=" + p.row_name);
+                        // 重试时重新找 actor：货刷新后游戏可能换了实例，一直握着旧实例就会
+                        // 永远拿到空入口列表（日志实测：同一地址反复失败，而该点以前成功过）。
+                        if (shop_probe.entries == 0) {
+                            // 入口为空：暂时排除它，让下一次扫描去找次近的（点位上可能有两个同类
+                            // actor：旧的已空 + 真正有货的；只清 target_actor 会重新选中同一个）。
+                            // 只排 20 秒：空入口也可能只是游戏武装晚了，永久拉黑会让该点永远拿不到。
+                            context.shop_taken_actors.insert_or_assign(context.target_actor,
+                                std::chrono::steady_clock::now() + std::chrono::seconds(20));
+                            context.target_actor = 0;
+                            // 空入口：可能只是选错了 actor（点位有已空的旧实例 + 真正有货的新实例），
+                            // 所以换 actor 再试两次；第三次还空就判「该点已无货」并跳过本点。
+                            // 本点，不再磨 20 次。
+                            if (context.interact_retry >= 3) {
+                                LogShop(context, "shop item absent point=" + p.row_name);
+                                const std::array absent_args{
+                                    std::string_view(p.row_name)};
+                                context.status = context.localizer.Format(
+                                    "status.shop_item_absent",
+                                    "Shop item is gone, skip [{0}]", absent_args);
+                                ++context.skipped;
+                                ++context.current_index;
+                                ResetPointState(context);
+                                context.due = now;
+                                return;
+                            }
+                        }
                         context.due = now + std::chrono::milliseconds(500);
                         context.status = context.localizer.Text(
                             "status.shop_interact_retry",
                             "隐身有效，等待拾取入口重试");
+                        return;
+                    }
+                    if (ShopRescanBudgetSpent(context)) {
+                        LogShop(context, "pickup entry never became ready point=" +
+                            p.row_name);
+                        const std::array exhausted_args{
+                            std::string_view(p.row_name)};
+                        context.status = context.localizer.Format(
+                            "status.shop_rescan_exhausted",
+                            "Shop pickup: retries exhausted, skip [{0}]",
+                            exhausted_args);
+                        ++context.skipped;
+                        ++context.current_index;
+                        ResetPointState(context);
+                        context.due = now;
                         return;
                     }
                     context.target_actor = 0;
@@ -3590,6 +3913,20 @@ void Tick(Context& context) {
             bool still_stealth{};
             if (ShopItemUsesBlueprint(context, context.target_actor, still_stealth) &&
                 still_stealth) {
+                if (ShopRescanBudgetSpent(context)) {
+                    LogShop(context, "take never confirmed point=" + p.row_name);
+                    const std::array exhausted_args{
+                        std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.shop_rescan_exhausted",
+                        "Shop pickup: retries exhausted, skip [{0}]",
+                        exhausted_args);
+                    ++context.skipped;
+                    ++context.current_index;
+                    ResetPointState(context);
+                    context.due = now;
+                    return;
+                }
                 context.interacted = false;
                 context.target_actor = 0;
                 context.interact_retry = 0;
@@ -3626,6 +3963,21 @@ void Tick(Context& context) {
                 context.due = now;
             }
         } else {
+            // Stealth can drop the moment a take is refused, and it used to be read only
+            // after the whole verification window had run out - which is what left a failed
+            // point sitting on "stealth still active" for half a minute. Look while waiting,
+            // but only after the completion predicates above, so a take that did land is
+            // still confirmed first. Expiring the deadline hands the point to the branch
+            // above on the next tick, which re-reads the uncollected catalog before it
+            // decides, so a slow confirmation is not mistaken for a failed take.
+            bool still_stealth{};
+            if (ShopItemUsesBlueprint(context, context.target_actor, still_stealth) &&
+                !still_stealth) {
+                LogShop(context, "stealth lost while verifying point=" + p.row_name);
+                context.interact_verify_deadline = {};
+                context.due = now;
+                return;
+            }
             context.due = now + std::chrono::milliseconds(300);
         }
         return;
@@ -3773,6 +4125,7 @@ void ANOMALY_CALL Update(void* plugin_context, const double delta_seconds) {
         GetPlayerController(context);
         RefreshUncollectedCatalog(context);
         RefreshPickedUpCatalog(context);
+        RefreshFoodRegionState(context);
         ReadTable(context);
         BuildClassMap(context);
     }
@@ -3949,6 +4302,14 @@ void ANOMALY_CALL Update(void* plugin_context, const double delta_seconds) {
             }
         }
     }
+    if (context.running &&
+        std::chrono::steady_clock::now() >= context.food_state_refresh_at) {
+        context.food_state_refresh_at =
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        RefreshUncollectedCatalog(context);
+        RefreshPickedUpCatalog(context);
+        RefreshFoodRegionState(context);
+    }
     Tick(context);
     if (context.oracle != nullptr) {
         auto& oracle = *context.oracle;
@@ -4045,6 +4406,14 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
                              &z_offset, 10.0, 100.0)) {
             context.teleport_z_offset.store(z_offset, std::memory_order_relaxed);
         }
+    }
+    const std::string empty_run_label =
+        context.localizer.Text("label.empty_run", "Empty points per region");
+    std::uint32_t empty_run =
+        context.food_empty_region_run.load(std::memory_order_relaxed);
+    if (ui->input_uint32(ui->user, anomaly::sdk::StringView(empty_run_label),
+                         &empty_run, 1, 20)) {
+        context.food_empty_region_run.store(empty_run, std::memory_order_relaxed);
     }
     const std::string start_index_label =
         context.localizer.Text("label.start_index", "Start Index");
