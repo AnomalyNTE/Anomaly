@@ -101,6 +101,9 @@ constexpr double kReissueDelaySeconds = 4.0;
 constexpr std::uint32_t kNavigationMaxAttempts = 2;
 constexpr double kApproachRadiusCentimeters = 100.0;
 constexpr double kFallOutThresholdCentimeters = 1000.0;
+// 地形加载慢时人会一直掉，所以要「立刻重传 + 次数宽松」；等待会摔死（用户实测）。
+constexpr std::uint32_t kFallOutMaximumRetries = 60;
+constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(250);
 constexpr double kScanActorRadiusCentimeters = 1500.0;
 constexpr std::string_view kLandmarkWorld = "XL_map_bigworld_test";
 constexpr double kLandmarkArrivalRadiusCentimeters = 500.0;
@@ -259,6 +262,12 @@ struct Context final {
     // Region keys ("Item|A") whose weekly food is spent, and when they were last recomputed.
     std::unordered_set<std::string> food_spent_groups;
     // Regions learned to be empty during this run, and the current run of empty points.
+    // 商店：本次运行里已经从哪些 actor 拿到过货。相邻点位可能共享一个 actor，拿走后它的入口
+    // 列表就空了，而扫描按「离点位最近」选，会一直选中它（日志实测同一地址反复失败）。
+    // 值 = 可以重新选它的时刻。用时限而不是永久拉黑：入口为空可能只是游戏武装晚了，
+    // 永久拉黑会让「该点唯一 actor」的点位永远拿不到。
+    std::unordered_map<std::uintptr_t, std::chrono::steady_clock::time_point>
+        shop_taken_actors;
     std::unordered_set<std::string> food_empty_groups;
     // Groups already written to the log this run, so a decision is reported once.
     std::unordered_set<std::string> food_skip_logged;
@@ -2159,6 +2168,16 @@ std::uintptr_t ScanForActor(Context& context, const Point& p,
         const double dz = bz - p.z;
         const double dist = dx * dx + dy * dy + dz * dz;
         if (dist < best_dist) {
+            // 商店：跳过还在排除期内的 actor（相邻点位共享 actor 的情况）。
+            // 注意前缀带下划线（ActorPrefixForCategory 返回 "ShopStealGoods_"）——比较写成不带下划线
+            // 会让排除永远不生效（日志实测：两次尝试拿到同一个 actor 地址）。
+            if (type_prefix == "ShopStealGoods_") {
+                const auto excluded = context.shop_taken_actors.find(object);
+                if (excluded != context.shop_taken_actors.end() &&
+                    std::chrono::steady_clock::now() < excluded->second) {
+                    continue;
+                }
+            }
             best = object;
             best_dist = dist;
         }
@@ -2189,8 +2208,12 @@ bool Teleport(Context& context, const Point& p) noexcept {
     request.position[0] = p.x;
     request.position[1] = p.y;
     request.position[2] = p.z + context.teleport_z_offset.load(std::memory_order_relaxed);
-    return context.teleport->teleport(context.teleport->user, &request).code ==
+    const bool sent = context.teleport->teleport(context.teleport->user, &request).code ==
         ANOMALY_STATUS_V1_OK;
+    // 传送后位置会变（安全点与点位高度不同），掉出世界的基准必须跟着重立，否则一到
+    // 较低的安全点就会被判「掉下去了」，于是来回传（用户实测）。
+    if (sent) context.fallout_baseline_z = 0.0;
+    return sent;
 }
 
 bool HasShopStealthSkill(Context& context);
@@ -2230,6 +2253,13 @@ struct InteractArrayHeader final {
     std::uintptr_t data{};
     std::int32_t count{};
     std::int32_t capacity{};
+};
+
+// armed late, while a flat zero means the standing spot never became valid.
+struct InteractProbe final {
+    const char* reason{"ok"};
+    int entries{};
+    int can_try{};
 };
 
 bool ReadInteractChoices(Context& context, const std::uintptr_t actor,
@@ -2276,12 +2306,6 @@ bool CanTryInteract(Context& context, const std::uintptr_t actor,
 
 // Why an interact attempt did or did not fire, and how many entries the game offered.
 // The shop path logs it: a `can_try` count that climbs over the retries means the entry is
-// armed late, while a flat zero means the standing spot never became valid.
-struct InteractProbe final {
-    const char* reason{"ok"};
-    int entries{};
-    int can_try{};
-};
 
 bool TriggerInteractPickup(Context& context, const std::uintptr_t actor,
                            InteractProbe* probe = nullptr) noexcept {
@@ -2894,32 +2918,6 @@ void TickPickup(Context& context, const Point& p,
 void TickFoodPickup(Context& context, const Point& p,
                     const std::chrono::steady_clock::time_point now) {
     if (context.target_actor == 0) {
-        double player_pos[3]{};
-        if (SnapshotPlayerPosition(context, player_pos) &&
-            player_pos[2] < p.z - kFallOutThresholdCentimeters) {
-            if (context.fallout_retries == 0) {
-                context.fallout_baseline_z = player_pos[2];
-            }
-            const double gained = player_pos[2] - context.fallout_baseline_z;
-            if (gained >= 100.0) {
-                context.fallout_baseline_z = player_pos[2];
-            }
-            if (context.fallout_retries < 5) {
-                ++context.fallout_retries;
-                context.teleport_retry = 1;
-                context.teleported = false;
-                context.retry_count = 0;
-                context.due = now + std::chrono::milliseconds(2000);
-                context.status = "掉出世界，重传 " + p.row_name;
-            } else {
-                ++context.skipped;
-                ++context.current_index;
-                ResetPointState(context);
-                context.due = now;
-                context.status = "掉出世界，跳过 " + p.row_name;
-            }
-            return;
-        }
         context.target_actor =
             ScanForActor(context, p, ActorPrefixForCategory(p.category));
         if (context.target_actor == 0 && p.category == "prison") {
@@ -3271,6 +3269,59 @@ void Tick(Context& context) {
         return;
     }
     const Point& p = context.filtered_points[context.current_index];
+    // 掉出世界（地形没加载好时会真的往下掉）对所有类别统一处理：立刻重传，不等待——
+    // 等待会摔死（用户实测）。次数给得宽松，地形加载慢时也能撑过去。
+    // 判据只看**玩家自己**的高度变化，不看点位高度：点位 z 常在货架/箱子上，比人站的地面
+    // 高十几米，用点位当基准会「人已经到了还在传」（用户实测）。
+    {
+        // 商店在「准备阶段」（还没隐身就绪）时有自己的安全点重传/超时逻辑，这里不插手，
+        // 否则两边会互相把对方传回去（用户实测：传几次没上去又去安全点）。
+        const bool shop_preparing =
+            p.category == "shop_steal" && !context.shop_stealth_ready;
+        double player_position[3]{};
+        if (!shop_preparing && SnapshotPlayerPosition(context, player_position)) {
+            // 每个点第一次拿到位置时立基准；上升 1 米以上就跟着更新（传送回高处、走上台阶）。
+            if (context.fallout_baseline_z == 0.0) {
+                context.fallout_baseline_z = player_position[2];
+            }
+            const double gained = player_position[2] - context.fallout_baseline_z;
+            if (gained >= 100.0) context.fallout_baseline_z = player_position[2];
+            const bool fell = player_position[2] <
+                context.fallout_baseline_z - kFallOutThresholdCentimeters;
+            if (fell) {
+            if (context.fallout_retries < kFallOutMaximumRetries) {
+                ++context.fallout_retries;
+                context.teleport_retry = 1;
+                context.teleported = false;
+                context.retry_count = 0;
+                // 不动商店的隐身/传送状态：那是它自己的流程，插手会互相打架。
+                context.interacted = false;
+                context.target_actor = 0;
+                // 直接下发传送：不能只设状态就 return——那样每 250 毫秒只是加计数，正常传送
+                // 路径永远没机会执行（用户实测「重传没反应」）。
+                Teleport(context, p);
+                const std::string retries = std::to_string(context.fallout_retries);
+                const std::string maximum = std::to_string(kFallOutMaximumRetries);
+                const std::array args{std::string_view(retries),
+                                      std::string_view(maximum),
+                                      std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.fallout_retry", "Fell out of world, re-teleport {0}/{1} [{2}]",
+                    args);
+                context.due = now + kFallOutRetryDelay;
+            } else {
+                ++context.skipped;
+                ++context.current_index;
+                ResetPointState(context);
+                context.due = now;
+                context.status = context.localizer.Format(
+                    "status.fallout_skip", "Fell out of world, skip [{0}]",
+                    std::array{std::string_view(p.row_name)});
+            }
+            return;
+        }
+    }
+    }
     if (p.category == "box_food" || p.category == "item_food") {
         std::string food_key;
         if (FoodGroupOf(p.row_name, food_key) &&
@@ -3669,7 +3720,11 @@ void Tick(Context& context) {
                      reinterpret_cast<void*>(context.server_interact_fn), params);
         if (triggered) {
             context.interacted = true;
-            if (p.category == "shop_steal") LogShop(context, "shop interaction requested point=" + p.row_name);
+            if (p.category == "shop_steal") {
+                            // 记下成功时的 actor 地址：与失败时的地址对照，判断插件是不是一直握着
+                            // 旧的（已被拿走的）实例，而刷新出来的货是另一个新实例。
+                            LogShop(context, "shop interaction requested point=" + p.row_name);
+                        }
             context.interact_verify_deadline = now + std::chrono::seconds(p.category == "shop_steal" ? 30 : 8);
             context.due = now + std::chrono::milliseconds(3000);
             const std::array interacted_args{std::string_view(p.row_name)};
@@ -3700,6 +3755,32 @@ void Tick(Context& context) {
                                 " can_try=" + std::to_string(shop_probe.can_try) +
                                 " dist=" + std::to_string(static_cast<long long>(
                                     probe_distance)) + "cm point=" + p.row_name);
+                        // 重试时重新找 actor：货刷新后游戏可能换了实例，一直握着旧实例就会
+                        // 永远拿到空入口列表（日志实测：同一地址反复失败，而该点以前成功过）。
+                        if (shop_probe.entries == 0) {
+                            // 入口为空：暂时排除它，让下一次扫描去找次近的（点位上可能有两个同类
+                            // actor：旧的已空 + 真正有货的；只清 target_actor 会重新选中同一个）。
+                            // 只排 20 秒：空入口也可能只是游戏武装晚了，永久拉黑会让该点永远拿不到。
+                            context.shop_taken_actors.insert_or_assign(context.target_actor,
+                                std::chrono::steady_clock::now() + std::chrono::seconds(20));
+                            context.target_actor = 0;
+                            // 空入口：可能只是选错了 actor（点位有已空的旧实例 + 真正有货的新实例），
+                            // 所以换 actor 再试两次；第三次还空就判「该点已无货」并跳过本点。
+                            // 本点，不再磨 20 次。
+                            if (context.interact_retry >= 3) {
+                                LogShop(context, "shop item absent point=" + p.row_name);
+                                const std::array absent_args{
+                                    std::string_view(p.row_name)};
+                                context.status = context.localizer.Format(
+                                    "status.shop_item_absent",
+                                    "Shop item is gone, skip [{0}]", absent_args);
+                                ++context.skipped;
+                                ++context.current_index;
+                                ResetPointState(context);
+                                context.due = now;
+                                return;
+                            }
+                        }
                         context.due = now + std::chrono::milliseconds(500);
                         context.status = context.localizer.Text(
                             "status.shop_interact_retry",
