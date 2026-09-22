@@ -106,6 +106,13 @@ std::filesystem::path ExecutableDirectory() {
     return ExecutablePath().parent_path();
 }
 
+// The hook that goes into the official launcher. It is built with this executable and ships in the
+// runtime payload directory. The path is absolute because the launcher it is injected into runs from
+// an install location this process does not own.
+std::filesystem::path GameHookLibrary() {
+    return ExecutableDirectory() / L"Anomaly" / L"NTEGameHook.dll";
+}
+
 struct AdministratorLaunchResult final {
     bool run_current_process{};
     int exit_code{};
@@ -445,11 +452,27 @@ public:
                 return;
             }
             anomaly::launcher::ManualMapLaunchOptions options;
-            options.launcher_path = launcher;
-            options.working_directory = launcher.parent_path();
+            // NTELauncher.exe is only the self-updating bootstrap. The launcher window and the
+            // platform pipe server live in the client it starts, so that client is started directly:
+            // it is the process that has to stay hidden, and it is the one that spawns HTGame.exe.
+            const auto command =
+                anomaly::launcher::ResolveClientLaunchCommand(launcher);
+            if (command.executable.empty()) {
+                PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
+                    MessageKind::Error, command.failure);
+                return;
+            }
+            options.launcher_path = command.executable;
+            options.launcher_arguments = command.arguments;
+            options.working_directory = command.executable.parent_path();
             options.manual_map.core_path = selected.core_path;
             options.manual_map.runtime_root = selected.runtime_root;
             options.manual_map.log_directory = options.manual_map.runtime_root / L"logs";
+            // The launcher is never asked to act by a user, so a hook goes into it: it keeps the
+            // launcher's window hidden from the inside and asks the launcher to start the game, which
+            // is what leaves the platform session -- and with it the login and support buttons --
+            // exactly as a normal launch produces it.
+            options.hook_path = GameHookLibrary();
             const auto result =
                 anomaly::launcher::LaunchAndManualMapRuntimeCore(options);
             if (result.Ok()) RefreshProcessesImpl();

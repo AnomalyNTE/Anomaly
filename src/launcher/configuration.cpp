@@ -18,6 +18,8 @@ constexpr std::uint64_t kMaximumConfigurationBytes = 64U * 1024U;
 constexpr std::wstring_view kGameExecutableName = L"HTGame.exe";
 constexpr std::wstring_view kMainlandLauncherExecutableName = L"NTELauncher.exe";
 constexpr std::wstring_view kGlobalLauncherExecutableName = L"NTEGlobalLauncher.exe";
+constexpr std::wstring_view kLauncherUpdateConfigFile = L"Config\\Config.ini";
+constexpr std::wstring_view kLauncherUpdateSection = L"UPDATE_CONFIG";
 
 std::wstring_view LauncherExecutableName(const NteClient client) noexcept {
     return client == NteClient::Global
@@ -577,6 +579,65 @@ LauncherClientConfiguration DiscoverLauncherConfiguration(
         }
     }
     return result;
+}
+
+NteClientLaunchCommand ResolveClientLaunchCommand(
+    const std::filesystem::path& launcher_executable) {
+    // The bootstrap reads its successor out of an update section instead of a compiled-in name, which
+    // is what lets the launcher replace itself. Reading the same section keeps Anomaly's launch
+    // identical to the shortcut the player uses.
+    NteClientLaunchCommand command;
+    if (launcher_executable.empty()) {
+        command.failure = "no launcher executable was selected";
+        return command;
+    }
+
+    // The profile API resolves a relative file name against the Windows directory rather than the
+    // working directory, so the launcher path is made absolute before it is handed over.
+    const auto launcher = std::filesystem::absolute(launcher_executable);
+    const auto read_value = [](const std::filesystem::path& config_ini, const wchar_t* key) {
+        std::array<wchar_t, MAX_PATH> buffer{};
+        const DWORD length = GetPrivateProfileStringW(
+            kLauncherUpdateSection.data(), key, L"", buffer.data(),
+            static_cast<DWORD>(buffer.size()), config_ini.c_str());
+        return std::wstring(buffer.data(), length);
+    };
+
+    // An install keeps a copy of the bootstrap at its root and the real one, with the update section
+    // that names the client, in the NTELauncher subdirectory. Discovery can land on either, and the
+    // root copy has no Config of its own, so the section is looked for in both places before the
+    // launch is refused. The client is then resolved against whichever directory owns that Config,
+    // because LaunchFilePath is relative to it.
+    const std::array<std::filesystem::path, 2> config_candidates{
+        launcher.parent_path() / kLauncherUpdateConfigFile,
+        launcher.parent_path() / L"NTELauncher" / kLauncherUpdateConfigFile,
+    };
+    for (const auto& config_ini : config_candidates) {
+        const std::wstring name = read_value(config_ini, L"LaunchFilePath");
+        if (name.empty()) continue;
+        const auto client = config_ini.parent_path().parent_path() / name;
+        if (!IsRegularFile(client)) continue;
+        command.executable = client;
+        command.arguments = read_value(config_ini, L"LaunchCmdLine");
+        return command;
+    }
+
+    // Nothing named a client. The bootstrap is the one executable that must never be substituted:
+    // it starts its client and then exits, so anything injected into it -- the hook that hides the
+    // window and asks for the game to start -- dies with it, leaving the client running unmanaged and
+    // the failure silent. A launcher selected directly, which is how a custom install is pointed at,
+    // is still returned as asked.
+    const auto requested = Fold(launcher.filename().wstring());
+    if (requested == Fold(std::wstring(kMainlandLauncherExecutableName)) ||
+        requested == Fold(std::wstring(kGlobalLauncherExecutableName))) {
+        command.failure = "the launcher bootstrap at " + WideUtf8(launcher.wstring()) +
+            " names no client: [UPDATE_CONFIG] LaunchFilePath is empty in " +
+            WideUtf8(config_candidates[0].wstring()) + " and " +
+            WideUtf8(config_candidates[1].wstring());
+        return command;
+    }
+    command.executable = launcher;
+    return command;
 }
 
 }  // namespace anomaly::launcher

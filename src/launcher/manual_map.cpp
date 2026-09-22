@@ -34,6 +34,22 @@ namespace {
 constexpr DWORD kAttachProcessAccess =
     PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_READ |
     PROCESS_VM_WRITE | PROCESS_CREATE_THREAD;
+
+// The hook injected into the launcher signals this immediately before asking it to start the game.
+// The name is duplicated in src/launcher/hook/nte_game_hook.cpp rather than shared through a header,
+// because that DLL runs inside a process this repository does not own and is deliberately
+// free-standing.
+constexpr wchar_t kLauncherArmedEventName[] = L"Local\\Anomaly.NteGameHook.Armed";
+
+// How long capture waits for that signal before falling back to the session's own timing. It only has
+// to cover the hook's startup delay plus injection, so it is far shorter than the discovery budget.
+constexpr DWORD kHookArmedTimeoutMilliseconds = 90000;
+
+// How long a freshly created process is given to publish its loader list. This is a one-time startup
+// cost rather than a user-paced wait: the image, ntdll and kernel32 are in the list within
+// milliseconds of creation, so a process still without them is one that never started.
+constexpr DWORD kLoaderReadyTimeoutMilliseconds = 15000;
+
 std::mutex g_debug_privilege_mutex;
 
 class Handle final {
@@ -756,6 +772,30 @@ RemoteModuleMap SnapshotModules(HANDLE process, DWORD& error) {
     return result;
 }
 
+// A process CreateProcessW has only just returned from may not have built its loader list yet: the
+// PEB's Ldr is still null, so a module snapshot reports ERROR_NOT_READY and anything that needs a
+// remote module address -- an injection, an import resolution -- has nothing to anchor against.
+// Every Windows process maps its own image, ntdll and kernel32 before anything else runs, so those
+// three are the readiness test.
+bool WaitForLoaderReady(
+    HANDLE process, std::wstring_view executable_name,
+    std::chrono::steady_clock::time_point deadline, RemoteModuleMap& modules, DWORD& error) {
+    do {
+        modules = SnapshotModules(process, error);
+        if (error == ERROR_SUCCESS &&
+            modules.contains(Fold(std::wstring(executable_name))) &&
+            modules.contains(L"ntdll.dll") && modules.contains(L"kernel32.dll")) {
+            return true;
+        }
+        if (error != ERROR_SUCCESS && error != ERROR_NOT_READY &&
+            error != ERROR_PARTIAL_COPY && error != ERROR_BAD_LENGTH) {
+            return false;
+        }
+        Sleep(1);
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+}
+
 template <typename T>
 T* Rva(std::vector<std::byte>& image, std::uint32_t rva, std::size_t count = 1) noexcept {
     if (count > std::numeric_limits<std::size_t>::max() / sizeof(T)) return nullptr;
@@ -926,6 +966,29 @@ LocalModule LoadLocalDependency(
     return LocalModule(module);
 }
 
+std::string NarrowPath(const std::filesystem::path& path) {
+    const std::wstring value = path.wstring();
+    if (value.empty()) return {};
+    const int required = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0) return {};
+    std::string result(static_cast<std::size_t>(required), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+            result.data(), required, nullptr, nullptr) == 0) {
+        return {};
+    }
+    return result;
+}
+
+// A remote loader thread exits with the module handle it produced, so its exit code is reported in
+// hex where the surrounding diagnostics are read.
+std::string Hex32(std::uint32_t value) {
+    constexpr char digits[] = "0123456789ABCDEF";
+    std::string text = "0x";
+    for (int shift = 28; shift >= 0; shift -= 4) text.push_back(digits[(value >> shift) & 0xF]);
+    return text;
+}
+
 std::filesystem::path LocalModulePath(HMODULE module) {
     if (module == nullptr) return {};
     std::wstring path(32768, L'\0');
@@ -1021,10 +1084,18 @@ bool RemoteLoadLibrary(
         failure = "remote dependency loader did not complete";
         return false;
     }
+    DWORD loaded{};
+    static_cast<void>(GetExitCodeThread(thread.Get(), &loaded));
     DWORD snapshot_error{};
     modules = SnapshotModules(process, snapshot_error);
     if (snapshot_error != ERROR_SUCCESS) {
         failure = "remote modules could not be refreshed";
+        return false;
+    }
+    // The loader thread exits with the module handle it produced, so a null result means nothing was
+    // loaded. Reporting success there would hide the failure behind whatever symptom it causes next.
+    if (FindRemoteModule(modules, path) == modules.end()) {
+        failure = "remote loader returned 0x" + Hex32(loaded) + " for " + NarrowPath(path);
         return false;
     }
     return true;
@@ -1039,7 +1110,9 @@ bool EnsureRemoteModule(
     if (FindRemoteModule(modules, requested) != modules.end()) return true;
     const bool api_set = name.starts_with(L"api-ms-") || name.starts_with(L"ext-ms-");
     if (api_set) return true;
-    failure = "remote dependency was not visible after loading";
+    // Naming the module matters: a manual map loads a whole import table, and "a dependency is
+    // missing" without saying which one leaves nothing to act on.
+    failure = "remote dependency was not visible after loading: " + NarrowPath(requested);
     return false;
 }
 
@@ -1811,50 +1884,6 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
     }
 }
 
-ManualMapResult ManualMapRuntimeCore(const ManualMapOptions& options) noexcept {
-    try {
-        if (options.process_id == 0 || options.core_path.empty()) {
-            return Failure(
-                ManualMapError::ProcessUnavailable, ERROR_INVALID_PARAMETER,
-                "manual-map options are incomplete");
-        }
-        const AttachableProcess inspected = InspectAttachableProcess(options.process_id);
-        if (inspected.inspection_error != ERROR_SUCCESS) {
-            return Failure(
-                inspected.inspection_error == ERROR_ACCESS_DENIED
-                    ? ManualMapError::AccessDenied : ManualMapError::ProcessUnavailable,
-                inspected.inspection_error,
-                inspected.inspection_error == ERROR_ACCESS_DENIED
-                    ? "target process denied the access required for attach"
-                    : "target process could not be inspected");
-        }
-        if (!inspected.owned_by_current_user) {
-            return Failure(
-                ManualMapError::DifferentUser, ERROR_ACCESS_DENIED,
-                "target process is owned by a different user");
-        }
-        if (!inspected.x64) {
-            return Failure(
-                ManualMapError::IncompatibleArchitecture, ERROR_BAD_EXE_FORMAT,
-                "target process is not x64");
-        }
-
-        DWORD open_error{};
-        Handle process = OpenProcessForAttach(options.process_id, open_error);
-        if (!process) {
-            return Failure(
-                open_error == ERROR_ACCESS_DENIED ? ManualMapError::AccessDenied
-                                                  : ManualMapError::ProcessUnavailable,
-                open_error, "target process could not be opened for attach");
-        }
-        return ManualMapRuntimeCoreWithHandle(options, inspected, process);
-    } catch (...) {
-        return Failure(
-            ManualMapError::ProcessUnavailable, ERROR_UNHANDLED_EXCEPTION,
-            "manual-map target inspection raised an unexpected exception");
-    }
-}
-
 ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
     const ManualMapLaunchOptions& options) noexcept {
     ManualMapLaunchResult result;
@@ -1900,22 +1929,16 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         const std::wstring requested_target = Fold(options.target_executable_name);
         const auto discovery_timeout = std::clamp<std::int64_t>(
             options.target_timeout.count(), 1, std::chrono::minutes(10).count() * 60'000LL);
-        const auto discovery_deadline = std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(discovery_timeout);
-        FastTargetCaptureResult captured;
-        std::atomic_bool capture_ready{};
-        std::jthread capture_thread([&](std::stop_token stop) noexcept {
-            try {
-                captured = CaptureTargetByFastPolling(
-                    requested_target, existing_targets, discovery_deadline,
-                    capture_ready, stop);
-            } catch (...) {
-                captured.error = ERROR_UNHANDLED_EXCEPTION;
-                capture_ready.store(true, std::memory_order_release);
-            }
-        });
-        while (!capture_ready.load(std::memory_order_acquire)) {
-            static_cast<void>(SwitchToThread());
+
+        // The hook signals this immediately before asking the launcher to start the game, so capture
+        // can be held until the seconds that matter. Polling is unavoidable -- the game process is
+        // created by ACE-BASE.sys, which offers nothing to subscribe to -- but a loop that starts with
+        // the launcher would spend most of its life watching a process that is still logging in.
+        Handle armed(CreateEventW(nullptr, TRUE, FALSE, kLauncherArmedEventName));
+        if (!armed) {
+            result.mapping = Failure(ManualMapError::ProcessControlFailure, GetLastError(),
+                "the launcher hook handshake could not be created");
+            return result;
         }
 
         STARTUPINFOW startup{.cb = sizeof(startup)};
@@ -1927,8 +1950,6 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
                 options.creation_flags & ~incompatible_flags,
                 nullptr, working_directory.c_str(), &startup, &created) == FALSE) {
             const DWORD launch_error = GetLastError();
-            capture_thread.request_stop();
-            capture_thread.join();
             result.mapping = Failure(
                 ManualMapError::ProcessLaunchFailure, launch_error,
                 "official launcher could not be started for target capture");
@@ -1938,6 +1959,48 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         Handle launcher_process(created.hProcess);
         Handle launcher_thread(created.hThread);
 
+        // The hook is injected before capture begins, because it is what puts the launcher into a
+        // state where the game can start at all and what reports that the moment has arrived.
+        if (!options.hook_path.empty()) {
+            // Injection resolves LoadLibraryW through the launcher's own module list, which does not
+            // exist the instant CreateProcessW returns. Asking too early reports ERROR_NOT_READY and
+            // leaves the launcher running with nothing in it.
+            const auto loader_deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(kLoaderReadyTimeoutMilliseconds);
+            DWORD hook_error{};
+            RemoteModuleMap launcher_modules;
+            std::string hook_failure;
+            if (!WaitForLoaderReady(launcher_process.Get(), launcher.filename().wstring(),
+                    loader_deadline, launcher_modules, hook_error)) {
+                result.mapping = Failure(ManualMapError::ProcessControlFailure,
+                    hook_error == ERROR_SUCCESS ? ERROR_TIMEOUT : hook_error,
+                    "the launcher's loader did not initialize before the hook timeout");
+                return result;
+            }
+            if (!RemoteLoadLibrary(launcher_process.Get(), options.hook_path, launcher_modules,
+                    hook_failure)) {
+                result.mapping = Failure(ManualMapError::ProcessControlFailure,
+                    ERROR_DLL_INIT_FAILED, "the game hook could not be injected");
+                return result;
+            }
+        }
+
+        FastTargetCaptureResult captured;
+        std::atomic_bool capture_ready{};
+        std::jthread capture_thread([&](std::stop_token stop) noexcept {
+            try {
+                // Bounded, so a launcher whose hook never reports still falls back to capturing on
+                // the session's own timing instead of stalling the launch.
+                static_cast<void>(WaitForSingleObject(armed.Get(), kHookArmedTimeoutMilliseconds));
+                const auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(discovery_timeout);
+                captured = CaptureTargetByFastPolling(
+                    requested_target, existing_targets, deadline, capture_ready, stop);
+            } catch (...) {
+                captured.error = ERROR_UNHANDLED_EXCEPTION;
+                capture_ready.store(true, std::memory_order_release);
+            }
+        });
         capture_thread.join();
         Handle target_process = std::move(captured.process);
         Handle target_cleanup;
@@ -1950,7 +2013,7 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
                     ? ManualMapError::AccessDenied
                     : captured.error == ERROR_TIMEOUT
                         ? ManualMapError::ProcessLaunchFailure
-                        : ManualMapError::ProcessControlFailure,
+                        : ManualMapError::ProcessUnavailable,
                 captured.error,
                 captured.error == ERROR_ACCESS_DENIED
                     ? "new target process was detected after mapping access was filtered"
@@ -1991,23 +2054,9 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             const auto loader_deadline = std::chrono::steady_clock::now() +
                 std::chrono::milliseconds(loader_timeout);
             DWORD module_error = ERROR_NOT_READY;
-            bool loader_ready{};
-            do {
-                auto modules = SnapshotModules(target_process.Get(), module_error);
-                loader_ready = module_error == ERROR_SUCCESS &&
-                    modules.contains(Fold(target.executable_name)) &&
-                    modules.contains(L"ntdll.dll") &&
-                    modules.contains(L"kernel32.dll");
-                if (module_error != ERROR_SUCCESS &&
-                    module_error != ERROR_NOT_READY &&
-                    module_error != ERROR_PARTIAL_COPY &&
-                    module_error != ERROR_BAD_LENGTH) {
-                    break;
-                }
-                if (!loader_ready) Sleep(1);
-            } while (!loader_ready &&
-                std::chrono::steady_clock::now() < loader_deadline);
-            if (!loader_ready) {
+            RemoteModuleMap loader_modules;
+            if (!WaitForLoaderReady(target_process.Get(), target.executable_name,
+                    loader_deadline, loader_modules, module_error)) {
                 result.mapping = Failure(
                     ManualMapError::DependencyFailure,
                     module_error == ERROR_SUCCESS ? ERROR_TIMEOUT : module_error,

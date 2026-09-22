@@ -47,6 +47,21 @@ struct LauncherConfigurationSaveResult final {
     [[nodiscard]] bool Ok() const noexcept { return win32_error == ERROR_SUCCESS; }
 };
 
+// What the launcher bootstrap starts. NTELauncher.exe is only a self-updating bootstrap: the
+// launcher window and the platform pipe server live in the client it starts, and the bootstrap names
+// that client in its own Config\Config.ini.
+struct NteClientLaunchCommand final {
+    std::filesystem::path executable;
+    std::wstring arguments;
+    // Set only when no client could be resolved, in which case `executable` is empty. It names what
+    // was looked for and where: a caller that refuses to start the bootstrap has to say why, or the
+    // refusal is indistinguishable from the launcher being misconfigured.
+    std::string failure;
+};
+
+[[nodiscard]] NteClientLaunchCommand ResolveClientLaunchCommand(
+    const std::filesystem::path& launcher_executable);
+
 struct LauncherDiscoveryOptions final {
     NteClient client{NteClient::MainlandChina};
     std::filesystem::path payload_root;

@@ -65,6 +65,11 @@ struct ManualMapLaunchOptions final {
     std::filesystem::path launcher_path;
     std::wstring launcher_arguments;
     std::filesystem::path working_directory;
+    // Injected into the launcher so the session can be started without the user touching the launcher
+    // UI. It hides the launcher's own window from the inside and signals the armed event below
+    // immediately before asking the launcher to start the game. When empty, the launcher is started
+    // and capture relies on it acting on its own, which it never does.
+    std::filesystem::path hook_path;
     std::wstring target_executable_name{L"HTGame.exe"};
     DWORD creation_flags{};
     std::chrono::milliseconds target_timeout{std::chrono::minutes(2)};
@@ -84,7 +89,6 @@ struct ManualMapLaunchResult final {
 [[nodiscard]] AttachableProcess InspectAttachableProcess(DWORD process_id) noexcept;
 [[nodiscard]] std::vector<AttachableProcess> EnumerateAttachableProcesses(
     std::wstring_view executable_name = L"HTGame.exe") noexcept;
-[[nodiscard]] ManualMapResult ManualMapRuntimeCore(const ManualMapOptions& options) noexcept;
 [[nodiscard]] ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
     const ManualMapLaunchOptions& options) noexcept;
 

@@ -546,6 +546,26 @@ target_compile_definitions(
 target_compile_options(anomaly_manual_map PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /EHsc>)
 target_link_libraries(anomaly_manual_map PUBLIC Advapi32 Psapi)
 
+# Injected into the official launcher (NTEGame.exe) to hide its window and ask it to start the game on
+# its own. It is deliberately free-standing: it runs inside a process this repository does not own, has
+# no dependency on any other target here, and reaches Qt only through exports it resolves at runtime.
+add_library(anomaly_nte_game_hook SHARED src/launcher/hook/nte_game_hook.cpp)
+# It sits with the runtime payload rather than beside the launcher: it is a runtime component, and the
+# launcher's own directory is the one the game install occupies.
+set_target_properties(anomaly_nte_game_hook PROPERTIES
+    OUTPUT_NAME "NTEGameHook"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Anomaly")
+# The launcher ships its own copies of MSVCP140/VCRUNTIME140 and loads them from its runtime directory,
+# so a dynamically linked hook would resolve against that older CRT instead of the one it was built
+# against -- module base names are unique per process, so there is no way to reach the newer one. A
+# static CRT keeps the hook's dependencies to system DLLs whose versions it does not constrain.
+set_target_properties(anomaly_nte_game_hook PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+target_compile_definitions(
+    anomaly_nte_game_hook PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_nte_game_hook PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_nte_game_hook PRIVATE User32)
+
 add_library(anomaly_semver STATIC src/plugin/semver.cpp)
 target_include_directories(anomaly_semver PUBLIC include)
 target_compile_definitions(
@@ -950,7 +970,9 @@ target_link_libraries(anomaly_launcher PRIVATE
     anomaly_manual_map anomaly_runtime_recovery
     anomaly_runtime_launch anomaly_ui_resources
     ole32 shell32 delayimp)
-add_dependencies(anomaly_launcher dwmapi anomaly_core)
+# The agent DLL is injected into the official launcher, so it has to exist next to AnomalyLauncher.exe
+# before the launcher can be started.
+add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
 
 add_executable(anomaly_render_fixture apps/render_fixture/main.cpp)
 set_target_properties(anomaly_render_fixture PROPERTIES OUTPUT_NAME "anomaly-render-fixture")
@@ -1443,7 +1465,7 @@ if(ANOMALY_BUILD_BIDKING_ROUND_POOL_PROBE)
     add_dependencies(anomaly_test_host anomaly_bidking_round_pool_probe)
 endif()
 set(ANOMALY_RELEASE_PE_TARGETS
-    dwmapi anomaly_core anomaly_launcher anomaly_crash_coordinator
+    dwmapi anomaly_core anomaly_launcher anomaly_crash_coordinator anomaly_nte_game_hook
     anomaly-plugin anomaly_abi_snapshot anomaly_test_host
     anomaly-profile anomaly_cli anomaly_inspect)
 get_property(ANOMALY_RELEASE_PLUGIN_TARGETS GLOBAL PROPERTY ANOMALY_RELEASE_PLUGIN_TARGETS)
@@ -1472,6 +1494,11 @@ install(TARGETS anomaly_core
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
 install(TARGETS anomaly_crash_coordinator
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime)
+# The launcher resolves this by absolute path under its own directory, so it is part of the runtime
+# payload and not an optional extra: a package without it launches and then fails to start the game.
+install(TARGETS anomaly_nte_game_hook
+    RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
+    LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
 if(TARGET anomaly_example_nte_combat_demo)
     install(TARGETS anomaly_example_nte_combat_demo
         RUNTIME DESTINATION Anomaly/plugins/NteCombatDemo COMPONENT GameRuntime
