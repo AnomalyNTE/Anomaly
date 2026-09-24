@@ -54,7 +54,11 @@ constexpr std::ptrdiff_t kGameInstanceLocalPlayersOffset = 56;
 constexpr std::ptrdiff_t kLocalPlayerControllerOffset = 48;
 constexpr std::ptrdiff_t kControllerPlayerStateOffset = 720;
 constexpr std::ptrdiff_t kActorRootComponentOffset = 456;
-constexpr std::ptrdiff_t kRobBankContainerInterfaceOffset = 864;
+// UE5-HT 1.4 exposes the RobBank interaction interface as a secondary base subobject: the
+// subobject starts here, its first member is its own vtable pointer, and the pickup entry
+// still sits at byte offset 24 of that vtable. The subobject address is the interface
+// `this` pointer the entry expects.
+constexpr std::ptrdiff_t kRobBankContainerInterfaceOffset = 872;
 constexpr std::ptrdiff_t kRobBankPickupVtableSlot = 24;
 
 constexpr std::ptrdiff_t kObjectInternalIndexOffset = 12;
@@ -73,16 +77,16 @@ constexpr std::uint32_t kObjectItemStride = 24;
 constexpr std::uint32_t kObjectPointerOffset = 0;
 constexpr std::uint32_t kObjectSerialOffset = 16;
 
-constexpr std::ptrdiff_t kRobBankCanInteractOffset = 0xC10;
+constexpr std::ptrdiff_t kRobBankCanInteractOffset = 0xC18;
 constexpr std::uint8_t kRobBankCanInteractMask = 1;
-constexpr std::ptrdiff_t kRobBankDelayInteractOffset = 0xC58;
+constexpr std::ptrdiff_t kRobBankDelayInteractOffset = 0xC60;
 constexpr std::uint8_t kRobBankDelayInteractMask = 1;
-constexpr std::ptrdiff_t kRobBankPointUidOffset = 2968;
+constexpr std::ptrdiff_t kRobBankPointUidOffset = 2976;
 constexpr std::ptrdiff_t kRobBankPointKeyDoorIdOffset = 196;
-constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3072;
+constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3080;
 constexpr std::ptrdiff_t kRobBankCloneDataAssetItemOffset = 104;
-// AHTPlayerState::ClientRobBankKeyDoorDataArray in UE5-HT 1.3.
-constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 0x95F0;
+// AHTPlayerState::ClientRobBankKeyDoorDataArray in UE5-HT 1.4.
+constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 0x9AD0;
 constexpr std::int32_t kMaximumKeyDoors = 4096;
 
 constexpr std::ptrdiff_t kDataTableRowMapOffset = 48;
@@ -90,7 +94,7 @@ constexpr std::size_t kDataTableRowStride = 24;
 constexpr std::size_t kDataTableRowPointerOffset = 8;
 constexpr std::int32_t kMaximumDataTableRows = 4096;
 constexpr std::ptrdiff_t kStaticItemNameOffset = 160;
-constexpr std::ptrdiff_t kStaticItemElementDataOffset = 392;
+constexpr std::ptrdiff_t kStaticItemElementDataOffset = 440;
 constexpr std::ptrdiff_t kInstancedStructDataOffset = 8;
 constexpr std::ptrdiff_t kRobBankItemValueOffset = 0;
 constexpr std::ptrdiff_t kRobBankItemCoinOffset = 4;
