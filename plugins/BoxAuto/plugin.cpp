@@ -1572,6 +1572,12 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
         Point p;
         p.row_name = ResolveName(
             context.names, static_cast<std::uint32_t>(row_id.comparison_index));
+        // FName 的编号也可能写在 number 字段（如 InteractBox_B_124 ✗）：只取 comparison_index
+        // 会得到基名 ✗，和游戏记录里的名字对不上 ⇒ 钱包点被全量过滤 ✗。补上后缀 ✔。
+        if (!p.row_name.empty() && row_id.number != 0) {
+            p.row_name.push_back('_');
+            p.row_name += std::to_string(row_id.number - 1U);
+        }
         if (category == "shop_steal" && IsExcludedShopPoint(p.row_name)) continue;
         p.x = x;
         p.y = y;
@@ -1656,6 +1662,12 @@ void ReadTable(Context& context) {
         Point p;
         p.row_name = ResolveName(
             context.names, static_cast<std::uint32_t>(row_id.comparison_index));
+        // FName 的编号也可能写在 number 字段（如 InteractBox_B_124 ✗）：只取 comparison_index
+        // 会得到基名 ✗，和游戏记录里的名字对不上 ⇒ 钱包点被全量过滤 ✗。补上后缀 ✔。
+        if (!p.row_name.empty() && row_id.number != 0) {
+            p.row_name.push_back('_');
+            p.row_name += std::to_string(row_id.number - 1U);
+        }
         p.x = x;
         p.y = y;
         p.z = z;
@@ -4407,13 +4419,17 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
             context.teleport_z_offset.store(z_offset, std::memory_order_relaxed);
         }
     }
-    const std::string empty_run_label =
-        context.localizer.Text("label.empty_run", "Empty points per region");
-    std::uint32_t empty_run =
-        context.food_empty_region_run.load(std::memory_order_relaxed);
-    if (ui->input_uint32(ui->user, anomaly::sdk::StringView(empty_run_label),
-                         &empty_run, 1, 20)) {
-        context.food_empty_region_run.store(empty_run, std::memory_order_relaxed);
+    // 这个阈值只作用于食物区域规则（「某区域连续 N 个点都是空的 ⇒ 整片跳过」）✗，
+    // 对其它类型没有任何影响 ✗ ⇒ 只在食物类型下显示 ✗，避免看起来像全局设置 ✗。
+    if (type_choice == 6 || type_choice == 7) {
+        const std::string empty_run_label =
+            context.localizer.Text("label.empty_run", "Empty points per region");
+        std::uint32_t empty_run =
+            context.food_empty_region_run.load(std::memory_order_relaxed);
+        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(empty_run_label),
+                             &empty_run, 1, 20)) {
+            context.food_empty_region_run.store(empty_run, std::memory_order_relaxed);
+        }
     }
     const std::string start_index_label =
         context.localizer.Text("label.start_index", "Start Index");

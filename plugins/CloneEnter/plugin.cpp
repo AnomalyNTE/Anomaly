@@ -5,6 +5,10 @@
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/nte.h"
 
+// 共享自动战斗状态机（plugins/common/combat）：怪物识别、选靶、接近/攻击、
+// 「见过怪之后连续 5 秒无怪」的完成判据与清空后的掉落拾取都由模块持有。
+#include "combat/auto_combat.hpp"
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -23,6 +27,8 @@
 #include <vector>
 
 namespace {
+
+namespace combat = anomaly::plugins::combat;
 
 constexpr std::string_view kGObjectsPattern =
     "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
@@ -128,27 +134,6 @@ constexpr EntryDisplay kDisplays[] = {
 
 constexpr std::size_t kDisplayCount = sizeof(kDisplays) / sizeof(kDisplays[0]);
 
-struct NormalAttackBinding {
-    std::uintptr_t world{};
-    std::uintptr_t controller{};
-    std::uintptr_t triggered{};
-    std::uintptr_t completed{};
-    std::uint8_t input_id{};
-    std::int32_t input_param{};
-    std::array<std::uint8_t, 8> pressed_value{};
-    std::array<std::uint8_t, 8> released_value{};
-};
-
-// 大世界怪死后尸体仍留在实体/角色快照里（位置、类名都不变），会被每轮重新选为
-// "最近的怪"，导致对着空气一直打。框架没有暴露死亡位，因此改用唯一可靠的信号：
-// 玩家打出的伤害流。在攻击距离内持续打不出伤害，就把该目标判为尸体并拉黑一段时间，
-// 让选靶跳过它，直到它真正从快照里消失。
-struct AutoCombatDeadTarget {
-    AnomalyGenerationHandleV1 handle{};
-    double pos[3]{};
-    std::chrono::steady_clock::time_point until{};
-};
-
 struct Context {
     const AnomalyHostApiV1* host{};
     const AnomalyCoreServiceV1* core{};
@@ -169,11 +154,10 @@ struct Context {
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
     const AnomalyNtePickupServiceV1* pickup{};
     std::string cache_path;
-    std::uintptr_t g_objects_address{};
-    std::uintptr_t g_world_address{};
-    std::uintptr_t controller{};
-    std::uintptr_t player_state{};
-    std::uintptr_t cached_world{0};
+    // 战斗状态机（plugins/common/combat）持有的状态：目标与选靶缓存、尸体拉黑、
+    // 玩家/世界/GObjects 解析缓存、怪物类名缓存、「见过怪后连续 5 秒无怪」的完成判据。
+    // 插件只保留触发它所需的开关、设置与面板状态。
+    combat::State combat_state;
 
     std::uint32_t entry_index{1};
     std::uint32_t display_index{3};
@@ -262,35 +246,13 @@ struct Context {
     std::chrono::steady_clock::time_point enter_transfer_timeout{};
     std::atomic_bool auto_attack{false};
     std::chrono::steady_clock::time_point next_attack{};
-    bool attack_is_melee{true};
     std::string combat_status;
-    double target_pos[3]{};
-    bool target_valid{false};
     std::atomic_uint32_t combat_search_radius_m{50};
-    bool combat_scan_valid{false};
-    std::chrono::steady_clock::time_point auto_combat_nav_retry_at{};
-    bool auto_combat_moving{false};
-    std::chrono::steady_clock::time_point next_target_update{};
-    // 尸体判定：当前目标句柄、玩家句柄、伤害流游标、最近一次玩家造成伤害的时刻、
-    // 进入攻击距离的时刻，以及已拉黑的尸体列表。
-    AnomalyGenerationHandleV1 auto_combat_target_handle{};
-    std::uint64_t auto_combat_player_handle{0};
-    std::uint64_t auto_combat_damage_cursor{0};
-    std::chrono::steady_clock::time_point auto_combat_last_player_hit_at{};
-    std::chrono::steady_clock::time_point auto_combat_attack_since{};
-    // 当前目标锁定期间是否至少命中过一次。命中的目标被打死用短拉黑，
-    // 从头到尾打不中的目标（道具）用长拉黑。
-    bool auto_combat_target_hit{false};
-    std::vector<AutoCombatDeadTarget> auto_combat_dead_targets;
     // 领奖窗口扫描失败是概率性的，重试很密集：这条诊断按 2 秒节流。
     std::chrono::steady_clock::time_point next_reward_scan_diag{};
     // 同上，「打开领奖窗口」失败的诊断也按 2 秒节流。
     std::chrono::steady_clock::time_point next_reward_open_diag{};
-    std::uint64_t monster_class_id{0};
-    std::vector<std::uint32_t> monster_class_name_ids;
-    std::chrono::steady_clock::time_point next_class_rescan{};
     std::uint64_t last_clone_id{0};
-    std::chrono::steady_clock::time_point next_clone_check{};
     bool clone_check_done{false};
     std::uint64_t current_clone_fname{0};
     bool award_window_opened{false};
@@ -341,8 +303,6 @@ struct Context {
     bool one_key_active{false};
     std::int32_t one_key_phase{0};
     std::chrono::steady_clock::time_point one_key_deadline{};
-    std::int32_t one_key_no_monster_seconds{0};
-    bool one_key_met_monster{false};
     std::uint32_t one_key_enter_wait{8};
     std::uint32_t one_key_loop_count{1};
     std::uint32_t one_key_loop_done{0};
@@ -358,14 +318,62 @@ struct Context {
     std::int32_t test_attack_phase{0};
     std::chrono::steady_clock::time_point test_attack_deadline{};
     bool melee_mode{false};
-    NormalAttackBinding normal_attack;
-    std::uint32_t melee_attack_counter{0};
     AnomalyGenerationHandleV1 exit_hotkey{};
     std::atomic_bool capturing_exit_hotkey{false};
     std::atomic_uint32_t exit_hotkey_key{VK_F9};
 };
 
-void ResetAutoCombatTarget(Context& context) noexcept;
+// 模块不直接写面板：战斗状态字符串经这个回调回到插件。
+void SetCombatStatus(void* user, const std::string& text) noexcept {
+    static_cast<Context*>(user)->combat_status = text;
+}
+
+// 每个调用点现构造宿主：服务指针、策略与回显都取自插件当前状态，模块不缓存它们，
+// 所以热重载或服务晚发布都不会让它用到过期指针。
+combat::Host MakeCombatHost(Context& context) noexcept {
+    combat::Host host;
+    host.navigation = context.navigation;
+    host.actors = context.actors;
+    host.entities = context.entities;
+    host.names = context.names;
+    host.objects = context.objects;
+    host.player = context.player;
+    host.teleport = context.teleport;
+    host.signature = context.signature;
+    host.pickup = context.pickup;
+    // session 服务可能晚于插件加载才发布（加载时世界还没初始化），与原传送实现一样惰性重查。
+    if (context.session == nullptr && context.host != nullptr) {
+        context.session = anomaly::sdk::Host(context.host)
+            .Query<AnomalyNteSessionServiceV1>(
+                ANOMALY_NTE_SESSION_SERVICE_V1_ID,
+                ANOMALY_NTE_SESSION_SERVICE_V1_VERSION).get();
+    }
+    host.session = context.session;
+    // 技能服务是动态发布的：原实现在每次施放前现查，这里每次构造宿主时现查。
+    if (context.host != nullptr) {
+        const anomaly::sdk::Host view(context.host);
+        context.combat = view.Query<AnomalyNteCombatServiceV1>(
+            ANOMALY_NTE_COMBAT_SERVICE_V1_ID,
+            ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION).get();
+        context.skills = view.Query<AnomalyNteSkillsServiceV1>(
+            ANOMALY_NTE_SKILLS_SERVICE_V1_ID,
+            ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION).get();
+        context.skill_invocation = view.Query<AnomalyNteSkillInvocationServiceV1>(
+            ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_ID,
+            ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_VERSION).get();
+    }
+    host.combat = context.combat;
+    host.skills = context.skills;
+    host.skill_invocation = context.skill_invocation;
+    host.search_radius_m = context.combat_search_radius_m.load(std::memory_order_acquire);
+    host.developer_mode = context.developer_mode.load(std::memory_order_acquire);
+    host.loot_after_kill = true;
+    host.melee_mode = context.melee_mode;
+    host.test_input_id = context.test_input_id;
+    host.set_status = SetCombatStatus;
+    host.status_user = &context;
+    return host;
+}
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -670,18 +678,21 @@ bool Invoke(void* object, void* function, void* parameters) noexcept {
 }
 
 bool GetPlayerState(Context& context) noexcept {
-    if (context.g_world_address == 0 &&
+    // 解析结果存在战斗状态机里（原 Context 的 g_world_address/player_state/controller/
+    // cached_world）：插件其余部分与模块共用同一份缓存，和搬移前完全一致。
+    auto& state = context.combat_state;
+    if (state.g_world_address == 0 &&
         !ResolveRipRelative(context.signature, kGWorldPattern, 0,
-                            context.g_world_address)) {
+                            state.g_world_address)) {
         return false;
     }
     std::uintptr_t world{};
-    if (!Read(reinterpret_cast<const void*>(context.g_world_address), world) ||
+    if (!Read(reinterpret_cast<const void*>(state.g_world_address), world) ||
         world == 0) {
         return false;
     }
-    if (context.player_state != 0 && context.controller != 0 &&
-        world == context.cached_world) {
+    if (state.player_state != 0 && state.controller != 0 &&
+        world == state.cached_world) {
         return true;
     }
     std::uintptr_t game_instance{};
@@ -716,14 +727,15 @@ bool GetPlayerState(Context& context) noexcept {
         ps == 0) {
         return false;
     }
-    if (context.cached_world != world) {
-        ResetAutoCombatTarget(context);
-        context.monster_class_name_ids.clear();
-        context.next_class_rescan = {};
+    if (state.cached_world != world) {
+        // 换世界等价于换副本实例：模块的 Reset 做掉了原实现这里的
+        // ResetAutoCombatTarget + 清 monster_class_name_ids + 清 next_class_rescan。
+        auto host = MakeCombatHost(context);
+        combat::Reset(host, state);
     }
-    context.controller = controller;
-    context.player_state = ps;
-    context.cached_world = world;
+    state.controller = controller;
+    state.player_state = ps;
+    state.cached_world = world;
     return true;
 }
 
@@ -742,9 +754,9 @@ bool SnapshotPlayerPosition(Context& context, double (&position)[3]) noexcept {
 }
 
 bool EnsureGObjects(Context& context) noexcept {
-    if (context.g_objects_address != 0) return true;
+    if (context.combat_state.g_objects_address != 0) return true;
     return ResolveRipRelative(context.signature, kGObjectsPattern, kGObjectsAddend,
-                              context.g_objects_address);
+                              context.combat_state.g_objects_address);
 }
 
 bool ActorsReady(const AnomalyNteActorsServiceV1* s) noexcept {
@@ -797,10 +809,10 @@ void* ObjectAt(Context& context, const std::uint32_t index) noexcept {
     if (!EnsureGObjects(context)) return nullptr;
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
-    if (!Read(reinterpret_cast<const void*>(context.g_objects_address + kObjectItemsOffset), items) ||
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
-        !Read(reinterpret_cast<const void*>(context.g_objects_address + kObjectCountOffset), count) ||
-        !Read(reinterpret_cast<const void*>(context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+        !Read(reinterpret_cast<const void*>(context.combat_state.g_objects_address + kObjectCountOffset), count) ||
+        !Read(reinterpret_cast<const void*>(context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || index >= static_cast<std::uint32_t>(count) || num_chunks <= 0) {
         return nullptr;
     }
@@ -826,12 +838,12 @@ void KillMonsters(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) {
         std::fprintf(fp, "no items\n");
         std::fclose(fp);
@@ -952,12 +964,12 @@ void ScanGE(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -997,7 +1009,7 @@ void DumpControllerDamageParams(Context& context) noexcept {
         return;
     }
     std::uintptr_t cc{};
-    if (!Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc) || cc == 0) {
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc) || cc == 0) {
         std::fprintf(fp, "no controller class\n");
         std::fclose(fp);
         return;
@@ -1047,7 +1059,6 @@ void ScanCloneClasses(Context& context) noexcept;
 void DumpCloneManagerFuncs(Context& context) noexcept;
 void ActivateSkill(Context& context) noexcept;
 bool ActivateSkillByInputId(Context& context, std::int32_t input_id) noexcept;
-void AutoCombatTick(Context& context) noexcept;
 void DumpCombatTarget(Context& context) noexcept;
 void DumpMonsterClasses(Context& context) noexcept;
 void DumpCloneMonsterInfo(Context& context) noexcept;
@@ -1088,7 +1099,7 @@ void DumpNetTargetStruct(Context& context) noexcept {
         return;
     }
     std::uintptr_t cc{};
-    if (!Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc) || cc == 0) {
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc) || cc == 0) {
         std::fprintf(fp, "no controller class\n");
         std::fclose(fp);
         return;
@@ -1153,12 +1164,12 @@ void DumpCharForNet(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t st = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1246,13 +1257,13 @@ void DumpPlayerDamageFunc(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t gpc{};
     if (!FindFunction(context.names, cc, "GetPlayerCharacter", 1, 8, gpc)) {
         std::fprintf(fp, "no GetPlayerCharacter\n"); std::fclose(fp); return;
     }
     std::uint8_t pb[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(gpc), pb)) {
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(gpc), pb)) {
         std::fprintf(fp, "GetPlayerCharacter failed\n"); std::fclose(fp); return;
     }
     std::uintptr_t pawn{};
@@ -1302,11 +1313,11 @@ void KillMonstersViaAnyDamage(Context& context) noexcept {
     std::uintptr_t pawn = 0;
     {
         std::uintptr_t cc{};
-        Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+        Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
         std::uintptr_t gpc{};
         if (FindFunction(context.names, cc, "GetPlayerCharacter", 1, 8, gpc)) {
             std::uint8_t pb[8]{};
-            if (Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(gpc), pb)) {
+            if (Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(gpc), pb)) {
                 std::memcpy(&pawn, pb, sizeof(pawn));
             }
         }
@@ -1315,12 +1326,12 @@ void KillMonstersViaAnyDamage(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     // 找 HTDamageType CDO
     std::uintptr_t dmg_type = 0;
@@ -1393,12 +1404,12 @@ void KillMonstersViaKillSelf(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::int32_t killed = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1448,12 +1459,12 @@ void KillMonstersViaDeathEvent(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::int32_t done = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1519,20 +1530,20 @@ void ApplyDamageViaNetTarget(Context& context) noexcept {
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     if (!EnsureGObjects(context)) { std::fprintf(fp, "no gobjects\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t gpc{};
     if (!FindFunction(context.names, cc, "GetPlayerCharacter", 1, 8, gpc)) {
         std::fprintf(fp, "no GetPlayerCharacter\n"); std::fclose(fp); return;
     }
     std::uint8_t pb[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(gpc), pb)) {
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(gpc), pb)) {
         std::fprintf(fp, "GetPlayerCharacter failed\n"); std::fclose(fp); return;
     }
     std::uintptr_t pawn{};
     std::memcpy(&pawn, pb, sizeof(pawn));
     std::fprintf(fp, "pawn=%llx controller=%llx\n",
                  static_cast<unsigned long long>(pawn),
-                 static_cast<unsigned long long>(context.controller));
+                 static_cast<unsigned long long>(context.combat_state.controller));
     if (pawn == 0) { std::fclose(fp); return; }
     std::uintptr_t fn{};
     if (!FindFunction(context.names, cc, "ServerApplyGameplayEffectOnNetTarget", 4, 176, fn)) {
@@ -1541,12 +1552,12 @@ void ApplyDamageViaNetTarget(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t ge_cdo = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1604,7 +1615,7 @@ void ApplyDamageViaNetTarget(Context& context) noexcept {
         std::memcpy(p + 88 + 56, &stack, 4);
         std::memcpy(p + 88 + 60, &mult, 4);
         std::memcpy(p + 88 + 64, &add, 4);
-        const bool ok = Invoke(reinterpret_cast<void*>(context.controller),
+        const bool ok = Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                                reinterpret_cast<void*>(fn), p);
         ++done;
         std::fprintf(fp, "[%u] nettarget-damage %s ok=%d\n", i, obj_name.c_str(), ok ? 1 : 0);
@@ -1622,12 +1633,12 @@ void SetMonstersHPToOne(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::int32_t done = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1693,12 +1704,12 @@ void DumpMonsterAttrSet(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::int32_t found = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1785,12 +1796,12 @@ void ScanMonsterHP(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t monster = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1845,12 +1856,12 @@ void DumpMonsterHPValues(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::int32_t found = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -1906,13 +1917,13 @@ void DumpPlayerAttributeSet(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t gpc{};
     if (!FindFunction(context.names, cc, "GetPlayerCharacter", 1, 8, gpc)) {
         std::fprintf(fp, "no GetPlayerCharacter\n"); std::fclose(fp); return;
     }
     std::uint8_t pb[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(gpc), pb)) {
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(gpc), pb)) {
         std::fprintf(fp, "GetPlayerCharacter failed\n"); std::fclose(fp); return;
     }
     std::uintptr_t pawn{};
@@ -1980,13 +1991,13 @@ void DumpAttributeValues(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t gpc{};
     if (!FindFunction(context.names, cc, "GetPlayerCharacter", 1, 8, gpc)) {
         std::fprintf(fp, "no GetPlayerCharacter\n"); std::fclose(fp); return;
     }
     std::uint8_t pb[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(gpc), pb)) {
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(gpc), pb)) {
         std::fprintf(fp, "GetPlayerCharacter failed\n"); std::fclose(fp); return;
     }
     std::uintptr_t pawn{};
@@ -2061,12 +2072,12 @@ void DumpHTAttrClass(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t cls = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -2144,12 +2155,12 @@ void DumpDamageAttrs(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -2226,12 +2237,12 @@ void DumpHPAttrs(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -2309,12 +2320,12 @@ void DumpModifierAttr(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t cdo = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -2369,13 +2380,13 @@ void BoostPlayerDamage(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t gpc{};
     if (!FindFunction(context.names, cc, "GetPlayerCharacter", 1, 8, gpc)) {
         std::fprintf(fp, "no GetPlayerCharacter\n"); std::fclose(fp); return;
     }
     std::uint8_t pb[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(gpc), pb)) {
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(gpc), pb)) {
         std::fprintf(fp, "GetPlayerCharacter failed\n"); std::fclose(fp); return;
     }
     std::uintptr_t pawn{};
@@ -2422,13 +2433,13 @@ void ApplyPlayerDamageBuff(Context& context) noexcept {
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     if (!EnsureGObjects(context)) { std::fprintf(fp, "no gobjects\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t gpc{};
     if (!FindFunction(context.names, cc, "GetPlayerCharacter", 1, 8, gpc)) {
         std::fprintf(fp, "no GetPlayerCharacter\n"); std::fclose(fp); return;
     }
     std::uint8_t pb[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(gpc), pb)) {
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(gpc), pb)) {
         std::fprintf(fp, "GetPlayerCharacter failed\n"); std::fclose(fp); return;
     }
     std::uintptr_t pawn{};
@@ -2444,12 +2455,12 @@ void ApplyPlayerDamageBuff(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) {
         std::fprintf(fp, "no items\n"); std::fclose(fp); return;
     }
@@ -2500,7 +2511,7 @@ void DumpPlayerFuncs(Context& context) noexcept {
         return;
     }
     std::uintptr_t cc{};
-    if (!Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc) || cc == 0) {
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc) || cc == 0) {
         std::fprintf(fp, "no controller class\n");
         std::fclose(fp);
         return;
@@ -2512,7 +2523,7 @@ void DumpPlayerFuncs(Context& context) noexcept {
         return;
     }
     std::uint8_t p[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(fn), p)) {
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(fn), p)) {
         std::fprintf(fp, "GetPlayerCharacter invoke failed\n");
         std::fclose(fp);
         return;
@@ -2570,12 +2581,12 @@ void DumpMonsterParams(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t cls = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -2720,12 +2731,12 @@ void DumpModifyDataStruct(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t cls = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -2808,12 +2819,12 @@ void DumpGEStruct(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     const char* targets[] = {"Default__Buff_DamageUP_C", "Default__GE_Kill_150_Damage_C"};
     std::uintptr_t found[2] = {0, 0};
@@ -2865,12 +2876,12 @@ void DumpScriptStruct(Context& context, const char* name) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t st = 0;
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -2933,12 +2944,12 @@ void DumpModifiers(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     const char* targets[] = {"Default__Buff_DamageUP_C", "Default__GE_Kill_150_Damage_C",
                              "Default__Buff_Divination_DamageUpGeneralBase_C",
@@ -3024,12 +3035,12 @@ void DumpClassFuncs(Context& context, const char* class_name) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) {
         std::fprintf(fp, "no items\n");
         std::fclose(fp);
@@ -3098,12 +3109,12 @@ std::uintptr_t FindDataAsset(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) {
         return 0;
     }
@@ -3245,7 +3256,7 @@ void SaveCache(Context& context) noexcept {
     if (fp == nullptr) return;
     const std::uint32_t magic = 0x434C4E45u;
     std::fwrite(&magic, sizeof(magic), 1, fp);
-    std::fwrite(&context.g_objects_address, sizeof(context.g_objects_address), 1, fp);
+    std::fwrite(&context.combat_state.g_objects_address, sizeof(context.combat_state.g_objects_address), 1, fp);
     const std::uint32_t ec = static_cast<std::uint32_t>(context.entries.size());
     std::fwrite(&ec, sizeof(ec), 1, fp);
     for (const auto& e : context.entries) {
@@ -3473,7 +3484,7 @@ bool TeleportToLandmark(Context& context, const std::string_view target_id,
 bool DoEnterClone(Context& context) noexcept {
     if (!GetPlayerState(context)) return false;
     std::uintptr_t ps_cls{};
-    if (!Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset),
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset),
               ps_cls) || ps_cls == 0) {
         return false;
     }
@@ -3548,14 +3559,14 @@ bool DoEnterClone(Context& context) noexcept {
                      RenderFName(context, match).c_str());
         std::fclose(fp);
     }
-    return Invoke(reinterpret_cast<void*>(context.player_state),
+    return Invoke(reinterpret_cast<void*>(context.combat_state.player_state),
                   reinterpret_cast<void*>(fn), p);
 }
 
 void ExitClone(Context& context) noexcept {
     if (!GetPlayerState(context)) return;
     std::uintptr_t ps_cls{};
-    if (!Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset),
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset),
               ps_cls) || ps_cls == 0) {
         return;
     }
@@ -3563,7 +3574,7 @@ void ExitClone(Context& context) noexcept {
     for (const char* n : names) {
         std::uintptr_t fn{};
         if (FindFunction(context.names, ps_cls, n, 0, 0, fn)) {
-            static_cast<void>(Invoke(reinterpret_cast<void*>(context.player_state),
+            static_cast<void>(Invoke(reinterpret_cast<void*>(context.combat_state.player_state),
                                      reinterpret_cast<void*>(fn), nullptr));
             break;
         }
@@ -3576,7 +3587,7 @@ void DumpPlayerStateFuncs(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player state\n"); std::fclose(fp); return; }
     std::uintptr_t ps_cls{};
-    if (!Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset),
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset),
               ps_cls) || ps_cls == 0) {
         std::fprintf(fp, "no ps class\n"); std::fclose(fp); return;
     }
@@ -3623,7 +3634,7 @@ void DumpCloneRPCParams(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player state\n"); std::fclose(fp); return; }
     std::uintptr_t ps_cls{};
-    if (!Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset),
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset),
               ps_cls) || ps_cls == 0) {
         std::fprintf(fp, "no ps class\n"); std::fclose(fp); return;
     }
@@ -3690,12 +3701,12 @@ void DumpCloneEnums(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -3743,12 +3754,12 @@ void ScanCloneClasses(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -3790,12 +3801,12 @@ void DumpCloneManagerFuncs(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t classes[kClassCount] = {};
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -3865,12 +3876,12 @@ void DumpEnumValues(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uintptr_t found[4] = {0, 0, 0, 0};
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
@@ -3934,7 +3945,7 @@ void TriggerPassPermitAward(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player state\n"); std::fclose(fp); return; }
     std::uintptr_t ps_cls{};
-    if (!Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset),
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset),
               ps_cls) || ps_cls == 0) {
         std::fprintf(fp, "no ps class\n"); std::fclose(fp); return;
     }
@@ -3945,7 +3956,7 @@ void TriggerPassPermitAward(Context& context) noexcept {
     std::uint8_t p[48]{};
     const std::int32_t msg_type = 1;  // GetAwardRequest
     std::memcpy(p + 0, &msg_type, 4);
-    const bool ok = Invoke(reinterpret_cast<void*>(context.player_state),
+    const bool ok = Invoke(reinterpret_cast<void*>(context.combat_state.player_state),
                            reinterpret_cast<void*>(fn), p);
     std::fprintf(fp, "ServerPassPermitRpc(GetAwardRequest) ok=%d\n", ok ? 1 : 0);
     std::fclose(fp);
@@ -4074,19 +4085,22 @@ bool ResolveNormalAttackInput(Context& context) {
         context.combat_status = "普攻输入：等待玩家";
         return false;
     }
-    auto& binding = context.normal_attack;
-    if (binding.controller == context.controller && binding.world == context.cached_world &&
+    // 普攻绑定缓存现在由战斗模块的 State 持有：测试普攻（TestAttackTick）与模块的
+    // 自动战斗共用同一份解析结果，和搬移前一致。
+    auto& state = context.combat_state;
+    auto& binding = state.normal_attack;
+    if (binding.controller == state.controller && binding.world == state.cached_world &&
         binding.triggered != 0 && binding.completed != 0) return true;
     binding = {};
-    NormalAttackBinding next;
+    combat::NormalAttackBinding next;
     std::uintptr_t cls{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cls);
+    Read(reinterpret_cast<const void*>(state.controller + kObjectClassOffset), cls);
     if (!FindFunction(context.names, cls, "ActivateAbilityFromID", 2, 8, next.triggered) ||
         !FindFunction(context.names, cls, "ReleaseAbilityFromID", 2, 8, next.completed)) {
         context.combat_status = "普攻输入：未找到配对的能力输入函数";
         return false;
     }
-    const auto table = FindWidgetProperty(context, context.controller, "DT_AbilityInput");
+    const auto table = FindWidgetProperty(context, state.controller, "DT_AbilityInput");
     const auto row_struct = FindWidgetProperty(context, table, "RowStruct");
     std::int32_t id_offset{}, param_offset{}, action_offset{};
     std::vector<std::pair<FNamePair, std::uintptr_t>> rows;
@@ -4126,15 +4140,15 @@ bool ResolveNormalAttackInput(Context& context) {
         value[id_offset] = next.input_id;
         std::memcpy(value.data() + param_offset, &next.input_param, sizeof(next.input_param));
     }
-    next.world = context.cached_world;
-    next.controller = context.controller;
+    next.world = context.combat_state.cached_world;
+    next.controller = context.combat_state.controller;
     binding = next;
     return true;
 }
 
 bool InvokeNormalAttack(Context& context) {
     if (!ResolveNormalAttackInput(context)) return false;
-    const auto& binding = context.normal_attack;
+    const auto& binding = context.combat_state.normal_attack;
     alignas(8) auto pressed_value = binding.pressed_value;
     alignas(8) auto released_value = binding.released_value;
     // A tap completes in this Game callback, so unload cannot strand a held input.
@@ -4149,56 +4163,17 @@ bool InvokeNormalAttack(Context& context) {
 
 void LogRewardDiagnostic(Context& context, const std::string& message);
 
-bool IsMonsterClassName(const std::string& name) noexcept {
-    // 以怪物前缀开头是最强信号，直接认定，不参与下面的辅助对象排除：
-    // 例如 mon_038_BP_World_CityEvent_Passive_01_C 名字里带 World/Passive，
-    // 但它确实是怪物，按关键词+排除词会被误杀。
-    if (name.rfind("mon_", 0) == 0 || name.rfind("boss", 0) == 0 ||
-        name.rfind("Boss_", 0) == 0) {
-        return true;
-    }
-    // 其余命名（大世界/事件怪等）按关键词命中识别，再排除同名族里的辅助对象。
-    // "mon_" 必须落在名字段边界上：Common_ 里也含 "mon_"，但 BP_MB_Graffiti_Decal_Common_C
-    // 是涂鸦贴花而不是怪，直接 find 会把它当成怪物。
-    bool candidate = false;
-    for (std::size_t at = name.find("mon_"); at != std::string::npos;
-         at = name.find("mon_", at + 1)) {
-        if (at == 0 || name[at - 1] == '_') {
-            candidate = true;
-            break;
-        }
-    }
-    if (!candidate) {
-        for (const char* kw : {"Monster", "monster", "boss", "Boss",
-                               "RainMan", "Enemy", "enemy"}) {
-            if (name.find(kw) != std::string::npos) {
-                candidate = true;
-                break;
-            }
-        }
-    }
-    if (!candidate) return false;
-    for (const char* kw : {"Controller", "bullet", "World", "Vision", "FX",
-                           "Child", "summon", "Body", "anim", "back", "begin",
-                           "Dead", "Play", "Hide", "Open", "Passive", "Skin",
-                           "Weapon", "Montage", "Material", "Texture",
-                           "LogicBox", "Spawn", "Manager"}) {
-        if (name.find(kw) != std::string::npos) return false;
-    }
-    return true;
-}
-
 bool TryGetCurrentCloneId(Context& context, std::uint64_t& id) noexcept {
     if (!GetPlayerState(context)) return false;
     if (context.get_cur_clone_id_fn == 0) {
         std::uintptr_t ps_cls{};
-        if (!Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset),
+        if (!Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset),
                   ps_cls) || ps_cls == 0) return false;
         if (!FindFunction(context.names, ps_cls, "GetCurCloneID", 1, 8,
                           context.get_cur_clone_id_fn)) return false;
     }
     std::uint8_t p[8]{};
-    if (!Invoke(reinterpret_cast<void*>(context.player_state),
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.player_state),
                 reinterpret_cast<void*>(context.get_cur_clone_id_fn), p)) {
         return false;
     }
@@ -4213,431 +4188,11 @@ std::uint64_t GetCurrentCloneId(Context& context) noexcept {
 }
 
 
-void StopAutoCombatMovement(Context& context) noexcept {
-    if (!context.auto_combat_moving) return;
-    if (context.navigation != nullptr && context.navigation->stop_movement != nullptr) {
-        static_cast<void>(context.navigation->stop_movement(context.navigation->user));
-    }
-    context.auto_combat_moving = false;
-}
-
-void ResetAutoCombatTarget(Context& context) noexcept {
-    StopAutoCombatMovement(context);
-    context.target_valid = false;
-    context.combat_scan_valid = false;
-    context.next_target_update = {};
-    // 计时必须跟着目标一起清掉：否则同一只怪离开半径后再回来时，
-    // 会继承上一轮的进入时刻，一锁定就被判成尸体。
-    context.auto_combat_attack_since = {};
-    context.auto_combat_target_hit = false;
-}
-
 double CombatDistanceSquared(const double* from, const double* to) noexcept {
     const double dx = to[0] - from[0];
     const double dy = to[1] - from[1];
     const double dz = to[2] - from[2];
     return dx * dx + dy * dy + dz * dz;
-}
-
-// 进入攻击距离后，玩家在这么长时间里一次伤害都没打出来，就认定目标无效。
-constexpr auto kAutoCombatNoDamageGrace = std::chrono::seconds(3);
-// 打死之后的尸体：拉黑到它从快照消失即可。
-constexpr auto kAutoCombatDeadTargetTtl = std::chrono::seconds(45);
-// 从头到尾一次都没打中过的目标（雨人的湖面/底座这类道具）：拉黑久一些，
-// 否则它会一直是最"近"的目标，让你反复对着空气挥。
-constexpr auto kAutoCombatNeverHitTargetTtl = std::chrono::seconds(120);
-// 大世界里带 RainMan/mon_ 字样却不是怪的道具（湖面、底座、贴花）实测最大边只有约 42cm，
-// 真正的怪都在 74cm 以上，因此按尺寸做一道物理预筛，三条边都小于阈值就不算怪物候选。
-constexpr double kAutoCombatMinimumExtentCm = 60.0;
-// 判定"同一具尸体"的位置容差（厘米）。
-constexpr double kAutoCombatDeadPosTolerance = 150.0;
-// 攻击分支使用的距离阈值（厘米）。
-constexpr double kAutoCombatAttackRangeCm = 600.0;
-
-// 实体快照句柄与伤害参与者句柄不在同一 ID 空间，句柄和位置任一命中都算同一具尸体。
-bool IsDeadAutoCombatTarget(
-    const Context& context, const AnomalyNteEntitySnapshotV1& snap,
-    const std::chrono::steady_clock::time_point now) noexcept {
-    for (const auto& dead : context.auto_combat_dead_targets) {
-        if (now >= dead.until) continue;
-        if (dead.handle.id != 0 && dead.handle.id == snap.handle.id &&
-            dead.handle.generation == snap.handle.generation) {
-            return true;
-        }
-        if (CombatDistanceSquared(dead.pos, snap.bounds_center) <=
-            kAutoCombatDeadPosTolerance * kAutoCombatDeadPosTolerance) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void BlacklistAutoCombatTarget(
-    Context& context, const AnomalyGenerationHandleV1& handle, const double* pos,
-    const std::chrono::steady_clock::time_point now, bool ever_hit) noexcept {
-    std::erase_if(context.auto_combat_dead_targets,
-        [now](const AutoCombatDeadTarget& dead) { return now >= dead.until; });
-    AutoCombatDeadTarget dead;
-    dead.handle = handle;
-    dead.pos[0] = pos[0];
-    dead.pos[1] = pos[1];
-    dead.pos[2] = pos[2];
-    dead.until = now +
-        (ever_hit ? kAutoCombatDeadTargetTtl : kAutoCombatNeverHitTargetTtl);
-    context.auto_combat_dead_targets.push_back(dead);
-}
-
-// entities 与 actors 两个服务的读取接口完全一致（frame/page/class_name_utf8），
-// 因此用模板统一处理：同一份逻辑同时覆盖两个实体来源。
-// 二者覆盖面不同——例如 boss18_* 只出现在 actors 服务，雨人只出现在 entities 服务。
-struct CombatTargetPick {
-    bool valid{};
-    double pos[3]{};
-    double best_distance_squared{};
-    AnomalyGenerationHandleV1 handle{};
-    std::uint32_t class_name_id{};
-};
-
-template <typename Service>
-bool CollectMonsterClassIdsFrom(
-    Service* service,
-    std::vector<std::uint32_t>& ids) {
-    if (service == nullptr || service->frame == nullptr || service->page == nullptr ||
-        service->class_name_utf8 == nullptr) {
-        return false;
-    }
-    AnomalyNteEntityFrameV1 frame{sizeof(frame)};
-    if (service->frame(service->user, &frame).code != ANOMALY_STATUS_V1_OK) return false;
-    std::array<AnomalyNteEntitySnapshotV1, 256> buf{};
-    for (auto& s : buf) s.struct_size = sizeof(s);
-    std::uint32_t offset = 0;
-    while (true) {
-        AnomalyNteEntityPageRequestV1 req{sizeof(req)};
-        req.generation = frame.generation;
-        req.offset = offset;
-        req.capacity = 256;
-        AnomalyNteEntityPageResultV1 res{sizeof(res)};
-        if (service->page(service->user, &req, buf.data(), &res).code !=
-            ANOMALY_STATUS_V1_OK) {
-            return false;
-        }
-        for (std::uint32_t j = 0; j < res.returned; ++j) {
-            const auto& snap = buf[j];
-            std::size_t sz = 0;
-            if (service->class_name_utf8(service->user, snap.class_id, nullptr, &sz).code !=
-                    ANOMALY_STATUS_V1_OK || sz == 0) {
-                continue;
-            }
-            std::string cn(sz, '\0');
-            if (service->class_name_utf8(service->user, snap.class_id, cn.data(), &sz).code !=
-                ANOMALY_STATUS_V1_OK) {
-                continue;
-            }
-            cn.resize(sz - 1);
-            if (!IsMonsterClassName(cn)) continue;
-            bool exists = false;
-            for (const std::uint32_t id : ids) {
-                if (id == snap.class_name_id) { exists = true; break; }
-            }
-            if (!exists) ids.push_back(snap.class_name_id);
-        }
-        if (res.next_offset == 0 || res.next_offset >= res.total_matches) break;
-        offset = res.next_offset;
-    }
-    return true;
-}
-
-template <typename Service, typename Skip>
-bool PickNearestMonsterFrom(
-    Service* service,
-    const std::vector<std::uint32_t>& ids,
-    const double* player_pos,
-    const double radius_squared,
-    Skip&& skip,
-    CombatTargetPick& pick) {
-    if (service == nullptr || service->frame == nullptr || service->page == nullptr ||
-        service->class_name_utf8 == nullptr) {
-        return false;
-    }
-    AnomalyNteEntityFrameV1 frame{sizeof(frame)};
-    if (service->frame(service->user, &frame).code != ANOMALY_STATUS_V1_OK) return false;
-    // 缓冲区在类名循环外复用：一次调用只初始化一份，而不是每个类名各一份
-    // （256 × sizeof(snapshot) ≈ 24KB，按类名数翻倍放大）。
-    std::array<AnomalyNteEntitySnapshotV1, 256> buf{};
-    for (auto& s : buf) s.struct_size = sizeof(s);
-    for (const std::uint32_t cid : ids) {
-        std::uint32_t offset = 0;
-        while (true) {
-            AnomalyNteEntityPageRequestV1 req{sizeof(req)};
-            req.generation = frame.generation;
-            req.offset = offset;
-            req.capacity = 256;
-            req.class_name_id = cid;
-            req.excluded_flags = ANOMALY_NTE_ENTITY_V1_LOCAL_PLAYER;
-            AnomalyNteEntityPageResultV1 res{sizeof(res)};
-            if (service->page(service->user, &req, buf.data(), &res).code !=
-                ANOMALY_STATUS_V1_OK) {
-                return false;
-            }
-            for (std::uint32_t j = 0; j < res.returned; ++j) {
-                const auto& snap = buf[j];
-                if (skip(snap)) continue;
-                // 物理预筛：三条边都小于阈值的不是怪物体型（雨人湖面/底座这类道具）。
-                const double largest_extent = (std::max)({snap.bounds_extent[0],
-                    snap.bounds_extent[1], snap.bounds_extent[2]});
-                if (!(largest_extent >= kAutoCombatMinimumExtentCm)) continue;
-                const double d2 = CombatDistanceSquared(player_pos, snap.bounds_center);
-                if (!std::isfinite(d2) || d2 > radius_squared) continue;
-                if (!pick.valid || d2 < pick.best_distance_squared) {
-                    pick.best_distance_squared = d2;
-                    pick.pos[0] = snap.bounds_center[0];
-                    pick.pos[1] = snap.bounds_center[1];
-                    pick.pos[2] = snap.bounds_center[2];
-                    pick.valid = true;
-                    pick.handle = snap.handle;
-                    pick.class_name_id = cid;
-                }
-            }
-            if (res.next_offset == 0 || res.next_offset >= res.total_matches) break;
-            offset = res.next_offset;
-        }
-    }
-    return true;
-}
-
-// 同时扫描 entities 与 actors 两个来源。二者覆盖面确实不同：entities 只覆盖
-// world.persistentLevel，包含大世界怪物的 actors 只在全部关卡的扫描里出现。
-bool FindMonsterClassIds(Context& context) noexcept {
-    const auto now = std::chrono::steady_clock::now();
-    if (!context.monster_class_name_ids.empty() && now < context.next_class_rescan) return true;
-    std::vector<std::uint32_t> next_ids;
-    const bool entities_ok = CollectMonsterClassIdsFrom(context.entities, next_ids);
-    const bool actors_ok = CollectMonsterClassIdsFrom(context.actors, next_ids);
-    if (!entities_ok && !actors_ok) return false;
-    context.monster_class_name_ids = std::move(next_ids);
-    context.next_class_rescan = now + std::chrono::seconds(5);
-    return true;
-}
-
-// 伤害流是否可用。不可用时不能做尸体判定，否则会误把所有目标判成尸体。
-bool CombatStreamAvailable(const Context& context) noexcept {
-    return context.combat != nullptr &&
-        context.combat->latest_damage_sequence != nullptr &&
-        context.combat->next_damage_event != nullptr;
-}
-
-// 消费战斗伤害流，记录"玩家最近一次打出了伤害"的时刻。
-// 该时刻是判断当前目标是否还能打的依据：尸体和道具类目标仍在快照里，但打不出任何伤害。
-void PumpAutoCombatCombatStream(Context& context) noexcept {
-    const auto now = std::chrono::steady_clock::now();
-    if (context.combat == nullptr) return;
-    if (context.combat->current_combatant != nullptr) {
-        AnomalyNteCombatantSnapshotV1 combatant{sizeof(combatant)};
-        if (context.combat->current_combatant(context.combat->user, &combatant).code ==
-            ANOMALY_STATUS_V1_OK) {
-            context.auto_combat_player_handle = combatant.character.id;
-        }
-    }
-    if (!CombatStreamAvailable(context)) return;
-    const std::uint64_t latest =
-        context.combat->latest_damage_sequence(context.combat->user);
-    // 首次进入或序列被重置时，从当前序列起步，避免把历史伤害当成刚刚命中。
-    if (context.auto_combat_damage_cursor == 0 ||
-        context.auto_combat_damage_cursor > latest) {
-        context.auto_combat_damage_cursor = latest;
-        return;
-    }
-    int drained = 0;
-    while (context.auto_combat_damage_cursor < latest && drained < 64) {
-        AnomalyNteDamageEventV1 event{sizeof(event)};
-        if (context.combat->next_damage_event(
-                context.combat->user, context.auto_combat_damage_cursor, &event).code !=
-            ANOMALY_STATUS_V1_OK) {
-            break;
-        }
-        if (event.sequence <= context.auto_combat_damage_cursor) break;
-        context.auto_combat_damage_cursor = event.sequence;
-        ++drained;
-        if (context.auto_combat_player_handle != 0 &&
-            event.attacker.id == context.auto_combat_player_handle) {
-            context.auto_combat_last_player_hit_at = now;
-        }
-    }
-}
-
-bool TeleportToPosition(Context& context, const double (&position)[3]) noexcept;
-
-void AutoCombatTick(Context& context) noexcept {
-    if (context.navigation == nullptr || context.navigation->move_to_location == nullptr ||
-        !GetPlayerState(context)) {
-        ResetAutoCombatTarget(context);
-        context.combat_status = "等待战斗服务";
-        return;
-    }
-    double player_pos[3]{};
-    if (!SnapshotPlayerPosition(context, player_pos) ||
-        !std::isfinite(player_pos[0]) || !std::isfinite(player_pos[1]) ||
-        !std::isfinite(player_pos[2])) {
-        ResetAutoCombatTarget(context);
-        context.combat_status = "等待玩家位置";
-        return;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    PumpAutoCombatCombatStream(context);
-    const double radius_cm = static_cast<double>(context.combat_search_radius_m.load(
-        std::memory_order_acquire)) * 100.0;
-    const double radius_squared = radius_cm * radius_cm;
-    if (!context.clone_check_done) {
-        ResetAutoCombatTarget(context);
-        context.monster_class_name_ids.clear();
-        context.next_class_rescan = {};
-        context.clone_check_done = true;
-        const std::uint64_t clone_id = GetCurrentCloneId(context);
-        if (clone_id != 0) {
-            context.last_clone_id = clone_id;
-        }
-    }
-    if (context.target_valid) {
-        const double cached_distance = CombatDistanceSquared(player_pos, context.target_pos);
-        if (!std::isfinite(cached_distance) || cached_distance > radius_squared) {
-            ResetAutoCombatTarget(context);
-        } else if (cached_distance <=
-                   kAutoCombatAttackRangeCm * kAutoCombatAttackRangeCm) {
-            // 已经在打它了。若连着 kAutoCombatNoDamageGrace 一点伤害都没打出来，
-            // 说明这个目标打不动：可能是还留在快照里的尸体，也可能是类名像怪、
-            // 实际是道具的对象。拉黑并重新选靶。
-            if (context.auto_combat_attack_since.time_since_epoch().count() == 0) {
-                context.auto_combat_attack_since = now;
-            }
-            const bool hit_recent =
-                context.auto_combat_last_player_hit_at.time_since_epoch().count() != 0 &&
-                now - context.auto_combat_last_player_hit_at <= kAutoCombatNoDamageGrace;
-            if (hit_recent) context.auto_combat_target_hit = true;
-            if (!hit_recent && CombatStreamAvailable(context) &&
-                now - context.auto_combat_attack_since > kAutoCombatNoDamageGrace) {
-                BlacklistAutoCombatTarget(context, context.auto_combat_target_handle,
-                    context.target_pos, now, context.auto_combat_target_hit);
-                ResetAutoCombatTarget(context);
-            }
-        } else {
-            context.auto_combat_attack_since = {};
-        }
-    }
-    // 每秒重新找一次最近的怪。这里不能再用 !target_valid 做条件：没有目标时它会让
-    // 整段扫描每帧都跑（两个服务 × 每个类名一次分页，每帧几十次分页调用），
-    // 这正是"开了自动战斗就掉帧"的来源。目标释放一律走 ResetAutoCombatTarget，
-    // 而它会清空 next_target_update，所以"释放后立刻重新选靶"的行为不受影响。
-    if (now >= context.next_target_update) {
-        context.target_valid = false;
-        context.combat_scan_valid = false;
-        if (FindMonsterClassIds(context)) {
-            CombatTargetPick pick;
-            pick.best_distance_squared = radius_squared;
-            // 同一份逻辑扫两个来源，取二者中更近的那个。
-            const auto skip_dead =
-                [&context, now](const AnomalyNteEntitySnapshotV1& snap) {
-                    return IsDeadAutoCombatTarget(context, snap, now);
-                };
-            const bool entities_ok = PickNearestMonsterFrom(
-                context.entities, context.monster_class_name_ids, player_pos,
-                radius_squared, skip_dead, pick);
-            const bool actors_ok = PickNearestMonsterFrom(
-                context.actors, context.monster_class_name_ids, player_pos,
-                radius_squared, skip_dead, pick);
-            context.combat_scan_valid = entities_ok || actors_ok;
-            if (pick.valid) {
-                context.target_pos[0] = pick.pos[0];
-                context.target_pos[1] = pick.pos[1];
-                context.target_pos[2] = pick.pos[2];
-                context.target_valid = true;
-                if (context.auto_combat_target_handle.id != pick.handle.id ||
-                    context.auto_combat_target_handle.generation !=
-                        pick.handle.generation) {
-                    context.auto_combat_target_handle = pick.handle;
-                    context.auto_combat_attack_since = {};
-                    context.auto_combat_target_hit = false;
-                }
-            }
-        }
-        context.next_target_update = now + std::chrono::milliseconds(1000);
-        if (!context.combat_scan_valid) {
-            ResetAutoCombatTarget(context);
-            context.combat_status = "等待目标数据";
-            return;
-        }
-        if (!context.target_valid) {
-            StopAutoCombatMovement(context);
-            context.combat_status = std::to_string(context.combat_search_radius_m.load()) + "米内无怪";
-            if (context.pickup != nullptr) {
-                AnomalyNtePickupRequestV1 req{sizeof(req)};
-                req.radius = 2000.0;
-                req.maximum_items = 10;
-                static_cast<void>(context.pickup->request_nearby(context.pickup->user, &req));
-            }
-        }
-    }
-    if (!context.target_valid) {
-        context.auto_combat_attack_since = {};
-        return;
-    }
-    const double dx = context.target_pos[0] - player_pos[0];
-    const double dy = context.target_pos[1] - player_pos[1];
-    const double dz = context.target_pos[2] - player_pos[2];
-    const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    char status[128]{};
-    std::snprintf(status, sizeof(status), "目标 %.1f米", dist / 100.0);
-    context.combat_status = status;
-    if (dist > kAutoCombatAttackRangeCm) {
-        // 怪物包围盒中心常常无法直接寻路抵达（悬空/湖面/特殊地形），游戏导航会原地不动。
-        // 开发者模式下改用传送接近，绕过不可达的寻路；抬高 200cm 避免落进地面。
-        if (context.developer_mode.load(std::memory_order_acquire)) {
-            double tp_target[3] = {
-                context.target_pos[0], context.target_pos[1],
-                context.target_pos[2] + 200.0};
-            if (TeleportToPosition(context, tp_target)) {
-                StopAutoCombatMovement(context);
-                return;
-            }
-        }
-        // 寻路只取水平位置，高度用玩家当前高度。
-        double nav_target[3] = {
-            context.target_pos[0], context.target_pos[1], player_pos[2]};
-        // 游戏原生寻路被每帧重复下发会反复重置（角色原地不动），
-        // 因此按间隔先 stop 再下发，与 BoxAuto 的成熟做法一致。
-        if (now >= context.auto_combat_nav_retry_at) {
-            context.auto_combat_nav_retry_at = now + std::chrono::seconds(2);
-            StopAutoCombatMovement(context);
-            if (context.navigation->move_to_location(
-                    context.navigation->user, nav_target).code == ANOMALY_STATUS_V1_OK) {
-                context.auto_combat_moving = true;
-            }
-        }
-    } else {
-        StopAutoCombatMovement(context);
-        if (context.melee_mode) {
-            ++context.melee_attack_counter;
-            bool do_normal_attack = true;
-            if (context.melee_attack_counter >= 4) {
-                context.melee_attack_counter = 0;
-                if (ActivateSkillByInputId(context, 2)) {
-                    do_normal_attack = false;
-                }
-            }
-            if (do_normal_attack && !InvokeNormalAttack(context)) {
-                context.auto_attack.store(false, std::memory_order_release);
-                context.one_key_active = false;
-                ResetAutoCombatTarget(context);
-            }
-        } else {
-            if (context.attack_is_melee) {
-                static_cast<void>(ActivateSkillByInputId(context, 2));
-            } else {
-                static_cast<void>(ActivateSkillByInputId(
-                    context, static_cast<std::int32_t>(context.test_input_id)));
-            }
-            context.attack_is_melee = !context.attack_is_melee;
-        }
-    }
 }
 
 void DumpCombatTarget(Context& context) noexcept {
@@ -4656,12 +4211,12 @@ void DumpMonsterClasses(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -4699,12 +4254,12 @@ void DumpCloneMonsterInfo(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -4777,12 +4332,12 @@ void ScanMonsterAssets(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -4995,7 +4550,7 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
         result.reason = reason;
         if (diagnose) {
             char address[32]{};
-            std::snprintf(address, sizeof(address), "0x%llX", static_cast<unsigned long long>(context.g_objects_address));
+            std::snprintf(address, sizeof(address), "0x%llX", static_cast<unsigned long long>(context.combat_state.g_objects_address));
             LogRewardDiagnostic(context, "reward-window scan=" + std::string(reason) +
                 " registry=" + address +
                 " scanned=" + std::to_string(result.scanned) +
@@ -5024,12 +4579,12 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) return finish("registry header unreadable");
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -5324,7 +4879,7 @@ void DumpChestChoices(Context& context) noexcept {
         std::fprintf(fp, "no BPGetInteractEntries\n"); std::fclose(fp); return;
     }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t trigger_fn{};
     if (FindFunction(context.names, cc, "TriggerInteract", 3, 13, trigger_fn)) {
         std::uint8_t tp[13]{};
@@ -5333,12 +4888,12 @@ void DumpChestChoices(Context& context) noexcept {
         std::memcpy(tp + 8, &zero, sizeof(zero));
         tp[12] = 0;
         std::fprintf(fp, "trigger=%d\n",
-                     Invoke(reinterpret_cast<void*>(context.controller),
+                     Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                             reinterpret_cast<void*>(trigger_fn), tp) ? 1 : 0);
     }
     auto read_choices = [&]() {
         std::uint8_t p[24]{};
-        std::memcpy(p + 0, &context.controller, sizeof(context.controller));
+        std::memcpy(p + 0, &context.combat_state.controller, sizeof(context.combat_state.controller));
         if (!Invoke(reinterpret_cast<void*>(chest), reinterpret_cast<void*>(fn), p)) {
             return;
         }
@@ -5363,7 +4918,7 @@ void DumpChestChoices(Context& context) noexcept {
     if (FindFunction(context.names, cls, "BPGetAdditionalInteractEntries", 2, 24, add_fn)) {
         std::fprintf(fp, "--- additional entries ---\n");
         std::uint8_t p[24]{};
-        std::memcpy(p + 0, &context.controller, sizeof(context.controller));
+        std::memcpy(p + 0, &context.combat_state.controller, sizeof(context.combat_state.controller));
         if (Invoke(reinterpret_cast<void*>(chest), reinterpret_cast<void*>(add_fn), p)) {
             std::uintptr_t data{};
             std::int32_t cnt{}, cap{};
@@ -5387,7 +4942,7 @@ void DumpChestChoices(Context& context) noexcept {
     std::uintptr_t open_fn{};
     if (FindFunction(context.names, cls, "BP_OpenTreasureBox", 1, 8, open_fn)) {
         std::uint8_t op[8]{};
-        std::memcpy(op, &context.controller, sizeof(context.controller));
+        std::memcpy(op, &context.combat_state.controller, sizeof(context.combat_state.controller));
         std::fprintf(fp, "open invoked=%d\n",
                      Invoke(reinterpret_cast<void*>(chest),
                             reinterpret_cast<void*>(open_fn), op) ? 1 : 0);
@@ -5483,13 +5038,13 @@ void DumpRewardParams(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t ps_cls{};
-    Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset), ps_cls);
+    Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset), ps_cls);
     std::uintptr_t ps_vtable{};
-    Read(reinterpret_cast<const void*>(context.player_state), ps_vtable);
+    Read(reinterpret_cast<const void*>(context.combat_state.player_state), ps_vtable);
     std::fprintf(fp, "player_state=%p vtable=%p\n",
-                 reinterpret_cast<void*>(context.player_state),
+                 reinterpret_cast<void*>(context.combat_state.player_state),
                  reinterpret_cast<void*>(ps_vtable));
     for (std::ptrdiff_t voff : {0x1008, 0x710, 0x708}) {
         std::uintptr_t vfn{};
@@ -5563,9 +5118,9 @@ void DumpAwardFuncs(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t ps_cls{};
-    Read(reinterpret_cast<const void*>(context.player_state + kObjectClassOffset), ps_cls);
+    Read(reinterpret_cast<const void*>(context.combat_state.player_state + kObjectClassOffset), ps_cls);
     for (std::uintptr_t owner : {ps_cls, cc}) {
         std::fprintf(fp, "=== %s ===\n", ObjectName(context.names, owner).c_str());
         for (std::uint32_t depth = 0; owner != 0 && depth < 64; ++depth) {
@@ -5611,12 +5166,12 @@ void DumpAwardUIFuncs(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -5687,12 +5242,12 @@ void DumpAwardUI(Context& context) noexcept {
     std::int32_t count{}, num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.combat_state.g_objects_address + kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.combat_state.g_objects_address + kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.combat_state.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) { std::fprintf(fp, "no items\n"); std::fclose(fp); return; }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
@@ -5918,7 +5473,7 @@ void DumpControllerClickFuncs(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t owner = cc;
     for (std::uint32_t depth = 0; owner != 0 && depth < 64; ++depth) {
         std::uintptr_t field{};
@@ -5996,7 +5551,7 @@ void DumpClickParams(Context& context) noexcept {
     if (fp == nullptr) return;
     if (!GetPlayerState(context)) { std::fprintf(fp, "no player\n"); std::fclose(fp); return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     struct Target { const char* name; std::uint8_t np; std::uint16_t ps; };
     const Target targets[] = {
         {"SetMouseLocation", 2, 8},
@@ -6216,13 +5771,13 @@ void GetEffectiveClaimPos(const Context& context, std::int32_t& x, std::int32_t&
 void RecordMousePos(Context& context) noexcept {
     if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
     if (!FindFunction(context.names, cc, "GetMousePosition", 3, 9, fn)) {
         context.combat_status = "未找到GetMousePosition"; return;
     }
     std::uint8_t p[9]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller),
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                 reinterpret_cast<void*>(fn), p)) {
         context.combat_status = "GetMousePosition失败"; return;
     }
@@ -6243,13 +5798,13 @@ void RecordMousePos(Context& context) noexcept {
 void RecordExitPos(Context& context) noexcept {
     if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
     if (!FindFunction(context.names, cc, "GetMousePosition", 3, 9, fn)) {
         context.combat_status = "未找到GetMousePosition"; return;
     }
     std::uint8_t p[9]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller),
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                 reinterpret_cast<void*>(fn), p)) {
         context.combat_status = "GetMousePosition失败"; return;
     }
@@ -6306,13 +5861,13 @@ void LoadExitConfig(Context& context) noexcept {
 void RecordWeeklyPos(Context& context) noexcept {
     if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
     if (!FindFunction(context.names, cc, "GetMousePosition", 3, 9, fn)) {
         context.combat_status = "未找到GetMousePosition"; return;
     }
     std::uint8_t p[9]{};
-    if (!Invoke(reinterpret_cast<void*>(context.controller),
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                 reinterpret_cast<void*>(fn), p)) {
         context.combat_status = "GetMousePosition失败"; return;
     }
@@ -6390,7 +5945,7 @@ void SendKeyF(bool down) noexcept {
 void SimulateClick(Context& context) noexcept {
     if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
     std::uintptr_t cc{};
-    Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cc);
+    Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
     if (context.click_phase == 0) {
         std::int32_t ex = 0, ey = 0;
@@ -6399,7 +5954,7 @@ void SimulateClick(Context& context) noexcept {
             std::uint8_t p[8]{};
             std::memcpy(p + 0, &ex, 4);
             std::memcpy(p + 4, &ey, 4);
-            static_cast<void>(Invoke(reinterpret_cast<void*>(context.controller),
+            static_cast<void>(Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                                      reinterpret_cast<void*>(fn), p));
         }
         MoveSystemCursor(ex, ey);
@@ -6459,14 +6014,14 @@ bool TriggerRewardChest(Context& context, std::uintptr_t chest,
     };
     std::uintptr_t cls{}, fn{};
     if (chest == 0) return fail("chest handle is null");
-    if (!Read(reinterpret_cast<const void*>(context.controller + kObjectClassOffset), cls) ||
+    if (!Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cls) ||
         cls == 0) return fail("controller class unreadable");
     if (!FindFunction(context.names, cls, "TriggerInteract", 3, 13, fn)) {
         return fail("TriggerInteract not found on the controller class hierarchy");
     }
     std::array<std::uint8_t, 13> parameters{};
     std::memcpy(parameters.data(), &chest, sizeof(chest));
-    if (!Invoke(reinterpret_cast<void*>(context.controller), reinterpret_cast<void*>(fn),
+    if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller), reinterpret_cast<void*>(fn),
                 parameters.data())) {
         return fail("TriggerInteract process-event call failed");
     }
@@ -6477,7 +6032,7 @@ bool TriggerRewardChest(Context& context, std::uintptr_t chest,
 void OpenRewardWindow(Context& context) {
     const bool moving_to_chest = context.auto_claim_active &&
         context.auto_claim_nav_deadline != std::chrono::steady_clock::time_point{};
-    if (moving_to_chest && !context.auto_combat_moving && context.navigation != nullptr &&
+    if (moving_to_chest && !context.combat_state.moving && context.navigation != nullptr &&
         context.navigation->stop_movement != nullptr) {
         context.navigation->stop_movement(context.navigation->user);
     }
@@ -6491,7 +6046,8 @@ void OpenRewardWindow(Context& context) {
     context.enter_arrived = false;
     context.auto_attack.store(false, std::memory_order_release);
     context.test_attack_waiting = false;
-    ResetAutoCombatTarget(context);
+    auto host = MakeCombatHost(context);
+    combat::Reset(host, context.combat_state);
     if (!GetPlayerState(context)) {
         context.combat_status = "打开领奖窗口：等待玩家";
         return;
@@ -6607,7 +6163,7 @@ void AutoClaimTick(Context& context) noexcept {
         std::uint64_t clone_id{};
         const bool left_clone = context.auto_claim_clone_id != 0 &&
             TryGetCurrentCloneId(context, clone_id) && clone_id == 0;
-        if (context.cached_world != context.auto_claim_world || left_clone) {
+        if (context.combat_state.cached_world != context.auto_claim_world || left_clone) {
             context.auto_claim_active = false;
             context.auto_claim_succeeded = true;
             context.combat_status = "领奖并退出完成";
@@ -6626,7 +6182,7 @@ void AutoClaimTick(Context& context) noexcept {
     switch (context.auto_claim_phase) {
     case 0: {
         context.auto_claim_succeeded = false;
-        context.auto_claim_world = context.cached_world;
+        context.auto_claim_world = context.combat_state.cached_world;
         context.auto_claim_clone_id = GetCurrentCloneId(context);
         if (windows.award != 0 || windows.settlement != 0) {
             context.auto_claim_phase = windows.award != 0 ? 1 : 2;
@@ -6808,6 +6364,10 @@ void AutoClaimTick(Context& context) noexcept {
 }
 
 
+// 见过怪之后连续这么多秒无怪，本点就算打完（与模块内部 kAutoCombatNoMonsterSeconds
+// 是同一个 5：模块负责计数，这里只负责跨过它）。
+constexpr std::uint32_t kOneKeyNoMonsterSeconds = 5;
+
 void OneKeyTick(Context& context) noexcept {
     if (!context.one_key_active) return;
     if (!GetPlayerState(context)) { context.combat_status = "一键副本：无玩家"; return; }
@@ -6839,13 +6399,12 @@ void OneKeyTick(Context& context) noexcept {
             context.one_key_home_pos[1] = context.landmark_dest[1];
             context.one_key_home_pos[2] = context.landmark_dest[2];
             context.one_key_home_valid = true;
-            ResetAutoCombatTarget(context);
+            auto host = MakeCombatHost(context);
+            combat::Reset(host, context.combat_state);
             context.clone_check_done = false;
             context.auto_attack.store(true, std::memory_order_release);
             context.next_attack = now;
             context.one_key_phase = 2;
-            context.one_key_no_monster_seconds = 0;
-            context.one_key_met_monster = false;
             context.one_key_deadline = now +
                 std::chrono::seconds(context.one_key_enter_wait);
             context.combat_status = "一键副本：等待开场动画";
@@ -6860,21 +6419,19 @@ void OneKeyTick(Context& context) noexcept {
     case 2: {
         if (now < context.one_key_deadline) return;
         context.one_key_deadline = now + std::chrono::seconds(1);
-        if (!context.combat_scan_valid) {
-            context.one_key_no_monster_seconds = 0;
+        // 「见过怪之后连续 5 秒无怪」由战斗模块统计（state.met_monster /
+        // state.no_monster_seconds）：这里只读结果，不再自己计数。
+        if (!context.combat_state.scan_valid) {
             context.combat_status = "一键副本：等待目标数据";
             return;
         }
-        if (context.target_valid) {
-            context.one_key_met_monster = true;
-            context.one_key_no_monster_seconds = 0;
-        } else if (context.one_key_met_monster) {
-            ++context.one_key_no_monster_seconds;
+        if (!context.combat_state.target_valid && context.combat_state.met_monster) {
             context.combat_status = "一键副本：无怪 " +
-                std::to_string(context.one_key_no_monster_seconds) + "s";
-            if (context.one_key_no_monster_seconds >= 5) {
+                std::to_string(context.combat_state.no_monster_seconds) + "s";
+            if (context.combat_state.no_monster_seconds >= kOneKeyNoMonsterSeconds) {
                 context.auto_attack.store(false, std::memory_order_release);
-                ResetAutoCombatTarget(context);
+                auto host = MakeCombatHost(context);
+                combat::Reset(host, context.combat_state);
                 context.one_key_phase = 3;
                 context.one_key_deadline = now + std::chrono::seconds(90);
                 context.combat_status = "一键副本：领取中";
@@ -6899,8 +6456,6 @@ void OneKeyTick(Context& context) noexcept {
                 context.one_key_phase = 4;
                 context.one_key_deadline = now +
                     std::chrono::seconds(context.one_key_exit_wait);
-                context.one_key_met_monster = false;
-                context.one_key_no_monster_seconds = 0;
                 context.combat_status = "一键副本：第 " +
                     std::to_string(context.one_key_loop_done + 1) + "/" +
                     std::to_string(context.one_key_loop_count) + " 轮，等待退出";
@@ -6959,8 +6514,8 @@ void TestAttackTick(Context& context) noexcept {
     context.test_attack_waiting = context.test_attack_phase < 5;
     context.test_attack_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(333);
     context.combat_status = "普通攻击输入 " + std::to_string(context.test_attack_phase) + "/5";
-    LogRewardDiagnostic(context, "normal-attack ability-input id=" + std::to_string(context.normal_attack.input_id) +
-        " param=" + std::to_string(context.normal_attack.input_param) + " tap=" + std::to_string(context.test_attack_phase));
+    LogRewardDiagnostic(context, "normal-attack ability-input id=" + std::to_string(context.combat_state.normal_attack.input_id) +
+        " param=" + std::to_string(context.combat_state.normal_attack.input_param) + " tap=" + std::to_string(context.test_attack_phase));
 }
 
 
@@ -7089,6 +6644,13 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
 
 void ANOMALY_CALL Unload(void* plugin_context) {
     delete static_cast<Context*>(plugin_context);
+}
+
+// 模块把「普攻打不出来」和「等服务/等位置/等目标数据」都并进了 unavailable，而原实现
+// 只对前者关掉总开关并结束副本。模块用 `State::attack_failed` 把前者单独标出来（每帧重算），
+// 这里直接读它——不要用回显的状态文本判断，那会把模块的措辞变成隐性契约。
+bool CombatAttackUnavailable(const Context& context) {
+    return context.combat_state.attack_failed;
 }
 
 void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
@@ -7350,11 +6912,10 @@ void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
     }
     if (context.one_key_pending.exchange(false, std::memory_order_acq_rel)) {
         context.auto_attack.store(false, std::memory_order_release);
-        ResetAutoCombatTarget(context);
+        auto host = MakeCombatHost(context);
+        combat::Reset(host, context.combat_state);
         context.one_key_active = true;
         context.one_key_phase = 0;
-        context.one_key_no_monster_seconds = 0;
-        context.one_key_met_monster = false;
         context.one_key_loop_done = 0;
         context.one_key_direct_enter = false;
         context.one_key_enter_pos_valid = false;
@@ -7476,12 +7037,31 @@ void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
     if (context.auto_attack.load(std::memory_order_acquire)) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= context.next_attack) {
-            AutoCombatTick(context);
+            auto host = MakeCombatHost(context);
+            if (!context.clone_check_done) {
+                // 原 AutoCombatTick 的一次性副本簿记：副本实例变了（或刚打开自动攻击）
+                // 时先清一遍战斗状态，再记下当前副本 ID。模块不认副本，这一步由调用方做。
+                combat::Reset(host, context.combat_state);
+                context.clone_check_done = true;
+                const std::uint64_t clone_id = GetCurrentCloneId(context);
+                if (clone_id != 0) {
+                    context.last_clone_id = clone_id;
+                }
+            }
+            const auto result = combat::Tick(host, context.combat_state);
+            if (result == combat::Result::unavailable && CombatAttackUnavailable(context)) {
+                // 原实现：普攻出不了手就关掉总开关并退出副本流程（结束一键副本）。
+                // 其余 unavailable（等服务/等位置/等目标数据）原本只是等待，不做任何事。
+                context.auto_attack.store(false, std::memory_order_release);
+                context.one_key_active = false;
+            }
             context.next_attack = now + std::chrono::milliseconds(
                 context.melee_mode ? 333 : 500);
         }
-    } else if (context.target_valid || context.combat_scan_valid || context.auto_combat_moving) {
-        ResetAutoCombatTarget(context);
+    } else if (context.combat_state.target_valid || context.combat_state.scan_valid ||
+               context.combat_state.moving) {
+        auto host = MakeCombatHost(context);
+        combat::Reset(host, context.combat_state);
     }
     AutoClaimTick(context);
     OneKeyTick(context);

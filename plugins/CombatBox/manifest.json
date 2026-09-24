@@ -23,7 +23,13 @@
     {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.navigation", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.map-landmarks", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true}
+    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.combat", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skill-invocation", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.actors", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.entities", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.pickup", "minVersion": 1, "optional": true}
   ],
   "capabilities": [
     "ui",
@@ -36,6 +42,12 @@
     "nte-player-snapshot",
     "nte-navigation",
     "nte-map-landmarks",
-    "nte-player-teleport"
+    "nte-player-teleport",
+    "nte-combat-read",
+    "nte-skills-read",
+    "nte-skill-invocation",
+    "nte-actor-snapshot",
+    "nte-entity-snapshot",
+    "nte-pickup"
   ]
 }
