@@ -7,9 +7,11 @@
 #include "anomaly/sdk/services/localization.h"
 #include "anomaly/sdk/services/plugin_state.h"
 #include "plugins/common/localization.hpp"
+#include "plugins/common/combat/auto_combat.hpp"
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -27,6 +29,8 @@
 #include <vector>
 
 namespace {
+
+namespace combat = anomaly::plugins::combat;
 
 constexpr std::string_view kTablePath =
     "/Game/DataTable/Treasurebox/DT_TreasureboxConfig.DT_TreasureboxConfig";
@@ -56,6 +60,25 @@ constexpr double kLandmarkTransferTimeoutSeconds = 20.0;
 constexpr double kLandmarkSettleSeconds = 2.0;
 constexpr double kArrivalRadiusCentimeters = 600.0;
 constexpr double kMovementTimeoutSeconds = 20.0;
+// 传送是瞬时的，但位置快照要下一帧才更新；等到位再进战斗阶段，超时就直接开打
+// （打不到怪由首次接敌超时收场，不再加一层失败状态）。
+constexpr double kTeleportArrivalTimeoutSeconds = 5.0;
+// 掉出世界的判据与 BoxAuto 保持一致（plugins/BoxAuto/plugin.cpp 的
+// kFallOutThresholdCentimeters）：玩家 Z 比当前点低 10 米以上即视为掉出世界。
+// 掉落判据用「下降速度」而不是「比基准低多少」：走路下坡每秒几米，自由落体每秒十几米。
+// 基准式判据两边都错过 —— 用点位高度当基准会误报（点位在箱子/高台上），用「进战斗时自己的高度」
+// 当基准则在「一开始就在下面」（传送落到地图下 / 地形没加载）时永远不触发，人卡在下面找不到怪。
+constexpr double kFallOutRateCentimetersPerSecond = 1500.0;
+// 比**当前点位**低这么多就算掉出世界（用户定的：点位坐标在地面上，1 米足够）。
+constexpr double kFallOutBelowPointCentimeters = 100.0;
+// 掉出世界后的重传次数：一次能修掉绝大多数「传送落进洞里/被挤出地图」，给到 3 次覆盖
+// 地图流式加载抖动；再多只是拖时间——本点的收敛另有首次接敌超时与模块黑名单 TTL 兜底。
+// 高楼/新区域的地图常常还没流式加载完，玩家会真的往下掉。**不能等**：等下去会摔死
+// （用户实测），所以检测到就立刻重传，一直传到落地为止。次数只是防止真无解时死循环，
+// 见过怪之后计数会清零（已经站稳开打，不该被之前的掉落惩罚）。
+constexpr std::uint32_t kFallOutMaximumRetries = 10;
+// 两次重传之间的最小间隔：只用来防止同一帧里反复下发传送。
+constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(1200);
 constexpr double kProgressCheckIntervalSeconds = 3.0;
 constexpr double kProgressThresholdCentimeters = 80.0;
 constexpr double kReissueDelaySeconds = 4.0;
@@ -210,6 +233,13 @@ struct Context final {
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
     const AnomalyNteNavigationServiceV1* navigation{};
     const AnomalyNteMapLandmarksServiceV1* map_landmarks{};
+    // 自动战斗模块需要的服务（模块自己不查服务，每次 tick 由这里重建 Host）。
+    const AnomalyNteCombatServiceV1* combat{};
+    const AnomalyNteSkillsServiceV1* skills{};
+    const AnomalyNteSkillInvocationServiceV1* skill_invocation{};
+    const AnomalyNteActorsServiceV1* actors{};
+    const AnomalyNteEntitiesServiceV1* entities{};
+    const AnomalyNtePickupServiceV1* pickup{};
     const AnomalyPluginStateServiceV1* plugin_state{};
     anomaly::plugins::Localizer localizer;
 
@@ -245,6 +275,47 @@ struct Context final {
     double navigation_target[3]{};
     double navigation_last_position[3]{};
     bool navigation_has_last_position{};
+
+    // —— 自动一轮：点 → 到达 → 自动战斗 → 下一个点 ——
+    // 当前点的行名（只有 Update 线程写；Draw 读时走 mutex）。
+    std::string current_row;
+    // 一轮是否在进行中（决定本点结束后是否自动取下一个点）。
+    bool auto_run{};
+    // 传送后的落点确认。
+    bool teleport_arrival_wait{};
+    std::chrono::steady_clock::time_point teleport_arrival_deadline{};
+    // 战斗阶段：共享模块的状态 + 「首次接敌超时」的起点。
+    anomaly::plugins::combat::State combat_state;
+    bool combat_active{};
+    std::chrono::steady_clock::time_point combat_started_at{};
+    // 进入战斗时玩家的高度：掉出世界用它作基准（点位高度常在箱子/高台上，不能当基准）。
+    double combat_start_z{};
+    // 掉落追踪：上次采样的高度与时刻（`fallout_last_at` 为空表示还没初始化）。
+    double fallout_last_z{};
+    std::chrono::steady_clock::time_point fallout_last_at{};
+    // 下一次允许重传的时刻（掉出世界后的等待间隔）。
+    std::chrono::steady_clock::time_point fallout_retry_at{};
+    // 最近一次「换了目标」的时刻与句柄：无伤害兜底要从这里重新计时，
+    // 否则刚出现怪就被兜底结束。
+    std::chrono::steady_clock::time_point combat_target_at{};
+    bool combat_had_target{};
+    std::atomic<double> first_contact_timeout_seconds{15.0};
+    // 无伤害兜底：伤害流不可用时模块内部的计时会被反复重置，靠不住；这里用调用方自己的时钟
+    // ——「自上次伤害（从没有过就用进入战斗的时刻）起 N 秒没有伤害 ⇒ 本点打完」。
+    std::atomic<double> no_damage_fallback_seconds{10.0};
+    // 搜索半径（米）：怪可能在传送落点 50 米外，匹配不到就先把这个调大。
+    std::atomic<double> search_radius_m{50.0};
+    // 攻击策略：开 = 近战普攻为主 + 每 4 次放一次技能（模块据此才会把「打不动」置成 attack_failed，
+    // 从而能立即跳过打不动的点）；关 = 只放技能，技能调用失败会被忽略。默认关，与一键副本一致。
+    // 默认开：模块只在平A路径上报「打不动这个目标」，默认关会让那条判断形同虚设。
+    std::atomic_bool melee_mode{true};
+    std::atomic_bool auto_start_pending{};
+    std::atomic_bool auto_stop_pending{};
+    // 掉出世界：本点已重传几次 + 「这次重传是不是同一点的重试」。
+    // 重试期间保留首次接敌超时的起点（不给重试续命），也保留「本点见过怪」这一事实。
+    std::uint32_t fallout_retries{};
+    bool combat_retry_pending{};
+    bool combat_retry_engaged{};
 };
 
 void RebuildFilteredLocked(Context& context) {
@@ -695,6 +766,427 @@ void SaveDoneSet(Context& context) {
     std::fclose(file);
 }
 
+// —— 自动战斗阶段（plugins/common/combat）——
+// 模块不认识面板：它每 tick 报的状态文本经这个回调落进插件自己的状态行，面板始终只显示一行。
+void SetCombatStatus(void* user, const std::string& text) noexcept {
+    auto* context = static_cast<Context*>(user);
+    if (context == nullptr) return;
+    std::lock_guard<std::mutex> lock(context->mutex);
+    context->status = text;
+}
+
+// 模块不查服务，宿主指针每次 tick 重建一份。
+combat::Host MakeCombatHost(Context& context) noexcept {
+    // 有些服务可能在本插件 Load 之后才发布（实体/角色快照随世界加载），Load 时查询会静默
+    // 拿到空指针。这里对空指针惰性重查——与一键副本对动态服务（session/combat/skills）的处理
+    // 一致。只补空的，非空不重查（避免每帧做无谓查询）。
+    if (context.actors == nullptr || context.entities == nullptr ||
+        context.combat == nullptr || context.skills == nullptr ||
+        context.skill_invocation == nullptr || context.pickup == nullptr) {
+        const auto view = anomaly::sdk::Host(context.host);
+        if (context.actors == nullptr) {
+            context.actors = view.Query<AnomalyNteActorsServiceV1>(
+                ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
+                ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION).get();
+        }
+        if (context.entities == nullptr) {
+            context.entities = view.Query<AnomalyNteEntitiesServiceV1>(
+                ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
+                ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION).get();
+        }
+        if (context.combat == nullptr) {
+            context.combat = view.Query<AnomalyNteCombatServiceV1>(
+                ANOMALY_NTE_COMBAT_SERVICE_V1_ID,
+                ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION).get();
+        }
+        if (context.skills == nullptr) {
+            context.skills = view.Query<AnomalyNteSkillsServiceV1>(
+                ANOMALY_NTE_SKILLS_SERVICE_V1_ID,
+                ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION).get();
+        }
+        if (context.skill_invocation == nullptr) {
+            context.skill_invocation = view.Query<AnomalyNteSkillInvocationServiceV1>(
+                ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_ID,
+                ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_VERSION).get();
+        }
+        if (context.pickup == nullptr) {
+            context.pickup = view.Query<AnomalyNtePickupServiceV1>(
+                ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
+                ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION).get();
+        }
+    }
+    combat::Host host;
+    host.combat = context.combat;
+    host.navigation = context.navigation;
+    host.actors = context.actors;
+    host.entities = context.entities;
+    host.names = context.names;
+    host.objects = context.objects;
+    host.player = context.player;
+    host.teleport = context.teleport;
+    host.session = context.session;
+    host.signature = context.signature;
+    host.skills = context.skills;
+    host.skill_invocation = context.skill_invocation;
+    host.pickup = context.pickup;
+    host.search_radius_m = static_cast<std::uint32_t>(
+        std::clamp(context.search_radius_m.load(std::memory_order_relaxed), 10.0, 300.0));
+    host.developer_mode = context.developer_mode.load(std::memory_order_acquire);
+    // 与副本一致：清空那一刻由模块自己发一次范围拾取（20 米 / 最多 10 件）。
+    host.loot_after_kill = true;
+    host.melee_mode = context.melee_mode.load(std::memory_order_relaxed);
+    // test_input_id 保持模块默认值。
+    host.set_status = &SetCombatStatus;
+    host.status_user = &context;
+    return host;
+}
+
+void SetStatusText(Context& context, const std::string_view key,
+                   const std::string_view fallback) {
+    std::lock_guard<std::mutex> lock(context.mutex);
+    context.status = context.localizer.Text(key, fallback);
+}
+
+// 点起不来（传送/寻路失败）：状态行留下原因并停住本轮，不静默跳过。
+void FailPointStart(Context& context, const std::string_view key,
+                    const std::string_view fallback) {
+    std::lock_guard<std::mutex> lock(context.mutex);
+    context.auto_run = false;
+    context.combat_retry_pending = false;
+    context.combat_retry_engaged = false;
+    context.status = context.localizer.Text(key, fallback);
+}
+
+// 结束战斗阶段并清空模块状态（换点、跳过、停止本轮都走这里）。
+void EndCombat(Context& context) {
+    if (!context.combat_active) return;
+    combat::Host host = MakeCombatHost(context);
+    combat::Reset(host, context.combat_state);
+    context.combat_state.dead_targets.clear();
+    context.combat_active = false;
+}
+
+// 开始一个点：传送（开发者模式）或寻路过去；到达由 Update 的到达分支接手进入战斗阶段。
+// fallout_retry：这是「掉出世界后重传同一个点」——沿用本点的重试计数、强制走传送
+// （掉出地图后寻路没有意义），并保留首次接敌超时的起点。
+void StartPoint(Context& context, const Point& p,
+                std::chrono::steady_clock::time_point now,
+                bool fallout_retry = false) {
+    context.combat_retry_pending = fallout_retry;
+    if (!fallout_retry) context.fallout_retries = 0;
+    // 上一轮战斗可能还在跑（例如战斗中用户直接点了另一个点）：先收干净再出发，
+    // 否则模块会一边寻路一边抢导航、状态行也会被它覆盖。
+    EndCombat(context);
+    {
+        std::lock_guard<std::mutex> lock(context.mutex);
+        context.current_row = p.row_name;
+    }
+    context.pending_target[0] = p.x;
+    context.pending_target[1] = p.y;
+    context.pending_target[2] = p.z;
+    context.teleport_arrival_wait = false;
+    context.landmark_transfer_attempted = false;
+    context.landmark_transfer_wait = false;
+    if (context.navigating && NavigationReady(context.navigation)) {
+        context.navigation->stop_movement(context.navigation->user);
+    }
+    context.navigating = false;
+    context.navigation_has_last_position = false;
+    if (fallout_retry || context.developer_mode.load(std::memory_order_acquire)) {
+        if (Teleport(context, p)) {
+            // 传送会带来巨大的高度跳变：重置掉落追踪，否则下一帧会把传送本身判成掉落。
+            context.fallout_last_z = 0.0;
+            context.fallout_last_at = {};
+            context.teleport_arrival_wait = true;
+            context.teleport_arrival_deadline = now + std::chrono::milliseconds(
+                static_cast<long long>(kTeleportArrivalTimeoutSeconds * 1000.0));
+        } else {
+            FailPointStart(context, "status.teleport_failed", "Teleport failed");
+        }
+        return;
+    }
+    if (!NavigationReady(context.navigation)) {
+        FailPointStart(context, "status.navigation_unavailable",
+                       "Navigation unavailable");
+        return;
+    }
+    double player_position[3]{};
+    const bool have_player = SnapshotPlayerPosition(context, player_position);
+    bool landmark_started = false;
+    if (have_player) {
+        landmark_started = TryBeginLandmarkTransfer(
+            context, p, player_position[0], player_position[1]);
+    }
+    if (landmark_started) {
+        SetStatusText(context, "status.landmark_transfer", "Fast travel");
+    } else if (StartNavigation(context, p, now)) {
+        std::lock_guard<std::mutex> lock(context.mutex);
+        const std::array nav_args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format(
+            "status.navigating", "Walking [{0}]", nav_args);
+    } else {
+        FailPointStart(context, "status.navigation_failed", "Walk failed");
+    }
+}
+
+// 到达本点：清空模块状态，开始「首次接敌超时」计时；随后每 tick 由 TickCombat 驱动。
+void BeginCombat(Context& context, std::chrono::steady_clock::time_point now) {
+    // 新点位：清零掉落重传计数 ✗（它只在「见到怪」时清零 ✗，否则会跨点位累加 ✗）。
+    context.fallout_retries = 0;
+    combat::Host host = MakeCombatHost(context);
+    combat::Reset(host, context.combat_state);
+    // Reset 不清黑名单表：换点必须自己清，否则上个点拉黑的目标会带到新点。
+    context.combat_state.dead_targets.clear();
+    context.combat_active = true;
+    {
+        double position[3]{};
+        context.combat_start_z = SnapshotPlayerPosition(context, position)
+            ? position[2] : context.pending_target[2];
+    }
+    context.combat_target_at = {};
+    context.combat_had_target = false;
+    context.fallout_retry_at = {};
+    if (context.combat_retry_pending) {
+        // 掉出世界后重传回到同一个点：不重置首次接敌超时的起点（否则重试可以无限续命），
+        // 并恢复「本点见过怪」——Reset 会清掉它，而这一点对同一点的重传依然成立；
+        // 不恢复的话，重传回来第一帧就会被首次接敌超时判跳过，重试等于白做。
+        context.combat_state.met_monster = context.combat_retry_engaged;
+    } else {
+        context.combat_started_at = now;
+    }
+    context.combat_retry_pending = false;
+    context.combat_retry_engaged = false;
+    std::lock_guard<std::mutex> lock(context.mutex);
+    const std::array args{std::string_view(context.current_row)};
+    context.status = context.localizer.Format(
+        "status.combat_start", "Auto combat [{0}]", args);
+}
+
+// 掉出世界（判据与 BoxAuto 相同：玩家 Z 比当前点低 10 米以上）。
+bool FellOutOfWorld(Context& context) {
+    // 正在打一个比你低得多的怪时（悬崖/多层地形，开发者模式下模块还会传送到怪身上），
+    // 玩家位置会合法地低于点位——那不是掉出世界，所以有目标就不判。
+    if (context.combat_state.target_valid) return false;
+    double position[3]{};
+    if (!SnapshotPlayerPosition(context, position)) return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (context.fallout_last_at == std::chrono::steady_clock::time_point{}) {
+        context.fallout_last_z = position[2];
+        context.fallout_last_at = now;
+        return false;
+    }
+    const double seconds =
+        std::chrono::duration<double>(now - context.fallout_last_at).count();
+    if (seconds < 0.05) return false;
+    const double rate = (context.fallout_last_z - position[2]) / seconds;
+    context.fallout_last_z = position[2];
+    context.fallout_last_at = now;
+    if (rate > kFallOutRateCentimetersPerSecond) return true;
+    // 主要判据：比当前点位低 1 米（坑底速度归零也能触发）。
+    return position[2] < context.pending_target[2] - kFallOutBelowPointCentimeters;
+}
+
+// 掉出世界后重传当前点：走与出发同一条路径（StartPoint 的传送分支），不另写一套。
+void RetryCurrentPoint(Context& context, std::chrono::steady_clock::time_point now) {
+    const bool engaged = context.combat_state.met_monster;
+    Point p;
+    p.x = context.pending_target[0];
+    p.y = context.pending_target[1];
+    p.z = context.pending_target[2];
+    {
+        std::lock_guard<std::mutex> lock(context.mutex);
+        p.row_name = context.current_row;
+    }
+    StartPoint(context, p, now, /*fallout_retry=*/true);
+    // 传给 BeginCombat：重传回来后要不要把「见过怪」恢复回去（出发失败时 pending 已被清掉）。
+    if (context.combat_retry_pending) context.combat_retry_engaged = engaged;
+}
+
+// 本点结束（打完或跳过）：不标记，直接取列表里的下一个点；列表走完就收工。
+void AdvancePoint(Context& context, std::chrono::steady_clock::time_point now) {
+    Point next;
+    bool have_next = false;
+    {
+        std::lock_guard<std::mutex> lock(context.mutex);
+        if (!context.auto_run) return;
+        std::size_t index = context.filtered_points.size();
+        for (std::size_t i = 0; i < context.filtered_points.size(); ++i) {
+            if (context.filtered_points[i].row_name == context.current_row) {
+                index = i;
+                break;
+            }
+        }
+        if (index + 1 < context.filtered_points.size()) {
+            next = context.filtered_points[index + 1];
+            have_next = true;
+        } else {
+            context.auto_run = false;
+            context.status = context.localizer.Text("status.run_finished", "Round finished");
+        }
+    }
+    if (have_next) StartPoint(context, next, now);
+}
+
+void StopRun(Context& context) {
+    if (context.navigating && NavigationReady(context.navigation)) {
+        context.navigation->stop_movement(context.navigation->user);
+    }
+    context.navigating = false;
+    context.teleport_arrival_wait = false;
+    context.landmark_transfer_wait = false;
+    combat::Host host = MakeCombatHost(context);
+    combat::Reset(host, context.combat_state);
+    context.combat_active = false;
+    context.combat_retry_pending = false;
+    context.combat_retry_engaged = false;
+    context.fallout_retries = 0;
+    std::lock_guard<std::mutex> lock(context.mutex);
+    context.auto_run = false;
+    context.status = context.localizer.Text("status.stopped", "Stopped");
+}
+
+// 伤害流不可用时的兜底：日志实测 `dmg=never`（打死了怪也收不到伤害事件），此时模块内部
+// 「8 秒没伤害就换靶」的计时会被距离抖动/句柄变化反复清零，永远攒不满。这里用调用方自己
+// 的时钟判断「多久没有伤害了」——参考点取最近一次伤害，从没有过就取进入战斗的时刻。
+bool NoDamageForTooLong(Context& context, std::chrono::steady_clock::time_point now) {
+    if (!context.combat_state.met_monster) return false;
+    // 参考点取最晚的一个：最近一次伤害 / 最近一次换目标 / 进入战斗。
+    // 换目标也要重置，否则「刚出现怪就被兜底结束」（日志实测：第 7 秒出怪、第 8 秒被判无伤害）。
+    auto reference = context.combat_started_at;
+    const auto last_hit = context.combat_state.last_player_hit_at;
+    if (last_hit.time_since_epoch().count() != 0 && last_hit > reference) {
+        reference = last_hit;
+    }
+    if (context.combat_target_at.time_since_epoch().count() != 0 &&
+        context.combat_target_at > reference) {
+        reference = context.combat_target_at;
+    }
+    const double seconds =
+        context.no_damage_fallback_seconds.load(std::memory_order_relaxed);
+    return now - reference > std::chrono::milliseconds(
+        static_cast<long long>(seconds * 1000.0));
+}
+
+// 战斗阶段每 tick 调用一次。模块内部已负责选靶/接近/攻击，以及 cleared 那一次拾取。
+void TickCombat(Context& context, std::chrono::steady_clock::time_point now) {
+    // 掉出世界先于模块 tick 处理：地图外不该再让模块选靶/寻路。
+    if (FellOutOfWorld(context)) {
+        // 还没到下一次重传时刻就等着（地图可能正在加载），期间保持战斗阶段不动。
+        if (now < context.fallout_retry_at) return;
+        // 重传也要重启「首次接敌超时」的计时器 ✗：否则重传消耗的是同一个 15 秒 ✗，
+    // 时间一到就会直接跳过（实测：传几次就跳过 ✗）。
+    context.combat_started_at = now;
+    context.fallout_retry_at = now + kFallOutRetryDelay;
+        if (context.fallout_retries < kFallOutMaximumRetries) {
+            ++context.fallout_retries;
+            const std::string retries = std::to_string(context.fallout_retries);
+            const std::string maximum = std::to_string(kFallOutMaximumRetries);
+            RetryCurrentPoint(context, now);
+            std::lock_guard<std::mutex> lock(context.mutex);
+            const std::array args{std::string_view(retries), std::string_view(maximum),
+                                  std::string_view(context.current_row)};
+            context.status = context.localizer.Format(
+                "status.fallout_retry", "Fell out of world, re-teleport {0}/{1} [{2}]",
+                args);
+            return;
+        }
+        EndCombat(context);
+        {
+            std::lock_guard<std::mutex> lock(context.mutex);
+            const std::array args{std::string_view(context.current_row)};
+            context.status = context.localizer.Format(
+                "status.fallout_skip", "Fell out of world, skip [{0}]", args);
+        }
+        AdvancePoint(context, now);
+        return;
+    }
+    combat::Host host = MakeCombatHost(context);
+    const combat::Result result = combat::Tick(host, context.combat_state);
+    // 已经站稳开打（见过怪）⇒ 掉落计数清零，别让之前的掉落把后面的正常战斗罚掉。
+    if (context.combat_state.met_monster) context.fallout_retries = 0;
+    // 只在「从没目标变成有目标」时重置兜底计时——那才算重新开打。
+    // 不能用「换目标」做条件：目标会在几具尸体之间每秒来回切（日志实测），那样计时会被
+    // 反复刷新，兜底永远攒不满，点就卡死了。
+    if (context.combat_state.target_valid && !context.combat_had_target) {
+        context.combat_target_at = now;
+    }
+    context.combat_had_target = context.combat_state.target_valid;
+    // 没有总超时：只有「这个点从头到尾没见过怪」才由这里收场（working/unavailable 都算）。
+    const double timeout_seconds =
+        context.first_contact_timeout_seconds.load(std::memory_order_relaxed);
+    const bool first_contact_timed_out = !context.combat_state.met_monster &&
+        now - context.combat_started_at >= std::chrono::milliseconds(
+            static_cast<long long>(timeout_seconds * 1000.0));
+    if (result == combat::Result::cleared) {
+        EndCombat(context);
+        {
+            std::lock_guard<std::mutex> lock(context.mutex);
+            const std::array args{std::string_view(context.current_row)};
+            context.status = context.localizer.Format(
+                "status.point_cleared", "Cleared [{0}] (not marked)", args);
+        }
+        AdvancePoint(context, now);
+        return;
+    }
+    if (NoDamageForTooLong(context, now)) {
+        EndCombat(context);
+        {
+            std::lock_guard<std::mutex> lock(context.mutex);
+            const std::array args{std::string_view(context.current_row)};
+            context.status = context.localizer.Format(
+                "status.no_damage_timeout", "No damage for {0}s, done [{1}]",
+                std::array{std::string_view(std::to_string(static_cast<int>(
+                                context.no_damage_fallback_seconds.load(
+                                    std::memory_order_relaxed)))),
+                           std::string_view(context.current_row)});
+        }
+        AdvancePoint(context, now);
+        return;
+    }
+    // 「打不动」（普攻/技能调用失败）：见过怪之后首次接敌超时永远不会触发，而模块自己的
+    // 黑名单 TTL 是 45/120 秒——不在这里立即跳过就要白等两分钟。
+    if (result == combat::Result::unavailable && context.combat_state.attack_failed) {
+        EndCombat(context);
+        {
+            std::lock_guard<std::mutex> lock(context.mutex);
+            const std::array args{std::string_view(context.current_row)};
+            context.status = context.localizer.Format(
+                "status.attack_failed", "Cannot attack, skip [{0}]", args);
+        }
+        AdvancePoint(context, now);
+        return;
+    }
+    if (first_contact_timed_out) {
+        EndCombat(context);
+        const std::string seconds = std::to_string(static_cast<int>(timeout_seconds));
+        {
+            std::lock_guard<std::mutex> lock(context.mutex);
+            const std::array args{std::string_view(seconds),
+                                  std::string_view(context.current_row)};
+            context.status = context.localizer.Format(
+                "status.first_contact_timeout", "No monster in {0}s, skipped [{1}]",
+                args);
+        }
+        AdvancePoint(context, now);
+        return;
+    }
+    // working / unavailable：状态行已由模块经 SetCombatStatus 写入。
+    // 战斗必需的服务没拿到时给出明确提示（否则模块只会笼统地说「等待目标数据」）。
+    if (context.actors == nullptr || context.entities == nullptr ||
+        context.combat == nullptr) {
+        std::string missing;
+        const auto add = [&missing](const char* name) {
+            if (!missing.empty()) missing += "/";
+            missing += name;
+        };
+        if (context.actors == nullptr) add("actors");
+        if (context.entities == nullptr) add("entities");
+        if (context.combat == nullptr) add("combat");
+        std::lock_guard<std::mutex> lock(context.mutex);
+        context.status = "战斗服务缺失: " + missing;
+    }
+}
+
 void Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_ui) {
     if (plugin_context == nullptr) return;
     auto& context = *static_cast<Context*>(plugin_context);
@@ -760,17 +1252,87 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_ui) {
     }
     ui->separator(ui->user);
 
+    // 自动一轮：开始 / 停止，以及可调的「首次接敌超时（秒）」。
+    if (ui->input_double != nullptr) {
+        double timeout_seconds =
+            context.first_contact_timeout_seconds.load(std::memory_order_relaxed);
+        const std::string timeout_label = context.localizer.Text(
+            "label.first_contact_timeout", "First contact timeout (s)");
+        if (ui->input_double(ui->user, anomaly::sdk::StringView(timeout_label),
+                             &timeout_seconds, 1.0, 10.0)) {
+            context.first_contact_timeout_seconds.store(
+                std::clamp(timeout_seconds, 1.0, 120.0), std::memory_order_relaxed);
+        }
+        double radius = context.search_radius_m.load(std::memory_order_relaxed);
+        const std::string radius_label = context.localizer.Text(
+            "label.search_radius", "Search radius (m)");
+        if (ui->input_double(ui->user, anomaly::sdk::StringView(radius_label),
+                             &radius, 5.0, 10.0)) {
+            context.search_radius_m.store(
+                std::clamp(radius, 10.0, 300.0), std::memory_order_relaxed);
+        }
+        double no_damage =
+            context.no_damage_fallback_seconds.load(std::memory_order_relaxed);
+        const std::string no_damage_label = context.localizer.Text(
+            "label.no_damage_fallback", "Give up point after no damage (s)");
+        if (ui->input_double(ui->user, anomaly::sdk::StringView(no_damage_label),
+                             &no_damage, 5.0, 15.0)) {
+            context.no_damage_fallback_seconds.store(
+                std::clamp(no_damage, 5.0, 600.0), std::memory_order_relaxed);
+        }
+    }
+    // 攻击策略开关：与一键副本的「平A模式」同一个含义。开着时模块才会把「打不动」标成
+    // attack_failed，本插件据此立即跳过该点；关着时只放技能、技能失败被忽略。
+    if (ui->checkbox != nullptr) {
+        int melee = context.melee_mode.load(std::memory_order_relaxed) ? 1 : 0;
+        const std::string melee_label =
+            context.localizer.Text("action.melee_mode", "Melee mode");
+        const std::string melee_id = melee_label + "##melee";
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(melee_id), &melee) != 0) {
+            context.melee_mode.store(melee != 0, std::memory_order_relaxed);
+        }
+    }
+    const std::string auto_start_label =
+        context.localizer.Text("action.auto_start", "Start auto");
+    if (ui->button(ui->user, anomaly::sdk::StringView(auto_start_label), 0.0F, 0.0F) != 0) {
+        context.auto_start_pending.store(true, std::memory_order_release);
+    }
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string auto_stop_label = context.localizer.Text("action.stop", "Stop");
+    if (ui->button(ui->user, anomaly::sdk::StringView(auto_stop_label), 0.0F, 0.0F) != 0) {
+        context.auto_stop_pending.store(true, std::memory_order_release);
+    }
     ui->separator(ui->user);
 
     std::string status;
     std::vector<Point> list;
+    std::string current_row;
+    bool auto_run = false;
     {
         std::lock_guard<std::mutex> lock(context.mutex);
         status = context.status;
         list = context.filtered_points;
+        current_row = context.current_row;
+        auto_run = context.auto_run;
     }
     if (!status.empty()) {
         ui->text(ui->user, anomaly::sdk::StringView(status));
+    }
+    if (auto_run && !current_row.empty()) {
+        std::size_t index = 0;
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            if (list[i].row_name == current_row) {
+                index = i;
+                break;
+            }
+        }
+        const std::string position =
+            std::to_string(index + 1) + "/" + std::to_string(list.size());
+        const std::array progress_args{
+            std::string_view(position), std::string_view(current_row)};
+        const std::string progress = context.localizer.Format(
+            "status.run_progress", "Auto {0} [{1}]", progress_args);
+        ui->text(ui->user, anomaly::sdk::StringView(progress));
     }
     const std::string done_str = std::to_string(context.done_set.size());
     const std::string total_str = std::to_string(list.size());
@@ -857,6 +1419,25 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     context->map_landmarks = view.Query<AnomalyNteMapLandmarksServiceV1>(
         ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID,
         ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION).get();
+    // 自动战斗模块用到的服务（可选：缺哪个模块自己会报不可用）。
+    context->combat = view.Query<AnomalyNteCombatServiceV1>(
+        ANOMALY_NTE_COMBAT_SERVICE_V1_ID,
+        ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION).get();
+    context->skills = view.Query<AnomalyNteSkillsServiceV1>(
+        ANOMALY_NTE_SKILLS_SERVICE_V1_ID,
+        ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION).get();
+    context->skill_invocation = view.Query<AnomalyNteSkillInvocationServiceV1>(
+        ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_ID,
+        ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_VERSION).get();
+    context->actors = view.Query<AnomalyNteActorsServiceV1>(
+        ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
+        ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION).get();
+    context->entities = view.Query<AnomalyNteEntitiesServiceV1>(
+        ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
+        ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION).get();
+    context->pickup = view.Query<AnomalyNtePickupServiceV1>(
+        ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
+        ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION).get();
     context->plugin_state = view.Query<AnomalyPluginStateServiceV1>(
         ANOMALY_PLUGIN_STATE_SERVICE_V1_ID,
         ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION).get();
@@ -925,7 +1506,7 @@ void ANOMALY_CALL Update(void* plugin_context, const double) {
             p.x = context.pending_target[0];
             p.y = context.pending_target[1];
             p.z = context.pending_target[2];
-            p.row_name = context.manual_teleport_row;
+            p.row_name = context.current_row;
             if (StartNavigation(context, p, now)) {
                 std::lock_guard<std::mutex> lock(context.mutex);
                 const std::array nav_args{std::string_view(p.row_name)};
@@ -975,17 +1556,15 @@ void ANOMALY_CALL Update(void* plugin_context, const double) {
         if (arrived) {
             context.navigation->stop_movement(context.navigation->user);
             context.navigating = false;
-            std::lock_guard<std::mutex> lock(context.mutex);
-            const std::array arrived_args{
-                std::string_view(context.manual_teleport_row)};
-            context.status = context.localizer.Format(
-                "status.arrived", "Arrived [{0}]", arrived_args);
+            // 到达即进入自动战斗阶段（状态行由模块接管）。
+            BeginCombat(context, now);
         } else if (now - context.navigation_last_progress_at >=
                    std::chrono::milliseconds(static_cast<long long>(
                        kMovementTimeoutSeconds * 1000.0))) {
             context.navigation->stop_movement(context.navigation->user);
             context.navigating = false;
             std::lock_guard<std::mutex> lock(context.mutex);
+            context.auto_run = false;
             context.status = context.localizer.Text(
                 "status.navigation_timeout", "Walk timeout");
         } else {
@@ -997,10 +1576,11 @@ void ANOMALY_CALL Update(void* plugin_context, const double) {
                 p.x = context.pending_target[0];
                 p.y = context.pending_target[1];
                 p.z = context.pending_target[2];
-                p.row_name = context.manual_teleport_row;
+                p.row_name = context.current_row;
                 if (!IssueNavigation(context, p)) {
                     context.navigating = false;
                     std::lock_guard<std::mutex> lock(context.mutex);
+                    context.auto_run = false;
                     context.status = context.localizer.Text(
                         "status.navigation_failed", "Walk failed");
                 }
@@ -1013,7 +1593,7 @@ void ANOMALY_CALL Update(void* plugin_context, const double) {
                     std::to_string(static_cast<long long>(distance_cm));
                 const std::array distance_args{
                     std::string_view(distance_str),
-                    std::string_view(context.manual_teleport_row)};
+                    std::string_view(context.current_row)};
                 std::lock_guard<std::mutex> lock(context.mutex);
                 context.status = context.localizer.Format(
                     "status.navigating_distance", "Walking {0}cm [{1}]",
@@ -1022,58 +1602,61 @@ void ANOMALY_CALL Update(void* plugin_context, const double) {
         }
     }
 
+    if (context.auto_start_pending.exchange(false, std::memory_order_acq_rel)) {
+        Point p;
+        bool have_point = false;
+        {
+            std::lock_guard<std::mutex> lock(context.mutex);
+            if (!context.filtered_points.empty()) {
+                p = context.filtered_points.front();
+                context.auto_run = true;
+                have_point = true;
+            } else {
+                context.status = context.localizer.Text("status.no_points", "No points");
+            }
+        }
+        if (have_point) StartPoint(context, p, now);
+    }
+
     if (context.manual_teleport_pending.exchange(false, std::memory_order_acq_rel)) {
         Point p;
         p.x = context.manual_teleport_x;
         p.y = context.manual_teleport_y;
         p.z = context.manual_teleport_z;
         p.row_name = context.manual_teleport_row;
-        context.pending_target[0] = p.x;
-        context.pending_target[1] = p.y;
-        context.pending_target[2] = p.z;
-        context.landmark_transfer_attempted = false;
-        context.landmark_transfer_wait = false;
-        if (context.navigating && NavigationReady(context.navigation)) {
-            context.navigation->stop_movement(context.navigation->user);
-        }
-        context.navigating = false;
-        context.navigation_has_last_position = false;
-        if (context.developer_mode.load(std::memory_order_acquire)) {
-            if (!Teleport(context, p)) {
-                std::lock_guard<std::mutex> lock(context.mutex);
-                context.status = context.localizer.Text(
-                    "status.teleport_failed", "Teleport failed");
-            }
-        } else if (NavigationReady(context.navigation)) {
-            double player_position[3]{};
-            const bool have_player = SnapshotPlayerPosition(context, player_position);
-            bool landmark_started = false;
-            if (have_player) {
-                landmark_started = TryBeginLandmarkTransfer(
-                    context, p, player_position[0], player_position[1]);
-            }
-            if (landmark_started) {
-                std::lock_guard<std::mutex> lock(context.mutex);
-                context.status = context.localizer.Text(
-                    "status.landmark_transfer", "Fast travel");
-            } else if (StartNavigation(context, p, now)) {
-                std::lock_guard<std::mutex> lock(context.mutex);
-                const std::array nav_args{std::string_view(p.row_name)};
-                context.status = context.localizer.Format(
-                    "status.navigating", "Walking [{0}]", nav_args);
-            } else {
-                std::lock_guard<std::mutex> lock(context.mutex);
-                context.status = context.localizer.Text(
-                    "status.teleport_failed", "Teleport failed");
-            }
-        } else {
+        {
             std::lock_guard<std::mutex> lock(context.mutex);
-            context.status = context.localizer.Text(
-                "status.navigation_unavailable", "Navigation unavailable");
+            // 单点按钮同时也是「从这一点开始跑一轮」的入口。
+            context.auto_run = true;
         }
+        StartPoint(context, p, now);
+    }
+
+    if (context.auto_stop_pending.exchange(false, std::memory_order_acq_rel)) {
+        StopRun(context);
     }
     if (context.save_pending.exchange(false, std::memory_order_acq_rel)) {
         SaveDoneSet(context);
+    }
+
+    // 传送后的落点确认：位置快照到位就进战斗阶段；超时（传送没生效）也直接开打，
+    // 打不到怪由首次接敌超时收场。
+    if (context.teleport_arrival_wait) {
+        double position[3]{};
+        const bool have_position = SnapshotPlayerPosition(context, position);
+        const bool arrived = have_position &&
+            PlanarDistanceSquared(position[0], position[1],
+                context.pending_target[0], context.pending_target[1]) <=
+                kArrivalRadiusCentimeters * kArrivalRadiusCentimeters;
+        if (arrived || now >= context.teleport_arrival_deadline) {
+            context.teleport_arrival_wait = false;
+            BeginCombat(context, now);
+        }
+    }
+
+    // 战斗阶段：本点打完（cleared）或「从未见过怪」超时之前，每 tick 驱动一次模块。
+    if (context.combat_active) {
+        TickCombat(context, now);
     }
 }
 
