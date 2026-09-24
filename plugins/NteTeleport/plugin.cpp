@@ -54,12 +54,14 @@ constexpr std::uint32_t kWorldGameInstanceOffset = 0x230;
 constexpr std::uint32_t kGameInstanceLocalPlayersOffset = 0x38;
 constexpr std::uint32_t kLocalPlayerControllerOffset = 0x30;
 constexpr std::uint32_t kControllerPlayerStateOffset = 0x2D0;
-// HTPlayerState.CurrentPathEffectParam (NavPathEffectParam) -> GoalLocation
-// (FVector, double precision = 24 bytes). Verified against the live game:
-// the currently tracked map target is stored here (also mirrored in the
-// NavigationPathEffectActor's LastRequestParam).
-constexpr std::uint32_t kPlayerStateCurrentPathEffectOffset = 0x1BD0;
-constexpr std::uint32_t kNavPathEffectGoalLocationOffset = 0x28;
+// HTPlayerState.CurNavigationPathEffect (BP_NavigationPathActor_C) ->
+// LastRequestParam (the navigation request) -> GoalLocation (FVector, double
+// precision = 24 bytes). HT 1.4 dropped NavPathEffectParam.GoalLocation and
+// leaves the player state's own CurrentPathEffectParam empty while tracking, so
+// the tracked position now lives on the navigation actor that draws the route.
+constexpr std::uint32_t kPlayerStateCurNavigationPathEffectOffset = 0x19C8;
+constexpr std::uint32_t kNavPathActorLastRequestParamOffset = 0x4F0;
+constexpr std::uint32_t kNavPathRequestGoalLocationOffset = 0x28;
 // The host teleport bridge uses bSweep=false and places the actor exactly at
 // the requested position. Coordinates taken from map markers, imported points
 // or tracked goals are often at (or slightly below) the walkable floor, which
@@ -494,9 +496,15 @@ bool ReadTrackedTarget(double position[3]) noexcept {
         !ReadPointerAt(controller, kControllerPlayerStateOffset, player_state)) {
         return false;
     }
+    std::uintptr_t nav_actor{};
+    if (!ReadPointerAt(
+            player_state, kPlayerStateCurNavigationPathEffectOffset, nav_actor)) {
+        return false;
+    }
     std::uintptr_t goal_location{};
-    if (!AddAddress(player_state,
-                    kPlayerStateCurrentPathEffectOffset + kNavPathEffectGoalLocationOffset,
+    if (!AddAddress(nav_actor,
+                    kNavPathActorLastRequestParamOffset +
+                        kNavPathRequestGoalLocationOffset,
                     goal_location)) {
         return false;
     }
