@@ -1314,7 +1314,7 @@ struct Ue5NteAdapter::State {
         static constexpr std::array get_monster_static_data{
             NteFunctionParameterSpec{"WorldContextObject", "ObjectProperty", 8, false},
             NteFunctionParameterSpec{"ConfigID", "NameProperty", 8, false},
-            NteFunctionParameterSpec{"InOutMonsterStaticData", "StructProperty", 280, false},
+            NteFunctionParameterSpec{"InOutMonsterStaticData", "StructProperty", 296, false},
             NteFunctionParameterSpec{"ReturnValue", "BoolProperty", 1, true}};
         switch (kind) {
         case NteFunctionKind::GetAbilitySystemComponent:
@@ -1372,7 +1372,7 @@ struct Ue5NteAdapter::State {
             return {kind, "AddBuffControl", "HTUI_MonsterBufferManager", 28,
                 monster_buffer_add};
         case NteFunctionKind::GetMonsterStaticData:
-            return {kind, "K2_GetMonsterStaticData", "HTSceneSolelyDataAsset", 297,
+            return {kind, "K2_GetMonsterStaticData", "HTSceneSolelyDataAsset", 313,
                 get_monster_static_data};
         case NteFunctionKind::CurrentDamageIsCrit:
             return {kind, "CurrentDamageIsCrit", "HTAttributeComponent", 1, get_bool};
@@ -2937,8 +2937,8 @@ struct Ue5NteAdapter::State {
         }
         const auto& binding = combat_skill_discovery.functions[
             NteIndex(NteFunctionKind::GetMonsterStaticData)];
-        constexpr std::uint16_t kMonsterStaticDataSize = 280;
-        constexpr std::size_t kMonsterStaticDataParameterCapacity = 304;
+        constexpr std::uint16_t kMonsterStaticDataSize = 296;
+        constexpr std::size_t kMonsterStaticDataParameterCapacity = 320;
         const auto text_offset = Layout(profile, "monsterData.textName", -1);
         if (!binding || binding->parms_size == 0 ||
             binding->parms_size > kMonsterStaticDataParameterCapacity ||
