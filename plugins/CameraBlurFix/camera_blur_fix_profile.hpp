@@ -20,14 +20,14 @@ inline constexpr std::uint32_t kControllerCameraManagerOffset = 0x380;
 // AHTPlayerCameraManager::PlayerFade* fields from the active HT profile.
 // These are the data path used by the camera pitch fade, not ProcessEvent
 // candidates. Keep the offsets profile-local and validate them at runtime.
-inline constexpr std::uint32_t kPlayerFadeSpeedOffset = 0x3B30;
-inline constexpr std::uint32_t kPlayerFadeDistanceSquareOffset = 0x3B34;
-inline constexpr std::uint32_t kPlayerHideDistanceSquareOffset = 0x3B38;
-inline constexpr std::uint32_t kPlayerPitchFadeCurveOffset = 0x3B40;
+inline constexpr std::uint32_t kPlayerFadeSpeedOffset = 0x3B50;
+inline constexpr std::uint32_t kPlayerFadeDistanceSquareOffset = 0x3B54;
+inline constexpr std::uint32_t kPlayerHideDistanceSquareOffset = 0x3B58;
+inline constexpr std::uint32_t kPlayerPitchFadeCurveOffset = 0x3B60;
 // AHTPlayerCameraManager::NormalCameraSettings is an inline FCameraSettings
 // value.  The two FTargetableFloat TargetValue members are the source values
 // copied into PlayerFadeDistance/PlayerHideDistance during camera update.
-inline constexpr std::uint32_t kNormalCameraSettingsOffset = 0xBAA8;
+inline constexpr std::uint32_t kNormalCameraSettingsOffset = 0xBAC8;
 inline constexpr std::uint32_t kNormalPlayerFadeDistanceTargetOffset = 0x55C;
 inline constexpr std::uint32_t kNormalPlayerHideDistanceTargetOffset = 0x564;
 } // namespace camera_blur_fix_profile
