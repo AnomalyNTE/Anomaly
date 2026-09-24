@@ -79,9 +79,11 @@ constexpr std::array<FunctionSpec, static_cast<std::size_t>(BridgeFunction::Coun
         {"SetBrushFromTexture", "Image"},
     }};
 
-// These indices belong to the v1 NTE build and are always validated before use.
-constexpr std::array<std::uint32_t, 8> kExactBuildObjectIndices{
-    13302U, 12745U, 12748U, 12749U, 12750U, 12754U, 36134U, 13642U};
+// Fast-path hints for the current NTE build. Every entry is validated by name and
+// owner before use, and the name scan below covers a build whose table moved.
+constexpr std::array<std::uint32_t, 18> kExactBuildObjectIndices{
+    9696U, 13627U, 13630U, 13631U, 13632U, 13636U, 13745U, 13746U, 14524U, 14525U,
+    14526U, 38300U, 38301U, 39169U, 41843U, 68012U, 68453U, 70463U};
 
 struct FNameValue final {
     std::uint32_t comparison_index{};
@@ -477,6 +479,8 @@ void DiscoverObject(
     const std::uintptr_t object, const std::string_view name) noexcept {
     DiscoverFunction(context, index, object, name);
     if (name == "WB_SystematicGameFeatureButton_C" && context.feature_button_class == 0U) {
+        // The native base class exists in every build, but only this widget blueprint has
+        // the bound child widgets the bridge fills in, so never fall back to the base.
         std::string class_name;
         if (ResolveClassName(context, object, &class_name) &&
             class_name == "WidgetBlueprintGeneratedClass") {
@@ -637,6 +641,37 @@ bool StaticReflectionDiscoveryComplete(const Context& context) noexcept {
         });
 }
 
+void DiscoverNamedReflectionObject(
+    Context& context, const std::uint32_t index,
+    const std::uintptr_t object) noexcept {
+    std::string name;
+    if (!ResolveObjectName(context, object, &name)) return;
+    bool function_target{};
+    for (std::size_t function{}; function < kFunctionSpecs.size(); ++function) {
+        if (kFunctionSpecs[function].name == name &&
+            g_functions[function].load(std::memory_order_acquire) == 0U) {
+            function_target = true;
+            break;
+        }
+    }
+    const bool object_target =
+        (name == "WB_SystematicGameFeatureButton_C" && context.feature_button_class == 0U) ||
+        (name == "Default__WidgetBlueprintLibrary" &&
+            context.widget_blueprint_library_cdo == 0U) ||
+        (name == "Default__KismetTextLibrary" &&
+            context.kismet_text_library_cdo == 0U) ||
+        (name == "Default__KismetRenderingLibrary" &&
+            context.kismet_rendering_library_cdo == 0U) ||
+        (name == "WrapBoxMenuButtons" && context.menu_candidates.empty());
+    if (!function_target && !object_target) return;
+    AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+    if (context.objects->snapshot_at(context.objects->user, index, &snapshot).code !=
+        ANOMALY_STATUS_V1_OK) {
+        return;
+    }
+    DiscoverObject(context, index, snapshot.handle, object, name);
+}
+
 void DiscoverReflectionCandidate(
     Context& context, const std::uint32_t index,
     const std::uintptr_t object) noexcept {
@@ -645,7 +680,15 @@ void DiscoverReflectionCandidate(
         !ReadGameThreadValue(object + kObjectClassOffset, &object_class)) {
         return;
     }
+    // The exact-build indices above are per-build data, and the menu rebuild clears the
+    // discovered class and container, so match by name until every piece is known again.
+    const bool construction_incomplete =
+        context.class_class == 0U || context.function_class == 0U ||
+        context.feature_button_class == 0U || context.menu_candidates.empty();
     if (object_class == context.class_class) {
+        if (construction_incomplete) {
+            DiscoverNamedReflectionObject(context, index, object);
+        }
         std::string name;
         if (!ResolveObjectName(context, object, &name)) return;
         bool discovered{};
@@ -663,7 +706,12 @@ void DiscoverReflectionCandidate(
         }
         return;
     }
-    if (object_class != context.function_class) return;
+    if (object_class != context.function_class) {
+        if (construction_incomplete) {
+            DiscoverNamedReflectionObject(context, index, object);
+        }
+        return;
+    }
 
     std::uintptr_t owner{};
     if (!ReadGameThreadValue(object + kObjectOuterOffset, &owner)) return;
@@ -689,13 +737,20 @@ void DiscoverReflectionCandidate(
     DiscoverObject(context, index, snapshot.handle, object, name);
 }
 
+// The menu container is a runtime object that only exists while the menu widget tree
+// is built, so the name scan stays alive until one candidate has been accepted.
+bool ReflectionScanComplete(const Context& context) noexcept {
+    return StaticReflectionDiscoveryComplete(context) &&
+        context.feature_button_class != 0U && !context.menu_candidates.empty();
+}
+
 void ScanObjects(Context& context) noexcept {
-    if (StaticReflectionDiscoveryComplete(context)) return;
+    if (ReflectionScanComplete(context)) return;
     if (!ObjectsReady(context.objects) || !NamesReady(context.names)) return;
     if (!RefreshObjectChunks(context)) return;
     DiscoverExactBuildObjects(context);
     DiscoverClassDefaultObjects(context);
-    if (StaticReflectionDiscoveryComplete(context)) return;
+    if (ReflectionScanComplete(context)) return;
     const std::uint32_t count = context.objects->count(context.objects->user);
     if (count == 0U) return;
     if (context.reflection_scan_complete) {
@@ -707,7 +762,7 @@ void ScanObjects(Context& context) noexcept {
     std::uint32_t scanned{};
     while (context.reflection_scan_cursor < count && scanned < kObjectsPerUpdate) {
         if ((scanned & 0x3fU) == 0U) {
-            if (StaticReflectionDiscoveryComplete(context)) break;
+            if (ReflectionScanComplete(context)) break;
             if (std::chrono::steady_clock::now() - started >= kScanBudget) break;
         }
         const std::uint32_t index = context.reflection_scan_cursor++;
@@ -998,7 +1053,7 @@ void DiscoverFeatureButtonClassFromContainer(Context& context) noexcept {
         }
         context.feature_button_class = candidate_class;
         Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-            "NTE ESC bridge class ready from validated native menu button: " +
+            "NTE ESC bridge class ready from validated menu button: " +
                 std::to_string(index));
         DiscoverFeatureButtonProperties(context);
         return;
@@ -1462,6 +1517,9 @@ void ObserveMenuRebuild(Context& context) noexcept {
         context.observed_child_count = -1;
         context.stable_container_updates = 0U;
         context.container_stable = false;
+        // Freed registry slots are reused, so a rebuilt menu can land behind the scan.
+        context.reflection_scan_cursor = 0U;
+        context.reflection_scan_complete = false;
         std::scoped_lock lock(context.bridge_mutex);
         context.menu_candidates.clear();
         context.bindings.clear();
