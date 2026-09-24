@@ -108,10 +108,6 @@ foreach ($generatedFile in @('SHA256SUMS.txt', 'release-manifest.json')) {
     $path = Join-Path $output $generatedFile
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }
-$auditDirectory = Join-Path $output 'audit'
-if (Test-Path -LiteralPath $auditDirectory) {
-    Remove-Item -LiteralPath $auditDirectory -Recurse -Force
-}
 $sbomDirectory = Join-Path $output 'sbom'
 if (Test-Path -LiteralPath $sbomDirectory) {
     Remove-Item -LiteralPath $sbomDirectory -Recurse -Force
@@ -130,10 +126,6 @@ $packages = @(
     [pscustomobject]@{
         InstallComponent = 'Tools'; Component = 'Tools'; Slug = 'tools'
         Name = "Anomaly-$Version-tools"
-    },
-    [pscustomobject]@{
-        InstallComponent = 'Symbols'; Component = 'Symbols'; Slug = 'symbols'
-        Name = "Anomaly-$Version-symbols"
     }
 )
 
@@ -148,40 +140,6 @@ foreach ($package in $packages) {
     if ($LASTEXITCODE -ne 0) { throw "install failed for $($package.InstallComponent)" }
 
     $stages[$package.Component] = $stage
-}
-
-# Each shipped PE must have exactly one corresponding linker PDB in the
-# separately distributed Symbols component.
-$expectedPdbNames = [Collections.Generic.HashSet[string]]::new(
-    [StringComparer]::OrdinalIgnoreCase)
-foreach ($component in @('Runtime', 'SDK', 'Tools')) {
-    Get-ChildItem -LiteralPath $stages[$component] -Recurse -Force -File |
-        Where-Object { $_.Extension -ieq '.dll' -or $_.Extension -ieq '.exe' } |
-        ForEach-Object {
-            $relative = [IO.Path]::GetRelativePath(
-                $stages[$component], $_.FullName).Replace('\', '/')
-            $pdbName = if ($component -eq 'Runtime' -and
-                $relative -match '(?i)^Anomaly/plugins/([^/]+)/plugin\.dll$') {
-                "$($Matches[1]).pdb"
-            } else {
-                "$($_.BaseName).pdb"
-            }
-            [void]$expectedPdbNames.Add($pdbName)
-        }
-}
-foreach ($sdkExamplePdb in @(
-        'HelloUi.pdb', 'TickCounter.pdb', 'ReliableConfig.pdb', 'NteInspector.pdb')) {
-    [void]$expectedPdbNames.Add($sdkExamplePdb)
-}
-$actualPdbNames = [Collections.Generic.HashSet[string]]::new(
-    [StringComparer]::OrdinalIgnoreCase)
-Get-ChildItem -LiteralPath $stages.Symbols -Recurse -Force -File |
-    Where-Object { $_.Extension -ieq '.pdb' } |
-    ForEach-Object { [void]$actualPdbNames.Add($_.Name) }
-$missingPdb = @($expectedPdbNames | Where-Object { -not $actualPdbNames.Contains($_) } | Sort-Object)
-$unexpectedPdb = @($actualPdbNames | Where-Object { -not $expectedPdbNames.Contains($_) } | Sort-Object)
-if ($missingPdb.Count -ne 0 -or $unexpectedPdb.Count -ne 0) {
-    throw "Symbols inventory does not match published PE files; missing=[$($missingPdb -join ', ')]; unexpected=[$($unexpectedPdb -join ', ')]"
 }
 
 $artifacts = @()

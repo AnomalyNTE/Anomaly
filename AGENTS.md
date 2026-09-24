@@ -83,7 +83,8 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 
 主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建预设。
 `build.cmd` 只是 CI 同一命令序列的便捷包装。禁止新建临时 NMake、Ninja、`build/` 或按阶段命名的
-主构建树。AddressSanitizer 使用独立的 `windows-asan` 预设。精确命令与产物路径见
+主构建树。默认构建只产出 Runtime、Tools、SDK 三个发布组件；开发夹具、诊断探针与 PDB 不属于
+发布内容，需要 `build.cmd fixtures|probes|symbols` 显式开启。精确命令与产物路径见
 `.agents/tooling.md`。
 
 ## 冗余清理约定

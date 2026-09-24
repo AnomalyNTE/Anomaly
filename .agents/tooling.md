@@ -13,8 +13,12 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
   --prefix .build\windows-vs2022\game-package --component GameRuntime
 ```
 
-AddressSanitizer 使用：`cmake --preset windows-asan`、
-`cmake --build --preset windows-asan --parallel`。
+默认构建只产出 Runtime、Tools、SDK 三个发布组件所需的 target。开发夹具（`fixtures`）、诊断探针
+（`probes`）与 PDB（`symbols`）不属于任何发布组件，默认不构建，只在需要时显式开启：
+`build.cmd fixtures|probes|symbols`，或在 configure 阶段传入 `ANOMALY_BUILD_TEST_FIXTURES=ON`、
+`ANOMALY_BUILD_DIAGNOSTIC_PROBES=ON`、`ANOMALY_BUILD_SYMBOLS=ON`。`build.cmd package` 额外把
+Tools、SDK（开启 symbols 时含 Symbols）暂存到 `.build\windows-vs2022\package`。
+
 日常二进制位于 `.build/windows-vs2022/bin/RelWithDebInfo`，可部署 Runtime 位于
 `.build/windows-vs2022/game-package`。
 
@@ -31,7 +35,7 @@ AddressSanitizer 使用：`cmake --preset windows-asan`、
 | 跨共享模块边界或公共合同 | 构建受影响模块及直接依赖方，运行两侧相关契约与集成验证 |
 | CMake 或构建图 | 重新 configure，构建受影响 target，并运行受影响验证；仅在影响无法界定时扩大范围 |
 | 公开 SDK/ABI | 构建 SDK 直接依赖方，运行 ABI、外部消费者及相关集成验证 |
-| 内存安全、解析器、重载、所有权或停止 | 完成上述相关验证，并增加对应的定向 `windows-asan` 构建与验证 |
+| 内存安全、解析器、重载、所有权或停止 | 完成上述相关验证，并增加对应的定向 fixture、契约与降级路径验证 |
 | 发布包 | 构建发布所需 target、运行相关合同/集成验证，再使用标准构建树运行 `tools/package_release.ps1` |
 
 环境限制导致命令无法执行时，运行可执行的最强子集，并在完成说明中记录未执行命令及原因。
@@ -49,8 +53,8 @@ AddressSanitizer 使用：`cmake --preset windows-asan`、
 | `diagnose_nte_profile.ps1`、`rescan_profile_signatures.ps1`、`scan_nte_entities.ps1` | 检查实时 NTE 目标和活动 Profile | 必须有明确请求、正确 PID/Profile；生成数据分享前需审查 |
 | `start-coordinate-tracker.ps1` | 启动常驻后台 tracker | 仅在明确请求时使用；结束前必须运行 `stop-coordinate-tracker.ps1` |
 | `collect_diagnostics.ps1` | 生成脱敏诊断包 | 用 `pwsh -NoProfile -File` 启动；检查输入 Runtime 和输出路径，dump 必须人工审查 |
-| `package_release.ps1` | staging、生成发布资料并覆盖发布输出 | 用 `pwsh -NoProfile -File` 启动；仅在干净标准构建后，且指定明确版本/输出目录时运行 |
-| `run_stability_suite.ps1` | 显式 opt-in 的 soak 证据 | 用 `pwsh -NoProfile -File` 启动；`-Quick` 只用于脚本冒烟，不是发布证据 |
+| `package_release.ps1` | staging Runtime、Tools、SDK 三个组件，并覆盖发布输出 | 用 `pwsh -NoProfile -File` 启动；仅在干净标准构建后，且指定明确版本/输出目录时运行 |
+| `run_stability_suite.ps1` | 显式 opt-in 的 soak 证据；需要先 `build.cmd fixtures` | 用 `pwsh -NoProfile -File` 启动；`-Quick` 只用于脚本冒烟，不是发布证据 |
 
 所有工具脚本默认使用 `.build/windows-vs2022` 和其中的 `RelWithDebInfo` 二进制。只在有意使用
 其他 artifact 时传入明确的工具路径；不要重新引入阶段命名或临时构建目录默认值。

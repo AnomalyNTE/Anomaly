@@ -43,25 +43,37 @@ else()
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()
 
-option(ANOMALY_ENABLE_ASAN "Instrument Anomaly targets with MSVC AddressSanitizer" OFF)
-if(ANOMALY_ENABLE_ASAN)
-    if(NOT MSVC)
-        message(FATAL_ERROR "ANOMALY_ENABLE_ASAN currently requires MSVC")
-    endif()
-    add_compile_definitions(ANOMALY_ENABLE_ASAN=1)
-    add_compile_options(
-        $<$<COMPILE_LANGUAGE:C>:/fsanitize=address>
-        $<$<COMPILE_LANGUAGE:CXX>:/fsanitize=address>)
-    add_link_options(/INCREMENTAL:NO)
-    get_filename_component(ANOMALY_ASAN_RUNTIME_DIRECTORY
-        "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    set(ANOMALY_ASAN_RUNTIME_DLL
-        "${ANOMALY_ASAN_RUNTIME_DIRECTORY}/clang_rt.asan_dynamic-x86_64.dll")
-    if(NOT EXISTS "${ANOMALY_ASAN_RUNTIME_DLL}")
-        message(FATAL_ERROR
-            "MSVC AddressSanitizer runtime was not found next to the configured compiler: "
-            "${ANOMALY_ASAN_RUNTIME_DLL}")
-    endif()
+# Development fixtures: the offline platform preview, the render fixtures and the
+# plugin-side test harnesses. They belong to no release component, so the default
+# build only produces the Runtime, Tools, SDK targets; enable them explicitly
+# (`build.cmd fixtures`) when working on them.
+option(ANOMALY_BUILD_TEST_FIXTURES
+    "Build development fixtures (platform preview, render and plugin test harnesses)" OFF)
+
+# Linker PDBs exist for the Symbols component alone, and no release publishes that
+# component, so the default build does not produce them. `build.cmd symbols`
+# (or -DANOMALY_BUILD_SYMBOLS=ON) enables both generation and packaging.
+option(ANOMALY_BUILD_SYMBOLS
+    "Generate and package linker PDBs for the release components" OFF)
+if(NOT ANOMALY_BUILD_SYMBOLS)
+    # RelWithDebInfo is the shipped configuration, so its debug information only
+    # fed the Symbols component; Debug keeps /Zi for local debugging.
+    foreach(anomaly_debug_flag_variable IN ITEMS
+            CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+        string(REPLACE "/Zi" "" ${anomaly_debug_flag_variable}
+            "${${anomaly_debug_flag_variable}}")
+        string(STRIP "${${anomaly_debug_flag_variable}}"
+            ${anomaly_debug_flag_variable})
+    endforeach()
+    foreach(anomaly_debug_link_variable IN ITEMS
+            CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO
+            CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO
+            CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO)
+        string(REPLACE "/debug" "" ${anomaly_debug_link_variable}
+            "${${anomaly_debug_link_variable}}")
+        string(STRIP "${${anomaly_debug_link_variable}}"
+            ${anomaly_debug_link_variable})
+    endforeach()
 endif()
 
 include(GNUInstallDirs)
@@ -936,25 +948,27 @@ target_link_libraries(anomaly_test_host PRIVATE
     anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
     anomaly_i18n nlohmann_json::nlohmann_json Psapi)
 
-add_executable(anomaly-platform-preview WIN32
-    apps/render_fixture/platform_preview.cpp
-    src/ui/platform_host.cpp
-    "${PLATFORM_UI_RESOURCES_RC}"
-    src/plugin/plugin_manager.cpp)
-set_target_properties(anomaly-platform-preview PROPERTIES
-    OUTPUT_NAME "anomaly-platform-preview")
-target_include_directories(anomaly-platform-preview PRIVATE include src)
-target_compile_definitions(anomaly-platform-preview PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly-platform-preview PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(
-    anomaly-platform-preview PRIVATE
-    ue5mem_core anomaly_imgui anomaly_plugin_shadow anomaly_plugin_dependency_resolver
-    anomaly_platform_ui_model anomaly_plugin_enablement anomaly_adapter_services
-    anomaly_platform_settings
-    anomaly_plugin_runtime
-    anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
-    anomaly_i18n nlohmann_json::nlohmann_json)
-add_dependencies(anomaly-platform-preview anomaly_stage_nte_profiles)
+if(ANOMALY_BUILD_TEST_FIXTURES)
+    add_executable(anomaly-platform-preview WIN32
+        apps/render_fixture/platform_preview.cpp
+        src/ui/platform_host.cpp
+        "${PLATFORM_UI_RESOURCES_RC}"
+        src/plugin/plugin_manager.cpp)
+    set_target_properties(anomaly-platform-preview PROPERTIES
+        OUTPUT_NAME "anomaly-platform-preview")
+    target_include_directories(anomaly-platform-preview PRIVATE include src)
+    target_compile_definitions(anomaly-platform-preview PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly-platform-preview PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(
+        anomaly-platform-preview PRIVATE
+        ue5mem_core anomaly_imgui anomaly_plugin_shadow anomaly_plugin_dependency_resolver
+        anomaly_platform_ui_model anomaly_plugin_enablement anomaly_adapter_services
+        anomaly_platform_settings
+        anomaly_plugin_runtime
+        anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
+        anomaly_i18n nlohmann_json::nlohmann_json)
+    add_dependencies(anomaly-platform-preview anomaly_stage_nte_profiles)
+endif()
 
 add_executable(anomaly_launcher WIN32
     apps/launcher/main.cpp
@@ -975,13 +989,15 @@ target_link_libraries(anomaly_launcher PRIVATE
 # before the launcher can be started.
 add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
 
-add_executable(anomaly_render_fixture apps/render_fixture/main.cpp)
-set_target_properties(anomaly_render_fixture PROPERTIES OUTPUT_NAME "anomaly-render-fixture")
-target_compile_definitions(
-    anomaly_render_fixture PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_render_fixture PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(
-    anomaly_render_fixture PRIVATE anomaly_runtime_kernel d3d12 dxgi dxguid)
+if(ANOMALY_BUILD_TEST_FIXTURES)
+    add_executable(anomaly_render_fixture apps/render_fixture/main.cpp)
+    set_target_properties(anomaly_render_fixture PROPERTIES OUTPUT_NAME "anomaly-render-fixture")
+    target_compile_definitions(
+        anomaly_render_fixture PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_render_fixture PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(
+        anomaly_render_fixture PRIVATE anomaly_runtime_kernel d3d12 dxgi dxguid)
+endif()
 
 # Exercises the Present interception path against a D3D11 swap chain, which is
 # what a title using the D3D11 RHI presents. Nothing covered that path before,
@@ -989,38 +1005,40 @@ target_link_libraries(
 # D3D11 game reporting nothing but "waiting for a command queue". The fixture
 # owns the window, device and swap chain; everything above it is the real
 # embedded platform, hooks included.
-add_executable(anomaly_d3d11_fixture
-    apps/render_fixture/d3d11_embedded_fixture.cpp
-    src/ui/platform_host.cpp
-    "${PLATFORM_UI_RESOURCES_RC}"
-    src/render/dx12/embedded_bridge.cpp
-    src/render/dx12/embedded_discovery.cpp
-    src/render/dx12/embedded_input.cpp
-    src/render/dx12/embedded_renderer.cpp
-    src/render/dx12/embedded_ui_resource_render_backend.cpp
-    src/ui/embedded_ui.cpp
-    src/game/nte/nte_esc_menu_bridge.cpp
-    src/plugin/plugin_manager.cpp)
-set_target_properties(anomaly_d3d11_fixture PROPERTIES OUTPUT_NAME "anomaly-d3d11-fixture")
-target_include_directories(anomaly_d3d11_fixture PRIVATE include src "${GENERATED_DIR}")
-target_compile_definitions(
-    anomaly_d3d11_fixture PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_d3d11_fixture PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(
-    anomaly_d3d11_fixture PRIVATE
-    ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
-    anomaly_platform_ui_model
-    anomaly_platform_settings
-    anomaly_scoped_platform
-    anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
-    anomaly_nte_profile_runtime
-    anomaly_websocket_server
-    anomaly_repository_coordinator
-    anomaly_crash_reporter anomaly_runtime_crash_coordinator
-    anomaly_structured_logger anomaly_ui_resources anomaly_i18n
-    anomaly_adapter_services anomaly_plugin_runtime
-    nlohmann_json::nlohmann_json d3d11 d3d12 dxgi dxguid)
-add_dependencies(anomaly_d3d11_fixture anomaly_stage_nte_profiles)
+if(ANOMALY_BUILD_TEST_FIXTURES)
+    add_executable(anomaly_d3d11_fixture
+        apps/render_fixture/d3d11_embedded_fixture.cpp
+        src/ui/platform_host.cpp
+        "${PLATFORM_UI_RESOURCES_RC}"
+        src/render/dx12/embedded_bridge.cpp
+        src/render/dx12/embedded_discovery.cpp
+        src/render/dx12/embedded_input.cpp
+        src/render/dx12/embedded_renderer.cpp
+        src/render/dx12/embedded_ui_resource_render_backend.cpp
+        src/ui/embedded_ui.cpp
+        src/game/nte/nte_esc_menu_bridge.cpp
+        src/plugin/plugin_manager.cpp)
+    set_target_properties(anomaly_d3d11_fixture PROPERTIES OUTPUT_NAME "anomaly-d3d11-fixture")
+    target_include_directories(anomaly_d3d11_fixture PRIVATE include src "${GENERATED_DIR}")
+    target_compile_definitions(
+        anomaly_d3d11_fixture PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_d3d11_fixture PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(
+        anomaly_d3d11_fixture PRIVATE
+        ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
+        anomaly_platform_ui_model
+        anomaly_platform_settings
+        anomaly_scoped_platform
+        anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
+        anomaly_nte_profile_runtime
+        anomaly_websocket_server
+        anomaly_repository_coordinator
+        anomaly_crash_reporter anomaly_runtime_crash_coordinator
+        anomaly_structured_logger anomaly_ui_resources anomaly_i18n
+        anomaly_adapter_services anomaly_plugin_runtime
+        nlohmann_json::nlohmann_json d3d11 d3d12 dxgi dxguid)
+    add_dependencies(anomaly_d3d11_fixture anomaly_stage_nte_profiles)
+endif()
 
 option(ANOMALY_BUILD_SDK_EXAMPLES "Build the Anomaly 1.0 SDK example plugins" ON)
 option(ANOMALY_BUILD_BUILTIN_PLUGINS "Build Anomaly bundled plugins" ON)
@@ -1077,12 +1095,14 @@ if(ANOMALY_BUILD_SDK_EXAMPLES)
     set_target_properties(anomaly_example_reliable_config PROPERTIES PDB_NAME ReliableConfig)
     set_target_properties(anomaly_example_nte_inspector PROPERTIES PDB_NAME NteInspector)
     set_target_properties(anomaly_example_nte_combat_demo PROPERTIES PDB_NAME NteCombatDemo)
-    add_dependencies(anomaly-platform-preview
-        anomaly_example_hello_ui
-        anomaly_example_tick_counter
-        anomaly_example_reliable_config
-        anomaly_example_nte_inspector
-        anomaly_example_nte_combat_demo)
+    if(TARGET anomaly-platform-preview)
+        add_dependencies(anomaly-platform-preview
+            anomaly_example_hello_ui
+            anomaly_example_tick_counter
+            anomaly_example_reliable_config
+            anomaly_example_nte_inspector
+            anomaly_example_nte_combat_demo)
+    endif()
 endif()
 
 if(ANOMALY_BUILD_BUILTIN_PLUGINS)
@@ -1151,21 +1171,23 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_link_libraries(anomaly_mmd2bip_converter PUBLIC nlohmann_json::nlohmann_json)
     target_link_libraries(anomaly_builtin_better_pose PRIVATE anomaly_mmd2bip_converter winmm)
     target_compile_options(anomaly_builtin_better_pose PRIVATE /utf-8)
-    add_executable(anomaly_better_pose_accessory_fixture
-        plugins/BetterPose/tests/accessory_dynamics_test.cpp)
-    target_compile_options(anomaly_better_pose_accessory_fixture PRIVATE /W4 /permissive- /EHsc)
-    add_executable(anomaly_better_pose_visibility_fixture
-        plugins/BetterPose/tests/accessory_visibility_test.cpp)
-    target_compile_options(anomaly_better_pose_visibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_include_directories(anomaly_better_pose_visibility_fixture PRIVATE include)
-    target_link_libraries(anomaly_better_pose_visibility_fixture PRIVATE
-        anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
-    add_executable(anomaly_better_pose_character_switch_fixture
-        plugins/BetterPose/tests/character_switch_test.cpp)
-    target_compile_options(anomaly_better_pose_character_switch_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_include_directories(anomaly_better_pose_character_switch_fixture PRIVATE include)
-    target_link_libraries(anomaly_better_pose_character_switch_fixture PRIVATE
-        anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_better_pose_accessory_fixture
+            plugins/BetterPose/tests/accessory_dynamics_test.cpp)
+        target_compile_options(anomaly_better_pose_accessory_fixture PRIVATE /W4 /permissive- /EHsc)
+        add_executable(anomaly_better_pose_visibility_fixture
+            plugins/BetterPose/tests/accessory_visibility_test.cpp)
+        target_compile_options(anomaly_better_pose_visibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_include_directories(anomaly_better_pose_visibility_fixture PRIVATE include)
+        target_link_libraries(anomaly_better_pose_visibility_fixture PRIVATE
+            anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+        add_executable(anomaly_better_pose_character_switch_fixture
+            plugins/BetterPose/tests/character_switch_test.cpp)
+        target_compile_options(anomaly_better_pose_character_switch_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_include_directories(anomaly_better_pose_character_switch_fixture PRIVATE include)
+        target_link_libraries(anomaly_better_pose_character_switch_fixture PRIVATE
+            anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+    endif()
     # The in-game conversion needs the reference MMD bone table next to the plugin.
     add_custom_command(TARGET anomaly_builtin_better_pose POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_directory
@@ -1218,10 +1240,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(anomaly_builtin_clone_enter PRIVATE anomaly_plugin_combat)
     target_link_libraries(anomaly_builtin_combat_box PRIVATE anomaly_plugin_combat)
-    add_executable(anomaly_combat_auto_fixture
-        plugins/common/combat/tests/auto_combat_test.cpp)
-    target_compile_options(anomaly_combat_auto_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_link_libraries(anomaly_combat_auto_fixture PRIVATE anomaly_plugin_combat)
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_combat_auto_fixture
+            plugins/common/combat/tests/auto_combat_test.cpp)
+        target_compile_options(anomaly_combat_auto_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_link_libraries(anomaly_combat_auto_fixture PRIVATE anomaly_plugin_combat)
+    endif()
     anomaly_add_plugin(anomaly_builtin_dll_loader
         SOURCES plugins/DllLoader/plugin.cpp
         MANIFEST plugins/DllLoader/manifest.json
@@ -1300,19 +1324,21 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_map_spawn_exporter
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_dll_loader)
-    add_dependencies(anomaly-platform-preview
-        anomaly_builtin_nte_position anomaly_builtin_nte_teleport
-        anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
-        anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-        anomaly_builtin_fake_uid anomaly_builtin_camera_tools
-        anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
-        anomaly_builtin_map_spawn_exporter
-        anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-        anomaly_builtin_clone_enter anomaly_builtin_dll_loader)
+    if(TARGET anomaly-platform-preview)
+        add_dependencies(anomaly-platform-preview
+            anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+            anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
+            anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
+            anomaly_builtin_fake_uid anomaly_builtin_camera_tools
+            anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
+            anomaly_builtin_map_spawn_exporter
+            anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
+            anomaly_builtin_clone_enter anomaly_builtin_dll_loader)
+    endif()
 endif()
 
 function(anomaly_stage_platform_preview_plugin target package_name)
-    if(NOT TARGET ${target})
+    if(NOT TARGET ${target} OR NOT TARGET anomaly-platform-preview)
         return()
     endif()
     add_custom_command(TARGET ${target} POST_BUILD
@@ -1354,18 +1380,23 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_combat_box CombatBox)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 
-add_custom_command(TARGET anomaly-platform-preview POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/CONTACT"
-            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/CONTACT"
-    ${ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS}
-    VERBATIM)
+if(TARGET anomaly-platform-preview)
+    add_custom_command(TARGET anomaly-platform-preview POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/CONTACT"
+                "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/CONTACT"
+        ${ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS}
+        VERBATIM)
+endif()
 
-option(ANOMALY_BUILD_WINSOCK_TRACE_PROBES
-    "Build opt-in bounded Winsock transport trace probe packages" ON)
-if(ANOMALY_BUILD_WINSOCK_TRACE_PROBES)
+# Diagnostic probe packages: bounded transport traces and the exact-build BidKing
+# probes. They are read-only research packages that ship in no release component,
+# so they are opt-in (`build.cmd probes`) instead of part of the default build.
+option(ANOMALY_BUILD_DIAGNOSTIC_PROBES
+    "Build the opt-in diagnostic probe plugin packages" OFF)
+if(ANOMALY_BUILD_DIAGNOSTIC_PROBES)
     function(anomaly_add_winsock_trace_probe target operation plugin_id package_name)
         anomaly_add_plugin(${target} NO_RELEASE
             SOURCES tools/winsock_trace_probe/plugin.cpp
@@ -1453,9 +1484,7 @@ if(ANOMALY_BUILD_WINSOCK_TRACE_PROBES)
     add_dependencies(anomaly_test_host anomaly_bcrypt_trace)
 endif()
 
-option(ANOMALY_BUILD_BIDKING_OBJECT_CATALOG
-    "Build the read-only NTE BidKing UObject catalog package" ON)
-if(ANOMALY_BUILD_BIDKING_OBJECT_CATALOG)
+if(ANOMALY_BUILD_DIAGNOSTIC_PROBES)
     anomaly_add_plugin(anomaly_bidking_object_catalog NO_RELEASE
         SOURCES tools/bidking_object_catalog/plugin.cpp
         MANIFEST tools/bidking_object_catalog/manifest.json
@@ -1466,11 +1495,6 @@ if(ANOMALY_BUILD_BIDKING_OBJECT_CATALOG)
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     add_dependencies(anomaly_test_host anomaly_bidking_object_catalog)
 
-endif()
-
-option(ANOMALY_BUILD_BIDKING_ROUND_POOL_PROBE
-    "Build the exact-build NTE BidKing response diagnostic package" ON)
-if(ANOMALY_BUILD_BIDKING_ROUND_POOL_PROBE)
     anomaly_add_plugin(anomaly_bidking_round_pool_probe NO_RELEASE
         SOURCES tools/bidking_round_pool_probe/plugin.cpp
         MANIFEST tools/bidking_round_pool_probe/manifest.json
@@ -1492,7 +1516,7 @@ foreach(runtime_plugin_target IN LISTS ANOMALY_RELEASE_PLUGIN_TARGETS)
         list(APPEND ANOMALY_RELEASE_PE_TARGETS ${runtime_plugin_target})
     endif()
 endforeach()
-if(MSVC)
+if(MSVC AND ANOMALY_BUILD_SYMBOLS)
     # Keep the CodeView record embedded in each published PE independent of the
     # build-machine directory. The full PDB remains in the Symbols component.
     foreach(release_target IN LISTS ANOMALY_RELEASE_PE_TARGETS)
@@ -1738,13 +1762,19 @@ set(ANOMALY_THIRD_PARTY_LICENSE_FILES
     third_party/licenses/nlohmann-json-LICENSE.txt
     third_party/licenses/json-schema-validator-LICENSE.txt
     third_party/licenses/noto-sans-cjk-LICENSE.txt)
-foreach(anomaly_release_component IN ITEMS GameRuntime SDK Tools Symbols)
+set(ANOMALY_RELEASE_COMPONENTS GameRuntime SDK Tools)
+if(ANOMALY_BUILD_SYMBOLS)
+    list(APPEND ANOMALY_RELEASE_COMPONENTS Symbols)
+endif()
+foreach(anomaly_release_component IN LISTS ANOMALY_RELEASE_COMPONENTS)
     install(FILES LICENSE NOTICE
         DESTINATION . COMPONENT ${anomaly_release_component})
     install(FILES ${ANOMALY_THIRD_PARTY_LICENSE_FILES}
         DESTINATION third_party/licenses COMPONENT ${anomaly_release_component})
 endforeach()
-foreach(symbol_target IN LISTS ANOMALY_RELEASE_PE_TARGETS)
-    install(FILES "$<TARGET_PDB_FILE:${symbol_target}>"
-        DESTINATION symbols COMPONENT Symbols)
-endforeach()
+if(ANOMALY_BUILD_SYMBOLS)
+    foreach(symbol_target IN LISTS ANOMALY_RELEASE_PE_TARGETS)
+        install(FILES "$<TARGET_PDB_FILE:${symbol_target}>"
+            DESTINATION symbols COMPONENT Symbols)
+    endforeach()
+endif()

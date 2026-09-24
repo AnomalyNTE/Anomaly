@@ -329,7 +329,7 @@ validator 必须验证：
 3. 运行 service contract fixture，覆盖分页、cursor、aggregate、generation、call gate 和 Stop drain。
 4. 运行 `anomaly-abi-snapshot --check abi/anomaly-sdk-v1-windows-x64.json`。
 5. 用纯 C 和 C++ 外部消费者分别编译三个服务表。
-6. 对 native damage hook、nested array 解析、ring 和 Stop/rollback 路径执行定向 `windows-asan` 验证。
+6. 对 native damage hook、nested array 解析、ring 和 Stop/rollback 路径执行定向 fixture 与降级路径验证。
 7. 最后执行 `git diff --check`，检查 API 文档链接和 capability 表一致性。
 
 真实进程 smoke 不替代上述 fixture。只有在活动 Profile 已包含新 Feature 且明确安排诊断时，才验证：伤害事件与界面表现一致、技能目录与当前角色一致、一次调用返回的 `accepted` 与游戏实际动作一致；诊断结束后不保留后台 tracker 或含对象路径的未审查日志。

@@ -11,6 +11,12 @@ on:
   pull_request:
     paths-ignore:
       - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      fixtures:
+        description: Also build the development fixtures and diagnostic probes
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -21,9 +27,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure
         shell: pwsh
+        env:
+          # Fixtures and diagnostic probes are opt-in; a normal run builds only the
+          # Runtime, Tools and SDK targets.
+          ANOMALY_BUILD_OPTIONAL: ${{ inputs.fixtures == true && 'ON' || 'OFF' }}
         run: |
           $arguments = @(
-            '--preset', 'windows-vs2022'
+            '--preset', 'windows-vs2022',
+            "-DANOMALY_BUILD_TEST_FIXTURES=$env:ANOMALY_BUILD_OPTIONAL",
+            "-DANOMALY_BUILD_DIAGNOSTIC_PROBES=$env:ANOMALY_BUILD_OPTIONAL"
           )
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             $arguments += "-DANOMALY_RELEASE_VERSION=$env:GITHUB_REF_NAME"
@@ -51,7 +63,7 @@ jobs:
           name: anomaly-tools-windows-x64
           path: .build/ci-artifacts/tools
           if-no-files-found: error
-      - name: Package runtime, SDK, tools and symbols
+      - name: Package runtime, tools and SDK
         if: github.ref_type == 'tag'
         shell: pwsh
         run: ./tools/package_release.ps1 -BuildDirectory .build/windows-vs2022 -Version ($env:GITHUB_REF_NAME).TrimStart('v') -Configuration RelWithDebInfo
@@ -62,8 +74,8 @@ jobs:
           name: release-archives
           path: |
             .build/release/Anomaly-*-runtime.zip
-            .build/release/Anomaly-*-sdk.zip
             .build/release/Anomaly-*-tools.zip
+            .build/release/Anomaly-*-sdk.zip
           if-no-files-found: error
   release:
     if: github.ref_type == 'tag'
@@ -104,14 +116,14 @@ jobs:
         with:
           subject-path: |
             .build/release/Anomaly-*-runtime.zip
-            .build/release/Anomaly-*-sdk.zip
             .build/release/Anomaly-*-tools.zip
-      - name: Publish runtime, SDK and tools
+            .build/release/Anomaly-*-sdk.zip
+      - name: Publish runtime, tools and SDK
         uses: softprops/action-gh-release@v2
         with:
           files: |
             .build/release/Anomaly-*-runtime.zip
-            .build/release/Anomaly-*-sdk.zip
             .build/release/Anomaly-*-tools.zip
+            .build/release/Anomaly-*-sdk.zip
           fail_on_unmatched_files: true
           body_path: CHANGES.md

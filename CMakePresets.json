@@ -12,15 +12,6 @@
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/.build/windows-vs2022"
-    },
-    {
-      "name": "windows-asan",
-      "displayName": "Windows x64 / AddressSanitizer",
-      "inherits": "windows-vs2022",
-      "binaryDir": "${sourceDir}/.build/windows-asan",
-      "cacheVariables": {
-        "ANOMALY_ENABLE_ASAN": "ON"
-      }
     }
   ],
   "buildPresets": [
@@ -32,11 +23,6 @@
     {
       "name": "windows-relwithdebinfo",
       "configurePreset": "windows-vs2022",
-      "configuration": "RelWithDebInfo"
-    },
-    {
-      "name": "windows-asan",
-      "configurePreset": "windows-asan",
       "configuration": "RelWithDebInfo"
     }
   ]

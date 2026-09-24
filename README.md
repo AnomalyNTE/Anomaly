@@ -107,7 +107,7 @@ qq交流群: 1037114140
 .\build.cmd
 ```
 
-`build.cmd` 是唯一受支持构建路径（CMake Preset `windows-vs2022` + `windows-relwithdebinfo`）的薄包装器，配置 → 构建后生成可直接部署的运行包。详见[从源码构建](docs/developer-guide/building.md)。
+`build.cmd` 是唯一受支持构建路径（CMake Preset `windows-vs2022` + `windows-relwithdebinfo`）的薄包装器，配置 → 构建后生成可直接部署的运行包。默认只构建 Runtime、Tools 与 SDK，开发夹具、诊断探针和 PDB 用 `build.cmd fixtures|probes|symbols` 按需开启。详见[从源码构建](docs/developer-guide/building.md)。
 
 ## 📚 文档
 

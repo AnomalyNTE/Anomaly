@@ -313,14 +313,6 @@ template <typename Descriptor, typename IsTerminator, typename NameRva>
         HasPrefix(module_name, L"mfcm");
 }
 
-#if defined(ANOMALY_ENABLE_ASAN)
-[[nodiscard]] bool IsHostSanitizerRuntime(std::wstring_view module_name) noexcept {
-    // MSVC's /fsanitize=address instruments both the host and plugin fixtures
-    // against this process-wide runtime. It is not a package-private DLL.
-    return module_name == L"clang_rt.asan_dynamic-x86_64.dll";
-}
-#endif
-
 [[nodiscard]] std::filesystem::path SystemDirectory() {
     std::array<wchar_t, 32768> buffer{};
     const UINT length = GetSystemDirectoryW(
@@ -504,32 +496,6 @@ private:
                 }
                 continue;
             }
-
-#if defined(ANOMALY_ENABLE_ASAN)
-            if (IsHostSanitizerRuntime(*module_name)) {
-                if (has_private_candidate) {
-                    Add(
-                        PluginNativeDependencyDiagnosticCode::PrivateCrtModule,
-                        image_path,
-                        *module_name,
-                        private_candidate,
-                        {},
-                        "plugin packages must not provide a private AddressSanitizer runtime");
-                    return;
-                }
-                if (FindLoaded(*module_name) == nullptr) {
-                    Add(
-                        PluginNativeDependencyDiagnosticCode::CrtRuntimeUnavailable,
-                        image_path,
-                        *module_name,
-                        {},
-                        {},
-                        "the host AddressSanitizer runtime is not loaded");
-                    return;
-                }
-                continue;
-            }
-#endif
 
             if (has_private_candidate) {
                 if (const LoadedModule* loaded = FindLoaded(*module_name);

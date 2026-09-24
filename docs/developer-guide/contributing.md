@@ -40,7 +40,7 @@ docs(sdk): document the config schema migration flow
 
 ## 构建与验证
 
-主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建预设（AddressSanitizer 用 `windows-asan`）。`build.cmd` 只是 CI 同一命令序列的便捷包装。**禁止**新建临时 NMake / Ninja / `build/` 或按阶段命名的主构建树。命令见[从源码构建](building.md)。
+主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建预设。`build.cmd` 只是 CI 同一命令序列的便捷包装。**禁止**新建临时 NMake / Ninja / `build/` 或按阶段命名的主构建树。命令见[从源码构建](building.md)。
 
 ## 实时目标与数据安全
 
