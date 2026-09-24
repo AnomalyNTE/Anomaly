@@ -221,15 +221,23 @@ typedef struct AnomalyNtePlayerTeleportRequestV1 {
     AnomalyGenerationHandleV1 world; AnomalyGenerationHandleV1 player;
     double position[3];
 } AnomalyNtePlayerTeleportRequestV1;
+typedef struct AnomalyNtePlayerTeleportPreloadRequestV1 {
+    uint32_t struct_size; uint32_t flags;
+    double position[3];
+    uint32_t duration_milliseconds; uint32_t reserved;
+} AnomalyNtePlayerTeleportPreloadRequestV1;
 typedef struct AnomalyNtePlayerTeleportServiceV1 {
     uint32_t struct_size; uint32_t service_version; void* user;
     AnomalyStatusV1 (ANOMALY_CALL *teleport)(void* user,
         const AnomalyNtePlayerTeleportRequestV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *preload)(void* user,
+        const AnomalyNtePlayerTeleportPreloadRequestV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *cancel_preload)(void* user);
 } AnomalyNtePlayerTeleportServiceV1;
 ```
 
 > [!CAUTION]
-> 这是**修改**类服务。`teleport` 仅在 Game 回调域内有效；若 UE 拒绝请求或调用后位置检查未到达目标，返回 `FAILED`。宿主提供 `bSweep=false`、`bTeleport=true`，不暴露 UE 对象指针或 `FHitResult` ABI。`world` 与 `player` 必须来自当前快照，stale handle 会被拒绝。该服务只在其引擎 `ProcessEvent` 签名、ABI / 反射、依赖与 Game-thread gate 同时通过时才发布；**Pawn-vtable fallback 被禁止**。
+> 这是**修改**类服务。`teleport` 仅在 Game 回调域内有效。`flags` 为 `0`（默认）时走**预载模式**：宿主先在目标位置装载框架流式覆盖（默认 2000 ms，若此前已调用 `preload` 则沿用其剩余窗口），再在随后的 Game tick 执行传送并清除覆盖，调用本身返回 `OK`（表示已受理），因此目标位置附近的失效检查不在此路径上；挂起期间该流式覆盖槽位归本次传送所有，其他消费者对 `anomaly.ue5.streaming-source` 的 `set_override` 返回 `CONFLICT`。`flags` 置 `ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE` 时保持旧的同步语义，调用后立即检查位置，未到达目标返回 `FAILED`——**目标区域已经加载时应当选它**，例如相机工具「传送到相机位置」且「场景随相机加载」已开启的情况。`preload` / `cancel_preload` 用于提前（例如传送前）单独申请或取消预载窗口；预载不可用时降级为同步传送而不失败。宿主提供 `bSweep=false`、`bTeleport=true`，不暴露 UE 对象指针或 `FHitResult` ABI。`world` 与 `player` 必须来自当前快照，stale handle 会被拒绝。该服务只在其引擎 `ProcessEvent` 签名、ABI / 反射、依赖与 Game-thread gate 同时通过时才发布；**Pawn-vtable fallback 被禁止**。旧插件可继续只调用 `teleport`，新增字段以 `struct_size` 判定，`service_version` 仍为 1。
 
 ---
 

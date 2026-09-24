@@ -110,6 +110,38 @@ typedef struct AnomalyUe5WorldServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *current)(void* user, AnomalyGenerationHandleV1* handle);
     AnomalyStatusV1 (ANOMALY_CALL *snapshot)(void* user, AnomalyGenerationHandleV1 handle, AnomalyUe5WorldSnapshotV1* snapshot);
 } AnomalyUe5WorldServiceV1;
+
+#define ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID "anomaly.ue5.streaming-source"
+#define ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION 1u
+#define ANOMALY_UE5_STREAMING_SOURCE_DURATION_V1_UNTIL_CLEARED 0u
+// Redirects world streaming: while an override is active the local player controller's
+// streaming source is evaluated at the requested position instead of at the pawn, which
+// makes that area load before anything is moved there. The Host owns the single
+// process-wide streaming-source hook, so any number of consumers share it. Consumers share
+// one override slot, so the most recent request wins until it expires or is cleared.
+typedef enum AnomalyUe5StreamingSourceOverrideFlagsV1 {
+    ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_NONE = 0,
+    // Also redirect the streaming source rotation, as a free camera following the view does.
+    ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION = 1
+} AnomalyUe5StreamingSourceOverrideFlagsV1;
+typedef struct AnomalyUe5StreamingSourceOverrideV1 {
+    uint32_t struct_size; uint32_t flags;
+    double position[3];
+    // Used only with ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION.
+    double rotation[3];
+    // ANOMALY_UE5_STREAMING_SOURCE_DURATION_V1_UNTIL_CLEARED keeps the override until
+    // clear_override. Any other value expires it that many milliseconds after the call,
+    // which bounds the request even when the consumer never clears it.
+    uint32_t duration_milliseconds; uint32_t reserved;
+} AnomalyUe5StreamingSourceOverrideV1;
+typedef struct AnomalyUe5StreamingSourceServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    // Valid only from the Game callback domain. Returns UNAVAILABLE when the active
+    // Profile does not carry a validated streaming source, and INVALID_ARGUMENT when the
+    // position is not finite.
+    AnomalyStatusV1 (ANOMALY_CALL *set_override)(void* user, const AnomalyUe5StreamingSourceOverrideV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *clear_override)(void* user);
+} AnomalyUe5StreamingSourceServiceV1;
 #ifdef __cplusplus
 }
 #endif

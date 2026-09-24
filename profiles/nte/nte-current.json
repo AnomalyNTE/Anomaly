@@ -205,6 +205,7 @@
     "ue5.process-event": ["ue5.ProcessEvent"],
     "ue5.actor-process-event": ["ue5.AActorProcessEvent"],
     "ue5.ahud": ["ue5.ProcessEvent"],
+    "ue5.streaming-source": ["ue5.GWorld", "ue5.GameTick"],
     "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
     "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
     "nte.session": ["ue5.GWorld", "ue5.GameTick"],
@@ -269,7 +270,8 @@
     "nte.pickup",
     "nte.combat",
     "nte.skills",
-    "nte.skill-invocation"
+    "nte.skill-invocation",
+    "ue5.streaming-source"
   ],
   "featureLayoutValidators": {
     "ue5.ftext": ["ue5-ftext-layout-v1"],
@@ -289,7 +291,8 @@
     "nte.pickup": ["nte-pickup-layout-v1"],
     "nte.combat": ["nte-combat-reflection-v1"],
     "nte.skills": ["nte-skills-layout-v1"],
-    "nte.skill-invocation": ["nte-skill-invocation-v1"]
+    "nte.skill-invocation": ["nte-skill-invocation-v1"],
+    "ue5.streaming-source": ["ue5-streaming-source-layout-v1"]
   },
   "featureDependencies": {
     "ue5.ftext": ["ue5.names"],
@@ -327,7 +330,8 @@
     "nte.skills": [
       "nte.player", "ue5.names", "ue5.objects", "ue5.process-event"
     ],
-    "nte.skill-invocation": ["nte.skills", "ue5.process-event"]
+    "nte.skill-invocation": ["nte.skills", "ue5.process-event"],
+    "ue5.streaming-source": ["nte.player"]
   },
   "layout": {
     "world.gameInstance": 560,
@@ -348,6 +352,7 @@
     "controller.playerState": 720,
     "playerState.roleName": 1120,
     "controller.cameraManager": 896,
+    "controller.streamingSourceVtableOffset": 3168,
     "actor.rootComponent": 456,
     "object.internalIndex": 12,
     "object.class": 16,

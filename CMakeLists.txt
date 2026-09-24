@@ -409,6 +409,7 @@ add_library(anomaly_adapter_services STATIC
     src/game/ue5/ue5_nte_adapter.cpp
     src/game/nte/nte_navigation_input_policy.cpp
     src/game/ue5/game_tick_hook.cpp
+    src/game/ue5/ue5_streaming_source_override.cpp
     src/game/ue5/ue5_outbound_bit_count_probe.cpp)
 target_include_directories(anomaly_adapter_services PUBLIC include)
 target_compile_definitions(

@@ -2,6 +2,7 @@
 #include "anomaly/nte_damage_capture.hpp"
 #include "anomaly/nte_monster_names.hpp"
 #include "anomaly/ue5_ftext.hpp"
+#include "anomaly/ue5_streaming_source_override.hpp"
 #include "anomaly/thread_local_value.hpp"
 
 #include <algorithm>
@@ -1150,6 +1151,21 @@ struct Ue5NteAdapter::State {
     std::uintptr_t player_pawn{};
     std::uintptr_t player_controller{};
     std::uintptr_t player_root{};
+    // Default teleport mode parks the validated mutation until the destination finished
+    // streaming. The parked request keeps the handles it was validated against, so the
+    // completing tick re-validates them exactly like an immediate call does.
+    struct ParkedTeleport {
+        std::array<double, 3> target{};
+        AnomalyGenerationHandleV1 world{};
+        AnomalyGenerationHandleV1 player{};
+        std::chrono::steady_clock::time_point deadline{};
+        bool queued{};
+    };
+
+    // Framework-owned streaming override shared by every consumer of
+    // anomaly.ue5.streaming-source and by the teleport preload.
+    std::unique_ptr<Ue5StreamingSourceOverride> streaming_source_override;
+    ParkedTeleport parked_teleport;
     std::uint64_t player_generation{};
     std::uint64_t player_attempt_sequence{};
     std::uint64_t player_sample_sequence{};
@@ -1689,6 +1705,23 @@ struct Ue5NteAdapter::State {
             combat_skill_discovery.gameplay_ability_class != 0;
     }
 
+    // The streaming source is what the world streams around, so redirecting it is how a
+    // destination is loaded before anything is moved there. The framework owns the single
+    // hook; plugins only consume the published override service.
+    [[nodiscard]] bool Ue5StreamingSourceAvailable() const noexcept {
+        return resolution.FeatureAvailable("ue5.streaming-source") &&
+            resolution.FeatureAvailable("nte.player") &&
+            LayoutKeysAvailable(profile, {
+                "world.gameInstance",
+                "gameInstance.localPlayers",
+                "localPlayer.controller",
+                "controller.streamingSourceVtableOffset"}) &&
+            FeatureDeclaresDependency(
+                profile, "ue5.streaming-source", "nte.player") &&
+            FeatureDeclaresLayoutValidator(
+                profile, "ue5.streaming-source", "ue5-streaming-source-layout-v1");
+    }
+
     [[nodiscard]] bool NtePlayerTeleportAvailable() const noexcept {
         const auto* const process_event = resolution.FindSymbol("ue5.ProcessEvent");
         return static_cast<bool>(process_event_invoker) &&
@@ -1979,6 +2012,7 @@ struct Ue5NteAdapter::State {
             return resolution.FeatureAvailable("nte.player") &&
                 NtePlayerTeleportAvailable();
         }
+        if (feature == "ue5.streaming-source") return Ue5StreamingSourceAvailable();
         if (feature == "nte.map-landmarks") return NteMapLandmarksAvailable();
         if (feature == "nte.navigation") return NteNavigationAvailable();
         if (feature == "nte.pickup") return NtePickupAvailable();
@@ -2457,6 +2491,8 @@ struct Ue5NteAdapter::State {
         world_name_layout_available = false;
         world_name_readable = false;
         teleport = {};
+        parked_teleport = {};
+        RemoveStreamingOverride();
         map_landmark_binding = {};
         map_landmark_catalog.reset();
         map_landmark_next_refresh_sequence = 0;
@@ -9140,7 +9176,8 @@ struct Ue5NteAdapter::State {
     static AnomalyStatusV1 ANOMALY_CALL Teleport(
         void* user,
         const AnomalyNtePlayerTeleportRequestV1* request) noexcept {
-        if (request == nullptr || request->struct_size < sizeof(*request) || request->flags != 0 ||
+        if (request == nullptr || request->struct_size < sizeof(*request) ||
+            (request->flags & ~ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE) != 0 ||
             !std::ranges::all_of(
                 request->position, [](double value) { return std::isfinite(value); })) {
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
@@ -9153,8 +9190,28 @@ struct Ue5NteAdapter::State {
 
         const std::array<double, 3> target{
             request->position[0], request->position[1], request->position[2]};
-        const AnomalyGenerationHandleV1 world = request->world;
-        const AnomalyGenerationHandleV1 player = request->player;
+        if ((request->flags & ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE) != 0) {
+            return TeleportNow(user, target, request->world, request->player);
+        }
+        AnomalyStatusV1 queued;
+        {
+            std::scoped_lock lock(state.mutex);
+            queued = state.QueueTeleport(target, request->world, request->player);
+        }
+        // No preload available for this Profile: the caller still gets its teleport.
+        return queued.code == ANOMALY_STATUS_V1_OK
+            ? queued
+            : TeleportNow(user, target, request->world, request->player);
+    }
+
+    // The validated mutation itself. Immediate mode runs it inside the caller's frame; the
+    // default mode runs it from the game tick once the destination finished streaming.
+    static AnomalyStatusV1 TeleportNow(
+        void* user,
+        const std::array<double, 3>& target,
+        const AnomalyGenerationHandleV1& world,
+        const AnomalyGenerationHandleV1& player) noexcept {
+        auto& state = *static_cast<State*>(user);
         TeleportBinding binding;
         Ue5NteAdapter::ProcessEventInvoker invoker;
         std::uintptr_t pawn{};
@@ -9248,6 +9305,187 @@ struct Ue5NteAdapter::State {
                 return Status(ANOMALY_STATUS_V1_FAILED, "teleport postcondition failed");
             }
         }
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    // Bounds the default preload window when the caller armed no explicit preload.
+    static constexpr std::uint32_t kTeleportPreloadMilliseconds = 2000;
+
+    [[nodiscard]] AnomalyStatusV1 QueueTeleport(
+        const std::array<double, 3>& target,
+        const AnomalyGenerationHandleV1& world,
+        const AnomalyGenerationHandleV1& player) noexcept {
+        if (!SemanticFeatureRunning("nte.player-teleport")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                          "teleport is unavailable for the active Profile");
+        }
+        const auto now = std::chrono::steady_clock::now();
+        auto window = std::chrono::milliseconds(kTeleportPreloadMilliseconds);
+        if (streaming_source_override != nullptr && streaming_source_override->Active()) {
+            const auto remaining = streaming_source_override->Remaining(now);
+            if (remaining > std::chrono::milliseconds::zero() &&
+                remaining < std::chrono::milliseconds::max()) {
+                window = remaining;
+            }
+        }
+        const auto armed = ArmStreamingOverride(target, {}, false, window);
+        if (armed.code != ANOMALY_STATUS_V1_OK) return armed;
+        parked_teleport = ParkedTeleport{target, world, player, now + window, true};
+        return Status(ANOMALY_STATUS_V1_OK, "teleport queued behind the streamed preload");
+    }
+
+    // Runs on the game tick, outside the tick's own lock, because the mutation re-enters
+    // the semantic state.
+    void CompleteParkedTeleport() noexcept {
+        ParkedTeleport parked;
+        {
+            std::scoped_lock lock(mutex);
+            if (!parked_teleport.queued ||
+                std::chrono::steady_clock::now() < parked_teleport.deadline) {
+                return;
+            }
+            parked = parked_teleport;
+            parked_teleport = {};
+        }
+        static_cast<void>(
+            TeleportNow(this, parked.target, parked.world, parked.player));
+        if (streaming_source_override != nullptr) {
+            streaming_source_override->ClearOverride();
+        }
+    }
+
+    // Arms the framework-owned streaming override at a destination. The controller is
+    // re-read on every call because the instance changes across level transitions while
+    // the streaming-source function itself does not.
+    [[nodiscard]] AnomalyStatusV1 ArmStreamingOverride(
+        const std::array<double, 3>& position,
+        const std::array<double, 3>& rotation,
+        bool redirect_rotation,
+        std::chrono::milliseconds duration) noexcept {
+        if (!std::ranges::all_of(
+                position, [](double value) { return std::isfinite(value); })) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                          "streaming override position is not finite");
+        }
+        if (!SemanticFeatureRunning("ue5.streaming-source")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                          "streaming source is unavailable for the active Profile");
+        }
+        PlayerLocationSample live;
+        if (!ReadCurrentPlayerLocation(live) || live.controller == 0) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "local player chain is unreadable");
+        }
+        std::uintptr_t vtable{};
+        std::uintptr_t streaming_source{};
+        if (!ReadValue(*memory, live.controller, vtable) || vtable == 0 ||
+            !ReadPointerAt(
+                *memory, vtable,
+                Layout(profile, "controller.streamingSourceVtableOffset"),
+                streaming_source) ||
+            streaming_source == 0) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                          "PlayerController streaming source is unavailable");
+        }
+        if (streaming_source_override == nullptr) {
+            streaming_source_override = std::make_unique<Ue5StreamingSourceOverride>();
+        }
+        if (!streaming_source_override->Install(live.controller, streaming_source)) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                          "streaming source hook is unavailable");
+        }
+        streaming_source_override->SetOverride(position, rotation, redirect_rotation, duration);
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    void ExpireStreamingOverride() noexcept {
+        if (streaming_source_override != nullptr) {
+            streaming_source_override->Expire(std::chrono::steady_clock::now());
+        }
+    }
+
+    void RemoveStreamingOverride() noexcept {
+        if (streaming_source_override != nullptr) streaming_source_override->Remove();
+    }
+
+    static AnomalyStatusV1 SetStreamingOverride(
+        void* user, const AnomalyUe5StreamingSourceOverrideV1* request) noexcept {
+        if (request == nullptr || request->struct_size < sizeof(*request) ||
+            (request->flags & ~ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION) != 0) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        const DWORD bound_game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (bound_game_thread == 0 || bound_game_thread != GetCurrentThreadId()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                          "streaming override requires the Game thread");
+        }
+        const std::array<double, 3> position{
+            request->position[0], request->position[1], request->position[2]};
+        const std::array<double, 3> rotation{
+            request->rotation[0], request->rotation[1], request->rotation[2]};
+        const bool redirect_rotation =
+            (request->flags & ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION) != 0;
+        if (redirect_rotation &&
+            !std::ranges::all_of(rotation, [](double value) { return std::isfinite(value); })) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                          "streaming override rotation is not finite");
+        }
+        std::scoped_lock lock(state.mutex);
+        // A parked teleport is already holding this slot for the destination it is about to
+        // move the player to. Letting another consumer overwrite it would stream the wrong
+        // area and drop the player through unloaded terrain, so the teleport keeps the slot
+        // for its window; the other consumer simply retries after the teleport ran.
+        if (state.parked_teleport.queued) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                          "a teleport preload owns the streaming override");
+        }
+        return state.ArmStreamingOverride(
+            position, redirect_rotation ? rotation : std::array<double, 3>{},
+            redirect_rotation, std::chrono::milliseconds(request->duration_milliseconds));
+    }
+
+    static AnomalyStatusV1 ClearStreamingOverride(void* user) noexcept {
+        auto& state = *static_cast<State*>(user);
+        std::scoped_lock lock(state.mutex);
+        if (state.streaming_source_override == nullptr) {
+            return Status(ANOMALY_STATUS_V1_OK);
+        }
+        state.streaming_source_override->ClearOverride();
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    // The teleport preload is the same override, resolved against the teleport feature so a
+    // caller never has to know the controller chain. It moves nothing itself; a failure
+    // degrades the caller to a plain teleport.
+    static AnomalyStatusV1 Preload(
+        void* user, const AnomalyNtePlayerTeleportPreloadRequestV1* request) noexcept {
+        if (request == nullptr || request->struct_size < sizeof(*request) ||
+            request->flags != 0) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        const DWORD bound_game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (bound_game_thread == 0 || bound_game_thread != GetCurrentThreadId()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "preload requires the Game thread");
+        }
+        if (!state.SemanticFeatureRunning("nte.player-teleport")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                          "teleport is unavailable for the active Profile");
+        }
+        const std::array<double, 3> position{
+            request->position[0], request->position[1], request->position[2]};
+        std::scoped_lock lock(state.mutex);
+        return state.ArmStreamingOverride(
+            position, {}, false, std::chrono::milliseconds(request->duration_milliseconds));
+    }
+
+    static AnomalyStatusV1 CancelPreload(void* user) noexcept {
+        auto& state = *static_cast<State*>(user);
+        std::scoped_lock lock(state.mutex);
+        if (state.streaming_source_override == nullptr) {
+            return Status(ANOMALY_STATUS_V1_OK);
+        }
+        state.streaming_source_override->ClearOverride();
         return Status(ANOMALY_STATUS_V1_OK);
     }
 
@@ -11644,7 +11882,11 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
         player_teleport_service = {
             sizeof(AnomalyNtePlayerTeleportServiceV1),
             ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION,
-            this, TeleportThunk};
+            this, TeleportThunk, PreloadThunk, CancelPreloadThunk};
+        streaming_source_service = {
+            sizeof(AnomalyUe5StreamingSourceServiceV1),
+            ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION,
+            this, SetStreamingOverrideThunk, ClearStreamingOverrideThunk};
         map_landmarks_service = {
             sizeof(AnomalyNteMapLandmarksServiceV1),
             ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION,
@@ -11714,6 +11956,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyNteSessionServiceV1 session_service{};
     AnomalyNtePlayerServiceV1 player_service{};
     AnomalyNtePlayerTeleportServiceV1 player_teleport_service{};
+    AnomalyUe5StreamingSourceServiceV1 streaming_source_service{};
     AnomalyNteMapLandmarksServiceV1 map_landmarks_service{};
     AnomalyNteNavigationServiceV1 navigation_service{};
     AnomalyNtePickupServiceV1 pickup_service{};
@@ -11874,6 +12117,30 @@ private:
         const AnomalyNtePlayerTeleportRequestV1* request) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::Teleport(lease.User(), request) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PreloadThunk(
+        void* user,
+        const AnomalyNtePlayerTeleportPreloadRequestV1* request) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::Preload(lease.User(), request) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL CancelPreloadThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::CancelPreload(lease.User()) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL SetStreamingOverrideThunk(
+        void* user,
+        const AnomalyUe5StreamingSourceOverrideV1* request) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::SetStreamingOverride(lease.User(), request) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL ClearStreamingOverrideThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::ClearStreamingOverride(lease.User()) : StoppedStatus();
     }
 
     static std::uint64_t ANOMALY_CALL MapLandmarkSequenceThunk(void* user) noexcept {
@@ -12968,6 +13235,23 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             semantic_lifetime)) {
         return false;
     }
+    if (framework_hook_ready && Ue5StreamingSourceAvailable() &&
+        !PublishIfMissing(
+            ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID,
+            ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION,
+            &endpoint->streaming_source_service,
+            [self, observer_endpoint] {
+                const auto locked = self.lock();
+                const auto observed = observer_endpoint.lock();
+                if (!locked || !observed ||
+                    locked->semantic_endpoint.load(std::memory_order_acquire) != observed) {
+                    return;
+                }
+                locked->player_demand.store(true, std::memory_order_release);
+            },
+            semantic_lifetime)) {
+        return false;
+    }
     if (framework_hook_ready && SemanticFeatureAvailable("nte.map-landmarks") &&
         !PublishIfMissing(
             ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID,
@@ -13427,6 +13711,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->RefreshWorld(sequence);
         state->RefreshObjects();
         state->RefreshTeleportBindingLocked();
+        state->ExpireStreamingOverride();
         state->RefreshMapLandmarksLocked(sequence);
         if (state->navigation_demand.load(std::memory_order_acquire)) {
             static_cast<void>(state->EnsureNavigationInputPolicyLocked());
@@ -13503,6 +13788,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->max_snapshot_cost_micros = (std::max)(
             state->max_snapshot_cost_micros, elapsed_micros);
     }
+    state->CompleteParkedTeleport();
     const auto endpoint = state->callback_endpoint.load(std::memory_order_acquire);
     if (!endpoint) return;
     auto callback = endpoint->Acquire();

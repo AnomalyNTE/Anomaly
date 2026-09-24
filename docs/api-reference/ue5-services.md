@@ -175,5 +175,37 @@ typedef struct AnomalyUe5WorldServiceV1 {
 
 `current` 返回当前 World 的 generation handle；`snapshot` 取该 handle 的 World 快照（含 `change_sequence`）。
 
+---
+
+## `anomaly.ue5.streaming-source`
+
+- **ID**：`"anomaly.ue5.streaming-source"` · **版本** 1 · **capability** `ue5-streaming-source`
+- **依赖**：feature `ue5.streaming-source`（依赖 `nte.player`，validator `ue5-streaming-source-layout-v1`，layout 键 `controller.streamingSourceVtableOffset`）
+
+```c
+#define ANOMALY_UE5_STREAMING_SOURCE_DURATION_V1_UNTIL_CLEARED 0u
+typedef enum AnomalyUe5StreamingSourceOverrideFlagsV1 {
+    ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_NONE = 0,
+    ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION = 1
+} AnomalyUe5StreamingSourceOverrideFlagsV1;
+typedef struct AnomalyUe5StreamingSourceOverrideV1 {
+    uint32_t struct_size; uint32_t flags;
+    double position[3];
+    double rotation[3];
+    uint32_t duration_milliseconds; uint32_t reserved;
+} AnomalyUe5StreamingSourceOverrideV1;
+typedef struct AnomalyUe5StreamingSourceServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *set_override)(void* user,
+        const AnomalyUe5StreamingSourceOverrideV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *clear_override)(void* user);
+} AnomalyUe5StreamingSourceServiceV1;
+```
+
+`set_override` 让局部玩家控制器的流式源在该位置求值，从而在角色移动过去之前把目标区域加载出来；`rotation` 仅在 `ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION` 置位时生效（自由相机跟随视角用）。`duration_milliseconds` 为 `UNTIL_CLEARED` 时一直保留到 `clear_override`，其他值在该毫秒数后自动失效——即使消费者忘记清除也不会长期劫持流式源。两个调用都必须在 Game 回调域内执行，否则返回 `CONFLICT`。
+
+> [!NOTE]
+> 宿主拥有**唯一的**进程级流式源 hook，因此多个插件可以同时消费该服务，但共享同一个覆盖槽位：最后一次请求生效，直到它过期或被清除。唯一的例外是**挂起中的传送预载**——宿主会为该传送保留槽位，此时其他消费者的 `set_override` 返回 `CONFLICT`（传送执行后即可再次申请），以免传送落点的流式源被改写到别处。消费者应在自己不再需要时调用 `clear_override`（例如插件停止、相机停止飞行）。该服务只在其 layout 键、validator 与 `nte.player` 依赖同时通过时才发布；不满足时调用返回 `UNAVAILABLE`，调用方应降级为直接操作（例如同步传送）。`anomaly.nte.player-teleport` 的默认预载模式也构建在该服务之上。
+
 > [!NOTE]
 > 更高层、面向 NTE 玩法的服务（会话事件、玩家 / 相机、实体分页）见 [NTE 服务](nte-services.md)。

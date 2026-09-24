@@ -1172,6 +1172,29 @@
         "snapshot": 24
       }
     },
+    "AnomalyUe5StreamingSourceOverrideV1": {
+      "size": 64,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "flags": 4,
+        "position": 8,
+        "rotation": 32,
+        "duration_milliseconds": 56,
+        "reserved": 60
+      }
+    },
+    "AnomalyUe5StreamingSourceServiceV1": {
+      "size": 32,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "set_override": 16,
+        "clear_override": 24
+      }
+    },
     "AnomalyNteBuildServiceV1": {
       "size": 32,
       "alignment": 8,
@@ -1283,13 +1306,26 @@
       }
     },
     "AnomalyNtePlayerTeleportServiceV1": {
-      "size": 24,
+      "size": 40,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
         "service_version": 4,
         "user": 8,
+        "preload": 24,
+        "cancel_preload": 32,
         "teleport": 16
+      }
+    },
+    "AnomalyNtePlayerTeleportPreloadRequestV1": {
+      "size": 40,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "flags": 4,
+        "position": 8,
+        "duration_milliseconds": 32,
+        "reserved": 36
       }
     },
     "AnomalyNteMapLandmarkSnapshotV1": {
@@ -1792,6 +1828,7 @@
     { "id": "anomaly.ue5.names", "version": 1, "table": "AnomalyUe5NamesServiceV1" },
     { "id": "anomaly.ue5.objects", "version": 1, "table": "AnomalyUe5ObjectsServiceV1" },
     { "id": "anomaly.ue5.world", "version": 1, "table": "AnomalyUe5WorldServiceV1" },
+    { "id": "anomaly.ue5.streaming-source", "version": 1, "table": "AnomalyUe5StreamingSourceServiceV1" },
     { "id": "anomaly.nte.build", "version": 1, "table": "AnomalyNteBuildServiceV1" },
     { "id": "anomaly.nte.session", "version": 1, "table": "AnomalyNteSessionServiceV1" },
     { "id": "anomaly.nte.player", "version": 1, "table": "AnomalyNtePlayerServiceV1" },

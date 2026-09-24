@@ -11,7 +11,7 @@ struct ServiceCapabilityMapping {
     std::string_view capability;
 };
 
-constexpr std::array<std::string_view, 41> kKnownCapabilities{
+constexpr std::array<std::string_view, 42> kKnownCapabilities{
     "commands",
     "configuration",
     "diagnostics",
@@ -50,12 +50,13 @@ constexpr std::array<std::string_view, 41> kKnownCapabilities{
     "ue5-names",
     "ue5-objects",
     "ue5-world",
+    "ue5-streaming-source",
     "ui",
     "json",
     "websocket",
 };
 
-constexpr std::array<ServiceCapabilityMapping, 41> kServiceCapabilities{{
+constexpr std::array<ServiceCapabilityMapping, 42> kServiceCapabilities{{
     {"anomaly.plugin-state", "configuration"},
     {"anomaly.config", "configuration"},
     {"anomaly.storage", "storage"},
@@ -83,6 +84,7 @@ constexpr std::array<ServiceCapabilityMapping, 41> kServiceCapabilities{{
     {"anomaly.ue5.names", "ue5-names"},
     {"anomaly.ue5.objects", "ue5-objects"},
     {"anomaly.ue5.world", "ue5-world"},
+    {"anomaly.ue5.streaming-source", "ue5-streaming-source"},
     {"anomaly.nte.build", "nte-build"},
     {"anomaly.nte.session", "nte-session-snapshot"},
     {"anomaly.nte.metrics", "nte-snapshot-metrics"},

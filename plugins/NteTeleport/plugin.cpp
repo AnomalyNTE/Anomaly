@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -62,6 +64,13 @@ constexpr std::uint32_t kControllerPlayerStateOffset = 0x2D0;
 constexpr std::uint32_t kPlayerStateCurNavigationPathEffectOffset = 0x19C8;
 constexpr std::uint32_t kNavPathActorLastRequestParamOffset = 0x4F0;
 constexpr std::uint32_t kNavPathRequestGoalLocationOffset = 0x28;
+// NTE streams world-partition cells around the local player controller's
+// streaming-source update - the same call the camera tools hook for their free
+// camera. Moving the player before those cells exist drops the character
+// through unloaded terrain, so a teleport hands the destination to the streamer
+// first and only moves the player once the preload window has elapsed.
+constexpr double kPreloadDelayDefault = 2.0;
+constexpr double kPreloadDelayMaximum = 15.0;
 // The host teleport bridge uses bSweep=false and places the actor exactly at
 // the requested position. Coordinates taken from map markers, imported points
 // or tracked goals are often at (or slightly below) the walkable floor, which
@@ -105,6 +114,7 @@ constexpr std::string_view kSettingsSchema = R"json(
     "zLift": {"type": "number"},
     "landingLift": {"type": "number"},
     "sinkRetries": {"type": "integer"},
+    "preloadDelay": {"type": "number"},
     "forwardHotkey": {"type": "integer"},
     "points": {
       "type": "array", "maxItems": 4096,
@@ -150,6 +160,7 @@ struct TeleportSettings {
     double z_lift{100.0};
     double landing_lift{250.0};
     std::uint32_t sink_retries{2};
+    double preload_delay{kPreloadDelayDefault};
     std::uint32_t forward_hotkey{};
     std::vector<ImportedPoint> points;
 };
@@ -188,6 +199,7 @@ struct Context {
     const AnomalySchedulerServiceV1* scheduler{};
     const AnomalyCoreServiceV1* core{};
     const AnomalySignatureServiceV1* signature{};
+    const AnomalyNtePlayerTeleportServiceV1* teleport_service{};
     AnomalyGenerationHandleV1 settings_schema{};
     double target[3]{};
     std::uintptr_t g_world_address{};
@@ -201,6 +213,7 @@ struct Context {
     double z_lift{100.0};
     double landing_lift{250.0};
     std::uint32_t sink_retries{2};
+    double preload_delay{kPreloadDelayDefault};
     std::uint32_t forward_hotkey_key{};
     AnomalyGenerationHandleV1 forward_hotkey{};
     bool capturing_forward{};
@@ -423,6 +436,20 @@ bool SignatureMethodsAvailable(const AnomalySignatureServiceV1* service) noexcep
         service->resolve != nullptr;
 }
 
+bool TeleportServiceMethodsAvailable(
+    const AnomalyNtePlayerTeleportServiceV1* service) noexcept {
+    return service != nullptr &&
+        service->service_version >= ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION &&
+        HasField<AnomalyNtePlayerTeleportServiceV1,
+            decltype(AnomalyNtePlayerTeleportServiceV1::preload)>(
+            service, offsetof(AnomalyNtePlayerTeleportServiceV1, preload)) &&
+        HasField<AnomalyNtePlayerTeleportServiceV1,
+            decltype(AnomalyNtePlayerTeleportServiceV1::cancel_preload)>(
+            service, offsetof(AnomalyNtePlayerTeleportServiceV1, cancel_preload)) &&
+        service->teleport != nullptr && service->preload != nullptr &&
+        service->cancel_preload != nullptr;
+}
+
 bool IsFinitePosition(const double position[3]) noexcept;
 bool IsFinitePosition(const std::array<double, 3>& position) noexcept;
 bool TryReadCurrentPosition(const AnomalyHostApiV1* host, double position[3]);
@@ -518,6 +545,44 @@ bool ReadTrackedTarget(double position[3]) noexcept {
     }
     std::ranges::copy(location, position);
     return true;
+}
+
+// Preload diagnostics go to the core log so a silently skipped preload can be
+// told apart from a working one without a debugger attached.
+void Log(const std::uint32_t level, const std::string& message) noexcept {
+    if (!CoreMethodsAvailable(g_context.core)) return;
+    try {
+        g_context.core->log(g_context.core->user, level,
+                            anomaly::sdk::StringView(message.c_str()));
+    } catch (...) {
+    }
+}
+
+// The framework owns the streaming-source hook and the preload window, so the plugin only
+// asks for a preload through the teleport service. A failure is not fatal: the host still
+// teleports, it just cannot stream the destination in first.
+void ArmTeleportPreload(const PendingTeleport& pending) noexcept {
+    if (g_context.teleport_service == nullptr ||
+        !TeleportServiceMethodsAvailable(g_context.teleport_service)) {
+        return;
+    }
+    double delay{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        delay = g_context.preload_delay;
+    }
+    if (!std::isfinite(delay) || delay <= 0.0) return;
+    AnomalyNtePlayerTeleportPreloadRequestV1 request{sizeof(request)};
+    request.duration_milliseconds = static_cast<std::uint32_t>(delay * 1000.0);
+    for (std::size_t axis = 0; axis != 3; ++axis) {
+        request.position[axis] = pending.position[axis];
+    }
+    const AnomalyStatusV1 status =
+        g_context.teleport_service->preload(g_context.teleport_service->user, &request);
+    if (status.code != ANOMALY_STATUS_V1_OK) {
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "teleport preload unavailable; teleporting without a streamed preload");
+    }
 }
 
 void DrawText(const AnomalyUiServiceV1* ui, const std::string_view text) {
@@ -860,6 +925,8 @@ bool ParseSettingsDocument(const std::string_view document, TeleportSettings& se
             if (!reader.ReadNumber(settings.landing_lift)) return false;
         } else if (key == "sinkRetries") {
             if (!reader.ReadUnsigned(settings.sink_retries)) return false;
+        } else if (key == "preloadDelay") {
+            if (!reader.ReadNumber(settings.preload_delay)) return false;
         } else if (key == "forwardHotkey") {
             if (!reader.ReadUnsigned(settings.forward_hotkey)) return false;
         } else if (key == "points") {
@@ -878,6 +945,8 @@ bool ParseSettingsDocument(const std::string_view document, TeleportSettings& se
         std::isfinite(settings.forward_distance) && std::isfinite(settings.z_lift) &&
         std::isfinite(settings.landing_lift) && settings.landing_lift >= 0.0 &&
         settings.landing_lift <= 2000.0 && settings.sink_retries <= 8U &&
+        std::isfinite(settings.preload_delay) && settings.preload_delay >= 0.0 &&
+        settings.preload_delay <= kPreloadDelayMaximum &&
         settings.forward_hotkey < 256U;
 }
 
@@ -913,6 +982,7 @@ std::string SerializeSettings(const TeleportSettings& settings) {
         ",\"zLift\":" + FormatDouble(settings.z_lift) +
         ",\"landingLift\":" + FormatDouble(settings.landing_lift) +
         ",\"sinkRetries\":" + std::to_string(settings.sink_retries) +
+        ",\"preloadDelay\":" + FormatDouble(settings.preload_delay) +
         ",\"forwardHotkey\":" + std::to_string(settings.forward_hotkey) +
         ",\"points\":[";
     for (std::size_t index = 0; index < settings.points.size(); ++index) {
@@ -965,6 +1035,7 @@ bool LoadSettings() {
         g_context.z_lift = settings.z_lift;
         g_context.landing_lift = settings.landing_lift;
         g_context.sink_retries = settings.sink_retries;
+        g_context.preload_delay = settings.preload_delay;
         g_context.forward_hotkey_key = settings.forward_hotkey;
         g_context.settings_dirty = false;
         return true;
@@ -984,6 +1055,7 @@ bool SaveSettings() {
         settings.z_lift = g_context.z_lift;
         settings.landing_lift = g_context.landing_lift;
         settings.sink_retries = g_context.sink_retries;
+        settings.preload_delay = g_context.preload_delay;
         settings.forward_hotkey = g_context.forward_hotkey_key;
         settings.points = g_context.imported_points;
     }
@@ -1592,7 +1664,16 @@ AnomalyStatusV1 IssueTeleport(
         return teleport ? StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE) : teleport.status;
     }
     AnomalyNtePlayerTeleportRequestV1 request{sizeof(request)};
-    request.flags = 0;
+    // The host streams the destination in by default; a zero preload delay asks for the
+    // previous immediate behaviour instead.
+    double preload_delay{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        preload_delay = g_context.preload_delay;
+    }
+    request.flags = std::isfinite(preload_delay) && preload_delay > 0.0
+        ? 0u
+        : ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE;
     request.world = world;
     request.player = player;
     for (std::size_t axis = 0; axis != 3; ++axis) request.position[axis] = position[axis];
@@ -1886,6 +1967,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
     const auto signature = QueryService<AnomalySignatureServiceV1>(
         host, ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
+    const auto teleport = QueryService<AnomalyNtePlayerTeleportServiceV1>(
+        host, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
+        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
     if (!ui) return ui.status;
     if (!config) return config.status;
     if (!HasUiFunctions(ui.service) || !ConfigMethodsAvailable(config.service)) {
@@ -1905,6 +1989,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.signature = SignatureMethodsAvailable(signature.service)
             ? signature.service
             : nullptr;
+        g_context.teleport_service =
+            TeleportServiceMethodsAvailable(teleport.service) ? teleport.service : nullptr;
         g_context.g_world_address = 0;
         g_context.tracked_target_valid = false;
         g_context.tracked_target_read_requested = false;
@@ -1920,6 +2006,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.z_lift = 100.0;
         g_context.landing_lift = 250.0;
         g_context.sink_retries = 2;
+        g_context.preload_delay = kPreloadDelayDefault;
         g_context.forward_hotkey_key = 0;
         g_context.forward_hotkey = {};
         g_context.capturing_forward = false;
@@ -2004,6 +2091,7 @@ void ANOMALY_CALL Unload(void* context) {
     g_context.scheduler = nullptr;
     g_context.core = nullptr;
     g_context.signature = nullptr;
+    g_context.teleport_service = nullptr;
     g_context.g_world_address = 0;
     g_context.tracked_target_valid = false;
     g_context.tracked_target_read_requested = false;
@@ -2103,7 +2191,12 @@ void ANOMALY_CALL Update(void* context, double) {
         QueueDirectionalTeleport(host, action);
         return;
     }
+
+    // Terrain preload: the destination is handed to the streamer first and the
+    // teleport is parked until the window elapses, so the character lands on
+    // loaded terrain instead of falling through it.
     if (!pending.queued) return;
+    ArmTeleportPreload(pending);
 
     // The host teleport bridge places the actor exactly at the requested
     // position (bSweep=false). Coordinates from map markers, imported points
@@ -2458,6 +2551,7 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
     double z_lift{};
     double landing_lift{};
     std::uint32_t sink_retries{};
+    double preload_delay{};
     {
         std::scoped_lock lock(g_context.mutex);
         capturing_forward = g_context.capturing_forward;
@@ -2466,6 +2560,7 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
         z_lift = g_context.z_lift;
         landing_lift = g_context.landing_lift;
         sink_retries = g_context.sink_retries;
+        preload_delay = g_context.preload_delay;
     }
 
     const std::string forward_name = forward_key == 0
@@ -2501,13 +2596,19 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
         "settings.distance.landing_lift", "Landing lift", "landing-lift");
     const std::string sink_retries_label = g_context.localizer.Label(
         "settings.distance.sink_retries", "Sink retries", "sink-retries");
+    const std::string preload_delay_label = g_context.localizer.Label(
+        "settings.distance.preload_delay", "Preload delay (s)", "preload-delay");
     double sink_retries_input = static_cast<double>(sink_retries);
+    double preload_delay_input = preload_delay;
     options_changed |= ui->input_double(
         ui->user, anomaly::sdk::StringView(landing_lift_label),
         &landing_lift, 0.0, 300.0) != 0;
     options_changed |= ui->input_double(
         ui->user, anomaly::sdk::StringView(sink_retries_label),
         &sink_retries_input, 0.0, 4.0) != 0;
+    options_changed |= ui->input_double(
+        ui->user, anomaly::sdk::StringView(preload_delay_label),
+        &preload_delay_input, 0.0, static_cast<float>(kPreloadDelayMaximum)) != 0;
     {
         std::scoped_lock lock(g_context.mutex);
         if (options_changed) {
@@ -2521,6 +2622,10 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
             if (std::isfinite(sink_retries_input)) {
                 g_context.sink_retries = std::clamp(
                     static_cast<std::uint32_t>(sink_retries_input), 0U, kSinkRetriesMaximum);
+            }
+            if (std::isfinite(preload_delay_input)) {
+                g_context.preload_delay = std::clamp(
+                    preload_delay_input, 0.0, kPreloadDelayMaximum);
             }
             g_context.settings_dirty = true;
         }

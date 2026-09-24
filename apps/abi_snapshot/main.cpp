@@ -1412,6 +1412,30 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyUe5StreamingSourceOverrideV1",
+        sizeof(AnomalyUe5StreamingSourceOverrideV1),
+        alignof(AnomalyUe5StreamingSourceOverrideV1),
+        {{"struct_size", offsetof(AnomalyUe5StreamingSourceOverrideV1, struct_size)},
+         {"flags", offsetof(AnomalyUe5StreamingSourceOverrideV1, flags)},
+         {"position", offsetof(AnomalyUe5StreamingSourceOverrideV1, position)},
+         {"rotation", offsetof(AnomalyUe5StreamingSourceOverrideV1, rotation)},
+         {"duration_milliseconds",
+          offsetof(AnomalyUe5StreamingSourceOverrideV1, duration_milliseconds)},
+         {"reserved", offsetof(AnomalyUe5StreamingSourceOverrideV1, reserved)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyUe5StreamingSourceServiceV1",
+        sizeof(AnomalyUe5StreamingSourceServiceV1),
+        alignof(AnomalyUe5StreamingSourceServiceV1),
+        {{"struct_size", offsetof(AnomalyUe5StreamingSourceServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyUe5StreamingSourceServiceV1, service_version)},
+         {"user", offsetof(AnomalyUe5StreamingSourceServiceV1, user)},
+         {"set_override", offsetof(AnomalyUe5StreamingSourceServiceV1, set_override)},
+         {"clear_override", offsetof(AnomalyUe5StreamingSourceServiceV1, clear_override)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyNteBuildServiceV1",
         sizeof(AnomalyNteBuildServiceV1),
         alignof(AnomalyNteBuildServiceV1),
@@ -1528,8 +1552,22 @@ std::string BuildSnapshot() {
         {{"struct_size", offsetof(AnomalyNtePlayerTeleportServiceV1, struct_size)},
          {"service_version", offsetof(AnomalyNtePlayerTeleportServiceV1, service_version)},
          {"user", offsetof(AnomalyNtePlayerTeleportServiceV1, user)},
+         {"preload", offsetof(AnomalyNtePlayerTeleportServiceV1, preload)},
+         {"cancel_preload", offsetof(AnomalyNtePlayerTeleportServiceV1, cancel_preload)},
          {"teleport",
           offsetof(AnomalyNtePlayerTeleportServiceV1, teleport)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNtePlayerTeleportPreloadRequestV1",
+        sizeof(AnomalyNtePlayerTeleportPreloadRequestV1),
+        alignof(AnomalyNtePlayerTeleportPreloadRequestV1),
+        {{"struct_size", offsetof(AnomalyNtePlayerTeleportPreloadRequestV1, struct_size)},
+         {"flags", offsetof(AnomalyNtePlayerTeleportPreloadRequestV1, flags)},
+         {"position", offsetof(AnomalyNtePlayerTeleportPreloadRequestV1, position)},
+         {"duration_milliseconds",
+          offsetof(AnomalyNtePlayerTeleportPreloadRequestV1, duration_milliseconds)},
+         {"reserved", offsetof(AnomalyNtePlayerTeleportPreloadRequestV1, reserved)}},
         false);
     AppendStruct(
         output,
@@ -2063,6 +2101,9 @@ std::string BuildSnapshot() {
         ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION, "AnomalyUe5ObjectsServiceV1", false);
     AppendService(output, ANOMALY_UE5_WORLD_SERVICE_V1_ID,
         ANOMALY_UE5_WORLD_SERVICE_V1_VERSION, "AnomalyUe5WorldServiceV1", false);
+    AppendService(output, ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID,
+        ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION,
+        "AnomalyUe5StreamingSourceServiceV1", false);
     AppendService(output, ANOMALY_NTE_BUILD_SERVICE_V1_ID,
         ANOMALY_NTE_BUILD_SERVICE_V1_VERSION, "AnomalyNteBuildServiceV1", false);
     AppendService(output, ANOMALY_NTE_SESSION_SERVICE_V1_ID,

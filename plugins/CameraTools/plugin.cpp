@@ -58,7 +58,6 @@ constexpr std::string_view kSettingsSchema = R"json(
 
 using CameraViewPointFn = void(ANOMALY_CALL *)(void *, double *, double *);
 using PlayerInputKeyFn = bool(ANOMALY_CALL *)(void *, const void *);
-using StreamingSourceFn = void(ANOMALY_CALL *)(void *, double *, double *);
 
 struct Context final {
   const AnomalyHostApiV1 *host{};
@@ -74,7 +73,6 @@ struct Context final {
   AnomalyGenerationHandleV1 teleport_hotkey{};
   AnomalyGenerationHandleV1 view_point_hook{};
   AnomalyGenerationHandleV1 input_key_hook{};
-  AnomalyGenerationHandleV1 streaming_source_hook{};
   std::atomic<double> distance{kDefaultDistance};
   std::atomic<float> speed{kDefaultSpeed};
   std::atomic<std::uint32_t> toggle_key{VK_F6};
@@ -86,6 +84,8 @@ struct Context final {
   std::atomic_bool active{};
   std::atomic_bool camera_position_valid{};
   std::atomic_bool streaming_source_follows_camera{};
+  bool streaming_source_armed{};
+  const AnomalyUe5StreamingSourceServiceV1 *streaming_source{};
   std::atomic_bool developer_mode{};
   std::atomic_bool teleport_pending{};
   std::atomic<std::uint32_t> teleport_status{ANOMALY_STATUS_V1_UNAVAILABLE};
@@ -94,15 +94,12 @@ struct Context final {
   std::atomic<std::uint64_t> settings_changed_at{};
   std::uintptr_t view_point_original{};
   std::uintptr_t input_key_original{};
-  std::uintptr_t streaming_source_original{};
   std::uintptr_t g_world_address{};
   std::uintptr_t f_name_pool_address{};
   std::uintptr_t view_point_target{};
   std::uintptr_t input_key_target{};
-  std::uintptr_t streaming_source_target{};
   std::atomic<std::uintptr_t> camera_manager{};
   std::atomic<std::uintptr_t> player_input{};
-  std::atomic<std::uintptr_t> streaming_source_controller{};
   std::array<std::atomic<double>, 3> position{};
   std::array<std::atomic<double>, 3> rotation{};
   std::array<std::atomic<double>, 3> observed_rotation{};
@@ -397,17 +394,57 @@ bool ResolveActivePlayerInput(Context &context,
          input_key == context.input_key_target;
 }
 
-bool ResolveActiveStreamingSource(Context &context,
-                                  std::uintptr_t &controller,
-                                  std::uintptr_t &streaming_source) noexcept {
-  controller = 0;
-  streaming_source = 0;
-  std::uintptr_t vtable{};
-  return ResolveLocalPlayerController(context, controller) &&
-         Read(context, controller, vtable) && vtable != 0 &&
-         ReadPointerAtOffset(context, vtable,
-                             kControllerStreamingSourceVtableOffset,
-                             streaming_source);
+// The framework owns the single streaming-source hook. This plugin only asks for an
+// override while the free camera is flying with "scene loads around free camera" enabled,
+// and gives it back when the camera stops so other consumers can use it.
+bool StreamingSourceMethodsAvailable(
+    const AnomalyUe5StreamingSourceServiceV1 *service) noexcept {
+  return service != nullptr &&
+         service->service_version >= ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION &&
+         service->set_override != nullptr && service->clear_override != nullptr;
+}
+
+void SyncStreamingSourceOverride(Context &context) noexcept {
+  const bool follows =
+      context.enabled.load(std::memory_order_acquire) &&
+      context.active.load(std::memory_order_acquire) &&
+      context.streaming_source_follows_camera.load(std::memory_order_acquire);
+  if (!StreamingSourceMethodsAvailable(context.streaming_source)) {
+    if (context.streaming_source_armed || follows) {
+      context.streaming_source_armed = false;
+      Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+          "streaming override unavailable: the anomaly.ue5.streaming-source service "
+          "is not published for this Profile");
+    }
+    context.streaming_source_armed = false;
+    return;
+  }
+  if (!follows) {
+    if (context.streaming_source_armed) {
+      context.streaming_source_armed = false;
+      static_cast<void>(context.streaming_source->clear_override(
+          context.streaming_source->user));
+    }
+    return;
+  }
+  AnomalyUe5StreamingSourceOverrideV1 request{sizeof(request)};
+  request.flags = ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION;
+  for (std::size_t axis{}; axis != 3; ++axis) {
+    request.position[axis] = context.position[axis].load(std::memory_order_acquire);
+    request.rotation[axis] = context.rotation[axis].load(std::memory_order_acquire);
+  }
+  request.duration_milliseconds =
+      ANOMALY_UE5_STREAMING_SOURCE_DURATION_V1_UNTIL_CLEARED;
+  const auto status = context.streaming_source->set_override(
+      context.streaming_source->user, &request);
+  const bool armed = status.code == ANOMALY_STATUS_V1_OK;
+  if (armed != context.streaming_source_armed) {
+    Log(context, armed ? ANOMALY_CORE_LOG_LEVEL_V1_INFO
+                       : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+        armed ? "streaming override armed at the free camera"
+              : "streaming override rejected by the host");
+  }
+  context.streaming_source_armed = armed;
 }
 
 void RefreshCameraManager(Context &context) noexcept {
@@ -439,22 +476,6 @@ void RefreshPlayerInput(Context &context) noexcept {
   if (previous != player_input) {
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
         "camera tools active EnhancedPlayerInput validated");
-  }
-}
-
-void RefreshStreamingSourceController(Context &context) noexcept {
-  std::uintptr_t controller{};
-  std::uintptr_t streaming_source{};
-  if (!ResolveActiveStreamingSource(context, controller, streaming_source) ||
-      streaming_source != context.streaming_source_target) {
-    context.streaming_source_controller.store(0, std::memory_order_release);
-    return;
-  }
-  const auto previous = context.streaming_source_controller.exchange(
-      controller, std::memory_order_acq_rel);
-  if (previous != controller) {
-    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-        "camera tools active streaming source validated");
   }
 }
 
@@ -975,60 +996,6 @@ void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
   }
 }
 
-void ANOMALY_CALL StreamingSourceDetour(void *object, double *location,
-                                        double *rotation) noexcept {
-  Context *context = g_active.load(std::memory_order_acquire);
-  AnomalyGenerationHandleV1 lease{};
-  bool leased = false;
-  StreamingSourceFn original =
-      context == nullptr
-          ? nullptr
-          : reinterpret_cast<StreamingSourceFn>(
-                context->streaming_source_original);
-  try {
-    if (context != nullptr && context->streaming_source_hook.id != 0 &&
-        HookReady(context->hook)) {
-      leased = context->hook
-                   ->begin_callback(context->hook->user,
-                                    context->streaming_source_hook, &lease)
-                   .code == ANOMALY_STATUS_V1_OK;
-    }
-  } catch (...) {
-  }
-
-  try {
-    if (original != nullptr) {
-      original(object, location, rotation);
-      if (leased && context != nullptr && location != nullptr &&
-          rotation != nullptr &&
-          object == reinterpret_cast<void *>(
-                        context->streaming_source_controller.load(
-                            std::memory_order_acquire)) &&
-          context->enabled.load(std::memory_order_acquire) &&
-          context->active.load(std::memory_order_acquire) &&
-          context->streaming_source_follows_camera.load(
-              std::memory_order_acquire)) {
-        std::array<double, 3> free_camera_location{};
-        std::array<double, 3> free_camera_rotation{};
-        for (std::size_t axis{}; axis != free_camera_location.size(); ++axis) {
-          free_camera_location[axis] =
-              context->position[axis].load(std::memory_order_acquire);
-          free_camera_rotation[axis] =
-              context->rotation[axis].load(std::memory_order_acquire);
-        }
-        for (std::size_t axis{}; axis != free_camera_location.size(); ++axis) {
-          location[axis] = free_camera_location[axis];
-          rotation[axis] = free_camera_rotation[axis];
-        }
-      }
-    }
-  } catch (...) {
-  }
-  if (leased && context != nullptr && HookReady(context->hook)) {
-    static_cast<void>(context->hook->end_callback(context->hook->user, lease));
-  }
-}
-
 bool ANOMALY_CALL PlayerInputKeyDetour(void *object,
                                        const void *parameters) noexcept {
   Context *context = g_active.load(std::memory_order_acquire);
@@ -1140,7 +1107,15 @@ void ProcessTeleport(Context &context) noexcept {
     return;
   }
   AnomalyNtePlayerTeleportRequestV1 request{sizeof(request)};
-  request.flags = 0;
+  // "Scene loads around free camera" means the free camera has been streaming where it flew,
+  // so the destination is loaded: waiting for a preload would only stall the jump. Without
+  // that setting nothing streams ahead of the player and the host's preload is what keeps
+  // the character from landing on unloaded terrain.
+  const bool already_streamed =
+      context.streaming_source_follows_camera.load(std::memory_order_acquire);
+  request.flags = already_streamed
+      ? ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE
+      : 0u;
   request.world = session_snapshot.world;
   request.player = player_snapshot.handle;
   std::ranges::copy(position, request.position);
@@ -1148,7 +1123,14 @@ void ProcessTeleport(Context &context) noexcept {
   context.teleport_status.store(status.code, std::memory_order_release);
   if (status.code != ANOMALY_STATUS_V1_OK) {
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-        "camera tools teleport to camera position failed");
+        already_streamed
+            ? "camera tools teleport to camera position failed (immediate)"
+            : "camera tools teleport to camera position failed (preload)");
+  } else {
+    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+        already_streamed
+            ? "camera tools teleport to camera position: immediate"
+            : "camera tools teleport to camera position: preload queued");
   }
 }
 
@@ -1235,6 +1217,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
                                        ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
   context->hook = Query<AnomalyHookServiceV1>(host, ANOMALY_HOOK_SERVICE_V1_ID,
                                               ANOMALY_HOOK_SERVICE_V1_VERSION);
+  context->streaming_source = Query<AnomalyUe5StreamingSourceServiceV1>(
+      host, ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID,
+      ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION);
   if (!CoreReady(context->core) || !ConfigReady(context->config) ||
       !InputReady(context->input) ||
       !UiReady(context->ui) || !SignatureReady(context->signature) ||
@@ -1278,22 +1263,6 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
   }
   RefreshCameraManager(*context);
   RefreshPlayerInput(*context);
-  std::uintptr_t streaming_source_controller{};
-  std::uintptr_t streaming_source_target{};
-  if (!ResolveActiveStreamingSource(*context, streaming_source_controller,
-                                    streaming_source_target)) {
-    return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                  "PlayerController streaming source is unavailable");
-  }
-  context->streaming_source_target = streaming_source_target;
-  context->streaming_source_controller.store(streaming_source_controller,
-                                             std::memory_order_release);
-  RefreshStreamingSourceController(*context);
-  if (context->streaming_source_controller.load(std::memory_order_acquire) ==
-      0) {
-    return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                  "PlayerController streaming source is unavailable");
-  }
   AnomalyHookRequestV1 view_point_request{sizeof(view_point_request)};
   view_point_request.kind = ANOMALY_HOOK_V1_FUNCTION;
   view_point_request.target = context->view_point_target;
@@ -1333,39 +1302,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
                   "PlayerInput InputKey hook creation failed");
   }
 
-  AnomalyHookRequestV1 streaming_source_request{
-      sizeof(streaming_source_request)};
-  streaming_source_request.kind = ANOMALY_HOOK_V1_FUNCTION;
-  streaming_source_request.target = context->streaming_source_target;
-  streaming_source_request.detour =
-      reinterpret_cast<void *>(&StreamingSourceDetour);
-  streaming_source_request.label =
-      anomaly::sdk::StringView("camera-tools-streaming-source");
-  const auto streaming_source_hook_status = context->hook->create(
-      context->hook->user, &streaming_source_request,
-      &context->streaming_source_original, &context->streaming_source_hook);
-  if (streaming_source_hook_status.code != ANOMALY_STATUS_V1_OK ||
-      context->streaming_source_hook.id == 0 ||
-      context->streaming_source_original == 0) {
-    static_cast<void>(
-        context->hook->release(context->hook->user, context->input_key_hook));
-    static_cast<void>(
-        context->hook->release(context->hook->user, context->view_point_hook));
-    g_active.store(nullptr, std::memory_order_release);
-    context->input_key_hook = {};
-    context->view_point_hook = {};
-    context->streaming_source_hook = {};
-    context->input_key_original = 0;
-    context->view_point_original = 0;
-    context->streaming_source_original = 0;
-    return Status(ANOMALY_STATUS_V1_FAILED,
-                  "PlayerController streaming-source hook creation failed");
-  }
   if (!RegisterToggleHotkey(
           *context, context->toggle_key.load(std::memory_order_acquire),
           context->toggle_hotkey)) {
-    static_cast<void>(context->hook->release(context->hook->user,
-                                              context->streaming_source_hook));
     static_cast<void>(
         context->hook->release(context->hook->user, context->input_key_hook));
     static_cast<void>(
@@ -1373,10 +1312,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
     g_active.store(nullptr, std::memory_order_release);
     context->input_key_hook = {};
     context->view_point_hook = {};
-    context->streaming_source_hook = {};
     context->input_key_original = 0;
     context->view_point_original = 0;
-    context->streaming_source_original = 0;
     return Status(ANOMALY_STATUS_V1_FAILED,
                   "free camera hotkey registration failed");
   }
@@ -1384,8 +1321,6 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
           *context, context->teleport_key.load(std::memory_order_acquire),
           context->teleport_hotkey)) {
     ReleaseToggleHotkey(*context);
-    static_cast<void>(context->hook->release(context->hook->user,
-                                              context->streaming_source_hook));
     static_cast<void>(
         context->hook->release(context->hook->user, context->input_key_hook));
     static_cast<void>(
@@ -1393,10 +1328,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
     g_active.store(nullptr, std::memory_order_release);
     context->input_key_hook = {};
     context->view_point_hook = {};
-    context->streaming_source_hook = {};
     context->input_key_original = 0;
     context->view_point_original = 0;
-    context->streaming_source_original = 0;
     return Status(ANOMALY_STATUS_V1_FAILED,
                   "camera teleport hotkey registration failed");
   }
@@ -1418,17 +1351,13 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   context->developer_mode.store(false, std::memory_order_release);
   ReleaseToggleHotkey(*context);
   ReleaseTeleportHotkey(*context);
-  AnomalyStatusV1 result = anomaly::sdk::Ok();
-  if (context->streaming_source_hook.id != 0 && HookReady(context->hook)) {
-    result = context->hook->release(context->hook->user,
-                                    context->streaming_source_hook);
-    if (result.code != ANOMALY_STATUS_V1_OK &&
-        result.code != ANOMALY_STATUS_V1_NOT_FOUND) {
-      return result;
-    }
-    context->streaming_source_hook = {};
-    result = anomaly::sdk::Ok();
+  if (context->streaming_source_armed &&
+      StreamingSourceMethodsAvailable(context->streaming_source)) {
+    context->streaming_source_armed = false;
+    static_cast<void>(context->streaming_source->clear_override(
+        context->streaming_source->user));
   }
+  AnomalyStatusV1 result = anomaly::sdk::Ok();
   if (context->input_key_hook.id != 0 && HookReady(context->hook)) {
     result =
         context->hook->release(context->hook->user, context->input_key_hook);
@@ -1454,10 +1383,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
       expected, nullptr, std::memory_order_acq_rel));
   context->input_key_original = 0;
   context->view_point_original = 0;
-  context->streaming_source_original = 0;
   context->camera_manager.store(0, std::memory_order_release);
   context->player_input.store(0, std::memory_order_release);
-  context->streaming_source_controller.store(0, std::memory_order_release);
   if (context->settings_revision.load(std::memory_order_acquire) !=
           context->persisted_settings_revision.load(
               std::memory_order_acquire) &&
@@ -1485,7 +1412,7 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
   try {
     RefreshCameraManager(*context);
     RefreshPlayerInput(*context);
-    RefreshStreamingSourceController(*context);
+    SyncStreamingSourceOverride(*context);
     UpdateFreeCamera(*context, delta_seconds);
     context->developer_mode.store(DeveloperModeEnabled(context->ui),
                                   std::memory_order_release);
@@ -1505,8 +1432,7 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
   } catch (...) {
     context->camera_manager.store(0, std::memory_order_release);
     context->camera_position_valid.store(false, std::memory_order_release);
-    context->streaming_source_controller.store(0, std::memory_order_release);
-  }
+    }
 }
 
 void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {

@@ -158,17 +158,41 @@ typedef struct AnomalyNtePlayerServiceV1 {
 // bSweep=false and bTeleport=true; it does not expose UE object pointers or an FHitResult ABI to
 // plugins. world and player must come from current snapshots, and stale handles are rejected
 // rather than resolving to a later object identity.
+//
+// By default (flags 0) the Host streams the destination in before moving the player, because moving
+// into terrain that has not loaded drops the player through the world. That completes on a later
+// Game tick: the call reports OK once the preload was accepted, and the post-call location check
+// happens on the completing tick instead of before this call returns. A Host that cannot preload
+// degrades to the immediate behaviour. Callers that need the previous synchronous semantics pass
+// ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE.
+#define ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE 1u
 typedef struct AnomalyNtePlayerTeleportRequestV1 {
     uint32_t struct_size; uint32_t flags;
     AnomalyGenerationHandleV1 world; AnomalyGenerationHandleV1 player;
     double position[3];
 } AnomalyNtePlayerTeleportRequestV1;
+typedef struct AnomalyNtePlayerTeleportPreloadRequestV1 {
+    uint32_t struct_size; uint32_t flags;
+    double position[3];
+    // See ANOMALY_UE5_STREAMING_SOURCE_DURATION_V1_UNTIL_CLEARED: zero keeps the
+    // preload window open until cancel_preload, any other value expires it that many
+    // milliseconds after the call.
+    uint32_t duration_milliseconds; uint32_t reserved;
+} AnomalyNtePlayerTeleportPreloadRequestV1;
 typedef struct AnomalyNtePlayerTeleportServiceV1 {
     uint32_t struct_size; uint32_t service_version; void* user;
     // Valid only from the Game callback domain. It returns FAILED if UE rejects the request or
     // the post-call location check does not reach the requested position.
     AnomalyStatusV1 (ANOMALY_CALL *teleport)(void* user,
         const AnomalyNtePlayerTeleportRequestV1* request);
+    // Present only when struct_size covers them; callers must check struct_size before use.
+    // preload asks the Host to stream the destination in before the teleport instead of
+    // teleporting into unloaded terrain, and does not move anything itself. The Host resolves
+    // the local player controller and validates the position, so a failure degrades to a plain
+    // teleport. cancel_preload ends the window early and is idempotent.
+    AnomalyStatusV1 (ANOMALY_CALL *preload)(void* user,
+        const AnomalyNtePlayerTeleportPreloadRequestV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *cancel_preload)(void* user);
 } AnomalyNtePlayerTeleportServiceV1;
 
 // Enumerates the active map's transferable landmarks and executes the game's map-icon transfer

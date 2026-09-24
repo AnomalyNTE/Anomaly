@@ -320,6 +320,47 @@ bool ReadNtePlayerChain(
     return true;
 }
 
+// The streaming source is the vtable entry the world streams around. A wrong offset
+// cannot be told apart from a valid one by its value alone, so the chain is walked and
+// the slot is required to hold a real pointer.
+FeatureValidationResult ValidateUe5StreamingSource(
+    const BuildProfile& profile,
+    const ProfileResolutionSnapshot& snapshot,
+    const SymbolMemory& memory) {
+    NtePlayerChain chain;
+    bool complete{};
+    std::string error;
+    if (!ReadNtePlayerChain(profile, snapshot, memory, chain, complete, error)) {
+        return FeatureFailure(std::move(error));
+    }
+    if (chain.controller == 0) {
+        return FeatureFailure("local player controller is unavailable");
+    }
+    std::uint64_t offset{};
+    if (!SemanticLayoutValue(
+            profile, "controller.streamingSourceVtableOffset", offset, error)) {
+        return FeatureFailure(std::move(error));
+    }
+    if (offset == 0 || offset % sizeof(std::uintptr_t) != 0 || offset > 0x4000) {
+        return FeatureFailure("controller streaming source offset is out of range");
+    }
+    std::uintptr_t vtable{};
+    if (!ReadAt(memory, chain.controller, 0, vtable, "controller vtable", error)) {
+        return FeatureFailure(std::move(error));
+    }
+    if (vtable == 0) return FeatureFailure("controller vtable is null");
+    std::uintptr_t streaming_source{};
+    if (!ReadAt(
+            memory, vtable, offset, streaming_source, "controller streaming source",
+            error)) {
+        return FeatureFailure(std::move(error));
+    }
+    if (streaming_source == 0) {
+        return FeatureFailure("controller streaming source is null");
+    }
+    return FeatureValidationResult{true, {}};
+}
+
 FeatureValidationResult ValidateNtePlayerLayout(
     const BuildProfile& profile,
     const ProfileResolutionSnapshot& snapshot,
@@ -1520,6 +1561,13 @@ FeatureLayoutValidatorRegistry::FeatureLayoutValidatorRegistry() {
         const ProfileResolutionSnapshot& snapshot,
         const SymbolMemory& memory) {
         return ValidateUe5AhudReflection(profile, snapshot, memory);
+    });
+    Register("ue5-streaming-source-layout-v1", [](
+        const BuildProfile& profile,
+        std::string_view,
+        const ProfileResolutionSnapshot& snapshot,
+        const SymbolMemory& memory) {
+        return ValidateUe5StreamingSource(profile, snapshot, memory);
     });
 }
 
