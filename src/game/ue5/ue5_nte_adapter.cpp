@@ -1160,6 +1160,10 @@ struct Ue5NteAdapter::State {
         AnomalyGenerationHandleV1 player{};
         std::chrono::steady_clock::time_point deadline{};
         bool queued{};
+        // Where the player stood when the preload started. Redirecting the streaming source to
+        // the destination unloads the ground under the player, so the parked window pins them
+        // here instead of letting them fall through the world before the teleport runs.
+        std::array<double, 3> anchor{};
     };
 
     // Framework-owned streaming override shared by every consumer of
@@ -9330,8 +9334,32 @@ struct Ue5NteAdapter::State {
         }
         const auto armed = ArmStreamingOverride(target, {}, false, window);
         if (armed.code != ANOMALY_STATUS_V1_OK) return armed;
-        parked_teleport = ParkedTeleport{target, world, player, now + window, true};
+        PlayerLocationSample origin;
+        if (!ReadCurrentPlayerLocation(origin)) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "local player chain is unreadable");
+        }
+        parked_teleport = ParkedTeleport{target, world, player, now + window, true, origin.position};
         return Status(ANOMALY_STATUS_V1_OK, "teleport queued behind the streamed preload");
+    }
+
+    // Keeps the player at the position they held when the preload started. The streaming
+    // override moves the only streaming source to the destination, so the cells around the
+    // player unload and the character drops through the missing ground during the window.
+    void PinParkedPlayer() noexcept {
+        ParkedTeleport parked;
+        {
+            std::scoped_lock lock(mutex);
+            if (!parked_teleport.queued) return;
+            parked = parked_teleport;
+        }
+        PlayerLocationSample live;
+        if (!ReadCurrentPlayerLocation(live)) return;
+        constexpr double kPinTolerance = 10.0;
+        for (std::size_t axis{}; axis != parked.anchor.size(); ++axis) {
+            if (std::fabs(live.position[axis] - parked.anchor[axis]) <= kPinTolerance) continue;
+            static_cast<void>(TeleportNow(this, parked.anchor, parked.world, parked.player));
+            return;
+        }
     }
 
     // Runs on the game tick, outside the tick's own lock, because the mutation re-enters
@@ -13788,6 +13816,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->max_snapshot_cost_micros = (std::max)(
             state->max_snapshot_cost_micros, elapsed_micros);
     }
+    state->PinParkedPlayer();
     state->CompleteParkedTeleport();
     const auto endpoint = state->callback_endpoint.load(std::memory_order_acquire);
     if (!endpoint) return;

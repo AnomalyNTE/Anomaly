@@ -1649,6 +1649,14 @@ void ScheduleImportFile(Context& context) {
     }
 }
 
+// The host streams a preload-mode destination before it moves the player: flags == 0 asks for
+// that window, ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE for the previous synchronous
+// behaviour. A zero preload delay selects the immediate path.
+bool PreloadModeEnabled() noexcept {
+    std::scoped_lock lock(g_context.mutex);
+    return std::isfinite(g_context.preload_delay) && g_context.preload_delay > 0.0;
+}
+
 AnomalyStatusV1 IssueTeleport(
     const AnomalyHostApiV1* host, const AnomalyGenerationHandleV1 world,
     const AnomalyGenerationHandleV1 player, const double position[3]) {
@@ -1664,14 +1672,7 @@ AnomalyStatusV1 IssueTeleport(
         return teleport ? StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE) : teleport.status;
     }
     AnomalyNtePlayerTeleportRequestV1 request{sizeof(request)};
-    // The host streams the destination in by default; a zero preload delay asks for the
-    // previous immediate behaviour instead.
-    double preload_delay{};
-    {
-        std::scoped_lock lock(g_context.mutex);
-        preload_delay = g_context.preload_delay;
-    }
-    request.flags = std::isfinite(preload_delay) && preload_delay > 0.0
+    request.flags = PreloadModeEnabled()
         ? 0u
         : ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE;
     request.world = world;
@@ -2205,6 +2206,12 @@ void ANOMALY_CALL Update(void* context, double) {
     // the destination Z so the character falls onto the surface, then watch
     // the player for a short window and re-issue with a higher lift if it
     // still sank through geometry.
+    //
+    // A preload-mode teleport streams the destination before the host moves the
+    // player, so it lands on loaded terrain by construction: the lift and the
+    // sink watch stay out of that path and belong to the immediate one, where
+    // the player is dropped onto whatever happens to be loaded.
+    const bool preloaded = PreloadModeEnabled();
     double landing_lift{};
     std::uint32_t sink_retries{};
     {
@@ -2212,17 +2219,27 @@ void ANOMALY_CALL Update(void* context, double) {
         landing_lift = g_context.landing_lift;
         sink_retries = g_context.sink_retries;
     }
+    const bool apply_landing_lift =
+        !preloaded && pending.apply_landing_lift && std::isfinite(landing_lift) &&
+        landing_lift > 0.0;
 
     std::array<double, 3> target{};
     std::ranges::copy(pending.position, target.begin());
-    if (pending.apply_landing_lift && std::isfinite(landing_lift) && landing_lift > 0.0) {
+    if (apply_landing_lift) {
         target[2] += landing_lift;
     }
     const AnomalyStatusV1 status = IssueTeleport(host, pending.world, pending.player, target.data());
     RecordResult(status);
+    char detail[160]{};
+    std::snprintf(
+        detail, sizeof(detail), "teleport %s target=(%.0f, %.0f, %.0f) code=%u",
+        preloaded ? "preload" : "immediate", target[0], target[1], target[2],
+        static_cast<unsigned>(status.code));
+    Log(status.code == ANOMALY_STATUS_V1_OK ? ANOMALY_CORE_LOG_LEVEL_V1_INFO
+                                            : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+        detail);
 
-    if (status.code == ANOMALY_STATUS_V1_OK && pending.apply_landing_lift &&
-        std::isfinite(landing_lift) && landing_lift > 0.0) {
+    if (apply_landing_lift && status.code == ANOMALY_STATUS_V1_OK) {
         std::scoped_lock lock(g_context.mutex);
         g_context.landing = {};
         g_context.landing.active = true;
