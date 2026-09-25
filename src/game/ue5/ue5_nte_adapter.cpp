@@ -6200,6 +6200,114 @@ struct Ue5NteAdapter::State {
         return CopyString(value, destination, size);
     }
 
+    // How far back through the pool a name lookup walks before giving up.
+    static constexpr std::uint32_t kMaximumScannedNameBlocks = 16;
+    // The pool's block table holds this many slots, which UE fixes.
+    static constexpr std::uint32_t kMaximumNameBlocks = 8192;
+
+    // Finds the id a name is registered under by walking the pool's newest entries backwards.
+    // Ids are handed out in registration order, so the id a name carries differs from run to
+    // run and cannot be recorded; a type whose name is known can only be named again by asking
+    // the pool for it. The walk starts at the newest block -- a reflected type is registered
+    // with the content that declares it, so it sits near the newest entries -- and stops after
+    // kMaximumScannedNameBlocks blocks. Without that bound a name that is not in the pool would
+    // walk every name the process ever registered, which is minutes of game-thread time.
+    AnomalyStatusV1 FindNameIdLocked(
+        const std::string_view name, std::uint32_t& name_id) const noexcept {
+        name_id = 0;
+        if (name.empty() || name.size() > 1024) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "name is invalid");
+        }
+        const auto* names = Symbol("ue5.FNamePool");
+        if (names == nullptr || !names->Available()) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+        const auto blocks_offset = Layout(profile, "names.blocksOffset");
+        const auto block_bits = Layout(profile, "names.blockBits", 16);
+        const auto entry_stride = Layout(profile, "names.entryStride", 2);
+        const auto length_shift = Layout(profile, "names.headerLengthShift", 6);
+        if (blocks_offset < 0 || block_bits <= 0 || block_bits >= 31 || entry_stride <= 0 ||
+            length_shift <= 0 || length_shift >= 16) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "name layout is unavailable");
+        }
+        const auto entries_per_block = static_cast<std::uint64_t>(1) << block_bits;
+        const auto block_at = [&](const std::uint32_t block_index, std::uintptr_t& block) {
+            std::int64_t slot_offset{};
+            std::uintptr_t block_slot{};
+            return AddLayoutOffset(
+                       blocks_offset,
+                       static_cast<std::int64_t>(block_index) * sizeof(std::uintptr_t),
+                       slot_offset) &&
+                AddAddress(names->address, slot_offset, block_slot) &&
+                ReadValue(*memory, block_slot, block) && block != 0;
+        };
+        // The newest block is found from the block table itself rather than from the allocator
+        // cursor that precedes it: that cursor read back as zero, which limited the search to
+        // the pool's first block and made every lookup miss. The table is the one the forward
+        // direction reads, so a block found here is known to be the one holding its entries.
+        std::uint32_t newest_block{};
+        bool found_newest = false;
+        for (std::uint32_t block_index = kMaximumNameBlocks; block_index-- > 0;) {
+            std::uintptr_t block{};
+            if (!block_at(block_index, block)) continue;
+            newest_block = block_index;
+            found_newest = true;
+            break;
+        }
+        if (!found_newest) return Status(ANOMALY_STATUS_V1_NOT_FOUND, "the pool holds no blocks");
+        const auto lowest_block = newest_block >= kMaximumScannedNameBlocks
+            ? newest_block - kMaximumScannedNameBlocks + 1
+            : 0U;
+        for (std::uint32_t block_index = newest_block;; --block_index) {
+            std::uintptr_t block{};
+            if (!block_at(block_index, block)) {
+                if (block_index == lowest_block) break;
+                continue;
+            }
+            // Only the newest block may be partly filled, and its used span is the entries that
+            // were written -- found by walking down to the first one that was not, because
+            // entries are handed out in order. Every block before it holds a full span.
+            auto entries = entries_per_block;
+            if (block_index == newest_block) {
+                entries = 0;
+                for (std::uint64_t entry_index = entries_per_block; entry_index-- > 0;) {
+                    std::uintptr_t entry{};
+                    if (!AddAddress(
+                            block, static_cast<std::int64_t>(entry_index * entry_stride), entry)) {
+                        break;
+                    }
+                    std::uint16_t header{};
+                    if (!ReadValue(*memory, entry, header)) break;
+                    if (header != 0) {
+                        entries = entry_index + 1;
+                        break;
+                    }
+                }
+                if (entries == 0) {
+                    if (block_index == lowest_block) break;
+                    continue;
+                }
+            }
+            for (std::uint64_t entry_index = entries; entry_index-- > 0;) {
+                std::uintptr_t entry{};
+                if (!AddAddress(
+                        block, static_cast<std::int64_t>(entry_index * entry_stride), entry)) {
+                    break;
+                }
+                std::uint16_t header{};
+                if (!ReadValue(*memory, entry, header)) break;
+                // The length sits in the header, so an entry that cannot match is skipped
+                // without reading its characters.
+                if (static_cast<std::size_t>(header >> length_shift) != name.size()) continue;
+                std::string value(name.size(), '\0');
+                if (!memory->Read(entry + sizeof(header), value.data(), value.size())) break;
+                if (value != name) continue;
+                name_id = (block_index << block_bits) | static_cast<std::uint32_t>(entry_index);
+                return Status(ANOMALY_STATUS_V1_OK);
+            }
+            if (block_index == lowest_block) break;
+        }
+        return Status(ANOMALY_STATUS_V1_NOT_FOUND, "no entry in the pool spells the name");
+    }
+
     std::string ResolveNameSnapshotLocked(std::uint32_t name_id) const {
         if (name_id == 0) return {};
         std::size_t size{};
@@ -8895,6 +9003,24 @@ struct Ue5NteAdapter::State {
     static AnomalyStatusV1 ANOMALY_CALL ResolveName(
         void* user, std::uint32_t name_id, char* destination, std::size_t* size) noexcept {
         return static_cast<State*>(user)->ResolveNameId(name_id, destination, size);
+    }
+
+    AnomalyStatusV1 FindNameId(const std::string_view name, std::uint32_t& name_id) noexcept {
+        std::scoped_lock lock(mutex);
+        if (!ServiceAvailableForPublication(ANOMALY_UE5_NAMES_SERVICE_V1_ID)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "UE5 names service is unavailable");
+        }
+        return FindNameIdLocked(name, name_id);
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL FindName(
+        void* user, const AnomalyStringViewV1 name, std::uint32_t* name_id) noexcept {
+        if (name_id == nullptr || name.data == nullptr || name.size == 0) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "name is invalid");
+        }
+        *name_id = 0;
+        return static_cast<State*>(user)->FindNameId(
+            std::string_view(name.data, name.size), *name_id);
     }
 
     static AnomalyStatusV1 ANOMALY_CALL ResolveFText(
@@ -12287,7 +12413,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             this, GameThreadIdThunk, TickSequenceThunk, IsGameThreadThunk};
         names_service = {
             sizeof(AnomalyUe5NamesServiceV1), ANOMALY_UE5_NAMES_SERVICE_V1_VERSION,
-            this, ResolveNameThunk, ResolveFTextThunk};
+            this, ResolveNameThunk, ResolveFTextThunk, FindNameThunk};
         objects_service = {
             sizeof(AnomalyUe5ObjectsServiceV1), ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION,
             this, ObjectGenerationThunk, ObjectCountThunk, ObjectSnapshotThunk,
@@ -12444,6 +12570,12 @@ private:
         void* user, std::uint32_t name_id, char* destination, std::size_t* size) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::ResolveName(lease.User(), name_id, destination, size) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL FindNameThunk(
+        void* user, const AnomalyStringViewV1 name, std::uint32_t* name_id) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::FindName(lease.User(), name, name_id) : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL ResolveFTextThunk(

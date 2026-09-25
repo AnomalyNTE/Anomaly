@@ -9,7 +9,9 @@
 #define ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID "anomaly.ue5.process-event"
 #define ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION 1u
 #define ANOMALY_UE5_NAMES_SERVICE_V1_ID "anomaly.ue5.names"
-#define ANOMALY_UE5_NAMES_SERVICE_V1_VERSION 1u
+// Version 2 adds find_utf8, which resolves a name to the id it is registered
+// under. Consumers read it through the struct size they were handed.
+#define ANOMALY_UE5_NAMES_SERVICE_V1_VERSION 2u
 #define ANOMALY_UE5_OBJECTS_SERVICE_V1_ID "anomaly.ue5.objects"
 #define ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION 1u
 #define ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle) ((uint32_t)((handle).id) - 1u)
@@ -90,6 +92,15 @@ typedef struct AnomalyUe5NamesServiceV1 {
     // text. Unsupported history returns NOT_FOUND; no UE text function is called.
     AnomalyStatusV1 (ANOMALY_CALL *resolve_ftext_utf8)(
         void* user, uintptr_t ftext_address, char* destination, size_t* inout_size);
+    // Resolves a UTF-8 name to the id it is registered under in this process. The
+    // id an FName carries is assigned as names are registered, so it differs from
+    // run to run and cannot be recorded; a type whose name is known can only be
+    // named again by asking for it. The pool is searched from its newest entries
+    // backwards, so a name registered late -- which every reflected type is --
+    // is found within the first few blocks. Returns NOT_FOUND when no entry in
+    // the pool spells the name.
+    AnomalyStatusV1 (ANOMALY_CALL *find_utf8)(
+        void* user, AnomalyStringViewV1 name, uint32_t* name_id);
 } AnomalyUe5NamesServiceV1;
 typedef struct AnomalyUe5ObjectSnapshotV1 {
     uint32_t struct_size; uint32_t reserved; AnomalyGenerationHandleV1 handle; uint32_t name_id; uint32_t flags;
