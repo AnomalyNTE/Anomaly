@@ -3,7 +3,7 @@
   "id": "anomaly.builtin.nte-quick-ultimate",
   "name": "Quick Ultimate",
   "description": "Hold Alt+1 through Alt+4 to switch characters and repeatedly send Q until the shortcut is released.",
-  "author": "Anomaly",
+  "author": "Shikari",
   "license": "AGPL-3.0-only",
   "version": "1.0.2",
   "entry": "plugin.dll",
