@@ -1236,6 +1236,27 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CloneEnter/manifest.json
         PACKAGE_NAME CloneEnter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CloneEnter")
+    add_library(anomaly_quick_ultimate_sequence STATIC
+        plugins/QuickUltimate/sequence.cpp)
+    target_include_directories(anomaly_quick_ultimate_sequence PUBLIC
+        plugins/QuickUltimate)
+    target_compile_options(anomaly_quick_ultimate_sequence PRIVATE
+        /W4 /permissive- /EHsc)
+    anomaly_add_plugin(anomaly_builtin_nte_quick_ultimate
+        SOURCES plugins/QuickUltimate/plugin.cpp
+        MANIFEST plugins/QuickUltimate/manifest.json
+        PACKAGE_NAME QuickUltimate
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/QuickUltimate")
+    target_link_libraries(anomaly_builtin_nte_quick_ultimate PRIVATE
+        anomaly_quick_ultimate_sequence user32)
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_quick_ultimate_sequence_fixture
+            plugins/QuickUltimate/tests/sequence_test.cpp)
+        target_compile_options(anomaly_quick_ultimate_sequence_fixture PRIVATE
+            /W4 /permissive- /EHsc)
+        target_link_libraries(anomaly_quick_ultimate_sequence_fixture PRIVATE
+            anomaly_quick_ultimate_sequence)
+    endif()
     # 共享自动战斗：插件是独立 DLL、不能互相调用，所以战斗逻辑放在静态库里由两边链接
     # （同 anomaly_mmd2bip_converter 的模式：一份源码，两个使用方）。
     add_library(anomaly_plugin_combat STATIC
@@ -1274,7 +1295,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             anomaly_builtin_teleport_landmarks_probe
             anomaly_builtin_map_spawn_exporter
             anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-            anomaly_builtin_clone_enter anomaly_builtin_dll_loader)
+            anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
+            anomaly_builtin_dll_loader)
         target_include_directories(${builtin_target} PRIVATE "${CMAKE_SOURCE_DIR}")
         target_compile_definitions(${builtin_target} PRIVATE
             UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1300,6 +1322,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     anomaly_copy_builtin_locales(anomaly_builtin_box_auto BoxAuto)
     anomaly_copy_builtin_locales(anomaly_builtin_combat_box CombatBox)
     anomaly_copy_builtin_locales(anomaly_builtin_clone_enter CloneEnter)
+    anomaly_copy_builtin_locales(anomaly_builtin_nte_quick_ultimate QuickUltimate)
     set_target_properties(anomaly_builtin_nte_position PROPERTIES PDB_NAME NtePosition)
     set_target_properties(anomaly_builtin_nte_teleport PROPERTIES PDB_NAME NteTeleport)
     set_target_properties(anomaly_builtin_nte_navigation PROPERTIES PDB_NAME NteNavmeshDemo)
@@ -1316,6 +1339,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     set_target_properties(anomaly_builtin_box_auto PROPERTIES PDB_NAME BoxAuto)
     set_target_properties(anomaly_builtin_combat_box PROPERTIES PDB_NAME CombatBox)
     set_target_properties(anomaly_builtin_clone_enter PROPERTIES PDB_NAME CloneEnter)
+    set_target_properties(anomaly_builtin_nte_quick_ultimate PROPERTIES PDB_NAME QuickUltimate)
     set_target_properties(anomaly_builtin_dll_loader PROPERTIES PDB_NAME DllLoader)
     if(MSVC)
         target_compile_options(anomaly_builtin_pink_paw_heist_esp PRIVATE /utf-8)
@@ -1332,7 +1356,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_teleport_landmarks_probe
         anomaly_builtin_map_spawn_exporter
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-        anomaly_builtin_clone_enter anomaly_builtin_dll_loader)
+        anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
+        anomaly_builtin_dll_loader)
     if(TARGET anomaly-platform-preview)
         add_dependencies(anomaly-platform-preview
             anomaly_builtin_nte_position anomaly_builtin_nte_teleport
@@ -1342,7 +1367,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
             anomaly_builtin_map_spawn_exporter
             anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-            anomaly_builtin_clone_enter anomaly_builtin_dll_loader)
+            anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
+            anomaly_builtin_dll_loader)
     endif()
 endif()
 
@@ -1387,6 +1413,8 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_wallet_collector WalletCol
 anomaly_stage_platform_preview_plugin(anomaly_builtin_box_auto BoxAuto)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_combat_box CombatBox)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
+anomaly_stage_platform_preview_plugin(
+    anomaly_builtin_nte_quick_ultimate QuickUltimate)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 
 if(TARGET anomaly-platform-preview)

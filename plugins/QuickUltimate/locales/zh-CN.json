@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "快捷大招",
+    "plugin.description": "按住 Alt+1 至 Alt+4 切换到对应角色自动释放极轨终结",
+    "window.title": "快捷大招",
+    "hotkeys.bindings": "固定快捷键：Alt+1 / Alt+2 / Alt+3 / Alt+4",
+    "state.ready": "就绪",
+    "state.switching": "正在切换角色",
+    "state.holding_ultimate": "持续释放中，松开组合键停止",
+    "state.finishing": "正在收尾",
+    "state.cleanup": "正在清理按键状态",
+    "status.waiting": "等待快捷键",
+    "status.running": "已触发角色槽位 {0}",
+    "status.sent": "角色槽位 {0}：切换和终极技能按键已发送",
+    "status.window_unavailable": "前台游戏窗口不可用",
+    "status.send_failed": "游戏窗口拒绝了一条按键消息"
+  }
+}
