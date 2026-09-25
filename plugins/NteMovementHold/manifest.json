@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte.movement-hold-probe",
+  "name": "Movement Hold Probe",
+  "description": "Panel button that toggles the Host player-hold service so the character freeze can be exercised on a live client, reporting the live gravity scale, velocity and movement mode while it is on.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "developer",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.nte.player-hold", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": ["ui", "nte-player-hold", "nte-player-snapshot"]
+}

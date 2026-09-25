@@ -141,12 +141,40 @@ typedef struct AnomalyNteCameraSnapshotV1 {
     double position[3]; double rotation[3];
     float horizontal_fov_degrees; uint32_t reserved;
 } AnomalyNteCameraSnapshotV1;
+// Hold state reported by AnomalyNtePlayerServiceV1::hold_snapshot.
+// HELD is set while the Host is holding the local character. REFUSED is set when the most recent
+// engage request could not take; an idle snapshot reports no live values, because resolving the
+// movement component is a long reflection walk that a per-frame reader must not pay for.
+#define ANOMALY_NTE_PLAYER_HOLD_V1_HELD (1u << 0u)
+#define ANOMALY_NTE_PLAYER_HOLD_V1_REFUSED (1u << 1u)
+typedef struct AnomalyNtePlayerHoldSnapshotV1 {
+    uint32_t struct_size; uint32_t flags; double gravity_scale; double velocity[3];
+    // EMovementMode value read back from the movement component while HELD. The hold is only
+    // effective while the character is out of MOVE_Falling (3), so this is the value that shows
+    // whether the game overwrote the hold's own write.
+    uint32_t movement_mode; uint32_t reserved;
+} AnomalyNtePlayerHoldSnapshotV1;
+
 typedef struct AnomalyNtePlayerServiceV1 {
     uint32_t struct_size; uint32_t service_version; void* user;
     AnomalyStatusV1 (ANOMALY_CALL *snapshot)(void* user, AnomalyNtePlayerSnapshotV1* snapshot);
     AnomalyStatusV1 (ANOMALY_CALL *esp_snapshot)(void* user, AnomalyNtePlayerEspSnapshotV1* snapshot);
     AnomalyStatusV1 (ANOMALY_CALL *camera_snapshot)(void* user,
         AnomalyNteCameraSnapshotV1* snapshot);
+    // Present only when struct_size covers them; callers must check struct_size before use.
+    // A plugin must declare the explicit nte-player-hold capability for these three. They stop
+    // the local character without moving it: engaging zeroes the movement component's gravity
+    // scale, clears velocity and takes the character out of its falling state; releasing clears
+    // velocity again and restores the original gravity scale in a grounded mode, so the engine
+    // re-checks the floor where the character actually is instead of settling a fall that began
+    // somewhere else. engage is idempotent and releasing without an engage is not an error. A
+    // caller inside the Game callback domain gets the outcome directly, any other thread's
+    // request is queued for the Game tick and its outcome appears in the next snapshot. The Host
+    // resolves the local pawn itself and never exposes UE object pointers.
+    AnomalyStatusV1 (ANOMALY_CALL *hold_engage)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *hold_release)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *hold_snapshot)(void* user,
+        AnomalyNtePlayerHoldSnapshotV1* snapshot);
 } AnomalyNtePlayerServiceV1;
 
 // Requests a teleport from a Host that has published the validated engine-owned teleport bridge.
@@ -162,9 +190,12 @@ typedef struct AnomalyNtePlayerServiceV1 {
 // By default (flags 0) the Host streams the destination in before moving the player, because moving
 // into terrain that has not loaded drops the player through the world. That completes on a later
 // Game tick: the call reports OK once the preload was accepted, and the post-call location check
-// happens on the completing tick instead of before this call returns. A Host that cannot preload
-// degrades to the immediate behaviour. Callers that need the previous synchronous semantics pass
-// ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE.
+// happens on the completing tick instead of before this call returns. The Host also holds the
+// character for the whole window and hands it back in a grounded mode at the destination (the same
+// writes anomaly.nte.player-hold exposes), so the arrival is not settled as a single fall spanning
+// the height difference between the two places. A Host that cannot preload, or that cannot
+// establish the hold, degrades to the immediate behaviour. Callers that need the previous
+// synchronous semantics pass ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE.
 #define ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE 1u
 typedef struct AnomalyNtePlayerTeleportRequestV1 {
     uint32_t struct_size; uint32_t flags;
@@ -194,6 +225,24 @@ typedef struct AnomalyNtePlayerTeleportServiceV1 {
         const AnomalyNtePlayerTeleportPreloadRequestV1* request);
     AnomalyStatusV1 (ANOMALY_CALL *cancel_preload)(void* user);
 } AnomalyNtePlayerTeleportServiceV1;
+
+// Holds the local character still by writing its movement component, so a window that unloads
+// the cells under the player cannot drop them through the world. A plugin must declare the
+// explicit nte-player-hold capability. The Host resolves the local pawn through the same
+// reflection chain it uses elsewhere and never exposes UE object pointers: engaging zeroes the
+// gravity scale, clears velocity and takes the character out of its falling state, releasing
+// clears velocity again and restores the original gravity scale in a grounded mode. engage is
+// idempotent and releasing without an engage is not an error. snapshots report the hold state
+// together with the live gravity scale, velocity and movement mode.
+#define ANOMALY_NTE_PLAYER_HOLD_SERVICE_V1_ID "anomaly.nte.player-hold"
+#define ANOMALY_NTE_PLAYER_HOLD_SERVICE_V1_VERSION 1u
+typedef struct AnomalyNtePlayerHoldServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *engage)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *release)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot)(void* user,
+        AnomalyNtePlayerHoldSnapshotV1* snapshot);
+} AnomalyNtePlayerHoldServiceV1;
 
 // Enumerates the active map's transferable landmarks and executes the game's map-icon transfer
 // bridge. A plugin must declare the explicit nte-map-landmarks capability. Landmark snapshots

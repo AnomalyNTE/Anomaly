@@ -2230,11 +2230,12 @@ void ANOMALY_CALL Update(void* context, double) {
     }
     const AnomalyStatusV1 status = IssueTeleport(host, pending.world, pending.player, target.data());
     RecordResult(status);
-    char detail[160]{};
+    char detail[192]{};
     std::snprintf(
-        detail, sizeof(detail), "teleport %s target=(%.0f, %.0f, %.0f) code=%u",
+        detail, sizeof(detail), "teleport %s target=(%.0f, %.0f, %.0f) code=%u note=%s",
         preloaded ? "preload" : "immediate", target[0], target[1], target[2],
-        static_cast<unsigned>(status.code));
+        static_cast<unsigned>(status.code),
+        status.message.data == nullptr ? "" : status.message.data);
     Log(status.code == ANOMALY_STATUS_V1_OK ? ANOMALY_CORE_LOG_LEVEL_V1_INFO
                                             : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
         detail);

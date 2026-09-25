@@ -120,6 +120,21 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 `anomaly.nte.map-landmarks`，不保存签名或偏移，也不自行扫描对象、解析 DataTable 或调用
 UE `ProcessEvent`；关闭开发者模式后不会出现在已安装插件视图中，也不会执行传送请求。
 
+### Movement Hold Probe
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.local.nte.movement-hold-probe` |
+| **作用** | 用一个按钮切换宿主的角色按住（`anomaly.nte.player-hold`），并实时显示重力系数、速度与移动模式，用于在真实客户端上验证传送到达窗口的按住行为。 |
+| **依赖服务** | `anomaly.core`、`anomaly.nte.player-hold`（可选）、`anomaly.nte.player`（可选） |
+| **需要 Profile** | 是；`anomaly.nte.player` 与 `anomaly.nte.player-hold` 由活动 Profile 提供，服务未发布时面板照常显示并提示尚未可用。 |
+
+面板显示 `held` / `refused`、实时重力系数与速度，以及 `mode`（`EMovementMode` 值，`3` 即
+`MOVE_Falling`）。冻结期间 **mode=3 是正常的**：宿主只把重力与速度按住，不改变角色所处的状态
+（游戏每帧都会把自己的模式写回去，改它没有意义）。真正决定传送是否会摔死的是角色**当时站在
+哪里**——宿主现在先传送、再在终点冻结，所以坠落锚点在终点。`refused` 表示宿主拒绝了冻结
+（原因写在宿主日志里），此时角色按没有冻结的方式落地。
+
 ### Map Spawn Exporter
 
 开发者模式下还可以使用 `Map Spawn Exporter`（`anomaly.builtin.map-spawn-exporter`）。点击

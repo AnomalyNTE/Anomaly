@@ -1151,25 +1151,21 @@ struct Ue5NteAdapter::State {
     std::uintptr_t player_pawn{};
     std::uintptr_t player_controller{};
     std::uintptr_t player_root{};
-    // Default teleport mode parks the validated mutation until the destination finished
-    // streaming. The parked request keeps the handles it was validated against, so the
-    // completing tick re-validates them exactly like an immediate call does.
-    struct ParkedTeleport {
-        std::array<double, 3> target{};
-        AnomalyGenerationHandleV1 world{};
-        AnomalyGenerationHandleV1 player{};
-        std::chrono::steady_clock::time_point deadline{};
-        bool queued{};
-        // Where the player stood when the preload started. Redirecting the streaming source to
-        // the destination unloads the ground under the player, so the parked window pins them
-        // here instead of letting them fall through the world before the teleport runs.
-        std::array<double, 3> anchor{};
+    // Default teleport mode moves the character first and then pins it at the destination while
+    // the engine streams the cells in around it. Holding the character at the *origin* and
+    // teleporting it afterwards was measurably fatal: the fall the game settles is anchored where
+    // the character was standing, so the whole origin-to-destination height difference was charged
+    // on landing. Never being anywhere but the destination is what keeps that difference out of it.
+    struct ArrivalHold {
+        std::chrono::steady_clock::time_point started{};
+        std::chrono::milliseconds window{};
+        bool active{};
     };
 
     // Framework-owned streaming override shared by every consumer of
     // anomaly.ue5.streaming-source and by the teleport preload.
     std::unique_ptr<Ue5StreamingSourceOverride> streaming_source_override;
-    ParkedTeleport parked_teleport;
+    ArrivalHold arrival_hold;
     std::uint64_t player_generation{};
     std::uint64_t player_attempt_sequence{};
     std::uint64_t player_sample_sequence{};
@@ -2495,7 +2491,8 @@ struct Ue5NteAdapter::State {
         world_name_layout_available = false;
         world_name_readable = false;
         teleport = {};
-        parked_teleport = {};
+        arrival_hold = {};
+        ReleaseMovementHoldForStopLocked();
         RemoveStreamingOverride();
         map_landmark_binding = {};
         map_landmark_catalog.reset();
@@ -9197,19 +9194,35 @@ struct Ue5NteAdapter::State {
         if ((request->flags & ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE) != 0) {
             return TeleportNow(user, target, request->world, request->player);
         }
-        AnomalyStatusV1 queued;
+        // Default mode: move the character first, then pin it where it landed. The streaming
+        // override points the engine's streaming source at the destination; the arrival hold is
+        // what keeps the character out of ground that is not there yet. Neither needs the other:
+        // a Profile without the streaming source still gets the hold, and the teleport itself is
+        // not conditional on either.
+        AnomalyStatusV1 preload;
         {
             std::scoped_lock lock(state.mutex);
-            queued = state.QueueTeleport(target, request->world, request->player);
+            preload = state.ArmTeleportArrival(target);
         }
-        // No preload available for this Profile: the caller still gets its teleport.
-        return queued.code == ANOMALY_STATUS_V1_OK
-            ? queued
-            : TeleportNow(user, target, request->world, request->player);
+        const AnomalyStatusV1 moved =
+            TeleportNow(user, target, request->world, request->player);
+        if (moved.code != ANOMALY_STATUS_V1_OK) {
+            state.AbortTeleportArrival();
+            return moved;
+        }
+        if (preload.code != ANOMALY_STATUS_V1_OK) {
+            // Why the destination is not being streamed for us rides along as the message so it
+            // reaches the caller's log; the teleport itself already happened.
+            return Status(ANOMALY_STATUS_V1_OK, preload.message.data);
+        }
+        return Status(
+            ANOMALY_STATUS_V1_OK,
+            "teleport arrived; the destination is held until its cells stream in");
     }
 
-    // The validated mutation itself. Immediate mode runs it inside the caller's frame; the
-    // default mode runs it from the game tick once the destination finished streaming.
+    // The validated mutation itself. Immediate mode runs it inside the caller's frame and touches
+    // nothing else; the default mode runs it inside the caller's frame too, and the arrival hold
+    // the caller armed around it is what keeps the character in place afterwards.
     static AnomalyStatusV1 TeleportNow(
         void* user,
         const std::array<double, 3>& target,
@@ -9314,15 +9327,17 @@ struct Ue5NteAdapter::State {
 
     // Bounds the default preload window when the caller armed no explicit preload.
     static constexpr std::uint32_t kTeleportPreloadMilliseconds = 2000;
+    // How much longer the arrival hold may outlive that window while the engine still reports
+    // streaming work for the destination.
+    static constexpr auto kArrivalHoldExtension = std::chrono::seconds(5);
 
-    [[nodiscard]] AnomalyStatusV1 QueueTeleport(
-        const std::array<double, 3>& target,
-        const AnomalyGenerationHandleV1& world,
-        const AnomalyGenerationHandleV1& player) noexcept {
-        if (!SemanticFeatureRunning("nte.player-teleport")) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                          "teleport is unavailable for the active Profile");
-        }
+    // Arms the arrival hold: the destination becomes the streaming source, the character is
+    // pinned where it stands (microseconds before the move, so nothing starts a fall in between)
+    // and the tick keeps it pinned until the window elapses. Returns the *streaming* status --
+    // a refused pin is not an error either, the character then simply lands on whatever the
+    // destination has loaded by the time it arrives.
+    [[nodiscard]] AnomalyStatusV1 ArmTeleportArrival(
+        const std::array<double, 3>& target) noexcept {
         const auto now = std::chrono::steady_clock::now();
         auto window = std::chrono::milliseconds(kTeleportPreloadMilliseconds);
         if (streaming_source_override != nullptr && streaming_source_override->Active()) {
@@ -9333,50 +9348,432 @@ struct Ue5NteAdapter::State {
             }
         }
         const auto armed = ArmStreamingOverride(target, {}, false, window);
-        if (armed.code != ANOMALY_STATUS_V1_OK) return armed;
         PlayerLocationSample origin;
         if (!ReadCurrentPlayerLocation(origin)) {
+            if (armed.code == ANOMALY_STATUS_V1_OK && streaming_source_override != nullptr) {
+                streaming_source_override->ClearOverride();
+            }
             return Status(ANOMALY_STATUS_V1_FAILED, "local player chain is unreadable");
         }
-        parked_teleport = ParkedTeleport{target, world, player, now + window, true, origin.position};
-        return Status(ANOMALY_STATUS_V1_OK, "teleport queued behind the streamed preload");
+        EngageMovementHoldLocked(origin.pawn);
+        arrival_hold = ArrivalHold{now, window, true};
+        return armed;
     }
 
-    // Keeps the player at the position they held when the preload started. The streaming
-    // override moves the only streaming source to the destination, so the cells around the
-    // player unload and the character drops through the missing ground during the window.
-    void PinParkedPlayer() noexcept {
-        ParkedTeleport parked;
+    // The move itself failed, so nothing was moved: the pin and the override have to go with it.
+    void AbortTeleportArrival() noexcept {
         {
             std::scoped_lock lock(mutex);
-            if (!parked_teleport.queued) return;
-            parked = parked_teleport;
+            arrival_hold = {};
+            FinishMovementHoldLocked();
         }
-        PlayerLocationSample live;
-        if (!ReadCurrentPlayerLocation(live)) return;
-        constexpr double kPinTolerance = 10.0;
-        for (std::size_t axis{}; axis != parked.anchor.size(); ++axis) {
-            if (std::fabs(live.position[axis] - parked.anchor[axis]) <= kPinTolerance) continue;
-            static_cast<void>(TeleportNow(this, parked.anchor, parked.world, parked.player));
+        if (streaming_source_override != nullptr) {
+            streaming_source_override->ClearOverride();
+        }
+    }
+
+    // Physical hold for the arrival window. Moving the streaming source to the destination
+    // unloads the cells the character is standing on, so it would drop through the missing ground
+    // before the destination is resident. Two writes keep it where it is, re-asserted every tick
+    // because the game keeps integrating the character during the window: gravity off (nothing
+    // accelerates it) and velocity zeroed (nothing carries it).
+    //
+    // The movement mode is deliberately left alone. Forcing MOVE_Flying was tried and the live
+    // client rewrites its own mode every frame, so the panel showed the mode flapping between 3
+    // and 5 while nothing was actually gained: the hold is worth having because of *where* the
+    // character is, not because of which mode it is in. With the character teleported first, the
+    // fall the game settles on landing starts at the destination, which is the whole point.
+    struct MovementHold {
+        // Identity of the pawn the offsets were resolved against. A pawn replaced mid-window
+        // (death, respawn, level change) leaves the component behind, and writing through a freed
+        // component is a use-after-free, so the hold is dropped instead.
+        std::uintptr_t pawn{};
+        std::uintptr_t component{};
+        std::int32_t gravity_scale_offset{-1};
+        std::int32_t velocity_offset{-1};
+        // Read-only: the snapshot reports the mode the game is running, which is how a probe can
+        // see that the game owns it.
+        std::int32_t movement_mode_offset{-1};
+        float gravity_scale{1.0F};
+        bool active{};
+        // Set when an engage request could not take, so a probe can tell "the Host refused the
+        // hold" apart from "nothing asked for it yet".
+        bool refused{};
+    };
+    MovementHold movement_hold;
+    // A plugin may ask for the hold from a render- or UI-thread callback, so the request is
+    // queued here (1 = engage, 2 = release) and performed by the Game tick, the only thread
+    // allowed to touch the movement component.
+    std::atomic<int> hold_request{0};
+    // Static literal naming the step that stopped the hold from engaging. It rides back to the
+    // caller as the teleport status message, which is the only channel the Game layer has.
+    const char* movement_hold_fault{"preload hold: not attempted"};
+
+    // A Blueprint pawn's own property list is longer than the shared linked-list walk in
+    // `FindReflectedPropertyLocked` follows, and that walk gives up instead of continuing into
+    // the parent classes. On the live NTE client `player_036_zankou_C` exposes 777 properties
+    // and `CharacterMovement` sits at the end of them, so the hold walks the whole super chain
+    // itself: child first, never stopping short, therefore also finding inherited properties
+    // such as `UMovementComponent::Velocity`.
+    [[nodiscard]] bool FindHeldPropertyLocked(
+        std::uintptr_t structure,
+        const std::string_view name,
+        ReflectedPropertyInfo& result) const {
+        constexpr std::size_t kMaximumClassDepth = 64;
+        constexpr std::size_t kMaximumProperties = 4096;
+        for (std::size_t depth{};
+             structure != 0 && depth < kMaximumClassDepth;
+             ++depth) {
+            std::uintptr_t property{};
+            if (!ReadValue(
+                    *memory, structure + Layout(profile, "ustruct.propertyLink"), property)) {
+                return false;
+            }
+            for (std::size_t count{}; property != 0 && count < kMaximumProperties; ++count) {
+                ReflectedPropertyInfo info;
+                if (!ReadReflectedPropertyLocked(property, info)) return false;
+                if (info.name == name && info.offset >= 0) {
+                    result = std::move(info);
+                    return true;
+                }
+                if (info.next == property) return false;
+                property = info.next;
+            }
+            // List exhausted or bound reached: either way the parent class is next, which is
+            // exactly what the shared walk cannot do once its own bound is hit.
+            std::uintptr_t super{};
+            if (!ReadValue(
+                    *memory, structure + Layout(profile, "ustruct.superStruct"), super) ||
+                super == structure) {
+                return false;
+            }
+            structure = super;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool ResolveMovementHoldLocked(const std::uintptr_t pawn) noexcept {
+        std::uintptr_t class_object{};
+        movement_hold_fault = "preload hold: the pawn has no CharacterMovement property";
+        if (!ReadPointerAt(*memory, pawn, Layout(profile, "object.class"), class_object)) {
+            return false;
+        }
+        ReflectedPropertyInfo movement;
+        if (!FindHeldPropertyLocked(class_object, "CharacterMovement", movement)) {
+            return false;
+        }
+        std::uintptr_t component{};
+        movement_hold_fault = "preload hold: the movement component is unreadable";
+        if (!ReadPointerAt(*memory, pawn, movement.offset, component)) return false;
+        std::uintptr_t component_class{};
+        if (!ReadPointerAt(
+                *memory, component, Layout(profile, "object.class"), component_class)) {
+            return false;
+        }
+        ReflectedPropertyInfo gravity_scale;
+        movement_hold_fault =
+            "preload hold: the movement component has no GravityScale float";
+        if (!FindHeldPropertyLocked(component_class, "GravityScale", gravity_scale) ||
+            gravity_scale.element_size != static_cast<std::int32_t>(sizeof(float))) {
+            return false;
+        }
+        ReflectedPropertyInfo velocity;
+        movement_hold_fault = "preload hold: the movement component has no Velocity vector";
+        if (!FindHeldPropertyLocked(component_class, "Velocity", velocity) ||
+            velocity.element_size != static_cast<std::int32_t>(sizeof(double) * 3U)) {
+            return false;
+        }
+        ReflectedPropertyInfo movement_mode;
+        movement_hold_fault = "preload hold: the movement component has no MovementMode byte";
+        if (!FindHeldPropertyLocked(component_class, "MovementMode", movement_mode) ||
+            movement_mode.element_size != 1) {
+            return false;
+        }
+        movement_hold.component = component;
+        movement_hold.gravity_scale_offset = gravity_scale.offset;
+        movement_hold.velocity_offset = velocity.offset;
+        movement_hold.movement_mode_offset = movement_mode.offset;
+        return true;
+    }
+
+    // Pins the character where it stands. Engaging is idempotent; a refusal records why in
+    // `movement_hold_fault` and in the snapshot's REFUSED flag, because a queued request has no
+    // other channel back to its caller.
+    void EngageMovementHoldLocked(const std::uintptr_t pawn) noexcept {
+        movement_hold.refused = false;
+        if (movement_hold.active) return;
+        if (!ResolveMovementHoldLocked(pawn)) {
+            movement_hold.refused = true;
             return;
         }
+        float gravity_scale{};
+        movement_hold_fault = "preload hold: the GravityScale value is unreadable";
+        if (!ReadValue(
+                *memory,
+                movement_hold.component + movement_hold.gravity_scale_offset,
+                gravity_scale) ||
+            !std::isfinite(gravity_scale)) {
+            movement_hold.refused = true;
+            return;
+        }
+        constexpr float kNoGravity = 0.0F;
+        constexpr std::array<double, 3> kNoVelocity{};
+        movement_hold_fault = "preload hold: the GravityScale write was rejected";
+        if (!memory->Write(
+                movement_hold.component + movement_hold.gravity_scale_offset,
+                &kNoGravity, sizeof(kNoGravity))) {
+            movement_hold.refused = true;
+            return;
+        }
+        static_cast<void>(memory->Write(
+            movement_hold.component + movement_hold.velocity_offset,
+            kNoVelocity.data(), sizeof(kNoVelocity)));
+        movement_hold.pawn = pawn;
+        movement_hold.gravity_scale = gravity_scale;
+        movement_hold.active = true;
+        movement_hold_fault = "";
     }
 
-    // Runs on the game tick, outside the tick's own lock, because the mutation re-enters
-    // the semantic state.
-    void CompleteParkedTeleport() noexcept {
-        ParkedTeleport parked;
+    // Hands the character back to gravity where it stands. The velocity is zeroed so the release
+    // starts from rest and the fall that follows is the destination's own.
+    void FinishMovementHoldLocked() noexcept {
+        if (!movement_hold.active) return;
+        constexpr std::array<double, 3> kNoVelocity{};
+        static_cast<void>(memory->Write(
+            movement_hold.component + movement_hold.velocity_offset,
+            kNoVelocity.data(), sizeof(kNoVelocity)));
+        static_cast<void>(memory->Write(
+            movement_hold.component + movement_hold.gravity_scale_offset,
+            &movement_hold.gravity_scale, sizeof(movement_hold.gravity_scale)));
+        movement_hold.active = false;
+    }
+
+    // The game keeps integrating the character while the destination streams in, so the pin is
+    // re-asserted every tick.
+    void ReassertMovementHold() noexcept {
+        std::scoped_lock lock(mutex);
+        const int request = hold_request.exchange(0, std::memory_order_acq_rel);
+        if (request == 2) {
+            FinishMovementHoldLocked();
+            return;
+        }
+        if (request != 1 && !movement_hold.active) return;
+        PlayerLocationSample live;
+        const bool live_readable = ReadCurrentPlayerLocation(live);
+        if (request == 1) {
+            if (live_readable) {
+                EngageMovementHoldLocked(live.pawn);
+            } else {
+                movement_hold.refused = true;
+                movement_hold_fault = "preload hold: the local pawn is unavailable";
+            }
+        }
+        if (!movement_hold.active) return;
+        if (!live_readable || live.pawn != movement_hold.pawn) {
+            movement_hold = MovementHold{};
+            movement_hold_fault = "preload hold: the local pawn changed while held";
+            return;
+        }
+        constexpr float kNoGravity{};
+        constexpr std::array<double, 3> kNoVelocity{};
+        static_cast<void>(memory->Write(
+            movement_hold.component + movement_hold.velocity_offset,
+            kNoVelocity.data(), sizeof(kNoVelocity)));
+        static_cast<void>(memory->Write(
+            movement_hold.component + movement_hold.gravity_scale_offset,
+            &kNoGravity, sizeof(kNoGravity)));
+    }
+
+    // Plugin-facing hold, for a caller that is already on the Game thread. The teleport arrival
+    // uses the same writes; exposing them lets a plugin run the pin on its own while it
+    // investigates the behaviour in a live session, and lets it read back *why* a pin was
+    // refused instead of only that it was.
+    AnomalyStatusV1 EngageMovementHold() noexcept {
+        std::scoped_lock lock(mutex);
+        PlayerLocationSample live;
+        if (!ReadCurrentPlayerLocation(live)) {
+            return Status(
+                ANOMALY_STATUS_V1_UNAVAILABLE, "preload hold: the local pawn is unavailable");
+        }
+        EngageMovementHoldLocked(live.pawn);
+        if (!movement_hold.active) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, movement_hold_fault);
+        }
+        return Status(ANOMALY_STATUS_V1_OK, "movement hold engaged");
+    }
+
+    AnomalyStatusV1 ReleaseMovementHold() noexcept {
+        std::scoped_lock lock(mutex);
+        if (!movement_hold.active) {
+            return Status(ANOMALY_STATUS_V1_OK, "movement hold was not engaged");
+        }
+        FinishMovementHoldLocked();
+        return Status(ANOMALY_STATUS_V1_OK, "movement hold released");
+    }
+
+    // Live view of the hold for a probe plugin. The values are only read while the hold is
+    // engaged: resolving the movement component is a long reflection walk, and this is called
+    // from a render callback, so an idle snapshot must not pay for it. The mode is read-only --
+    // the game owns it, and a probe can watch it change under the hold.
+    AnomalyStatusV1 MovementHoldSnapshot(AnomalyNtePlayerHoldSnapshotV1* snapshot) noexcept {
+        if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot)) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        std::scoped_lock lock(mutex);
+        AnomalyNtePlayerHoldSnapshotV1 value{
+            sizeof(*snapshot), 0, 0.0, {0.0, 0.0, 0.0}, 0, 0};
+        // Reported while no hold is engaged as well: a probe has to tell a refused engage apart
+        // from a hold nobody asked for yet.
+        if (movement_hold.refused) value.flags |= ANOMALY_NTE_PLAYER_HOLD_V1_REFUSED;
+        if (movement_hold.active) {
+            value.flags |= ANOMALY_NTE_PLAYER_HOLD_V1_HELD;
+            float gravity_scale{};
+            std::uint8_t movement_mode{};
+            if (!ReadValue(
+                    *memory,
+                    movement_hold.component + movement_hold.gravity_scale_offset,
+                    gravity_scale)) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "the gravity scale is unreadable");
+            }
+            value.gravity_scale = gravity_scale;
+            if (!ReadValue(
+                    *memory,
+                    movement_hold.component + movement_hold.velocity_offset,
+                    value.velocity)) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "the velocity is unreadable");
+            }
+            if (!ReadValue(
+                    *memory,
+                    movement_hold.component + movement_hold.movement_mode_offset,
+                    movement_mode)) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "the movement mode is unreadable");
+            }
+            value.movement_mode = movement_mode;
+        }
+        *snapshot = value;
+        return Status(ANOMALY_STATUS_V1_OK, "movement hold snapshot");
+    }
+
+    // Session teardown: restore gravity only while the movement component is still the one
+    // that was resolved, so a pointer the game already freed is never written to.
+    void ReleaseMovementHoldForStopLocked() noexcept {
+        if (!movement_hold.active) return;
+        PlayerLocationSample live;
+        std::uintptr_t class_object{};
+        ReflectedPropertyInfo movement;
+        std::uintptr_t component{};
+        const bool resolved =
+            ReadCurrentPlayerLocation(live) &&
+            ReadPointerAt(*memory, live.pawn, Layout(profile, "object.class"), class_object) &&
+            FindReflectedPropertyLocked(class_object, "CharacterMovement", movement, true) &&
+            movement.offset >= 0 &&
+            ReadPointerAt(*memory, live.pawn, movement.offset, component) &&
+            component == movement_hold.component;
+        if (resolved) {
+            // The character is handed back where it is: a stop has no tick left to re-check
+            // anything, so this is the one release that cannot wait for the engine.
+            FinishMovementHoldLocked();
+            return;
+        }
+        movement_hold = {};
+    }
+
+    // The game's own transfer waits for its streaming to finish (the dump carries
+    // OnTeleportStreamingCompleted / WaitForStreamingCompleted); the engine reports that state
+    // through UWorldPartitionSubsystem::IsAllStreamingCompleted. The arrival hold asks that
+    // question when its window elapses, so a destination that is still streaming keeps the
+    // character pinned instead of dropping it onto cells that are not there yet.
+    struct StreamingCompletionBinding {
+        std::uintptr_t subsystem{};
+        std::uintptr_t function{};
+        std::uint16_t parms_size{};
+        std::uint16_t return_value_offset{};
+        bool available{};
+        bool resolved{};
+    } streaming_completion_binding;
+
+    [[nodiscard]] bool ResolveStreamingCompletionLocked() noexcept {
+        if (streaming_completion_binding.resolved) return streaming_completion_binding.available;
+        streaming_completion_binding.resolved = true;
+        try {
+            std::uintptr_t function{};
+            if (!FindExactObjectLocked(
+                    L"/Script/Engine.WorldPartitionSubsystem.IsAllStreamingCompleted", function)) {
+                return false;
+            }
+            std::uint16_t parms_size{};
+            std::uint16_t return_value_offset{};
+            if (!ReadValue(*memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+                !ReadValue(
+                    *memory, function + Layout(profile, "ufunction.returnValueOffset"),
+                    return_value_offset) ||
+                parms_size != sizeof(std::uint8_t) ||
+                return_value_offset != 0 || !process_event_invoker) {
+                return false;
+            }
+            std::uintptr_t subsystem{};
+            for (std::uint32_t index = 0; index < object_registry.count; ++index) {
+                std::uintptr_t candidate{};
+                std::uint32_t serial{};
+                if (!ReadObjectSlot(*memory, object_registry, index, candidate, serial) ||
+                    candidate == 0) {
+                    continue;
+                }
+                std::uintptr_t class_object{};
+                std::string class_name;
+                if (!ReadPointerAt(
+                        *memory, candidate, Layout(profile, "object.class"), class_object) ||
+                    !ReadReflectedObjectNameLocked(class_object, class_name) ||
+                    class_name != "WorldPartitionSubsystem") {
+                    continue;
+                }
+                subsystem = candidate;
+                break;
+            }
+            if (subsystem == 0) return false;
+            streaming_completion_binding.subsystem = subsystem;
+            streaming_completion_binding.function = function;
+            streaming_completion_binding.parms_size = parms_size;
+            streaming_completion_binding.return_value_offset = return_value_offset;
+            streaming_completion_binding.available = true;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    // True while the engine still reports streaming work for the armed destination. An
+    // unresolvable query leaves the fixed window in charge, which is the previous behaviour.
+    [[nodiscard]] bool StreamingCompletionPendingLocked() noexcept {
+        if (!ResolveStreamingCompletionLocked()) return false;
+        std::uint8_t parameters[sizeof(std::uint8_t)]{};
+        if (!InvokeProcessEventGuarded(
+                process_event_invoker, streaming_completion_binding.subsystem,
+                streaming_completion_binding.function, parameters,
+                streaming_completion_binding.parms_size)) {
+            return false;
+        }
+        return parameters[streaming_completion_binding.return_value_offset] == 0;
+    }
+
+    // Ends the arrival hold: the window the caller asked for is the floor, the engine's own
+    // streaming report is the ceiling. A destination that is still streaming when the window
+    // elapses keeps the character pinned a little longer instead of dropping it onto cells that
+    // are not there yet; a query that cannot be resolved leaves the window in charge.
+    void ReleaseArrivalHold() noexcept {
         {
             std::scoped_lock lock(mutex);
-            if (!parked_teleport.queued ||
-                std::chrono::steady_clock::now() < parked_teleport.deadline) {
+            if (!arrival_hold.active) return;
+            const auto now = std::chrono::steady_clock::now();
+            const auto deadline = arrival_hold.started + arrival_hold.window;
+            if (now < deadline ||
+                (now < deadline + kArrivalHoldExtension &&
+                 StreamingCompletionPendingLocked())) {
                 return;
             }
-            parked = parked_teleport;
-            parked_teleport = {};
+            arrival_hold = {};
+            FinishMovementHoldLocked();
         }
-        static_cast<void>(
-            TeleportNow(this, parked.target, parked.world, parked.player));
         if (streaming_source_override != nullptr) {
             streaming_source_override->ClearOverride();
         }
@@ -9459,11 +9856,11 @@ struct Ue5NteAdapter::State {
                           "streaming override rotation is not finite");
         }
         std::scoped_lock lock(state.mutex);
-        // A parked teleport is already holding this slot for the destination it is about to
-        // move the player to. Letting another consumer overwrite it would stream the wrong
-        // area and drop the player through unloaded terrain, so the teleport keeps the slot
-        // for its window; the other consumer simply retries after the teleport ran.
-        if (state.parked_teleport.queued) {
+        // An arrival hold is already keeping this slot on the destination the character was moved
+        // to. Letting another consumer overwrite it would stream the wrong area and drop the
+        // character through unloaded terrain, so the teleport keeps the slot for its window; the
+        // other consumer simply retries after the arrival released it.
+        if (state.arrival_hold.active) {
             return Status(ANOMALY_STATUS_V1_CONFLICT,
                           "a teleport preload owns the streaming override");
         }
@@ -11906,11 +12303,16 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             this, SessionSnapshotThunk, SessionNextEventThunk, SessionLatestEventSequenceThunk};
         player_service = {
             sizeof(AnomalyNtePlayerServiceV1), ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION,
-            this, PlayerSnapshotThunk, PlayerEspSnapshotThunk, CameraSnapshotThunk};
+            this, PlayerSnapshotThunk, PlayerEspSnapshotThunk, CameraSnapshotThunk,
+            PlayerHoldEngageThunk, PlayerHoldReleaseThunk, PlayerHoldSnapshotThunk};
         player_teleport_service = {
             sizeof(AnomalyNtePlayerTeleportServiceV1),
             ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION,
             this, TeleportThunk, PreloadThunk, CancelPreloadThunk};
+        player_hold_service = {
+            sizeof(AnomalyNtePlayerHoldServiceV1),
+            ANOMALY_NTE_PLAYER_HOLD_SERVICE_V1_VERSION,
+            this, PlayerHoldEngageThunk, PlayerHoldReleaseThunk, PlayerHoldSnapshotThunk};
         streaming_source_service = {
             sizeof(AnomalyUe5StreamingSourceServiceV1),
             ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION,
@@ -11984,6 +12386,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyNteSessionServiceV1 session_service{};
     AnomalyNtePlayerServiceV1 player_service{};
     AnomalyNtePlayerTeleportServiceV1 player_teleport_service{};
+    AnomalyNtePlayerHoldServiceV1 player_hold_service{};
     AnomalyUe5StreamingSourceServiceV1 streaming_source_service{};
     AnomalyNteMapLandmarksServiceV1 map_landmarks_service{};
     AnomalyNteNavigationServiceV1 navigation_service{};
@@ -12145,6 +12548,41 @@ private:
         const AnomalyNtePlayerTeleportRequestV1* request) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::Teleport(lease.User(), request) : StoppedStatus();
+    }
+
+    // A caller inside the Game callback domain gets the outcome -- including the step that
+    // refused it -- straight back. A caller on the render/UI thread cannot touch the movement
+    // component, so its request is queued for the Game tick and the outcome shows up in the next
+    // snapshot instead.
+    static AnomalyStatusV1 ANOMALY_CALL PlayerHoldEngageThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        if (!lease) return StoppedStatus();
+        auto& state = *static_cast<State*>(lease.User());
+        const DWORD bound_game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (bound_game_thread != 0 && bound_game_thread == GetCurrentThreadId()) {
+            return state.EngageMovementHold();
+        }
+        state.hold_request.store(1, std::memory_order_release);
+        return Status(ANOMALY_STATUS_V1_OK, "movement hold engage queued");
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PlayerHoldReleaseThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        if (!lease) return StoppedStatus();
+        auto& state = *static_cast<State*>(lease.User());
+        const DWORD bound_game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (bound_game_thread != 0 && bound_game_thread == GetCurrentThreadId()) {
+            return state.ReleaseMovementHold();
+        }
+        state.hold_request.store(2, std::memory_order_release);
+        return Status(ANOMALY_STATUS_V1_OK, "movement hold release queued");
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PlayerHoldSnapshotThunk(
+        void* user, AnomalyNtePlayerHoldSnapshotV1* snapshot) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? static_cast<State*>(lease.User())->MovementHoldSnapshot(snapshot)
+                     : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL PreloadThunk(
@@ -13263,6 +13701,23 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             semantic_lifetime)) {
         return false;
     }
+    if (framework_hook_ready && SemanticFeatureAvailable("nte.player") &&
+        !PublishIfMissing(
+            ANOMALY_NTE_PLAYER_HOLD_SERVICE_V1_ID,
+            ANOMALY_NTE_PLAYER_HOLD_SERVICE_V1_VERSION,
+            &endpoint->player_hold_service,
+            [self, observer_endpoint] {
+                const auto locked = self.lock();
+                const auto observed = observer_endpoint.lock();
+                if (!locked || !observed ||
+                    locked->semantic_endpoint.load(std::memory_order_acquire) != observed) {
+                    return;
+                }
+                locked->player_demand.store(true, std::memory_order_release);
+            },
+            semantic_lifetime)) {
+        return false;
+    }
     if (framework_hook_ready && Ue5StreamingSourceAvailable() &&
         !PublishIfMissing(
             ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID,
@@ -13816,8 +14271,8 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->max_snapshot_cost_micros = (std::max)(
             state->max_snapshot_cost_micros, elapsed_micros);
     }
-    state->PinParkedPlayer();
-    state->CompleteParkedTeleport();
+    state->ReassertMovementHold();
+    state->ReleaseArrivalHold();
     const auto endpoint = state->callback_endpoint.load(std::memory_order_acquire);
     if (!endpoint) return;
     auto callback = endpoint->Acquire();

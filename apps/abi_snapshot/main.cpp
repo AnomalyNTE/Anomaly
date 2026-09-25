@@ -1523,6 +1523,18 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyNtePlayerHoldSnapshotV1",
+        sizeof(AnomalyNtePlayerHoldSnapshotV1),
+        alignof(AnomalyNtePlayerHoldSnapshotV1),
+        {{"struct_size", offsetof(AnomalyNtePlayerHoldSnapshotV1, struct_size)},
+         {"flags", offsetof(AnomalyNtePlayerHoldSnapshotV1, flags)},
+         {"gravity_scale", offsetof(AnomalyNtePlayerHoldSnapshotV1, gravity_scale)},
+         {"velocity", offsetof(AnomalyNtePlayerHoldSnapshotV1, velocity)},
+         {"movement_mode", offsetof(AnomalyNtePlayerHoldSnapshotV1, movement_mode)},
+         {"reserved", offsetof(AnomalyNtePlayerHoldSnapshotV1, reserved)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyNtePlayerServiceV1",
         sizeof(AnomalyNtePlayerServiceV1),
         alignof(AnomalyNtePlayerServiceV1),
@@ -1531,7 +1543,10 @@ std::string BuildSnapshot() {
          {"user", offsetof(AnomalyNtePlayerServiceV1, user)},
          {"snapshot", offsetof(AnomalyNtePlayerServiceV1, snapshot)},
          {"esp_snapshot", offsetof(AnomalyNtePlayerServiceV1, esp_snapshot)},
-         {"camera_snapshot", offsetof(AnomalyNtePlayerServiceV1, camera_snapshot)}},
+         {"camera_snapshot", offsetof(AnomalyNtePlayerServiceV1, camera_snapshot)},
+         {"hold_engage", offsetof(AnomalyNtePlayerServiceV1, hold_engage)},
+         {"hold_release", offsetof(AnomalyNtePlayerServiceV1, hold_release)},
+         {"hold_snapshot", offsetof(AnomalyNtePlayerServiceV1, hold_snapshot)}},
         false);
     AppendStruct(
         output,
@@ -2112,6 +2127,8 @@ std::string BuildSnapshot() {
         ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION, "AnomalyNtePlayerServiceV1", false);
     AppendService(output, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
         ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION, "AnomalyNtePlayerTeleportServiceV1", false);
+    AppendService(output, ANOMALY_NTE_PLAYER_HOLD_SERVICE_V1_ID,
+        ANOMALY_NTE_PLAYER_HOLD_SERVICE_V1_VERSION, "AnomalyNtePlayerHoldServiceV1", false);
     AppendService(output, ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID,
         ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION, "AnomalyNteMapLandmarksServiceV1", false);
     AppendService(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,

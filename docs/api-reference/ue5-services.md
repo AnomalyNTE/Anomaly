@@ -205,7 +205,7 @@ typedef struct AnomalyUe5StreamingSourceServiceV1 {
 `set_override` 让局部玩家控制器的流式源在该位置求值，从而在角色移动过去之前把目标区域加载出来；`rotation` 仅在 `ANOMALY_UE5_STREAMING_SOURCE_OVERRIDE_V1_ROTATION` 置位时生效（自由相机跟随视角用）。`duration_milliseconds` 为 `UNTIL_CLEARED` 时一直保留到 `clear_override`，其他值在该毫秒数后自动失效——即使消费者忘记清除也不会长期劫持流式源。两个调用都必须在 Game 回调域内执行，否则返回 `CONFLICT`。
 
 > [!NOTE]
-> 宿主拥有**唯一的**进程级流式源 hook，因此多个插件可以同时消费该服务，但共享同一个覆盖槽位：最后一次请求生效，直到它过期或被清除。唯一的例外是**挂起中的传送预载**——宿主会为该传送保留槽位，此时其他消费者的 `set_override` 返回 `CONFLICT`（传送执行后即可再次申请），以免传送落点的流式源被改写到别处。消费者应在自己不再需要时调用 `clear_override`（例如插件停止、相机停止飞行）。该服务只在其 layout 键、validator 与 `nte.player` 依赖同时通过时才发布；不满足时调用返回 `UNAVAILABLE`，调用方应降级为直接操作（例如同步传送）。`anomaly.nte.player-teleport` 的默认预载模式也构建在该服务之上。
+> 宿主拥有**唯一的**进程级流式源 hook，因此多个插件可以同时消费该服务，但共享同一个覆盖槽位：最后一次请求生效，直到它过期或被清除。唯一的例外是**传送到达窗口**——宿主会为该次传送保留槽位，此时其他消费者的 `set_override` 返回 `CONFLICT`（窗口结束后即可再次申请），以免传送落点的流式源被改写到别处。消费者应在自己不再需要时调用 `clear_override`（例如插件停止、相机停止飞行）。该服务只在其 layout 键、validator 与 `nte.player` 依赖同时通过时才发布；不满足时调用返回 `UNAVAILABLE`，调用方应降级为直接操作（例如同步传送）。`anomaly.nte.player-teleport` 的默认预载模式也构建在该服务之上。
 
 > [!NOTE]
 > 更高层、面向 NTE 玩法的服务（会话事件、玩家 / 相机、实体分页）见 [NTE 服务](nte-services.md)。

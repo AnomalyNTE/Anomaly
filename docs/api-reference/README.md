@@ -135,6 +135,7 @@ void*    user;             // 调用每个函数时作为第一个参数回传
 | `anomaly.nte.session` | 1 | `nte-session-snapshot` | [nte.session](nte-services.md#anomalyntesession) |
 | `anomaly.nte.player` | 1 | `nte-player-snapshot` | [nte.player](nte-services.md#anomalynteplayer) |
 | `anomaly.nte.player-teleport` | 1 | `nte-player-teleport` | [nte.player-teleport](nte-services.md#anomalynteplayer-teleport) |
+| `anomaly.nte.player-hold` | 1 | `nte-player-hold` | [nte.player-hold](nte-services.md#anomalynteplayer-hold) |
 | `anomaly.nte.map-landmarks` | 1 | `nte-map-landmarks` | [nte.map-landmarks](nte-services.md#anomalyntemap-landmarks) |
 | `anomaly.nte.navigation` | 1 | `nte-navigation` | [nte.navigation](nte-services.md#anomalyntenavigation) |
 | `anomaly.nte.pickup` | 1 | `nte-pickup` | [nte.pickup](nte-services.md#anomalyntepickup) |

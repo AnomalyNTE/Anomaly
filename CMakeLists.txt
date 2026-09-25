@@ -1116,6 +1116,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteTeleport/manifest.json
         PACKAGE_NAME NteTeleport
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
+    anomaly_add_plugin(anomaly_builtin_nte_movement_hold
+        SOURCES plugins/NteMovementHold/plugin.cpp
+        MANIFEST plugins/NteMovementHold/manifest.json
+        PACKAGE_NAME NteMovementHold
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteMovementHold")
     anomaly_add_plugin(anomaly_builtin_nte_navigation
         SOURCES plugins/NteNavmeshDemo/plugin.cpp
         MANIFEST plugins/NteNavmeshDemo/manifest.json
@@ -1258,6 +1263,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
 
     foreach(builtin_target IN ITEMS
             anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+            anomaly_builtin_nte_movement_hold
             anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
             anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
             anomaly_builtin_fake_uid anomaly_builtin_camera_tools
@@ -1564,6 +1570,13 @@ if(TARGET anomaly_builtin_nte_teleport)
         DESTINATION Anomaly/plugins/NteTeleport COMPONENT GameRuntime)
     install(DIRECTORY plugins/NteTeleport/locales/
         DESTINATION Anomaly/plugins/NteTeleport/locales COMPONENT GameRuntime)
+endif()
+if(TARGET anomaly_builtin_nte_movement_hold)
+    install(TARGETS anomaly_builtin_nte_movement_hold
+        RUNTIME DESTINATION Anomaly/plugins/NteMovementHold COMPONENT GameRuntime
+        LIBRARY DESTINATION Anomaly/plugins/NteMovementHold COMPONENT GameRuntime)
+    install(FILES plugins/NteMovementHold/manifest.json
+        DESTINATION Anomaly/plugins/NteMovementHold COMPONENT GameRuntime)
 endif()
 if(TARGET anomaly_builtin_nte_navigation)
     install(TARGETS anomaly_builtin_nte_navigation

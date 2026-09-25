@@ -204,6 +204,11 @@ typedef struct AnomalyNtePlayerServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *snapshot)(void* user, AnomalyNtePlayerSnapshotV1*);
     AnomalyStatusV1 (ANOMALY_CALL *esp_snapshot)(void* user, AnomalyNtePlayerEspSnapshotV1*);
     AnomalyStatusV1 (ANOMALY_CALL *camera_snapshot)(void* user, AnomalyNteCameraSnapshotV1*);
+    // 仅当 struct_size 覆盖到它们时存在；需要 nte-player-hold capability。
+    AnomalyStatusV1 (ANOMALY_CALL *hold_engage)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *hold_release)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *hold_snapshot)(void* user,
+        AnomalyNtePlayerHoldSnapshotV1* snapshot);
 } AnomalyNtePlayerServiceV1;
 ```
 
@@ -237,7 +242,36 @@ typedef struct AnomalyNtePlayerTeleportServiceV1 {
 ```
 
 > [!CAUTION]
-> 这是**修改**类服务。`teleport` 仅在 Game 回调域内有效。`flags` 为 `0`（默认）时走**预载模式**：宿主先在目标位置装载框架流式覆盖（默认 2000 ms，若此前已调用 `preload` 则沿用其剩余窗口），再在随后的 Game tick 执行传送并清除覆盖，调用本身返回 `OK`（表示已受理），因此目标位置附近的失效检查不在此路径上；挂起期间该流式覆盖槽位归本次传送所有，其他消费者对 `anomaly.ue5.streaming-source` 的 `set_override` 返回 `CONFLICT`。`flags` 置 `ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE` 时保持旧的同步语义，调用后立即检查位置，未到达目标返回 `FAILED`——**目标区域已经加载时应当选它**，例如相机工具「传送到相机位置」且「场景随相机加载」已开启的情况。`preload` / `cancel_preload` 用于提前（例如传送前）单独申请或取消预载窗口；预载不可用时降级为同步传送而不失败。宿主提供 `bSweep=false`、`bTeleport=true`，不暴露 UE 对象指针或 `FHitResult` ABI。`world` 与 `player` 必须来自当前快照，stale handle 会被拒绝。该服务只在其引擎 `ProcessEvent` 签名、ABI / 反射、依赖与 Game-thread gate 同时通过时才发布；**Pawn-vtable fallback 被禁止**。旧插件可继续只调用 `teleport`，新增字段以 `struct_size` 判定，`service_version` 仍为 1。
+> 这是**修改**类服务。`teleport` 仅在 Game 回调域内有效。`flags` 为 `0`（默认）时走**预载模式**：宿主先装载框架流式覆盖到目标位置（默认 2000 ms，若此前已调用 `preload` 则沿用其剩余窗口），**随即在同一调用里执行传送**，然后在窗口内冻结角色并清除覆盖。顺序是刻意反过来的：先把角色放到终点再让流式源指向终点——若先移动流式源、把角色留在原地等待，终点区块装载的同时起点脚下的地面被卸载，而游戏结算的那次坠落锚定在角色当时所在的位置，于是「起点→终点」的整段高差会被当作一次坠落，落地即死（实测如此）。角色始终只待在终点，坠落锚点因此只能是终点。窗口内冻结的写入与 `anomaly.nte.player-hold` 相同（重力系数 0 + 速度 0，每 tick 重申），窗口到期后交还重力；若届时引擎仍报告目标区域在流式加载中，冻结最多再延长 5 秒（`UWorldPartitionSubsystem::IsAllStreamingCompleted`），查询不可用时以窗口为准。窗口期间该流式覆盖槽位归本次传送所有，其他消费者对 `anomaly.ue5.streaming-source` 的 `set_override` 返回 `CONFLICT`。传送本身失败时冻结与覆盖一并回滚，错误原样返回给调用方；预载不可用时降级为同步传送，降级原因随 `message` 返回。`flags` 置 `ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE` 时完全不碰流式源与冻结，调用后立即检查位置，未到达目标返回 `FAILED`——**目标区域已经加载时应当选它**，例如相机工具「传送到相机位置」且「场景随相机加载」已开启的情况。`preload` / `cancel_preload` 用于提前（例如传送前）单独申请或取消预载窗口；预载不可用时降级为同步传送而不失败。宿主提供 `bSweep=false`、`bTeleport=true`，不暴露 UE 对象指针或 `FHitResult` ABI。`world` 与 `player` 必须来自当前快照，stale handle 会被拒绝。该服务只在其引擎 `ProcessEvent` 签名、ABI / 反射、依赖与 Game-thread gate 同时通过时才发布；**Pawn-vtable fallback 被禁止**。旧插件可继续只调用 `teleport`，新增字段以 `struct_size` 判定，`service_version` 仍为 1。
+
+---
+
+## `anomaly.nte.player-hold`
+
+- **ID**：`"anomaly.nte.player-hold"` · **版本** 1 · **capability** `nte-player-hold`
+- **标志位**：`ANOMALY_NTE_PLAYER_HOLD_V1_HELD` = `1u << 0u`，`ANOMALY_NTE_PLAYER_HOLD_V1_REFUSED` = `1u << 1u`
+
+```c
+typedef struct AnomalyNtePlayerHoldSnapshotV1 {
+    uint32_t struct_size; uint32_t flags; double gravity_scale; double velocity[3];
+    uint32_t movement_mode; uint32_t reserved;
+} AnomalyNtePlayerHoldSnapshotV1;
+
+typedef struct AnomalyNtePlayerHoldServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *engage)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *release)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot)(void* user,
+        AnomalyNtePlayerHoldSnapshotV1* snapshot);
+} AnomalyNtePlayerHoldServiceV1;
+```
+
+> [!CAUTION]
+> 这是**修改**类服务。宿主通过与其他特性相同的反射链解析本地角色，`engage` 写两样东西：重力系数归零、速度清零；`release` 再清零速度并把原重力系数写回，让角色原地恢复重力。
+>
+> **它只负责"把角色按在原地"，不负责改变角色所处的状态。** 曾经试过在窗口内把移动模式改成 `MOVE_Flying`（引擎不会自己离开、`PhysFlying` 不需要地面），但实测客户端每帧都会把自己的模式写回去，面板上模式在 `3` 与 `5` 之间来回跳，收益为零。真正决定生死的是**角色当时站在哪里**：游戏结算的那次坠落锚定在坠落开始时角色所在的位置，所以只要角色一直在终点，高差就不会被结算（见 `anomaly.nte.player-teleport`：先传送、再冻结）。
+>
+> `engage` 幂等；未 `engage` 就 `release` 不算错误。调用方在 Game 回调域内时直接返回结果（含被拒绝的原因），其他线程（例如 UI 绘制回调）的请求排队到 Game tick 执行，结果在下一次 `snapshot` 里体现。`snapshot` 返回 `HELD` / `REFUSED` 标志与实时重力系数、速度、移动模式（`EMovementMode` 值，`3` 即 `MOVE_Falling`；这是**只读**诊断量，用来观察游戏自己在做什么）。全程不向插件暴露 UE 对象指针。
 
 ---
 

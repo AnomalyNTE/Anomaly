@@ -1282,8 +1282,20 @@
         "reserved": 100
       }
     },
+    "AnomalyNtePlayerHoldSnapshotV1": {
+      "size": 48,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "flags": 4,
+        "gravity_scale": 8,
+        "velocity": 16,
+        "movement_mode": 40,
+        "reserved": 44
+      }
+    },
     "AnomalyNtePlayerServiceV1": {
-      "size": 40,
+      "size": 64,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -1291,7 +1303,10 @@
         "user": 8,
         "snapshot": 16,
         "esp_snapshot": 24,
-        "camera_snapshot": 32
+        "camera_snapshot": 32,
+        "hold_engage": 40,
+        "hold_release": 48,
+        "hold_snapshot": 56
       }
     },
     "AnomalyNtePlayerTeleportRequestV1": {
@@ -1833,6 +1848,7 @@
     { "id": "anomaly.nte.session", "version": 1, "table": "AnomalyNteSessionServiceV1" },
     { "id": "anomaly.nte.player", "version": 1, "table": "AnomalyNtePlayerServiceV1" },
     { "id": "anomaly.nte.player-teleport", "version": 1, "table": "AnomalyNtePlayerTeleportServiceV1" },
+    { "id": "anomaly.nte.player-hold", "version": 1, "table": "AnomalyNtePlayerHoldServiceV1" },
     { "id": "anomaly.nte.map-landmarks", "version": 1, "table": "AnomalyNteMapLandmarksServiceV1" },
     { "id": "anomaly.nte.navigation", "version": 1, "table": "AnomalyNteNavigationServiceV1" },
     { "id": "anomaly.nte.pickup", "version": 1, "table": "AnomalyNtePickupServiceV1" },
