@@ -1934,11 +1934,16 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         // can be held until the seconds that matter. Polling is unavoidable -- the game process is
         // created by ACE-BASE.sys, which offers nothing to subscribe to -- but a loop that starts with
         // the launcher would spend most of its life watching a process that is still logging in.
-        Handle armed(CreateEventW(nullptr, TRUE, FALSE, kLauncherArmedEventName));
-        if (!armed) {
-            result.mapping = Failure(ManualMapError::ProcessControlFailure, GetLastError(),
-                "the launcher hook handshake could not be created");
-            return result;
+        // Nothing injects a hook while the launcher's auto-start is off, so nothing has to be waited
+        // for: capture polls from the start for the HTGame.exe the player starts from the launcher.
+        Handle armed;
+        if (!options.hook_path.empty()) {
+            armed.Reset(CreateEventW(nullptr, TRUE, FALSE, kLauncherArmedEventName));
+            if (!armed) {
+                result.mapping = Failure(ManualMapError::ProcessControlFailure, GetLastError(),
+                    "the launcher hook handshake could not be created");
+                return result;
+            }
         }
 
         STARTUPINFOW startup{.cb = sizeof(startup)};
@@ -1991,7 +1996,10 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             try {
                 // Bounded, so a launcher whose hook never reports still falls back to capturing on
                 // the session's own timing instead of stalling the launch.
-                static_cast<void>(WaitForSingleObject(armed.Get(), kHookArmedTimeoutMilliseconds));
+                if (armed) {
+                    static_cast<void>(
+                        WaitForSingleObject(armed.Get(), kHookArmedTimeoutMilliseconds));
+                }
                 const auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::milliseconds(discovery_timeout);
                 captured = CaptureTargetByFastPolling(

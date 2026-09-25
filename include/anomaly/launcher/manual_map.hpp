@@ -67,8 +67,9 @@ struct ManualMapLaunchOptions final {
     std::filesystem::path working_directory;
     // Injected into the launcher so the session can be started without the user touching the launcher
     // UI. It hides the launcher's own window from the inside and signals the armed event below
-    // immediately before asking the launcher to start the game. When empty, the launcher is started
-    // and capture relies on it acting on its own, which it never does.
+    // immediately before asking the launcher to start the game. When empty, nothing is injected and
+    // capture polls from the moment the launcher is started, waiting for the player to start the game
+    // from the launcher's own window.
     std::filesystem::path hook_path;
     std::wstring target_executable_name{L"HTGame.exe"};
     DWORD creation_flags{};

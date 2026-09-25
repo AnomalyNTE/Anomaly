@@ -562,6 +562,9 @@ target_link_libraries(anomaly_manual_map PUBLIC Advapi32 Psapi)
 # Injected into the official launcher (NTEGame.exe) to hide its window and ask it to start the game on
 # its own. It is deliberately free-standing: it runs inside a process this repository does not own, has
 # no dependency on any other target here, and reaches Qt only through exports it resolves at runtime.
+# The launcher's kAutoStartOfficialClient switch is off, so nothing injects it; it is still built and
+# shipped so that the auto-start path stays compiled and that one switch is the whole of turning it
+# back on.
 add_library(anomaly_nte_game_hook SHARED src/launcher/hook/nte_game_hook.cpp)
 # It sits with the runtime payload rather than beside the launcher: it is a runtime component, and the
 # launcher's own directory is the one the game install occupies.
@@ -985,8 +988,8 @@ target_link_libraries(anomaly_launcher PRIVATE
     anomaly_manual_map anomaly_runtime_recovery
     anomaly_runtime_launch anomaly_ui_resources
     ole32 shell32 delayimp)
-# The agent DLL is injected into the official launcher, so it has to exist next to AnomalyLauncher.exe
-# before the launcher can be started.
+# The hook is part of the runtime payload the launcher is installed with, so it is built before the
+# launcher that would inject it.
 add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
@@ -1541,8 +1544,9 @@ install(TARGETS anomaly_core
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
 install(TARGETS anomaly_crash_coordinator
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime)
-# The launcher resolves this by absolute path under its own directory, so it is part of the runtime
-# payload and not an optional extra: a package without it launches and then fails to start the game.
+# The launcher resolves this by absolute path under its own directory, so it stays part of the runtime
+# payload: a package that turned auto-starting back on without it would launch and then fail to start
+# the game.
 install(TARGETS anomaly_nte_game_hook
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)

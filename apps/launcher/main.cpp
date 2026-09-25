@@ -113,6 +113,13 @@ std::filesystem::path GameHookLibrary() {
     return ExecutableDirectory() / L"Anomaly" / L"NTEGameHook.dll";
 }
 
+// Auto-starting the official client is off. The launcher is started the way its own shortcut starts
+// it, and the player presses start game in the window that opens, so capture waits for the HTGame.exe
+// that press produces. Everything auto-starting needs -- resolving the client out of the bootstrap's
+// update section, injecting the hook, and the hook itself -- is kept behind this switch, still
+// compiled and still shipped, so turning it back on is this one line.
+constexpr bool kAutoStartOfficialClient = false;
+
 struct AdministratorLaunchResult final {
     bool run_current_process{};
     int exit_code{};
@@ -452,27 +459,34 @@ public:
                 return;
             }
             anomaly::launcher::ManualMapLaunchOptions options;
-            // NTELauncher.exe is only the self-updating bootstrap. The launcher window and the
-            // platform pipe server live in the client it starts, so that client is started directly:
-            // it is the process that has to stay hidden, and it is the one that spawns HTGame.exe.
-            const auto command =
-                anomaly::launcher::ResolveClientLaunchCommand(launcher);
-            if (command.executable.empty()) {
-                PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
-                    MessageKind::Error, command.failure);
-                return;
+            // NTELauncher.exe is what the player's own shortcut starts: it opens the launcher window,
+            // and the press of its start button is what creates HTGame.exe.
+            options.launcher_path = launcher;
+            options.working_directory = launcher.parent_path();
+            if constexpr (kAutoStartOfficialClient) {
+                // NTELauncher.exe is only the self-updating bootstrap. The launcher window and the
+                // platform pipe server live in the client it starts, so that client is started
+                // directly: it is the process that has to stay hidden, and it is the one that spawns
+                // HTGame.exe.
+                const auto command =
+                    anomaly::launcher::ResolveClientLaunchCommand(launcher);
+                if (command.executable.empty()) {
+                    PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
+                        MessageKind::Error, command.failure);
+                    return;
+                }
+                options.launcher_path = command.executable;
+                options.launcher_arguments = command.arguments;
+                options.working_directory = command.executable.parent_path();
+                // The launcher is never asked to act by a user, so a hook goes into it: it keeps the
+                // launcher's window hidden from the inside and asks the launcher to start the game,
+                // which is what leaves the platform session -- and with it the login and support
+                // buttons -- exactly as a normal launch produces it.
+                options.hook_path = GameHookLibrary();
             }
-            options.launcher_path = command.executable;
-            options.launcher_arguments = command.arguments;
-            options.working_directory = command.executable.parent_path();
             options.manual_map.core_path = selected.core_path;
             options.manual_map.runtime_root = selected.runtime_root;
             options.manual_map.log_directory = options.manual_map.runtime_root / L"logs";
-            // The launcher is never asked to act by a user, so a hook goes into it: it keeps the
-            // launcher's window hidden from the inside and asks the launcher to start the game, which
-            // is what leaves the platform session -- and with it the login and support buttons --
-            // exactly as a normal launch produces it.
-            options.hook_path = GameHookLibrary();
             const auto result =
                 anomaly::launcher::LaunchAndManualMapRuntimeCore(options);
             if (result.Ok()) RefreshProcessesImpl();
