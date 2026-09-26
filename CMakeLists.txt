@@ -1302,6 +1302,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             anomaly_builtin_map_spawn_exporter
             anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
             anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
+            anomaly_builtin_nte_free_fly
             anomaly_builtin_dll_loader)
         target_include_directories(${builtin_target} PRIVATE "${CMAKE_SOURCE_DIR}")
         target_compile_definitions(${builtin_target} PRIVATE
@@ -1346,12 +1347,14 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     set_target_properties(anomaly_builtin_combat_box PROPERTIES PDB_NAME CombatBox)
     set_target_properties(anomaly_builtin_clone_enter PROPERTIES PDB_NAME CloneEnter)
     set_target_properties(anomaly_builtin_nte_quick_ultimate PROPERTIES PDB_NAME QuickUltimate)
+    set_target_properties(anomaly_builtin_nte_free_fly PROPERTIES PDB_NAME NteFreeFly)
     set_target_properties(anomaly_builtin_dll_loader PROPERTIES PDB_NAME DllLoader)
     if(MSVC)
         target_compile_options(anomaly_builtin_pink_paw_heist_esp PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_box_auto PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport
@@ -1363,6 +1366,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_map_spawn_exporter
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
+        anomaly_builtin_nte_free_fly
         anomaly_builtin_dll_loader)
     if(TARGET anomaly-platform-preview)
         add_dependencies(anomaly-platform-preview
@@ -1374,6 +1378,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             anomaly_builtin_map_spawn_exporter
             anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
             anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
+            anomaly_builtin_nte_free_fly
             anomaly_builtin_dll_loader)
     endif()
 endif()
@@ -1421,6 +1426,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_combat_box CombatBox)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
 anomaly_stage_platform_preview_plugin(
     anomaly_builtin_nte_quick_ultimate QuickUltimate)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 
 if(TARGET anomaly-platform-preview)
@@ -1740,6 +1746,13 @@ if(TARGET anomaly_builtin_clone_enter)
         DESTINATION Anomaly/plugins/CloneEnter COMPONENT GameRuntime)
     install(DIRECTORY plugins/CloneEnter/locales/
         DESTINATION Anomaly/plugins/CloneEnter/locales COMPONENT GameRuntime)
+endif()
+if(TARGET anomaly_builtin_nte_free_fly)
+    install(TARGETS anomaly_builtin_nte_free_fly
+        RUNTIME DESTINATION Anomaly/plugins/NteFreeFly COMPONENT GameRuntime
+        LIBRARY DESTINATION Anomaly/plugins/NteFreeFly COMPONENT GameRuntime)
+    install(FILES plugins/NteFreeFly/manifest.json
+        DESTINATION Anomaly/plugins/NteFreeFly COMPONENT GameRuntime)
 endif()
 if(TARGET anomaly_builtin_dll_loader)
     install(TARGETS anomaly_builtin_dll_loader
