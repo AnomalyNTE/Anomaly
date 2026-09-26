@@ -1236,6 +1236,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CloneEnter/manifest.json
         PACKAGE_NAME CloneEnter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CloneEnter")
+
+    anomaly_add_plugin(anomaly_builtin_nte_free_fly
+        SOURCES plugins/NteFreeFly/plugin.cpp
+        MANIFEST plugins/NteFreeFly/manifest.json
+        PACKAGE_NAME NteFreeFly
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteFreeFly")
     add_library(anomaly_quick_ultimate_sequence STATIC
         plugins/QuickUltimate/sequence.cpp)
     target_include_directories(anomaly_quick_ultimate_sequence PUBLIC
