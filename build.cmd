@@ -8,6 +8,7 @@ rem                          Runtime package in game-package\
 rem   build.cmd fixtures     also build the development fixtures
 rem   build.cmd probes       also build the diagnostic probe packages
 rem   build.cmd symbols      also generate and stage linker PDBs (local debugging)
+rem   build.cmd testplugins  also build and install the developer test plugin packages
 rem   build.cmd package      also stage Tools and SDK under package\
 rem
 rem Arguments can be combined, e.g. "build.cmd fixtures package".
@@ -28,6 +29,7 @@ if not exist "%CMAKE%" goto :missing_cmake
 set "FIXTURES=OFF"
 set "PROBES=OFF"
 set "SYMBOLS=OFF"
+set "TESTPLUGINS=OFF"
 set "PACKAGE=OFF"
 
 :parse
@@ -35,6 +37,7 @@ if "%~1"=="" goto :run
 if /i "%~1"=="fixtures" goto :argument_fixtures
 if /i "%~1"=="probes" goto :argument_probes
 if /i "%~1"=="symbols" goto :argument_symbols
+if /i "%~1"=="testplugins" goto :argument_testplugins
 if /i "%~1"=="package" goto :argument_package
 if /i "%~1"=="help" goto :help
 if /i "%~1"=="-h" goto :help
@@ -57,6 +60,11 @@ set "SYMBOLS=ON"
 shift
 goto :parse
 
+:argument_testplugins
+set "TESTPLUGINS=ON"
+shift
+goto :parse
+
 :argument_package
 set "PACKAGE=ON"
 shift
@@ -66,8 +74,8 @@ goto :parse
 set "BUILD_DIR=%~dp0.build\windows-vs2022"
 set "PACKAGE_DIR=%BUILD_DIR%\game-package"
 
-rem Fixtures, diagnostic probes and PDBs stay out of the default build.
-"%CMAKE%" --preset windows-vs2022 -DANOMALY_BUILD_TEST_FIXTURES=%FIXTURES% -DANOMALY_BUILD_DIAGNOSTIC_PROBES=%PROBES% -DANOMALY_BUILD_SYMBOLS=%SYMBOLS%
+rem Fixtures, diagnostic probes, test plugin packages and PDBs stay out of the default build.
+"%CMAKE%" --preset windows-vs2022 -DANOMALY_BUILD_TEST_FIXTURES=%FIXTURES% -DANOMALY_BUILD_DIAGNOSTIC_PROBES=%PROBES% -DANOMALY_BUILD_SYMBOLS=%SYMBOLS% -DANOMALY_BUILD_TEST_PLUGINS=%TESTPLUGINS%
 if errorlevel 1 exit /b %errorlevel%
 
 "%CMAKE%" --build --preset windows-relwithdebinfo --parallel
@@ -77,6 +85,13 @@ rem Keep the existing package tree and replace only files owned by the install s
 "%CMAKE%" --install "%BUILD_DIR%" --config RelWithDebInfo --prefix "%PACKAGE_DIR%" --component GameRuntime
 if errorlevel 1 exit /b %errorlevel%
 
+rem Test plugin packages are built and installed only on request; they live in their own
+rem component and never enter a release package.
+if "%TESTPLUGINS%"=="OFF" goto :after_test_plugins
+"%CMAKE%" --install "%BUILD_DIR%" --config RelWithDebInfo --prefix "%PACKAGE_DIR%" --component TestPlugins
+if errorlevel 1 exit /b %errorlevel%
+
+:after_test_plugins
 if "%PACKAGE%"=="ON" goto :stage_components
 exit /b 0
 
@@ -102,7 +117,7 @@ set "USAGE_EXIT=1"
 
 :print_usage
 echo.
-echo usage: build.cmd [fixtures] [probes] [symbols] [package]
+echo usage: build.cmd [fixtures] [probes] [symbols] [testplugins] [package]
 echo.
 echo   (no argument)  build the Runtime, Tools and SDK targets, then install the
 echo                  deployable Runtime package into
@@ -110,6 +125,8 @@ echo                  .build\windows-vs2022\game-package
 echo   fixtures       also build the development fixtures
 echo   probes         also build the diagnostic probe packages
 echo   symbols        also generate linker PDBs and stage the Symbols component
+echo   testplugins    also build and install the developer test plugin packages
+echo                  (never part of a release component)
 echo   package        also stage Tools and SDK into .build\windows-vs2022\package
 echo.
 exit /b %USAGE_EXIT%

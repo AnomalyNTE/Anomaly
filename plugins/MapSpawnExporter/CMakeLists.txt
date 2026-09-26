@@ -24,7 +24,4 @@ target_include_directories(anomaly_map_spawn_exporter BEFORE PRIVATE
 target_compile_definitions(anomaly_map_spawn_exporter PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-install(TARGETS anomaly_map_spawn_exporter
-    RUNTIME DESTINATION MapSpawnExporter
-    LIBRARY DESTINATION MapSpawnExporter)
-install(FILES manifest.json DESTINATION MapSpawnExporter)
+# `anomaly_add_plugin` installs the package into Anomaly/plugins/MapSpawnExporter.

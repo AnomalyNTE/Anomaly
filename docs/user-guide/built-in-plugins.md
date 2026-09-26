@@ -5,6 +5,11 @@
 > [!NOTE]
 > 坐标、实体 ESP 和 WalletCollector 等功能都依赖 [Profile](nte-profiles.md)。活动 Profile 缺少签名、偏移或校验未通过时，插件仍然可以加载，但对应功能会显示为不可用。
 
+> [!NOTE]
+> `Nearby Pickup`、`Movement Hold Probe`、`Map Spawn Exporter`、`Teleport Landmarks Probe` 与
+> Navmesh Demo 属于开发者测试包：默认构建与发布的运行包都不含它们，只有用 `build.cmd testplugins`
+> 构建的运行包才会带上（见[从源码构建](../developer-guide/building.md)）。其余插件随发布运行包提供。
+
 ## Coordinate Display
 
 | | |

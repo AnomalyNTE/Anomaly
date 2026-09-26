@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       fixtures:
-        description: Also build the development fixtures and diagnostic probes
+        description: Also build the development fixtures, diagnostic probes and test plugin packages
         type: boolean
         default: false
 
@@ -28,14 +28,15 @@ jobs:
       - name: Configure
         shell: pwsh
         env:
-          # Fixtures and diagnostic probes are opt-in; a normal run builds only the
-          # Runtime, Tools and SDK targets.
+          # Fixtures, diagnostic probes and test plugin packages are opt-in; a normal run
+          # builds only the Runtime, Tools and SDK targets.
           ANOMALY_BUILD_OPTIONAL: ${{ inputs.fixtures == true && 'ON' || 'OFF' }}
         run: |
           $arguments = @(
             '--preset', 'windows-vs2022',
             "-DANOMALY_BUILD_TEST_FIXTURES=$env:ANOMALY_BUILD_OPTIONAL",
-            "-DANOMALY_BUILD_DIAGNOSTIC_PROBES=$env:ANOMALY_BUILD_OPTIONAL"
+            "-DANOMALY_BUILD_DIAGNOSTIC_PROBES=$env:ANOMALY_BUILD_OPTIONAL",
+            "-DANOMALY_BUILD_TEST_PLUGINS=$env:ANOMALY_BUILD_OPTIONAL"
           )
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             $arguments += "-DANOMALY_RELEASE_VERSION=$env:GITHUB_REF_NAME"
@@ -49,6 +50,11 @@ jobs:
         run: |
           cmake --install .build/windows-vs2022 --config RelWithDebInfo --prefix .build/ci-artifacts/runtime --component GameRuntime
           cmake --install .build/windows-vs2022 --config RelWithDebInfo --prefix .build/ci-artifacts/tools --component Tools
+      - name: Stage CI test plugins
+        if: github.ref_type != 'tag' && inputs.fixtures == true
+        shell: pwsh
+        run: |
+          cmake --install .build/windows-vs2022 --config RelWithDebInfo --prefix .build/ci-artifacts/runtime --component TestPlugins
       - name: Upload CI runtime
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4

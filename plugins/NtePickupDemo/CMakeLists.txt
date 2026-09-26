@@ -25,13 +25,5 @@ target_include_directories(anomaly_nte_pickup_demo PRIVATE "${CMAKE_CURRENT_SOUR
 target_compile_definitions(anomaly_nte_pickup_demo PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-add_custom_command(TARGET anomaly_nte_pickup_demo POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/locales"
-        "$<TARGET_FILE_DIR:anomaly_nte_pickup_demo>/locales")
-
-install(TARGETS anomaly_nte_pickup_demo
-    RUNTIME DESTINATION NtePickupDemo
-    LIBRARY DESTINATION NtePickupDemo)
-install(FILES manifest.json DESTINATION NtePickupDemo)
-install(DIRECTORY locales/ DESTINATION NtePickupDemo/locales)
+# `anomaly_add_plugin` mirrors the manifest and the `locales` directory next to it into the
+# package directory, and installs the package into Anomaly/plugins/NtePickupDemo.
