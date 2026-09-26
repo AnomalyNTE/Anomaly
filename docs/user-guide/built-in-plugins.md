@@ -127,6 +127,27 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 默认使用 **寻路捡钱包**。地图地标服务可用时，插件会利用它优化跨区路线；服务不可用时按常规寻路继续处理。
 
+## Free Fly
+
+| | |
+| --- | --- |
+| **ID** | `local.nte.free-fly` |
+| **作用** | 按住 WASD 水平飞行、空格上升、Ctrl 下降，让角色在空中自由移动并穿过墙体；开关快捷键可在面板里捕获并保存。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.input`；`anomaly.config`、`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport`、`anomaly.nte.player-hold`（均为 V1，可选） |
+| **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
+
+飞行期间角色由插件独占控制：被冻结抑制的常规移动改由插件按同一套按键驱动。位移通过
+`anomaly.nte.player-teleport` 落位，宿主以 `bSweep=false` 执行，不经过碰撞检测，因此可以直接
+穿过墙体；重力冻结优先走 `player` 服务表尾的 hold 入口，独立服务作为回退。相机朝向不可用时
+`WASD` 退化为沿世界坐标轴移动。开关快捷键默认 F6，可以在插件窗口里重新捕获并持久化。
+
+落位是按需触发的（有输入、或角色偏离目标超过 15 厘米），不是逐帧：宿主传送走 ProcessEvent，
+逐帧调用会明显掉帧。停用、`on_stop` 与 `on_unload` 都会 `release` hold 交还重力并关闭控制，
+不会留下持久修改。
+
+> [!WARNING]
+> 在离地较高的位置关闭飞行时角色会原地自由落体，可能受到坠落伤害；建议先降到贴近地面再关闭。
+
 ## 开发者模式调试插件
 
 启用会话开发者模式后，插件列表还会显示 `Teleport Landmarks Probe`

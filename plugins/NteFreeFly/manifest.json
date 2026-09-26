@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 2,
+  "id": "local.nte.free-fly",
+  "name": "Free Fly",
+  "description": "按住 WASD 水平移动、空格上升、Ctrl 下降，让角色在空中自由飞行并穿过墙体；开关快捷键可在面板里改成任意按键并自动保存。飞行完全由语义服务（玩家传送 + 角色冻结）实现，不读写游戏内存，停用后不残留任何修改。",
+  "author": "Mou-Mou-SaMa",
+  "license": "MIT",
+  "audience": "user",
+  "version": "1.5.1",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.input", "minVersion": 1},
+    {"id": "anomaly.config", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player-hold", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "ui",
+    "input",
+    "configuration",
+    "nte-session-snapshot",
+    "nte-player-snapshot",
+    "nte-player-teleport",
+    "nte-player-hold"
+  ]
+}
