@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "local.nte.free-fly",
   "name": "Free Fly",
-  "description": "按住 WASD 水平移动、空格上升、Ctrl 下降，让角色在空中自由飞行并穿过墙体；开关快捷键可在面板里改成任意按键并自动保存。飞行完全由语义服务（玩家传送 + 角色冻结）实现，不读写游戏内存，停用后不残留任何修改。",
+  "description": "按住 WASD 水平移动、空格上升、Ctrl 下降，让角色在空中自由飞行并穿过墙体。",
   "author": "Mou-Mou-SaMa",
   "license": "MIT",
   "audience": "user",
