@@ -448,8 +448,12 @@ int ANOMALY_CALL BeginWindow(
     }
     bool visible = open == nullptr || *open != 0;
     if (!management_shell) {
+        // A plugin window is a floating body of its own, so it keeps an opaque
+        // surface. The themed surface tokens are transparent while a background
+        // image is active -- the shell paints its own veil instead -- and using
+        // one here would leave the window with no background at all.
         ImGui::PushStyleColor(
-            ImGuiCol_WindowBg, ThemeColor(PlatformUiTheme().child_background));
+            ImGuiCol_WindowBg, ThemeColor(anomaly::PlatformUiSurfaceColor()));
         ImGui::PushStyleVar(
             ImGuiStyleVar_WindowPadding, ImVec2(kPluginWindowBodyPadding, kPluginWindowBodyPadding));
     }

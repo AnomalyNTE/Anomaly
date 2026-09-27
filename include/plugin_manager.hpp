@@ -240,6 +240,10 @@ public:
         const std::shared_ptr<anomaly::PluginScope>& scope,
         anomaly::UiResourceHandle handle, float width, float height,
         std::uint32_t tint_rgba) noexcept;
+    [[nodiscard]] bool DrawUiTextureEx(
+        const std::shared_ptr<anomaly::PluginScope>& scope,
+        anomaly::UiResourceHandle handle,
+        const anomaly::UiTextureDrawRequest& request) noexcept;
     [[nodiscard]] bool QueueUiFontLoad(
         const std::shared_ptr<anomaly::PluginScope>& scope,
         anomaly::UiResourceHandle handle) noexcept;

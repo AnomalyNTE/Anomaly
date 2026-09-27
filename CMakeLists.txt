@@ -749,7 +749,7 @@ target_include_directories(anomaly_ui_resources PUBLIC include)
 target_compile_definitions(
     anomaly_ui_resources PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_ui_resources PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(anomaly_ui_resources PUBLIC anomaly_plugin_runtime ole32)
+target_link_libraries(anomaly_ui_resources PUBLIC anomaly_plugin_runtime ole32 shell32)
 
 add_library(anomaly_hook_manager STATIC src/hook/hook_manager.cpp)
 target_include_directories(anomaly_hook_manager PUBLIC include)
@@ -781,6 +781,16 @@ target_compile_options(anomaly_platform_settings PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
     anomaly_platform_settings PUBLIC anomaly_reliable_storage
     PRIVATE nlohmann_json::nlohmann_json)
+
+# Theme layout geometry and parsing. It has no ImGui or D3D dependency so the
+# launcher, the in-game shell and the standalone verification can share it.
+add_library(anomaly_platform_ui_layout STATIC src/ui/platform_ui_layout.cpp)
+target_include_directories(anomaly_platform_ui_layout PUBLIC include)
+target_compile_definitions(
+    anomaly_platform_ui_layout PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_platform_ui_layout PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(
+    anomaly_platform_ui_layout PRIVATE nlohmann_json::nlohmann_json)
 
 add_library(anomaly_minhook_backend STATIC src/hook/minhook_backend.cpp)
 target_include_directories(anomaly_minhook_backend PUBLIC include)
@@ -865,6 +875,7 @@ target_link_libraries(
     ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
     anomaly_platform_ui_model
     anomaly_platform_settings
+    anomaly_platform_ui_layout
     anomaly_scoped_platform
     anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
     anomaly_nte_profile_runtime
@@ -892,7 +903,15 @@ add_custom_command(TARGET anomaly_core POST_BUILD
             "$<TARGET_FILE_DIR:anomaly_core>/locales/host"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/assets/fonts"
-            "$<TARGET_FILE_DIR:anomaly_core>/assets/fonts")
+            "$<TARGET_FILE_DIR:anomaly_core>/assets/fonts"
+    # Theme artwork and presets ship with the runtime too: the preview fixture
+    # deploys them and the injected host resolves the same entry points.
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/images"
+            "$<TARGET_FILE_DIR:anomaly_core>/assets/images"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/config/themes"
+            "$<TARGET_FILE_DIR:anomaly_core>/config/themes")
 
 add_library(dwmapi SHARED
     src/bootstrap/dwmapi/proxy_main.cpp
@@ -966,10 +985,10 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         anomaly-platform-preview PRIVATE
         ue5mem_core anomaly_imgui anomaly_plugin_shadow anomaly_plugin_dependency_resolver
         anomaly_platform_ui_model anomaly_plugin_enablement anomaly_adapter_services
-        anomaly_platform_settings
+        anomaly_platform_settings anomaly_platform_ui_layout
         anomaly_plugin_runtime
         anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
-        anomaly_i18n nlohmann_json::nlohmann_json)
+        anomaly_i18n nlohmann_json::nlohmann_json ole32 shell32)
     add_dependencies(anomaly-platform-preview anomaly_stage_nte_profiles)
 endif()
 
@@ -986,6 +1005,7 @@ target_link_options(anomaly_launcher PRIVATE /MANIFESTUAC:NO /DELAYLOAD:dwmapi.d
 target_link_libraries(anomaly_launcher PRIVATE
     anomaly_config anomaly_imgui anomaly_launcher_configuration anomaly_launcher_proxy
     anomaly_manual_map anomaly_runtime_recovery
+    anomaly_platform_settings anomaly_platform_ui_layout
     anomaly_runtime_launch anomaly_ui_resources
     ole32 shell32 delayimp)
 # The hook is part of the runtime payload the launcher is installed with, so it is built before the
@@ -1031,6 +1051,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
         anomaly_platform_ui_model
         anomaly_platform_settings
+        anomaly_platform_ui_layout
         anomaly_scoped_platform
         anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
         anomaly_nte_profile_runtime
@@ -1062,7 +1083,20 @@ set(ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
             "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/locales/host"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/assets/fonts"
-            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/assets/fonts")
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/assets/fonts"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/images"
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/assets/images")
+
+# Theme presets are shipped content, so the whole directory is deployed exactly
+# like locales and artwork. `layout.json` is deliberately absent from the source
+# directory: it is the shared document the running build creates the first time a
+# background is changed, and it lives in the deployed tree only.
+list(APPEND ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/config/themes"
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/config/themes")
+
 if(ANOMALY_BUILD_SDK_EXAMPLES)
     # The SDK examples ship as sources in the SDK component; only NteCombatDemo is also a
     # runtime package, so the others are built without installing one.
@@ -1550,6 +1584,13 @@ install(DIRECTORY locales/host
     DESTINATION Anomaly/locales COMPONENT GameRuntime)
 install(FILES assets/fonts/NotoSansCJKsc-Regular.ttf
     DESTINATION Anomaly/assets/fonts COMPONENT GameRuntime)
+# Theme artwork and presets ship with the package: the game runtime and the
+# launcher both resolve `assets/images/...` and `config/themes/...` against the
+# same `Anomaly/` root. Users replace or extend these with their own files.
+install(DIRECTORY assets/images/
+    DESTINATION Anomaly/assets/images COMPONENT GameRuntime)
+install(DIRECTORY config/themes/
+    DESTINATION Anomaly/config/themes COMPONENT GameRuntime)
 install(CODE [[
     file(REMOVE_RECURSE
         "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/Anomaly/profiles/nte")
@@ -1558,6 +1599,10 @@ install(DIRECTORY profiles/
     DESTINATION Anomaly/profiles COMPONENT GameRuntime)
 install(TARGETS anomaly_cli anomaly_inspect anomaly-profile anomaly-plugin anomaly_abi_snapshot anomaly_test_host
     RUNTIME DESTINATION . COMPONENT Tools)
+# The layout editor is one offline HTML file: it needs no runtime, no network and
+# no build step, so it ships as data next to the command line tools.
+install(FILES tools/theme_layout_editor/index.html
+    DESTINATION theme-editor COMPONENT Tools)
 install(TARGETS anomaly_sdk EXPORT AnomalySDKTargets COMPONENT SDK)
 install(EXPORT AnomalySDKTargets
     FILE AnomalySDKTargets.cmake

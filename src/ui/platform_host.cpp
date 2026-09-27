@@ -2,6 +2,7 @@
 
 #include "anomaly/host_ui_service.hpp"
 #include "anomaly/adapter_service_registry.hpp"
+#include "anomaly/platform_ui_layout.hpp"
 #include "anomaly/platform_ui_model.hpp"
 #include "anomaly/platform_ui_input_policy.hpp"
 #include "anomaly/platform_ui_theme.hpp"
@@ -12,6 +13,9 @@
 #include "plugin_manager.hpp"
 
 #include <Windows.h>
+#include <objbase.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
 #include <d3d11.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -57,6 +61,11 @@ namespace {
 // WS_EX_LAYERED redirects the window to a surface the D3D swap chain never
 // reaches, which paints an opaque rectangle instead.
 constexpr float kHostClearColor[4]{0.0f, 0.0f, 0.0f, 0.0f};
+
+// Half extent of the clip rectangle a theme sticker draws under. It is far
+// larger than any display so the clip never becomes the thing that cuts a
+// sticker off; the renderer clamps every command to the swap chain anyway.
+constexpr float kThemeStickerClipExtent = 16384.0f;
 
 struct HostWindow {
     HWND window{};
@@ -670,6 +679,355 @@ anomaly::UiWindowRequest PlatformUiWindowRequest() {
     return request;
 }
 
+// A theme image resolved into whatever the current host can draw with. The
+// embedded surface owns a D3D12 or D3D11 swap chain and reaches the texture
+// through the shared UI resource registry; the standalone surface owns its own
+// D3D11 device and draws a view it created itself. Geometry and tinting are
+// shared, so both resolve to the same quad.
+struct ThemeImage final {
+    anomaly::UiResourceHandle handle;
+    ID3D11ShaderResourceView* standalone_view{};
+    float width{};
+    float height{};
+
+    [[nodiscard]] bool Valid() const noexcept {
+        return (handle || standalone_view != nullptr) && width > 0.0F && height > 0.0F;
+    }
+};
+
+// What the render thread draws from: the parsed layout plus every image already
+// resolved to a drawable target.
+struct ThemeLayoutState final {
+    std::uint64_t version{};
+    bool available{};
+    std::string message;
+    anomaly::PlatformUiLayoutDocument layout;
+    ThemeImage background;
+    std::vector<ThemeImage> stickers;
+};
+
+// One parsed theme layout plus every image it names, already decoded on the
+// worker. The layout worker publishes a new immutable cache whenever the file
+// changes, so the render thread only swaps a shared pointer and never touches
+// disk. Handing the registry decoded pixels rather than encoded bytes is what
+// keeps host-owned theme art independent of the plugin resource worker: the
+// render backend uploads an `Rgba8` payload directly.
+struct ThemeLayoutCache final {
+    std::uint64_t version{};
+    bool available{};
+    std::string message;
+    anomaly::PlatformUiLayoutDocument layout;
+    anomaly::UiRgba8Image background;
+    std::vector<anomaly::UiRgba8Image> stickers;
+};
+
+struct ThemeLayoutFileStamp final {
+    bool present{};
+    std::filesystem::file_time_type write_time{};
+    std::uintmax_t size{};
+};
+
+// One "open an image" request in the settings page. The modal dialog runs on the
+// UI thread, because the shell picker aborts when this process opens it from a
+// background thread; the copy, the layout write and the reload stay on the theme
+// worker, which owns every file operation.
+struct ThemeBackgroundPick final {
+    bool cancelled{};
+    std::filesystem::path source;
+    std::string relative_path;
+    std::string message;
+};
+
+// Copies the user's own picture into the runtime root, because a layout path has
+// to stay relative and pass the resolver's traversal check. A file that already
+// lives inside the root is referenced where it is instead of being duplicated.
+// The wallpaper is a property of the whole interface, so the picture the user
+// picks is stored in the shared layout rather than in one palette's file.
+[[nodiscard]] std::filesystem::path SharedPlatformUiLayoutFile(
+    const std::filesystem::path& runtime_root) noexcept {
+    return runtime_root / std::filesystem::path(anomaly::kPlatformUiLayoutDirectory) /
+        std::filesystem::path(anomaly::kPlatformUiLayoutSharedFileName);
+}
+
+// FNV-1a over the file bytes: the digest goes into the copied file's name, so
+// importing the same picture twice reuses one copy instead of writing a second.
+[[nodiscard]] bool HashFileContents(
+    const std::filesystem::path& source, std::string& digest, std::string& error) noexcept {
+    try {
+        std::ifstream stream(source, std::ios::binary);
+        if (!stream) {
+            error = "cannot read the image";
+            return false;
+        }
+        std::uint64_t hash = 1469598103934665603ULL;
+        char buffer[65536];
+        for (;;) {
+            stream.read(buffer, sizeof(buffer));
+            const std::streamsize count = stream.gcount();
+            for (std::streamsize index = 0; index < count; ++index) {
+                hash ^= static_cast<unsigned char>(buffer[static_cast<std::size_t>(index)]);
+                hash *= 1099511628211ULL;
+            }
+            if (count < static_cast<std::streamsize>(sizeof(buffer))) break;
+        }
+        char text[17]{};
+        std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(hash));
+        digest = text;
+        return true;
+    } catch (...) {
+        error = "cannot read the image";
+        return false;
+    }
+}
+bool ImportThemeBackground(
+    const std::filesystem::path& runtime_root, const std::filesystem::path& source,
+    std::string& relative_path, std::string& error) noexcept {
+    try {
+        std::error_code code;
+        const std::filesystem::path relative =
+            std::filesystem::relative(source, runtime_root, code);
+        const std::wstring& raw = relative.native();
+        if (!code && !relative.empty() &&
+            raw.find(L"..") == std::wstring::npos && relative.is_relative()) {
+            relative_path = relative.generic_string();
+            return true;
+        }
+        std::string stem;
+        for (const char character : source.stem().string()) {
+            const bool safe = (character >= 'a' && character <= 'z') ||
+                (character >= 'A' && character <= 'Z') ||
+                (character >= '0' && character <= '9') || character == '-' ||
+                character == '_';
+            stem.push_back(safe ? character : '-');
+        }
+        if (stem.empty()) stem = "background";
+        std::string extension = source.extension().string();
+        std::transform(
+            extension.begin(), extension.end(), extension.begin(),
+            [](const unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+        if (extension.empty()) extension = ".png";
+        std::string digest;
+        if (!HashFileContents(source, digest, error)) return false;
+        // User wallpapers live apart from the artwork a theme ships with.
+        const std::filesystem::path directory = runtime_root / L"assets" / L"custom";
+        std::filesystem::create_directories(directory, code);
+        const std::filesystem::path target = directory / (stem + "-" + digest + extension);
+        if (!std::filesystem::exists(target, code)) {
+            std::filesystem::copy_file(
+                source, target, std::filesystem::copy_options::overwrite_existing, code);
+            if (code) {
+                error = "cannot copy the image";
+                return false;
+            }
+        }
+        relative_path = "assets/custom/" + target.filename().string();
+        return true;
+    } catch (...) {
+        error = "cannot import the image";
+        return false;
+    }
+}
+
+// The shell dialog is owned by the host window when the process has one, so it
+// opens in front of the shell instead of looking like a second application.
+// The shell file dialog only builds its view inside a single-threaded apartment
+// and its modal loop pumps messages on whatever thread shows it. It therefore
+// runs on the dedicated picker thread started alongside the layout worker, so
+// the render loop never blocks while the user browses for a picture.
+class StaComApartment final {
+public:
+    StaComApartment() noexcept
+        : result_(
+              CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)) {}
+    ~StaComApartment() {
+        if (SUCCEEDED(result_)) CoUninitialize();
+    }
+    [[nodiscard]] bool Usable() const noexcept { return SUCCEEDED(result_); }
+
+private:
+    HRESULT result_{};
+};
+
+// Runs on the picker thread, so everything it touches stays there.
+void ShowThemeBackgroundDialog(std::filesystem::path& chosen, std::string& error) {
+    const StaComApartment apartment;
+    if (!apartment.Usable()) {
+        error = "cannot initialize COM for the file dialog";
+        return;
+    }
+    Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(
+            CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+        error = "cannot create the file dialog";
+        return;
+    }
+    DWORD options{};
+    if (SUCCEEDED(dialog->GetOptions(&options))) {
+        dialog->SetOptions(
+            options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+    }
+    constexpr COMDLG_FILTERSPEC filters[] = {
+        {L"Images", L"*.png;*.jpg;*.jpeg;*.bmp;*.gif"}, {L"All files", L"*.*"}};
+    dialog->SetFileTypes(ARRAYSIZE(filters), filters);
+    dialog->SetTitle(L"Choose a background image");
+    // An unowned shell dialog opens behind the shell or the game and its modal
+    // loop can end before the user ever sees it, which leaves the picker thread
+    // stuck in Show() and every later request silently ignored. Whatever window
+    // is in front when the request arrives is the one the user is looking at, so
+    // that is the window the dialog is made modal to. A window owned by another
+    // process is not a valid parent, so only this process's windows qualify.
+    HWND owner = GetForegroundWindow();
+    if (owner != nullptr) {
+        DWORD owner_process = 0;
+        static_cast<void>(GetWindowThreadProcessId(owner, &owner_process));
+        if (owner_process != GetCurrentProcessId()) owner = nullptr;
+    }
+    const HRESULT shown = dialog->Show(owner);
+    // A cancelled dialog is not a failure, so it must not be reported as one.
+    if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return;
+    if (FAILED(shown)) {
+        error = "the file dialog failed";
+        return;
+    }
+    Microsoft::WRL::ComPtr<IShellItem> selected;
+    if (FAILED(dialog->GetResult(&selected))) {
+        error = "no file was selected";
+        return;
+    }
+    PWSTR raw{};
+    if (FAILED(selected->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || raw == nullptr) {
+        error = "the selected file has no filesystem path";
+        return;
+    }
+    chosen = std::filesystem::path(raw);
+    CoTaskMemFree(raw);
+}
+ThemeLayoutFileStamp ReadThemeLayoutStamp(const std::filesystem::path& path) noexcept {
+    ThemeLayoutFileStamp stamp;
+    std::error_code error;
+    const auto write_time = std::filesystem::last_write_time(path, error);
+    if (error) return stamp;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error) return stamp;
+    stamp.present = true;
+    stamp.write_time = write_time;
+    stamp.size = size;
+    return stamp;
+}
+
+// Reads and decodes one layout image through the shared decoder, which already
+// rejects reparse points, oversized files and non-regular files.
+anomaly::UiRgba8Image ReadThemeLayoutImage(
+    const std::filesystem::path& runtime_root, const std::string& relative_path) noexcept {
+    try {
+        std::filesystem::path resolved;
+        if (!anomaly::ResolvePlatformUiLayoutPath(runtime_root, relative_path, resolved)) {
+            return {};
+        }
+        const auto read = anomaly::ReadUiResourceBytes(
+            resolved, anomaly::kDefaultUiResourceEncodedByteLimit);
+        if (!read) return {};
+        const auto decoded = anomaly::DecodeUiImageRgba8(read.bytes);
+        if (!decoded) return {};
+        return decoded.image;
+    } catch (...) {
+        return {};
+    }
+}
+
+std::shared_ptr<ThemeLayoutCache> LoadThemeLayoutCache(
+    const std::filesystem::path& runtime_root, const std::filesystem::path& layout_path,
+    const std::uint64_t version) noexcept {
+    auto cache = std::make_shared<ThemeLayoutCache>();
+    cache->version = version;
+    try {
+        // A layout file that was never written is an empty layout, not a fault.
+        // The settings page can only create one while the layout counts as
+        // usable, so reporting absence as an error would lock the very controls
+        // that produce the file. The document is created on first change.
+        if (!std::filesystem::is_regular_file(layout_path)) {
+            cache->available = true;
+            return cache;
+        }
+        const auto read = anomaly::ReadUiResourceBytes(
+            layout_path, anomaly::kPlatformUiLayoutMaximumBytes);
+        if (!read) {
+            cache->message = "the layout file could not be read";
+            return cache;
+        }
+        const std::string text(
+            reinterpret_cast<const char*>(read.bytes.data()), read.bytes.size());
+        auto parsed = anomaly::ParsePlatformUiLayout(text);
+        if (!parsed.ok) {
+            cache->message = std::move(parsed.message);
+            return cache;
+        }
+        cache->layout = std::move(parsed.layout);
+        cache->available = true;
+        // A theme file supplies the wallpaper that theme ships with, and an
+        // enabled picture in the shared file is the one the user chose. The choice
+        // wins, because otherwise the picker would look broken inside any theme
+        // that ships artwork of its own. Clearing the choice is what brings the
+        // shipped wallpaper back, and turning the fill mode off does exactly that.
+        const std::filesystem::path shared = SharedPlatformUiLayoutFile(runtime_root);
+        if (layout_path != shared) {
+            if (const auto shared_read = anomaly::ReadUiResourceBytes(
+                    shared, anomaly::kPlatformUiLayoutMaximumBytes)) {
+                const std::string shared_text(
+                    reinterpret_cast<const char*>(shared_read.bytes.data()),
+                    shared_read.bytes.size());
+                const auto shared_parsed = anomaly::ParsePlatformUiLayout(shared_text);
+                if (shared_parsed.ok) {
+                    // The veil is a user preference rather than theme artwork, so
+                    // the shared value always applies. Letting a theme keep its own
+                    // would make the visibility control dead inside that theme.
+                    cache->layout.surface_opacity = shared_parsed.layout.surface_opacity;
+                    if (shared_parsed.layout.background.mode !=
+                            anomaly::PlatformUiBackgroundMode::Disabled &&
+                        !shared_parsed.layout.background.path.empty()) {
+                        cache->layout.background = shared_parsed.layout.background;
+                    }
+                }
+            }
+        }
+
+        // Identical files are read once; a repeated sticker reuses the pixels.
+        std::map<std::string, std::size_t> loaded;
+        if (cache->layout.background.mode != anomaly::PlatformUiBackgroundMode::Disabled) {
+            cache->background = ReadThemeLayoutImage(
+                runtime_root, cache->layout.background.path);
+        }
+        cache->stickers.resize(cache->layout.stickers.size());
+        for (std::size_t index = 0; index < cache->layout.stickers.size(); ++index) {
+            const std::string& path = cache->layout.stickers[index].path;
+            const auto found = loaded.find(path);
+            if (found != loaded.end()) {
+                cache->stickers[index] = cache->stickers[found->second];
+                continue;
+            }
+            cache->stickers[index] = ReadThemeLayoutImage(runtime_root, path);
+            loaded.emplace(path, index);
+        }
+        return cache;
+    } catch (...) {
+        cache->available = false;
+        cache->message = "the layout could not be prepared";
+        return cache;
+    }
+}
+
+[[nodiscard]] std::uint32_t ThemeTintRgba(
+    const anomaly::PlatformUiColor& color, const float alpha) noexcept {
+    const auto channel = [](const float value) {
+        return static_cast<std::uint32_t>(
+            std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return channel(color.red) | (channel(color.green) << 8U) |
+        (channel(color.blue) << 16U) | (channel(color.alpha * alpha) << 24U);
+}
+
 class PlatformUi final : public std::enable_shared_from_this<PlatformUi> {
 public:
     PlatformUi(
@@ -741,6 +1099,222 @@ public:
                 }
             }
         });
+        // The theme layout lives outside the plugin packages and is re-read on
+        // its own worker: the render thread must never open a file, and the
+        // editor writes this file while the shell keeps running.
+        // The picker owns its own thread: the dialog is modal to itself, so the
+        // render loop keeps drawing while the user browses.
+        theme_picker_worker_ = std::jthread([this](const std::stop_token stop_token) {
+            while (!stop_token.stop_requested()) {
+                std::shared_ptr<ThemeBackgroundPick> dialog_request;
+                {
+                    std::unique_lock lock(theme_layout_write_mutex_);
+                    theme_wait_condition_.wait_for(lock, std::chrono::seconds(1),
+                        [this, &stop_token] {
+                            return stop_token.stop_requested() ||
+                                theme_picker_dialog_request_ != nullptr;
+                        });
+                    if (stop_token.stop_requested()) return;
+                    dialog_request =
+                        std::exchange(theme_picker_dialog_request_, nullptr);
+                }
+                if (!dialog_request) continue;
+                std::filesystem::path chosen;
+                std::string failure;
+                ShowThemeBackgroundDialog(chosen, failure);
+                {
+                    std::scoped_lock lock(theme_layout_write_mutex_);
+                    if (!chosen.empty()) {
+                        dialog_request->source = std::move(chosen);
+                        theme_background_pick_request_ = std::move(dialog_request);
+                    } else {
+                        dialog_request->cancelled = failure.empty();
+                        dialog_request->message = std::move(failure);
+                        theme_background_pick_result_ = std::move(dialog_request);
+                    }
+                }
+                theme_wait_condition_.notify_all();
+            }
+        });        theme_worker_ = std::jthread(
+            [this, root = diagnostics_.runtime_root](std::stop_token stop_token) {
+                std::uint64_t version = 0;
+                ThemeLayoutFileStamp previous;
+                std::filesystem::path previous_path;
+                bool primed = false;
+                while (!stop_token.stop_requested()) {
+                    try {
+                        const bool requested =
+                            theme_layout_reload_.exchange(false, std::memory_order_relaxed);
+                        // The palette picks the file: a per-palette layout under
+                        // config/themes wins over the shared one, so switching
+                        // palettes switches artwork instead of layering it.
+                        const std::filesystem::path layout_file =
+                            anomaly::ResolvePlatformUiLayoutFile(
+                                root, anomaly::ToString(anomaly::GetPlatformUiPalette()));
+                        const ThemeLayoutFileStamp stamp =
+                            ReadThemeLayoutStamp(layout_file);
+                        const bool changed = requested || !primed ||
+                            layout_file != previous_path ||
+                            stamp.present != previous.present ||
+                            (stamp.present && (stamp.write_time != previous.write_time ||
+                                stamp.size != previous.size));
+                        if (changed) {
+                            previous = stamp;
+                            previous_path = layout_file;
+                            primed = true;
+                            auto cache = LoadThemeLayoutCache(root, layout_file, ++version);
+                            std::scoped_lock lock(theme_layout_mutex_);
+                            theme_layout_published_ = std::move(cache);
+                        }
+                        // The checkbox and the mode combo only publish an intent;
+                        // the read-modify-write of the shared file happens here,
+                        // because the render thread must never touch the disk.
+                        int mode_request = -1;
+                        {
+                            std::scoped_lock lock(theme_layout_write_mutex_);
+                            mode_request =
+                                std::exchange(theme_background_mode_request_, -1);
+                        }
+                        if (mode_request >= 0) {
+                            const std::filesystem::path shared =
+                                SharedPlatformUiLayoutFile(root);
+                            anomaly::PlatformUiLayoutDocument document;
+                            if (const auto read = anomaly::ReadUiResourceBytes(
+                                    shared, anomaly::kPlatformUiLayoutMaximumBytes)) {
+                                const std::string text(
+                                    reinterpret_cast<const char*>(read.bytes.data()),
+                                    read.bytes.size());
+                                const auto parsed = anomaly::ParsePlatformUiLayout(text);
+                                if (parsed.ok) document = parsed.layout;
+                            }
+                            document.background.mode =
+                                static_cast<anomaly::PlatformUiBackgroundMode>(mode_request);
+                            if (mode_request != static_cast<int>(
+                                    anomaly::PlatformUiBackgroundMode::Disabled) &&
+                                document.background.opacity <= 0.0f) {
+                                document.background.opacity = 1.0f;
+                            }
+                            // Turning a fill mode on is a request to see the picture,
+                            // so an opaque surface is relaxed exactly like a pick does.
+                            if (mode_request != static_cast<int>(
+                                    anomaly::PlatformUiBackgroundMode::Disabled) &&
+                                document.surface_opacity >= 1.0f) {
+                                document.surface_opacity =
+                                    anomaly::kPlatformUiLayoutSurfaceOpacityDefault;
+                            }
+                            std::string error;
+                            auto result = std::make_shared<std::string>();
+                            if (anomaly::WritePlatformUiLayout(shared, document, error)) {
+                                theme_layout_reload_.store(true, std::memory_order_relaxed);
+                            } else {
+                                *result = error;
+                            }
+                            std::scoped_lock lock(theme_layout_write_mutex_);
+                            theme_layout_write_result_ = std::move(result);
+                        }
+                        // The background visibility slider writes the veil into the
+                        // shared document, so it survives a palette switch exactly
+                        // like the background picture does.
+                        float opacity_request = -1.0f;
+                        {
+                            std::scoped_lock lock(theme_layout_write_mutex_);
+                            opacity_request =
+                                std::exchange(theme_surface_opacity_request_, -1.0f);
+                        }
+                        if (opacity_request >= 0.0f) {
+                            const std::filesystem::path shared =
+                                SharedPlatformUiLayoutFile(root);
+                            anomaly::PlatformUiLayoutDocument document;
+                            if (const auto read = anomaly::ReadUiResourceBytes(
+                                    shared, anomaly::kPlatformUiLayoutMaximumBytes)) {
+                                const std::string text(
+                                    reinterpret_cast<const char*>(read.bytes.data()),
+                                    read.bytes.size());
+                                const auto parsed = anomaly::ParsePlatformUiLayout(text);
+                                if (parsed.ok) document = parsed.layout;
+                            }
+                            document.surface_opacity = opacity_request;
+                            std::string error;
+                            auto result = std::make_shared<std::string>();
+                            if (anomaly::WritePlatformUiLayout(shared, document, error)) {
+                                theme_layout_reload_.store(true, std::memory_order_relaxed);
+                            } else {
+                                *result = error;
+                            }
+                            std::scoped_lock lock(theme_layout_write_mutex_);
+                            theme_layout_write_result_ = std::move(result);
+                        }
+                        // "打开图片" hands the file the UI thread picked over to
+                        // here. The copy, the layout write and the reload all stay
+                        // on this thread, where every other file operation lives.
+                        std::shared_ptr<ThemeBackgroundPick> pick;
+                        {
+                            std::scoped_lock lock(theme_layout_write_mutex_);
+                            pick = std::exchange(theme_background_pick_request_, nullptr);
+                        }
+                        if (pick) {
+                            if (ImportThemeBackground(
+                                    root, pick->source, pick->relative_path, pick->message)) {
+                                // Reading the shared file and rewriting only the
+                                // background keeps every sticker that shares it,
+                                // which a document rebuilt from memory would drop.
+                                const std::filesystem::path shared =
+                                    SharedPlatformUiLayoutFile(root);
+                                anomaly::PlatformUiLayoutDocument document;
+                                if (const auto read = anomaly::ReadUiResourceBytes(
+                                        shared, anomaly::kPlatformUiLayoutMaximumBytes)) {
+                                    const std::string text(
+                                        reinterpret_cast<const char*>(read.bytes.data()),
+                                        read.bytes.size());
+                                    const auto parsed = anomaly::ParsePlatformUiLayout(text);
+                                    if (parsed.ok) document = parsed.layout;
+                                }
+                                document.background.path = pick->relative_path;
+                                // A picture the user just picked is meant to be seen,
+                                // so a disabled or invisible background is corrected
+                                // rather than silently ignored.
+                                if (document.background.mode ==
+                                    anomaly::PlatformUiBackgroundMode::Disabled) {
+                                    document.background.mode =
+                                        anomaly::PlatformUiBackgroundMode::Crop;
+                                }
+                                document.background.opacity = 1.0f;
+                                // The document created here starts fully opaque,
+                                // which would hide the picture behind the shell.
+                                // Relaxing the veil is what makes a fresh pick
+                                // visible instead of looking like nothing happened.
+                                if (document.surface_opacity >= 1.0f) {
+                                    document.surface_opacity =
+                                        anomaly::kPlatformUiLayoutSurfaceOpacityDefault;
+                                }
+                                std::string error;
+                                if (!anomaly::WritePlatformUiLayout(shared, document, error)) {
+                                    pick->message = error;
+                                } else {
+                                    theme_layout_reload_.store(true, std::memory_order_relaxed);
+                                }
+                            }
+                            std::scoped_lock lock(theme_layout_write_mutex_);
+                            theme_background_pick_result_ = std::move(pick);
+                        }
+                    } catch (const std::exception& failure) {
+                        // The worker owns every file operation; a failure must stay
+                        // here, because an exception leaving a std::jthread body
+                        // calls std::terminate and aborts the whole process. Report
+                        // it through the pick result so the page explains itself.
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        theme_background_pick_result_ = std::make_shared<ThemeBackgroundPick>();
+                        theme_background_pick_result_->message = failure.what();
+                    } catch (...) {
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        theme_background_pick_result_ = std::make_shared<ThemeBackgroundPick>();
+                        theme_background_pick_result_->message = "cannot apply the background image";
+                    }
+                    std::unique_lock wait_lock(theme_wait_mutex_);
+                    theme_wait_condition_.wait_for(
+                        wait_lock, stop_token, std::chrono::seconds(1), [] { return false; });
+                }
+            });
         management_window_ = plugins_.UiResources().RegisterWindow(
             management_window_scope_, PlatformUiWindowRequest());
         if (management_window_) {
@@ -761,7 +1335,16 @@ public:
 
     ~PlatformUi() {
         catalog_worker_.request_stop();
+        StopThemeWorker();
+        theme_worker_.join();
+        ReleaseThemeTextures();
         RevokeManagementWindow();
+    }
+
+    void StopThemeWorker() noexcept {
+        theme_picker_worker_.request_stop();
+        theme_worker_.request_stop();
+        theme_wait_condition_.notify_all();
     }
 
     [[nodiscard]] bool Ready() const noexcept { return static_cast<bool>(management_window_); }
@@ -810,6 +1393,7 @@ public:
             closing_ = true;
         }
         catalog_worker_.request_stop();
+        StopThemeWorker();
         RevokeManagementWindow();
     }
 
@@ -862,6 +1446,7 @@ public:
         // its last lifecycle callback is being drained. The owner itself is
         // retained by the global handoff below until this method succeeds.
         catalog_worker_.request_stop();
+        StopThemeWorker();
         if (diagnostics_.lifecycle_drain) {
             const bool drained = diagnostics_.lifecycle_drain(remaining());
             if (!drained) {
@@ -927,6 +1512,10 @@ public:
         }
         const ImGuiIO& io = ImGui::GetIO();
         if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) return;
+        if (theme_style_dirty_) {
+            theme_style_dirty_ = false;
+            ApplyPlatformUiStyle();
+        }
         const float ui_scale = PlatformUiScale();
         const bool ui_scale_changed = std::abs(ui_scale - management_shell_ui_scale_) > 0.0001f;
         // Keep a consistent margin around the responsive product surface and
@@ -1013,6 +1602,19 @@ public:
             UpdateLayout();
             HandleShellShortcuts();
             const bool shell_was_collapsed = ManagementShellCollapsed();
+            // Collapsing keeps the wallpaper: the strip is the entire window, so
+            // dropping the artwork as well left a hole in the game rather than a
+            // small copy of the custom background. The stickers still go, because a
+            // placement normalised against the expanded shell reads as noise in a
+            // strip this thin.
+            DrawThemeImages(
+                management_window_origin, management_window_size, false,
+                !shell_was_collapsed);
+            if (!shell_was_collapsed) {
+                // The second sticker pass also runs before the shell, so a sticker
+                // can paint over the wallpaper without ever landing on the text.
+                DrawThemeImages(management_window_origin, management_window_size, true);
+            }
             RecordPerformance(PlatformUiPerformanceStage::FrameSetup, phase_started);
             phase_started = measure ? std::chrono::steady_clock::now()
                                     : std::chrono::steady_clock::time_point{};
@@ -1075,9 +1677,340 @@ public:
             texture = logo_texture_;
         }
         plugins_.PrepareUiTexture(scope, texture);
+        SyncThemeLayout();
+        if (const auto applied = theme_layout_applied_) {
+            for (const ThemeImage& sticker : applied->stickers) {
+                plugins_.PrepareUiTexture(scope, sticker.handle);
+            }
+            plugins_.PrepareUiTexture(scope, applied->background.handle);
+        }
     }
 
 private:
+    // Publishes a newly loaded theme layout to the render thread. Textures are
+    // requested here, before the frame begins, so the request never runs inside
+    // an ImGui frame and a reload cannot accumulate device resources.
+    void SyncThemeLayout() noexcept {
+        try {
+            // The gate below is palette-scoped, so a palette change has to re-run
+            // this whole sync even when the layout file itself did not move. The
+            // previous pass already handed its decoded pixels to the GPU, so
+            // coming back to a themed palette needs a fresh decode rather than a
+            // second look at the same cache: the reload request produces one.
+            const auto active_palette = anomaly::GetPlatformUiPalette();
+            if (!theme_layout_palette_) {
+                theme_layout_palette_ = active_palette;
+            } else if (*theme_layout_palette_ != active_palette) {
+                theme_layout_palette_ = active_palette;
+                theme_layout_reload_.store(true, std::memory_order_relaxed);
+                theme_wait_condition_.notify_all();
+                return;
+            }
+            std::shared_ptr<ThemeLayoutCache> published;
+            {
+                std::scoped_lock lock(theme_layout_mutex_);
+                published = theme_layout_published_;
+            }
+            if (!published || published->version == theme_layout_applied_version_) return;
+            theme_layout_applied_version_ = published->version;
+            ReleaseThemeTextures();
+            // The worker already resolved the palette to a concrete file, so a
+            // layout that does not exist for this palette simply arrives empty
+            // and the palette below is restored exactly.
+            // The decoded pixels are handed over here and then dropped. The
+            // registry keeps its own copy of the payload for device recovery,
+            // and the standalone host keeps its D3D11 views, so the render side
+            // must not hold a second copy of the pixels.
+            anomaly::UiRgba8Image background = std::move(published->background);
+            std::vector<anomaly::UiRgba8Image> stickers = std::move(published->stickers);
+            auto state = std::make_shared<ThemeLayoutState>();
+            state->version = published->version;
+            state->available = published->available;
+            const auto resolve = [this](const anomaly::UiRgba8Image& image) {
+                ThemeImage target;
+                if (image.width == 0 || image.height == 0 || image.pixels.empty()) return target;
+                target.width = static_cast<float>(image.width);
+                target.height = static_cast<float>(image.height);
+                if (HostOwnsD3D11Device()) {
+                    target.standalone_view = CreateStandaloneTexture(image);
+                    return target;
+                }
+                anomaly::UiTextureRequest texture_request;
+                texture_request.format = anomaly::UiTextureFormat::Rgba8;
+                texture_request.width = image.width;
+                texture_request.height = image.height;
+                texture_request.encoded_bytes = image.pixels;
+                target.handle = plugins_.UiResources().RequestTexture(
+                    management_window_scope_, std::move(texture_request));
+                if (target.handle) {
+                    static_cast<void>(plugins_.QueueUiTextureLoad(
+                        management_window_scope_, target.handle));
+                }
+                return target;
+            };
+            state->background = resolve(background);
+            state->stickers.reserve(stickers.size());
+            for (const anomaly::UiRgba8Image& image : stickers) {
+                state->stickers.push_back(resolve(image));
+            }
+            // Attenuating the surface tokens is what lets themed artwork show
+            // through the shell, and it has to happen for stickers as well as
+            // for a wallpaper: stickers are drawn before the panels, so an
+            // opaque panel would hide them completely. Only a layout with no
+            // drawable content at all restores the palette exactly.
+            const bool wallpaper = state->background.Valid() &&
+                published->layout.background.mode !=
+                    anomaly::PlatformUiBackgroundMode::Disabled &&
+                published->layout.background.opacity > 0.0f;
+            const bool themed = wallpaper || !state->stickers.empty();
+            anomaly::SetPlatformUiSurfaceAlpha(
+                themed ? published->layout.surface_opacity : 1.0f);
+            state->layout = std::move(published->layout);
+            state->message = published->message;
+            theme_layout_applied_ = std::move(state);
+            theme_style_dirty_ = true;
+            // Keep the page's fill-mode control on what was just applied, unless
+            // the user is mid-change on it. A pending change stops being pending
+            // once the applied layout reports the mode it asked for, so the
+            // control never snaps back to the value it is replacing.
+            if (theme_background_mode_dirty_) {
+                if (static_cast<int>(theme_layout_applied_->layout.background.mode) ==
+                    theme_background_mode_) {
+                    theme_background_mode_dirty_ = false;
+                }
+            } else {
+                theme_background_mode_ = static_cast<int>(
+                    theme_layout_applied_->layout.background.mode);
+            }
+            // The same handshake for the background visibility slider: the value
+            // that was just applied takes the control over, unless the user is
+            // still moving it.
+            if (theme_surface_opacity_dirty_) {
+                if (std::abs(
+                        theme_layout_applied_->layout.surface_opacity -
+                        theme_surface_opacity_) < 0.005f) {
+                    theme_surface_opacity_dirty_ = false;
+                }
+            } else {
+                theme_surface_opacity_ = theme_layout_applied_->layout.surface_opacity;
+            }
+        } catch (...) {
+            theme_style_dirty_ = true;
+        }
+    }
+
+    void ReleaseThemeTextures() noexcept {
+        // Cleared before the new layout is resolved so a reload cannot
+        // accumulate device resources.
+        if (theme_layout_applied_) {
+            const auto release = [this](const ThemeImage& image) {
+                if (!image.handle) return;
+                static_cast<void>(plugins_.UiResources().Release(
+                    management_window_scope_, image.handle));
+            };
+            release(theme_layout_applied_->background);
+            for (const ThemeImage& sticker : theme_layout_applied_->stickers) release(sticker);
+            theme_layout_applied_.reset();
+        }
+        for (ID3D11ShaderResourceView* const view : standalone_theme_views_) {
+            if (view != nullptr) view->Release();
+        }
+        standalone_theme_views_.clear();
+    }
+
+    [[nodiscard]] bool HostOwnsD3D11Device() const noexcept {
+        return g_window != nullptr && g_window->device != nullptr;
+    }
+
+    // The standalone surface owns its D3D11 device, so it uploads the theme
+    // image itself: the shared registry can only be prepared by the embedded
+    // renderer, which is the one that installs a resource backend.
+    [[nodiscard]] ID3D11ShaderResourceView* CreateStandaloneTexture(
+        const anomaly::UiRgba8Image& image) noexcept {
+        try {
+            ID3D11Device* const device = g_window != nullptr ? g_window->device : nullptr;
+            if (device == nullptr) return nullptr;
+            D3D11_TEXTURE2D_DESC description{};
+            description.Width = image.width;
+            description.Height = image.height;
+            description.MipLevels = 1;
+            description.ArraySize = 1;
+            description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            description.SampleDesc.Count = 1;
+            description.Usage = D3D11_USAGE_DEFAULT;
+            description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA data{};
+            data.pSysMem = image.pixels.data();
+            data.SysMemPitch = image.width * 4U;
+            ID3D11Texture2D* texture{};
+            if (FAILED(device->CreateTexture2D(&description, &data, &texture)) ||
+                texture == nullptr) {
+                return nullptr;
+            }
+            ID3D11ShaderResourceView* view{};
+            const HRESULT result = device->CreateShaderResourceView(texture, nullptr, &view);
+            texture->Release();
+            if (FAILED(result) || view == nullptr) return nullptr;
+            standalone_theme_views_.push_back(view);
+            return view;
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    // Emits one theme image. Both hosts end up in the same quad: the embedded
+    // surface forwards to the resource backend, while the standalone surface has
+    // no backend and records the geometry straight onto its own draw list.
+    void EmitThemeImage(const ThemeImage& image, const anomaly::UiTextureDrawRequest& request,
+        ImDrawList* const list) noexcept {
+        if (image.handle) {
+            static_cast<void>(
+                plugins_.DrawUiTextureEx(management_window_scope_, image.handle, request));
+            return;
+        }
+        if (image.standalone_view == nullptr || list == nullptr) return;
+        const auto texture = static_cast<ImTextureID>(
+            reinterpret_cast<std::uintptr_t>(image.standalone_view));
+        const ImVec2 minimum(request.x, request.y);
+        const ImVec2 maximum(request.x + request.width, request.y + request.height);
+        const ImVec2 uv_min(request.uv0_x, request.uv0_y);
+        const ImVec2 uv_max(request.uv1_x, request.uv1_y);
+        if (request.rotation_degrees == 0.0F) {
+            list->AddImage(texture, minimum, maximum, uv_min, uv_max, request.tint_rgba);
+            return;
+        }
+        const anomaly::PlatformUiStickerPlacement placement{
+            request.x, request.y, request.width, request.height, request.rotation_degrees,
+            request.uv0_x, request.uv0_y, request.uv1_x, request.uv1_y, 1.0F};
+        const auto quad = anomaly::ComputePlatformUiImageQuad(placement);
+        list->AddImageQuad(texture,
+            ImVec2(quad.x[0], quad.y[0]), ImVec2(quad.x[1], quad.y[1]),
+            ImVec2(quad.x[2], quad.y[2]), ImVec2(quad.x[3], quad.y[3]),
+            ImVec2(quad.u[0], quad.v[0]), ImVec2(quad.u[1], quad.v[1]),
+            ImVec2(quad.u[2], quad.v[2]), ImVec2(quad.u[3], quad.v[3]),
+            request.tint_rgba);
+    }
+
+    // Draws the themed background and stickers against the shell viewport.
+    //
+    // The stack is:
+    //
+    //   window surface -> wallpaper -> behind stickers -> panels/labels/buttons
+    //                                       -> front stickers on top of them all
+    //
+    // `behind` therefore sits exactly where the user expects a wallpaper to sit:
+    // it is dimmed by the panel surfaces according to `surfaceOpacity`, and it
+    // can never touch a label. `front` is the deliberate opt-in for a pop-out
+    // sticker that has to stay at full strength over a panel; it is drawn on the
+    // overlay list, so it can cover text as well and belongs in the margins.
+    //
+    // Neither layer is clipped to the shell window: `behind` replaces the window
+    // clip rectangle, and the overlay list is only bounded by the host viewport.
+    // That is what lets a sticker overhang the shell for the pop-out effect.
+    void DrawThemeImages(const ImVec2 origin, const ImVec2 size, const bool front,
+        const bool stickers = true) noexcept {
+        const auto applied = theme_layout_applied_;
+        if (!applied || !applied->available) return;
+        try {
+            ImDrawList* const list =
+                front ? ImGui::GetForegroundDrawList() : ImGui::GetWindowDrawList();
+            if (list == nullptr) return;
+            const auto& layout = applied->layout;
+            if (!front && applied->background.Valid() &&
+                layout.background.mode != anomaly::PlatformUiBackgroundMode::Disabled) {
+                const auto placement = anomaly::ComputePlatformUiBackgroundPlacement(
+                    layout.background.mode, applied->background.width,
+                    applied->background.height, origin.x, origin.y, size.x, size.y);
+                if (placement.Visible()) {
+                    anomaly::UiTextureDrawRequest request;
+                    request.x = placement.x;
+                    request.y = placement.y;
+                    request.width = placement.width;
+                    request.height = placement.height;
+                    request.uv0_x = placement.uv0_x;
+                    request.uv0_y = placement.uv0_y;
+                    request.uv1_x = placement.uv1_x;
+                    request.uv1_y = placement.uv1_y;
+                    request.tint_rgba = ThemeTintRgba(
+                        layout.background.tint, layout.background.opacity);
+                    list->PushClipRect(
+                        origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+                    EmitThemeImage(applied->background, request, list);
+                    list->PopClipRect();
+                }
+            }
+            // The single opaque-ish surface of the shell. Every panel fill token
+            // is transparent while a theme is active, so this veil is the only
+            // thing standing in for them, and it is painted *below* the stickers
+            // and below the shell content. That ordering is what gives a sticker
+            // a solid panel to sit on without letting it reach a label.
+            if (!front) {
+                const anomaly::PlatformUiColor veil = anomaly::PlatformUiSurfaceColor();
+                // surfaceOpacity only ever described the wallpaper showing
+                // through the shell. With no wallpaper there is nothing behind
+                // the veil to reveal, so it stays fully opaque and the shell
+                // keeps one solid palette colour for the stickers to sit on.
+                const anomaly::PlatformUiBackground& background =
+                    applied->layout.background;
+                const bool wallpaper = applied->background.Valid() &&
+                    background.mode != anomaly::PlatformUiBackgroundMode::Disabled &&
+                    background.opacity > 0.0f;
+                const float veil_alpha =
+                    wallpaper ? anomaly::GetPlatformUiSurfaceAlpha() : 1.0f;
+                if (veil_alpha > 0.0f) {
+                    const auto channel = [](const float value) {
+                        return static_cast<int>(value * 255.0f + 0.5f);
+                    };
+                    list->PushClipRect(
+                        origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+                    list->AddRectFilled(
+                        origin, ImVec2(origin.x + size.x, origin.y + size.y),
+                        IM_COL32(
+                            channel(veil.red), channel(veil.green), channel(veil.blue),
+                            channel(veil_alpha)));
+                    list->PopClipRect();
+                }
+            }
+            // Replacing the window clip rectangle with a wider one is what lets
+            // a `behind` sticker paint outside the shell window; the renderer
+            // still clamps every command to the host swap chain.
+            if (!front) {
+                list->PushClipRect(
+                    ImVec2(-kThemeStickerClipExtent, -kThemeStickerClipExtent),
+                    ImVec2(kThemeStickerClipExtent, kThemeStickerClipExtent), false);
+            }
+            for (std::size_t index = 0;
+                    stickers && index < layout.stickers.size() &&
+                    index < applied->stickers.size(); ++index) {
+                const auto& sticker = layout.stickers[index];
+                if ((sticker.layer == anomaly::PlatformUiStickerLayer::Front) != front) {
+                    continue;
+                }
+                const ThemeImage& image = applied->stickers[index];
+                if (!image.Valid()) continue;
+                const auto placement = anomaly::ComputePlatformUiStickerPlacement(
+                    sticker, image.width, image.height, size.x, size.y);
+                if (!placement.Visible()) continue;
+                anomaly::UiTextureDrawRequest request;
+                request.x = origin.x + placement.x;
+                request.y = origin.y + placement.y;
+                request.width = placement.width;
+                request.height = placement.height;
+                request.rotation_degrees = placement.rotation;
+                request.uv0_x = placement.uv0_x;
+                request.uv0_y = placement.uv0_y;
+                request.uv1_x = placement.uv1_x;
+                request.uv1_y = placement.uv1_y;
+                request.tint_rgba = ThemeTintRgba(sticker.tint, sticker.opacity);
+                request.on_top = front;
+                EmitThemeImage(image, request, list);
+            }
+            if (!front) list->PopClipRect();
+        } catch (...) {
+            // A theme is decoration: a failed draw must never disturb the shell.
+        }
+    }
+
     using Route = anomaly::PlatformUiRoute;
     using Tab = anomaly::PlatformUiPluginTab;
     using Filter = anomaly::PlatformUiPluginFilter;
@@ -4465,6 +5398,8 @@ private:
         case anomaly::PlatformUiPalette::Paper:
             return Text(anomaly::MessageId::SettingsPalettePaper);
         case anomaly::PlatformUiPalette::AnomalyHub: return "AnomalyHub";
+        case anomaly::PlatformUiPalette::Naiwa:
+            return Text(anomaly::MessageId::SettingsPaletteNaiwa);
         case anomaly::PlatformUiPalette::Custom:
             return Text(anomaly::MessageId::SettingsPaletteCustom);
         }
@@ -4737,18 +5672,20 @@ private:
                 }, Text(anomaly::MessageId::SettingsRestartRequired));
             row("interface.palette", Text(anomaly::MessageId::SettingsPalette),
                 Text(anomaly::MessageId::SettingsPaletteHint),
-                "palette theme color moss aurora ember paper anomalyhub custom", [&] {
+                "palette theme color moss aurora ember paper naiwa anomalyhub custom", [&] {
                     if (ImGui::BeginCombo("##value", PaletteLabel(values.interface_palette))) {
-                        constexpr std::array<anomaly::PlatformUiPalette, 6> options{
+                        constexpr std::array<anomaly::PlatformUiPalette, 7> options{
                             anomaly::PlatformUiPalette::Moss,
                             anomaly::PlatformUiPalette::Aurora,
                             anomaly::PlatformUiPalette::Ember,
                             anomaly::PlatformUiPalette::Paper,
+                            anomaly::PlatformUiPalette::Naiwa,
                             anomaly::PlatformUiPalette::AnomalyHub,
                             anomaly::PlatformUiPalette::Custom};
-                        constexpr std::array<std::string_view, 6> ids{
+                        constexpr std::array<std::string_view, 7> ids{
                             "palette-moss", "palette-aurora", "palette-ember",
-                            "palette-paper", "palette-anomalyhub", "palette-custom"};
+                            "palette-paper", "palette-naiwa", "palette-anomalyhub",
+                            "palette-custom"};
                         for (std::size_t index = 0; index < options.size(); ++index) {
                             const std::string option = anomaly::StableDisplayLabel(
                                 PaletteLabel(options[index]), ids[index]);
@@ -4797,6 +5734,125 @@ private:
                     "custom palette border outline separator color",
                     values.interface_custom_colors.border);
             }
+            // 自定义背景图：两个控件，选完即时生效。贴纸只由编辑器排版，这里保存
+            // 时整份文档写回，因此不会动到贴纸。放在自定义配色之外，任何配色都能用。
+            row("interface.background_image", Text(anomaly::MessageId::SettingsBackgroundImage),
+                Text(anomaly::MessageId::SettingsBackgroundImageHint),
+                "custom background wallpaper image pick file", [&] {
+                    if (!theme_layout_applied_ || !theme_layout_applied_->available) {
+                        ImGui::TextDisabled("%s",
+                            Text(anomaly::MessageId::SettingsThemeLayoutUnavailable));
+                        return;
+                    }
+                    // 背景是全局设置：勾选框开关，中间选图，右侧只选填充方式。取消勾选
+                    // 后通用布局里不留背景，主题自带的那张壁纸自然回来。
+                    // The cell's left edge, so the fill-mode combo can size itself to
+                    // what this line has left. ImGui measures the content region
+                    // against the window rather than the table cell, so any
+                    // window-relative width runs the control past the column.
+                    const float line_start = ImGui::GetCursorPosX();
+                    constexpr int disabled =
+                        static_cast<int>(anomaly::PlatformUiBackgroundMode::Disabled);
+                    constexpr int crop =
+                        static_cast<int>(anomaly::PlatformUiBackgroundMode::Crop);
+                    bool enabled = theme_background_mode_ != disabled;
+                    if (ImGui::Checkbox("##background-enabled", &enabled)) {
+                        // 从关闭切到开启时默认用裁剪。
+                        const int next = enabled
+                            ? (theme_background_mode_ == disabled ? crop
+                                                                  : theme_background_mode_)
+                            : disabled;
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        theme_background_mode_request_ = next;
+                        theme_background_mode_ = next;
+                        // Hold the control on the new value until the worker has
+                        // written it: the applied layout still reports the old one.
+                        theme_background_mode_dirty_ = true;
+                        theme_wait_condition_.notify_all();
+                    }
+                    ImGui::SameLine();
+                    const std::string open = StableLabel(
+                        anomaly::MessageId::SettingsBackgroundOpen, "background-open");
+                    // The request slot stays occupied while the dialog is up, so the
+                    // button reads as busy instead of looking dead.
+                    bool dialog_pending = false;
+                    {
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        dialog_pending = theme_picker_dialog_request_ != nullptr;
+                    }
+                    ImGui::BeginDisabled(dialog_pending);
+                    if (ImGui::Button(open.c_str())) {
+                        // Hand the dialog to the picker thread and return, so the
+                        // frame finishes and the game keeps rendering.
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        theme_picker_dialog_request_ = std::make_shared<ThemeBackgroundPick>();
+                        theme_wait_condition_.notify_all();
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    // Whatever this line has left, so the trio ends exactly where
+                    // every other row's single control ends.
+                    ImGui::SetNextItemWidth((std::max)(
+                        48.0f, Scaled(238.0f) - (ImGui::GetCursorPosX() - line_start)));
+                    const std::array<const char*, 3> modes{
+                        Text(anomaly::MessageId::SettingsBackgroundModeCenter),
+                        Text(anomaly::MessageId::SettingsBackgroundModeCrop),
+                        Text(anomaly::MessageId::SettingsBackgroundModeStretch)};
+                    int mode = std::clamp(theme_background_mode_, 1, 3) - 1;
+                    // The row label already names the control and the hint beside
+                    // it was removed, so the combo carries no visible caption.
+                    if (ImGui::Combo("##background-mode", &mode, modes.data(),
+                            static_cast<int>(modes.size()))) {
+                        // 填充方式同样是全局设置，交给 worker 落到通用布局里。
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        theme_background_mode_request_ = mode + 1;
+                        theme_background_mode_ = mode + 1;
+                        theme_background_mode_dirty_ = true;
+                        theme_wait_condition_.notify_all();
+                    }
+                    // 成功/失败都回显，失败时给出具体原因。
+                    std::shared_ptr<ThemeBackgroundPick> pick;
+                    std::shared_ptr<std::string> write;
+                    {
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        pick = std::exchange(theme_background_pick_result_, nullptr);
+                        write = std::exchange(theme_layout_write_result_, nullptr);
+                    }
+                    const std::string* failure = nullptr;
+                    if (write && !write->empty()) failure = write.get();
+                    if (pick && !pick->cancelled && !pick->message.empty()) {
+                        failure = &pick->message;
+                    }
+                    if (failure) {
+                        const std::array<std::string_view, 1> arguments{*failure};
+                        ImGui::TextColored(ErrorColor(), "%s", Format(
+                            anomaly::MessageId::SettingsBackgroundFailed, arguments).c_str());
+                    } else if (pick && !pick->cancelled) {
+                        ImGui::TextColored(AccentColor(), "%s",
+                            Text(anomaly::MessageId::SettingsBackgroundApplied));
+                    }
+                });
+            // The background is global, so the veil over it is global too: this row
+            // writes the shared layout instead of the saved preferences, which is
+            // why it sits beside the picture it dims.
+            row("interface.background_visibility",
+                Text(anomaly::MessageId::SettingsBackgroundVisibility),
+                Text(anomaly::MessageId::SettingsBackgroundVisibilityHint),
+                "veil opacity dim wallpaper readability", [&] {
+                    int value = static_cast<int>(std::lround(
+                        std::clamp(theme_surface_opacity_, 0.0f, 1.0f) * 100.0f));
+                    if (ImGui::SliderInt("##value", &value,
+                            static_cast<int>(
+                                anomaly::kPlatformUiLayoutSurfaceOpacityMinimum * 100.0f),
+                            100, "%d%%")) {
+                        const float chosen = static_cast<float>(value) / 100.0f;
+                        std::scoped_lock lock(theme_layout_write_mutex_);
+                        theme_surface_opacity_request_ = chosen;
+                        theme_surface_opacity_ = chosen;
+                        theme_surface_opacity_dirty_ = true;
+                        theme_wait_condition_.notify_all();
+                    }
+                });
             row("interface.scale_percent", Text(anomaly::MessageId::SettingsInterfaceScale),
                 Text(anomaly::MessageId::SettingsInterfaceScaleHint),
                 "dpi font size zoom", [&] {
@@ -4817,15 +5873,6 @@ private:
                         settings_scale_edit_percent_.reset();
                     }
                 }, Text(anomaly::MessageId::SettingsUiRebuild));
-            row("interface.opacity_percent", Text(anomaly::MessageId::SettingsWindowOpacity),
-                Text(anomaly::MessageId::SettingsWindowOpacityHint),
-                "alpha transparency", [&] {
-                    int value = static_cast<int>(values.interface_opacity_percent);
-                    if (ImGui::SliderInt("##value", &value, 10, 100, "%d%%")) {
-                        value = ((value + 2) / 5) * 5;
-                        values.interface_opacity_percent = static_cast<std::uint32_t>(value);
-                    }
-                });
             row("interface.reduced_motion", Text(anomaly::MessageId::SettingsReduceMotion),
                 Text(anomaly::MessageId::SettingsReduceMotionHint),
                 "animation accessibility", [&] {
@@ -6428,6 +7475,44 @@ private:
     std::shared_ptr<anomaly::PluginScope> management_window_scope_;
     anomaly::UiResourceHandle management_window_;
     anomaly::UiResourceHandle logo_texture_;
+    std::shared_ptr<ThemeLayoutCache> theme_layout_published_;
+    std::shared_ptr<ThemeLayoutState> theme_layout_applied_;
+    // Palette the applied layout was gated for. A change here forces a reload,
+    // which is what brings a themed layout back after a visit to another theme.
+    std::optional<anomaly::PlatformUiPalette> theme_layout_palette_;
+    // The settings page edits a background and hands it to the theme worker,
+    // because the render thread must never touch a file. The worker writes it and
+    // publishes what happened so the page can report the outcome.
+    std::mutex theme_layout_write_mutex_;
+    std::shared_ptr<std::string> theme_layout_write_result_;
+    // The picked file travels from the UI thread to the worker through this
+    // slot, and the outcome travels back the same way.
+    // Set by the settings page, materialized by the worker: -1 means no request.
+    int theme_background_mode_request_{-1};
+    std::shared_ptr<ThemeBackgroundPick> theme_background_pick_request_;
+    std::shared_ptr<ThemeBackgroundPick> theme_background_pick_result_;
+    // Fill mode shown by the settings page, owned by the render thread.
+    int theme_background_mode_{};
+    bool theme_background_mode_dirty_{};
+    // Background visibility: the veil drawn over the wallpaper. Set by the same
+    // settings page and materialized by the same worker as the fill mode.
+    float theme_surface_opacity_request_{-1.0f};
+    float theme_surface_opacity_{1.0f};
+    bool theme_surface_opacity_dirty_{};
+    // D3D11 views the standalone surface created for the current theme layout.
+    // They live as long as the layout that produced them.
+    std::vector<ID3D11ShaderResourceView*> standalone_theme_views_;
+    std::uint64_t theme_layout_applied_version_{};
+    bool theme_style_dirty_{};
+    std::atomic<bool> theme_layout_reload_{true};
+    mutable std::mutex theme_layout_mutex_;
+    std::mutex theme_wait_mutex_;
+    std::condition_variable_any theme_wait_condition_;
+    std::jthread theme_worker_;
+    // The picker thread services dialog requests so the render loop never waits.
+    // Declared after the layout worker so it stops first at teardown.
+    std::shared_ptr<ThemeBackgroundPick> theme_picker_dialog_request_;
+    std::jthread theme_picker_worker_;
     PlatformDiagnostics diagnostics_;
     std::optional<ContactInformation> contact_;
     anomaly::PlatformUiModel model_;
@@ -6969,9 +8054,17 @@ void RunPlatform(
     class_registered = RegisterClassExW(&window_class) != 0;
     const DWORD extended_style = WS_EX_TOOLWINDOW;
     const DWORD window_style = host.attached ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+    // The attached window covers a game client area, so it is sized to that.
+    // The standalone window is a fixed-size surface that has to be deliberately
+    // larger than the shell: the shell keeps its own 1180x700 size and the
+    // surrounding margin is what a theme sticker overhangs into, which is how
+    // the pop-out effect is visible outside the game.
+    constexpr int kStandaloneWindowWidth = 1480;
+    constexpr int kStandaloneWindowHeight = 940;
     host.window = CreateWindowExW(
         extended_style, window_class.lpszClassName, L"Anomaly Plugin Platform", window_style,
-        120, 100, 1080, 720, host.attached ? host.target : nullptr, nullptr, instance, nullptr);
+        120, 100, kStandaloneWindowWidth, kStandaloneWindowHeight,
+        host.attached ? host.target : nullptr, nullptr, instance, nullptr);
     if (host.window == nullptr || !CreateDevice(host)) {
         std::ofstream(root / L"anomaly-platform.log", std::ios::app)
             << "platform window/device creation failed: " << GetLastError() << '\n';
