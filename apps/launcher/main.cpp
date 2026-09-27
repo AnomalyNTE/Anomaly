@@ -86,7 +86,6 @@ constexpr float kHeaderHeight = 44.0f;
 constexpr float kLauncherBandLeft = 115.4f;
 constexpr float kLauncherBandRight = 81.1f;
 constexpr float kModeHeight = 68.0f;
-constexpr float kFooterHeight = 58.0f;
 constexpr float kProxyActionLeftPadding = 4.0f;
 constexpr float kLauncherFontScale = 20.0f / 13.0f;
 constexpr float kDefaultDpi = 96.0f;
@@ -136,6 +135,12 @@ struct LauncherMessage final {
     std::string detail;
 };
 
+// Which mode a status message belongs to. The controller keeps a single message, so
+// without this an attach outcome stayed on screen after switching to the proxy mode,
+// where it described something that mode cannot do. Shared covers what neither mode
+// owns: the initial scan, settings and hotkey writes.
+enum class MessageScope { Both, Proxy, Attach };
+
 struct LauncherSnapshot final {
     anomaly::launcher::NteClient selected_client{
         anomaly::launcher::NteClient::MainlandChina};
@@ -153,6 +158,7 @@ struct LauncherSnapshot final {
     bool busy{};
     LauncherMessage message;
     MessageKind message_kind{MessageKind::Neutral};
+    MessageScope message_scope{MessageScope::Both};
     std::shared_ptr<const LauncherTheme> theme;
 };
 
@@ -442,7 +448,7 @@ public:
           source_{payload_root_ / L"dwmapi.dll", payload_root_ / L"Anomaly"},
           configuration_path_(anomaly::launcher::LauncherConfigurationPath(payload_root_)),
           worker_([this](std::stop_token stop) { WorkerMain(stop); }) {
-        Queue(anomaly::MessageId::LauncherStatusScanningLocal, [this] {
+        Queue(anomaly::MessageId::LauncherStatusScanningLocal, MessageScope::Both, [this] {
             InitializePathsImpl();
         });
     }
@@ -467,7 +473,7 @@ public:
             state_.game_directory = std::move(directory);
             configuration_.Selected().game_directory = state_.game_directory;
         }
-        Queue(anomaly::MessageId::LauncherStatusInspectingProxy, [this] {
+        Queue(anomaly::MessageId::LauncherStatusInspectingProxy, MessageScope::Proxy, [this] {
             ReconcileRelatedPathsImpl();
             const auto saved = PersistConfigurationImpl();
             RefreshHotkeyImpl();
@@ -482,7 +488,7 @@ public:
     }
 
     void RefreshProxy() {
-        Queue(anomaly::MessageId::LauncherStatusInspectingProxy, [this] {
+        Queue(anomaly::MessageId::LauncherStatusInspectingProxy, MessageScope::Proxy, [this] {
             RefreshProxyImpl();
             RefreshRecoveryImpl();
             RefreshProcessesImpl(false);
@@ -490,7 +496,7 @@ public:
     }
 
     void InstallProxy() {
-        Queue(anomaly::MessageId::LauncherStatusInstallingRuntime, [this] {
+        Queue(anomaly::MessageId::LauncherStatusInstallingRuntime, MessageScope::Proxy, [this] {
             const auto game = GameDirectory();
             const auto result = anomaly::launcher::InstallProxyRuntime(game, source_);
             PublishProxy(result);
@@ -502,7 +508,7 @@ public:
     void SetProxyEnabled(bool enabled) {
         Queue(enabled ? anomaly::MessageId::LauncherStatusEnablingProxy
                       : anomaly::MessageId::LauncherStatusDisablingProxy,
-            [this, enabled] {
+            MessageScope::Proxy, [this, enabled] {
             const auto game = GameDirectory();
             const auto result = anomaly::launcher::SetProxyEnabled(
                 game, source_, enabled);
@@ -511,7 +517,7 @@ public:
     }
 
     void RestoreRecovery(anomaly::RuntimeRecoveryAxis axis) {
-        Queue(anomaly::MessageId::LauncherStatusRestoringRecovery, [this, axis] {
+        Queue(anomaly::MessageId::LauncherStatusRestoringRecovery, MessageScope::Proxy, [this, axis] {
             const auto runtime_root = GameDirectory() / L"Anomaly";
             anomaly::RuntimeRecoveryStore store(runtime_root);
             PublishRecovery(store.Restore(axis), true);
@@ -520,7 +526,7 @@ public:
 
     void RefreshProcesses() {
         Queue(anomaly::MessageId::LauncherStatusScanningProcesses,
-            [this] { RefreshProcessesImpl(); });
+            MessageScope::Attach, [this] { RefreshProcessesImpl(); });
     }
 
     void SelectLauncherExecutable(std::filesystem::path executable) {
@@ -530,7 +536,7 @@ public:
             state_.launcher_executable = std::move(executable);
             configuration_.Selected().launcher_executable = state_.launcher_executable;
         }
-        Queue(anomaly::MessageId::LauncherStatusScanningLocal, [this] {
+        Queue(anomaly::MessageId::LauncherStatusScanningLocal, MessageScope::Attach, [this] {
             ReconcileRelatedPathsImpl();
             const auto saved = PersistConfigurationImpl();
             RefreshProcessesImpl();
@@ -555,7 +561,7 @@ public:
             state_.recovery_message.clear();
             state_.attached_process = 0;
         }
-        Queue(anomaly::MessageId::LauncherStatusScanningLocal, [this] {
+        Queue(anomaly::MessageId::LauncherStatusScanningLocal, MessageScope::Both, [this] {
             ReconcileRelatedPathsImpl();
             const auto saved = PersistConfigurationImpl();
             RefreshHotkeyImpl();
@@ -570,7 +576,7 @@ public:
     }
 
     void LaunchAndAttach() {
-        Queue(anomaly::MessageId::LauncherStatusLaunchingAttach, [this] {
+        Queue(anomaly::MessageId::LauncherStatusLaunchingAttach, MessageScope::Attach, [this] {
             const auto launcher = LauncherExecutable();
             const auto selected = ResolveAttachRuntime();
             if (!selected.Ok()) {
@@ -628,7 +634,7 @@ public:
     }
 
     void SetToggleKey(const std::uint32_t key) {
-        Queue(anomaly::MessageId::LauncherStatusSavingSettings, [this, key] {
+        Queue(anomaly::MessageId::LauncherStatusSavingSettings, MessageScope::Both, [this, key] {
             if (!SaveToggleKeyImpl(key)) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
                     MessageKind::Error, "menu toggle preference could not be written");
@@ -705,13 +711,17 @@ private:
             (RuntimeSettingsRoot() / L"anomaly.ini").c_str()) != FALSE;
     }
 
-    bool Queue(anomaly::MessageId activity, Work work) {
+    bool Queue(anomaly::MessageId activity, MessageScope scope, Work work) {
         {
             std::scoped_lock lock(state_mutex_);
             if (state_.busy) return false;
             state_.busy = true;
             state_.message = MakeLauncherMessage(activity);
             state_.message_kind = MessageKind::Neutral;
+            // The scope is the operation's, so every message the work publishes --
+            // including the ones written deeper in, such as a failed settings save --
+            // stays attributed to the mode that asked for it.
+            state_.message_scope = scope;
         }
         {
             std::scoped_lock lock(queue_mutex_);
@@ -1756,6 +1766,29 @@ void DrawStartupSettings(
     }
 }
 
+// The width a status line has to leave free for the refresh at its right edge, so
+// the text beside it wraps before the icon instead of running underneath it.
+float StatusRefreshReserve() {
+    return ButtonHeight(38.0f) + Scale(16.0f) + Scale(8.0f);
+}
+
+// The refresh belongs on a mode's status line, at its right edge: it acts on exactly
+// the state shown beside it. On an action row below it followed a right-aligned
+// button and was pushed off the panel entirely. Both modes carry one, so the
+// placement and the centring live here rather than being repeated.
+bool StatusRefreshButton(
+    const char* id, const char* tooltip, const bool enabled, const float status_top) {
+    const float icon_extent = ButtonHeight(38.0f);
+    ImGui::SameLine();
+    // Centred against the status line rather than sitting on its baseline, which a
+    // frame-height button always overflows.
+    ImGui::SetCursorPosY(
+        status_top - (icon_extent - ImGui::GetTextLineHeight()) * 0.5f);
+    ImGui::SetCursorPosX(
+        ImGui::GetWindowWidth() - icon_extent - Scale(16.0f));
+    return IconButton(id, 0xe72c, tooltip, enabled);
+}
+
 void DrawProxyMode(
     HWND window, LauncherController& controller, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
@@ -1786,22 +1819,10 @@ void DrawProxyMode(
         Text(translator, anomaly::MessageId::LauncherSectionInstallation));
     ImGui::TextColored(ProxyStateColor(snapshot.proxy.state), "%s",
         Text(translator, ProxyStateMessageId(snapshot.proxy.state)));
-    // The refresh belongs on the status line, at its right edge: it acts on
-    // exactly the installation state shown beside it. On the action row below it
-    // followed a right-aligned button and was pushed off the panel entirely.
-    ImGui::SameLine();
-    // Centred against the status line rather than sitting on its baseline, which a
-    // frame-height button always overflows.
     const float status_top = ImGui::GetItemRectMin().y - ImGui::GetWindowPos().y;
-    const float icon_extent = ButtonHeight(38.0f);
-    ImGui::SetCursorPosY(
-        status_top - (icon_extent - ImGui::GetTextLineHeight()) * 0.5f);
-    ImGui::SetCursorPosX(
-        ImGui::GetWindowWidth() - icon_extent - Scale(16.0f));
-    if (IconButton(
-            "refresh-proxy", 0xe72c,
-            Text(translator, anomaly::MessageId::LauncherProxyRefresh),
-            !snapshot.busy && !snapshot.game_directory.empty())) {
+    if (StatusRefreshButton(
+            "refresh-proxy", Text(translator, anomaly::MessageId::LauncherProxyRefresh),
+            !snapshot.busy && !snapshot.game_directory.empty(), status_top)) {
         controller.RefreshProxy();
     }
     if (snapshot.proxy.state == State::UpdateAvailable) {
@@ -1810,9 +1831,12 @@ void DrawProxyMode(
             translator, anomaly::MessageId::LauncherProxyUpdateDescription));
         ImGui::PopTextWrapPos();
     }
-    if (snapshot.message_kind != MessageKind::Neutral) {
+    if (snapshot.message_kind != MessageKind::Neutral &&
+        snapshot.message_scope != MessageScope::Attach) {
         // Install and enable failures used to be reported by the footer, which is
-        // gone, so the status block carries them now.
+        // gone, so the status block carries them now. Attach outcomes are left out:
+        // the controller keeps one message, and without this an attach result
+        // described itself here, under a mode that cannot attach.
         const ImVec4 proxy_ink = snapshot.message_kind == MessageKind::Error
             ? ThemeColor(theme.danger)
             : ThemeColor(theme.success);
@@ -1917,9 +1941,20 @@ void DrawAttachMode(
             ? ThemeColor(theme.success)
             : kLauncherMutedInk;
     const std::string status = RenderMessage(translator, snapshot.message);
-    ImGui::PushTextWrapPos();
+    ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - StatusRefreshReserve());
     ImGui::TextColored(status_ink, "%s", status.c_str());
     ImGui::PopTextWrapPos();
+    // The process summary needs a refresh of its own. Without one the launcher keeps
+    // reporting the process it attached to after that process has exited, and the
+    // stale list leaves the attach action disabled until the launcher is restarted.
+    const float process_status_top =
+        ImGui::GetItemRectMin().y - ImGui::GetWindowPos().y;
+    if (StatusRefreshButton(
+            "refresh-processes",
+            Text(translator, anomaly::MessageId::LauncherProcessRefresh),
+            !snapshot.busy, process_status_top)) {
+        controller.RefreshProcesses();
+    }
 
     const bool can_launch = !snapshot.busy && snapshot.core_available &&
         !snapshot.launcher_executable.empty() && snapshot.processes.empty();
@@ -1934,31 +1969,6 @@ void DrawAttachMode(
             ImVec2(240.0f, 62.0f))) {
         controller.LaunchAndAttach();
     }
-}
-
-void DrawFooter(
-    const LauncherSnapshot& snapshot, const anomaly::Translator& translator) {
-    const auto& theme = ue5mem::PlatformUiTheme();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 11.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.navigation_background));
-    ImGui::BeginChild(
-        "LauncherFooter", ImVec2(0.0f, Scale(kFooterHeight)),
-        ImGuiChildFlags_AlwaysUseWindowPadding);
-    // The footer sits on the same light surface as everything else, where the
-    // palette's success and danger tones are far too pale to read. The icon still
-    // carries the state, so the text itself is simply black.
-    const ImVec4 color(0.0f, 0.0f, 0.0f, 1.0f);
-    const char32_t icon = snapshot.message_kind == MessageKind::Success ? 0xe73e
-        : snapshot.message_kind == MessageKind::Error ? 0xe7ba : 0xe72c;
-    ImGui::TextColored(color, "%s", Glyph(icon));
-    ImGui::SameLine();
-    const std::string rendered = RenderMessage(translator, snapshot.message);
-    const std::string message = Ellipsize(
-        rendered, (std::max)(32.0f, ImGui::GetContentRegionAvail().x));
-    ImGui::TextColored(color, "%s", message.c_str());
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
 }
 
 // The native caption is gone, so the launcher draws its own: a drag band holding
