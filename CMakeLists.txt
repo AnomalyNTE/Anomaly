@@ -1007,7 +1007,7 @@ target_link_libraries(anomaly_launcher PRIVATE
     anomaly_manual_map anomaly_runtime_recovery
     anomaly_platform_settings anomaly_platform_ui_layout
     anomaly_runtime_launch anomaly_ui_resources
-    ole32 shell32 delayimp)
+    ole32 shell32 delayimp dcomp)
 # The hook is part of the runtime payload the launcher is installed with, so it is built before the
 # launcher that would inject it.
 add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
