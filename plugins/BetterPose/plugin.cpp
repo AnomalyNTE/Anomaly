@@ -21,6 +21,7 @@ using Microsoft::WRL::ComPtr;
 #include "better_pose_profile.hpp"
 #include "accessory_dynamics.hpp"
 #include "secondary_rules.hpp"
+#include "pose_history.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -369,6 +370,12 @@ struct Context final {
   // Cursor movement since the press, so the grab offset inside the pick radius is kept.
   std::atomic<float> overlay_drag_delta_x{};
   std::atomic<float> overlay_drag_delta_y{};
+  // Mouse-only modifiers (the keyboard reaches the game: Alt summons its
+  // cursor, Ctrl toggles walking). Wheel notches accumulated during a left
+  // drag push the joint toward (+) or away from the camera; a right-button
+  // drag twists the bone about its own axis instead of swinging it.
+  std::atomic<std::int32_t> overlay_drag_wheel{};
+  std::atomic_bool overlay_drag_twist{};
   std::atomic_bool overlay_drag_cancel{};
   // Game thread only: the pose captured when the current drag began. Every
   // frame solves from this start, so a pose write landing a frame late cannot
@@ -403,6 +410,12 @@ struct Context final {
     std::array<double, 4> mid_parent_start{};  // world rotation of the root bone at the press
     std::array<double, 3> plane_right{};       // world direction of +1 screen pixel in x
     std::array<double, 3> plane_down{};        // world direction of +1 screen pixel in y
+    std::array<double, 3> toward_camera{};     // unit, world: -view ray at the end joint
+    // Twist: turns `pivot` about its own bone axis (pivot -> joint).
+    bool twist{};
+    // One-bone depth: wheel swings the joint toward the camera about the axis
+    // perpendicular to both the bone and the view ray, through the pivot.
+    std::array<double, 3> depth_axis{};
   } overlay_drag;
   // Two-bone IK on for chains that have one (limbs); off = always rotate one bone.
   std::atomic_bool overlay_ik_enabled{true};
@@ -410,6 +423,7 @@ struct Context final {
   bool overlay_mouse_was_down{};
   bool overlay_right_was_down{};
   bool overlay_dragging{};
+  bool overlay_press_right{};  // the drag was started with the right button
   std::uint32_t overlay_press_joint{(std::numeric_limits<std::uint32_t>::max)()};
   float overlay_press_x{};
   float overlay_press_y{};
@@ -453,6 +467,18 @@ struct Context final {
   std::array<std::atomic<double>, 3> requested_root_offset{};
   std::array<std::atomic<double>, 3> edited_translation{};
   std::atomic_bool pose_reset_requested{};
+  // Undo/redo. The history lives on the game thread (UpdateRuntime); the panel
+  // and the Ctrl+Z / Ctrl+Y keys only post requests, and read back the counts.
+  better_pose::history::PoseHistory pose_history;
+  std::uintptr_t pose_history_mesh{};
+  std::atomic<int> pose_history_request{};  // 1 undo, 2 redo, 0 none
+  std::atomic<std::uint32_t> pose_undo_count{};
+  std::atomic<std::uint32_t> pose_redo_count{};
+  // Held while a mouse button is down over the panel or the canvas, so a slow
+  // slider drag with a pause in the middle is still one step.
+  std::atomic_bool pose_edit_held{};
+  bool pose_undo_key_was_down{};  // render thread
+  bool pose_redo_key_was_down{};  // render thread
   std::atomic<std::uint32_t> pose_file_action_requested{0};
   std::string active_character_id;
   bool character_profiles_initialized{};
@@ -1003,6 +1029,60 @@ void ResetPoseValues(Context &context) noexcept {
   context.requested_root_offset[0].store(0.0, std::memory_order_release);
   context.requested_root_offset[1].store(0.0, std::memory_order_release);
   context.requested_root_offset[2].store(0.0, std::memory_order_release);
+}
+
+better_pose::history::PoseState CapturePoseState(Context &context) {
+  better_pose::history::PoseState state;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    state.angles = context.bone_angles;
+  }
+  for (std::size_t axis{}; axis != 3; ++axis)
+    state.root_offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
+  return state;
+}
+
+void RestorePoseState(Context &context, const better_pose::history::PoseState &state) {
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    // Keep the table at least as long as the skeleton; the pose code reads
+    // bone_angles[0 .. count) and the recorded table may be shorter.
+    const std::size_t size = (std::max)(context.bone_angles.size(), state.angles.size());
+    context.bone_angles.assign(size, {0.0, 0.0, 0.0});
+    std::copy(state.angles.begin(), state.angles.end(), context.bone_angles.begin());
+  }
+  for (std::size_t axis{}; axis != 3; ++axis)
+    context.requested_root_offset[axis].store(state.root_offset[axis], std::memory_order_release);
+  context.pose_override_enabled.store(true, std::memory_order_release);
+  context.pose_settings_dirty.store(true, std::memory_order_release);
+}
+
+// Game thread, every update: record settled edits, apply a posted undo/redo.
+// A different mesh (character switch) starts a fresh history.
+void StepPoseHistory(Context &context) noexcept {
+  try {
+    const std::uint64_t now = GetTickCount64();
+    if (context.pose_history_mesh != context.runtime.mesh) {
+      context.pose_history_mesh = context.runtime.mesh;
+      context.pose_history.Reset(CapturePoseState(context));
+      context.pose_history_request.store(0, std::memory_order_release);
+    } else {
+      const int request = context.pose_history_request.exchange(0, std::memory_order_acq_rel);
+      const auto live = CapturePoseState(context);
+      better_pose::history::PoseState target;
+      if (request == 1 ? context.pose_history.Undo(live, target)
+                       : request == 2 ? context.pose_history.Redo(live, target) : false)
+        RestorePoseState(context, target);
+      else
+        static_cast<void>(context.pose_history.Observe(
+            live, context.pose_edit_held.load(std::memory_order_acquire), now));
+    }
+    context.pose_undo_count.store(static_cast<std::uint32_t>(context.pose_history.UndoCount()),
+                                  std::memory_order_release);
+    context.pose_redo_count.store(static_cast<std::uint32_t>(context.pose_history.RedoCount()),
+                                  std::memory_order_release);
+  } catch (...) {
+  }
 }
 
 bool LoadPoseSettings(Context &context) noexcept {
@@ -7171,6 +7251,10 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     context.pose_settings_dirty.store(true, std::memory_order_release);
   }
 
+  // A loaded motion owns the pose; its frames are not manual edits.
+  if (!context.motion_loaded.load(std::memory_order_acquire))
+    StepPoseHistory(context);
+
   const bool master_enabled =
       context.pose_override_enabled.load(std::memory_order_acquire);  std::size_t active_joints{};
   {
@@ -7608,6 +7692,37 @@ bool ViewRotationAxis(Project &&project, const Vec3d &pivot, Vec3d &axis,
   if (!(std::abs(swept) > 1e-6))
     return false;
   sense = swept > 0.0 ? 1.0 : -1.0;
+  return true;
+}
+
+// The unit direction from `point` toward the camera. The view ray through
+// the point is known up to sign; the camera side is where the projection
+// magnifies, so compare how far apart two points 1 cm apart land on screen
+// 20 cm either way along the ray.
+template <typename Project>
+bool TowardCamera(Project &&project, const Vec3d &point, Vec3d &toward) noexcept {
+  Vec3d ray;
+  double sense{};
+  if (!ViewRotationAxis(project, point, ray, sense))
+    return false;
+  Vec3d across = V3Cross(ray, std::abs(ray.z) < 0.9 ? Vec3d{0, 0, 1} : Vec3d{1, 0, 0});
+  across = V3Scale(across, 1.0 / V3Length(across));
+  const auto spread = [&](const double along) {
+    const Vec3d centre = V3Add(point, V3Scale(ray, along));
+    const Vec3d next = V3Add(centre, across);
+    const double a[3]{centre.x, centre.y, centre.z};
+    const double b[3]{next.x, next.y, next.z};
+    float pa[2]{};
+    float pb[2]{};
+    if (!project(a, pa) || !project(b, pb))
+      return -1.0;
+    return std::hypot(static_cast<double>(pb[0]) - pa[0], static_cast<double>(pb[1]) - pa[1]);
+  };
+  const double minus = spread(-20.0);
+  const double plus = spread(20.0);
+  if (!(minus > 0.0) || !(plus > 0.0) || minus == plus)
+    return false;
+  toward = plus > minus ? ray : V3Scale(ray, -1.0);
   return true;
 }
 
@@ -8113,6 +8228,29 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
         drag.ik = true;
       }
     }
+    // Depth: the direction toward the camera at the joint is minus the view
+    // ray (ViewRotationAxis measured `sense` against the screen, so recover
+    // the ray sign from where a point in front of the joint projects). A
+    // one-bone drag turns about the axis perpendicular to the bone and the
+    // view ray, which is the rotation that moves the joint most in depth.
+    {
+      drag.toward_camera = {0.0, 0.0, 0.0};
+      drag.depth_axis = {0.0, 0.0, 0.0};
+      Vec3d toward;
+      if (TowardCamera(project, joint_world.translation, toward)) {
+        drag.toward_camera = {toward.x, toward.y, toward.z};
+        Vec3d depth_axis = V3Cross(offset, toward);
+        const double length = V3Length(depth_axis);
+        if (length > 1e-9) {
+          depth_axis = V3Scale(depth_axis, 1.0 / length);
+          drag.depth_axis = {depth_axis.x, depth_axis.y, depth_axis.z};
+        }
+      }
+    }
+    drag.twist = context.overlay_drag_twist.load(std::memory_order_acquire);
+    if (drag.twist)
+      drag.ik = false;  // twist is always the one bone
+
     // The reference is where the joint was at the press, so the bone only
     // turns once the cursor sweeps around the pivot.
     drag.angle_ready = false;
@@ -8125,13 +8263,40 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     context.pose_override_enabled.store(true, std::memory_order_release);
   }
 
+  const double wheel_notches =
+      static_cast<double>(context.overlay_drag_wheel.load(std::memory_order_acquire)) / 120.0;
+
+  if (drag.twist) {
+    // Right drag: horizontal cursor travel twists the bone about its own
+    // axis, 0.5 degree per pixel (a 360 px swipe is half a turn).
+    constexpr double kTwistRadiansPerPixel = 0.5 * 3.14159265358979323846 / 180.0;
+    const double dx = context.overlay_drag_delta_x.load(std::memory_order_acquire);
+    const Vec3d bone{drag.joint_offset[0], drag.joint_offset[1], drag.joint_offset[2]};
+    const double length = V3Length(bone);
+    if (!(length > 1e-6))
+      return;
+    const Vec3d axis = V3Scale(bone, dx * kTwistRadiansPerPixel / length);
+    const Quatd parent_world{drag.parent_world[0], drag.parent_world[1],
+                             drag.parent_world[2], drag.parent_world[3]};
+    const Quatd start_offset{drag.start_offset[0], drag.start_offset[1],
+                             drag.start_offset[2], drag.start_offset[3]};
+    const Quatd next = ApplyWorldRotationToOffset(
+        parent_world, QuatFromRotationVector({axis.x, axis.y, axis.z}), start_offset);
+    WriteDragAngles(context, drag.pivot, QuatToRotator(next));
+    return;
+  }
+
   if (drag.ik) {
+    // Wheel: 5 cm per notch toward (+) or away from (-) the camera.
+    constexpr double kDepthCmPerNotch = 5.0;
     const double dx = context.overlay_drag_delta_x.load(std::memory_order_acquire);
     const double dy = context.overlay_drag_delta_y.load(std::memory_order_acquire);
     const Vec3d end{drag.end_world[0], drag.end_world[1], drag.end_world[2]};
+    const Vec3d toward{drag.toward_camera[0], drag.toward_camera[1], drag.toward_camera[2]};
     const Vec3d target = V3Add(
-        end, V3Add(V3Scale(Vec3d{drag.plane_right[0], drag.plane_right[1], drag.plane_right[2]}, dx),
-                   V3Scale(Vec3d{drag.plane_down[0], drag.plane_down[1], drag.plane_down[2]}, dy)));
+        V3Add(end, V3Scale(toward, wheel_notches * kDepthCmPerNotch)),
+        V3Add(V3Scale(Vec3d{drag.plane_right[0], drag.plane_right[1], drag.plane_right[2]}, dx),
+              V3Scale(Vec3d{drag.plane_down[0], drag.plane_down[1], drag.plane_down[2]}, dy)));
     const TwoBoneRotations turn = SolveTwoBone(
         Vec3d{drag.root_world[0], drag.root_world[1], drag.root_world[2]},
         Vec3d{drag.mid_world[0], drag.mid_world[1], drag.mid_world[2]}, end, target);
@@ -8155,15 +8320,26 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
   const float cursor[2]{
       drag.start_screen[0] + context.overlay_drag_delta_x.load(std::memory_order_acquire),
       drag.start_screen[1] + context.overlay_drag_delta_y.load(std::memory_order_acquire)};
-  if (!AdvanceDragAngle(drag.pivot_screen.data(), cursor, drag.angle_ready, drag.last_raw,
-                        drag.angle))
+  // A wheel-only drag never moves the cursor far enough for an angle; still
+  // apply the depth part.
+  const bool have_angle = AdvanceDragAngle(drag.pivot_screen.data(), cursor, drag.angle_ready,
+                                           drag.last_raw, drag.angle);
+  if (!have_angle && wheel_notches == 0.0)
     return;
   const Quatd parent_world{drag.parent_world[0], drag.parent_world[1],
                            drag.parent_world[2], drag.parent_world[3]};
   const Quatd start_offset{drag.start_offset[0], drag.start_offset[1],
                            drag.start_offset[2], drag.start_offset[3]};
-  const Quatd world_rotation = QuatFromRotationVector(
-      {drag.axis[0] * drag.angle, drag.axis[1] * drag.angle, drag.axis[2] * drag.angle});
+  // Wheel: 10 degrees per notch, swinging the joint toward the camera.
+  constexpr double kDepthRadiansPerNotch = 10.0 * 3.14159265358979323846 / 180.0;
+  const double swing = have_angle ? drag.angle : 0.0;
+  const double depth = wheel_notches * kDepthRadiansPerNotch;
+  const Quatd screen_turn = QuatFromRotationVector(
+      {drag.axis[0] * swing, drag.axis[1] * swing, drag.axis[2] * swing});
+  const Quatd depth_turn = QuatFromRotationVector(
+      {drag.depth_axis[0] * depth, drag.depth_axis[1] * depth, drag.depth_axis[2] * depth});
+  // Depth first (about the bone's axis at the press), then the screen swing.
+  const Quatd world_rotation = QuatNormalize(QuatMultiply(screen_turn, depth_turn));
   const Quatd next = ApplyWorldRotationToOffset(parent_world, world_rotation, start_offset);
   WriteDragAngles(context, drag.pivot, QuatToRotator(next));
 }
@@ -8385,9 +8561,9 @@ void UpdateSkeletonOverlayPicking(Context &context,
     drop_mouse();
     return;
   }
-  const bool mouse_down = (input.mouse_buttons & 1U) != 0;
-  const bool pressed = mouse_down && !context.overlay_mouse_was_down;
-  context.overlay_mouse_was_down = mouse_down;
+  const bool left_down = (input.mouse_buttons & 1U) != 0;
+  const bool left_pressed = left_down && !context.overlay_mouse_was_down;
+  context.overlay_mouse_was_down = left_down;
   const bool right_down = (input.mouse_buttons & 2U) != 0;
   const bool right_pressed = right_down && !context.overlay_right_was_down;
   context.overlay_right_was_down = right_down;
@@ -8399,14 +8575,25 @@ void UpdateSkeletonOverlayPicking(Context &context,
     context.overlay_dragging = false;
     context.overlay_press_joint = kOverlayNoBone;
   };
-  // A drag lasts until the button is released; right click cancels it and puts
-  // the bone back where it was.
-  if (context.overlay_press_joint != kOverlayNoBone &&
-      (!mouse_down || !menu_owns_mouse || right_pressed)) {
-    if (context.overlay_dragging && right_pressed)
-      context.overlay_drag_cancel.store(true, std::memory_order_release);
-    end_drag();
+  // A drag lasts while the button that started it is held (left swings,
+  // right twists). Pressing the other button cancels it and puts the bones
+  // back where they were.
+  if (context.overlay_press_joint != kOverlayNoBone) {
+    const bool held = context.overlay_press_right ? right_down : left_down;
+    const bool other_pressed = context.overlay_press_right ? left_pressed : right_pressed;
+    if (!held || !menu_owns_mouse || other_pressed) {
+      if (context.overlay_dragging && other_pressed)
+        context.overlay_drag_cancel.store(true, std::memory_order_release);
+      end_drag();
+      // The cancelling click must not also start a new pick below.
+      if (other_pressed) {
+        clear_hover();
+        return;
+      }
+    }
   }
+  const bool pressed = left_pressed || right_pressed;
+  const bool press_right = right_pressed && !left_pressed;
   const bool can_frame_state =
       HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::frame_state)>(
           ui, offsetof(AnomalyUiServiceV1, frame_state)) &&
@@ -8453,6 +8640,17 @@ void UpdateSkeletonOverlayPicking(Context &context,
       context.overlay_drag_joint.store(context.overlay_press_joint,
                                        std::memory_order_release);
     }
+    // The wheel counts even before the cursor moves: scroll-only depth edits.
+    if (input.mouse_wheel != 0 && !context.overlay_press_right &&
+        !context.motion_loaded.load(std::memory_order_acquire)) {
+      if (!context.overlay_dragging) {
+        context.overlay_dragging = true;
+        context.overlay_drag_generation.fetch_add(1, std::memory_order_acq_rel);
+        context.overlay_drag_joint.store(context.overlay_press_joint,
+                                         std::memory_order_release);
+      }
+      context.overlay_drag_wheel.fetch_add(input.mouse_wheel, std::memory_order_acq_rel);
+    }
     context.overlay_drag_delta_x.store(dx, std::memory_order_release);
     context.overlay_drag_delta_y.store(dy, std::memory_order_release);
     context.overlay_hover_index.store(context.overlay_press_joint, std::memory_order_release);
@@ -8475,7 +8673,53 @@ void UpdateSkeletonOverlayPicking(Context &context,
     context.overlay_press_y = mouse_y;
     context.overlay_drag_delta_x.store(0.0F, std::memory_order_release);
     context.overlay_drag_delta_y.store(0.0F, std::memory_order_release);
+    context.overlay_drag_wheel.store(0, std::memory_order_release);
+    context.overlay_press_right = press_right;
+    context.overlay_drag_twist.store(press_right, std::memory_order_release);
   }
+}
+
+// Render thread, inside Draw. Keeps an edit open while the left mouse button
+// is down (a slider or a joint being dragged) and turns Ctrl+Z / Ctrl+Y (and
+// Ctrl+Shift+Z) into undo/redo requests, on the press only. The keys are
+// ignored while a text field wants the keyboard, so Ctrl+Z inside the file
+// name box stays the text box's.
+void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noexcept {
+  if (!InputReady(context.input)) {
+    context.pose_edit_held.store(false, std::memory_order_release);
+    return;
+  }
+  AnomalyInputSnapshotV1 input{};
+  input.struct_size = sizeof(input);
+  if (context.input->snapshot(context.input->user, &input).code != ANOMALY_STATUS_V1_OK) {
+    context.pose_edit_held.store(false, std::memory_order_release);
+    return;
+  }
+  const bool menu_owns_mouse = (input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_MOUSE) != 0;
+  context.pose_edit_held.store(menu_owns_mouse && (input.mouse_buttons & 3U) != 0,
+                               std::memory_order_release);
+  const auto key_down = [&](const std::uint32_t key) {
+    return key < 256U && (input.keys[key / 8U] & (1U << (key % 8U))) != 0;
+  };
+  const bool control = (input.modifiers & ANOMALY_INPUT_MODIFIER_V1_CONTROL) != 0;
+  const bool shift = (input.modifiers & ANOMALY_INPUT_MODIFIER_V1_SHIFT) != 0;
+  const bool typing =
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::frame_state)>(
+          ui, offsetof(AnomalyUiServiceV1, frame_state)) &&
+      ui->frame_state != nullptr &&
+      (ui->frame_state(ui->user) &
+       (ANOMALY_UI_FRAME_V1_WANT_TEXT_INPUT)) != 0;
+  const bool undo_down = menu_owns_mouse && control && !shift && key_down('Z');
+  const bool redo_down =
+      menu_owns_mouse && control && (key_down('Y') || (shift && key_down('Z')));
+  if (!typing && !context.motion_loaded.load(std::memory_order_acquire)) {
+    if (undo_down && !context.pose_undo_key_was_down)
+      context.pose_history_request.store(1, std::memory_order_release);
+    if (redo_down && !context.pose_redo_key_was_down)
+      context.pose_history_request.store(2, std::memory_order_release);
+  }
+  context.pose_undo_key_was_down = undo_down;
+  context.pose_redo_key_was_down = redo_down;
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
@@ -8640,6 +8884,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     return;
 
   UpdateSkeletonOverlayPicking(*context, ui);
+  UpdatePoseHistoryInput(*context, ui);
 
   RenderSnapshot snapshot{};
   {
@@ -9140,8 +9385,10 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       if (overlay_enabled != 0 && context->input != nullptr) {
         const std::string overlay_hint = context->localizer.Text(
             "pose.skeleton.overlay.hint",
-            "Click a joint to select it; drag it to rotate its parent bone, right click "
-            "cancels. Not while an MMD motion is loaded.");
+            "Click a joint to select it. Left drag swings its parent bone (hands and feet "
+            "move the limb with IK); scroll while dragging to push it toward or away from "
+            "the camera. Right drag left/right twists the bone. The other button cancels. "
+            "Not while an MMD motion is loaded.");
         ui->text(ui->user, anomaly::sdk::StringView(overlay_hint));
       }
     }
@@ -9400,6 +9647,35 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       else
         context->pose_reset_requested.store(true, std::memory_order_release);
     }
+
+    // Undo / redo. Disabled while a motion is loaded: it owns the pose.
+    const bool history_open = !context->motion_loaded.load(std::memory_order_acquire);
+    const std::uint32_t undo_count = context->pose_undo_count.load(std::memory_order_acquire);
+    const std::uint32_t redo_count = context->pose_redo_count.load(std::memory_order_acquire);
+    const bool can_enable =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
+            ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
+        ui->button_enabled != nullptr;
+    const auto history_button = [&](const std::string &label, const bool enabled) {
+      return can_enable ? ui->button_enabled(ui->user, anomaly::sdk::StringView(label), 84.0F,
+                                             0.0F, enabled ? 1 : 0) != 0 && enabled
+                        : ui->button(ui->user, anomaly::sdk::StringView(label), 84.0F, 0.0F) !=
+                                  0 &&
+                              enabled;
+    };
+    const std::string undo_label =
+        context->localizer.Text("pose.undo", "Undo") + " (" + std::to_string(undo_count) + ")##pose-undo";
+    const std::string redo_label =
+        context->localizer.Text("pose.redo", "Redo") + " (" + std::to_string(redo_count) + ")##pose-redo";
+    if (history_button(undo_label, history_open && undo_count != 0))
+      context->pose_history_request.store(1, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    if (history_button(redo_label, history_open && redo_count != 0))
+      context->pose_history_request.store(2, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string history_hint =
+        context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y");
+    ui->text(ui->user, anomaly::sdk::StringView(history_hint));
 
     ui->separator(ui->user);
     if (context->pose_export_name[0] == '\0') {

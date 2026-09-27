@@ -335,6 +335,59 @@ void TwoBoneIk() {
         "the view-plane basis keeps the depth");
 }
 
+template <typename Cam>
+void TwistAndDepth(const Cam &camera, const Vec3d &eye, const char *name) {
+  const Vec3d pivot{250.0, 30.0, 60.0};
+  const Vec3d offset{10.0, -15.0, -40.0};
+  const Vec3d joint = V3Add(pivot, offset);
+
+  // Toward the camera really points at the eye.
+  Vec3d toward;
+  Check(TowardCamera(camera, joint, toward), name);
+  const Vec3d to_eye = V3Sub(eye, joint);
+  Check(V3Dot(toward, V3Scale(to_eye, 1.0 / V3Length(to_eye))) > 0.999,
+        "toward-camera points at the eye");
+
+  // IK depth: moving the target along it brings the joint nearer, and keeps
+  // it on the same screen spot.
+  const Vec3d nearer = V3Add(joint, V3Scale(toward, 15.0));
+  Check(V3Length(V3Sub(eye, nearer)) < V3Length(to_eye) - 14.9, "IK depth moves toward the eye");
+  float a[2]{};
+  float b[2]{};
+  const double pa[3]{joint.x, joint.y, joint.z};
+  const double pb[3]{nearer.x, nearer.y, nearer.z};
+  camera(pa, a);
+  camera(pb, b);
+  Check(std::hypot(a[0] - b[0], a[1] - b[1]) < 0.01, "IK depth does not move the joint on screen");
+
+  // One-bone depth: turning about cross(bone, toward) brings the joint nearer.
+  Vec3d depth_axis = V3Cross(offset, toward);
+  depth_axis = V3Scale(depth_axis, 1.0 / V3Length(depth_axis));
+  const double angle = 10.0 * 3.14159265358979323846 / 180.0;
+  const Vec3d turned = V3Add(pivot, QuatRotateVector(QuatFromRotationVector(
+                                                        {depth_axis.x * angle,
+                                                         depth_axis.y * angle,
+                                                         depth_axis.z * angle}),
+                                                    offset));
+  Check(V3Length(V3Sub(eye, turned)) < V3Length(to_eye), "a positive depth notch comes nearer");
+  Check(std::abs(V3Length(V3Sub(turned, pivot)) - V3Length(offset)) < 1e-9,
+        "depth swing keeps the bone length");
+
+  // Twist: about the bone's own axis, the joint does not move at all.
+  const double twist = 1.2;
+  const Vec3d bone_axis = V3Scale(offset, twist / V3Length(offset));
+  const Vec3d twisted = QuatRotateVector(
+      QuatFromRotationVector({bone_axis.x, bone_axis.y, bone_axis.z}), offset);
+  Check(V3Length(V3Sub(twisted, offset)) < 1e-9, "twist keeps the joint in place");
+  // ...but it does turn the bone: a perpendicular direction rotates by the angle.
+  const Vec3d side = V3Cross(offset, Vec3d{0, 0, 1});
+  const Vec3d side_turned = QuatRotateVector(
+      QuatFromRotationVector({bone_axis.x, bone_axis.y, bone_axis.z}), side);
+  const double cosine = V3Dot(side, side_turned) / (V3Length(side) * V3Length(side_turned));
+  Check(std::abs(std::acos(std::clamp(cosine, -1.0, 1.0)) - twist) < 1e-9,
+        "twist turns the bone by the requested angle");
+}
+
 void BehindCameraIsRejected() {
   const auto never = [](const double *, float *) { return false; };
   Vec3d axis;
@@ -368,8 +421,13 @@ int main() {
   fixture::StackedBones();
   fixture::BodyOnlyMask();
   fixture::TwoBoneIk();
+  fixture::TwistAndDepth(fixture::Camera{}, Vec3d{0, 0, 0}, "axis-aligned toward camera");
+  {
+    const fixture::TiltedCamera tilted;
+    fixture::TwistAndDepth(tilted, tilted.eye, "tilted toward camera");
+  }
   std::cout << "PASS rotator round trip, hold still, sweep both ways, full turn, pivot "
                "graze, tilted camera, behind camera, parent space, stacked bones, body-only "
-               "mask, two-bone IK\n";
+               "mask, two-bone IK, twist, depth\n";
   return 0;
 }
