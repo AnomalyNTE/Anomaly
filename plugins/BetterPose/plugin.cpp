@@ -567,6 +567,13 @@ struct Context final {
   better_pose::orbit::Orbit orbit;
   std::array<double, 3> orbit_focus_target{};
   std::atomic<double> orbit_focal_pixels{};  // measured from the AHUD projection
+  // Pose camera lens: horizontal field of view in degrees (the engine's
+  // convention), 0 = leave the game's own. `orbit_game_fov` is the game's value
+  // read when the pose camera took over, for the slider's starting point and
+  // for handing the lens back when it is switched off.
+  std::atomic<float> orbit_fov{};
+  std::atomic<float> orbit_game_fov{};
+  std::atomic_bool orbit_fov_restore{};
   // Render thread only.
   bool orbit_right_dragging{};
   bool orbit_middle_was_down{};
@@ -2512,10 +2519,40 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
             out_location[axis] = view.location[static_cast<std::size_t>(axis)];
             out_rotation[axis] = view.rotation[static_cast<std::size_t>(axis)];
           }
+          // The lens lives in the POV struct, not in the getter's outputs (the
+          // same place the camera track writes its lens). The game's own value
+          // is read once, before the first write, so it can be handed back.
+          std::uintptr_t fov_address{};
+          if (AddAddress(context->camera_pov_struct, kCameraPovFovOffset, fov_address)) {
+            if (context->orbit_game_fov.load(std::memory_order_acquire) <= 0.0F) {
+              float game_fov{};
+              if (Read(*context, fov_address, game_fov) && game_fov > 5.0F && game_fov < 170.0F)
+                context->orbit_game_fov.store(game_fov, std::memory_order_release);
+            }
+            const float lens = context->orbit_fov.load(std::memory_order_acquire);
+            const float game_fov = context->orbit_game_fov.load(std::memory_order_acquire);
+            if (lens >= better_pose::orbit::kMinimumFov && lens <= better_pose::orbit::kMaximumFov) {
+              static_cast<void>(Write(*context, fov_address, lens));
+              context->orbit_fov_restore.store(true, std::memory_order_release);
+            } else if (context->orbit_fov_restore.exchange(false, std::memory_order_acq_rel) &&
+                       game_fov > 5.0F && game_fov < 170.0F) {
+              // "Game" pressed while the pose camera stays on: hand the lens back now.
+              static_cast<void>(Write(*context, fov_address, game_fov));
+            }
+          }
           if (leased && HookReady(context->hook))
             static_cast<void>(context->hook->end_callback(context->hook->user, lease));
           return pov;
         }
+      } else if (context->orbit_fov_restore.exchange(false, std::memory_order_acq_rel)) {
+        // Pose camera just switched off (the hook stays while another camera
+        // mode wants it): put the game's lens back once. If the hook goes
+        // away first, the game rewrites the POV itself on its next update.
+        const float game_fov = context->orbit_game_fov.load(std::memory_order_acquire);
+        std::uintptr_t fov_address{};
+        if (game_fov > 5.0F && game_fov < 170.0F &&
+            AddAddress(context->camera_pov_struct, kCameraPovFovOffset, fov_address))
+          static_cast<void>(Write(*context, fov_address, game_fov));
       }
     }
   } catch (...) {
@@ -9682,6 +9719,30 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             "pose.camera.hint",
             "Empty scene: right drag orbits, middle drag pans, wheel zooms.");
         ui->text(ui->user, anomaly::sdk::StringView(orbit_hint));
+
+        // Lens. 0 means "the game's own"; the slider starts from the game's
+        // value, read by the detour the first frame the pose camera drives.
+        const float game_fov = context->orbit_game_fov.load(std::memory_order_acquire);
+        const float current = context->orbit_fov.load(std::memory_order_acquire);
+        float fov = current >= better_pose::orbit::kMinimumFov
+                        ? current
+                        : std::clamp(game_fov > 0.0F ? game_fov : 80.0F,
+                                     better_pose::orbit::kMinimumFov,
+                                     better_pose::orbit::kMaximumFov);
+        const std::string fov_label = context->localizer.Text("pose.camera.fov", "Field of view");
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(fov_label), &fov,
+                             better_pose::orbit::kMinimumFov,
+                             better_pose::orbit::kMaximumFov) != 0) {
+          fov = std::clamp(fov, better_pose::orbit::kMinimumFov, better_pose::orbit::kMaximumFov);
+          context->orbit_fov.store(fov, std::memory_order_release);
+        }
+        ui->same_line(ui->user, 0.0F, 4.0F);
+        const std::string fov_reset =
+            context->localizer.Label("pose.camera.fov.reset", "Game", "pose-camera-fov-reset");
+        if (ui->button(ui->user, anomaly::sdk::StringView(fov_reset), 42.0F, 0.0F) != 0) {
+          context->orbit_fov.store(0.0F, std::memory_order_release);
+          context->orbit_fov_restore.store(true, std::memory_order_release);
+        }
       }
     }
 

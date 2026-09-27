@@ -15,6 +15,10 @@ inline constexpr double kDegrees = 180.0 / kPi;
 inline constexpr double kMinimumDistance = 20.0;    // cm
 inline constexpr double kMaximumDistance = 3000.0;  // cm
 inline constexpr double kMaximumPitch = 89.0;       // degrees, short of the pole
+// Horizontal field of view, degrees (UE's convention). 15 is a long lens for
+// a close-up of a hand or a face; 120 is wider than any gameplay camera.
+inline constexpr float kMinimumFov = 15.0F;
+inline constexpr float kMaximumFov = 120.0F;
 
 struct Orbit {
   std::array<double, 3> focus{};  // world, cm

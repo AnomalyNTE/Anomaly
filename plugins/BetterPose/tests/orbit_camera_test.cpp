@@ -118,12 +118,18 @@ void FocusMovesOnlyTheFocus() {
 }
 }  // namespace
 
+void FovBounds() {
+  Check(kMinimumFov > 0.0F && kMinimumFov < kMaximumFov && kMaximumFov < 180.0F,
+        "the lens range is a valid horizontal field of view");
+}
+
 int main() {
+  FovBounds();
   StartsWhereThePlayerLooks();
   RotateKeepsTheFocus();
   PanFollowsTheCursor();
   ZoomIsBounded();
   FocusMovesOnlyTheFocus();
-  std::cout << "PASS start from view, orbit, pan under cursor, zoom bounds, focus\n";
+  std::cout << "PASS fov bounds, start from view, orbit, pan under cursor, zoom bounds, focus\n";
   return 0;
 }
