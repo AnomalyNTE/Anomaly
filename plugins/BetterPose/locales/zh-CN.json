@@ -17,6 +17,7 @@
     "pose.skeleton.hidden": "已屏蔽",
     "pose.skeleton.ik": "四肢 IK（拖手/脚时手臂腿一起动）",
     "pose.skeleton.face": "显示面部骨骼",
+    "pose.skeleton.size": "骨骼点大小",
     "pose.camera.orbit": "姿势镜头（鼠标控制）",
     "pose.camera.focus": "对准选中关节",
     "pose.camera.reset": "回到游戏视角",

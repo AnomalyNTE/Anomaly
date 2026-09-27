@@ -388,6 +388,47 @@ void TwistAndDepth(const Cam &camera, const Vec3d &eye, const char *name) {
         "twist turns the bone by the requested angle");
 }
 
+void CircleCost() {
+  constexpr double kPi = 3.14159265358979323846;
+  for (const float radius : {3.0F, 5.0F, 7.0F, 10.0F, 13.0F, 16.0F}) {
+    const auto detail = CircleDetailFor(radius);
+    const auto rows = DiscRows(radius, detail.strip);
+    const std::size_t calls = rows.size() + static_cast<std::size_t>(detail.segments) + 1;
+    Check(calls <= 22, "a marker costs at most 22 draw calls");
+    // The ring's chords stay within 0.4 px of the true circle.
+    const double sagitta = radius * (1.0 - std::cos(kPi / detail.segments));
+    Check(sagitta < 0.4, "the ring looks round");
+    double area{};
+    for (const auto &row : rows)
+      area += static_cast<double>(row.height) * row.half_width * 2.0;
+    const double circle = kPi * radius * radius;
+    Check(std::abs(area - circle) / circle < 0.08, "the coarse fill still covers the circle");
+  }
+  const auto standard = CircleDetailFor(7.0F);
+  Check(DiscRows(7.0F, standard.strip).size() + static_cast<std::size_t>(standard.segments) + 1 == 16,
+        "the default 7 px marker is 16 calls");
+}
+
+void DiscStrips() {
+  for (const float radius : {3.0F, 7.0F, 10.5F, 16.0F}) {
+    const auto rows = DiscRows(radius, 2.0F);
+    Check(!rows.empty(), "a disc has rows");
+    double area{};
+    float next_top = -radius;
+    for (const auto &row : rows) {
+      Check(std::abs(row.top - next_top) < 1e-4F, "rows are contiguous and never overlap");
+      Check(row.half_width <= radius + 1e-4F, "rows stay inside the circle");
+      area += static_cast<double>(row.height) * row.half_width * 2.0;
+      next_top = row.top + row.height;
+    }
+    Check(std::abs(next_top - radius) < 1e-4F, "rows reach the bottom of the circle");
+    const double circle = 3.14159265358979323846 * radius * radius;
+    Check(std::abs(area - circle) / circle < 0.06, "the strips fill the circle's area");
+  }
+  Check(DiscRows(0.0F, 2.0F).empty() && DiscRows(5.0F, 0.0F).empty(),
+        "degenerate discs draw nothing");
+}
+
 void BehindCameraIsRejected() {
   const auto never = [](const double *, float *) { return false; };
   Vec3d axis;
@@ -420,6 +461,8 @@ int main() {
   fixture::ParentSpaceConversion();
   fixture::StackedBones();
   fixture::BodyOnlyMask();
+  fixture::DiscStrips();
+  fixture::CircleCost();
   fixture::TwoBoneIk();
   fixture::TwistAndDepth(fixture::Camera{}, Vec3d{0, 0, 0}, "axis-aligned toward camera");
   {
@@ -428,6 +471,6 @@ int main() {
   }
   std::cout << "PASS rotator round trip, hold still, sweep both ways, full turn, pivot "
                "graze, tilted camera, behind camera, parent space, stacked bones, body-only "
-               "mask, two-bone IK, twist, depth\n";
+               "mask, two-bone IK, twist, depth, disc strips, circle cost\n";
   return 0;
 }

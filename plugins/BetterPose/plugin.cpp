@@ -334,6 +334,8 @@ struct Context final {
   std::atomic_bool skeleton_overlay_enabled{};
   // Hide hair, clothing and ornament bones from the overlay (drawing and picking).
   std::atomic_bool overlay_body_only{true};
+  // Joint marker radius in canvas pixels; the pick radius follows it.
+  std::atomic<float> overlay_joint_radius{7.0F};
   std::atomic_bool overlay_show_face{};
   std::atomic<std::uint32_t> overlay_hidden_count{};
   std::mutex overlay_mutex;
@@ -7633,10 +7635,16 @@ constexpr std::uint32_t kOverlayNoBone = (std::numeric_limits<std::uint32_t>::ma
 constexpr float kOverlayPickRadius = 12.0F;
 constexpr std::uint32_t kOverlayResolveRetryFrames = 300;
 constexpr std::uint32_t kOverlayLineColor = ANOMALY_RGBA_V1(80, 220, 255, 190);
-constexpr std::uint32_t kOverlayOutlineColor = ANOMALY_RGBA_V1(0, 0, 0, 200);
-constexpr std::uint32_t kOverlayJointColor = ANOMALY_RGBA_V1(255, 255, 255, 230);
+constexpr std::uint32_t kOverlayJointFill = ANOMALY_RGBA_V1(255, 255, 255, 70);
+constexpr std::uint32_t kOverlayJointRing = ANOMALY_RGBA_V1(20, 20, 20, 150);
+constexpr std::uint32_t kOverlayJointCentre = ANOMALY_RGBA_V1(255, 255, 255, 230);
 constexpr std::uint32_t kOverlayHoverColor = ANOMALY_RGBA_V1(255, 160, 40, 255);
+constexpr std::uint32_t kOverlayHoverFill = ANOMALY_RGBA_V1(255, 160, 40, 90);
 constexpr std::uint32_t kOverlaySelectedColor = ANOMALY_RGBA_V1(255, 230, 0, 255);
+constexpr std::uint32_t kOverlaySelectedFill = ANOMALY_RGBA_V1(255, 230, 0, 90);
+constexpr float kOverlayDefaultRadius = 7.0F;
+constexpr float kOverlayMinimumRadius = 3.0F;
+constexpr float kOverlayMaximumRadius = 16.0F;
 
 Vec3d V3Sub(const Vec3d &a, const Vec3d &b) noexcept { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 Vec3d V3Add(const Vec3d &a, const Vec3d &b) noexcept { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
@@ -8468,12 +8476,72 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
   WriteDragAngles(context, drag.pivot, QuatToRotator(next));
 }
 
-void DrawOverlayDot(const AnomalyUe5AhudFrameV1 *frame, const float x,
-                    const float y, const float half, const std::uint32_t color) noexcept {
-  frame->draw_rect(frame->user, x - half - 1.0F, y - half - 1.0F,
-                   half * 2.0F + 2.0F, half * 2.0F + 2.0F, kOverlayOutlineColor);
-  frame->draw_rect(frame->user, x - half, y - half, half * 2.0F, half * 2.0F,
-                   color);
+// A filled disc as horizontal strips: AHUD has rects and lines but no circle.
+// The strips never overlap, so a translucent fill blends exactly once. Each
+// row is {top offset from the centre, height, half width}.
+struct DiscRow {
+  float top;
+  float height;
+  float half_width;
+};
+
+std::vector<DiscRow> DiscRows(const float radius, const float step) {
+  std::vector<DiscRow> rows;
+  if (!(radius > 0.0F) || !(step > 0.0F))
+    return rows;
+  for (float top = -radius; top < radius; top += step) {
+    const float height = (std::min)(step, radius - top);
+    const float middle = top + height * 0.5F;
+    const float half = std::sqrt((std::max)(0.0F, radius * radius - middle * middle));
+    if (half > 0.25F)
+      rows.push_back({top, height, half});
+  }
+  return rows;
+}
+
+// How finely a marker is built, from its radius. Every rect and line is one
+// UFunction call through ProcessEvent, so the counts are kept to what the eye
+// can tell apart: 5 fill strips (3 below 5 px) and one ring segment per
+// ~4.5 px of circumference, between 8 and 16 -- the ring then strays from a
+// true circle by under 0.4 px, and it hides the steps the coarse fill leaves
+// at the rim. At the default 7 px that is 16 calls a joint (was 24).
+struct CircleDetail {
+  float strip;
+  int segments;
+};
+
+CircleDetail CircleDetailFor(const float radius) noexcept {
+  CircleDetail detail;
+  detail.strip = (std::max)(2.0F, radius * 0.4F);
+  const int segments = static_cast<int>(std::ceil(2.0F * 3.14159265F * radius / 4.5F));
+  detail.segments = std::clamp(segments, 8, 16);
+  return detail;
+}
+
+// A joint marker: translucent fill, a ring round it and a solid centre, so it
+// reads on bright and dark scenery alike. `ring` 0 skips the ring.
+void DrawOverlayCircle(const AnomalyUe5AhudFrameV1 *frame, const float x, const float y,
+                       const float radius, const std::uint32_t fill, const std::uint32_t ring,
+                       const float ring_thickness, const std::uint32_t centre) noexcept {
+  const CircleDetail detail = CircleDetailFor(radius);
+  for (const auto &row : DiscRows(radius, detail.strip))
+    frame->draw_rect(frame->user, x - row.half_width, y + row.top, row.half_width * 2.0F,
+                     row.height, fill);
+  if (ring != 0) {
+    const int kSegments = detail.segments;
+    const float kStep = 2.0F * 3.14159265F / static_cast<float>(kSegments);
+    float px = x + radius;
+    float py = y;
+    for (int segment = 1; segment <= kSegments; ++segment) {
+      const float nx = x + radius * std::cos(kStep * static_cast<float>(segment));
+      const float ny = y + radius * std::sin(kStep * static_cast<float>(segment));
+      frame->draw_line(frame->user, px, py, nx, ny, ring, ring_thickness);
+      px = nx;
+      py = ny;
+    }
+  }
+  if (centre != 0)
+    frame->draw_rect(frame->user, x - 1.0F, y - 1.0F, 2.0F, 2.0F, centre);
 }
 
 // A joint's world position, for focusing the pose camera on it. Render
@@ -8632,18 +8700,23 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
     const std::uint32_t hovered =
         hover_fresh ? context->overlay_hover_index.load(std::memory_order_acquire)
                     : kOverlayNoBone;
+    const float radius = std::clamp(
+        context->overlay_joint_radius.load(std::memory_order_acquire), kOverlayMinimumRadius,
+        kOverlayMaximumRadius);
+    const float big = radius + 3.0F;
     for (std::uint32_t bone{}; bone != count; ++bone) {
       if (valid[bone] == 0 || bone == selected || bone == hovered)
         continue;
-      DrawOverlayDot(frame, screen[bone][0], screen[bone][1], 2.0F,
-                     kOverlayJointColor);
+      DrawOverlayCircle(frame, screen[bone][0], screen[bone][1], radius, kOverlayJointFill,
+                        kOverlayJointRing, 1.0F, kOverlayJointCentre);
     }
     if (hovered < count && valid[hovered] != 0 && hovered != selected)
-      DrawOverlayDot(frame, screen[hovered][0], screen[hovered][1], 4.0F,
-                     kOverlayHoverColor);
+      DrawOverlayCircle(frame, screen[hovered][0], screen[hovered][1], big, kOverlayHoverFill,
+                        kOverlayHoverColor, 2.0F, kOverlayHoverColor);
     if (selected < count && valid[selected] != 0)
-      DrawOverlayDot(frame, screen[selected][0], screen[selected][1], 5.0F,
-                     kOverlaySelectedColor);
+      DrawOverlayCircle(frame, screen[selected][0], screen[selected][1], big,
+                        kOverlaySelectedFill, kOverlaySelectedColor, 2.0F,
+                        kOverlaySelectedColor);
     // While dragging: the grabbed joint in orange, and a thin line to the
     // cursor so an unreachable target is visibly unreachable.
     const auto &drag = context->overlay_drag;
@@ -8656,8 +8729,8 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
           drag.start_screen[1] + context->overlay_drag_delta_y.load(std::memory_order_acquire);
       frame->draw_line(frame->user, screen[dragged][0], screen[dragged][1], target_x,
                        target_y, kOverlayHoverColor, 1.0F);
-      DrawOverlayDot(frame, screen[dragged][0], screen[dragged][1], 5.0F,
-                     kOverlayHoverColor);
+      DrawOverlayCircle(frame, screen[dragged][0], screen[dragged][1], big, kOverlayHoverFill,
+                        kOverlayHoverColor, 2.0F, kOverlayHoverColor);
     }
 
     auto &weight = context->overlay_frame_weight;
@@ -8835,9 +8908,16 @@ void UpdateSkeletonOverlayPicking(Context &context,
   // drag moves the selection to the pivot, so the same spot could resolve to a
   // different stacked bone on the next press.
   constexpr float kStackPixels = 3.0F;
+  // A click anywhere on the drawn circle picks it: never smaller than the
+  // old 12 px, and a few pixels beyond the marker's own edge.
+  const float pick_radius = (std::max)(
+      kOverlayPickRadius,
+      std::clamp(context.overlay_joint_radius.load(std::memory_order_acquire),
+                 kOverlayMinimumRadius, kOverlayMaximumRadius) +
+          4.0F);
   const std::uint32_t nearest = PickOverlayJoint(
       context.overlay_screen_joints, context.overlay_screen_valid,
-      context.overlay_screen_weight, mouse_x, mouse_y, kOverlayPickRadius, kStackPixels);
+      context.overlay_screen_weight, mouse_x, mouse_y, pick_radius, kStackPixels);
   context.overlay_hover_index.store(nearest, std::memory_order_release);
   context.overlay_hover_tick.store(GetTickCount64(), std::memory_order_release);
   if (pressed && !over_ui && nearest != kOverlayNoBone) {
@@ -9780,6 +9860,14 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             context->overlay_show_face.store(face != 0, std::memory_order_release);
           ui->same_line(ui->user, 0.0F, 12.0F);
         }
+        float joint_radius = context->overlay_joint_radius.load(std::memory_order_acquire);
+        const std::string radius_label =
+            context->localizer.Text("pose.skeleton.size", "Joint size");
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(radius_label), &joint_radius,
+                             kOverlayMinimumRadius, kOverlayMaximumRadius) != 0)
+          context->overlay_joint_radius.store(
+              std::clamp(joint_radius, kOverlayMinimumRadius, kOverlayMaximumRadius),
+              std::memory_order_release);
         int ik = context->overlay_ik_enabled.load(std::memory_order_acquire) ? 1 : 0;
         const std::string ik_label =
             context->localizer.Text("pose.skeleton.ik", "Limb IK (hands, feet)");
