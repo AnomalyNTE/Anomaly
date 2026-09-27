@@ -10056,10 +10056,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
             ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
         ui->button_enabled != nullptr;
-    const auto history_button = [&](const std::string &label, const bool enabled) {
-      return can_enable ? ui->button_enabled(ui->user, anomaly::sdk::StringView(label), 84.0F,
+    // `width` 0 sizes the button to its text.
+    const auto history_button = [&](const std::string &label, const bool enabled,
+                                    const float width = 84.0F) {
+      return can_enable ? ui->button_enabled(ui->user, anomaly::sdk::StringView(label), width,
                                              0.0F, enabled ? 1 : 0) != 0 && enabled
-                        : ui->button(ui->user, anomaly::sdk::StringView(label), 84.0F, 0.0F) !=
+                        : ui->button(ui->user, anomaly::sdk::StringView(label), width, 0.0F) !=
                                   0 &&
                               enabled;
     };
@@ -10081,14 +10083,14 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     const auto mirror_button = [&](const char *key, const char *fallback, const char *id,
                                    const int request) {
       const std::string label = context->localizer.Label(key, fallback, id);
-      if (history_button(label, history_open))
+      if (history_button(label, history_open, 0.0F))
         context->pose_mirror_request.store(request, std::memory_order_release);
     };
-    mirror_button("pose.mirror.flip", "Flip L/R", "pose-mirror-flip", 1);
+    mirror_button("pose.mirror.flip", "Flip left and right", "pose-mirror-flip", 1);
     ui->same_line(ui->user, 0.0F, 6.0F);
-    mirror_button("pose.mirror.left_to_right", "Left to right", "pose-mirror-l2r", 2);
+    mirror_button("pose.mirror.left_to_right", "Copy left to right", "pose-mirror-l2r", 2);
     ui->same_line(ui->user, 0.0F, 6.0F);
-    mirror_button("pose.mirror.right_to_left", "Right to left", "pose-mirror-r2l", 3);
+    mirror_button("pose.mirror.right_to_left", "Copy right to left", "pose-mirror-r2l", 3);
 
     ui->separator(ui->user);
 
