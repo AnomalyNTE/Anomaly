@@ -16,9 +16,14 @@ using Microsoft::WRL::ComPtr;
 #include "anomaly/sdk/services/platform.h"
 #include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/services/ui.h"
+#include "anomaly/sdk/services/ui_resources.h"
 #include <nlohmann/json.hpp>
 #include "better_pose_profile.hpp"
 #include "accessory_dynamics.hpp"
+#include "secondary_rules.hpp"
+#include "pose_history.hpp"
+#include "orbit_camera.hpp"
+#include "pose_mirror.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -315,6 +320,120 @@ struct Context final {
   const AnomalyConfigServiceV1 *config{};
   const AnomalyStorageServiceV1 *storage{};
   const AnomalySchedulerServiceV1 *scheduler{};
+  // Optional: the skeleton overlay draws through the host AHUD and picks joints
+  // with the host input snapshot. Either may be missing; the rest of the plugin
+  // does not depend on them.
+  const AnomalyUe5AhudServiceV1 *ahud{};
+  const AnomalyInputServiceV1 *input{};
+  AnomalyGenerationHandleV1 ahud_subscription{};
+
+  // Skeleton overlay. The AHUD callback (game thread, after the frame's pose is
+  // final) reads the mesh's component-space pose, projects every joint, draws
+  // it and publishes the screen positions; Draw (render thread) picks the joint
+  // under a click from those. overlay_mutex guards the published overlay_screen_*.
+  std::atomic_bool skeleton_overlay_enabled{};
+  // Hide hair, clothing and ornament bones from the overlay (drawing and picking).
+  std::atomic_bool overlay_body_only{true};
+  // Joint marker radius in canvas pixels; the pick radius follows it.
+  std::atomic<float> overlay_joint_radius{7.0F};
+  std::atomic_bool overlay_show_face{};
+  std::atomic<std::uint32_t> overlay_hidden_count{};
+  std::mutex overlay_mutex;
+  std::vector<std::array<float, 2>> overlay_screen_joints;
+  std::vector<std::uint8_t> overlay_screen_valid;
+  std::vector<std::uint32_t> overlay_screen_weight;  // descendants, for stacked picks
+  std::vector<std::array<double, 3>> overlay_joint_world;  // for focusing the pose camera
+  bool overlay_component_world_valid{};
+  std::vector<std::array<double, 3>> overlay_frame_world;  // game thread scratch
+  float overlay_viewport_width{};
+  float overlay_viewport_height{};
+  // Game thread only. The UFunction object is resolved once: looking it up by
+  // path every frame walks the object registry under a lock.
+  std::uintptr_t overlay_component_transform_function{};
+  std::uint32_t overlay_resolve_cooldown{};
+  bool overlay_published{};
+  std::vector<std::uint8_t> overlay_raw_pose;
+  std::vector<std::array<float, 2>> overlay_frame_joints;
+  std::vector<std::uint8_t> overlay_frame_valid;
+  std::vector<std::uint32_t> overlay_frame_weight;
+  // Game thread: the body-only mask, rebuilt when the mesh or its names change.
+  std::vector<std::uint8_t> overlay_hidden;
+  std::uintptr_t overlay_hidden_mesh{};
+  std::size_t overlay_hidden_names{};
+  bool overlay_hidden_parents{};
+  bool overlay_hidden_face{};
+  std::uint32_t overlay_hidden_total{};
+  // Written by Draw, read by the AHUD callback to highlight the joint under the cursor.
+  std::atomic<std::uint32_t> overlay_hover_index{
+      (std::numeric_limits<std::uint32_t>::max)()};
+  // Draw only runs while the window is open; a hover older than this is stale.
+  std::atomic<std::uint64_t> overlay_hover_tick{};
+  // Joint drag. Draw (render thread) owns the mouse and publishes which joint
+  // is being dragged and where the cursor is, in AHUD canvas pixels; the AHUD
+  // callback (game thread) turns that into a rotation of the joint's parent.
+  std::atomic<std::uint32_t> overlay_drag_joint{
+      (std::numeric_limits<std::uint32_t>::max)()};
+  std::atomic<std::uint32_t> overlay_drag_generation{};
+  // Cursor movement since the press, so the grab offset inside the pick radius is kept.
+  std::atomic<float> overlay_drag_delta_x{};
+  std::atomic<float> overlay_drag_delta_y{};
+  // Mouse-only modifiers (the keyboard reaches the game: Alt summons its
+  // cursor, Ctrl toggles walking). Wheel notches accumulated during a left
+  // drag push the joint toward (+) or away from the camera; a right-button
+  // drag twists the bone about its own axis instead of swinging it.
+  std::atomic<std::int32_t> overlay_drag_wheel{};
+  std::atomic_bool overlay_drag_twist{};
+  std::atomic_bool overlay_drag_cancel{};
+  // Game thread only: the pose captured when the current drag began. Every
+  // frame solves from this start, so a pose write landing a frame late cannot
+  // make the drag overshoot.
+  struct OverlayDrag {
+    bool valid{};
+    std::uint32_t generation{};
+    std::uint32_t pivot{};
+    std::array<double, 3> pivot_world{};
+    std::array<double, 3> joint_offset{};    // joint - pivot, world
+    std::array<double, 4> parent_world{};    // pivot's parent world rotation
+    std::array<double, 4> start_offset{};    // pivot's offset quaternion
+    std::array<double, 3> start_angles{};
+    std::array<float, 2> start_screen{};     // grabbed joint on screen
+    std::array<float, 2> pivot_screen{};     // pivot on screen at the press
+    std::array<double, 3> axis{};            // view ray through the pivot, world
+    double angle{};                          // unwrapped cursor angle since the press
+    double last_raw{};                       // cursor angle last frame, wrapped
+    bool angle_ready{};
+    // Two-bone IK (dragging an end joint with a hinge above it). `pivot` is
+    // then the middle bone (elbow/knee) and `root` the upper bone
+    // (shoulder/hip); the end joint is placed on the cursor, on the view plane
+    // at the depth it had at the press.
+    bool ik{};
+    std::uint32_t root{};
+    std::array<double, 3> root_world{};
+    std::array<double, 3> mid_world{};
+    std::array<double, 3> end_world{};
+    std::array<double, 4> root_parent_world{};
+    std::array<double, 4> root_start_offset{};
+    std::array<double, 3> root_start_angles{};
+    std::array<double, 4> mid_parent_start{};  // world rotation of the root bone at the press
+    std::array<double, 3> plane_right{};       // world direction of +1 screen pixel in x
+    std::array<double, 3> plane_down{};        // world direction of +1 screen pixel in y
+    std::array<double, 3> toward_camera{};     // unit, world: -view ray at the end joint
+    // Twist: turns `pivot` about its own bone axis (pivot -> joint).
+    bool twist{};
+    // One-bone depth: wheel swings the joint toward the camera about the axis
+    // perpendicular to both the bone and the view ray, through the pivot.
+    std::array<double, 3> depth_axis{};
+  } overlay_drag;
+  // Two-bone IK on for chains that have one (limbs); off = always rotate one bone.
+  std::atomic_bool overlay_ik_enabled{true};
+  // Render thread only.
+  bool overlay_mouse_was_down{};
+  bool overlay_right_was_down{};
+  bool overlay_dragging{};
+  bool overlay_press_right{};  // the drag was started with the right button
+  std::uint32_t overlay_press_joint{(std::numeric_limits<std::uint32_t>::max)()};
+  float overlay_press_x{};
+  float overlay_press_y{};
 
   std::mutex state_mutex;
   std::mutex pose_angles_mutex;
@@ -355,6 +474,20 @@ struct Context final {
   std::array<std::atomic<double>, 3> requested_root_offset{};
   std::array<std::atomic<double>, 3> edited_translation{};
   std::atomic_bool pose_reset_requested{};
+  // Undo/redo. The history lives on the game thread (UpdateRuntime); the panel
+  // and the Ctrl+Z / Ctrl+Y keys only post requests, and read back the counts.
+  better_pose::history::PoseHistory pose_history;
+  std::uintptr_t pose_history_mesh{};
+  std::atomic<int> pose_history_request{};  // 1 undo, 2 redo, 0 none
+  // Mirror request from the panel: 1 flip, 2 left to right, 3 right to left.
+  std::atomic<int> pose_mirror_request{};
+  std::atomic<std::uint32_t> pose_undo_count{};
+  std::atomic<std::uint32_t> pose_redo_count{};
+  // Held while a mouse button is down over the panel or the canvas, so a slow
+  // slider drag with a pause in the middle is still one step.
+  std::atomic_bool pose_edit_held{};
+  bool pose_undo_key_was_down{};  // render thread
+  bool pose_redo_key_was_down{};  // render thread
   std::atomic<std::uint32_t> pose_file_action_requested{0};
   std::string active_character_id;
   bool character_profiles_initialized{};
@@ -426,6 +559,28 @@ struct Context final {
   // frame. Distance is how far back along that direction the camera sits, height how far above the
   // character's feet; the aim is the character's own chest. Both are centimetres.
   std::atomic_bool camera_follow{};
+  // Pose camera: a mouse-only orbit camera for editing, driven through the
+  // same view-point hook as the follow camera. Draw posts mouse motion into
+  // the orbit (orbit_mutex); the detour turns it into the view each frame.
+  std::atomic_bool orbit_enabled{};
+  std::atomic_bool orbit_initialized{};
+  std::atomic_bool orbit_focus_requested{};
+  std::mutex orbit_mutex;
+  better_pose::orbit::Orbit orbit;
+  std::array<double, 3> orbit_focus_target{};
+  std::atomic<double> orbit_focal_pixels{};  // measured from the AHUD projection
+  // Pose camera lens: horizontal field of view in degrees (the engine's
+  // convention), 0 = leave the game's own. `orbit_game_fov` is the game's value
+  // read when the pose camera took over, for the slider's starting point and
+  // for handing the lens back when it is switched off.
+  std::atomic<float> orbit_fov{};
+  std::atomic<float> orbit_game_fov{};
+  std::atomic_bool orbit_fov_restore{};
+  // Render thread only.
+  bool orbit_right_dragging{};
+  bool orbit_middle_was_down{};
+  float orbit_last_x{};
+  float orbit_last_y{};
   std::atomic<double> camera_follow_distance_cm{380.0};
   std::atomic<double> camera_follow_height_cm{150.0};
   // Whether the follow camera rides the character's up/down. On is the loose, hand-held look; off
@@ -700,6 +855,30 @@ bool SchedulerReady(const AnomalySchedulerServiceV1 *service) noexcept {
   return service != nullptr && service->schedule != nullptr;
 }
 
+bool AhudReady(const AnomalyUe5AhudServiceV1 *service) noexcept {
+  return HasField<AnomalyUe5AhudServiceV1,
+                  decltype(AnomalyUe5AhudServiceV1::unsubscribe)>(
+             service, offsetof(AnomalyUe5AhudServiceV1, unsubscribe)) &&
+         service->service_version >= ANOMALY_UE5_AHUD_SERVICE_V1_VERSION &&
+         service->subscribe != nullptr && service->unsubscribe != nullptr;
+}
+
+bool AhudFrameReady(const AnomalyUe5AhudFrameV1 *frame) noexcept {
+  return HasField<AnomalyUe5AhudFrameV1,
+                  decltype(AnomalyUe5AhudFrameV1::draw_rect)>(
+             frame, offsetof(AnomalyUe5AhudFrameV1, draw_rect)) &&
+         frame->viewport_width != 0 && frame->viewport_height != 0 &&
+         frame->project != nullptr && frame->draw_line != nullptr &&
+         frame->draw_rect != nullptr;
+}
+
+bool InputReady(const AnomalyInputServiceV1 *service) noexcept {
+  return HasField<AnomalyInputServiceV1,
+                  decltype(AnomalyInputServiceV1::snapshot)>(
+             service, offsetof(AnomalyInputServiceV1, snapshot)) &&
+         service->snapshot != nullptr;
+}
+
 AnomalyByteSpanV1 Bytes(const std::string_view value) noexcept {
   return {reinterpret_cast<const std::uint8_t *>(value.data()), value.size()};
 }
@@ -881,6 +1060,68 @@ void ResetPoseValues(Context &context) noexcept {
   context.requested_root_offset[0].store(0.0, std::memory_order_release);
   context.requested_root_offset[1].store(0.0, std::memory_order_release);
   context.requested_root_offset[2].store(0.0, std::memory_order_release);
+}
+
+better_pose::history::PoseState CapturePoseState(Context &context) {
+  better_pose::history::PoseState state;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    state.angles = context.bone_angles;
+  }
+  for (std::size_t axis{}; axis != 3; ++axis)
+    state.root_offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
+  return state;
+}
+
+void RestorePoseState(Context &context, const better_pose::history::PoseState &state) {
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    // Keep the table at least as long as the skeleton; the pose code reads
+    // bone_angles[0 .. count) and the recorded table may be shorter.
+    const std::size_t size = (std::max)(context.bone_angles.size(), state.angles.size());
+    context.bone_angles.assign(size, {0.0, 0.0, 0.0});
+    std::copy(state.angles.begin(), state.angles.end(), context.bone_angles.begin());
+  }
+  for (std::size_t axis{}; axis != 3; ++axis)
+    context.requested_root_offset[axis].store(state.root_offset[axis], std::memory_order_release);
+  context.pose_override_enabled.store(true, std::memory_order_release);
+  context.pose_settings_dirty.store(true, std::memory_order_release);
+}
+
+// Game thread: mirror the manual pose. Every bone's final local rotation is
+// offset * base; the mirror reflects the finals (see pose_mirror.hpp) and the
+// new offsets are final' * base^-1, back into the slider angles. The rig is
+// measured from the captured base pose, so it follows whatever skeleton the
+// character has. The body offset is reflected across the same plane. The
+// change is an ordinary edit, so undo takes it back.
+bool MirrorPose(Context &context, const int request) noexcept;
+
+// Game thread, every update: record settled edits, apply a posted undo/redo.
+// A different mesh (character switch) starts a fresh history.
+void StepPoseHistory(Context &context) noexcept {
+  try {
+    const std::uint64_t now = GetTickCount64();
+    if (context.pose_history_mesh != context.runtime.mesh) {
+      context.pose_history_mesh = context.runtime.mesh;
+      context.pose_history.Reset(CapturePoseState(context));
+      context.pose_history_request.store(0, std::memory_order_release);
+    } else {
+      const int request = context.pose_history_request.exchange(0, std::memory_order_acq_rel);
+      const auto live = CapturePoseState(context);
+      better_pose::history::PoseState target;
+      if (request == 1 ? context.pose_history.Undo(live, target)
+                       : request == 2 ? context.pose_history.Redo(live, target) : false)
+        RestorePoseState(context, target);
+      else
+        static_cast<void>(context.pose_history.Observe(
+            live, context.pose_edit_held.load(std::memory_order_acquire), now));
+    }
+    context.pose_undo_count.store(static_cast<std::uint32_t>(context.pose_history.UndoCount()),
+                                  std::memory_order_release);
+    context.pose_redo_count.store(static_cast<std::uint32_t>(context.pose_history.RedoCount()),
+                                  std::memory_order_release);
+  } catch (...) {
+  }
 }
 
 bool LoadPoseSettings(Context &context) noexcept {
@@ -2240,6 +2481,82 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
   try {
     if (original != nullptr)
       pov = original(self, first, second);
+  } catch (...) {
+  }
+
+  // The pose camera comes first and owns the view outright while it is on.
+  try {
+    auto *out_location = static_cast<double *>(first);
+    auto *out_rotation = static_cast<double *>(second);
+    if (context != nullptr && out_location != nullptr && out_rotation != nullptr) {
+      const bool finite = std::isfinite(out_location[0]) && std::isfinite(out_location[1]) &&
+                          std::isfinite(out_location[2]) && std::isfinite(out_rotation[0]) &&
+                          std::isfinite(out_rotation[1]) && std::isfinite(out_rotation[2]);
+      if (context->orbit_enabled.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(context->orbit_mutex);
+        if (!context->orbit_initialized.load(std::memory_order_acquire) && finite) {
+          // Circle whatever the player was looking at: the character if it is
+          // in front of the camera, else a point 300 cm ahead.
+          std::array<double, 3> location{out_location[0], out_location[1], out_location[2]};
+          std::array<double, 3> rotation{out_rotation[0], out_rotation[1], out_rotation[2]};
+          double feet[3]{};
+          double centre[3]{};
+          double distance = 300.0;
+          if (CharacterBounds(*context, feet, centre)) {
+            const double dx = centre[0] - location[0];
+            const double dy = centre[1] - location[1];
+            const double dz = centre[2] - location[2];
+            const double range = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (range > 50.0 && range < 2500.0)
+              distance = range;
+          }
+          context->orbit = better_pose::orbit::FromView(location, rotation, distance);
+          context->orbit_initialized.store(true, std::memory_order_release);
+        }
+        if (context->orbit_focus_requested.exchange(false, std::memory_order_acq_rel))
+          better_pose::orbit::Focus(context->orbit, context->orbit_focus_target);
+        if (context->orbit_initialized.load(std::memory_order_acquire)) {
+          const auto view = better_pose::orbit::ViewOf(context->orbit);
+          for (int axis = 0; axis < 3; ++axis) {
+            out_location[axis] = view.location[static_cast<std::size_t>(axis)];
+            out_rotation[axis] = view.rotation[static_cast<std::size_t>(axis)];
+          }
+          // The lens lives in the POV struct, not in the getter's outputs (the
+          // same place the camera track writes its lens). The game's own value
+          // is read once, before the first write, so it can be handed back.
+          std::uintptr_t fov_address{};
+          if (AddAddress(context->camera_pov_struct, kCameraPovFovOffset, fov_address)) {
+            if (context->orbit_game_fov.load(std::memory_order_acquire) <= 0.0F) {
+              float game_fov{};
+              if (Read(*context, fov_address, game_fov) && game_fov > 5.0F && game_fov < 170.0F)
+                context->orbit_game_fov.store(game_fov, std::memory_order_release);
+            }
+            const float lens = context->orbit_fov.load(std::memory_order_acquire);
+            const float game_fov = context->orbit_game_fov.load(std::memory_order_acquire);
+            if (lens >= better_pose::orbit::kMinimumFov && lens <= better_pose::orbit::kMaximumFov) {
+              static_cast<void>(Write(*context, fov_address, lens));
+              context->orbit_fov_restore.store(true, std::memory_order_release);
+            } else if (context->orbit_fov_restore.exchange(false, std::memory_order_acq_rel) &&
+                       game_fov > 5.0F && game_fov < 170.0F) {
+              // "Game" pressed while the pose camera stays on: hand the lens back now.
+              static_cast<void>(Write(*context, fov_address, game_fov));
+            }
+          }
+          if (leased && HookReady(context->hook))
+            static_cast<void>(context->hook->end_callback(context->hook->user, lease));
+          return pov;
+        }
+      } else if (context->orbit_fov_restore.exchange(false, std::memory_order_acq_rel)) {
+        // Pose camera just switched off (the hook stays while another camera
+        // mode wants it): put the game's lens back once. If the hook goes
+        // away first, the game rewrites the POV itself on its next update.
+        const float game_fov = context->orbit_game_fov.load(std::memory_order_acquire);
+        std::uintptr_t fov_address{};
+        if (game_fov > 5.0F && game_fov < 170.0F &&
+            AddAddress(context->camera_pov_struct, kCameraPovFovOffset, fov_address))
+          static_cast<void>(Write(*context, fov_address, game_fov));
+      }
+    }
   } catch (...) {
   }
 
@@ -7049,6 +7366,17 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     context.pose_settings_dirty.store(true, std::memory_order_release);
   }
 
+  // A loaded motion owns the pose; its frames are not manual edits.
+  if (!context.motion_loaded.load(std::memory_order_acquire)) {
+    const int mirror = context.pose_mirror_request.exchange(0, std::memory_order_acq_rel);
+    if (mirror != 0 && !MirrorPose(context, mirror))
+      SetReflectionStatus(context, "mirror unavailable: load the bones and make the character "
+                                   "visible first");
+    StepPoseHistory(context);
+  } else {
+    context.pose_mirror_request.store(0, std::memory_order_release);
+  }
+
   const bool master_enabled =
       context.pose_override_enabled.load(std::memory_order_acquire);  std::size_t active_joints{};
   {
@@ -7095,7 +7423,9 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   // point is often a placeholder the game is not recomputing (measured frozen with x = 0 for
   // seconds), and a shot built against a placeholder is what "the camera stares at one place"
   // turned out to be. Follow mode is an extra source of the shot, not an always-on override.
-  const bool camera_requested = camera_configured && motion_playing_now;
+  // The pose camera needs the hook whenever it is on, playing or not.
+  const bool orbit_on = context.orbit_enabled.load(std::memory_order_acquire);
+  const bool camera_requested = (camera_configured && motion_playing_now) || orbit_on;
   // Size the camera's MMD world before any motion has published the exact ratio: the live
   // character's leg over the reference model's is the same definition the converters bake into
   // `mmdLegLength`, and MMD's bare 8 cm/unit convention is 6.8 % short for a 169 cm character
@@ -7119,7 +7449,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   if (camera_requested) {
     if (RefreshCameraPovTarget(context))
       camera_hook_ok = EnsureCameraPovHook(context);
-    if (!context.camera_was_enabled) {
+    if (!context.camera_was_enabled && camera_configured && motion_playing_now) {
       context.camera_was_enabled = true;
       context.camera_anchored.store(false, std::memory_order_release);
       context.camera_anchor_wait = 0;
@@ -7296,6 +7626,1520 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
                            " new_mesh=" + Hex(mesh) + " takeover=reset motion=unloaded");
 }
 
+// ---------------------------------------------------------------------------
+// Skeleton overlay: every joint of the local mesh drawn through the host AHUD,
+// with a line to its parent, and a click on a joint selects it for editing.
+// ---------------------------------------------------------------------------
+
+constexpr std::uint32_t kOverlayNoBone = (std::numeric_limits<std::uint32_t>::max)();
+constexpr float kOverlayPickRadius = 12.0F;
+constexpr std::uint32_t kOverlayResolveRetryFrames = 300;
+constexpr std::uint32_t kOverlayLineColor = ANOMALY_RGBA_V1(80, 220, 255, 190);
+constexpr std::uint32_t kOverlayJointFill = ANOMALY_RGBA_V1(255, 255, 255, 70);
+constexpr std::uint32_t kOverlayJointRing = ANOMALY_RGBA_V1(20, 20, 20, 150);
+constexpr std::uint32_t kOverlayJointCentre = ANOMALY_RGBA_V1(255, 255, 255, 230);
+constexpr std::uint32_t kOverlayHoverColor = ANOMALY_RGBA_V1(255, 160, 40, 255);
+constexpr std::uint32_t kOverlayHoverFill = ANOMALY_RGBA_V1(255, 160, 40, 90);
+constexpr std::uint32_t kOverlaySelectedColor = ANOMALY_RGBA_V1(255, 230, 0, 255);
+constexpr std::uint32_t kOverlaySelectedFill = ANOMALY_RGBA_V1(255, 230, 0, 90);
+constexpr float kOverlayDefaultRadius = 7.0F;
+constexpr float kOverlayMinimumRadius = 3.0F;
+constexpr float kOverlayMaximumRadius = 16.0F;
+
+Vec3d V3Sub(const Vec3d &a, const Vec3d &b) noexcept { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Vec3d V3Add(const Vec3d &a, const Vec3d &b) noexcept { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+Vec3d V3Scale(const Vec3d &a, const double s) noexcept { return {a.x * s, a.y * s, a.z * s}; }
+double V3Dot(const Vec3d &a, const Vec3d &b) noexcept { return a.x * b.x + a.y * b.y + a.z * b.z; }
+Vec3d V3Cross(const Vec3d &a, const Vec3d &b) noexcept {
+  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+double V3Length(const Vec3d &a) noexcept { return std::sqrt(V3Dot(a, a)); }
+
+Quatd QuatNormalize(const Quatd &q) noexcept {
+  const double length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (!(length > 1e-12))
+    return Quatd{};
+  return Quatd{q.x / length, q.y / length, q.z / length, q.w / length};
+}
+
+Quatd QuatFromRotationVector(const std::array<double, 3> &omega) noexcept {
+  const double angle =
+      std::sqrt(omega[0] * omega[0] + omega[1] * omega[1] + omega[2] * omega[2]);
+  if (angle < 1e-12)
+    return QuatNormalize(Quatd{omega[0] * 0.5, omega[1] * 0.5, omega[2] * 0.5, 1.0});
+  const double s = std::sin(angle * 0.5) / angle;
+  return Quatd{omega[0] * s, omega[1] * s, omega[2] * s, std::cos(angle * 0.5)};
+}
+
+// The inverse of RotatorToQuat, in UE's FQuat::Rotator convention, so the
+// result round-trips through the joint sliders. Degrees, each in [-180, 180].
+std::array<double, 3> QuatToRotator(const Quatd &input) noexcept {
+  constexpr double kRadiansToDegrees = 180.0 / 3.14159265358979323846;
+  const Quatd q = QuatNormalize(input);
+  const auto normalize = [](double value) {
+    while (value > 180.0)
+      value -= 360.0;
+    while (value < -180.0)
+      value += 360.0;
+    return value;
+  };
+  const double singularity = q.z * q.x - q.w * q.y;
+  const double yaw_y = 2.0 * (q.w * q.z + q.x * q.y);
+  const double yaw_x = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+  constexpr double kThreshold = 0.4999995;
+  double pitch{};
+  double yaw = std::atan2(yaw_y, yaw_x) * kRadiansToDegrees;
+  double roll{};
+  if (singularity < -kThreshold) {
+    pitch = -90.0;
+    roll = normalize(-yaw - 2.0 * std::atan2(q.x, q.w) * kRadiansToDegrees);
+  } else if (singularity > kThreshold) {
+    pitch = 90.0;
+    roll = normalize(yaw - 2.0 * std::atan2(q.x, q.w) * kRadiansToDegrees);
+  } else {
+    pitch = std::asin(std::clamp(2.0 * singularity, -1.0, 1.0)) * kRadiansToDegrees;
+    roll = std::atan2(-2.0 * (q.w * q.x + q.y * q.z),
+                      1.0 - 2.0 * (q.x * q.x + q.y * q.y)) *
+           kRadiansToDegrees;
+  }
+  return {normalize(pitch), normalize(yaw), normalize(roll)};
+}
+
+// Joint drag is a view-plane rotation, like a rotate gizmo: the parent bone
+// turns about the view ray through it by exactly the angle the cursor has
+// swept around the parent on screen. That angle is a function of the cursor
+// alone, so holding the mouse still holds the bone still, and it cannot flip
+// to the far side of the joint's sphere. (An earlier free 3D solve re-ran every
+// frame with three unknowns and two screen coordinates; the unconstrained one
+// drifted whenever the projection moved by a fraction of a pixel.)
+
+double WrapAngle(double radians) noexcept {
+  constexpr double kPi = 3.14159265358979323846;
+  while (radians > kPi)
+    radians -= 2.0 * kPi;
+  while (radians < -kPi)
+    radians += 2.0 * kPi;
+  return radians;
+}
+
+// The view ray through `pivot`: the one world direction along which the
+// projection does not move, i.e. the cross product of the gradients of
+// screen x and screen y. Found numerically since the host exposes only project.
+// `sense` is +1 or -1 so that a positive angle about the axis turns a point
+// the same way the cursor angle atan2(dy, dx) increases on screen.
+template <typename Project>
+bool ViewRotationAxis(Project &&project, const Vec3d &pivot, Vec3d &axis,
+                      double &sense) noexcept;
+
+// The world directions that move `point` one screen pixel right and one pixel
+// down while staying at its depth (on the plane through it facing the view).
+// The inverse of the projection's 2x3 Jacobian restricted to that plane.
+template <typename Project>
+bool ViewPlaneBasis(Project &&project, const Vec3d &point, const Vec3d &view_axis,
+                    Vec3d &right, Vec3d &down) noexcept {
+  const Vec3d helper = std::abs(view_axis.z) < 0.9 ? Vec3d{0, 0, 1} : Vec3d{1, 0, 0};
+  Vec3d u = V3Cross(view_axis, helper);
+  u = V3Scale(u, 1.0 / V3Length(u));
+  const Vec3d v = V3Cross(view_axis, u);
+  constexpr double kStep = 1.0;  // cm
+  float centre[2]{};
+  float pu[2]{};
+  float pv[2]{};
+  const double c[3]{point.x, point.y, point.z};
+  const double cu[3]{point.x + u.x * kStep, point.y + u.y * kStep, point.z + u.z * kStep};
+  const double cv[3]{point.x + v.x * kStep, point.y + v.y * kStep, point.z + v.z * kStep};
+  if (!project(c, centre) || !project(cu, pu) || !project(cv, pv))
+    return false;
+  // Pixels per cm along u and v.
+  const double j00 = (static_cast<double>(pu[0]) - centre[0]) / kStep;
+  const double j10 = (static_cast<double>(pu[1]) - centre[1]) / kStep;
+  const double j01 = (static_cast<double>(pv[0]) - centre[0]) / kStep;
+  const double j11 = (static_cast<double>(pv[1]) - centre[1]) / kStep;
+  const double determinant = j00 * j11 - j01 * j10;
+  if (!(std::abs(determinant) > 1e-9) || !std::isfinite(determinant))
+    return false;
+  // [du dv] per pixel = J^-1.
+  const double i00 = j11 / determinant;
+  const double i01 = -j01 / determinant;
+  const double i10 = -j10 / determinant;
+  const double i11 = j00 / determinant;
+  right = V3Add(V3Scale(u, i00), V3Scale(v, i10));
+  down = V3Add(V3Scale(u, i01), V3Scale(v, i11));
+  return true;
+}
+
+template <typename Project>
+bool ViewRotationAxis(Project &&project, const Vec3d &pivot, Vec3d &axis,
+                      double &sense) noexcept {
+  constexpr double kStep = 1.0;  // cm
+  double gradient[2][3]{};
+  for (int component{}; component != 3; ++component) {
+    double plus[3]{pivot.x, pivot.y, pivot.z};
+    double minus[3]{pivot.x, pivot.y, pivot.z};
+    plus[component] += kStep;
+    minus[component] -= kStep;
+    float a[2]{};
+    float b[2]{};
+    if (!project(plus, a) || !project(minus, b))
+      return false;
+    gradient[0][component] = (static_cast<double>(a[0]) - b[0]) / (2.0 * kStep);
+    gradient[1][component] = (static_cast<double>(a[1]) - b[1]) / (2.0 * kStep);
+  }
+  const Vec3d gx{gradient[0][0], gradient[0][1], gradient[0][2]};
+  const Vec3d gy{gradient[1][0], gradient[1][1], gradient[1][2]};
+  Vec3d ray{gx.y * gy.z - gx.z * gy.y, gx.z * gy.x - gx.x * gy.z,
+            gx.x * gy.y - gx.y * gy.x};
+  const double length = std::sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
+  if (!(length > 1e-12) || !std::isfinite(length))
+    return false;
+  axis = Vec3d{ray.x / length, ray.y / length, ray.z / length};
+
+  // Measure the handedness instead of assuming UE's axes and a y-down screen:
+  // turn a probe perpendicular to the axis a little and see which way it goes.
+  const Vec3d helper = std::abs(axis.z) < 0.9 ? Vec3d{0.0, 0.0, 1.0} : Vec3d{1.0, 0.0, 0.0};
+  Vec3d probe{axis.y * helper.z - axis.z * helper.y, axis.z * helper.x - axis.x * helper.z,
+              axis.x * helper.y - axis.y * helper.x};
+  const double probe_length =
+      std::sqrt(probe.x * probe.x + probe.y * probe.y + probe.z * probe.z);
+  probe = Vec3d{probe.x / probe_length * 10.0, probe.y / probe_length * 10.0,
+                probe.z / probe_length * 10.0};
+  const Vec3d turned = QuatRotateVector(
+      QuatFromRotationVector({axis.x * 0.1, axis.y * 0.1, axis.z * 0.1}), probe);
+  const double centre_world[3]{pivot.x, pivot.y, pivot.z};
+  const double probe_world[3]{pivot.x + probe.x, pivot.y + probe.y, pivot.z + probe.z};
+  const double turned_world[3]{pivot.x + turned.x, pivot.y + turned.y, pivot.z + turned.z};
+  float centre[2]{};
+  float before[2]{};
+  float after[2]{};
+  if (!project(centre_world, centre) || !project(probe_world, before) ||
+      !project(turned_world, after))
+    return false;
+  const double swept =
+      WrapAngle(std::atan2(static_cast<double>(after[1]) - centre[1],
+                           static_cast<double>(after[0]) - centre[0]) -
+                std::atan2(static_cast<double>(before[1]) - centre[1],
+                           static_cast<double>(before[0]) - centre[0]));
+  if (!(std::abs(swept) > 1e-6))
+    return false;
+  sense = swept > 0.0 ? 1.0 : -1.0;
+  return true;
+}
+
+// The unit direction from `point` toward the camera. The view ray through
+// the point is known up to sign; the camera side is where the projection
+// magnifies, so compare how far apart two points 1 cm apart land on screen
+// 20 cm either way along the ray.
+template <typename Project>
+bool TowardCamera(Project &&project, const Vec3d &point, Vec3d &toward) noexcept {
+  Vec3d ray;
+  double sense{};
+  if (!ViewRotationAxis(project, point, ray, sense))
+    return false;
+  Vec3d across = V3Cross(ray, std::abs(ray.z) < 0.9 ? Vec3d{0, 0, 1} : Vec3d{1, 0, 0});
+  across = V3Scale(across, 1.0 / V3Length(across));
+  const auto spread = [&](const double along) {
+    const Vec3d centre = V3Add(point, V3Scale(ray, along));
+    const Vec3d next = V3Add(centre, across);
+    const double a[3]{centre.x, centre.y, centre.z};
+    const double b[3]{next.x, next.y, next.z};
+    float pa[2]{};
+    float pb[2]{};
+    if (!project(a, pa) || !project(b, pb))
+      return -1.0;
+    return std::hypot(static_cast<double>(pb[0]) - pa[0], static_cast<double>(pb[1]) - pa[1]);
+  };
+  const double minus = spread(-20.0);
+  const double plus = spread(20.0);
+  if (!(minus > 0.0) || !(plus > 0.0) || minus == plus)
+    return false;
+  toward = plus > minus ? ray : V3Scale(ray, -1.0);
+  return true;
+}
+
+// Accumulates the cursor's angle around the pivot on screen, unwrapped so a
+// drag can go past half a turn. Near the pivot the angle is meaningless, so it
+// holds there. Returns true once `angle` holds a usable value.
+// The bone a drag of `joint` turns: its nearest ancestor that is not sitting
+// on the joint. Biped rigs stack bones -- twist bones on their limb, the
+// pelvis on the hip root -- and a pivot at the joint's own position has
+// nothing to swing. `distance2(a, b)` is the squared distance between two
+// bones. Returns -1 when every ancestor coincides (or there is none).
+template <typename Distance2>
+std::int32_t ResolveDragPivot(const std::vector<std::int32_t> &parents,
+                              const std::uint32_t joint, Distance2 &&distance2) noexcept {
+  constexpr double kCoincident2 = 0.1 * 0.1;  // cm
+  const auto count = static_cast<std::uint32_t>(parents.size());
+  if (joint >= count)
+    return -1;
+  std::int32_t pivot = parents[joint];
+  // Bounded by the bone count, so a malformed hierarchy with a cycle ends.
+  for (std::uint32_t step{}; step != count; ++step) {
+    if (pivot < 0 || static_cast<std::uint32_t>(pivot) >= count)
+      return -1;
+    if (distance2(joint, static_cast<std::uint32_t>(pivot)) >= kCoincident2)
+      return pivot;
+    pivot = parents[static_cast<std::size_t>(pivot)];
+  }
+  return -1;
+}
+
+// Which bones the "body only" overlay hides: hair, clothing and ornaments, by
+// the same name rules the accessory physics uses to find them, plus every bone
+// hanging below one (a chain's helper bones do not always carry the keyword).
+// Twist, finger, IK and tail bones are not secondary and stay visible. Returns
+// the number hidden; with no names loaded nothing is hidden.
+// Bones that exist for the engine, not the body: IK and foot-placement
+// targets and weapon sockets hang off the root beside Bip001 (root_foot,
+// foot_l, hand_r, wq_root_L, P_wq_R), virtual bones are named "VB ...", and
+// Bip001-PropN are the hand prop mounts. Dragging them moves nothing visible.
+bool IsControlBone(const std::string_view name, const std::int32_t parent,
+                   const std::vector<std::string> &names) {
+  if (name.rfind("VB ", 0) == 0)
+    return true;
+  const auto low = better_pose::secondary::Lower(name);
+  if (low.rfind("bip001-prop", 0) == 0)
+    return true;
+  // A direct child of the skeleton root other than the Bip001 rig itself.
+  if (parent >= 0 && static_cast<std::size_t>(parent) < names.size()) {
+    const auto parent_low = better_pose::secondary::Lower(names[static_cast<std::size_t>(parent)]);
+    if (parent_low == "root" && low.rfind("bip001", 0) != 0)
+      return true;
+  }
+  return false;
+}
+
+// Facial rig bones under the head: mouth, lips, teeth, eyebrows, eyelids,
+// eyeballs, cheeks. Real joints, but ~50 of them crowd the face into a blob.
+bool IsFaceBone(const std::string_view name) {
+  const auto low = better_pose::secondary::Lower(name);
+  for (const char *key : {"mouth", "zuiba", "yachi", "lip", "eyebrow", "eyelid", "eyeco",
+                          "eyeball", "lianjia", "tongue", "jaw"})
+    if (low.find(key) != std::string::npos)
+      return true;
+  return false;
+}
+
+std::uint32_t BuildOverlayHiddenMask(const std::vector<std::string> &names,
+                                     const std::vector<std::int32_t> &parents,
+                                     std::vector<std::uint8_t> &hidden,
+                                     const bool hide_face = true) {
+  const auto count = static_cast<std::uint32_t>(parents.size());
+  hidden.assign(count, 0);
+  if (names.size() != count)
+    return 0;
+  std::vector<std::uint8_t> own(count, 0);
+  for (std::uint32_t bone{}; bone != count; ++bone)
+    own[bone] = better_pose::secondary::IsSecondary(names[bone]) ||
+                        better_pose::secondary::IsOrnament(names[bone]) ||
+                        IsControlBone(names[bone], parents[bone], names) ||
+                        (hide_face && IsFaceBone(names[bone]))
+                    ? 1
+                    : 0;
+  std::uint32_t total{};
+  for (std::uint32_t bone{}; bone != count; ++bone) {
+    // Walk up until a secondary ancestor or the root; bounded against cycles.
+    std::int32_t at = static_cast<std::int32_t>(bone);
+    for (std::uint32_t step{}; step <= count && at >= 0 &&
+                               static_cast<std::uint32_t>(at) < count;
+         ++step) {
+      if (own[static_cast<std::size_t>(at)] != 0) {
+        hidden[bone] = 1;
+        ++total;
+        break;
+      }
+      at = parents[static_cast<std::size_t>(at)];
+    }
+  }
+  return total;
+}
+
+// How many bones hang below each bone. Used to break ties between joints that
+// land on the same pixel: the limb bone carrying the rest of the chain is the
+// one worth grabbing, not a twist, helper or IK bone stacked on it. Walking up
+// from every bone is bounded by the bone count, so a cycle cannot hang it.
+void CountDescendants(const std::vector<std::int32_t> &parents,
+                      std::vector<std::uint32_t> &descendants) noexcept {
+  const auto count = static_cast<std::uint32_t>(parents.size());
+  descendants.assign(count, 0);
+  for (std::uint32_t bone{}; bone != count; ++bone) {
+    std::int32_t parent = parents[bone];
+    for (std::uint32_t step{}; step != count && parent >= 0 &&
+                               static_cast<std::uint32_t>(parent) < count;
+         ++step) {
+      ++descendants[static_cast<std::size_t>(parent)];
+      parent = parents[static_cast<std::size_t>(parent)];
+    }
+  }
+}
+
+// The joint under the cursor. Every joint within `radius` is a candidate; the
+// ones within `stack` pixels of the nearest count as one stacked point, and of
+// those the bone with the most descendants wins (then the nearer, then the
+// lower index). The result is the same every frame, however the projection of
+// coincident bones jitters by a fraction of a pixel.
+std::uint32_t PickOverlayJoint(const std::vector<std::array<float, 2>> &screen,
+                               const std::vector<std::uint8_t> &valid,
+                               const std::vector<std::uint32_t> &weight, const float x,
+                               const float y, const float radius, const float stack) noexcept {
+  constexpr std::uint32_t kNone = (std::numeric_limits<std::uint32_t>::max)();
+  const std::size_t count = (std::min)({screen.size(), valid.size(), weight.size()});
+  float nearest2 = radius * radius;
+  bool any = false;
+  for (std::size_t bone{}; bone != count; ++bone) {
+    if (valid[bone] == 0)
+      continue;
+    const float dx = screen[bone][0] - x;
+    const float dy = screen[bone][1] - y;
+    const float distance2 = dx * dx + dy * dy;
+    if (distance2 <= nearest2) {
+      nearest2 = distance2;
+      any = true;
+    }
+  }
+  if (!any)
+    return kNone;
+  const float limit = std::sqrt(nearest2) + stack;
+  const float limit2 = limit * limit;
+  std::uint32_t best = kNone;
+  float best2{};
+  for (std::size_t bone{}; bone != count; ++bone) {
+    if (valid[bone] == 0)
+      continue;
+    const float dx = screen[bone][0] - x;
+    const float dy = screen[bone][1] - y;
+    const float distance2 = dx * dx + dy * dy;
+    if (distance2 > limit2)
+      continue;
+    if (best == kNone || weight[bone] > weight[best] ||
+        (weight[bone] == weight[best] && distance2 < best2)) {
+      best = static_cast<std::uint32_t>(bone);
+      best2 = distance2;
+    }
+  }
+  return best;
+}
+
+bool AdvanceDragAngle(const float pivot[2], const float cursor[2], bool &ready,
+                      double &last_raw, double &angle) noexcept {
+  constexpr double kMinimumRadius = 8.0;  // pixels
+  const double dx = static_cast<double>(cursor[0]) - pivot[0];
+  const double dy = static_cast<double>(cursor[1]) - pivot[1];
+  if (dx * dx + dy * dy < kMinimumRadius * kMinimumRadius)
+    return ready;
+  const double raw = std::atan2(dy, dx);
+  if (!ready) {
+    ready = true;
+    last_raw = raw;
+    return true;
+  }
+  angle += WrapAngle(raw - last_raw);
+  last_raw = raw;
+  return true;
+}
+
+// The pose model is local = offset * base, component = parent * local. Giving
+// the bone an extra world rotation R therefore needs offset' = P^-1 R P offset,
+// with P the world rotation of the bone's parent.
+Quatd ApplyWorldRotationToOffset(const Quatd &parent_world, const Quatd &world_rotation,
+                                 const Quatd &offset) noexcept {
+  return QuatNormalize(QuatMultiply(
+      QuatMultiply(QuatMultiply(QuatConjugate(parent_world), world_rotation),
+                   parent_world),
+      offset));
+}
+
+// The shortest rotation taking direction `from` onto direction `to`.
+Quatd QuatFromTo(const Vec3d &from, const Vec3d &to) noexcept {
+  const double lf = V3Length(from);
+  const double lt = V3Length(to);
+  if (!(lf > 1e-12) || !(lt > 1e-12))
+    return Quatd{};
+  const Vec3d a = V3Scale(from, 1.0 / lf);
+  const Vec3d b = V3Scale(to, 1.0 / lt);
+  const double d = V3Dot(a, b);
+  if (d < -0.999999) {
+    // Opposite: any axis perpendicular to `a` works.
+    Vec3d axis = V3Cross(a, std::abs(a.x) < 0.9 ? Vec3d{1, 0, 0} : Vec3d{0, 1, 0});
+    axis = V3Scale(axis, 1.0 / V3Length(axis));
+    return Quatd{axis.x, axis.y, axis.z, 0.0};
+  }
+  const Vec3d c = V3Cross(a, b);
+  return QuatNormalize(Quatd{c.x, c.y, c.z, 1.0 + d});
+}
+
+// The joints a drag moves by two-bone IK: hands and feet, which sit below a
+// hinge (forearm, calf). Fingers, toes and helper bones stay one-bone drags.
+bool IsIkEndBone(std::string_view name) {
+  const auto low = better_pose::secondary::Lower(name);
+  for (const char *skip : {"finger", "toe", "twist", "adjust", "ik", "nub", "prop"})
+    if (low.find(skip) != std::string::npos)
+      return false;
+  return low.find("hand") != std::string::npos || low.find("foot") != std::string::npos;
+}
+
+// Two-bone IK in world space. Given the root, middle and end joints at the
+// press and a target for the end, returns the world rotations to add to the
+// root bone and (after the root's) to the middle bone. The bend stays in the
+// plane the limb already bends in, so an elbow keeps pointing where it
+// pointed; the reach is clamped just short of straight so the knee never
+// snaps through. Bone lengths are kept exactly.
+struct TwoBoneRotations {
+  Quatd root;
+  Quatd mid;  // applied after `root`, about the middle joint
+};
+
+TwoBoneRotations SolveTwoBone(const Vec3d &root, const Vec3d &mid, const Vec3d &end,
+                              const Vec3d &target) noexcept {
+  TwoBoneRotations out;
+  const Vec3d upper = V3Sub(mid, root);
+  const Vec3d lower = V3Sub(end, mid);
+  const double a = V3Length(upper);
+  const double b = V3Length(lower);
+  const Vec3d reach = V3Sub(end, root);
+  Vec3d wanted = V3Sub(target, root);
+  double want = V3Length(wanted);
+  if (!(a > 1e-6) || !(b > 1e-6) || !(want > 1e-6))
+    return out;
+  // Clamp between fully folded and almost straight.
+  const double minimum = std::abs(a - b) + 1e-3;
+  const double maximum = (a + b) * 0.9995;
+  const double length = std::clamp(want, minimum, maximum);
+  wanted = V3Scale(wanted, length / want);
+  want = length;
+  const Vec3d direction = V3Scale(wanted, 1.0 / want);
+
+  // The bend direction: which way the middle joint sticks out from the line
+  // root-to-end. Keeping it is what keeps an elbow pointing where it pointed.
+  const auto perpendicular = [](const Vec3d &v, const Vec3d &unit) {
+    return V3Sub(v, V3Scale(unit, V3Dot(v, unit)));
+  };
+  Vec3d bend{};
+  const double reach_length = V3Length(reach);
+  if (reach_length > 1e-6)
+    bend = perpendicular(upper, V3Scale(reach, 1.0 / reach_length));
+  bend = perpendicular(bend, direction);
+  if (V3Length(bend) < 1e-3 * a)  // straight limb: bend the way the upper bone leans
+    bend = perpendicular(upper, direction);
+  if (V3Length(bend) < 1e-6 * a)  // and failing that, any way at all
+    bend = perpendicular(std::abs(direction.z) < 0.9 ? Vec3d{0, 0, 1} : Vec3d{1, 0, 0},
+                         direction);
+  bend = V3Scale(bend, 1.0 / V3Length(bend));
+
+  // Law of cosines: where the middle joint must sit for the two lengths.
+  const double cos_root = std::clamp((a * a + want * want - b * b) / (2.0 * a * want), -1.0, 1.0);
+  const double sin_root = std::sqrt((std::max)(0.0, 1.0 - cos_root * cos_root));
+  const Vec3d new_upper =
+      V3Add(V3Scale(direction, a * cos_root), V3Scale(bend, a * sin_root));
+
+  // Shortest-arc rotations add no twist about the bones themselves.
+  out.root = QuatFromTo(upper, new_upper);
+  const Vec3d carried_lower = QuatRotateVector(out.root, lower);
+  out.mid = QuatFromTo(carried_lower, V3Sub(wanted, new_upper));
+  return out;
+}
+
+void ClearOverlayScreen(Context &context) noexcept {
+  if (!context.overlay_published)
+    return;
+  std::lock_guard<std::mutex> lock(context.overlay_mutex);
+  context.overlay_screen_joints.clear();
+  context.overlay_screen_valid.clear();
+  context.overlay_screen_weight.clear();
+  context.overlay_joint_world.clear();
+  context.overlay_component_world_valid = false;
+  context.overlay_published = false;
+}
+
+// Game thread. K2_GetComponentToWorld is looked up once, then retried only
+// every few seconds if the object registry was not ready yet.
+bool ReadMeshComponentToWorld(Context &context, const std::uintptr_t mesh,
+                              Transformd &world) noexcept {
+  if (context.overlay_component_transform_function == 0) {
+    if (context.overlay_resolve_cooldown != 0) {
+      --context.overlay_resolve_cooldown;
+      return false;
+    }
+    std::uintptr_t function{};
+    if (!FindObjectAddressByPath(context, kFunctionSceneGetComponentTransformPath,
+                                 function) ||
+        function == 0) {
+      context.overlay_resolve_cooldown = kOverlayResolveRetryFrames;
+      return false;
+    }
+    context.overlay_component_transform_function = function;
+  }
+  std::uintptr_t vtable{};
+  std::uintptr_t process_event{};
+  if (!Read(context, mesh, vtable) || vtable == 0 ||
+      !Read(context,
+            vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) *
+                        sizeof(void *),
+            process_event) ||
+      process_event == 0)
+    return false;
+  std::array<std::uint8_t, sizeof(PackedTransform)> parameters{};
+  PackedTransform packed{};
+  if (!CallResolvedUFunction(mesh, context.overlay_component_transform_function,
+                             process_event, parameters.data(), parameters.size(),
+                             &packed))
+    return false;
+  world = UnpackTransform(packed);
+  const double values[]{world.rotation.x, world.rotation.y, world.rotation.z,
+                        world.rotation.w, world.translation.x,
+                        world.translation.y, world.translation.z,
+                        world.scale.x, world.scale.y, world.scale.z};
+  return std::all_of(std::begin(values), std::end(values),
+                     [](const double value) { return std::isfinite(value); });
+}
+
+Transformd OverlayJointWorld(const Context &context, const Transformd &component_world,
+                             const std::uint32_t bone) noexcept {
+  PackedTransform packed{};
+  std::memcpy(&packed,
+              context.overlay_raw_pose.data() + static_cast<std::size_t>(bone) * kTransformSize,
+              sizeof(packed));
+  return TransformMultiply(component_world, UnpackTransform(packed));
+}
+
+void WriteDragAngles(Context &context, const std::uint32_t bone,
+                     const std::array<double, 3> &angles) noexcept {
+  std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+  if (bone >= context.bone_angles.size())
+    context.bone_angles.resize(static_cast<std::size_t>(bone) + 1);
+  context.bone_angles[bone] = angles;
+}
+
+// Game thread, inside the AHUD callback, after this frame's joints were read
+// and projected. Dragging a joint rotates its parent bone (the pivot) so the
+// joint follows the cursor; the pose override then applies the new angle on
+// the next mesh tick. Motion playback owns the pose, so no drag while loaded.
+void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
+                      const Transformd &component_world, const std::uint32_t count,
+                      const std::vector<std::array<float, 2>> &screen,
+                      const std::vector<std::uint8_t> &valid) noexcept {
+  auto &drag = context.overlay_drag;
+  if (context.overlay_drag_cancel.exchange(false, std::memory_order_acq_rel) &&
+      drag.valid) {
+    WriteDragAngles(context, drag.pivot, drag.start_angles);
+    if (drag.ik)
+      WriteDragAngles(context, drag.root, drag.root_start_angles);
+    drag.valid = false;
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+  }
+  // Draw refreshes the tick every frame of a drag; it stops running when the
+  // plugin window closes, and a drag without its mouse owner has ended.
+  const bool owner_alive =
+      GetTickCount64() - context.overlay_hover_tick.load(std::memory_order_acquire) < 250U;
+  const std::uint32_t joint = owner_alive
+                                  ? context.overlay_drag_joint.load(std::memory_order_acquire)
+                                  : kOverlayNoBone;
+  const std::uint32_t generation =
+      context.overlay_drag_generation.load(std::memory_order_acquire);
+  if (joint == kOverlayNoBone ||
+      context.motion_loaded.load(std::memory_order_acquire)) {
+    if (drag.valid) {
+      drag.valid = false;
+      context.pose_settings_dirty.store(true, std::memory_order_release);  // drag finished
+    }
+    return;
+  }
+  const auto project = [frame](const double world[3], float out[2]) {
+    double depth{};
+    return frame->project(frame->user, world, out, &depth) != 0 && depth > 0.0 &&
+           std::isfinite(out[0]) && std::isfinite(out[1]);
+  };
+  const auto &parents = context.bone_parents;
+  if (!drag.valid || drag.generation != generation) {
+    // One start per press: a start that failed (joint off screen, twist bone)
+    // is not retried later against a pose that may already have moved.
+    if (drag.generation == generation)
+      return;
+    drag.valid = false;
+    drag.generation = generation;
+    const auto fail = [&](const char *reason) {
+      LogDiagnostic(context, std::string("betterpose joint drag not started: ") + reason +
+                                 " joint=" + std::to_string(joint));
+    };
+    if (joint >= count || valid[joint] == 0 || parents.size() != count)
+      return fail("joint unavailable");
+    const std::int32_t pivot = ResolveDragPivot(
+        parents, joint, [&](const std::uint32_t a, const std::uint32_t b) {
+          const Vec3d pa = OverlayJointWorld(context, component_world, a).translation;
+          const Vec3d pb = OverlayJointWorld(context, component_world, b).translation;
+          return (pa.x - pb.x) * (pa.x - pb.x) + (pa.y - pb.y) * (pa.y - pb.y) +
+                 (pa.z - pb.z) * (pa.z - pb.z);
+        });
+    if (pivot < 0)
+      return fail("no ancestor away from the joint");
+    const Transformd pivot_world =
+        OverlayJointWorld(context, component_world, static_cast<std::uint32_t>(pivot));
+    const Transformd joint_world = OverlayJointWorld(context, component_world, joint);
+    const std::int32_t grandparent = parents[static_cast<std::size_t>(pivot)];
+    const Quatd parent_rotation =
+        grandparent >= 0 && static_cast<std::uint32_t>(grandparent) < count
+            ? OverlayJointWorld(context, component_world,
+                                static_cast<std::uint32_t>(grandparent))
+                  .rotation
+            : component_world.rotation;
+    const Vec3d offset{joint_world.translation.x - pivot_world.translation.x,
+                       joint_world.translation.y - pivot_world.translation.y,
+                       joint_world.translation.z - pivot_world.translation.z};
+    std::array<double, 3> start_angles{};
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      if (static_cast<std::size_t>(pivot) < context.bone_angles.size())
+        start_angles = context.bone_angles[static_cast<std::size_t>(pivot)];
+    }
+    const Quatd start_offset =
+        RotatorToQuat(start_angles[0], start_angles[1], start_angles[2]);
+    drag.pivot = static_cast<std::uint32_t>(pivot);
+    drag.pivot_world = {pivot_world.translation.x, pivot_world.translation.y,
+                        pivot_world.translation.z};
+    drag.joint_offset = {offset.x, offset.y, offset.z};
+    drag.parent_world = {parent_rotation.x, parent_rotation.y, parent_rotation.z,
+                         parent_rotation.w};
+    drag.start_offset = {start_offset.x, start_offset.y, start_offset.z, start_offset.w};
+    drag.start_angles = start_angles;
+    drag.start_screen = screen[joint];
+    Vec3d axis;
+    double sense{};
+    if (valid[static_cast<std::size_t>(pivot)] == 0)
+      return fail("pivot off screen");
+    if (!ViewRotationAxis(project, pivot_world.translation, axis, sense))
+      return fail("view axis unavailable");
+    drag.axis = {axis.x * sense, axis.y * sense, axis.z * sense};
+    drag.pivot_screen = screen[static_cast<std::size_t>(pivot)];
+
+    // Hands and feet drag the whole limb: the forearm/calf is `pivot`, the
+    // upper arm/thigh above it the IK root. Anything else stays one-bone.
+    drag.ik = false;
+    if (context.overlay_ik_enabled.load(std::memory_order_acquire) &&
+        joint < context.bone_names.size() && IsIkEndBone(context.bone_names[joint])) {
+      const std::int32_t root = ResolveDragPivot(
+          parents, static_cast<std::uint32_t>(pivot),
+          [&](const std::uint32_t a, const std::uint32_t b) {
+            const Vec3d pa = OverlayJointWorld(context, component_world, a).translation;
+            const Vec3d pb = OverlayJointWorld(context, component_world, b).translation;
+            return V3Dot(V3Sub(pa, pb), V3Sub(pa, pb));
+          });
+      Vec3d end_axis;
+      double end_sense{};
+      Vec3d right;
+      Vec3d down;
+      if (root >= 0 &&
+          ViewRotationAxis(project, joint_world.translation, end_axis, end_sense) &&
+          ViewPlaneBasis(project, joint_world.translation, end_axis, right, down)) {
+        const auto root_bone = static_cast<std::uint32_t>(root);
+        const Transformd root_world = OverlayJointWorld(context, component_world, root_bone);
+        const std::int32_t root_parent = parents[root_bone];
+        const Quatd root_parent_rotation =
+            root_parent >= 0 && static_cast<std::uint32_t>(root_parent) < count
+                ? OverlayJointWorld(context, component_world,
+                                    static_cast<std::uint32_t>(root_parent))
+                      .rotation
+                : component_world.rotation;
+        std::array<double, 3> root_angles{};
+        {
+          std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+          if (root_bone < context.bone_angles.size())
+            root_angles = context.bone_angles[root_bone];
+        }
+        const Quatd root_offset = RotatorToQuat(root_angles[0], root_angles[1], root_angles[2]);
+        drag.root = root_bone;
+        drag.root_world = {root_world.translation.x, root_world.translation.y,
+                           root_world.translation.z};
+        drag.mid_world = drag.pivot_world;
+        drag.end_world = {joint_world.translation.x, joint_world.translation.y,
+                          joint_world.translation.z};
+        drag.root_parent_world = {root_parent_rotation.x, root_parent_rotation.y,
+                                  root_parent_rotation.z, root_parent_rotation.w};
+        drag.root_start_offset = {root_offset.x, root_offset.y, root_offset.z, root_offset.w};
+        drag.root_start_angles = root_angles;
+        drag.plane_right = {right.x, right.y, right.z};
+        drag.plane_down = {down.x, down.y, down.z};
+        drag.ik = true;
+      }
+    }
+    // Depth: the direction toward the camera at the joint is minus the view
+    // ray (ViewRotationAxis measured `sense` against the screen, so recover
+    // the ray sign from where a point in front of the joint projects). A
+    // one-bone drag turns about the axis perpendicular to the bone and the
+    // view ray, which is the rotation that moves the joint most in depth.
+    {
+      drag.toward_camera = {0.0, 0.0, 0.0};
+      drag.depth_axis = {0.0, 0.0, 0.0};
+      Vec3d toward;
+      if (TowardCamera(project, joint_world.translation, toward)) {
+        drag.toward_camera = {toward.x, toward.y, toward.z};
+        Vec3d depth_axis = V3Cross(offset, toward);
+        const double length = V3Length(depth_axis);
+        if (length > 1e-9) {
+          depth_axis = V3Scale(depth_axis, 1.0 / length);
+          drag.depth_axis = {depth_axis.x, depth_axis.y, depth_axis.z};
+        }
+      }
+    }
+    drag.twist = context.overlay_drag_twist.load(std::memory_order_acquire);
+    if (drag.twist)
+      drag.ik = false;  // twist is always the one bone
+
+    // The reference is where the joint was at the press, so the bone only
+    // turns once the cursor sweeps around the pivot.
+    drag.angle_ready = false;
+    drag.angle = 0.0;
+    static_cast<void>(AdvanceDragAngle(drag.pivot_screen.data(), drag.start_screen.data(),
+                                       drag.angle_ready, drag.last_raw, drag.angle));
+    drag.valid = true;
+    // The sliders now show the bone the drag edits.
+    context.requested_bone_index.store(drag.pivot, std::memory_order_release);
+    context.pose_override_enabled.store(true, std::memory_order_release);
+  }
+
+  const double wheel_notches =
+      static_cast<double>(context.overlay_drag_wheel.load(std::memory_order_acquire)) / 120.0;
+
+  if (drag.twist) {
+    // Right drag: horizontal cursor travel twists the bone about its own
+    // axis, 0.5 degree per pixel (a 360 px swipe is half a turn).
+    constexpr double kTwistRadiansPerPixel = 0.5 * 3.14159265358979323846 / 180.0;
+    const double dx = context.overlay_drag_delta_x.load(std::memory_order_acquire);
+    const Vec3d bone{drag.joint_offset[0], drag.joint_offset[1], drag.joint_offset[2]};
+    const double length = V3Length(bone);
+    if (!(length > 1e-6))
+      return;
+    const Vec3d axis = V3Scale(bone, dx * kTwistRadiansPerPixel / length);
+    const Quatd parent_world{drag.parent_world[0], drag.parent_world[1],
+                             drag.parent_world[2], drag.parent_world[3]};
+    const Quatd start_offset{drag.start_offset[0], drag.start_offset[1],
+                             drag.start_offset[2], drag.start_offset[3]};
+    const Quatd next = ApplyWorldRotationToOffset(
+        parent_world, QuatFromRotationVector({axis.x, axis.y, axis.z}), start_offset);
+    WriteDragAngles(context, drag.pivot, QuatToRotator(next));
+    return;
+  }
+
+  if (drag.ik) {
+    // Wheel: 5 cm per notch toward (+) or away from (-) the camera.
+    constexpr double kDepthCmPerNotch = 5.0;
+    const double dx = context.overlay_drag_delta_x.load(std::memory_order_acquire);
+    const double dy = context.overlay_drag_delta_y.load(std::memory_order_acquire);
+    const Vec3d end{drag.end_world[0], drag.end_world[1], drag.end_world[2]};
+    const Vec3d toward{drag.toward_camera[0], drag.toward_camera[1], drag.toward_camera[2]};
+    const Vec3d target = V3Add(
+        V3Add(end, V3Scale(toward, wheel_notches * kDepthCmPerNotch)),
+        V3Add(V3Scale(Vec3d{drag.plane_right[0], drag.plane_right[1], drag.plane_right[2]}, dx),
+              V3Scale(Vec3d{drag.plane_down[0], drag.plane_down[1], drag.plane_down[2]}, dy)));
+    const TwoBoneRotations turn = SolveTwoBone(
+        Vec3d{drag.root_world[0], drag.root_world[1], drag.root_world[2]},
+        Vec3d{drag.mid_world[0], drag.mid_world[1], drag.mid_world[2]}, end, target);
+    const Quatd root_parent{drag.root_parent_world[0], drag.root_parent_world[1],
+                            drag.root_parent_world[2], drag.root_parent_world[3]};
+    const Quatd root_offset{drag.root_start_offset[0], drag.root_start_offset[1],
+                            drag.root_start_offset[2], drag.root_start_offset[3]};
+    const Quatd mid_parent{drag.parent_world[0], drag.parent_world[1], drag.parent_world[2],
+                           drag.parent_world[3]};
+    const Quatd mid_offset{drag.start_offset[0], drag.start_offset[1], drag.start_offset[2],
+                           drag.start_offset[3]};
+    // The middle bone's parent has itself turned by the root rotation.
+    const Quatd moved_mid_parent = QuatNormalize(QuatMultiply(turn.root, mid_parent));
+    const Quatd next_root = ApplyWorldRotationToOffset(root_parent, turn.root, root_offset);
+    const Quatd next_mid = ApplyWorldRotationToOffset(moved_mid_parent, turn.mid, mid_offset);
+    WriteDragAngles(context, drag.root, QuatToRotator(next_root));
+    WriteDragAngles(context, drag.pivot, QuatToRotator(next_mid));
+    return;
+  }
+
+  const float cursor[2]{
+      drag.start_screen[0] + context.overlay_drag_delta_x.load(std::memory_order_acquire),
+      drag.start_screen[1] + context.overlay_drag_delta_y.load(std::memory_order_acquire)};
+  // A wheel-only drag never moves the cursor far enough for an angle; still
+  // apply the depth part.
+  const bool have_angle = AdvanceDragAngle(drag.pivot_screen.data(), cursor, drag.angle_ready,
+                                           drag.last_raw, drag.angle);
+  if (!have_angle && wheel_notches == 0.0)
+    return;
+  const Quatd parent_world{drag.parent_world[0], drag.parent_world[1],
+                           drag.parent_world[2], drag.parent_world[3]};
+  const Quatd start_offset{drag.start_offset[0], drag.start_offset[1],
+                           drag.start_offset[2], drag.start_offset[3]};
+  // Wheel: 10 degrees per notch, swinging the joint toward the camera.
+  constexpr double kDepthRadiansPerNotch = 10.0 * 3.14159265358979323846 / 180.0;
+  const double swing = have_angle ? drag.angle : 0.0;
+  const double depth = wheel_notches * kDepthRadiansPerNotch;
+  const Quatd screen_turn = QuatFromRotationVector(
+      {drag.axis[0] * swing, drag.axis[1] * swing, drag.axis[2] * swing});
+  const Quatd depth_turn = QuatFromRotationVector(
+      {drag.depth_axis[0] * depth, drag.depth_axis[1] * depth, drag.depth_axis[2] * depth});
+  // Depth first (about the bone's axis at the press), then the screen swing.
+  const Quatd world_rotation = QuatNormalize(QuatMultiply(screen_turn, depth_turn));
+  const Quatd next = ApplyWorldRotationToOffset(parent_world, world_rotation, start_offset);
+  WriteDragAngles(context, drag.pivot, QuatToRotator(next));
+}
+
+// A filled disc as horizontal strips: AHUD has rects and lines but no circle.
+// The strips never overlap, so a translucent fill blends exactly once. Each
+// row is {top offset from the centre, height, half width}.
+struct DiscRow {
+  float top;
+  float height;
+  float half_width;
+};
+
+std::vector<DiscRow> DiscRows(const float radius, const float step) {
+  std::vector<DiscRow> rows;
+  if (!(radius > 0.0F) || !(step > 0.0F))
+    return rows;
+  for (float top = -radius; top < radius; top += step) {
+    const float height = (std::min)(step, radius - top);
+    const float middle = top + height * 0.5F;
+    const float half = std::sqrt((std::max)(0.0F, radius * radius - middle * middle));
+    if (half > 0.25F)
+      rows.push_back({top, height, half});
+  }
+  return rows;
+}
+
+// How finely a marker is built, from its radius. Every rect and line is one
+// UFunction call through ProcessEvent, so the counts are kept to what the eye
+// can tell apart: 5 fill strips (3 below 5 px) and one ring segment per
+// ~4.5 px of circumference, between 8 and 16 -- the ring then strays from a
+// true circle by under 0.4 px, and it hides the steps the coarse fill leaves
+// at the rim. At the default 7 px that is 16 calls a joint (was 24).
+struct CircleDetail {
+  float strip;
+  int segments;
+};
+
+CircleDetail CircleDetailFor(const float radius) noexcept {
+  CircleDetail detail;
+  detail.strip = (std::max)(2.0F, radius * 0.4F);
+  const int segments = static_cast<int>(std::ceil(2.0F * 3.14159265F * radius / 4.5F));
+  detail.segments = std::clamp(segments, 8, 16);
+  return detail;
+}
+
+// A joint marker: translucent fill, a ring round it and a solid centre, so it
+// reads on bright and dark scenery alike. `ring` 0 skips the ring.
+void DrawOverlayCircle(const AnomalyUe5AhudFrameV1 *frame, const float x, const float y,
+                       const float radius, const std::uint32_t fill, const std::uint32_t ring,
+                       const float ring_thickness, const std::uint32_t centre) noexcept {
+  const CircleDetail detail = CircleDetailFor(radius);
+  for (const auto &row : DiscRows(radius, detail.strip))
+    frame->draw_rect(frame->user, x - row.half_width, y + row.top, row.half_width * 2.0F,
+                     row.height, fill);
+  if (ring != 0) {
+    const int kSegments = detail.segments;
+    const float kStep = 2.0F * 3.14159265F / static_cast<float>(kSegments);
+    float px = x + radius;
+    float py = y;
+    for (int segment = 1; segment <= kSegments; ++segment) {
+      const float nx = x + radius * std::cos(kStep * static_cast<float>(segment));
+      const float ny = y + radius * std::sin(kStep * static_cast<float>(segment));
+      frame->draw_line(frame->user, px, py, nx, ny, ring, ring_thickness);
+      px = nx;
+      py = ny;
+    }
+  }
+  if (centre != 0)
+    frame->draw_rect(frame->user, x - 1.0F, y - 1.0F, 2.0F, 2.0F, centre);
+}
+
+// A joint's world position, for focusing the pose camera on it. Render
+// thread: reads the component-space pose through the memory service, and the
+// mesh transform the overlay cached from the game thread on its last frame.
+bool JointWorldPosition(Context &context, const std::uint32_t bone,
+                        std::array<double, 3> &point) noexcept {
+  std::lock_guard<std::mutex> lock(context.overlay_mutex);
+  if (!context.overlay_component_world_valid || bone >= context.overlay_joint_world.size())
+    return false;
+  point = context.overlay_joint_world[bone];
+  return std::isfinite(point[0]) && std::isfinite(point[1]) && std::isfinite(point[2]);
+}
+
+// The orbit's pan wants the focal length in canvas pixels: how far a 1 cm
+// step across the view at 100 cm lands on screen. Measured through the AHUD
+// projection (which already sees the pose camera), whether or not the
+// skeleton overlay is drawn.
+void MeasureOrbitFocal(Context &context, const AnomalyUe5AhudFrameV1 *frame) noexcept {
+  if (!context.orbit_enabled.load(std::memory_order_acquire))
+    return;
+  better_pose::orbit::View view;
+  {
+    std::lock_guard<std::mutex> lock(context.orbit_mutex);
+    if (!context.orbit_initialized.load(std::memory_order_acquire))
+      return;
+    view = better_pose::orbit::ViewOf(context.orbit);
+  }
+  const auto forward = better_pose::orbit::Forward(view.rotation[0], view.rotation[1]);
+  const double yaw = view.rotation[1] / better_pose::orbit::kDegrees;
+  const double a[3]{view.location[0] + forward[0] * 100.0, view.location[1] + forward[1] * 100.0,
+                    view.location[2] + forward[2] * 100.0};
+  const double b[3]{a[0] - std::sin(yaw), a[1] + std::cos(yaw), a[2]};
+  float pa[2]{};
+  float pb[2]{};
+  double depth{};
+  if (frame->project(frame->user, a, pa, &depth) == 0 ||
+      frame->project(frame->user, b, pb, &depth) == 0)
+    return;
+  const double pixels =
+      std::hypot(static_cast<double>(pb[0]) - pa[0], static_cast<double>(pb[1]) - pa[1]);
+  if (std::isfinite(pixels) && pixels > 0.0)
+    context.orbit_focal_pixels.store(pixels * 100.0, std::memory_order_release);
+}
+
+void ANOMALY_CALL DrawSkeletonOverlay(void *user,
+                                      const AnomalyUe5AhudFrameV1 *frame) noexcept {
+  auto *context = static_cast<Context *>(user);
+  if (context == nullptr)
+    return;
+  try {
+    if (AhudFrameReady(frame))
+      MeasureOrbitFocal(*context, frame);
+    if (!context->skeleton_overlay_enabled.load(std::memory_order_acquire) ||
+        !AhudFrameReady(frame)) {
+      ClearOverlayScreen(*context);
+      return;
+    }
+    const std::uintptr_t mesh = context->runtime.mesh;
+    const std::uintptr_t pose = context->runtime.component_space_data;
+    const std::uint32_t count = context->runtime.component_space_count;
+    Transformd component_world;
+    if (mesh == 0 || pose == 0 || count == 0 || count > kMaximumBoneIndex + 1U ||
+        !CoreReady(context->core) ||
+        !ReadMeshComponentToWorld(*context, mesh, component_world)) {
+      ClearOverlayScreen(*context);
+      return;
+    }
+    auto &raw = context->overlay_raw_pose;
+    raw.resize(static_cast<std::size_t>(count) * kTransformSize);
+    AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
+    if (context->core->read_memory(context->core->user, pose, span).code !=
+        ANOMALY_STATUS_V1_OK) {
+      ClearOverlayScreen(*context);
+      return;
+    }
+
+    auto &screen = context->overlay_frame_joints;
+    auto &valid = context->overlay_frame_valid;
+    auto &world_points = context->overlay_frame_world;
+    screen.assign(count, {0.0F, 0.0F});
+    valid.assign(count, 0);
+    world_points.assign(count, {0.0, 0.0, 0.0});
+    const float width = static_cast<float>(frame->viewport_width);
+    const float height = static_cast<float>(frame->viewport_height);
+    constexpr float kMargin = 64.0F;
+    for (std::uint32_t bone{}; bone != count; ++bone) {
+      PackedTransform packed{};
+      std::memcpy(&packed, raw.data() + static_cast<std::size_t>(bone) * kTransformSize,
+                  sizeof(packed));
+      const Transformd joint = TransformMultiply(component_world, UnpackTransform(packed));
+      const double world[3]{joint.translation.x, joint.translation.y,
+                            joint.translation.z};
+      world_points[bone] = {world[0], world[1], world[2]};
+      float projected[2]{};
+      double depth{};
+      if (frame->project(frame->user, world, projected, &depth) == 0 ||
+          !(depth > 0.0) || !std::isfinite(projected[0]) ||
+          !std::isfinite(projected[1]) || projected[0] < -kMargin ||
+          projected[1] < -kMargin || projected[0] > width + kMargin ||
+          projected[1] > height + kMargin)
+        continue;
+      screen[bone] = {projected[0], projected[1]};
+      valid[bone] = 1;
+    }
+
+    // The drag needs every joint (a hidden bone can still be the pivot's
+    // parent), so the body-only mask applies after it, to drawing and picking.
+    StepSkeletonDrag(*context, frame, component_world, count, screen, valid);
+    if (context->overlay_body_only.load(std::memory_order_acquire)) {
+      const bool parents_ready = context->bone_parents.size() == count;
+      const bool hide_face = !context->overlay_show_face.load(std::memory_order_acquire);
+      if (context->overlay_hidden_mesh != mesh ||
+          context->overlay_hidden_names != context->bone_names.size() ||
+          context->overlay_hidden.size() != count ||
+          context->overlay_hidden_parents != parents_ready ||
+          context->overlay_hidden_face != hide_face) {
+        context->overlay_hidden_parents = parents_ready;
+        context->overlay_hidden_face = hide_face;
+        context->overlay_hidden_total = BuildOverlayHiddenMask(
+            context->bone_names, context->bone_parents.size() == count
+                                     ? context->bone_parents
+                                     : std::vector<std::int32_t>(count, -1),
+            context->overlay_hidden, hide_face);
+        context->overlay_hidden_mesh = mesh;
+        context->overlay_hidden_names = context->bone_names.size();
+      }
+      if (context->overlay_hidden.size() == count)
+        for (std::uint32_t bone{}; bone != count; ++bone)
+          if (context->overlay_hidden[bone] != 0)
+            valid[bone] = 0;
+      context->overlay_hidden_count.store(context->overlay_hidden_total,
+                                          std::memory_order_release);
+    } else {
+      context->overlay_hidden_count.store(0, std::memory_order_release);
+    }
+
+    // Bones first, joints on top, the hovered and selected joints last.
+    const auto &parents = context->bone_parents;
+    for (std::uint32_t bone{}; bone != count; ++bone) {
+      if (valid[bone] == 0 || bone >= parents.size())
+        continue;
+      const std::int32_t parent = parents[bone];
+      if (parent < 0 || static_cast<std::uint32_t>(parent) >= count ||
+          valid[static_cast<std::size_t>(parent)] == 0)
+        continue;
+      const auto &from = screen[static_cast<std::size_t>(parent)];
+      frame->draw_line(frame->user, from[0], from[1], screen[bone][0],
+                       screen[bone][1], kOverlayLineColor, 1.5F);
+    }
+    const std::uint32_t selected =
+        context->requested_bone_index.load(std::memory_order_acquire);
+    const bool hover_fresh =
+        GetTickCount64() - context->overlay_hover_tick.load(std::memory_order_acquire) <
+        250U;
+    const std::uint32_t hovered =
+        hover_fresh ? context->overlay_hover_index.load(std::memory_order_acquire)
+                    : kOverlayNoBone;
+    const float radius = std::clamp(
+        context->overlay_joint_radius.load(std::memory_order_acquire), kOverlayMinimumRadius,
+        kOverlayMaximumRadius);
+    const float big = radius + 3.0F;
+    for (std::uint32_t bone{}; bone != count; ++bone) {
+      if (valid[bone] == 0 || bone == selected || bone == hovered)
+        continue;
+      DrawOverlayCircle(frame, screen[bone][0], screen[bone][1], radius, kOverlayJointFill,
+                        kOverlayJointRing, 1.0F, kOverlayJointCentre);
+    }
+    if (hovered < count && valid[hovered] != 0 && hovered != selected)
+      DrawOverlayCircle(frame, screen[hovered][0], screen[hovered][1], big, kOverlayHoverFill,
+                        kOverlayHoverColor, 2.0F, kOverlayHoverColor);
+    if (selected < count && valid[selected] != 0)
+      DrawOverlayCircle(frame, screen[selected][0], screen[selected][1], big,
+                        kOverlaySelectedFill, kOverlaySelectedColor, 2.0F,
+                        kOverlaySelectedColor);
+    // While dragging: the grabbed joint in orange, and a thin line to the
+    // cursor so an unreachable target is visibly unreachable.
+    const auto &drag = context->overlay_drag;
+    const std::uint32_t dragged =
+        context->overlay_drag_joint.load(std::memory_order_acquire);
+    if (drag.valid && dragged < count && valid[dragged] != 0) {
+      const float target_x =
+          drag.start_screen[0] + context->overlay_drag_delta_x.load(std::memory_order_acquire);
+      const float target_y =
+          drag.start_screen[1] + context->overlay_drag_delta_y.load(std::memory_order_acquire);
+      frame->draw_line(frame->user, screen[dragged][0], screen[dragged][1], target_x,
+                       target_y, kOverlayHoverColor, 1.0F);
+      DrawOverlayCircle(frame, screen[dragged][0], screen[dragged][1], big, kOverlayHoverFill,
+                        kOverlayHoverColor, 2.0F, kOverlayHoverColor);
+    }
+
+    auto &weight = context->overlay_frame_weight;
+    if (parents.size() == count)
+      CountDescendants(parents, weight);
+    else
+      weight.assign(count, 0);
+    std::lock_guard<std::mutex> lock(context->overlay_mutex);
+    context->overlay_screen_joints.swap(screen);
+    context->overlay_screen_valid.swap(valid);
+    context->overlay_screen_weight.swap(weight);
+    context->overlay_joint_world.swap(world_points);
+    context->overlay_component_world_valid = true;
+    context->overlay_viewport_width = width;
+    context->overlay_viewport_height = height;
+    context->overlay_published = true;
+  } catch (...) {
+    // The callback must not throw into the host; drop this frame's overlay.
+  }
+}
+
+bool SubscribeSkeletonOverlay(Context &context) noexcept {
+  if (!AhudReady(context.ahud) || context.ahud_subscription.id != 0)
+    return context.ahud_subscription.id != 0;
+  AnomalyGenerationHandleV1 handle{};
+  const auto status = context.ahud->subscribe(context.ahud->user,
+                                              DrawSkeletonOverlay, &context, &handle);
+  if (status.code != ANOMALY_STATUS_V1_OK || handle.id == 0)
+    return false;
+  context.ahud_subscription = handle;
+  return true;
+}
+
+void UnsubscribeSkeletonOverlay(Context &context) noexcept {
+  if (context.ahud_subscription.id == 0)
+    return;
+  const auto handle = context.ahud_subscription;
+  context.ahud_subscription = {};
+  // A successful unsubscribe drains a callback already in flight, so the
+  // context stays valid for it.
+  if (AhudReady(context.ahud))
+    static_cast<void>(context.ahud->unsubscribe(context.ahud->user, handle));
+  std::lock_guard<std::mutex> lock(context.overlay_mutex);
+  context.overlay_screen_joints.clear();
+  context.overlay_screen_valid.clear();
+  context.overlay_published = false;
+}
+
+// Render thread, inside Draw. Hover highlights the joint nearest the cursor;
+// a fresh left press on it selects that joint. Picking only happens while the
+// host menu owns the cursor and the cursor is not over any ImGui window, so
+// clicks meant for the game or for a panel never change the selection.
+void UpdateSkeletonOverlayPicking(Context &context,
+                                  const AnomalyUiServiceV1 *ui) noexcept {
+  const auto clear_hover = [&] {
+    context.overlay_hover_index.store(kOverlayNoBone, std::memory_order_release);
+  };
+  const auto drop_mouse = [&] {
+    clear_hover();
+    context.overlay_mouse_was_down = false;
+    context.overlay_right_was_down = false;
+    context.overlay_drag_joint.store(kOverlayNoBone, std::memory_order_release);
+    context.overlay_dragging = false;
+    context.overlay_press_joint = kOverlayNoBone;
+  };
+  if (!context.skeleton_overlay_enabled.load(std::memory_order_acquire) ||
+      !InputReady(context.input)) {
+    drop_mouse();
+    return;
+  }
+  AnomalyInputSnapshotV1 input{};
+  input.struct_size = sizeof(input);
+  if (context.input->snapshot(context.input->user, &input).code !=
+      ANOMALY_STATUS_V1_OK) {
+    drop_mouse();
+    return;
+  }
+  const bool left_down = (input.mouse_buttons & 1U) != 0;
+  const bool left_pressed = left_down && !context.overlay_mouse_was_down;
+  context.overlay_mouse_was_down = left_down;
+  const bool right_down = (input.mouse_buttons & 2U) != 0;
+  const bool right_pressed = right_down && !context.overlay_right_was_down;
+  context.overlay_right_was_down = right_down;
+
+  const bool menu_owns_mouse =
+      (input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_MOUSE) != 0;
+  const auto end_drag = [&] {
+    context.overlay_drag_joint.store(kOverlayNoBone, std::memory_order_release);
+    context.overlay_dragging = false;
+    context.overlay_press_joint = kOverlayNoBone;
+  };
+  // A drag lasts while the button that started it is held (left swings,
+  // right twists). Pressing the other button cancels it and puts the bones
+  // back where they were.
+  if (context.overlay_press_joint != kOverlayNoBone) {
+    const bool held = context.overlay_press_right ? right_down : left_down;
+    const bool other_pressed = context.overlay_press_right ? left_pressed : right_pressed;
+    if (!held || !menu_owns_mouse || other_pressed) {
+      if (context.overlay_dragging && other_pressed)
+        context.overlay_drag_cancel.store(true, std::memory_order_release);
+      end_drag();
+      // The cancelling click must not also start a new pick below.
+      if (other_pressed) {
+        clear_hover();
+        return;
+      }
+    }
+  }
+  const bool pressed = left_pressed || right_pressed;
+  const bool press_right = right_pressed && !left_pressed;
+  const bool can_frame_state =
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::frame_state)>(
+          ui, offsetof(AnomalyUiServiceV1, frame_state)) &&
+      ui->frame_state != nullptr;
+  const bool over_ui =
+      can_frame_state &&
+      (ui->frame_state(ui->user) & ANOMALY_UI_FRAME_V1_WANT_CAPTURE_MOUSE) != 0;
+  // The panel check only gates starting a pick: a drag that began on the
+  // canvas keeps going when the cursor passes over a window.
+  if (!menu_owns_mouse ||
+      (over_ui && context.overlay_press_joint == kOverlayNoBone)) {
+    clear_hover();
+    return;
+  }
+
+  // The input snapshot is in window client pixels; the AHUD canvas may be a
+  // different resolution (render scale), so map one onto the other.
+  float mouse_x = input.mouse_x;
+  float mouse_y = input.mouse_y;
+  std::lock_guard<std::mutex> lock(context.overlay_mutex);
+  if (context.overlay_screen_joints.empty()) {
+    clear_hover();
+    end_drag();
+    return;
+  }
+  if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+    RECT client{};
+    if (GetClientRect(window, &client) != FALSE && client.right > 0 &&
+        client.bottom > 0 && context.overlay_viewport_width > 0.0F &&
+        context.overlay_viewport_height > 0.0F) {
+      mouse_x *= context.overlay_viewport_width / static_cast<float>(client.right);
+      mouse_y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+    }
+  }
+  if (context.overlay_press_joint != kOverlayNoBone) {
+    const float dx = mouse_x - context.overlay_press_x;
+    const float dy = mouse_y - context.overlay_press_y;
+    // A few pixels of slack so a plain click never nudges the pose.
+    constexpr float kDragThreshold = 4.0F;
+    if (!context.overlay_dragging && dx * dx + dy * dy >= kDragThreshold * kDragThreshold &&
+        !context.motion_loaded.load(std::memory_order_acquire)) {
+      context.overlay_dragging = true;
+      context.overlay_drag_generation.fetch_add(1, std::memory_order_acq_rel);
+      context.overlay_drag_joint.store(context.overlay_press_joint,
+                                       std::memory_order_release);
+    }
+    // The wheel counts even before the cursor moves: scroll-only depth edits.
+    if (input.mouse_wheel != 0 && !context.overlay_press_right &&
+        !context.motion_loaded.load(std::memory_order_acquire)) {
+      if (!context.overlay_dragging) {
+        context.overlay_dragging = true;
+        context.overlay_drag_generation.fetch_add(1, std::memory_order_acq_rel);
+        context.overlay_drag_joint.store(context.overlay_press_joint,
+                                         std::memory_order_release);
+      }
+      context.overlay_drag_wheel.fetch_add(input.mouse_wheel, std::memory_order_acq_rel);
+    }
+    context.overlay_drag_delta_x.store(dx, std::memory_order_release);
+    context.overlay_drag_delta_y.store(dy, std::memory_order_release);
+    context.overlay_hover_index.store(context.overlay_press_joint, std::memory_order_release);
+    context.overlay_hover_tick.store(GetTickCount64(), std::memory_order_release);
+    return;
+  }
+  // Stateless on purpose: the pick used to prefer the current selection, but a
+  // drag moves the selection to the pivot, so the same spot could resolve to a
+  // different stacked bone on the next press.
+  constexpr float kStackPixels = 3.0F;
+  // A click anywhere on the drawn circle picks it: never smaller than the
+  // old 12 px, and a few pixels beyond the marker's own edge.
+  const float pick_radius = (std::max)(
+      kOverlayPickRadius,
+      std::clamp(context.overlay_joint_radius.load(std::memory_order_acquire),
+                 kOverlayMinimumRadius, kOverlayMaximumRadius) +
+          4.0F);
+  const std::uint32_t nearest = PickOverlayJoint(
+      context.overlay_screen_joints, context.overlay_screen_valid,
+      context.overlay_screen_weight, mouse_x, mouse_y, pick_radius, kStackPixels);
+  context.overlay_hover_index.store(nearest, std::memory_order_release);
+  context.overlay_hover_tick.store(GetTickCount64(), std::memory_order_release);
+  if (pressed && !over_ui && nearest != kOverlayNoBone) {
+    context.requested_bone_index.store(nearest, std::memory_order_release);
+    context.overlay_press_joint = nearest;
+    context.overlay_press_x = mouse_x;
+    context.overlay_press_y = mouse_y;
+    context.overlay_drag_delta_x.store(0.0F, std::memory_order_release);
+    context.overlay_drag_delta_y.store(0.0F, std::memory_order_release);
+    context.overlay_drag_wheel.store(0, std::memory_order_release);
+    context.overlay_press_right = press_right;
+    context.overlay_drag_twist.store(press_right, std::memory_order_release);
+  }
+}
+
+// Render thread, inside Draw, after the joint picker. With the pose camera on,
+// the mouse over empty scene (no panel under it, no joint under it, no joint
+// drag running) drives the orbit: right drag rotates, middle drag pans, the
+// wheel zooms. Every one is a mouse message the host keeps from the game while
+// the menu is open, so nothing here can make the character move.
+void UpdateOrbitCameraInput(Context &context, const AnomalyUiServiceV1 *ui) noexcept {
+  if (!context.orbit_enabled.load(std::memory_order_acquire) || !InputReady(context.input)) {
+    context.orbit_right_dragging = false;
+    context.orbit_middle_was_down = false;
+    return;
+  }
+  AnomalyInputSnapshotV1 input{};
+  input.struct_size = sizeof(input);
+  if (context.input->snapshot(context.input->user, &input).code != ANOMALY_STATUS_V1_OK)
+    return;
+  const bool menu_owns_mouse = (input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_MOUSE) != 0;
+  const bool right_down = (input.mouse_buttons & 2U) != 0;
+  const bool middle_down = (input.mouse_buttons & 4U) != 0;
+  // In AHUD canvas pixels, like the picker, so the pan matches the projection.
+  float x = input.mouse_x;
+  float y = input.mouse_y;
+  {
+    std::lock_guard<std::mutex> lock(context.overlay_mutex);
+    if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+      RECT client{};
+      if (GetClientRect(window, &client) != FALSE && client.right > 0 && client.bottom > 0 &&
+          context.overlay_viewport_width > 0.0F && context.overlay_viewport_height > 0.0F) {
+        x *= context.overlay_viewport_width / static_cast<float>(client.right);
+        y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+      }
+    }
+  }
+  const bool over_ui =
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::frame_state)>(
+          ui, offsetof(AnomalyUiServiceV1, frame_state)) &&
+      ui->frame_state != nullptr &&
+      (ui->frame_state(ui->user) & ANOMALY_UI_FRAME_V1_WANT_CAPTURE_MOUSE) != 0;
+  // A joint under the cursor, or a joint drag, owns the mouse instead.
+  const bool joint_busy =
+      context.overlay_press_joint != kOverlayNoBone ||
+      (context.skeleton_overlay_enabled.load(std::memory_order_acquire) &&
+       context.overlay_hover_index.load(std::memory_order_acquire) != kOverlayNoBone);
+  const bool free = menu_owns_mouse && !over_ui && !joint_busy;
+
+  const float dx = x - context.orbit_last_x;
+  const float dy = y - context.orbit_last_y;
+  const bool was_rotating = context.orbit_right_dragging;
+  const bool was_panning = context.orbit_middle_was_down;
+  // Start only on empty scene; once started, keep going until release even
+  // over a panel or a joint.
+  if (!right_down || !menu_owns_mouse)
+    context.orbit_right_dragging = false;
+  else if (!was_rotating && free)
+    context.orbit_right_dragging = true;
+  if (!middle_down || !menu_owns_mouse)
+    context.orbit_middle_was_down = false;
+  else if (!was_panning && free)
+    context.orbit_middle_was_down = true;
+
+  {
+    std::lock_guard<std::mutex> lock(context.orbit_mutex);
+    if (context.orbit_initialized.load(std::memory_order_acquire)) {
+      if (was_rotating && context.orbit_right_dragging)
+        better_pose::orbit::Rotate(context.orbit, dx, dy);
+      if (was_panning && context.orbit_middle_was_down)
+        better_pose::orbit::Pan(context.orbit, dx, dy,
+                                context.orbit_focal_pixels.load(std::memory_order_acquire));
+      if (input.mouse_wheel != 0 && free)
+        better_pose::orbit::Zoom(context.orbit, static_cast<double>(input.mouse_wheel));
+    }
+  }
+  context.orbit_last_x = x;
+  context.orbit_last_y = y;
+}
+
+// Render thread, inside Draw. Keeps an edit open while the left mouse button
+// is down (a slider or a joint being dragged) and turns Ctrl+Z / Ctrl+Y (and
+// Ctrl+Shift+Z) into undo/redo requests, on the press only. The keys are
+// ignored while a text field wants the keyboard, so Ctrl+Z inside the file
+// name box stays the text box's.
+void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noexcept {
+  if (!InputReady(context.input)) {
+    context.pose_edit_held.store(false, std::memory_order_release);
+    return;
+  }
+  AnomalyInputSnapshotV1 input{};
+  input.struct_size = sizeof(input);
+  if (context.input->snapshot(context.input->user, &input).code != ANOMALY_STATUS_V1_OK) {
+    context.pose_edit_held.store(false, std::memory_order_release);
+    return;
+  }
+  const bool menu_owns_mouse = (input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_MOUSE) != 0;
+  context.pose_edit_held.store(menu_owns_mouse && (input.mouse_buttons & 3U) != 0,
+                               std::memory_order_release);
+  const auto key_down = [&](const std::uint32_t key) {
+    return key < 256U && (input.keys[key / 8U] & (1U << (key % 8U))) != 0;
+  };
+  const bool control = (input.modifiers & ANOMALY_INPUT_MODIFIER_V1_CONTROL) != 0;
+  const bool shift = (input.modifiers & ANOMALY_INPUT_MODIFIER_V1_SHIFT) != 0;
+  const bool typing =
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::frame_state)>(
+          ui, offsetof(AnomalyUiServiceV1, frame_state)) &&
+      ui->frame_state != nullptr &&
+      (ui->frame_state(ui->user) &
+       (ANOMALY_UI_FRAME_V1_WANT_TEXT_INPUT)) != 0;
+  const bool undo_down = menu_owns_mouse && control && !shift && key_down('Z');
+  const bool redo_down =
+      menu_owns_mouse && control && (key_down('Y') || (shift && key_down('Z')));
+  if (!typing && !context.motion_loaded.load(std::memory_order_acquire)) {
+    if (undo_down && !context.pose_undo_key_was_down)
+      context.pose_history_request.store(1, std::memory_order_release);
+    if (redo_down && !context.pose_redo_key_was_down)
+      context.pose_history_request.store(2, std::memory_order_release);
+  }
+  context.pose_undo_key_was_down = undo_down;
+  context.pose_redo_key_was_down = redo_down;
+}
+
+bool MirrorPose(Context &context, const int request) noexcept {
+  try {
+    using namespace better_pose::mirror;
+    if (!CapturePoseBase(context))
+      return false;
+    const auto count = context.pose_base_locals.size();
+    if (count == 0 || context.bone_names.size() != count || context.bone_parents.size() != count)
+      return false;
+    std::vector<Quat> base(count);
+    std::vector<Transformd> locals(count);
+    std::vector<std::array<double, 3>> angles;
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      if (context.pose_base_locals.size() != count)
+        return false;
+      for (std::size_t bone{}; bone != count; ++bone) {
+        const auto &raw = context.pose_base_locals[bone];
+        base[bone] = Normalize({raw[0], raw[1], raw[2], raw[3]});
+        locals[bone].rotation = Quatd{base[bone][0], base[bone][1], base[bone][2], base[bone][3]};
+        locals[bone].translation = Vec3d{raw[4], raw[5], raw[6]};
+        locals[bone].scale = Vec3d{raw[8], raw[9], raw[10]};
+      }
+      angles = context.bone_angles;
+    }
+    angles.resize((std::max)(angles.size(), count), {0.0, 0.0, 0.0});
+    // The rig from the rest pose: component frames and positions.
+    std::vector<Transformd> components(count);
+    std::vector<std::uint8_t> marks(count, 0);
+    for (std::uint32_t bone{}; bone != count; ++bone)
+      static_cast<void>(
+          ComputeBoneComponent(bone, locals, context.bone_parents, components, marks));
+    std::vector<Quat> rest(count);
+    std::vector<Vec> positions(count);
+    for (std::size_t bone{}; bone != count; ++bone) {
+      const auto &c = components[bone];
+      rest[bone] = Normalize({c.rotation.x, c.rotation.y, c.rotation.z, c.rotation.w});
+      positions[bone] = {c.translation.x, c.translation.y, c.translation.z};
+    }
+    const auto partner = Partners(context.bone_names);
+    const Rig rig = BuildRig(rest, positions, context.bone_parents, partner, context.bone_names);
+    if (!rig.valid)
+      return false;
+    // Finals, mirrored, back to offsets.
+    std::vector<Quat> finals(count);
+    for (std::size_t bone{}; bone != count; ++bone) {
+      const Quatd offset = RotatorToQuat(angles[bone][0], angles[bone][1], angles[bone][2]);
+      finals[bone] = Multiply({offset.x, offset.y, offset.z, offset.w}, base[bone]);
+    }
+    const Operation operation = request == 2   ? Operation::LeftToRight
+                                : request == 3 ? Operation::RightToLeft
+                                               : Operation::Flip;
+    const auto mirrored =
+        Apply(rig, context.bone_parents, partner, context.bone_names, finals, operation);
+    std::vector<std::array<double, 3>> next = angles;
+    for (std::size_t bone{}; bone != count; ++bone) {
+      if (Distance(mirrored[bone], finals[bone]) < 1e-12)
+        continue;  // untouched: keep the exact slider values
+      const Quat offset = Normalize(Multiply(mirrored[bone], Conjugate(base[bone])));
+      auto rotator = QuatToRotator(Quatd{offset[0], offset[1], offset[2], offset[3]});
+      // Snap the float noise of an identity offset back to a clean zero.
+      for (auto &value : rotator)
+        if (std::abs(value) < 1e-6)
+          value = 0.0;
+      next[bone] = rotator;
+    }
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      context.bone_angles = std::move(next);
+    }
+    // The body offset: a flip reflects it; copying one side onto the other
+    // leaves where the body stands alone.
+    if (operation == Operation::Flip) {
+      Vec offset{};
+      for (std::size_t axis{}; axis != 3; ++axis)
+        offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
+      const Vec reflected = ReflectLateral(rig, offset);
+      for (std::size_t axis{}; axis != 3; ++axis)
+        context.requested_root_offset[axis].store(std::abs(reflected[axis]) < 1e-9 ? 0.0
+                                                                                   : reflected[axis],
+                                                  std::memory_order_release);
+    }
+    context.pose_override_enabled.store(true, std::memory_order_release);
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
                                   void **plugin_context) {
   if (host == nullptr || plugin_context == nullptr)
@@ -7332,6 +9176,14 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
                                        ANOMALY_SCHEDULER_SERVICE_V1_VERSION);
   if (!SchedulerReady(context->scheduler))
     context->scheduler = nullptr;
+  context->ahud = Query<AnomalyUe5AhudServiceV1>(
+      host, ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION);
+  if (!AhudReady(context->ahud))
+    context->ahud = nullptr;
+  context->input = Query<AnomalyInputServiceV1>(
+      host, ANOMALY_INPUT_SERVICE_V1_ID, ANOMALY_INPUT_SERVICE_V1_VERSION);
+  if (!InputReady(context->input))
+    context->input = nullptr;
   if (!CoreReady(context->core) || !SignatureReady(context->signature) ||
       !NamesReady(context->names) ||
       !ObjectsReady(context->objects) ||
@@ -7365,6 +9217,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
   }
   UpdateRuntime(*context, 0.0);
   context->reflection_action_requested.store(5, std::memory_order_release);
+  // Optional: without the AHUD the skeleton overlay is simply unavailable.
+  if (!SubscribeSkeletonOverlay(*context) && context->ahud != nullptr)
+    LogDiagnostic(*context, "betterpose skeleton overlay: AHUD subscription failed");
   return anomaly::sdk::Ok();
 }
 
@@ -7372,6 +9227,12 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   auto *context = static_cast<Context *>(plugin_context);
   if (context == nullptr)
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+  // First: the overlay callback reads runtime, which is reset below.
+  UnsubscribeSkeletonOverlay(*context);
+  // The hook is released below; drop the pose camera with it so a reload
+  // starts from the game's own view.
+  context->orbit_enabled.store(false, std::memory_order_release);
+  context->orbit_initialized.store(false, std::memory_order_release);
   static_cast<void>(ReleasePoseTickHook(*context));
   static_cast<void>(ReleaseCameraPovHook(*context));
   RestoreAll(*context);
@@ -7443,6 +9304,10 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   auto *context = static_cast<Context *>(plugin_context);
   if (context == nullptr || !UiReady(ui))
     return;
+
+  UpdateSkeletonOverlayPicking(*context, ui);
+  UpdateOrbitCameraInput(*context, ui);
+  UpdatePoseHistoryInput(*context, ui);
 
   RenderSnapshot snapshot{};
   {
@@ -7900,6 +9765,126 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
                                            std::memory_order_release);
     }
 
+    // Pose camera: mouse-only orbit, independent of the skeleton overlay.
+    if (context->input != nullptr) {
+      int orbit = context->orbit_enabled.load(std::memory_order_acquire) ? 1 : 0;
+      const std::string orbit_label =
+          context->localizer.Text("pose.camera.orbit", "Pose camera");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(orbit_label), &orbit) != 0) {
+        // Every switch-on starts again from the game's current view.
+        if (orbit != 0)
+          context->orbit_initialized.store(false, std::memory_order_release);
+        context->orbit_enabled.store(orbit != 0, std::memory_order_release);
+      }
+      if (orbit != 0) {
+        ui->same_line(ui->user, 0.0F, 12.0F);
+        const std::uint32_t selected =
+            context->requested_bone_index.load(std::memory_order_acquire);
+        const std::string focus_label =
+            context->localizer.Text("pose.camera.focus", "Focus selected joint");
+        if (ui->button(ui->user, anomaly::sdk::StringView(focus_label), 0.0F, 0.0F) != 0) {
+          std::array<double, 3> point{};
+          if (JointWorldPosition(*context, selected, point)) {
+            std::lock_guard<std::mutex> lock(context->orbit_mutex);
+            context->orbit_focus_target = point;
+            context->orbit_focus_requested.store(true, std::memory_order_release);
+          }
+        }
+        ui->same_line(ui->user, 0.0F, 6.0F);
+        const std::string reset_label =
+            context->localizer.Label("pose.camera.reset", "Reset view", "pose-camera-reset");
+        if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 0.0F, 0.0F) != 0)
+          context->orbit_initialized.store(false, std::memory_order_release);
+        const std::string orbit_hint = context->localizer.Text(
+            "pose.camera.hint",
+            "Empty scene: right drag orbits, middle drag pans, wheel zooms.");
+        ui->text(ui->user, anomaly::sdk::StringView(orbit_hint));
+
+        // Lens. 0 means "the game's own"; the slider starts from the game's
+        // value, read by the detour the first frame the pose camera drives.
+        const float game_fov = context->orbit_game_fov.load(std::memory_order_acquire);
+        const float current = context->orbit_fov.load(std::memory_order_acquire);
+        float fov = current >= better_pose::orbit::kMinimumFov
+                        ? current
+                        : std::clamp(game_fov > 0.0F ? game_fov : 80.0F,
+                                     better_pose::orbit::kMinimumFov,
+                                     better_pose::orbit::kMaximumFov);
+        const std::string fov_label = context->localizer.Text("pose.camera.fov", "Field of view");
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(fov_label), &fov,
+                             better_pose::orbit::kMinimumFov,
+                             better_pose::orbit::kMaximumFov) != 0) {
+          fov = std::clamp(fov, better_pose::orbit::kMinimumFov, better_pose::orbit::kMaximumFov);
+          context->orbit_fov.store(fov, std::memory_order_release);
+        }
+        ui->same_line(ui->user, 0.0F, 4.0F);
+        const std::string fov_reset =
+            context->localizer.Label("pose.camera.fov.reset", "Game", "pose-camera-fov-reset");
+        if (ui->button(ui->user, anomaly::sdk::StringView(fov_reset), 42.0F, 0.0F) != 0) {
+          context->orbit_fov.store(0.0F, std::memory_order_release);
+          context->orbit_fov_restore.store(true, std::memory_order_release);
+        }
+      }
+    }
+
+    if (context->ahud != nullptr) {
+      int overlay_enabled =
+          context->skeleton_overlay_enabled.load(std::memory_order_acquire) ? 1 : 0;
+      const std::string overlay_toggle =
+          context->localizer.Text("pose.skeleton.overlay", "Show skeleton");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(overlay_toggle),
+                       &overlay_enabled) != 0) {
+        context->skeleton_overlay_enabled.store(overlay_enabled != 0,
+                                                std::memory_order_release);
+      }
+      if (overlay_enabled != 0) {
+        ui->same_line(ui->user, 0.0F, 12.0F);
+        int body_only = context->overlay_body_only.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string body_only_label =
+            context->localizer.Text("pose.skeleton.body_only", "Body only");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(body_only_label), &body_only) != 0)
+          context->overlay_body_only.store(body_only != 0, std::memory_order_release);
+        const std::uint32_t hidden =
+            context->overlay_hidden_count.load(std::memory_order_acquire);
+        if (body_only != 0 && hidden != 0) {
+          ui->same_line(ui->user, 0.0F, 6.0F);
+          const std::string hidden_line =
+              context->localizer.Text("pose.skeleton.hidden", "hidden") + " " +
+              std::to_string(hidden);
+          ui->text(ui->user, anomaly::sdk::StringView(hidden_line));
+        }
+        if (body_only != 0) {
+          int face = context->overlay_show_face.load(std::memory_order_acquire) ? 1 : 0;
+          const std::string face_label =
+              context->localizer.Text("pose.skeleton.face", "Show face bones");
+          if (ui->checkbox(ui->user, anomaly::sdk::StringView(face_label), &face) != 0)
+            context->overlay_show_face.store(face != 0, std::memory_order_release);
+          ui->same_line(ui->user, 0.0F, 12.0F);
+        }
+        float joint_radius = context->overlay_joint_radius.load(std::memory_order_acquire);
+        const std::string radius_label =
+            context->localizer.Text("pose.skeleton.size", "Joint size");
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(radius_label), &joint_radius,
+                             kOverlayMinimumRadius, kOverlayMaximumRadius) != 0)
+          context->overlay_joint_radius.store(
+              std::clamp(joint_radius, kOverlayMinimumRadius, kOverlayMaximumRadius),
+              std::memory_order_release);
+        int ik = context->overlay_ik_enabled.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string ik_label =
+            context->localizer.Text("pose.skeleton.ik", "Limb IK (hands, feet)");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(ik_label), &ik) != 0)
+          context->overlay_ik_enabled.store(ik != 0, std::memory_order_release);
+      }
+      if (overlay_enabled != 0 && context->input != nullptr) {
+        const std::string overlay_hint = context->localizer.Text(
+            "pose.skeleton.overlay.hint",
+            "Click a joint to select it. Left drag swings its parent bone (hands and feet "
+            "move the limb with IK); scroll while dragging to push it toward or away from "
+            "the camera. Right drag left/right twists the bone. The other button cancels. "
+            "Not while an MMD motion is loaded.");
+        ui->text(ui->user, anomaly::sdk::StringView(overlay_hint));
+      }
+    }
+
     auto bone = context->requested_bone_index.load(std::memory_order_acquire);
     std::string selected_name = "None";
     if (bone < snapshot.bone_names.size())
@@ -7911,98 +9896,6 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     ui->text(ui->user, anomaly::sdk::StringView(selected_line));
     const std::string pose_status_line = std::string(snapshot.pose_status.data());
     ui->text(ui->user, anomaly::sdk::StringView(pose_status_line));
-
-    const bool can_text_input =
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
-            ui, offsetof(AnomalyUiServiceV1, input_text)) &&
-        ui->input_text != nullptr;
-    const bool can_bone_list =
-        can_text_input &&
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
-            ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
-        ui->begin_child != nullptr &&
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
-            ui, offsetof(AnomalyUiServiceV1, end_child)) &&
-        ui->end_child != nullptr &&
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
-            ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
-        ui->filter_match != nullptr;
-
-    if (can_bone_list) {
-      const std::string filter_label =
-          context->localizer.Text("pose.filter", "Bone filter");
-      static_cast<void>(ui->input_text(
-          ui->user, anomaly::sdk::StringView(filter_label),
-          context->bone_filter.data(), context->bone_filter.size(),
-          ANOMALY_UI_TEXT_INPUT_V1_NONE));
-
-      const auto set_filter = [&](const char *value) {
-        std::snprintf(context->bone_filter.data(), context->bone_filter.size(),
-                      "%s", value);
-      };
-      int quick_button_index = 0;
-      const auto quick_button = [&](const char *value, const std::string &label) {
-        if (ui->button(ui->user, anomaly::sdk::StringView(label), 56.0F, 0.0F) != 0)
-          set_filter(value);
-        ++quick_button_index;
-        if (quick_button_index % 6 != 0)
-          ui->same_line(ui->user, 0.0F, 4.0F);
-      };
-      quick_button("arm", context->localizer.Text("filter.arm", "Arm"));
-      quick_button("forearm", context->localizer.Text("filter.elbow", "Elbow"));
-      quick_button("hand", context->localizer.Text("filter.hand", "Hand"));
-      quick_button("thigh", context->localizer.Text("filter.thigh", "Thigh"));
-      quick_button("calf", context->localizer.Text("filter.knee", "Knee"));
-      quick_button("foot", context->localizer.Text("filter.foot", "Foot"));
-      quick_button("clavicle", context->localizer.Text("filter.shoulder", "Shoulder"));
-      quick_button("neck", context->localizer.Text("filter.neck", "Neck"));
-      quick_button("head", context->localizer.Text("filter.head", "Head"));
-      quick_button("spine", context->localizer.Text("filter.spine", "Spine"));
-      quick_button("pelvis", context->localizer.Text("filter.pelvis", "Pelvis"));
-      quick_button("", context->localizer.Text("filter.all", "All"));
-
-      // The host pushes its Child stack entry when `begin_child` is called, whether or not ImGui
-      // culled the child, so `end_child` has to be called either way: skipping it when the child is
-      // scrolled out of view leaves the stack unbalanced and the host faults the whole plugin.
-      const int bone_child_open =
-          ui->begin_child(ui->user, anomaly::sdk::StringView("bone-list"), 0.0F, 240.0F, 0U);
-      if (bone_child_open != 0) {
-        if (snapshot.bone_names.empty()) {
-          const std::string empty_label = context->localizer.Text(
-              "pose.bones.empty", "Bone names not loaded; press Load Bones.");
-          ui->text(ui->user, anomaly::sdk::StringView(empty_label));
-        } else {
-          const std::string_view filter(context->bone_filter.data());
-          for (std::size_t index{}; index != snapshot.bone_names.size(); ++index) {
-            if (ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
-                                 anomaly::sdk::StringView(
-                                     snapshot.bone_names[index])) == 0)
-              continue;
-            const std::string bone_item =
-                std::to_string(index) + " " + snapshot.bone_names[index];
-            if (ui->button(ui->user, anomaly::sdk::StringView(bone_item), 0.0F,
-                           0.0F) != 0) {
-              context->requested_bone_index.store(
-                  static_cast<std::uint32_t>(index), std::memory_order_release);
-            }
-          }
-        }
-      }
-      ui->end_child(ui->user);
-    } else {
-      const std::string bone_label =
-          context->localizer.Text("pose.bone", "Bone index");
-      double bone_value = static_cast<double>(bone);
-      if (ui->input_double(ui->user, anomaly::sdk::StringView(bone_label),
-                           &bone_value, 1.0, 8.0) != 0) {
-        if (bone_value < 0.0)
-          bone_value = 0.0;
-        if (bone_value > static_cast<double>(kMaximumBoneIndex))
-          bone_value = static_cast<double>(kMaximumBoneIndex);
-        context->requested_bone_index.store(
-            static_cast<std::uint32_t>(bone_value), std::memory_order_release);
-      }
-    }
 
     float pitch = 0.0F;
     float yaw = 0.0F;
@@ -8153,6 +10046,144 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         ui->open_popup(ui->user, anomaly::sdk::StringView("pose-reset-confirm"));
       else
         context->pose_reset_requested.store(true, std::memory_order_release);
+    }
+
+    // Undo / redo. Disabled while a motion is loaded: it owns the pose.
+    const bool history_open = !context->motion_loaded.load(std::memory_order_acquire);
+    const std::uint32_t undo_count = context->pose_undo_count.load(std::memory_order_acquire);
+    const std::uint32_t redo_count = context->pose_redo_count.load(std::memory_order_acquire);
+    const bool can_enable =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
+            ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
+        ui->button_enabled != nullptr;
+    // `width` 0 sizes the button to its text.
+    const auto history_button = [&](const std::string &label, const bool enabled,
+                                    const float width = 84.0F) {
+      return can_enable ? ui->button_enabled(ui->user, anomaly::sdk::StringView(label), width,
+                                             0.0F, enabled ? 1 : 0) != 0 && enabled
+                        : ui->button(ui->user, anomaly::sdk::StringView(label), width, 0.0F) !=
+                                  0 &&
+                              enabled;
+    };
+    const std::string undo_label =
+        context->localizer.Text("pose.undo", "Undo") + " (" + std::to_string(undo_count) + ")##pose-undo";
+    const std::string redo_label =
+        context->localizer.Text("pose.redo", "Redo") + " (" + std::to_string(redo_count) + ")##pose-redo";
+    if (history_button(undo_label, history_open && undo_count != 0))
+      context->pose_history_request.store(1, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    if (history_button(redo_label, history_open && redo_count != 0))
+      context->pose_history_request.store(2, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string history_hint =
+        context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y");
+    ui->text(ui->user, anomaly::sdk::StringView(history_hint));
+
+    // Mirror: whole pose, or one side copied onto the other. Undo reverts it.
+    const auto mirror_button = [&](const char *key, const char *fallback, const char *id,
+                                   const int request) {
+      const std::string label = context->localizer.Label(key, fallback, id);
+      if (history_button(label, history_open, 0.0F))
+        context->pose_mirror_request.store(request, std::memory_order_release);
+    };
+    mirror_button("pose.mirror.flip", "Flip left and right", "pose-mirror-flip", 1);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    mirror_button("pose.mirror.left_to_right", "Copy left to right", "pose-mirror-l2r", 2);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    mirror_button("pose.mirror.right_to_left", "Copy right to left", "pose-mirror-r2l", 3);
+
+    ui->separator(ui->user);
+
+    const bool can_text_input =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
+            ui, offsetof(AnomalyUiServiceV1, input_text)) &&
+        ui->input_text != nullptr;
+    const bool can_bone_list =
+        can_text_input &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+        ui->begin_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
+            ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+        ui->end_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
+            ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
+        ui->filter_match != nullptr;
+
+    if (can_bone_list) {
+      const std::string filter_label =
+          context->localizer.Text("pose.filter", "Bone filter");
+      static_cast<void>(ui->input_text(
+          ui->user, anomaly::sdk::StringView(filter_label),
+          context->bone_filter.data(), context->bone_filter.size(),
+          ANOMALY_UI_TEXT_INPUT_V1_NONE));
+
+      const auto set_filter = [&](const char *value) {
+        std::snprintf(context->bone_filter.data(), context->bone_filter.size(),
+                      "%s", value);
+      };
+      int quick_button_index = 0;
+      const auto quick_button = [&](const char *value, const std::string &label) {
+        if (ui->button(ui->user, anomaly::sdk::StringView(label), 56.0F, 0.0F) != 0)
+          set_filter(value);
+        ++quick_button_index;
+        if (quick_button_index % 6 != 0)
+          ui->same_line(ui->user, 0.0F, 4.0F);
+      };
+      quick_button("arm", context->localizer.Text("filter.arm", "Arm"));
+      quick_button("forearm", context->localizer.Text("filter.elbow", "Elbow"));
+      quick_button("hand", context->localizer.Text("filter.hand", "Hand"));
+      quick_button("thigh", context->localizer.Text("filter.thigh", "Thigh"));
+      quick_button("calf", context->localizer.Text("filter.knee", "Knee"));
+      quick_button("foot", context->localizer.Text("filter.foot", "Foot"));
+      quick_button("clavicle", context->localizer.Text("filter.shoulder", "Shoulder"));
+      quick_button("neck", context->localizer.Text("filter.neck", "Neck"));
+      quick_button("head", context->localizer.Text("filter.head", "Head"));
+      quick_button("spine", context->localizer.Text("filter.spine", "Spine"));
+      quick_button("pelvis", context->localizer.Text("filter.pelvis", "Pelvis"));
+      quick_button("", context->localizer.Text("filter.all", "All"));
+
+      // The host pushes its Child stack entry when `begin_child` is called, whether or not ImGui
+      // culled the child, so `end_child` has to be called either way: skipping it when the child is
+      // scrolled out of view leaves the stack unbalanced and the host faults the whole plugin.
+      const int bone_child_open =
+          ui->begin_child(ui->user, anomaly::sdk::StringView("bone-list"), 0.0F, 240.0F, 0U);
+      if (bone_child_open != 0) {
+        if (snapshot.bone_names.empty()) {
+          const std::string empty_label = context->localizer.Text(
+              "pose.bones.empty", "Bone names not loaded; press Load Bones.");
+          ui->text(ui->user, anomaly::sdk::StringView(empty_label));
+        } else {
+          const std::string_view filter(context->bone_filter.data());
+          for (std::size_t index{}; index != snapshot.bone_names.size(); ++index) {
+            if (ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
+                                 anomaly::sdk::StringView(
+                                     snapshot.bone_names[index])) == 0)
+              continue;
+            const std::string bone_item =
+                std::to_string(index) + " " + snapshot.bone_names[index];
+            if (ui->button(ui->user, anomaly::sdk::StringView(bone_item), 0.0F,
+                           0.0F) != 0) {
+              context->requested_bone_index.store(
+                  static_cast<std::uint32_t>(index), std::memory_order_release);
+            }
+          }
+        }
+      }
+      ui->end_child(ui->user);
+    } else {
+      const std::string bone_label =
+          context->localizer.Text("pose.bone", "Bone index");
+      double bone_value = static_cast<double>(bone);
+      if (ui->input_double(ui->user, anomaly::sdk::StringView(bone_label),
+                           &bone_value, 1.0, 8.0) != 0) {
+        if (bone_value < 0.0)
+          bone_value = 0.0;
+        if (bone_value > static_cast<double>(kMaximumBoneIndex))
+          bone_value = static_cast<double>(kMaximumBoneIndex);
+        context->requested_bone_index.store(
+            static_cast<std::uint32_t>(bone_value), std::memory_order_release);
+      }
     }
 
     ui->separator(ui->user);
