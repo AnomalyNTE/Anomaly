@@ -22,6 +22,7 @@ using Microsoft::WRL::ComPtr;
 #include "accessory_dynamics.hpp"
 #include "secondary_rules.hpp"
 #include "pose_history.hpp"
+#include "orbit_camera.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -338,6 +339,9 @@ struct Context final {
   std::vector<std::array<float, 2>> overlay_screen_joints;
   std::vector<std::uint8_t> overlay_screen_valid;
   std::vector<std::uint32_t> overlay_screen_weight;  // descendants, for stacked picks
+  std::vector<std::array<double, 3>> overlay_joint_world;  // for focusing the pose camera
+  bool overlay_component_world_valid{};
+  std::vector<std::array<double, 3>> overlay_frame_world;  // game thread scratch
   float overlay_viewport_width{};
   float overlay_viewport_height{};
   // Game thread only. The UFunction object is resolved once: looking it up by
@@ -550,6 +554,21 @@ struct Context final {
   // frame. Distance is how far back along that direction the camera sits, height how far above the
   // character's feet; the aim is the character's own chest. Both are centimetres.
   std::atomic_bool camera_follow{};
+  // Pose camera: a mouse-only orbit camera for editing, driven through the
+  // same view-point hook as the follow camera. Draw posts mouse motion into
+  // the orbit (orbit_mutex); the detour turns it into the view each frame.
+  std::atomic_bool orbit_enabled{};
+  std::atomic_bool orbit_initialized{};
+  std::atomic_bool orbit_focus_requested{};
+  std::mutex orbit_mutex;
+  better_pose::orbit::Orbit orbit;
+  std::array<double, 3> orbit_focus_target{};
+  std::atomic<double> orbit_focal_pixels{};  // measured from the AHUD projection
+  // Render thread only.
+  bool orbit_right_dragging{};
+  bool orbit_middle_was_down{};
+  float orbit_last_x{};
+  float orbit_last_y{};
   std::atomic<double> camera_follow_distance_cm{380.0};
   std::atomic<double> camera_follow_height_cm{150.0};
   // Whether the follow camera rides the character's up/down. On is the loose, hand-held look; off
@@ -2442,6 +2461,52 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
   try {
     if (original != nullptr)
       pov = original(self, first, second);
+  } catch (...) {
+  }
+
+  // The pose camera comes first and owns the view outright while it is on.
+  try {
+    auto *out_location = static_cast<double *>(first);
+    auto *out_rotation = static_cast<double *>(second);
+    if (context != nullptr && out_location != nullptr && out_rotation != nullptr) {
+      const bool finite = std::isfinite(out_location[0]) && std::isfinite(out_location[1]) &&
+                          std::isfinite(out_location[2]) && std::isfinite(out_rotation[0]) &&
+                          std::isfinite(out_rotation[1]) && std::isfinite(out_rotation[2]);
+      if (context->orbit_enabled.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(context->orbit_mutex);
+        if (!context->orbit_initialized.load(std::memory_order_acquire) && finite) {
+          // Circle whatever the player was looking at: the character if it is
+          // in front of the camera, else a point 300 cm ahead.
+          std::array<double, 3> location{out_location[0], out_location[1], out_location[2]};
+          std::array<double, 3> rotation{out_rotation[0], out_rotation[1], out_rotation[2]};
+          double feet[3]{};
+          double centre[3]{};
+          double distance = 300.0;
+          if (CharacterBounds(*context, feet, centre)) {
+            const double dx = centre[0] - location[0];
+            const double dy = centre[1] - location[1];
+            const double dz = centre[2] - location[2];
+            const double range = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (range > 50.0 && range < 2500.0)
+              distance = range;
+          }
+          context->orbit = better_pose::orbit::FromView(location, rotation, distance);
+          context->orbit_initialized.store(true, std::memory_order_release);
+        }
+        if (context->orbit_focus_requested.exchange(false, std::memory_order_acq_rel))
+          better_pose::orbit::Focus(context->orbit, context->orbit_focus_target);
+        if (context->orbit_initialized.load(std::memory_order_acquire)) {
+          const auto view = better_pose::orbit::ViewOf(context->orbit);
+          for (int axis = 0; axis < 3; ++axis) {
+            out_location[axis] = view.location[static_cast<std::size_t>(axis)];
+            out_rotation[axis] = view.rotation[static_cast<std::size_t>(axis)];
+          }
+          if (leased && HookReady(context->hook))
+            static_cast<void>(context->hook->end_callback(context->hook->user, lease));
+          return pov;
+        }
+      }
+    }
   } catch (...) {
   }
 
@@ -7301,7 +7366,9 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   // point is often a placeholder the game is not recomputing (measured frozen with x = 0 for
   // seconds), and a shot built against a placeholder is what "the camera stares at one place"
   // turned out to be. Follow mode is an extra source of the shot, not an always-on override.
-  const bool camera_requested = camera_configured && motion_playing_now;
+  // The pose camera needs the hook whenever it is on, playing or not.
+  const bool orbit_on = context.orbit_enabled.load(std::memory_order_acquire);
+  const bool camera_requested = (camera_configured && motion_playing_now) || orbit_on;
   // Size the camera's MMD world before any motion has published the exact ratio: the live
   // character's leg over the reference model's is the same definition the converters bake into
   // `mmdLegLength`, and MMD's bare 8 cm/unit convention is 6.8 % short for a 169 cm character
@@ -7325,7 +7392,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   if (camera_requested) {
     if (RefreshCameraPovTarget(context))
       camera_hook_ok = EnsureCameraPovHook(context);
-    if (!context.camera_was_enabled) {
+    if (!context.camera_was_enabled && camera_configured && motion_playing_now) {
       context.camera_was_enabled = true;
       context.camera_anchored.store(false, std::memory_order_release);
       context.camera_anchor_wait = 0;
@@ -8015,6 +8082,8 @@ void ClearOverlayScreen(Context &context) noexcept {
   context.overlay_screen_joints.clear();
   context.overlay_screen_valid.clear();
   context.overlay_screen_weight.clear();
+  context.overlay_joint_world.clear();
+  context.overlay_component_world_valid = false;
   context.overlay_published = false;
 }
 
@@ -8352,12 +8421,57 @@ void DrawOverlayDot(const AnomalyUe5AhudFrameV1 *frame, const float x,
                    color);
 }
 
+// A joint's world position, for focusing the pose camera on it. Render
+// thread: reads the component-space pose through the memory service, and the
+// mesh transform the overlay cached from the game thread on its last frame.
+bool JointWorldPosition(Context &context, const std::uint32_t bone,
+                        std::array<double, 3> &point) noexcept {
+  std::lock_guard<std::mutex> lock(context.overlay_mutex);
+  if (!context.overlay_component_world_valid || bone >= context.overlay_joint_world.size())
+    return false;
+  point = context.overlay_joint_world[bone];
+  return std::isfinite(point[0]) && std::isfinite(point[1]) && std::isfinite(point[2]);
+}
+
+// The orbit's pan wants the focal length in canvas pixels: how far a 1 cm
+// step across the view at 100 cm lands on screen. Measured through the AHUD
+// projection (which already sees the pose camera), whether or not the
+// skeleton overlay is drawn.
+void MeasureOrbitFocal(Context &context, const AnomalyUe5AhudFrameV1 *frame) noexcept {
+  if (!context.orbit_enabled.load(std::memory_order_acquire))
+    return;
+  better_pose::orbit::View view;
+  {
+    std::lock_guard<std::mutex> lock(context.orbit_mutex);
+    if (!context.orbit_initialized.load(std::memory_order_acquire))
+      return;
+    view = better_pose::orbit::ViewOf(context.orbit);
+  }
+  const auto forward = better_pose::orbit::Forward(view.rotation[0], view.rotation[1]);
+  const double yaw = view.rotation[1] / better_pose::orbit::kDegrees;
+  const double a[3]{view.location[0] + forward[0] * 100.0, view.location[1] + forward[1] * 100.0,
+                    view.location[2] + forward[2] * 100.0};
+  const double b[3]{a[0] - std::sin(yaw), a[1] + std::cos(yaw), a[2]};
+  float pa[2]{};
+  float pb[2]{};
+  double depth{};
+  if (frame->project(frame->user, a, pa, &depth) == 0 ||
+      frame->project(frame->user, b, pb, &depth) == 0)
+    return;
+  const double pixels =
+      std::hypot(static_cast<double>(pb[0]) - pa[0], static_cast<double>(pb[1]) - pa[1]);
+  if (std::isfinite(pixels) && pixels > 0.0)
+    context.orbit_focal_pixels.store(pixels * 100.0, std::memory_order_release);
+}
+
 void ANOMALY_CALL DrawSkeletonOverlay(void *user,
                                       const AnomalyUe5AhudFrameV1 *frame) noexcept {
   auto *context = static_cast<Context *>(user);
   if (context == nullptr)
     return;
   try {
+    if (AhudFrameReady(frame))
+      MeasureOrbitFocal(*context, frame);
     if (!context->skeleton_overlay_enabled.load(std::memory_order_acquire) ||
         !AhudFrameReady(frame)) {
       ClearOverlayScreen(*context);
@@ -8384,8 +8498,10 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
 
     auto &screen = context->overlay_frame_joints;
     auto &valid = context->overlay_frame_valid;
+    auto &world_points = context->overlay_frame_world;
     screen.assign(count, {0.0F, 0.0F});
     valid.assign(count, 0);
+    world_points.assign(count, {0.0, 0.0, 0.0});
     const float width = static_cast<float>(frame->viewport_width);
     const float height = static_cast<float>(frame->viewport_height);
     constexpr float kMargin = 64.0F;
@@ -8396,6 +8512,7 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       const Transformd joint = TransformMultiply(component_world, UnpackTransform(packed));
       const double world[3]{joint.translation.x, joint.translation.y,
                             joint.translation.z};
+      world_points[bone] = {world[0], world[1], world[2]};
       float projected[2]{};
       double depth{};
       if (frame->project(frame->user, world, projected, &depth) == 0 ||
@@ -8497,6 +8614,8 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
     context->overlay_screen_joints.swap(screen);
     context->overlay_screen_valid.swap(valid);
     context->overlay_screen_weight.swap(weight);
+    context->overlay_joint_world.swap(world_points);
+    context->overlay_component_world_valid = true;
     context->overlay_viewport_width = width;
     context->overlay_viewport_height = height;
     context->overlay_published = true;
@@ -8679,6 +8798,81 @@ void UpdateSkeletonOverlayPicking(Context &context,
   }
 }
 
+// Render thread, inside Draw, after the joint picker. With the pose camera on,
+// the mouse over empty scene (no panel under it, no joint under it, no joint
+// drag running) drives the orbit: right drag rotates, middle drag pans, the
+// wheel zooms. Every one is a mouse message the host keeps from the game while
+// the menu is open, so nothing here can make the character move.
+void UpdateOrbitCameraInput(Context &context, const AnomalyUiServiceV1 *ui) noexcept {
+  if (!context.orbit_enabled.load(std::memory_order_acquire) || !InputReady(context.input)) {
+    context.orbit_right_dragging = false;
+    context.orbit_middle_was_down = false;
+    return;
+  }
+  AnomalyInputSnapshotV1 input{};
+  input.struct_size = sizeof(input);
+  if (context.input->snapshot(context.input->user, &input).code != ANOMALY_STATUS_V1_OK)
+    return;
+  const bool menu_owns_mouse = (input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_MOUSE) != 0;
+  const bool right_down = (input.mouse_buttons & 2U) != 0;
+  const bool middle_down = (input.mouse_buttons & 4U) != 0;
+  // In AHUD canvas pixels, like the picker, so the pan matches the projection.
+  float x = input.mouse_x;
+  float y = input.mouse_y;
+  {
+    std::lock_guard<std::mutex> lock(context.overlay_mutex);
+    if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+      RECT client{};
+      if (GetClientRect(window, &client) != FALSE && client.right > 0 && client.bottom > 0 &&
+          context.overlay_viewport_width > 0.0F && context.overlay_viewport_height > 0.0F) {
+        x *= context.overlay_viewport_width / static_cast<float>(client.right);
+        y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+      }
+    }
+  }
+  const bool over_ui =
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::frame_state)>(
+          ui, offsetof(AnomalyUiServiceV1, frame_state)) &&
+      ui->frame_state != nullptr &&
+      (ui->frame_state(ui->user) & ANOMALY_UI_FRAME_V1_WANT_CAPTURE_MOUSE) != 0;
+  // A joint under the cursor, or a joint drag, owns the mouse instead.
+  const bool joint_busy =
+      context.overlay_press_joint != kOverlayNoBone ||
+      (context.skeleton_overlay_enabled.load(std::memory_order_acquire) &&
+       context.overlay_hover_index.load(std::memory_order_acquire) != kOverlayNoBone);
+  const bool free = menu_owns_mouse && !over_ui && !joint_busy;
+
+  const float dx = x - context.orbit_last_x;
+  const float dy = y - context.orbit_last_y;
+  const bool was_rotating = context.orbit_right_dragging;
+  const bool was_panning = context.orbit_middle_was_down;
+  // Start only on empty scene; once started, keep going until release even
+  // over a panel or a joint.
+  if (!right_down || !menu_owns_mouse)
+    context.orbit_right_dragging = false;
+  else if (!was_rotating && free)
+    context.orbit_right_dragging = true;
+  if (!middle_down || !menu_owns_mouse)
+    context.orbit_middle_was_down = false;
+  else if (!was_panning && free)
+    context.orbit_middle_was_down = true;
+
+  {
+    std::lock_guard<std::mutex> lock(context.orbit_mutex);
+    if (context.orbit_initialized.load(std::memory_order_acquire)) {
+      if (was_rotating && context.orbit_right_dragging)
+        better_pose::orbit::Rotate(context.orbit, dx, dy);
+      if (was_panning && context.orbit_middle_was_down)
+        better_pose::orbit::Pan(context.orbit, dx, dy,
+                                context.orbit_focal_pixels.load(std::memory_order_acquire));
+      if (input.mouse_wheel != 0 && free)
+        better_pose::orbit::Zoom(context.orbit, static_cast<double>(input.mouse_wheel));
+    }
+  }
+  context.orbit_last_x = x;
+  context.orbit_last_y = y;
+}
+
 // Render thread, inside Draw. Keeps an edit open while the left mouse button
 // is down (a slider or a joint being dragged) and turns Ctrl+Z / Ctrl+Y (and
 // Ctrl+Shift+Z) into undo/redo requests, on the press only. The keys are
@@ -8811,6 +9005,10 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   // First: the overlay callback reads runtime, which is reset below.
   UnsubscribeSkeletonOverlay(*context);
+  // The hook is released below; drop the pose camera with it so a reload
+  // starts from the game's own view.
+  context->orbit_enabled.store(false, std::memory_order_release);
+  context->orbit_initialized.store(false, std::memory_order_release);
   static_cast<void>(ReleasePoseTickHook(*context));
   static_cast<void>(ReleaseCameraPovHook(*context));
   RestoreAll(*context);
@@ -8884,6 +9082,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     return;
 
   UpdateSkeletonOverlayPicking(*context, ui);
+  UpdateOrbitCameraInput(*context, ui);
   UpdatePoseHistoryInput(*context, ui);
 
   RenderSnapshot snapshot{};
@@ -9342,6 +9541,43 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
                                            std::memory_order_release);
     }
 
+    // Pose camera: mouse-only orbit, independent of the skeleton overlay.
+    if (context->input != nullptr) {
+      int orbit = context->orbit_enabled.load(std::memory_order_acquire) ? 1 : 0;
+      const std::string orbit_label =
+          context->localizer.Text("pose.camera.orbit", "Pose camera");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(orbit_label), &orbit) != 0) {
+        // Every switch-on starts again from the game's current view.
+        if (orbit != 0)
+          context->orbit_initialized.store(false, std::memory_order_release);
+        context->orbit_enabled.store(orbit != 0, std::memory_order_release);
+      }
+      if (orbit != 0) {
+        ui->same_line(ui->user, 0.0F, 12.0F);
+        const std::uint32_t selected =
+            context->requested_bone_index.load(std::memory_order_acquire);
+        const std::string focus_label =
+            context->localizer.Text("pose.camera.focus", "Focus selected joint");
+        if (ui->button(ui->user, anomaly::sdk::StringView(focus_label), 0.0F, 0.0F) != 0) {
+          std::array<double, 3> point{};
+          if (JointWorldPosition(*context, selected, point)) {
+            std::lock_guard<std::mutex> lock(context->orbit_mutex);
+            context->orbit_focus_target = point;
+            context->orbit_focus_requested.store(true, std::memory_order_release);
+          }
+        }
+        ui->same_line(ui->user, 0.0F, 6.0F);
+        const std::string reset_label =
+            context->localizer.Label("pose.camera.reset", "Reset view", "pose-camera-reset");
+        if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 0.0F, 0.0F) != 0)
+          context->orbit_initialized.store(false, std::memory_order_release);
+        const std::string orbit_hint = context->localizer.Text(
+            "pose.camera.hint",
+            "Empty scene: right drag orbits, middle drag pans, wheel zooms.");
+        ui->text(ui->user, anomaly::sdk::StringView(orbit_hint));
+      }
+    }
+
     if (context->ahud != nullptr) {
       int overlay_enabled =
           context->skeleton_overlay_enabled.load(std::memory_order_acquire) ? 1 : 0;
@@ -9404,98 +9640,6 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     ui->text(ui->user, anomaly::sdk::StringView(selected_line));
     const std::string pose_status_line = std::string(snapshot.pose_status.data());
     ui->text(ui->user, anomaly::sdk::StringView(pose_status_line));
-
-    const bool can_text_input =
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
-            ui, offsetof(AnomalyUiServiceV1, input_text)) &&
-        ui->input_text != nullptr;
-    const bool can_bone_list =
-        can_text_input &&
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
-            ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
-        ui->begin_child != nullptr &&
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
-            ui, offsetof(AnomalyUiServiceV1, end_child)) &&
-        ui->end_child != nullptr &&
-        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
-            ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
-        ui->filter_match != nullptr;
-
-    if (can_bone_list) {
-      const std::string filter_label =
-          context->localizer.Text("pose.filter", "Bone filter");
-      static_cast<void>(ui->input_text(
-          ui->user, anomaly::sdk::StringView(filter_label),
-          context->bone_filter.data(), context->bone_filter.size(),
-          ANOMALY_UI_TEXT_INPUT_V1_NONE));
-
-      const auto set_filter = [&](const char *value) {
-        std::snprintf(context->bone_filter.data(), context->bone_filter.size(),
-                      "%s", value);
-      };
-      int quick_button_index = 0;
-      const auto quick_button = [&](const char *value, const std::string &label) {
-        if (ui->button(ui->user, anomaly::sdk::StringView(label), 56.0F, 0.0F) != 0)
-          set_filter(value);
-        ++quick_button_index;
-        if (quick_button_index % 6 != 0)
-          ui->same_line(ui->user, 0.0F, 4.0F);
-      };
-      quick_button("arm", context->localizer.Text("filter.arm", "Arm"));
-      quick_button("forearm", context->localizer.Text("filter.elbow", "Elbow"));
-      quick_button("hand", context->localizer.Text("filter.hand", "Hand"));
-      quick_button("thigh", context->localizer.Text("filter.thigh", "Thigh"));
-      quick_button("calf", context->localizer.Text("filter.knee", "Knee"));
-      quick_button("foot", context->localizer.Text("filter.foot", "Foot"));
-      quick_button("clavicle", context->localizer.Text("filter.shoulder", "Shoulder"));
-      quick_button("neck", context->localizer.Text("filter.neck", "Neck"));
-      quick_button("head", context->localizer.Text("filter.head", "Head"));
-      quick_button("spine", context->localizer.Text("filter.spine", "Spine"));
-      quick_button("pelvis", context->localizer.Text("filter.pelvis", "Pelvis"));
-      quick_button("", context->localizer.Text("filter.all", "All"));
-
-      // The host pushes its Child stack entry when `begin_child` is called, whether or not ImGui
-      // culled the child, so `end_child` has to be called either way: skipping it when the child is
-      // scrolled out of view leaves the stack unbalanced and the host faults the whole plugin.
-      const int bone_child_open =
-          ui->begin_child(ui->user, anomaly::sdk::StringView("bone-list"), 0.0F, 240.0F, 0U);
-      if (bone_child_open != 0) {
-        if (snapshot.bone_names.empty()) {
-          const std::string empty_label = context->localizer.Text(
-              "pose.bones.empty", "Bone names not loaded; press Load Bones.");
-          ui->text(ui->user, anomaly::sdk::StringView(empty_label));
-        } else {
-          const std::string_view filter(context->bone_filter.data());
-          for (std::size_t index{}; index != snapshot.bone_names.size(); ++index) {
-            if (ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
-                                 anomaly::sdk::StringView(
-                                     snapshot.bone_names[index])) == 0)
-              continue;
-            const std::string bone_item =
-                std::to_string(index) + " " + snapshot.bone_names[index];
-            if (ui->button(ui->user, anomaly::sdk::StringView(bone_item), 0.0F,
-                           0.0F) != 0) {
-              context->requested_bone_index.store(
-                  static_cast<std::uint32_t>(index), std::memory_order_release);
-            }
-          }
-        }
-      }
-      ui->end_child(ui->user);
-    } else {
-      const std::string bone_label =
-          context->localizer.Text("pose.bone", "Bone index");
-      double bone_value = static_cast<double>(bone);
-      if (ui->input_double(ui->user, anomaly::sdk::StringView(bone_label),
-                           &bone_value, 1.0, 8.0) != 0) {
-        if (bone_value < 0.0)
-          bone_value = 0.0;
-        if (bone_value > static_cast<double>(kMaximumBoneIndex))
-          bone_value = static_cast<double>(kMaximumBoneIndex);
-        context->requested_bone_index.store(
-            static_cast<std::uint32_t>(bone_value), std::memory_order_release);
-      }
-    }
 
     float pitch = 0.0F;
     float yaw = 0.0F;
@@ -9676,6 +9820,100 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     const std::string history_hint =
         context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y");
     ui->text(ui->user, anomaly::sdk::StringView(history_hint));
+
+    ui->separator(ui->user);
+
+    const bool can_text_input =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
+            ui, offsetof(AnomalyUiServiceV1, input_text)) &&
+        ui->input_text != nullptr;
+    const bool can_bone_list =
+        can_text_input &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+        ui->begin_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
+            ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+        ui->end_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
+            ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
+        ui->filter_match != nullptr;
+
+    if (can_bone_list) {
+      const std::string filter_label =
+          context->localizer.Text("pose.filter", "Bone filter");
+      static_cast<void>(ui->input_text(
+          ui->user, anomaly::sdk::StringView(filter_label),
+          context->bone_filter.data(), context->bone_filter.size(),
+          ANOMALY_UI_TEXT_INPUT_V1_NONE));
+
+      const auto set_filter = [&](const char *value) {
+        std::snprintf(context->bone_filter.data(), context->bone_filter.size(),
+                      "%s", value);
+      };
+      int quick_button_index = 0;
+      const auto quick_button = [&](const char *value, const std::string &label) {
+        if (ui->button(ui->user, anomaly::sdk::StringView(label), 56.0F, 0.0F) != 0)
+          set_filter(value);
+        ++quick_button_index;
+        if (quick_button_index % 6 != 0)
+          ui->same_line(ui->user, 0.0F, 4.0F);
+      };
+      quick_button("arm", context->localizer.Text("filter.arm", "Arm"));
+      quick_button("forearm", context->localizer.Text("filter.elbow", "Elbow"));
+      quick_button("hand", context->localizer.Text("filter.hand", "Hand"));
+      quick_button("thigh", context->localizer.Text("filter.thigh", "Thigh"));
+      quick_button("calf", context->localizer.Text("filter.knee", "Knee"));
+      quick_button("foot", context->localizer.Text("filter.foot", "Foot"));
+      quick_button("clavicle", context->localizer.Text("filter.shoulder", "Shoulder"));
+      quick_button("neck", context->localizer.Text("filter.neck", "Neck"));
+      quick_button("head", context->localizer.Text("filter.head", "Head"));
+      quick_button("spine", context->localizer.Text("filter.spine", "Spine"));
+      quick_button("pelvis", context->localizer.Text("filter.pelvis", "Pelvis"));
+      quick_button("", context->localizer.Text("filter.all", "All"));
+
+      // The host pushes its Child stack entry when `begin_child` is called, whether or not ImGui
+      // culled the child, so `end_child` has to be called either way: skipping it when the child is
+      // scrolled out of view leaves the stack unbalanced and the host faults the whole plugin.
+      const int bone_child_open =
+          ui->begin_child(ui->user, anomaly::sdk::StringView("bone-list"), 0.0F, 240.0F, 0U);
+      if (bone_child_open != 0) {
+        if (snapshot.bone_names.empty()) {
+          const std::string empty_label = context->localizer.Text(
+              "pose.bones.empty", "Bone names not loaded; press Load Bones.");
+          ui->text(ui->user, anomaly::sdk::StringView(empty_label));
+        } else {
+          const std::string_view filter(context->bone_filter.data());
+          for (std::size_t index{}; index != snapshot.bone_names.size(); ++index) {
+            if (ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
+                                 anomaly::sdk::StringView(
+                                     snapshot.bone_names[index])) == 0)
+              continue;
+            const std::string bone_item =
+                std::to_string(index) + " " + snapshot.bone_names[index];
+            if (ui->button(ui->user, anomaly::sdk::StringView(bone_item), 0.0F,
+                           0.0F) != 0) {
+              context->requested_bone_index.store(
+                  static_cast<std::uint32_t>(index), std::memory_order_release);
+            }
+          }
+        }
+      }
+      ui->end_child(ui->user);
+    } else {
+      const std::string bone_label =
+          context->localizer.Text("pose.bone", "Bone index");
+      double bone_value = static_cast<double>(bone);
+      if (ui->input_double(ui->user, anomaly::sdk::StringView(bone_label),
+                           &bone_value, 1.0, 8.0) != 0) {
+        if (bone_value < 0.0)
+          bone_value = 0.0;
+        if (bone_value > static_cast<double>(kMaximumBoneIndex))
+          bone_value = static_cast<double>(kMaximumBoneIndex);
+        context->requested_bone_index.store(
+            static_cast<std::uint32_t>(bone_value), std::memory_order_release);
+      }
+    }
 
     ui->separator(ui->user);
     if (context->pose_export_name[0] == '\0') {
