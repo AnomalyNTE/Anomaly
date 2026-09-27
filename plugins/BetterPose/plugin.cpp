@@ -23,6 +23,7 @@ using Microsoft::WRL::ComPtr;
 #include "secondary_rules.hpp"
 #include "pose_history.hpp"
 #include "orbit_camera.hpp"
+#include "pose_mirror.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -476,6 +477,8 @@ struct Context final {
   better_pose::history::PoseHistory pose_history;
   std::uintptr_t pose_history_mesh{};
   std::atomic<int> pose_history_request{};  // 1 undo, 2 redo, 0 none
+  // Mirror request from the panel: 1 flip, 2 left to right, 3 right to left.
+  std::atomic<int> pose_mirror_request{};
   std::atomic<std::uint32_t> pose_undo_count{};
   std::atomic<std::uint32_t> pose_redo_count{};
   // Held while a mouse button is down over the panel or the canvas, so a slow
@@ -1075,6 +1078,14 @@ void RestorePoseState(Context &context, const better_pose::history::PoseState &s
   context.pose_override_enabled.store(true, std::memory_order_release);
   context.pose_settings_dirty.store(true, std::memory_order_release);
 }
+
+// Game thread: mirror the manual pose. Every bone's final local rotation is
+// offset * base; the mirror reflects the finals (see pose_mirror.hpp) and the
+// new offsets are final' * base^-1, back into the slider angles. The rig is
+// measured from the captured base pose, so it follows whatever skeleton the
+// character has. The body offset is reflected across the same plane. The
+// change is an ordinary edit, so undo takes it back.
+bool MirrorPose(Context &context, const int request) noexcept;
 
 // Game thread, every update: record settled edits, apply a posted undo/redo.
 // A different mesh (character switch) starts a fresh history.
@@ -7317,8 +7328,15 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   }
 
   // A loaded motion owns the pose; its frames are not manual edits.
-  if (!context.motion_loaded.load(std::memory_order_acquire))
+  if (!context.motion_loaded.load(std::memory_order_acquire)) {
+    const int mirror = context.pose_mirror_request.exchange(0, std::memory_order_acq_rel);
+    if (mirror != 0 && !MirrorPose(context, mirror))
+      SetReflectionStatus(context, "mirror unavailable: load the bones and make the character "
+                                   "visible first");
     StepPoseHistory(context);
+  } else {
+    context.pose_mirror_request.store(0, std::memory_order_release);
+  }
 
   const bool master_enabled =
       context.pose_override_enabled.load(std::memory_order_acquire);  std::size_t active_joints{};
@@ -8916,6 +8934,95 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
   context.pose_redo_key_was_down = redo_down;
 }
 
+bool MirrorPose(Context &context, const int request) noexcept {
+  try {
+    using namespace better_pose::mirror;
+    if (!CapturePoseBase(context))
+      return false;
+    const auto count = context.pose_base_locals.size();
+    if (count == 0 || context.bone_names.size() != count || context.bone_parents.size() != count)
+      return false;
+    std::vector<Quat> base(count);
+    std::vector<Transformd> locals(count);
+    std::vector<std::array<double, 3>> angles;
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      if (context.pose_base_locals.size() != count)
+        return false;
+      for (std::size_t bone{}; bone != count; ++bone) {
+        const auto &raw = context.pose_base_locals[bone];
+        base[bone] = Normalize({raw[0], raw[1], raw[2], raw[3]});
+        locals[bone].rotation = Quatd{base[bone][0], base[bone][1], base[bone][2], base[bone][3]};
+        locals[bone].translation = Vec3d{raw[4], raw[5], raw[6]};
+        locals[bone].scale = Vec3d{raw[8], raw[9], raw[10]};
+      }
+      angles = context.bone_angles;
+    }
+    angles.resize((std::max)(angles.size(), count), {0.0, 0.0, 0.0});
+    // The rig from the rest pose: component frames and positions.
+    std::vector<Transformd> components(count);
+    std::vector<std::uint8_t> marks(count, 0);
+    for (std::uint32_t bone{}; bone != count; ++bone)
+      static_cast<void>(
+          ComputeBoneComponent(bone, locals, context.bone_parents, components, marks));
+    std::vector<Quat> rest(count);
+    std::vector<Vec> positions(count);
+    for (std::size_t bone{}; bone != count; ++bone) {
+      const auto &c = components[bone];
+      rest[bone] = Normalize({c.rotation.x, c.rotation.y, c.rotation.z, c.rotation.w});
+      positions[bone] = {c.translation.x, c.translation.y, c.translation.z};
+    }
+    const auto partner = Partners(context.bone_names);
+    const Rig rig = BuildRig(rest, positions, context.bone_parents, partner, context.bone_names);
+    if (!rig.valid)
+      return false;
+    // Finals, mirrored, back to offsets.
+    std::vector<Quat> finals(count);
+    for (std::size_t bone{}; bone != count; ++bone) {
+      const Quatd offset = RotatorToQuat(angles[bone][0], angles[bone][1], angles[bone][2]);
+      finals[bone] = Multiply({offset.x, offset.y, offset.z, offset.w}, base[bone]);
+    }
+    const Operation operation = request == 2   ? Operation::LeftToRight
+                                : request == 3 ? Operation::RightToLeft
+                                               : Operation::Flip;
+    const auto mirrored =
+        Apply(rig, context.bone_parents, partner, context.bone_names, finals, operation);
+    std::vector<std::array<double, 3>> next = angles;
+    for (std::size_t bone{}; bone != count; ++bone) {
+      if (Distance(mirrored[bone], finals[bone]) < 1e-12)
+        continue;  // untouched: keep the exact slider values
+      const Quat offset = Normalize(Multiply(mirrored[bone], Conjugate(base[bone])));
+      auto rotator = QuatToRotator(Quatd{offset[0], offset[1], offset[2], offset[3]});
+      // Snap the float noise of an identity offset back to a clean zero.
+      for (auto &value : rotator)
+        if (std::abs(value) < 1e-6)
+          value = 0.0;
+      next[bone] = rotator;
+    }
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      context.bone_angles = std::move(next);
+    }
+    // The body offset: a flip reflects it; copying one side onto the other
+    // leaves where the body stands alone.
+    if (operation == Operation::Flip) {
+      Vec offset{};
+      for (std::size_t axis{}; axis != 3; ++axis)
+        offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
+      const Vec reflected = ReflectLateral(rig, offset);
+      for (std::size_t axis{}; axis != 3; ++axis)
+        context.requested_root_offset[axis].store(std::abs(reflected[axis]) < 1e-9 ? 0.0
+                                                                                   : reflected[axis],
+                                                  std::memory_order_release);
+    }
+    context.pose_override_enabled.store(true, std::memory_order_release);
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
                                   void **plugin_context) {
   if (host == nullptr || plugin_context == nullptr)
@@ -9820,6 +9927,19 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     const std::string history_hint =
         context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y");
     ui->text(ui->user, anomaly::sdk::StringView(history_hint));
+
+    // Mirror: whole pose, or one side copied onto the other. Undo reverts it.
+    const auto mirror_button = [&](const char *key, const char *fallback, const char *id,
+                                   const int request) {
+      const std::string label = context->localizer.Label(key, fallback, id);
+      if (history_button(label, history_open))
+        context->pose_mirror_request.store(request, std::memory_order_release);
+    };
+    mirror_button("pose.mirror.flip", "Flip L/R", "pose-mirror-flip", 1);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    mirror_button("pose.mirror.left_to_right", "Left to right", "pose-mirror-l2r", 2);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    mirror_button("pose.mirror.right_to_left", "Right to left", "pose-mirror-r2l", 3);
 
     ui->separator(ui->user);
 
