@@ -529,7 +529,7 @@
     "launcher.status.recovery_restore_failed": "无法还原恢复设置",
     "launcher.status.core_unavailable": "Anomaly.Core.dll 不可用",
     "launcher.status.no_processes": "未找到正在运行的 HTGame.exe 进程",
-    "launcher.status.processes_refreshed": "进程列表已刷新",
+    "launcher.status.process_found": "已找到 HTGame.exe（PID {0}）",
     "launcher.status.saving_settings": "正在保存启动设置",
     "launcher.status.settings_saved": "启动设置已保存"
   }

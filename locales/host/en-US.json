@@ -529,7 +529,7 @@
     "launcher.status.recovery_restore_failed": "Recovery setting could not be restored",
     "launcher.status.core_unavailable": "Anomaly.Core.dll is unavailable",
     "launcher.status.no_processes": "No running HTGame.exe process found",
-    "launcher.status.processes_refreshed": "Process list refreshed",
+    "launcher.status.process_found": "Found HTGame.exe (PID {0})",
     "launcher.status.saving_settings": "Saving startup settings",
     "launcher.status.settings_saved": "Startup settings saved"
   }

@@ -959,9 +959,22 @@ private:
             state_.message = MakeLauncherMessage(
                 anomaly::MessageId::LauncherStatusNoProcesses);
             state_.message_kind = MessageKind::Neutral;
-        } else {
+        } else if (state_.attached_process != 0) {
+            // The status describes the state, not the act of scanning, so a scan that
+            // finds the attached process keeps reporting the attachment instead of
+            // replacing it with a note that the list was rebuilt.
+            const std::string process_id = std::to_string(state_.attached_process);
             state_.message = MakeLauncherMessage(
-                anomaly::MessageId::LauncherStatusProcessesRefreshed);
+                anomaly::MessageId::LauncherStatusLaunchAttached, {process_id});
+            state_.message_kind = MessageKind::Success;
+        } else {
+            // Opening the launcher while the game already runs lands here. The process
+            // and its id are what the mode has to report; a note that the list was
+            // rebuilt says nothing about the state it just read.
+            const std::string process_id =
+                std::to_string(state_.processes.front().process_id);
+            state_.message = MakeLauncherMessage(
+                anomaly::MessageId::LauncherStatusProcessFound, {process_id});
             state_.message_kind = MessageKind::Neutral;
         }
     }

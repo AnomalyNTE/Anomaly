@@ -525,6 +525,6 @@ ANOMALY_I18N_MESSAGE(LauncherStatusRecoveryRestored, "launcher.status.recovery_r
 ANOMALY_I18N_MESSAGE(LauncherStatusRecoveryRestoreFailed, "launcher.status.recovery_restore_failed")
 ANOMALY_I18N_MESSAGE(LauncherStatusCoreUnavailable, "launcher.status.core_unavailable")
 ANOMALY_I18N_MESSAGE(LauncherStatusNoProcesses, "launcher.status.no_processes")
-ANOMALY_I18N_MESSAGE(LauncherStatusProcessesRefreshed, "launcher.status.processes_refreshed")
+ANOMALY_I18N_MESSAGE(LauncherStatusProcessFound, "launcher.status.process_found")
 ANOMALY_I18N_MESSAGE(LauncherStatusSavingSettings, "launcher.status.saving_settings")
 ANOMALY_I18N_MESSAGE(LauncherStatusSettingsSaved, "launcher.status.settings_saved")
