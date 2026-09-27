@@ -26,7 +26,7 @@ std::string PreviewPaletteArgument() {
     const std::wstring command_line = GetCommandLineW();
     constexpr std::wstring_view prefix = L"--palette=";
     const std::size_t start = command_line.find(prefix);
-    if (start == std::wstring::npos) return "anomalyhub";
+    if (start == std::wstring::npos) return "naiwa";
     const std::size_t value_start = start + prefix.size();
     const std::size_t value_end = command_line.find_first_of(L" \t\r\n", value_start);
     const std::wstring value = command_line.substr(
@@ -40,7 +40,7 @@ std::string PreviewPaletteArgument() {
             result.push_back(static_cast<char>(character));
         }
     }
-    return result.empty() ? "anomalyhub" : result;
+    return result.empty() ? "naiwa" : result;
 }
 
 }  // namespace

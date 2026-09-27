@@ -193,7 +193,7 @@ PlatformUiThemeColors BuildCustomTheme(const PlatformUiCustomColors& colors) noe
 PlatformUiCustomColors g_platform_ui_custom_colors;
 PlatformUiThemeColors g_platform_ui_custom_theme =
     BuildCustomTheme(g_platform_ui_custom_colors);
-std::atomic<PlatformUiPalette> g_platform_ui_palette{PlatformUiPalette::AnomalyHub};
+std::atomic<PlatformUiPalette> g_platform_ui_palette{PlatformUiPalette::Naiwa};
 std::atomic<float> g_platform_ui_surface_alpha{1.0f};
 PlatformUiThemeColors g_platform_ui_surface_theme = kAnomalyHub;
 
@@ -207,7 +207,7 @@ const PlatformUiThemeColors& BasePlatformUiTheme() noexcept {
     case PlatformUiPalette::Custom: return g_platform_ui_custom_theme;
     case PlatformUiPalette::Moss: return kMoss;
     }
-    return kAnomalyHub;
+    return kNaiwa;
 }
 
 constexpr PlatformUiColor WithAlpha(
@@ -370,7 +370,9 @@ PlatformUiPalette ParsePlatformUiPalette(const std::string_view value) noexcept 
     if (value == "anomalyhub") return PlatformUiPalette::AnomalyHub;
     if (value == "naiwa") return PlatformUiPalette::Naiwa;
     if (value == "custom") return PlatformUiPalette::Custom;
-    return PlatformUiPalette::AnomalyHub;
+    // An unknown name falls back to the preset the shell ships wearing, not to the
+    // palette the settings were once written against.
+    return PlatformUiPalette::Naiwa;
 }
 
 std::string_view ToString(const PlatformUiPalette palette) noexcept {
@@ -383,7 +385,7 @@ std::string_view ToString(const PlatformUiPalette palette) noexcept {
     case PlatformUiPalette::Custom: return "custom";
     case PlatformUiPalette::Moss: return "moss";
     }
-    return "anomalyhub";
+    return "naiwa";
 }
 
 namespace {

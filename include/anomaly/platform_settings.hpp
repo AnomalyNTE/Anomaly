@@ -38,7 +38,7 @@ enum class PlatformMinimumLogLevel : std::uint8_t {
 
 struct PlatformSettingsValues final {
     LanguagePreference interface_language{LanguagePreference::Auto};
-    PlatformUiPalette interface_palette{PlatformUiPalette::AnomalyHub};
+    PlatformUiPalette interface_palette{PlatformUiPalette::Naiwa};
     PlatformUiCustomColors interface_custom_colors;
     std::uint32_t interface_scale_percent{kPlatformInterfaceScaleDefaultPercent};
     std::uint32_t interface_opacity_percent{100};

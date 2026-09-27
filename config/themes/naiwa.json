@@ -4,7 +4,7 @@
     "width": 1180,
     "height": 700
   },
-  "surfaceOpacity": 0.72,
+  "surfaceOpacity": 1.0,
   "background": {
     "path": "assets/images/naiwa-background.png",
     "mode": "crop",
