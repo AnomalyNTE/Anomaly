@@ -24,6 +24,7 @@ using Microsoft::WRL::ComPtr;
 #include "pose_history.hpp"
 #include "orbit_camera.hpp"
 #include "pose_mirror.hpp"
+#include "morph_catalog.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -481,6 +482,40 @@ struct Context final {
   std::atomic<int> pose_history_request{};  // 1 undo, 2 redo, 0 none
   // Mirror request from the panel: 1 flip, 2 left to right, 3 right to left.
   std::atomic<int> pose_mirror_request{};
+
+  // Expression (morph targets) on the body mesh. The catalogue and weights
+  // are guarded by morph_mutex: Draw edits the weights, the game thread reads
+  // them and writes each driven morph with SetMorphTarget every update (the
+  // game's own face animation writes the same morphs, so a single write would
+  // be undone by the next blink). Everything else is game-thread only.
+  std::mutex morph_mutex;
+  better_pose::morph::Catalog morph_catalog;
+  better_pose::morph::Weights morph_weights;
+  std::array<char, 64> morph_filter{};
+  std::atomic_bool morph_release_all{};       // panel: hand every morph back
+  std::atomic_bool morph_rescan_requested{};  // panel: read the list again
+  std::string morph_status;                   // guarded by morph_mutex
+  std::uintptr_t morph_mesh{};
+  std::uint32_t morph_array_offset{};  // USkeletalMesh::MorphTargets, found once
+  std::uintptr_t morph_set_function{};
+  std::uintptr_t morph_process_event{};
+  std::vector<std::uint32_t> morph_released;  // written back to 0 once, then left alone
+  std::vector<std::uint8_t> morph_was_driven;
+  // Expression undo/redo: its own history (Ctrl+Z on the expression page
+  // undoes expressions, on the pose page poses). Game thread owns it.
+  better_pose::history::ExpressionHistory morph_history;
+  std::uintptr_t morph_history_mesh{};
+  std::atomic<int> morph_history_request{};  // 1 undo, 2 redo
+  std::atomic<std::uint32_t> morph_undo_count{};
+  std::atomic<std::uint32_t> morph_redo_count{};
+  // Which page the panel showed last frame, so Ctrl+Z goes to the right one.
+  std::atomic_bool expression_page_active{};
+  // Expression file: name typed in the panel; export/import run on the game
+  // thread, which owns the catalogue's FNames.
+  std::array<char, 128> morph_export_name{};
+  std::string morph_file_status;  // guarded by morph_mutex
+  std::atomic<int> morph_file_request{};  // 1 export, 2 import
+  std::wstring morph_import_path;         // guarded by morph_mutex
   std::atomic<std::uint32_t> pose_undo_count{};
   std::atomic<std::uint32_t> pose_redo_count{};
   // Held while a mouse button is down over the panel or the canvas, so a slow
@@ -7237,6 +7272,314 @@ bool RefreshRuntime(Context &context) noexcept {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Expression: the body mesh's morph targets (blend shapes).
+//
+// USkeletalMesh::MorphTargets is a TArray<UMorphTarget*>. Its offset is not in
+// the Profile, so it is found on the asset: the first TArray header whose
+// elements are live objects of a MorphTarget class. The names are the morph
+// objects' own FNames, which is exactly the FName SetMorphTarget takes.
+// SetMorphTarget(FName, float Value, bool bRemoveZeroWeight) is 13 bytes
+// (FName @0, float @8, bool @12), read from the engine's own reflection.
+// ---------------------------------------------------------------------------
+
+constexpr std::string_view kFunctionSetMorphTargetPath =
+    "/Script/Engine.SkeletalMeshComponent.SetMorphTarget";
+
+std::uintptr_t BodyMeshAsset(Context &context, const std::uintptr_t mesh) noexcept {
+  for (std::uint32_t offset{}; offset + 8 <= 0x2000; offset += 8) {
+    std::uintptr_t candidate{};
+    if (!ReadPointerAt(context, mesh, offset, candidate) || candidate == 0)
+      continue;
+    const std::string name = ClassNameOf(context, candidate);
+    if (name.find("SkeletalMesh") != std::string::npos &&
+        name.find("Component") == std::string::npos)
+      return candidate;
+  }
+  return 0;
+}
+
+bool ReadMorphCatalog(Context &context, const std::uintptr_t asset,
+                      std::vector<better_pose::morph::Entry> &entries) noexcept {
+  entries.clear();
+  const auto read_at = [&](const std::uint32_t offset) {
+    std::uintptr_t data{};
+    std::int32_t count{};
+    std::int32_t capacity{};
+    if (!Read(context, asset + offset, data) || !Read(context, asset + offset + 8, count) ||
+        !Read(context, asset + offset + 12, capacity))
+      return false;
+    if (data == 0 || count <= 0 || count > 4096 || capacity < count || capacity > 65536)
+      return false;
+    std::uintptr_t first{};
+    if (!Read(context, data, first) || first == 0 ||
+        ClassNameOf(context, first).find("MorphTarget") == std::string::npos)
+      return false;
+    for (std::int32_t index{}; index != count; ++index) {
+      std::uintptr_t morph{};
+      if (!Read(context, data + static_cast<std::uintptr_t>(index) * 8U, morph) || morph == 0)
+        continue;
+      better_pose::morph::Entry entry;
+      entry.name = ObjectNameOf(context, morph);
+      if (entry.name.empty() || !Read(context, morph + kObjectNameOffset, entry.fname))
+        continue;
+      entries.push_back(std::move(entry));
+    }
+    return !entries.empty();
+  };
+  if (context.morph_array_offset != 0 && read_at(context.morph_array_offset))
+    return true;
+  for (std::uint32_t offset = 0x28; offset + 16 <= 0x1000; offset += 8) {
+    if (read_at(offset)) {
+      context.morph_array_offset = offset;
+      return true;
+    }
+  }
+  return false;
+}
+
+better_pose::history::ExpressionState CaptureExpression(Context &context) {
+  std::lock_guard<std::mutex> lock(context.morph_mutex);
+  return {context.morph_weights.value, context.morph_weights.driven};
+}
+
+void RestoreExpression(Context &context, const better_pose::history::ExpressionState &state) {
+  std::lock_guard<std::mutex> lock(context.morph_mutex);
+  auto &weights = context.morph_weights;
+  const std::size_t count = weights.value.size();
+  for (std::size_t i{}; i != count; ++i) {
+    const bool driven = i < state.driven.size() && state.driven[i] != 0;
+    if (driven)
+      weights.Set(i, i < state.weights.size() ? state.weights[i] : 0.0F);
+    else
+      weights.Release(i);
+  }
+}
+
+// Game thread: undo/redo for the expression, the same settle-then-record
+// history as the pose (pose_history.hpp). A new mesh starts a fresh history.
+void StepExpressionHistory(Context &context) noexcept {
+  try {
+    if (context.morph_history_mesh != context.morph_mesh) {
+      context.morph_history_mesh = context.morph_mesh;
+      context.morph_history.Reset(CaptureExpression(context));
+      context.morph_history_request.store(0, std::memory_order_release);
+    } else {
+      const int request = context.morph_history_request.exchange(0, std::memory_order_acq_rel);
+      const auto live = CaptureExpression(context);
+      better_pose::history::ExpressionState target;
+      if (request == 1 ? context.morph_history.Undo(live, target)
+                       : request == 2 ? context.morph_history.Redo(live, target) : false)
+        RestoreExpression(context, target);
+      else
+        static_cast<void>(context.morph_history.Observe(
+            live, context.pose_edit_held.load(std::memory_order_acquire), GetTickCount64()));
+    }
+    context.morph_undo_count.store(static_cast<std::uint32_t>(context.morph_history.UndoCount()),
+                                   std::memory_order_release);
+    context.morph_redo_count.store(static_cast<std::uint32_t>(context.morph_history.RedoCount()),
+                                   std::memory_order_release);
+  } catch (...) {
+  }
+}
+
+// Game thread: expression file export/import. The document is small (a few
+// kilobytes), so it is written and read here rather than on a task.
+//   { "format": "betterpose-expression", "version": 1,
+//     "morphs": [ { "name": "jawOpen", "weight": 0.8 }, ... ] }
+void StepExpressionFile(Context &context) noexcept {
+  const int request = context.morph_file_request.exchange(0, std::memory_order_acq_rel);
+  if (request == 0)
+    return;
+  // Every message goes through the localizer: `key`, English fallback, and
+  // up to two {0}/{1} arguments.
+  const auto set_status = [&context](const std::string_view key, const std::string_view fallback,
+                                     const std::string &a = {}, const std::string &b = {}) {
+    const std::array<std::string_view, 2> arguments{a, b};
+    const std::size_t used = !b.empty() ? 2U : !a.empty() ? 1U : 0U;
+    std::string text = context.localizer.Format(
+        key, fallback, std::span<const std::string_view>(arguments.data(), used));
+    std::lock_guard<std::mutex> lock(context.morph_mutex);
+    context.morph_file_status = std::move(text);
+  };
+  try {
+    if (request == 1) {
+      std::string name(context.morph_export_name.data());
+      if (name.empty())
+        name = "expression";
+      if (name.size() < 5 || name.substr(name.size() - 5) != ".json")
+        name += ".json";
+      const std::wstring folder = Utf8ToWide(context.pose_export_folder);
+      if (folder.empty()) {
+        set_status("morph.file.no_folder", "Export failed: choose a folder first");
+        return;
+      }
+      std::wstring path = folder;
+      if (path.back() != L'\\' && path.back() != L'/')
+        path.push_back(L'\\');
+      path += Utf8ToWide(name);
+      nlohmann::json root;
+      root["format"] = "betterpose-expression";
+      root["version"] = 1;
+      nlohmann::json morphs = nlohmann::json::array();
+      {
+        std::lock_guard<std::mutex> lock(context.morph_mutex);
+        for (const auto &morph :
+             better_pose::morph::CollectDriven(context.morph_catalog, context.morph_weights))
+          morphs.push_back({{"name", morph.name}, {"weight", morph.weight}});
+      }
+      if (morphs.empty()) {
+        set_status("morph.file.nothing", "Export failed: no morph is set (drag a slider first)");
+        return;
+      }
+      const std::size_t saved = morphs.size();
+      root["morphs"] = std::move(morphs);
+      const std::string document = root.dump(2);
+      std::ofstream file(path, std::ios::binary);
+      if (!file) {
+        set_status("morph.file.open_failed", "Export failed: cannot open {0}", WideToUtf8(path));
+        return;
+      }
+      file.write(document.data(), static_cast<std::streamsize>(document.size()));
+      file.close();
+      if (file)
+        set_status("morph.file.exported", "Exported {0} morphs to {1}", std::to_string(saved),
+                   WideToUtf8(path));
+      else
+        set_status("morph.file.write_failed", "Export failed: write error");
+      return;
+    }
+
+    std::wstring path;
+    {
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      path = context.morph_import_path;
+    }
+    if (path.empty()) {
+      set_status("morph.file.no_file", "Import failed: choose a file first");
+      return;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+      set_status("morph.file.read_failed", "Import failed: cannot open the file");
+      return;
+    }
+    std::string document((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
+    if (document.empty() || document.size() > 1024U * 1024U) {
+      set_status("morph.file.unreadable", "Import failed: the file cannot be read");
+      return;
+    }
+    const auto root = nlohmann::json::parse(document, nullptr, false);
+    if (!root.is_object() || root.value("format", std::string()) != "betterpose-expression" ||
+        !root.contains("morphs") || !root["morphs"].is_array()) {
+      set_status("morph.file.wrong_format", "Import failed: not an expression file");
+      return;
+    }
+    std::vector<better_pose::morph::SavedMorph> saved;
+    for (const auto &item : root["morphs"]) {
+      if (!item.is_object() || !item.contains("name") || !item["name"].is_string() ||
+          !item.contains("weight") || !item["weight"].is_number())
+        continue;
+      const float weight = item["weight"].get<float>();
+      if (!std::isfinite(weight))
+        continue;
+      saved.push_back({item["name"].get<std::string>(), weight});
+    }
+    std::vector<std::string> missing;
+    std::size_t matched{};
+    {
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      matched = better_pose::morph::ApplySaved(context.morph_catalog, saved,
+                                              context.morph_weights, missing);
+    }
+    if (missing.empty())
+      set_status("morph.file.imported", "Imported {0} morphs", std::to_string(matched));
+    else
+      set_status("morph.file.imported_missing",
+                 "Imported {0} morphs; {1} are not on this character", std::to_string(matched),
+                 std::to_string(missing.size()) + " (" + missing.front() + " ...)");
+  } catch (...) {
+    if (request == 1)
+      set_status("morph.file.export_failed", "Export failed");
+    else
+      set_status("morph.file.invalid", "Import failed: invalid document");
+  }
+}
+
+// Game thread, every update: (re)load the catalogue for a new body mesh, and
+// write every driven weight. A morph the user released is written to 0 once
+// and then left to the game again.
+void StepExpression(Context &context) noexcept {
+  try {
+    const std::uintptr_t mesh = context.runtime.mesh;
+    if (mesh == 0)
+      return;
+    const bool rescan = context.morph_rescan_requested.exchange(false, std::memory_order_acq_rel);
+    if (mesh != context.morph_mesh || rescan) {
+      context.morph_mesh = mesh;
+      context.morph_set_function = 0;
+      context.morph_process_event = 0;
+      context.morph_released.clear();
+      const std::uintptr_t asset = BodyMeshAsset(context, mesh);
+      std::vector<better_pose::morph::Entry> entries;
+      const bool ok = asset != 0 && ReadMorphCatalog(context, asset, entries);
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      const std::size_t count = entries.size();
+      context.morph_catalog.Build(asset, std::move(entries));
+      context.morph_weights.Resize(count);
+      context.morph_was_driven.assign(count, 0);
+      context.morph_status = ok ? "" : "no morph targets on this character";
+    }
+
+    std::vector<std::pair<std::array<std::uint8_t, 8>, float>> writes;
+    {
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      const auto &entries = context.morph_catalog.entries;
+      auto &weights = context.morph_weights;
+      if (context.morph_release_all.exchange(false, std::memory_order_acq_rel))
+        for (std::size_t i{}; i != weights.driven.size(); ++i)
+          weights.Release(i);
+      const std::size_t count = (std::min)(entries.size(), weights.value.size());
+      context.morph_was_driven.resize(count, 0);
+      for (std::size_t i{}; i != count; ++i) {
+        if (weights.driven[i] != 0) {
+          writes.emplace_back(entries[i].fname, weights.value[i]);
+          context.morph_was_driven[i] = 1;
+        } else if (context.morph_was_driven[i] != 0) {
+          writes.emplace_back(entries[i].fname, 0.0F);  // released: back to neutral once
+          context.morph_was_driven[i] = 0;
+        }
+      }
+    }
+    if (writes.empty())
+      return;
+    if (context.morph_set_function == 0 &&
+        (!FindObjectAddressByPath(context, kFunctionSetMorphTargetPath,
+                                  context.morph_set_function) ||
+         context.morph_set_function == 0))
+      return;
+    if (context.morph_process_event == 0) {
+      std::uintptr_t vtable{};
+      if (!Read(context, mesh, vtable) || vtable == 0 ||
+          !Read(context, vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) * 8U,
+                context.morph_process_event) ||
+          context.morph_process_event == 0)
+        return;
+    }
+    for (const auto &[fname, value] : writes) {
+      std::array<std::uint8_t, 13> parameters{};
+      std::memcpy(parameters.data(), fname.data(), fname.size());
+      std::memcpy(parameters.data() + 8, &value, sizeof(value));
+      parameters[12] = 0;  // keep zero weights: the game may still be blending them
+      static_cast<void>(CallResolvedUFunction(mesh, context.morph_set_function,
+                                              context.morph_process_event, parameters.data(),
+                                              parameters.size()));
+    }
+  } catch (...) {
+  }
+}
+
 void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   if (!RefreshRuntime(context)) {
     PublishSnapshot(context, "local player character is unavailable");
@@ -7244,6 +7587,9 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   }
 
   EnsureActiveCharacterProfile(context);
+  StepExpressionFile(context);
+  StepExpressionHistory(context);
+  StepExpression(context);
 
   const bool freeze_enabled =
       context.freeze_enabled.load(std::memory_order_acquire);
@@ -9041,11 +9387,15 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
   const bool undo_down = menu_owns_mouse && control && !shift && key_down('Z');
   const bool redo_down =
       menu_owns_mouse && control && (key_down('Y') || (shift && key_down('Z')));
-  if (!typing && !context.motion_loaded.load(std::memory_order_acquire)) {
+  // The shortcut goes to the page on screen: expressions on the expression
+  // page (they are not tied to motion playback), the pose everywhere else.
+  const bool expression = context.expression_page_active.load(std::memory_order_acquire);
+  if (!typing && (expression || !context.motion_loaded.load(std::memory_order_acquire))) {
+    auto &request = expression ? context.morph_history_request : context.pose_history_request;
     if (undo_down && !context.pose_undo_key_was_down)
-      context.pose_history_request.store(1, std::memory_order_release);
+      request.store(1, std::memory_order_release);
     if (redo_down && !context.pose_redo_key_was_down)
-      context.pose_history_request.store(2, std::memory_order_release);
+      request.store(2, std::memory_order_release);
   }
   context.pose_undo_key_was_down = undo_down;
   context.pose_redo_key_was_down = redo_down;
@@ -10270,6 +10620,188 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       const std::string warning = context->localizer.Text(
           "pose.unavailable", "Pose edit is inactive until the authoritative bone-space pose buffer is populated.");
       ui->text(ui->user, anomaly::sdk::StringView(warning));
+    }
+    if (use_tabs)
+      ui->end_tab_item(ui->user);
+  }
+
+  // --- Expression: morph targets ---------------------------------------------
+  const std::string expression_tab_label =
+      context->localizer.Text("tab.expression", "Expression");
+  const bool expression_page =
+      !use_tabs ||
+      ui->begin_tab_item(ui->user, anomaly::sdk::StringView(expression_tab_label), nullptr, 0U,
+                         1) != 0;
+  // Without tabs every section is on one page; Ctrl+Z then stays with the pose.
+  context->expression_page_active.store(use_tabs && expression_page, std::memory_order_release);
+  if (expression_page) {
+    const bool can_list =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
+            ui, offsetof(AnomalyUiServiceV1, input_text)) &&
+        ui->input_text != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+        ui->begin_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
+            ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+        ui->end_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
+            ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
+        ui->filter_match != nullptr;
+
+    // The file dialog is modal and pumps messages for as long as it is open,
+    // so it runs after the lock below is released: the game thread keeps
+    // writing the expression meanwhile.
+    bool import_requested = false;
+    bool folder_requested = false;
+    {
+    std::lock_guard<std::mutex> lock(context->morph_mutex);
+    auto &catalog = context->morph_catalog;
+    auto &weights = context->morph_weights;
+    const std::size_t driven = weights.DrivenCount();
+    const std::string summary =
+        context->localizer.Text("morph.count", "Morph targets") + ": " +
+        std::to_string(catalog.entries.size()) + "   " +
+        context->localizer.Text("morph.driven", "set by you") + ": " + std::to_string(driven);
+    ui->text(ui->user, anomaly::sdk::StringView(summary));
+    if (!context->morph_status.empty())
+      ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                             "morph.none", "No morph targets on this character.")));
+    const std::string release_label =
+        context->localizer.Label("morph.release_all", "Give all back to the game",
+                                 "morph-release-all");
+    if (ui->button(ui->user, anomaly::sdk::StringView(release_label), 0.0F, 0.0F) != 0)
+      context->morph_release_all.store(true, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string rescan_label =
+        context->localizer.Label("morph.rescan", "Reload list", "morph-rescan");
+    if (ui->button(ui->user, anomaly::sdk::StringView(rescan_label), 0.0F, 0.0F) != 0)
+      context->morph_rescan_requested.store(true, std::memory_order_release);
+    const std::string hint = context->localizer.Text(
+        "morph.hint",
+        "Dragging a slider takes that morph over from the game; the reset button hands it back.");
+    ui->text(ui->user, anomaly::sdk::StringView(hint));
+
+    // Undo/redo: the expression's own history.
+    const std::uint32_t morph_undo = context->morph_undo_count.load(std::memory_order_acquire);
+    const std::uint32_t morph_redo = context->morph_redo_count.load(std::memory_order_acquire);
+    const bool can_enable_button =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
+            ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
+        ui->button_enabled != nullptr;
+    const auto morph_button = [&](const std::string &label, const bool enabled) {
+      return can_enable_button
+                 ? ui->button_enabled(ui->user, anomaly::sdk::StringView(label), 84.0F, 0.0F,
+                                      enabled ? 1 : 0) != 0 && enabled
+                 : ui->button(ui->user, anomaly::sdk::StringView(label), 84.0F, 0.0F) != 0 &&
+                       enabled;
+    };
+    const std::string morph_undo_label = context->localizer.Text("pose.undo", "Undo") + " (" +
+                                         std::to_string(morph_undo) + ")##morph-undo";
+    const std::string morph_redo_label = context->localizer.Text("pose.redo", "Redo") + " (" +
+                                         std::to_string(morph_redo) + ")##morph-redo";
+    if (morph_button(morph_undo_label, morph_undo != 0))
+      context->morph_history_request.store(1, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    if (morph_button(morph_redo_label, morph_redo != 0))
+      context->morph_history_request.store(2, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    ui->text(ui->user, anomaly::sdk::StringView(
+                           context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y")));
+
+    // Expression file. The folder is the one chosen on the pose page.
+    if (context->morph_export_name[0] == '\0')
+      std::snprintf(context->morph_export_name.data(), context->morph_export_name.size(),
+                    "expression.json");
+    ui->text(ui->user,
+             anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    ui->input_text(ui->user, anomaly::sdk::StringView("##morph-export-name"),
+                   context->morph_export_name.data(), context->morph_export_name.size(), 0);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string morph_folder_label =
+        context->localizer.Label("pose.choose.folder", "Choose folder", "morph-choose-folder");
+    if (ui->button(ui->user, anomaly::sdk::StringView(morph_folder_label), 90.0F, 0.0F) != 0)
+      folder_requested = true;
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string morph_export_label =
+        context->localizer.Label("morph.export", "Export expression", "morph-export");
+    if (ui->button(ui->user, anomaly::sdk::StringView(morph_export_label), 0.0F, 0.0F) != 0)
+      context->morph_file_request.store(1, std::memory_order_release);
+    const std::string morph_import_label =
+        context->localizer.Label("morph.import", "Import expression", "morph-import");
+    if (ui->button(ui->user, anomaly::sdk::StringView(morph_import_label), 0.0F, 0.0F) != 0)
+      import_requested = true;
+    if (!context->morph_file_status.empty()) {
+      ui->same_line(ui->user, 0.0F, 8.0F);
+      ui->text(ui->user, anomaly::sdk::StringView(context->morph_file_status));
+    }
+    ui->separator(ui->user);
+
+    if (can_list && !catalog.entries.empty()) {
+      const std::string filter_label = context->localizer.Text("morph.filter", "Search");
+      static_cast<void>(ui->input_text(ui->user, anomaly::sdk::StringView(filter_label),
+                                       context->morph_filter.data(), context->morph_filter.size(),
+                                       ANOMALY_UI_TEXT_INPUT_V1_NONE));
+      // Same rule as the bone list: end_child is called whether or not the
+      // child is visible, or the host's child stack goes out of balance.
+      const int morph_list_open = ui->begin_child(
+          ui->user, anomaly::sdk::StringView("morph-list"), 0.0F, 420.0F, 0U);
+      if (morph_list_open != 0) {
+        const std::string_view filter(context->morph_filter.data());
+        auto current = better_pose::morph::Group::Count;
+        for (const std::uint32_t index : catalog.order) {
+          const auto &entry = catalog.entries[index];
+          if (!filter.empty() &&
+              ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
+                               anomaly::sdk::StringView(entry.name)) == 0)
+            continue;
+          if (entry.group != current) {
+            current = entry.group;
+            const auto group = static_cast<std::size_t>(current);
+            const std::string heading =
+                context->localizer.Text(better_pose::morph::kGroupKeys[group],
+                                        better_pose::morph::kGroupNames[group]) +
+                " (" + std::to_string(catalog.CountIn(current)) + ")";
+            ui->separator(ui->user);
+            ui->text(ui->user, anomaly::sdk::StringView(heading));
+          }
+          float value = weights.value[index];
+          const bool is_driven = weights.driven[index] != 0;
+          const std::string label = (is_driven ? "* " : "  ") + entry.name + "###morph-" +
+                                    std::to_string(index);
+          if (ui->slider_float(ui->user, anomaly::sdk::StringView(label), &value, 0.0F, 1.0F) !=
+              0)
+            weights.Set(index, value);
+          if (is_driven) {
+            ui->same_line(ui->user, 0.0F, 4.0F);
+            const std::string reset = context->localizer.Label(
+                "morph.reset", "Reset", "morph-reset-" + std::to_string(index));
+            if (ui->button(ui->user, anomaly::sdk::StringView(reset), 0.0F, 0.0F) != 0)
+              weights.Release(index);
+          }
+        }
+      }
+      ui->end_child(ui->user);
+    }
+    }  // morph_mutex
+    if (folder_requested) {
+      const auto selected = ChooseFolder(context->pose_export_folder);
+      if (selected) {
+        const std::string folder_utf8 = WideToUtf8(selected->native());
+        if (!folder_utf8.empty())
+          context->pose_export_folder = folder_utf8;
+      }
+    }
+    if (import_requested) {
+      const auto selected = ChooseFile(context->pose_export_folder);
+      if (selected) {
+        {
+          std::lock_guard<std::mutex> lock(context->morph_mutex);
+          context->morph_import_path = selected->native();
+        }
+        context->morph_file_request.store(2, std::memory_order_release);
+      }
     }
     if (use_tabs)
       ui->end_tab_item(ui->user);
