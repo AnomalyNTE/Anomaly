@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "UI 按钮",
+    "plugin.description": "分类列出游戏内 UI 按钮（可点击 / 不可点击 / 隐藏），直接调用按钮点击事件"
+  }
+}
