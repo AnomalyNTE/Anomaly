@@ -34,6 +34,7 @@
     "pose.skeleton.body_only": "只显示身体（屏蔽头发衣服）",
     "pose.skeleton.hidden": "已屏蔽",
     "pose.skeleton.ik": "四肢 IK（拖手/脚时手臂腿一起动）",
+    "pose.skeleton.limits": "关节限制（手指、肘、膝、肩、髋按人体范围活动）",
     "pose.skeleton.face": "显示面部骨骼",
     "pose.skeleton.size": "骨骼点大小",
     "pose.camera.orbit": "姿势镜头（鼠标控制）",

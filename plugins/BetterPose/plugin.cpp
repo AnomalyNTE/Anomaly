@@ -26,6 +26,7 @@ using Microsoft::WRL::ComPtr;
 #include "pose_mirror.hpp"
 #include "morph_catalog.hpp"
 #include "mmd_morph_map.hpp"
+#include "joint_limits.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -425,9 +426,26 @@ struct Context final {
     // One-bone depth: wheel swings the joint toward the camera about the axis
     // perpendicular to both the bone and the view ray, through the pivot.
     std::array<double, 3> depth_axis{};
+    // Joint limits (hinge pivot): the drag's rotation is projected onto the
+    // bone's own hinge axis (world, at the press) and the bend is clamped.
+    // `hinge_base` is the offset with the bend removed, so the new offset is
+    // hinge_base * bend(new); `hinge_sign` makes positive = bending.
+    bool hinge{};
+    bool limb_hinge{};  // IK drag: clamp the elbow/knee bend to its range
+    std::array<double, 3> hinge_axis_world{};
+    std::array<double, 4> hinge_base{};       // offset with the bend removed
+    std::array<double, 4> hinge_rest_base{};  // the bone's base (rest) rotation
+    double hinge_start_bend{};                // degrees, bending direction
+    int hinge_limit_axis{2};
+    double hinge_sign{1.0};
+    double hinge_minimum{};
+    double hinge_maximum{};
   } overlay_drag;
   // Two-bone IK on for chains that have one (limbs); off = always rotate one bone.
   std::atomic_bool overlay_ik_enabled{true};
+  // Joint limits: hinge bones (finger joints past the root, elbows, knees)
+  // only bend about their own axis and within a range. Off = free rotation.
+  std::atomic_bool overlay_limits_enabled{};
   // Render thread only.
   bool overlay_mouse_was_down{};
   bool overlay_right_was_down{};
@@ -8667,6 +8685,29 @@ Transformd OverlayJointWorld(const Context &context, const Transformd &component
   return TransformMultiply(component_world, UnpackTransform(packed));
 }
 
+// Joint limits for a ball joint (shoulder, hip): with the switch on, pull an
+// offset the drag produced back inside the bone's range. Anything that is not
+// a ball joint, or with the switch off, passes through untouched.
+Quatd LimitBallOffset(Context &context, const std::uint32_t bone, const Quatd &offset) noexcept {
+  if (!context.overlay_limits_enabled.load(std::memory_order_acquire) ||
+      bone >= context.bone_names.size())
+    return offset;
+  const auto ball = better_pose::limits::BallFor(context.bone_names[bone]);
+  if (!ball.valid)
+    return offset;
+  std::array<double, 4> base{0.0, 0.0, 0.0, 1.0};
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    if (bone >= context.pose_base_locals.size())
+      return offset;
+    const auto &raw = context.pose_base_locals[bone];
+    base = {raw[0], raw[1], raw[2], raw[3]};
+  }
+  const auto limited = better_pose::limits::ClampBall(
+      ball, better_pose::limits::Normalize(base), {offset.x, offset.y, offset.z, offset.w});
+  return Quatd{limited[0], limited[1], limited[2], limited[3]};
+}
+
 void WriteDragAngles(Context &context, const std::uint32_t bone,
                      const std::array<double, 3> &angles) noexcept {
   std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -8849,6 +8890,73 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     if (drag.twist)
       drag.ik = false;  // twist is always the one bone
 
+    // Joint limits: a hinge pivot (finger joints past the root) only bends
+    // about its own measured axis, within its range (joint_limits.hpp). The
+    // current offset is split into that bend and everything else, which is
+    // kept as it is while the drag changes only the bend.
+    drag.hinge = false;
+    drag.limb_hinge = false;
+    // An IK drag's middle bone (elbow/knee) with limits on: only the range is
+    // enforced (the solver already bends in its plane).
+    if (context.overlay_limits_enabled.load(std::memory_order_acquire) && drag.ik &&
+        drag.pivot < context.bone_names.size()) {
+      const auto limit = better_pose::limits::LimitFor(context.bone_names[drag.pivot]);
+      std::array<double, 4> base_rotation{0.0, 0.0, 0.0, 1.0};
+      bool have_base = false;
+      {
+        std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+        if (drag.pivot < context.pose_base_locals.size()) {
+          const auto &raw = context.pose_base_locals[drag.pivot];
+          base_rotation = {raw[0], raw[1], raw[2], raw[3]};
+          have_base = true;
+        }
+      }
+      if (limit.kind == better_pose::limits::Kind::Hinge && have_base) {
+        drag.limb_hinge = true;
+        drag.hinge_rest_base = better_pose::limits::Normalize(base_rotation);
+        drag.hinge_limit_axis = limit.axis;
+        drag.hinge_sign = limit.sign;
+        drag.hinge_minimum = limit.minimum;
+        drag.hinge_maximum = limit.maximum;
+      }
+    }
+    if (context.overlay_limits_enabled.load(std::memory_order_acquire) && !drag.ik &&
+        !drag.twist && drag.pivot < context.bone_names.size()) {
+      const auto limit = better_pose::limits::LimitFor(context.bone_names[drag.pivot]);
+      std::array<double, 4> base_rotation{0.0, 0.0, 0.0, 1.0};
+      bool have_base = false;
+      {
+        std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+        if (drag.pivot < context.pose_base_locals.size()) {
+          const auto &raw = context.pose_base_locals[drag.pivot];
+          base_rotation = {raw[0], raw[1], raw[2], raw[3]};
+          have_base = true;
+        }
+      }
+      if (limit.kind == better_pose::limits::Kind::Hinge && have_base) {
+        const auto base = better_pose::limits::Normalize(base_rotation);
+        const auto split = better_pose::limits::SplitBend(
+            limit, base, {start_offset.x, start_offset.y, start_offset.z, start_offset.w});
+        // The hinge in world space, for choosing which screen sweep bends.
+        std::array<double, 3> unit{0.0, 0.0, 0.0};
+        unit[static_cast<std::size_t>(limit.axis)] = 1.0;
+        const Quatd base_q{base[0], base[1], base[2], base[3]};
+        const Quatd parent_q{drag.parent_world[0], drag.parent_world[1], drag.parent_world[2],
+                             drag.parent_world[3]};
+        const Vec3d axis_world = QuatRotateVector(
+            parent_q, QuatRotateVector(QuatMultiply(start_offset, base_q),
+                                       Vec3d{unit[0], unit[1], unit[2]}));
+        drag.hinge = true;
+        drag.hinge_axis_world = {axis_world.x, axis_world.y, axis_world.z};
+        drag.hinge_base = split.rest;
+        drag.hinge_start_bend = split.bend_degrees;
+        drag.hinge_limit_axis = limit.axis;
+        drag.hinge_sign = limit.sign;
+        drag.hinge_minimum = limit.minimum;
+        drag.hinge_maximum = limit.maximum;
+        drag.hinge_rest_base = base;
+      }
+    }
     // The reference is where the joint was at the press, so the bone only
     // turns once the cursor sweeps around the pivot.
     drag.angle_ready = false;
@@ -8880,7 +8988,7 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
                              drag.start_offset[2], drag.start_offset[3]};
     const Quatd next = ApplyWorldRotationToOffset(
         parent_world, QuatFromRotationVector({axis.x, axis.y, axis.z}), start_offset);
-    WriteDragAngles(context, drag.pivot, QuatToRotator(next));
+    WriteDragAngles(context, drag.pivot, QuatToRotator(LimitBallOffset(context, drag.pivot, next)));
     return;
   }
 
@@ -8909,8 +9017,32 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     // The middle bone's parent has itself turned by the root rotation.
     const Quatd moved_mid_parent = QuatNormalize(QuatMultiply(turn.root, mid_parent));
     const Quatd next_root = ApplyWorldRotationToOffset(root_parent, turn.root, root_offset);
-    const Quatd next_mid = ApplyWorldRotationToOffset(moved_mid_parent, turn.mid, mid_offset);
-    WriteDragAngles(context, drag.root, QuatToRotator(next_root));
+    Quatd next_mid = ApplyWorldRotationToOffset(moved_mid_parent, turn.mid, mid_offset);
+    // Joint limits: the solver keeps the bend plane it started in, so the
+    // elbow/knee already only bends; what it cannot know is the range. The
+    // bend is read off the solved offset and clamped (a knee dragged past
+    // straight would fold backwards otherwise). A clamp leaves the hand short
+    // of the cursor -- the limb cannot reach it -- rather than breaking it.
+    if (drag.limb_hinge) {
+      better_pose::limits::Limit limit;
+      limit.kind = better_pose::limits::Kind::Hinge;
+      limit.axis = drag.hinge_limit_axis;
+      limit.sign = drag.hinge_sign;
+      limit.minimum = drag.hinge_minimum;
+      limit.maximum = drag.hinge_maximum;
+      const auto split = better_pose::limits::SplitBend(
+          limit, drag.hinge_rest_base, {next_mid.x, next_mid.y, next_mid.z, next_mid.w});
+      if (split.bend_degrees < limit.minimum || split.bend_degrees > limit.maximum) {
+        const auto clamped = better_pose::limits::ComposeBend(limit, drag.hinge_rest_base,
+                                                              split.rest, split.bend_degrees);
+        next_mid = Quatd{clamped[0], clamped[1], clamped[2], clamped[3]};
+      }
+    }
+    // The shoulder/hip is clamped too. The solve is not redone around the
+    // clamp, so a limited shoulder leaves the hand off the cursor -- the
+    // pose the arm cannot reach -- instead of bending the elbow to make up.
+    WriteDragAngles(context, drag.root,
+                    QuatToRotator(LimitBallOffset(context, drag.root, next_root)));
     WriteDragAngles(context, drag.pivot, QuatToRotator(next_mid));
     return;
   }
@@ -8932,13 +9064,43 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
   constexpr double kDepthRadiansPerNotch = 10.0 * 3.14159265358979323846 / 180.0;
   const double swing = have_angle ? drag.angle : 0.0;
   const double depth = wheel_notches * kDepthRadiansPerNotch;
+  if (drag.hinge) {
+    // Only the part of the drag about the hinge bends it. The screen sweep
+    // turns about the view ray: its share on the hinge is the cosine between
+    // the two, so a finger seen side-on (hinge toward the camera) bends 1:1
+    // with the sweep and one seen edge-on barely moves -- there the wheel,
+    // turning about the axis across the bone and the ray, takes over with
+    // its own share. Sideways motion is simply dropped.
+    constexpr double kDegrees = 180.0 / 3.14159265358979323846;
+    const Vec3d hinge_world{drag.hinge_axis_world[0], drag.hinge_axis_world[1],
+                            drag.hinge_axis_world[2]};
+    const double sweep_share =
+        V3Dot(Vec3d{drag.axis[0], drag.axis[1], drag.axis[2]}, hinge_world);
+    const double wheel_share =
+        V3Dot(Vec3d{drag.depth_axis[0], drag.depth_axis[1], drag.depth_axis[2]}, hinge_world);
+    // Rotation about the hinge's +axis, in world; bending is `hinge_sign` of it.
+    const double about_axis = swing * sweep_share + depth * wheel_share;
+    better_pose::limits::Limit limit;
+    limit.kind = better_pose::limits::Kind::Hinge;
+    limit.axis = drag.hinge_limit_axis;
+    limit.sign = drag.hinge_sign;
+    limit.minimum = drag.hinge_minimum;
+    limit.maximum = drag.hinge_maximum;
+    const double bend = drag.hinge_start_bend + about_axis * drag.hinge_sign * kDegrees;
+    const auto offset = better_pose::limits::ComposeBend(limit, drag.hinge_rest_base,
+                                                         drag.hinge_base, bend);
+    WriteDragAngles(context, drag.pivot,
+                    QuatToRotator(Quatd{offset[0], offset[1], offset[2], offset[3]}));
+    return;
+  }
   const Quatd screen_turn = QuatFromRotationVector(
       {drag.axis[0] * swing, drag.axis[1] * swing, drag.axis[2] * swing});
   const Quatd depth_turn = QuatFromRotationVector(
       {drag.depth_axis[0] * depth, drag.depth_axis[1] * depth, drag.depth_axis[2] * depth});
   // Depth first (about the bone's axis at the press), then the screen swing.
   const Quatd world_rotation = QuatNormalize(QuatMultiply(screen_turn, depth_turn));
-  const Quatd next = ApplyWorldRotationToOffset(parent_world, world_rotation, start_offset);
+  const Quatd next = LimitBallOffset(
+      context, drag.pivot, ApplyWorldRotationToOffset(parent_world, world_rotation, start_offset));
   WriteDragAngles(context, drag.pivot, QuatToRotator(next));
 }
 
@@ -10343,6 +10505,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             context->localizer.Text("pose.skeleton.ik", "Limb IK (hands, feet)");
         if (ui->checkbox(ui->user, anomaly::sdk::StringView(ik_label), &ik) != 0)
           context->overlay_ik_enabled.store(ik != 0, std::memory_order_release);
+        ui->same_line(ui->user, 0.0F, 12.0F);
+        int limits = context->overlay_limits_enabled.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string limits_label = context->localizer.Text(
+            "pose.skeleton.limits", "Joint limits (fingers, elbows, knees, shoulders, hips)");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(limits_label), &limits) != 0)
+          context->overlay_limits_enabled.store(limits != 0, std::memory_order_release);
       }
       if (overlay_enabled != 0 && context->input != nullptr) {
         const std::string overlay_hint = context->localizer.Text(
