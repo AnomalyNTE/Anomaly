@@ -865,10 +865,26 @@ struct AutoTeleportState {
     std::string target_id;
 };
 
+// A step that failed is not retried until its gate opens again. Each of
+// these is either a signature scan over HTGame.exe's .text (hundreds of MB)
+// or a StaticFindObject by path, and all of them used to run again on every
+// frame after a failure -- a game update that moves one pattern turned that
+// into a scan per frame, which is what made the plugin stutter the moment it
+// was enabled. The first failure of a streak is logged with the step's name.
+struct RetryGate {
+    std::chrono::steady_clock::time_point next{};
+    bool failing{};
+};
+
 struct Context {
     const AnomalySignatureServiceV1* signature{};
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5ObjectsServiceV1* objects{};
+    const AnomalyCoreServiceV1* core{};
+    RetryGate scan_gate{};
+    RetryGate world_gate{};
+    RetryGate objects_gate{};
+    RetryGate state_query_gate{};
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
@@ -891,6 +907,32 @@ struct Context {
     std::uint64_t next_state_refresh_sequence{};
     std::size_t state_refresh_cursor{};
 };
+
+constexpr auto kOracleRetryInterval = std::chrono::seconds(5);
+
+void OracleLog(const Context& context, const std::string& message) {
+    if (context.core != nullptr && context.core->log != nullptr) {
+        context.core->log(context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                          anomaly::sdk::StringView("box-auto oracle: " + message));
+    }
+}
+
+// True when the step may run now.
+bool OracleGateOpen(const RetryGate& gate) noexcept {
+    return !gate.failing || std::chrono::steady_clock::now() >= gate.next;
+}
+
+void OracleGateFailed(const Context& context, RetryGate& gate, const char* step) {
+    if (!gate.failing)
+        OracleLog(context, std::string(step) + " failed; retrying every 5 s instead of every frame");
+    gate.failing = true;
+    gate.next = std::chrono::steady_clock::now() + kOracleRetryInterval;
+}
+
+void OracleGateSucceeded(const Context& context, RetryGate& gate, const char* step) {
+    if (gate.failing) OracleLog(context, std::string(step) + " recovered");
+    gate.failing = false;
+}
 
 bool OracleResolveRipRelative(const AnomalySignatureServiceV1* signature,
                               const std::string_view pattern,
@@ -945,10 +987,14 @@ bool OracleReadFString(const std::uintptr_t address, std::string& result) {
 }
 
 bool OracleRefreshObjectRegistry(Context& context) noexcept {
-    if (context.g_objects_address == 0 &&
-        !OracleResolveRipRelative(context.signature, kGObjectsPattern,
-                                  kGObjectsAddend, context.g_objects_address)) {
-        return false;
+    if (context.g_objects_address == 0) {
+        if (!OracleGateOpen(context.objects_gate)) return false;
+        if (!OracleResolveRipRelative(context.signature, kGObjectsPattern,
+                                      kGObjectsAddend, context.g_objects_address)) {
+            OracleGateFailed(context, context.objects_gate, "GObjects signature");
+            return false;
+        }
+        OracleGateSucceeded(context, context.objects_gate, "GObjects signature");
     }
     ObjectRegistry next{};
     if (!Read(reinterpret_cast<const void*>(
@@ -1011,10 +1057,14 @@ bool OracleFindExactObject(Context& context, const std::string_view path,
 
 bool OracleResolvePlayerState(Context& context) noexcept {
     if (context.player_state != 0) return true;
-    if (context.g_world_address == 0 &&
-        !OracleResolveRipRelative(context.signature, kGWorldPattern, 0,
-                                  context.g_world_address)) {
-        return false;
+    if (context.g_world_address == 0) {
+        if (!OracleGateOpen(context.world_gate)) return false;
+        if (!OracleResolveRipRelative(context.signature, kGWorldPattern, 0,
+                                      context.g_world_address)) {
+            OracleGateFailed(context, context.world_gate, "GWorld signature");
+            return false;
+        }
+        OracleGateSucceeded(context, context.world_gate, "GWorld signature");
     }
     std::uintptr_t world{};
     std::uintptr_t game_instance{};
@@ -1059,12 +1109,17 @@ bool OracleInvokeStateQuery(const std::uintptr_t function,
 
 bool OracleScanCatalog(Context& context) {
     if (context.scan_attempted) return context.scan_ready;
+    if (!OracleGateOpen(context.scan_gate)) return false;
     if (!OracleFindExactObject(context, kTreasureboxDataAssetPath,
-                               context.treasure_asset) ||
-        !Read(reinterpret_cast<const void*>(
+                               context.treasure_asset)) {
+        OracleGateFailed(context, context.scan_gate, "TreasureboxDataAsset lookup");
+        return false;
+    }
+    if (!Read(reinterpret_cast<const void*>(
                   context.treasure_asset + kOracleStoneDataAssetTableOffset),
               context.data_table) ||
         context.data_table == 0) {
+        OracleGateFailed(context, context.scan_gate, "oracle data table read");
         return false;
     }
     std::uintptr_t data{};
@@ -1090,10 +1145,14 @@ bool OracleScanCatalog(Context& context) {
               flags_max) ||
         data == 0 || num <= 0 || num > kDataTableMaxRows || max < num ||
         flags_num < num || flags_max < flags_num) {
+        OracleGateFailed(context, context.scan_gate, "oracle row map header");
         return false;
     }
     const auto word_count = static_cast<std::size_t>((flags_num + 31) / 32);
-    if (word_count == 0 || word_count > 128) return false;
+    if (word_count == 0 || word_count > 128) {
+        OracleGateFailed(context, context.scan_gate, "oracle row map flags");
+        return false;
+    }
     std::vector<std::uint32_t> flags(word_count);
     if (flags_data != 0) {
         if (!ReadBytes(reinterpret_cast<const void*>(flags_data), flags.data(),
@@ -1140,7 +1199,11 @@ bool OracleScanCatalog(Context& context) {
         discovered.push_back(std::move(record));
         if (discovered.size() >= kMaximumOracleStones) break;
     }
-    if (discovered.empty()) return false;
+    if (discovered.empty()) {
+        OracleGateFailed(context, context.scan_gate, "oracle rows (none readable)");
+        return false;
+    }
+    OracleGateSucceeded(context, context.scan_gate, "oracle catalogue");
     std::scoped_lock lock(context.mutex);
     context.records = std::move(discovered);
     context.scan_ready = true;
@@ -1151,6 +1214,7 @@ bool OracleScanCatalog(Context& context) {
 void OracleRefreshStates(Context& context) {
     if (!context.scan_ready) return;
     if (context.state_query == 0) {
+        if (!OracleGateOpen(context.state_query_gate)) return;
         std::uintptr_t fn{};
         if (context.signature->resolve(
                 context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
@@ -1158,8 +1222,10 @@ void OracleRefreshStates(Context& context) {
                 anomaly::sdk::StringView(kOracleStoneStateQueryPattern), &fn)
                 .code != ANOMALY_STATUS_V1_OK ||
             fn == 0) {
+            OracleGateFailed(context, context.state_query_gate, "oracle state query signature");
             return;
         }
+        OracleGateSucceeded(context, context.state_query_gate, "oracle state query signature");
         context.state_query = fn;
     }
     if (!OracleResolvePlayerState(context)) return;
@@ -1314,6 +1380,7 @@ void OracleInitialize(Context& context, const AnomalyHostApiV1* host) {
     const auto view = anomaly::sdk::Host(host);
     context.signature = view.Query<AnomalySignatureServiceV1>(
         ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).get();
+    context.core = view.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID, 1).get();
     context.names = view.Query<AnomalyUe5NamesServiceV1>(
         ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION).get();
     context.objects = view.Query<AnomalyUe5ObjectsServiceV1>(
