@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2,
+  "id": "local.ui-buttons",
+  "name": "UI Buttons",
+  "description": "List in-game UI buttons by clickability, pick the button under the cursor and click it through the Host UI button service.",
+  "author": "Anomaly",
+  "license": "MIT",
+  "version": "0.2.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.input", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.ui-buttons", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": ["ui", "input", "nte-ui-buttons"]
+}

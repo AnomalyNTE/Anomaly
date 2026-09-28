@@ -182,6 +182,18 @@ capability ↔ service 对应关系见 [Manifest 与 capability · capability �
 NTE Adapter 的 Profile gate 和线程域，避免实体 generation、对象生命周期和确认逻辑在插件间分叉。
 确认优先复用实体缓存和直接状态字节，仅在截止时调用一次 `BPCanTryInteract`。
 
+### 点击游戏 UI 按钮
+
+需要打开界面、领取奖励这类点击游戏按钮的流程时，声明 `nte-ui-buttons` capability 并查询
+`anomaly.nte.ui-buttons`。流程是 `request_scan` → 等请求 `COMPLETE` → `find` 按名称 / 文字 /
+所在界面找到按钮 → `request_click` → 等请求 `COMPLETE` 并检查 `status`；多步操作按这个顺序串联，
+每次界面变化后重新扫描。Host 在点击前会重新判定按钮是否被其他界面遮挡，`CONFLICT` 表示这一刻不能点，
+应等待或重新扫描，而不是加 `FORCE` 强行点击。
+
+插件不得自行扫描 GObjects 找按钮、直接调用按钮的 UFunction 或模拟鼠标点击：直接调点击会绕过
+Slate 命中测试，点到被遮挡的按钮会让游戏进入不可预期的状态。服务合同见
+[`anomaly.nte.ui-buttons`](../api-reference/nte-services.md#anomalynteui-buttons)。
+
 ### 地图地标传送
 
 需要显示地图上所有可传送地标时，声明 `nte-map-landmarks` capability，并查询

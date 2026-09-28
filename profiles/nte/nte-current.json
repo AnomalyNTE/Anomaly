@@ -40,6 +40,7 @@
         "anomaly.nte.esc-menu-button",
         "anomaly.nte.entities",
         "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
         "anomaly.nte.combat",
         "anomaly.nte.skills",
         "anomaly.nte.skill-invocation"
@@ -83,6 +84,7 @@
         "anomaly.nte.navigation",
         "anomaly.nte.esc-menu-button",
         "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
         "anomaly.nte.combat",
         "anomaly.nte.skills",
         "anomaly.nte.skill-invocation"
@@ -94,7 +96,7 @@
       "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B E9 41 0F B6 D9 33 C9 49 8B F8 48 8B F2",
       "resolve": {"kind": "direct"},
       "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.objects", "anomaly.nte.map-landmarks"]
+      "requiredBy": ["anomaly.ue5.objects", "anomaly.nte.map-landmarks", "anomaly.nte.ui-buttons"]
     },
     "ue5.GameTick": {
       "module": "HTGame.exe",
@@ -117,6 +119,7 @@
         "anomaly.nte.esc-menu-button",
         "anomaly.nte.entities",
         "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
         "anomaly.nte.combat",
         "anomaly.nte.skills",
         "anomaly.nte.skill-invocation"
@@ -131,6 +134,7 @@
       "requiredBy": [
         "anomaly.ue5.framework", "anomaly.ue5.ahud",
         "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
         "anomaly.nte.combat", "anomaly.nte.skills", "anomaly.nte.skill-invocation"
       ]
     },
@@ -243,6 +247,7 @@
     ],
     "nte.entities": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
     "nte.pickup": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent"],
+    "nte.ui-buttons": ["ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.StaticFindObject", "ue5.ProcessEvent"],
     "nte.combat": [
       "ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects",
       "nte.HTAbilityCharacter.BroadcastCharacterOnDamaged"
@@ -268,6 +273,7 @@
     "nte.navigation",
     "nte.esc-menu-button",
     "nte.pickup",
+    "nte.ui-buttons",
     "nte.combat",
     "nte.skills",
     "nte.skill-invocation",
@@ -289,6 +295,7 @@
     "nte.esc-menu-button": ["nte-esc-menu-hooks-v1"],
     "nte.entities": ["nte-entities-layout-v2"],
     "nte.pickup": ["nte-pickup-layout-v1"],
+    "nte.ui-buttons": ["nte-ui-buttons-layout-v1"],
     "nte.combat": ["nte-combat-reflection-v1"],
     "nte.skills": ["nte-skills-layout-v1"],
     "nte.skill-invocation": ["nte-skill-invocation-v1"],
@@ -324,6 +331,7 @@
     "nte.esc-menu-button": ["ue5.names", "ue5.objects", "ue5.process-event"],
     "nte.entities": ["ue5.names"],
     "nte.pickup": ["nte.player", "nte.entities", "ue5.names", "ue5.objects", "ue5.process-event"],
+    "nte.ui-buttons": ["ue5.names", "ue5.objects", "ue5.object-find", "ue5.process-event"],
     "nte.combat": [
       "nte.player", "ue5.names", "ue5.objects", "ue5.process-event"
     ],
@@ -552,6 +560,44 @@
     "pickup.entries.array": 8,
     "pickup.entries.maximumChoices": 8,
     "pickup.interactEntryStride": 360,
-    "pickup.interactEntryIndex": 0
+    "pickup.interactEntryIndex": 0,
+    "object.flags": 8,
+    "widget.slot": 48,
+    "widget.flags": 217,
+    "widget.enabledMask": 4,
+    "widget.visibility": 220,
+    "widget.renderOpacity": 224,
+    "panelSlot.parent": 40,
+    "widgetTree.rootWidget": 48,
+    "panelWidget.slots": 360,
+    "widgetSwitcher.activeWidgetIndex": 384,
+    "button.onPressed": 1352,
+    "button.onReleased": 1368,
+    "button.onClicked": 1336,
+    "scriptDelegate.stride": 16,
+    "scriptDelegate.objectIndex": 0,
+    "scriptDelegate.serial": 4,
+    "scriptDelegate.functionName": 8,
+    "commonButton.lockedByte": 1128,
+    "commonButton.lockedMask": 2,
+    "activatableWidget.isModal": 898,
+    "activatableWidget.isActive": 992,
+    "activatableContainer.widgetList": 400,
+    "activatableContainer.displayedWidget": 416,
+    "htuiButton.buttonText": 5968,
+    "htuiButton.pressedFlag": 6129,
+    "htuiButton.lastClickTicks": 6208,
+    "htuiBase.isClosing": 1562,
+    "htuiBase.pauseGame": 1811,
+    "htuiBase.hideMainForm": 1877,
+    "htuiBase.inputConfig": 3646,
+    "htuiBase.inputConfigMenu": 3,
+    "htuiBase.hideChildrenReason": 3972,
+    "checkBox.onCheckStateChanged": 2808,
+    "textBlock.text": 392,
+    "htuiRadioBox.radioBox": 4960,
+    "htuiRadioBox.radioText": 4968,
+    "htuiRadioBox.blockButton": 4976,
+    "htuiListItem.clickButton": 1616
   }
 }

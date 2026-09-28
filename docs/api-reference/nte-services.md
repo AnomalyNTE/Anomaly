@@ -79,6 +79,154 @@ World、对象注册表或 Host generation 变化会清理当前请求并返回 
 
 ---
 
+## `anomaly.nte.ui-buttons`
+
+- **ID**：`"anomaly.nte.ui-buttons"` · **版本** 1 · **capability** `nte-ui-buttons`
+
+该服务让插件直接点击游戏 UI 按钮（UMG `Button`、CommonUI `CommonButtonBase`、HTGame
+`HTUI_Button`），以及页签 / 单选框（HTGame `HTUI_RadioBox`、`HTRadioBox`，UMG `CheckBox`）
+和列表条目（HTGame `HTUI_ListItem`）。Host 负责扫描控件树、判定按钮能否点击、识别鼠标下的按钮，
+并按真实点击的顺序调用控件自己的点击处理函数；**不合成任何鼠标或键盘输入**，也不向插件暴露 UE
+对象指针、UFunction 或 Profile 偏移。
+
+```c
+typedef struct AnomalyNteUiButtonsServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *status)(void* user, AnomalyNteUiButtonsStatusV1* status);
+    AnomalyStatusV1 (ANOMALY_CALL *button_at)(void* user, uint64_t catalog_sequence,
+        uint32_t index, AnomalyNteUiButtonSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *window_at)(void* user, uint64_t catalog_sequence,
+        uint32_t index, AnomalyNteUiWindowSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *find)(void* user, const AnomalyNteUiButtonQueryV1* query,
+        AnomalyNteUiButtonSnapshotV1* first, uint32_t* match_count);
+    AnomalyStatusV1 (ANOMALY_CALL *request_scan)(void* user, AnomalyGenerationHandleV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *request_pick)(void* user, AnomalyGenerationHandleV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *request_click)(void* user,
+        const AnomalyNteUiButtonClickRequestV1* click, AnomalyGenerationHandleV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *request_snapshot)(void* user,
+        AnomalyGenerationHandleV1 request, AnomalyNteUiButtonRequestSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *pick_hit_at)(void* user, AnomalyGenerationHandleV1 request,
+        uint32_t index, AnomalyNteUiButtonSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *cancel)(void* user, AnomalyGenerationHandleV1 request);
+} AnomalyNteUiButtonsServiceV1;
+```
+
+完整的结构体、原因位与标志位定义见 `services/nte.h`。所有入口可以从任意线程调用。
+
+### 请求状态机
+
+`request_scan`、`request_pick`、`request_click` 只把请求排进 Host 队列并返回请求 handle；
+实际工作在之后的 Game tick 中按时间片（每 tick ≤3 ms、≤48 次 ProcessEvent）执行。请求按提交
+顺序逐个运行：
+
+```text
+QUEUED ──(Game tick 取出)──▶ RUNNING ──▶ COMPLETE(status)
+   │                           │
+   └───────── cancel ──────────┴──▶ COMPLETE(CANCELLED)
+```
+
+- `request_snapshot` 读取请求的 `state` 与最终 `status`。`COMPLETE` 后的 `status` 就是结果：
+  | status | 含义 |
+  | --- | --- |
+  | `OK` | 扫描发布了新目录 / 拾取完成 / 点击被执行且（HTUI 按钮）被游戏接受 |
+  | `CONFLICT` | 点击时按钮不可点击；`reasons` 与 `detail` 给出原因和遮挡它的界面 |
+  | `NOT_FOUND` | 按钮 handle 已失效（对象被回收、槽位复用或对象注册表换代） |
+  | `FAILED` | 调用异常，或 HTUI 按钮丢弃了这次点击（例如仍在点击间隔内） |
+  | `UNAVAILABLE` | Profile、反射类型或对象注册表不可用 |
+  | `CANCELLED` | 被 `cancel` 取消 |
+- 同时打开的请求上限 32 个，超出时提交返回 `CONFLICT`。完成的请求保留最近 64 个供查询。
+- 点击请求在执行的那一 tick 完成；扫描和拾取可能跨多个 tick。
+
+### 按钮目录
+
+扫描完成后发布一份不可变目录，用 `catalog_sequence` 标识；`status` 返回当前目录序号和按钮 /
+界面层数量。`button_at` / `window_at` 必须带上枚举所用的序号，目录被新扫描替换后旧序号返回
+`NOT_FOUND`，这时重新读取 `status`。目录按 可点击 → 不可点击 → 隐藏 排序。
+
+每个按钮带 `category`（`CLICKABLE` / `BLOCKED` / `HIDDEN`）和 `reasons` 位：可见性类原因
+（自身或父控件隐藏、完全透明、WidgetSwitcher 非当前页、不是所在界面层的当前界面、未挂到界面、
+不在视口）归入 `HIDDEN`，其余原因（禁用、不可交互、锁定、不接受命中测试、界面关闭中、
+**被其他界面遮挡**）归入 `BLOCKED`。`cause` 给出第一个原因对应的控件或界面名。
+
+“被其他界面遮挡”由界面层判定：Host 读取 CommonUI 各界面层当前显示的界面，界面处于显示状态且为
+模态、暂停游戏、菜单独占输入或要求隐藏主界面时，会遮挡绘制顺序在它之下的按钮；要求隐藏主界面的
+界面还会遮挡主界面（`HTUI_MainForm`）里的全部按钮。宁可多判遮挡：误判只会少一个可点按钮，漏判会
+点到玩家看不见的界面，使游戏进入不可预期的状态。
+
+`find` 在目录中按名称、按钮文字、所在界面（窗口 / 所属 UserWidget / 路径上任一 UserWidget）和
+分类掩码筛选，返回第一个匹配和匹配数量。
+
+### 点击
+
+`request_click` 的 `button` handle 取自目录快照。执行前 Host 重新核对对象身份，并**现读界面层
+重新判定可点击性**：扫描之后才打开的界面同样会拦截点击。不可点击时请求以 `CONFLICT` 完成，不调用
+任何游戏函数；`ANOMALY_NTE_UI_BUTTON_CLICK_V1_FORCE` 跳过这一判定（仍拒绝失效 handle）。
+
+点击方式固定为 按下 → 抬起 → 点击：CommonUI 按钮调用 `HandleButtonPressed`、
+`HandleButtonReleased`、`HandleButtonClicked`；UMG 按钮依次调用 `OnPressed`、`OnReleased`、
+`OnClicked` 委托上绑定的函数。`HTUI_Button` 只有在按下阶段置位后才接受点击，Host 以按钮记录的
+点击时间是否变化判断游戏是否接受，并在 `outcome` 中报告 `PRESS_ARMED` / `CLICK_ACCEPTED`；
+未被接受的点击以 `FAILED` 完成。
+
+页签和列表条目按控件本身列出（`kind` 分别为 `RADIO`、`LIST_ENTRY`），包在里面的
+`RadioBox` / `BlockBtn` / `Btn_Click` 不再单独列出：
+
+| kind | 控件 | 点击 | 锁定判定 |
+| --- | --- | --- | --- |
+| `RADIO` | `HTUI_RadioBox` | `SetSelected(true, true)`，由游戏广播选中事件 | `IsSystematicGameFeatureActivated` 为假 |
+| `RADIO` | `HTRadioBox` / `HTCheckBox` | `HTRadioBox.SetSelected(true, true)`；非单选框按 `CheckBox` 处理 | 无 |
+| `RADIO` | UMG `CheckBox` | `SetIsChecked(true)`，再以 `true` 调用 `OnCheckStateChanged` 的绑定 | 无 |
+| `LIST_ENTRY` | `HTUI_ListItem` | `OnBtnPressed` → `OnBtnReleased` → `OnBtnClicked` | `IsItemLocked` 为真 |
+
+**已选中的页签仍归为可点击**：点击之后界面变成什么由当前界面决定，而不是由页签的选中状态决定。
+点击后控件处于选中状态时 `outcome` 报告 `CLICK_ACCEPTED`。可见性与遮挡判定与普通按钮相同。
+
+### 鼠标拾取
+
+`request_pick` 先重新扫描，再对所有未隐藏的按钮查询 `UWidget::IsHovered`（Slate 按真实光标
+维护的悬停状态）。完成后 `hit_count` 为悬停命中数，`pick_hit_at` 按由内到外的顺序读取；
+第 0 个是光标实际指向的最内层按钮。被判为遮挡但处于悬停的按钮同样返回（分类为 `BLOCKED`），
+可以据此发现遮挡误判。光标不在游戏窗口上时没有命中。
+
+### 使用示例：领取每日奖励
+
+```c
+// 在 on_update（Game 域）中推进：先扫描，再找到按钮并点击，最后确认点击结果。
+AnomalyGenerationHandleV1 scan;
+buttons->request_scan(buttons->user, &scan);
+// ……之后的 tick 中轮询，直到 request_snapshot(scan) 返回 COMPLETE + OK ……
+
+AnomalyNteUiButtonQueryV1 query = {sizeof(query)};
+query.name = (AnomalyStringViewV1){"BtnClaim", 8};
+query.category_mask = ANOMALY_NTE_UI_BUTTON_QUERY_V1_CATEGORY(
+    ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE);
+AnomalyNteUiButtonSnapshotV1 button = {sizeof(button)};
+uint32_t matches = 0;
+if (buttons->find(buttons->user, &query, &button, &matches).code == ANOMALY_STATUS_V1_OK) {
+    AnomalyNteUiButtonClickRequestV1 click = {sizeof(click)};
+    click.button = button.button;
+    AnomalyGenerationHandleV1 request;
+    buttons->request_click(buttons->user, &click, &request);
+    // 下一 tick：request_snapshot(request) 为 COMPLETE + OK 即点击已被游戏接受。
+}
+```
+
+打开界面、切换页签这类多步流程由插件按 扫描 → 查找 → 点击 → 重新扫描 的顺序串联；每一步
+都要等上一个请求完成并检查其 `status`。
+
+### 发布条件与降级
+
+活动 Profile 必须声明 `nte.ui-buttons` Feature、`nte-ui-buttons-layout-v1` validator，以及
+`ue5.names`、`ue5.objects`、`ue5.object-find`、`ue5.process-event` 依赖；控件、CommonUI
+与 HTGame 字段偏移全部来自 Profile 的 `widget.*`、`panelSlot.*`、`activatableWidget.*`、
+`htuiButton.*`、`htuiBase.*`、`checkBox.*`、`textBlock.*`、`htuiRadioBox.*`、`htuiListItem.*` 等 layout 键。
+缺少页签或列表条目相关的反射函数时，只是这一类控件不列出。反射类型在对象注册表每一代首次就绪时解析一次，
+`status` 的 `READY` 位报告结果；缺少 `UMG.Widget.IsHovered` 时拾取不可用（`PICK_AVAILABLE`
+为 0），其余功能照常。对象注册表换代时目录与全部按钮 handle 失效，未完成请求以
+`UNAVAILABLE` 或 `NOT_FOUND` 结束；Host 停止或重启后旧请求 handle 不再可寻址。
+
+---
+
 ## `anomaly.nte.build`
 
 - **ID**：`"anomaly.nte.build"` · **版本** 1 · **capability** `nte-build`

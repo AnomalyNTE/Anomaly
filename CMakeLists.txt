@@ -420,6 +420,7 @@ add_library(anomaly_adapter_services STATIC
     src/game/ue5/ue5_damage_function_hook.cpp
     src/game/ue5/ue5_nte_adapter.cpp
     src/game/nte/nte_navigation_input_policy.cpp
+    src/game/nte/nte_ui_buttons.cpp
     src/game/ue5/game_tick_hook.cpp
     src/game/ue5/ue5_streaming_source_override.cpp
     src/game/ue5/ue5_outbound_bit_count_probe.cpp)
@@ -1022,6 +1023,18 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         anomaly_render_fixture PRIVATE anomaly_runtime_kernel d3d12 dxgi dxguid)
 endif()
 
+# Drives the Host UI button engine (anomaly.nte.ui-buttons) against an in-memory widget
+# tree laid out from the SDK dump, with offsets read from the shipped NTE Profile.
+if(ANOMALY_BUILD_TEST_FIXTURES)
+    add_executable(anomaly_nte_ui_buttons_fixture apps/nte_ui_buttons_fixture/main.cpp)
+    target_compile_definitions(anomaly_nte_ui_buttons_fixture PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+        "ANOMALY_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
+    target_compile_options(anomaly_nte_ui_buttons_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_ui_buttons_fixture PRIVATE
+        anomaly_adapter_services anomaly_build_profile)
+endif()
+
 # Exercises the Present interception path against a D3D11 swap chain, which is
 # what a title using the D3D11 RHI presents. Nothing covered that path before,
 # which is how an overlay that only knew how to draw with D3D12 could sit in a
@@ -1337,6 +1350,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_combat_auto_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
         target_link_libraries(anomaly_combat_auto_fixture PRIVATE anomaly_plugin_combat)
     endif()
+    # UI 按钮调试面板：anomaly.nte.ui-buttons 服务的消费者，功能全部在 Host。
+    anomaly_add_plugin(anomaly_builtin_ui_buttons
+        SOURCES plugins/UiButtons/plugin.cpp
+        MANIFEST plugins/UiButtons/manifest.json
+        PACKAGE_NAME UiButtons
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/UiButtons")
     anomaly_add_plugin(anomaly_builtin_dll_loader
         SOURCES plugins/DllLoader/plugin.cpp
         MANIFEST plugins/DllLoader/manifest.json
@@ -1356,7 +1375,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
-        anomaly_builtin_nte_free_fly
+        anomaly_builtin_nte_free_fly anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -1376,6 +1395,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     if(TARGET anomaly-platform-preview)
@@ -1427,6 +1447,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
 anomaly_stage_platform_preview_plugin(
     anomaly_builtin_nte_quick_ultimate QuickUltimate)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_ui_buttons UiButtons)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 
 if(TARGET anomaly-platform-preview)
