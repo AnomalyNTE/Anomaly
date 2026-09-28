@@ -612,22 +612,35 @@ VmdDocument ParseVmd(const std::vector<std::uint8_t> &bytes) {
     highest_frame = (std::max)(highest_frame, frame);
   }
 
-  // Morph keyframes.
+  // Morph keyframes: kept per name (decoded to UTF-8, the mapping table's
+  // encoding) for the expression playback; the retarget itself ignores them.
   std::uint32_t morph_key_count = 0;
   if (!ReadPod(data, size, offset, morph_key_count)) {
     document.error = "vmd is truncated before the morph key count";
     return document;
   }
+  std::map<std::string, std::size_t> morph_index;
   for (std::uint32_t i = 0; i < morph_key_count; ++i) {
     std::string name;
     std::uint32_t frame = 0;
     float weight = 0.0F;
-    if (!ReadFixedName(data, size, offset, 15, name) ||
+    if (!ReadShiftJisName(data, size, offset, 15, name) ||
         !ReadPod(data, size, offset, frame) || !ReadPod(data, size, offset, weight)) {
       document.error = "vmd is truncated in the morph keyframe table";
       return document;
     }
+    if (name.empty() || !std::isfinite(weight))
+      continue;
+    auto found = morph_index.find(name);
+    if (found == morph_index.end()) {
+      found = morph_index.emplace(name, document.morphs.size()).first;
+      document.morphs.push_back(VmdMorphTrack{name, {}});
+    }
+    document.morphs[found->second].keys.push_back(VmdMorphKey{frame, weight});
   }
+  for (auto &track : document.morphs)
+    std::stable_sort(track.keys.begin(), track.keys.end(),
+                     [](const VmdMorphKey &a, const VmdMorphKey &b) { return a.frame < b.frame; });
 
   // Camera keyframes: frame, distance, position, rotation, 24 interpolation bytes,
   // view angle, perspective flag.
@@ -3096,6 +3109,25 @@ Result BuildMotion(const Input &input) {
     for (auto &[name, track] : output_offsets)
       offsets[name] = std::move(track);
     document["boneOffsets"] = std::move(offsets);
+  }
+  // Facial keys, sparse and by MMD name: which NTE morphs they drive depends
+  // on the character, so the runtime maps them (mmd_morph_map.hpp). Frames are
+  // the VMD's own, the same timeline `firstFrame` indexes into. Morphs that
+  // stay at zero the whole motion are dropped (some motions key 100+ at 0).
+  {
+    json morphs = json::object();
+    for (const auto &track : vmd.morphs) {
+      const bool moves = std::any_of(track.keys.begin(), track.keys.end(),
+                                     [](const VmdMorphKey &k) { return k.weight > 1e-4F; });
+      if (!moves)
+        continue;
+      json keys = json::array();
+      for (const auto &key : track.keys)
+        keys.push_back(json::array({key.frame, Round6(key.weight)}));
+      morphs[track.name] = std::move(keys);
+    }
+    if (!morphs.empty())
+      document["morphs"] = std::move(morphs);
   }
   // IK evidence: per chain, the worst effector-to-IK-bone distance before and after the
   // solve in MMD units, plus how far the solver had to rotate the chain. Without numbers

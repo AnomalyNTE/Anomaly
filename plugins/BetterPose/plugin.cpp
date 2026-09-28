@@ -24,6 +24,10 @@ using Microsoft::WRL::ComPtr;
 #include "pose_history.hpp"
 #include "orbit_camera.hpp"
 #include "pose_mirror.hpp"
+#include "morph_catalog.hpp"
+#include "mmd_morph_map.hpp"
+#include "joint_limits.hpp"
+#include "pose_document.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -423,9 +427,26 @@ struct Context final {
     // One-bone depth: wheel swings the joint toward the camera about the axis
     // perpendicular to both the bone and the view ray, through the pivot.
     std::array<double, 3> depth_axis{};
+    // Joint limits (hinge pivot): the drag's rotation is projected onto the
+    // bone's own hinge axis (world, at the press) and the bend is clamped.
+    // `hinge_base` is the offset with the bend removed, so the new offset is
+    // hinge_base * bend(new); `hinge_sign` makes positive = bending.
+    bool hinge{};
+    bool limb_hinge{};  // IK drag: clamp the elbow/knee bend to its range
+    std::array<double, 3> hinge_axis_world{};
+    std::array<double, 4> hinge_base{};       // offset with the bend removed
+    std::array<double, 4> hinge_rest_base{};  // the bone's base (rest) rotation
+    double hinge_start_bend{};                // degrees, bending direction
+    int hinge_limit_axis{2};
+    double hinge_sign{1.0};
+    double hinge_minimum{};
+    double hinge_maximum{};
   } overlay_drag;
   // Two-bone IK on for chains that have one (limbs); off = always rotate one bone.
   std::atomic_bool overlay_ik_enabled{true};
+  // Joint limits: hinge bones (finger joints past the root, elbows, knees)
+  // only bend about their own axis and within a range. Off = free rotation.
+  std::atomic_bool overlay_limits_enabled{};
   // Render thread only.
   bool overlay_mouse_was_down{};
   bool overlay_right_was_down{};
@@ -481,6 +502,40 @@ struct Context final {
   std::atomic<int> pose_history_request{};  // 1 undo, 2 redo, 0 none
   // Mirror request from the panel: 1 flip, 2 left to right, 3 right to left.
   std::atomic<int> pose_mirror_request{};
+
+  // Expression (morph targets) on the body mesh. The catalogue and weights
+  // are guarded by morph_mutex: Draw edits the weights, the game thread reads
+  // them and writes each driven morph with SetMorphTarget every update (the
+  // game's own face animation writes the same morphs, so a single write would
+  // be undone by the next blink). Everything else is game-thread only.
+  std::mutex morph_mutex;
+  better_pose::morph::Catalog morph_catalog;
+  better_pose::morph::Weights morph_weights;
+  std::array<char, 64> morph_filter{};
+  std::atomic_bool morph_release_all{};       // panel: hand every morph back
+  std::atomic_bool morph_rescan_requested{};  // panel: read the list again
+  std::string morph_status;                   // guarded by morph_mutex
+  std::uintptr_t morph_mesh{};
+  std::uint32_t morph_array_offset{};  // USkeletalMesh::MorphTargets, found once
+  std::uintptr_t morph_set_function{};
+  std::uintptr_t morph_process_event{};
+  std::vector<std::uint32_t> morph_released;  // written back to 0 once, then left alone
+  std::vector<std::uint8_t> morph_was_driven;
+  // Expression undo/redo: its own history (Ctrl+Z on the expression page
+  // undoes expressions, on the pose page poses). Game thread owns it.
+  better_pose::history::ExpressionHistory morph_history;
+  std::uintptr_t morph_history_mesh{};
+  std::atomic<int> morph_history_request{};  // 1 undo, 2 redo
+  std::atomic<std::uint32_t> morph_undo_count{};
+  std::atomic<std::uint32_t> morph_redo_count{};
+  // Which page the panel showed last frame, so Ctrl+Z goes to the right one.
+  std::atomic_bool expression_page_active{};
+  // Expression file: name typed in the panel; export/import run on the game
+  // thread, which owns the catalogue's FNames.
+  std::array<char, 128> morph_export_name{};
+  std::string morph_file_status;  // guarded by morph_mutex
+  std::atomic<int> morph_file_request{};  // 1 export, 2 import
+  std::wstring morph_import_path;         // guarded by morph_mutex
   std::atomic<std::uint32_t> pose_undo_count{};
   std::atomic<std::uint32_t> pose_redo_count{};
   // Held while a mouse button is down over the panel or the canvas, so a slow
@@ -527,7 +582,22 @@ struct Context final {
     double mmd_leg_length{};
     std::string mesh_id;
     std::string path;
+    // Facial keys by MMD morph name, in VMD frames (the timeline firstFrame
+    // indexes into). Mapped onto the character's morphs at playback time.
+    std::vector<std::string> morph_names;
+    std::vector<std::vector<better_pose::mmd_morph::Key>> morph_keys;
   };
+  // MMD morphs -> this character's morph catalogue, rebuilt when either the
+  // motion or the catalogue changes. Game thread only.
+  std::vector<better_pose::mmd_morph::Resolved> motion_morph_map;
+  std::uintptr_t motion_morph_map_asset{};
+  std::string motion_morph_map_path;
+  std::atomic_bool motion_expression_enabled{true};  // panel: play the VMD's facial keys
+  std::atomic<std::uint32_t> motion_morph_mapped{};   // for the panel: MMD morphs with a target
+  std::atomic<std::uint32_t> motion_morph_total{};
+  // NTE morphs the motion is driving right now, so they can be handed back
+  // to the game when playback stops. Game thread only.
+  std::vector<std::uint8_t> motion_morph_driving;
   std::mutex motion_mutex;
   MotionTrack motion;
   // Guarded by motion_mutex: a worker started before unload/switch cannot
@@ -894,11 +964,21 @@ void EnsurePoseAngleCapacity(Context &context) noexcept {
 // recreates the plugin on every reload, and re-picking the file plus re-enabling driving after
 // each rebuild is pure friction. Declared here, defined next to the UTF-8 helpers it needs.
 
-bool ApplyPoseDocument(Context &context, const nlohmann::json &json) noexcept {  try {
+// How the last pose document landed: bones matched by name, by index (old
+// files), and the named bones this character lacks. The import path turns it
+// into its status line.
+struct PoseApplyReport {
+  std::size_t by_name{};
+  std::size_t by_index{};
+  std::vector<std::string> missing;
+};
+
+bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
+                       PoseApplyReport *report = nullptr) noexcept {  try {
     if (!json.is_object() || !json.contains("bones") ||
         !json.at("bones").is_array())
       return false;
-    std::vector<std::array<double, 3>> loaded;
+    std::vector<better_pose::pose_document::SavedBone> saved;
     for (const auto &item : json.at("bones")) {
       if (!item.is_object() || !item.contains("index") ||
           !item.contains("pitch") || !item.contains("yaw") ||
@@ -923,9 +1003,29 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json) noexcept { 
       if (pitch < -180.0 || pitch > 180.0 || yaw < -180.0 || yaw > 180.0 ||
           roll < -180.0 || roll > 180.0)
         return false;
-      if (loaded.size() <= index)
-        loaded.resize(static_cast<std::size_t>(index) + 1);
-      loaded[static_cast<std::size_t>(index)] = {pitch, yaw, roll};
+      better_pose::pose_document::SavedBone bone;
+      bone.index = index;
+      if (item.contains("name") && item.at("name").is_string())
+        bone.name = item.at("name").get<std::string>();
+      bone.pitch = pitch;
+      bone.yaw = yaw;
+      bone.roll = roll;
+      saved.push_back(std::move(bone));
+    }
+    // Names first: an index only means something on the skeleton it was
+    // saved from (pose_document.hpp).
+    const auto placed =
+        better_pose::pose_document::Place(saved, context.bone_names, kMaximumBoneIndex);
+    std::vector<std::array<double, 3>> loaded;
+    for (const auto &bone : placed.placed) {
+      if (loaded.size() <= bone.bone)
+        loaded.resize(static_cast<std::size_t>(bone.bone) + 1);
+      loaded[bone.bone] = {bone.pitch, bone.yaw, bone.roll};
+    }
+    if (report != nullptr) {
+      report->by_name = placed.by_name;
+      report->by_index = placed.by_index;
+      report->missing = placed.missing;
     }
     std::array<double, 3> root_offset{};
     if (json.contains("rootOffset")) {
@@ -972,10 +1072,15 @@ std::string BuildPoseDocument(Context &context) noexcept {
       const auto &angle = context.bone_angles[index];
       if (angle[0] == 0.0 && angle[1] == 0.0 && angle[2] == 0.0)
         continue;
-      bones.push_back({{"index", index},
-                       {"pitch", angle[0]},
-                       {"yaw", angle[1]},
-                       {"roll", angle[2]}});
+      nlohmann::json bone{{"index", index},
+                          {"pitch", angle[0]},
+                          {"yaw", angle[1]},
+                          {"roll", angle[2]}};
+      // The name is what another character is matched by; the index stays
+      // for older readers and for skeletons whose names are not loaded.
+      if (index < context.bone_names.size() && !context.bone_names[index].empty())
+        bone["name"] = context.bone_names[index];
+      bones.push_back(std::move(bone));
     }
   }
   std::array<double, 3> root_offset{};
@@ -3844,6 +3949,29 @@ bool LoadMotionDocument(Context &context, const std::string &document,
       }
     }
     track.offsets_ready = true;
+  }
+  // Facial keys (optional; motions converted before this carry none).
+  const auto morphs = json.find("morphs");
+  if (morphs != json.end() && morphs->is_object()) {
+    for (auto it = morphs->begin(); it != morphs->end(); ++it) {
+      if (!it.value().is_array())
+        continue;
+      std::vector<better_pose::mmd_morph::Key> keys;
+      for (const auto &key : it.value()) {
+        if (!key.is_array() || key.size() != 2 || !key[0].is_number() || !key[1].is_number())
+          continue;
+        const float weight = key[1].get<float>();
+        if (!std::isfinite(weight))
+          continue;
+        keys.push_back({key[0].get<std::uint32_t>(), weight});
+      }
+      if (keys.empty())
+        continue;
+      std::stable_sort(keys.begin(), keys.end(),
+                       [](const auto &a, const auto &b) { return a.frame < b.frame; });
+      track.morph_names.push_back(it.key());
+      track.morph_keys.push_back(std::move(keys));
+    }
   }
   {
     std::lock_guard<std::mutex> lock(context.motion_mutex);
@@ -6721,12 +6849,21 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
         SetReflectionStatus(*context, "pose import failed: unreadable file");
       } else {
         const auto json = nlohmann::json::parse(document);
-        if (!ApplyPoseDocument(*context, json)) {
+        PoseApplyReport report;
+        if (!ApplyPoseDocument(*context, json, &report)) {
           SetReflectionStatus(*context, "pose import failed: invalid document");
         } else {
           context->pose_override_enabled.store(true, std::memory_order_release);
           context->pose_settings_dirty.store(true, std::memory_order_release);
-          SetReflectionStatus(*context, "pose imported");
+          std::string status =
+              "pose imported: " + std::to_string(report.by_name) + " bones by name";
+          if (report.by_index != 0)
+            status += ", " + std::to_string(report.by_index) +
+                      " by index (old file: may not match another character)";
+          if (!report.missing.empty())
+            status += ", " + std::to_string(report.missing.size()) +
+                      " not on this character (e.g. " + report.missing.front() + ")";
+          SetReflectionStatus(*context, status);
         }
       }
     } else if (data->action == 4) {
@@ -7237,6 +7374,395 @@ bool RefreshRuntime(Context &context) noexcept {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Expression: the body mesh's morph targets (blend shapes).
+//
+// USkeletalMesh::MorphTargets is a TArray<UMorphTarget*>. Its offset is not in
+// the Profile, so it is found on the asset: the first TArray header whose
+// elements are live objects of a MorphTarget class. The names are the morph
+// objects' own FNames, which is exactly the FName SetMorphTarget takes.
+// SetMorphTarget(FName, float Value, bool bRemoveZeroWeight) is 13 bytes
+// (FName @0, float @8, bool @12), read from the engine's own reflection.
+// ---------------------------------------------------------------------------
+
+constexpr std::string_view kFunctionSetMorphTargetPath =
+    "/Script/Engine.SkeletalMeshComponent.SetMorphTarget";
+
+std::uintptr_t BodyMeshAsset(Context &context, const std::uintptr_t mesh) noexcept {
+  for (std::uint32_t offset{}; offset + 8 <= 0x2000; offset += 8) {
+    std::uintptr_t candidate{};
+    if (!ReadPointerAt(context, mesh, offset, candidate) || candidate == 0)
+      continue;
+    const std::string name = ClassNameOf(context, candidate);
+    if (name.find("SkeletalMesh") != std::string::npos &&
+        name.find("Component") == std::string::npos)
+      return candidate;
+  }
+  return 0;
+}
+
+bool ReadMorphCatalog(Context &context, const std::uintptr_t asset,
+                      std::vector<better_pose::morph::Entry> &entries) noexcept {
+  entries.clear();
+  const auto read_at = [&](const std::uint32_t offset) {
+    std::uintptr_t data{};
+    std::int32_t count{};
+    std::int32_t capacity{};
+    if (!Read(context, asset + offset, data) || !Read(context, asset + offset + 8, count) ||
+        !Read(context, asset + offset + 12, capacity))
+      return false;
+    if (data == 0 || count <= 0 || count > 4096 || capacity < count || capacity > 65536)
+      return false;
+    std::uintptr_t first{};
+    if (!Read(context, data, first) || first == 0 ||
+        ClassNameOf(context, first).find("MorphTarget") == std::string::npos)
+      return false;
+    for (std::int32_t index{}; index != count; ++index) {
+      std::uintptr_t morph{};
+      if (!Read(context, data + static_cast<std::uintptr_t>(index) * 8U, morph) || morph == 0)
+        continue;
+      better_pose::morph::Entry entry;
+      entry.name = ObjectNameOf(context, morph);
+      if (entry.name.empty() || !Read(context, morph + kObjectNameOffset, entry.fname))
+        continue;
+      entries.push_back(std::move(entry));
+    }
+    return !entries.empty();
+  };
+  if (context.morph_array_offset != 0 && read_at(context.morph_array_offset))
+    return true;
+  for (std::uint32_t offset = 0x28; offset + 16 <= 0x1000; offset += 8) {
+    if (read_at(offset)) {
+      context.morph_array_offset = offset;
+      return true;
+    }
+  }
+  return false;
+}
+
+better_pose::history::ExpressionState CaptureExpression(Context &context) {
+  std::lock_guard<std::mutex> lock(context.morph_mutex);
+  return {context.morph_weights.value, context.morph_weights.driven};
+}
+
+void RestoreExpression(Context &context, const better_pose::history::ExpressionState &state) {
+  std::lock_guard<std::mutex> lock(context.morph_mutex);
+  auto &weights = context.morph_weights;
+  const std::size_t count = weights.value.size();
+  for (std::size_t i{}; i != count; ++i) {
+    const bool driven = i < state.driven.size() && state.driven[i] != 0;
+    if (driven)
+      weights.Set(i, i < state.weights.size() ? state.weights[i] : 0.0F);
+    else
+      weights.Release(i);
+  }
+}
+
+// Game thread: undo/redo for the expression, the same settle-then-record
+// history as the pose (pose_history.hpp). A new mesh starts a fresh history.
+void StepExpressionHistory(Context &context) noexcept {
+  try {
+    if (context.morph_history_mesh != context.morph_mesh) {
+      context.morph_history_mesh = context.morph_mesh;
+      context.morph_history.Reset(CaptureExpression(context));
+      context.morph_history_request.store(0, std::memory_order_release);
+    } else {
+      const int request = context.morph_history_request.exchange(0, std::memory_order_acq_rel);
+      const auto live = CaptureExpression(context);
+      better_pose::history::ExpressionState target;
+      if (request == 1 ? context.morph_history.Undo(live, target)
+                       : request == 2 ? context.morph_history.Redo(live, target) : false)
+        RestoreExpression(context, target);
+      else
+        static_cast<void>(context.morph_history.Observe(
+            live, context.pose_edit_held.load(std::memory_order_acquire), GetTickCount64()));
+    }
+    context.morph_undo_count.store(static_cast<std::uint32_t>(context.morph_history.UndoCount()),
+                                   std::memory_order_release);
+    context.morph_redo_count.store(static_cast<std::uint32_t>(context.morph_history.RedoCount()),
+                                   std::memory_order_release);
+  } catch (...) {
+  }
+}
+
+// Game thread: expression file export/import. The document is small (a few
+// kilobytes), so it is written and read here rather than on a task.
+//   { "format": "betterpose-expression", "version": 1,
+//     "morphs": [ { "name": "jawOpen", "weight": 0.8 }, ... ] }
+void StepExpressionFile(Context &context) noexcept {
+  const int request = context.morph_file_request.exchange(0, std::memory_order_acq_rel);
+  if (request == 0)
+    return;
+  // Every message goes through the localizer: `key`, English fallback, and
+  // up to two {0}/{1} arguments.
+  const auto set_status = [&context](const std::string_view key, const std::string_view fallback,
+                                     const std::string &a = {}, const std::string &b = {}) {
+    const std::array<std::string_view, 2> arguments{a, b};
+    const std::size_t used = !b.empty() ? 2U : !a.empty() ? 1U : 0U;
+    std::string text = context.localizer.Format(
+        key, fallback, std::span<const std::string_view>(arguments.data(), used));
+    std::lock_guard<std::mutex> lock(context.morph_mutex);
+    context.morph_file_status = std::move(text);
+  };
+  try {
+    if (request == 1) {
+      std::string name(context.morph_export_name.data());
+      if (name.empty())
+        name = "expression";
+      if (name.size() < 5 || name.substr(name.size() - 5) != ".json")
+        name += ".json";
+      const std::wstring folder = Utf8ToWide(context.pose_export_folder);
+      if (folder.empty()) {
+        set_status("morph.file.no_folder", "Export failed: choose a folder first");
+        return;
+      }
+      std::wstring path = folder;
+      if (path.back() != L'\\' && path.back() != L'/')
+        path.push_back(L'\\');
+      path += Utf8ToWide(name);
+      nlohmann::json root;
+      root["format"] = "betterpose-expression";
+      root["version"] = 1;
+      nlohmann::json morphs = nlohmann::json::array();
+      {
+        std::lock_guard<std::mutex> lock(context.morph_mutex);
+        for (const auto &morph :
+             better_pose::morph::CollectDriven(context.morph_catalog, context.morph_weights))
+          morphs.push_back({{"name", morph.name}, {"weight", morph.weight}});
+      }
+      if (morphs.empty()) {
+        set_status("morph.file.nothing", "Export failed: no morph is set (drag a slider first)");
+        return;
+      }
+      const std::size_t saved = morphs.size();
+      root["morphs"] = std::move(morphs);
+      const std::string document = root.dump(2);
+      std::ofstream file(path, std::ios::binary);
+      if (!file) {
+        set_status("morph.file.open_failed", "Export failed: cannot open {0}", WideToUtf8(path));
+        return;
+      }
+      file.write(document.data(), static_cast<std::streamsize>(document.size()));
+      file.close();
+      if (file)
+        set_status("morph.file.exported", "Exported {0} morphs to {1}", std::to_string(saved),
+                   WideToUtf8(path));
+      else
+        set_status("morph.file.write_failed", "Export failed: write error");
+      return;
+    }
+
+    std::wstring path;
+    {
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      path = context.morph_import_path;
+    }
+    if (path.empty()) {
+      set_status("morph.file.no_file", "Import failed: choose a file first");
+      return;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+      set_status("morph.file.read_failed", "Import failed: cannot open the file");
+      return;
+    }
+    std::string document((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
+    if (document.empty() || document.size() > 1024U * 1024U) {
+      set_status("morph.file.unreadable", "Import failed: the file cannot be read");
+      return;
+    }
+    const auto root = nlohmann::json::parse(document, nullptr, false);
+    if (!root.is_object() || root.value("format", std::string()) != "betterpose-expression" ||
+        !root.contains("morphs") || !root["morphs"].is_array()) {
+      set_status("morph.file.wrong_format", "Import failed: not an expression file");
+      return;
+    }
+    std::vector<better_pose::morph::SavedMorph> saved;
+    for (const auto &item : root["morphs"]) {
+      if (!item.is_object() || !item.contains("name") || !item["name"].is_string() ||
+          !item.contains("weight") || !item["weight"].is_number())
+        continue;
+      const float weight = item["weight"].get<float>();
+      if (!std::isfinite(weight))
+        continue;
+      saved.push_back({item["name"].get<std::string>(), weight});
+    }
+    std::vector<std::string> missing;
+    std::size_t matched{};
+    {
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      matched = better_pose::morph::ApplySaved(context.morph_catalog, saved,
+                                              context.morph_weights, missing);
+    }
+    if (missing.empty())
+      set_status("morph.file.imported", "Imported {0} morphs", std::to_string(matched));
+    else
+      set_status("morph.file.imported_missing",
+                 "Imported {0} morphs; {1} are not on this character", std::to_string(matched),
+                 std::to_string(missing.size()) + " (" + missing.front() + " ...)");
+  } catch (...) {
+    if (request == 1)
+      set_status("morph.file.export_failed", "Export failed");
+    else
+      set_status("morph.file.invalid", "Import failed: invalid document");
+  }
+}
+
+// Game thread, every update: (re)load the catalogue for a new body mesh, and
+// write every driven weight. A morph the user released is written to 0 once
+// and then left to the game again.
+void StepExpression(Context &context) noexcept {
+  try {
+    const std::uintptr_t mesh = context.runtime.mesh;
+    if (mesh == 0)
+      return;
+    const bool rescan = context.morph_rescan_requested.exchange(false, std::memory_order_acq_rel);
+    if (mesh != context.morph_mesh || rescan) {
+      context.morph_mesh = mesh;
+      context.morph_set_function = 0;
+      context.morph_process_event = 0;
+      context.morph_released.clear();
+      const std::uintptr_t asset = BodyMeshAsset(context, mesh);
+      std::vector<better_pose::morph::Entry> entries;
+      const bool ok = asset != 0 && ReadMorphCatalog(context, asset, entries);
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      const std::size_t count = entries.size();
+      context.morph_catalog.Build(asset, std::move(entries));
+      context.morph_weights.Resize(count);
+      context.morph_was_driven.assign(count, 0);
+      context.morph_status = ok ? "" : "no morph targets on this character";
+      // Every name into the log once per mesh, in chunks under the log's
+      // line limit: the MMD mapping table is written against these names.
+      if (ok) {
+        std::string line;
+        std::size_t chunk{};
+        const auto flush = [&]() {
+          if (line.empty())
+            return;
+          LogDiagnostic(context, "betterpose morph names " + Hex(asset) + " part " +
+                                     std::to_string(++chunk) + ": " + line);
+          line.clear();
+        };
+        for (const auto &entry : context.morph_catalog.entries) {
+          if (line.size() + entry.name.size() + 2 > 900)
+            flush();
+          line += (line.empty() ? "" : ", ") + entry.name;
+        }
+        flush();
+      }
+    }
+
+    // The loaded motion's facial keys, sampled at the playhead and mapped onto
+    // this character's morphs. Only while a motion with morphs is loaded and
+    // the page's switch is on; a morph the user set by hand wins over it.
+    std::vector<float> motion_weights;
+    std::vector<std::uint8_t> motion_touched;
+    const bool motion_drives =
+        context.motion_loaded.load(std::memory_order_acquire) &&
+        context.motion_expression_enabled.load(std::memory_order_acquire);
+    if (motion_drives) {
+      std::vector<std::string> catalogue_names;
+      std::uintptr_t catalogue_asset{};
+      {
+        std::lock_guard<std::mutex> lock(context.morph_mutex);
+        catalogue_asset = context.morph_catalog.asset;
+        catalogue_names.reserve(context.morph_catalog.entries.size());
+        for (const auto &entry : context.morph_catalog.entries)
+          catalogue_names.push_back(entry.name);
+      }
+      std::lock_guard<std::mutex> lock(context.motion_mutex);
+      const auto &motion = context.motion;
+      if (!motion.morph_names.empty() && !catalogue_names.empty()) {
+        if (context.motion_morph_map_asset != catalogue_asset ||
+            context.motion_morph_map_path != motion.path) {
+          context.motion_morph_map =
+              better_pose::mmd_morph::Resolve(motion.morph_names, catalogue_names);
+          context.motion_morph_map_asset = catalogue_asset;
+          context.motion_morph_map_path = motion.path;
+          std::uint32_t mapped{};
+          std::string unmapped;
+          for (const auto &resolved : context.motion_morph_map) {
+            if (!resolved.drives.empty())
+              ++mapped;
+            else
+              unmapped += (unmapped.empty() ? "" : ", ") + resolved.mmd;
+          }
+          context.motion_morph_mapped.store(mapped, std::memory_order_release);
+          context.motion_morph_total.store(
+              static_cast<std::uint32_t>(context.motion_morph_map.size()),
+              std::memory_order_release);
+          LogDiagnostic(context, "betterpose motion morphs: " + std::to_string(mapped) + "/" +
+                                     std::to_string(context.motion_morph_map.size()) +
+                                     " mapped" +
+                                     (unmapped.empty() ? "" : "; no target: " + unmapped));
+        }
+        // The same frame the bone sampler uses: seconds * fps from firstFrame.
+        const double fps = motion.fps > 0.0 ? motion.fps : 30.0;
+        const double frame = static_cast<double>(motion.first_frame) +
+                             context.motion_seconds.load(std::memory_order_acquire) * fps;
+        std::vector<float> sampled(motion.morph_keys.size());
+        for (std::size_t i{}; i != sampled.size(); ++i)
+          sampled[i] = better_pose::mmd_morph::Sample(motion.morph_keys[i], frame);
+        better_pose::mmd_morph::Combine(context.motion_morph_map, sampled, catalogue_names.size(),
+                                        motion_weights, motion_touched);
+      }
+    }
+
+    std::vector<std::pair<std::array<std::uint8_t, 8>, float>> writes;
+    {
+      std::lock_guard<std::mutex> lock(context.morph_mutex);
+      const auto &entries = context.morph_catalog.entries;
+      auto &weights = context.morph_weights;
+      if (context.morph_release_all.exchange(false, std::memory_order_acq_rel))
+        for (std::size_t i{}; i != weights.driven.size(); ++i)
+          weights.Release(i);
+      const std::size_t count = (std::min)(entries.size(), weights.value.size());
+      context.morph_was_driven.resize(count, 0);
+      context.motion_morph_driving.resize(count, 0);
+      for (std::size_t i{}; i != count; ++i) {
+        const bool from_motion = i < motion_touched.size() && motion_touched[i] != 0;
+        if (weights.driven[i] != 0) {
+          writes.emplace_back(entries[i].fname, weights.value[i]);
+          context.morph_was_driven[i] = 1;
+        } else if (from_motion) {
+          writes.emplace_back(entries[i].fname, motion_weights[i]);
+          context.morph_was_driven[i] = 1;
+        } else if (context.morph_was_driven[i] != 0) {
+          writes.emplace_back(entries[i].fname, 0.0F);  // released: back to neutral once
+          context.morph_was_driven[i] = 0;
+        }
+        context.motion_morph_driving[i] = from_motion ? 1 : 0;
+      }
+    }
+    if (writes.empty())
+      return;
+    if (context.morph_set_function == 0 &&
+        (!FindObjectAddressByPath(context, kFunctionSetMorphTargetPath,
+                                  context.morph_set_function) ||
+         context.morph_set_function == 0))
+      return;
+    if (context.morph_process_event == 0) {
+      std::uintptr_t vtable{};
+      if (!Read(context, mesh, vtable) || vtable == 0 ||
+          !Read(context, vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) * 8U,
+                context.morph_process_event) ||
+          context.morph_process_event == 0)
+        return;
+    }
+    for (const auto &[fname, value] : writes) {
+      std::array<std::uint8_t, 13> parameters{};
+      std::memcpy(parameters.data(), fname.data(), fname.size());
+      std::memcpy(parameters.data() + 8, &value, sizeof(value));
+      parameters[12] = 0;  // keep zero weights: the game may still be blending them
+      static_cast<void>(CallResolvedUFunction(mesh, context.morph_set_function,
+                                              context.morph_process_event, parameters.data(),
+                                              parameters.size()));
+    }
+  } catch (...) {
+  }
+}
+
 void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   if (!RefreshRuntime(context)) {
     PublishSnapshot(context, "local player character is unavailable");
@@ -7244,6 +7770,9 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   }
 
   EnsureActiveCharacterProfile(context);
+  StepExpressionFile(context);
+  StepExpressionHistory(context);
+  StepExpression(context);
 
   const bool freeze_enabled =
       context.freeze_enabled.load(std::memory_order_acquire);
@@ -8201,6 +8730,29 @@ Transformd OverlayJointWorld(const Context &context, const Transformd &component
   return TransformMultiply(component_world, UnpackTransform(packed));
 }
 
+// Joint limits for a ball joint (shoulder, hip): with the switch on, pull an
+// offset the drag produced back inside the bone's range. Anything that is not
+// a ball joint, or with the switch off, passes through untouched.
+Quatd LimitBallOffset(Context &context, const std::uint32_t bone, const Quatd &offset) noexcept {
+  if (!context.overlay_limits_enabled.load(std::memory_order_acquire) ||
+      bone >= context.bone_names.size())
+    return offset;
+  const auto ball = better_pose::limits::BallFor(context.bone_names[bone]);
+  if (!ball.valid)
+    return offset;
+  std::array<double, 4> base{0.0, 0.0, 0.0, 1.0};
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    if (bone >= context.pose_base_locals.size())
+      return offset;
+    const auto &raw = context.pose_base_locals[bone];
+    base = {raw[0], raw[1], raw[2], raw[3]};
+  }
+  const auto limited = better_pose::limits::ClampBall(
+      ball, better_pose::limits::Normalize(base), {offset.x, offset.y, offset.z, offset.w});
+  return Quatd{limited[0], limited[1], limited[2], limited[3]};
+}
+
 void WriteDragAngles(Context &context, const std::uint32_t bone,
                      const std::array<double, 3> &angles) noexcept {
   std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -8383,6 +8935,73 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     if (drag.twist)
       drag.ik = false;  // twist is always the one bone
 
+    // Joint limits: a hinge pivot (finger joints past the root) only bends
+    // about its own measured axis, within its range (joint_limits.hpp). The
+    // current offset is split into that bend and everything else, which is
+    // kept as it is while the drag changes only the bend.
+    drag.hinge = false;
+    drag.limb_hinge = false;
+    // An IK drag's middle bone (elbow/knee) with limits on: only the range is
+    // enforced (the solver already bends in its plane).
+    if (context.overlay_limits_enabled.load(std::memory_order_acquire) && drag.ik &&
+        drag.pivot < context.bone_names.size()) {
+      const auto limit = better_pose::limits::LimitFor(context.bone_names[drag.pivot]);
+      std::array<double, 4> base_rotation{0.0, 0.0, 0.0, 1.0};
+      bool have_base = false;
+      {
+        std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+        if (drag.pivot < context.pose_base_locals.size()) {
+          const auto &raw = context.pose_base_locals[drag.pivot];
+          base_rotation = {raw[0], raw[1], raw[2], raw[3]};
+          have_base = true;
+        }
+      }
+      if (limit.kind == better_pose::limits::Kind::Hinge && have_base) {
+        drag.limb_hinge = true;
+        drag.hinge_rest_base = better_pose::limits::Normalize(base_rotation);
+        drag.hinge_limit_axis = limit.axis;
+        drag.hinge_sign = limit.sign;
+        drag.hinge_minimum = limit.minimum;
+        drag.hinge_maximum = limit.maximum;
+      }
+    }
+    if (context.overlay_limits_enabled.load(std::memory_order_acquire) && !drag.ik &&
+        !drag.twist && drag.pivot < context.bone_names.size()) {
+      const auto limit = better_pose::limits::LimitFor(context.bone_names[drag.pivot]);
+      std::array<double, 4> base_rotation{0.0, 0.0, 0.0, 1.0};
+      bool have_base = false;
+      {
+        std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+        if (drag.pivot < context.pose_base_locals.size()) {
+          const auto &raw = context.pose_base_locals[drag.pivot];
+          base_rotation = {raw[0], raw[1], raw[2], raw[3]};
+          have_base = true;
+        }
+      }
+      if (limit.kind == better_pose::limits::Kind::Hinge && have_base) {
+        const auto base = better_pose::limits::Normalize(base_rotation);
+        const auto split = better_pose::limits::SplitBend(
+            limit, base, {start_offset.x, start_offset.y, start_offset.z, start_offset.w});
+        // The hinge in world space, for choosing which screen sweep bends.
+        std::array<double, 3> unit{0.0, 0.0, 0.0};
+        unit[static_cast<std::size_t>(limit.axis)] = 1.0;
+        const Quatd base_q{base[0], base[1], base[2], base[3]};
+        const Quatd parent_q{drag.parent_world[0], drag.parent_world[1], drag.parent_world[2],
+                             drag.parent_world[3]};
+        const Vec3d axis_world = QuatRotateVector(
+            parent_q, QuatRotateVector(QuatMultiply(start_offset, base_q),
+                                       Vec3d{unit[0], unit[1], unit[2]}));
+        drag.hinge = true;
+        drag.hinge_axis_world = {axis_world.x, axis_world.y, axis_world.z};
+        drag.hinge_base = split.rest;
+        drag.hinge_start_bend = split.bend_degrees;
+        drag.hinge_limit_axis = limit.axis;
+        drag.hinge_sign = limit.sign;
+        drag.hinge_minimum = limit.minimum;
+        drag.hinge_maximum = limit.maximum;
+        drag.hinge_rest_base = base;
+      }
+    }
     // The reference is where the joint was at the press, so the bone only
     // turns once the cursor sweeps around the pivot.
     drag.angle_ready = false;
@@ -8414,7 +9033,7 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
                              drag.start_offset[2], drag.start_offset[3]};
     const Quatd next = ApplyWorldRotationToOffset(
         parent_world, QuatFromRotationVector({axis.x, axis.y, axis.z}), start_offset);
-    WriteDragAngles(context, drag.pivot, QuatToRotator(next));
+    WriteDragAngles(context, drag.pivot, QuatToRotator(LimitBallOffset(context, drag.pivot, next)));
     return;
   }
 
@@ -8443,8 +9062,32 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     // The middle bone's parent has itself turned by the root rotation.
     const Quatd moved_mid_parent = QuatNormalize(QuatMultiply(turn.root, mid_parent));
     const Quatd next_root = ApplyWorldRotationToOffset(root_parent, turn.root, root_offset);
-    const Quatd next_mid = ApplyWorldRotationToOffset(moved_mid_parent, turn.mid, mid_offset);
-    WriteDragAngles(context, drag.root, QuatToRotator(next_root));
+    Quatd next_mid = ApplyWorldRotationToOffset(moved_mid_parent, turn.mid, mid_offset);
+    // Joint limits: the solver keeps the bend plane it started in, so the
+    // elbow/knee already only bends; what it cannot know is the range. The
+    // bend is read off the solved offset and clamped (a knee dragged past
+    // straight would fold backwards otherwise). A clamp leaves the hand short
+    // of the cursor -- the limb cannot reach it -- rather than breaking it.
+    if (drag.limb_hinge) {
+      better_pose::limits::Limit limit;
+      limit.kind = better_pose::limits::Kind::Hinge;
+      limit.axis = drag.hinge_limit_axis;
+      limit.sign = drag.hinge_sign;
+      limit.minimum = drag.hinge_minimum;
+      limit.maximum = drag.hinge_maximum;
+      const auto split = better_pose::limits::SplitBend(
+          limit, drag.hinge_rest_base, {next_mid.x, next_mid.y, next_mid.z, next_mid.w});
+      if (split.bend_degrees < limit.minimum || split.bend_degrees > limit.maximum) {
+        const auto clamped = better_pose::limits::ComposeBend(limit, drag.hinge_rest_base,
+                                                              split.rest, split.bend_degrees);
+        next_mid = Quatd{clamped[0], clamped[1], clamped[2], clamped[3]};
+      }
+    }
+    // The shoulder/hip is clamped too. The solve is not redone around the
+    // clamp, so a limited shoulder leaves the hand off the cursor -- the
+    // pose the arm cannot reach -- instead of bending the elbow to make up.
+    WriteDragAngles(context, drag.root,
+                    QuatToRotator(LimitBallOffset(context, drag.root, next_root)));
     WriteDragAngles(context, drag.pivot, QuatToRotator(next_mid));
     return;
   }
@@ -8466,13 +9109,43 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
   constexpr double kDepthRadiansPerNotch = 10.0 * 3.14159265358979323846 / 180.0;
   const double swing = have_angle ? drag.angle : 0.0;
   const double depth = wheel_notches * kDepthRadiansPerNotch;
+  if (drag.hinge) {
+    // Only the part of the drag about the hinge bends it. The screen sweep
+    // turns about the view ray: its share on the hinge is the cosine between
+    // the two, so a finger seen side-on (hinge toward the camera) bends 1:1
+    // with the sweep and one seen edge-on barely moves -- there the wheel,
+    // turning about the axis across the bone and the ray, takes over with
+    // its own share. Sideways motion is simply dropped.
+    constexpr double kDegrees = 180.0 / 3.14159265358979323846;
+    const Vec3d hinge_world{drag.hinge_axis_world[0], drag.hinge_axis_world[1],
+                            drag.hinge_axis_world[2]};
+    const double sweep_share =
+        V3Dot(Vec3d{drag.axis[0], drag.axis[1], drag.axis[2]}, hinge_world);
+    const double wheel_share =
+        V3Dot(Vec3d{drag.depth_axis[0], drag.depth_axis[1], drag.depth_axis[2]}, hinge_world);
+    // Rotation about the hinge's +axis, in world; bending is `hinge_sign` of it.
+    const double about_axis = swing * sweep_share + depth * wheel_share;
+    better_pose::limits::Limit limit;
+    limit.kind = better_pose::limits::Kind::Hinge;
+    limit.axis = drag.hinge_limit_axis;
+    limit.sign = drag.hinge_sign;
+    limit.minimum = drag.hinge_minimum;
+    limit.maximum = drag.hinge_maximum;
+    const double bend = drag.hinge_start_bend + about_axis * drag.hinge_sign * kDegrees;
+    const auto offset = better_pose::limits::ComposeBend(limit, drag.hinge_rest_base,
+                                                         drag.hinge_base, bend);
+    WriteDragAngles(context, drag.pivot,
+                    QuatToRotator(Quatd{offset[0], offset[1], offset[2], offset[3]}));
+    return;
+  }
   const Quatd screen_turn = QuatFromRotationVector(
       {drag.axis[0] * swing, drag.axis[1] * swing, drag.axis[2] * swing});
   const Quatd depth_turn = QuatFromRotationVector(
       {drag.depth_axis[0] * depth, drag.depth_axis[1] * depth, drag.depth_axis[2] * depth});
   // Depth first (about the bone's axis at the press), then the screen swing.
   const Quatd world_rotation = QuatNormalize(QuatMultiply(screen_turn, depth_turn));
-  const Quatd next = ApplyWorldRotationToOffset(parent_world, world_rotation, start_offset);
+  const Quatd next = LimitBallOffset(
+      context, drag.pivot, ApplyWorldRotationToOffset(parent_world, world_rotation, start_offset));
   WriteDragAngles(context, drag.pivot, QuatToRotator(next));
 }
 
@@ -9041,11 +9714,15 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
   const bool undo_down = menu_owns_mouse && control && !shift && key_down('Z');
   const bool redo_down =
       menu_owns_mouse && control && (key_down('Y') || (shift && key_down('Z')));
-  if (!typing && !context.motion_loaded.load(std::memory_order_acquire)) {
+  // The shortcut goes to the page on screen: expressions on the expression
+  // page (they are not tied to motion playback), the pose everywhere else.
+  const bool expression = context.expression_page_active.load(std::memory_order_acquire);
+  if (!typing && (expression || !context.motion_loaded.load(std::memory_order_acquire))) {
+    auto &request = expression ? context.morph_history_request : context.pose_history_request;
     if (undo_down && !context.pose_undo_key_was_down)
-      context.pose_history_request.store(1, std::memory_order_release);
+      request.store(1, std::memory_order_release);
     if (redo_down && !context.pose_redo_key_was_down)
-      context.pose_history_request.store(2, std::memory_order_release);
+      request.store(2, std::memory_order_release);
   }
   context.pose_undo_key_was_down = undo_down;
   context.pose_redo_key_was_down = redo_down;
@@ -9873,6 +10550,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             context->localizer.Text("pose.skeleton.ik", "Limb IK (hands, feet)");
         if (ui->checkbox(ui->user, anomaly::sdk::StringView(ik_label), &ik) != 0)
           context->overlay_ik_enabled.store(ik != 0, std::memory_order_release);
+        ui->same_line(ui->user, 0.0F, 12.0F);
+        int limits = context->overlay_limits_enabled.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string limits_label = context->localizer.Text(
+            "pose.skeleton.limits", "Joint limits (fingers, elbows, knees, shoulders, hips)");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(limits_label), &limits) != 0)
+          context->overlay_limits_enabled.store(limits != 0, std::memory_order_release);
       }
       if (overlay_enabled != 0 && context->input != nullptr) {
         const std::string overlay_hint = context->localizer.Text(
@@ -10094,6 +10777,63 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
 
     ui->separator(ui->user);
 
+    // File: name, folder, export, import -- above the bone list.
+    if (context->pose_export_name[0] == '\0') {
+      std::snprintf(context->pose_export_name.data(), context->pose_export_name.size(),
+                  "pose.json");
+    }
+    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    ui->input_text(ui->user, anomaly::sdk::StringView("##pose-export-name"),
+                   context->pose_export_name.data(),
+                   context->pose_export_name.size(), 0);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string choose_folder_label =
+        context->localizer.Text("pose.choose.folder", "Choose folder");
+    if (ui->button(ui->user, anomaly::sdk::StringView(choose_folder_label), 90.0F,
+                   0.0F) != 0) {
+      const auto selected = ChooseFolder(context->pose_export_folder);
+      if (selected) {
+        const std::string folder_utf8 = WideToUtf8(selected->native());
+        if (!folder_utf8.empty())
+          context->pose_export_folder = folder_utf8;
+      }
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string export_label =
+        context->localizer.Text("pose.export", "Export");
+    if (ui->button(ui->user, anomaly::sdk::StringView(export_label), 60.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(1, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string export_skeleton_label =
+        context->localizer.Text("pose.export.skeleton", "Export Skeleton");
+    if (ui->button(ui->user, anomaly::sdk::StringView(export_skeleton_label), 110.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(3, std::memory_order_release);
+
+    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.import.file", "Import file")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string choose_file_label =
+        context->localizer.Text("pose.choose.file", "Choose file");
+    if (ui->button(ui->user, anomaly::sdk::StringView(choose_file_label), 90.0F,
+                   0.0F) != 0) {
+      const auto selected = ChooseFile(context->pose_import_file);
+      if (selected) {
+        const std::string file_utf8 = WideToUtf8(selected->native());
+        if (!file_utf8.empty())
+          context->pose_import_file = file_utf8;
+      }
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string import_label =
+        context->localizer.Text("pose.import", "Import");
+    if (ui->button(ui->user, anomaly::sdk::StringView(import_label), 60.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(2, std::memory_order_release);
+
+    ui->separator(ui->user);
+
     const bool can_text_input =
         HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
             ui, offsetof(AnomalyUiServiceV1, input_text)) &&
@@ -10186,60 +10926,6 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       }
     }
 
-    ui->separator(ui->user);
-    if (context->pose_export_name[0] == '\0') {
-      std::snprintf(context->pose_export_name.data(), context->pose_export_name.size(),
-                  "pose.json");
-    }
-    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    ui->input_text(ui->user, anomaly::sdk::StringView("##pose-export-name"),
-                   context->pose_export_name.data(),
-                   context->pose_export_name.size(), 0);
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string choose_folder_label =
-        context->localizer.Text("pose.choose.folder", "Choose folder");
-    if (ui->button(ui->user, anomaly::sdk::StringView(choose_folder_label), 90.0F,
-                   0.0F) != 0) {
-      const auto selected = ChooseFolder(context->pose_export_folder);
-      if (selected) {
-        const std::string folder_utf8 = WideToUtf8(selected->native());
-        if (!folder_utf8.empty())
-          context->pose_export_folder = folder_utf8;
-      }
-    }
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string export_label =
-        context->localizer.Text("pose.export", "Export");
-    if (ui->button(ui->user, anomaly::sdk::StringView(export_label), 60.0F,
-                   0.0F) != 0)
-      context->pose_file_action_requested.store(1, std::memory_order_release);
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string export_skeleton_label =
-        context->localizer.Text("pose.export.skeleton", "Export Skeleton");
-    if (ui->button(ui->user, anomaly::sdk::StringView(export_skeleton_label), 110.0F,
-                   0.0F) != 0)
-      context->pose_file_action_requested.store(3, std::memory_order_release);
-
-    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.import.file", "Import file")));
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string choose_file_label =
-        context->localizer.Text("pose.choose.file", "Choose file");
-    if (ui->button(ui->user, anomaly::sdk::StringView(choose_file_label), 90.0F,
-                   0.0F) != 0) {
-      const auto selected = ChooseFile(context->pose_import_file);
-      if (selected) {
-        const std::string file_utf8 = WideToUtf8(selected->native());
-        if (!file_utf8.empty())
-          context->pose_import_file = file_utf8;
-      }
-    }
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string import_label =
-        context->localizer.Text("pose.import", "Import");
-    if (ui->button(ui->user, anomaly::sdk::StringView(import_label), 60.0F,
-                   0.0F) != 0)
-      context->pose_file_action_requested.store(2, std::memory_order_release);
 
     if (can_confirm_popup) {
       int confirm_open = 1;
@@ -10270,6 +10956,209 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       const std::string warning = context->localizer.Text(
           "pose.unavailable", "Pose edit is inactive until the authoritative bone-space pose buffer is populated.");
       ui->text(ui->user, anomaly::sdk::StringView(warning));
+    }
+    if (use_tabs)
+      ui->end_tab_item(ui->user);
+  }
+
+  // --- Expression: morph targets ---------------------------------------------
+  const std::string expression_tab_label =
+      context->localizer.Text("tab.expression", "Expression");
+  const bool expression_page =
+      !use_tabs ||
+      ui->begin_tab_item(ui->user, anomaly::sdk::StringView(expression_tab_label), nullptr, 0U,
+                         1) != 0;
+  // Without tabs every section is on one page; Ctrl+Z then stays with the pose.
+  context->expression_page_active.store(use_tabs && expression_page, std::memory_order_release);
+  if (expression_page) {
+    const bool can_list =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
+            ui, offsetof(AnomalyUiServiceV1, input_text)) &&
+        ui->input_text != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+        ui->begin_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
+            ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+        ui->end_child != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::filter_match)>(
+            ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
+        ui->filter_match != nullptr;
+
+    // The file dialog is modal and pumps messages for as long as it is open,
+    // so it runs after the lock below is released: the game thread keeps
+    // writing the expression meanwhile.
+    bool import_requested = false;
+    bool folder_requested = false;
+    {
+    std::lock_guard<std::mutex> lock(context->morph_mutex);
+    auto &catalog = context->morph_catalog;
+    auto &weights = context->morph_weights;
+    const std::size_t driven = weights.DrivenCount();
+    const std::string summary =
+        context->localizer.Text("morph.count", "Morph targets") + ": " +
+        std::to_string(catalog.entries.size()) + "   " +
+        context->localizer.Text("morph.driven", "set by you") + ": " + std::to_string(driven);
+    ui->text(ui->user, anomaly::sdk::StringView(summary));
+    // The loaded MMD motion's facial keys: on by default, a hand-set morph
+    // always wins over the motion.
+    int motion_expression =
+        context->motion_expression_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string motion_expression_label = context->localizer.Text(
+        "morph.motion", "Play the MMD motion's expressions");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_expression_label),
+                     &motion_expression) != 0)
+      context->motion_expression_enabled.store(motion_expression != 0,
+                                               std::memory_order_release);
+    const std::uint32_t mapped = context->motion_morph_mapped.load(std::memory_order_acquire);
+    const std::uint32_t total = context->motion_morph_total.load(std::memory_order_acquire);
+    if (context->motion_loaded.load(std::memory_order_acquire) && total != 0) {
+      ui->same_line(ui->user, 0.0F, 8.0F);
+      const std::array<std::string_view, 2> counts{std::to_string(mapped),
+                                                   std::to_string(total)};
+      const std::string mapped_line = context->localizer.Format(
+          "morph.motion.mapped", "{0}/{1} MMD morphs mapped",
+          std::span<const std::string_view>(counts.data(), counts.size()));
+      ui->text(ui->user, anomaly::sdk::StringView(mapped_line));
+    }
+    if (!context->morph_status.empty())
+      ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                             "morph.none", "No morph targets on this character.")));
+    const std::string release_label =
+        context->localizer.Label("morph.release_all", "Give all back to the game",
+                                 "morph-release-all");
+    if (ui->button(ui->user, anomaly::sdk::StringView(release_label), 0.0F, 0.0F) != 0)
+      context->morph_release_all.store(true, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string rescan_label =
+        context->localizer.Label("morph.rescan", "Reload list", "morph-rescan");
+    if (ui->button(ui->user, anomaly::sdk::StringView(rescan_label), 0.0F, 0.0F) != 0)
+      context->morph_rescan_requested.store(true, std::memory_order_release);
+    const std::string hint = context->localizer.Text(
+        "morph.hint",
+        "Dragging a slider takes that morph over from the game; the reset button hands it back.");
+    ui->text(ui->user, anomaly::sdk::StringView(hint));
+
+    // Undo/redo: the expression's own history.
+    const std::uint32_t morph_undo = context->morph_undo_count.load(std::memory_order_acquire);
+    const std::uint32_t morph_redo = context->morph_redo_count.load(std::memory_order_acquire);
+    const bool can_enable_button =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
+            ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
+        ui->button_enabled != nullptr;
+    const auto morph_button = [&](const std::string &label, const bool enabled) {
+      return can_enable_button
+                 ? ui->button_enabled(ui->user, anomaly::sdk::StringView(label), 84.0F, 0.0F,
+                                      enabled ? 1 : 0) != 0 && enabled
+                 : ui->button(ui->user, anomaly::sdk::StringView(label), 84.0F, 0.0F) != 0 &&
+                       enabled;
+    };
+    const std::string morph_undo_label = context->localizer.Text("pose.undo", "Undo") + " (" +
+                                         std::to_string(morph_undo) + ")##morph-undo";
+    const std::string morph_redo_label = context->localizer.Text("pose.redo", "Redo") + " (" +
+                                         std::to_string(morph_redo) + ")##morph-redo";
+    if (morph_button(morph_undo_label, morph_undo != 0))
+      context->morph_history_request.store(1, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    if (morph_button(morph_redo_label, morph_redo != 0))
+      context->morph_history_request.store(2, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    ui->text(ui->user, anomaly::sdk::StringView(
+                           context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y")));
+
+    // Expression file. The folder is the one chosen on the pose page.
+    if (context->morph_export_name[0] == '\0')
+      std::snprintf(context->morph_export_name.data(), context->morph_export_name.size(),
+                    "expression.json");
+    ui->text(ui->user,
+             anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    ui->input_text(ui->user, anomaly::sdk::StringView("##morph-export-name"),
+                   context->morph_export_name.data(), context->morph_export_name.size(), 0);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string morph_folder_label =
+        context->localizer.Label("pose.choose.folder", "Choose folder", "morph-choose-folder");
+    if (ui->button(ui->user, anomaly::sdk::StringView(morph_folder_label), 90.0F, 0.0F) != 0)
+      folder_requested = true;
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string morph_export_label =
+        context->localizer.Label("morph.export", "Export expression", "morph-export");
+    if (ui->button(ui->user, anomaly::sdk::StringView(morph_export_label), 0.0F, 0.0F) != 0)
+      context->morph_file_request.store(1, std::memory_order_release);
+    const std::string morph_import_label =
+        context->localizer.Label("morph.import", "Import expression", "morph-import");
+    if (ui->button(ui->user, anomaly::sdk::StringView(morph_import_label), 0.0F, 0.0F) != 0)
+      import_requested = true;
+    if (!context->morph_file_status.empty()) {
+      ui->same_line(ui->user, 0.0F, 8.0F);
+      ui->text(ui->user, anomaly::sdk::StringView(context->morph_file_status));
+    }
+    ui->separator(ui->user);
+
+    if (can_list && !catalog.entries.empty()) {
+      const std::string filter_label = context->localizer.Text("morph.filter", "Search");
+      static_cast<void>(ui->input_text(ui->user, anomaly::sdk::StringView(filter_label),
+                                       context->morph_filter.data(), context->morph_filter.size(),
+                                       ANOMALY_UI_TEXT_INPUT_V1_NONE));
+      // Same rule as the bone list: end_child is called whether or not the
+      // child is visible, or the host's child stack goes out of balance.
+      const int morph_list_open = ui->begin_child(
+          ui->user, anomaly::sdk::StringView("morph-list"), 0.0F, 420.0F, 0U);
+      if (morph_list_open != 0) {
+        const std::string_view filter(context->morph_filter.data());
+        auto current = better_pose::morph::Group::Count;
+        for (const std::uint32_t index : catalog.order) {
+          const auto &entry = catalog.entries[index];
+          if (!filter.empty() &&
+              ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
+                               anomaly::sdk::StringView(entry.name)) == 0)
+            continue;
+          if (entry.group != current) {
+            current = entry.group;
+            const auto group = static_cast<std::size_t>(current);
+            const std::string heading =
+                context->localizer.Text(better_pose::morph::kGroupKeys[group],
+                                        better_pose::morph::kGroupNames[group]) +
+                " (" + std::to_string(catalog.CountIn(current)) + ")";
+            ui->separator(ui->user);
+            ui->text(ui->user, anomaly::sdk::StringView(heading));
+          }
+          float value = weights.value[index];
+          const bool is_driven = weights.driven[index] != 0;
+          const std::string label = (is_driven ? "* " : "  ") + entry.name + "###morph-" +
+                                    std::to_string(index);
+          if (ui->slider_float(ui->user, anomaly::sdk::StringView(label), &value, 0.0F, 1.0F) !=
+              0)
+            weights.Set(index, value);
+          if (is_driven) {
+            ui->same_line(ui->user, 0.0F, 4.0F);
+            const std::string reset = context->localizer.Label(
+                "morph.reset", "Reset", "morph-reset-" + std::to_string(index));
+            if (ui->button(ui->user, anomaly::sdk::StringView(reset), 0.0F, 0.0F) != 0)
+              weights.Release(index);
+          }
+        }
+      }
+      ui->end_child(ui->user);
+    }
+    }  // morph_mutex
+    if (folder_requested) {
+      const auto selected = ChooseFolder(context->pose_export_folder);
+      if (selected) {
+        const std::string folder_utf8 = WideToUtf8(selected->native());
+        if (!folder_utf8.empty())
+          context->pose_export_folder = folder_utf8;
+      }
+    }
+    if (import_requested) {
+      const auto selected = ChooseFile(context->pose_export_folder);
+      if (selected) {
+        {
+          std::lock_guard<std::mutex> lock(context->morph_mutex);
+          context->morph_import_path = selected->native();
+        }
+        context->morph_file_request.store(2, std::memory_order_release);
+      }
     }
     if (use_tabs)
       ui->end_tab_item(ui->user);
