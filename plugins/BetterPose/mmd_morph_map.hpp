@@ -23,8 +23,18 @@
 // eye (MMD ウィンク is the model's left eye too), EB_UD_* at 1 raises a brow.
 namespace better_pose::mmd_morph {
 
+// One candidate NTE morph. Its own scale multiplies the target's: fallbacks
+// are different shapes, so one can need a different strength than the first
+// choice (TD_EyesClo closes further than biyan and looks right at half).
+struct Candidate {
+  std::string_view name;
+  float scale = 1.0F;
+  Candidate(const char *n) : name(n) {}  // NOLINT: implicit, keeps the table terse
+  Candidate(const std::string_view n, const float s = 1.0F) : name(n), scale(s) {}
+};
+
 struct Target {
-  std::vector<std::string_view> candidates;  // first one present wins
+  std::vector<Candidate> candidates;  // first one present wins
   float scale = 1.0F;
 };
 
@@ -34,11 +44,12 @@ struct Rule {
 };
 
 // Builders keep the table readable: T(scale, candidates...) is one target,
-// R(mmd, targets...) one rule.
-inline Target T(const float scale, std::initializer_list<std::string_view> candidates) {
-  return Target{std::vector<std::string_view>(candidates), scale};
+// C(name, scale) a candidate with its own strength, R(mmd, targets...) one rule.
+inline Candidate C(const std::string_view name, const float scale) { return {name, scale}; }
+inline Target T(const float scale, std::initializer_list<Candidate> candidates) {
+  return Target{std::vector<Candidate>(candidates), scale};
 }
-inline Target T(std::initializer_list<std::string_view> candidates) { return T(1.0F, candidates); }
+inline Target T(std::initializer_list<Candidate> candidates) { return T(1.0F, candidates); }
 inline Rule R(const std::string_view mmd, std::initializer_list<Target> targets) {
   return Rule{mmd, std::vector<Target>(targets)};
 }
@@ -47,16 +58,16 @@ inline const std::vector<Rule> &Rules() {
   static const std::vector<Rule> rules{
       // Mouth: the vowel shapes MMD lip sync is built from.
       R("あ", {T({"jawOpen_a", "jawOpen"})}),
-      R("い", {T(0.6F, {"jawOpen_yi", "jawOpen"})}),
+      R("い", {T({"jawOpen_yi", C("jawOpen", 0.6F)})}),
       R("う", {T({"jawOpen_wu", "mouthPucker"})}),
-      R("え", {T(0.7F, {"jawOpen_ei", "jawOpen"})}),
+      R("え", {T({"jawOpen_ei", C("jawOpen", 0.7F)})}),
       R("お", {T({"jawOpen_o", "mouthFunnel"})}),
       R("ワ", {T({"jawOpen_a", "jawOpen"})}),
       R("ω", {T({"mouthPucker"})}),
       R("口角上げ", {T(0.5F, {"jawOpen_Smile_01_CLO", "jawOpen_Happy_01_CLO"})}),
       R("にやり", {T({"jawOpen_Smile_01_CLO", "jawOpen_Happy_01_CLO"})}),
       // Eyes.
-      R("まばたき", {T({"biyan", "TD_EyesClo"})}),
+      R("まばたき", {T({"biyan", C("TD_EyesClo", 0.5F)})}),
       R("ウィンク", {T({"biyan_L"})}),
       R("ウィンク２", {T({"biyan_L"})}),
       R("ウィンク右", {T({"biyan_R"})}),
@@ -107,10 +118,11 @@ inline std::vector<Resolved> Resolve(const std::vector<std::string> &mmd_names,
                                    [&](const Rule &r) { return r.mmd == mmd; });
     if (rule != Rules().end()) {
       for (const auto &target : rule->targets) {
-        for (const auto candidate : target.candidates) {
-          const std::int64_t index = find(candidate);
+        for (const auto &candidate : target.candidates) {
+          const std::int64_t index = find(candidate.name);
           if (index >= 0) {
-            resolved.drives.push_back({static_cast<std::uint32_t>(index), target.scale});
+            resolved.drives.push_back(
+                {static_cast<std::uint32_t>(index), target.scale * candidate.scale});
             break;
           }
         }

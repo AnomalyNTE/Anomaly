@@ -154,6 +154,23 @@ void MmdMapping() {
   Check(without_vowels[b[1].drives[0].entry] == "mouthFunnel", "お falls back to mouthFunnel");
   Check(b[2].drives.empty() && b[3].drives.empty(),
         "a morph the character lacks entirely is skipped, not guessed");
+  Check(with_vowels[a[4].drives[0].entry] == "biyan" && a[4].drives[0].scale == 1.0F,
+        "まばたき uses biyan at full strength");
+  const std::vector<std::string> no_biyan{"jawOpen", "TD_EyesClo"};
+  const auto c = mm::Resolve({"まばたき"}, no_biyan);
+  Check(c[0].drives.size() == 1 && no_biyan[c[0].drives[0].entry] == "TD_EyesClo" &&
+            c[0].drives[0].scale == 0.5F,
+        "the TD_EyesClo fallback carries its own half strength");
+  // い / え: the vowel shape is full strength, only the jawOpen stand-in is partial.
+  const auto vowel = mm::Resolve({"い", "え"}, with_vowels);
+  Check(with_vowels[vowel[0].drives[0].entry] == "jawOpen_yi" && vowel[0].drives[0].scale == 1.0F &&
+            with_vowels[vowel[1].drives[0].entry] == "jawOpen_ei" &&
+            vowel[1].drives[0].scale == 1.0F,
+        "a dedicated vowel shape is driven at full strength");
+  const auto stand_in = mm::Resolve({"い", "え"}, without_vowels);
+  Check(without_vowels[stand_in[0].drives[0].entry] == "jawOpen" &&
+            stand_in[0].drives[0].scale == 0.6F && stand_in[1].drives[0].scale == 0.7F,
+        "the jawOpen stand-in keeps its partial strength");
 
   // Sampling: linear between keys, held at the ends.
   const std::vector<mm::Key> keys{{10, 0.0F}, {20, 1.0F}, {40, 0.5F}};
