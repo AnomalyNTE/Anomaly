@@ -19,7 +19,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <map>
 #include <mutex>
 #include <new>
 #include <string>
@@ -775,7 +774,6 @@ namespace oracle_stone_impl {
 
 using oracle_stone_locator_profile::kGObjectsPattern;
 using oracle_stone_locator_profile::kGWorldPattern;
-using oracle_stone_locator_profile::kOracleStoneStateQueryPattern;
 using oracle_stone_locator_profile::kRipDisplacementOffset;
 using oracle_stone_locator_profile::kRipInstructionSize;
 using oracle_stone_locator_profile::kGObjectsAddend;
@@ -806,7 +804,6 @@ using oracle_stone_locator_profile::kOracleStoneLevelOffset;
 using oracle_stone_locator_profile::kOracleStoneFloorOffset;
 using oracle_stone_locator_profile::kOracleStoneLocationOffset;
 using oracle_stone_locator_profile::kOracleStoneMapExploreOffset;
-using oracle_stone_locator_profile::kOracleStoneStateContextOffset;
 using oracle_stone_locator_profile::kTreasureboxDataAssetPath;
 
 using oracle_stone_locator::OracleStoneUnknown;
@@ -814,7 +811,6 @@ using oracle_stone_locator::OracleStoneAvailable;
 using oracle_stone_locator::OracleStoneCollected;
 
 constexpr std::size_t kMaximumOracleStones = 4096;
-constexpr std::size_t kMaximumStateQueriesPerTick = 64;
 constexpr std::uint32_t kMaximumObjectCount = 16U * 1024U * 1024U;
 constexpr std::uint32_t kMaximumObjectChunks = 4096;
 
@@ -884,14 +880,12 @@ struct Context {
     RetryGate scan_gate{};
     RetryGate world_gate{};
     RetryGate objects_gate{};
-    RetryGate state_query_gate{};
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
 
     std::uintptr_t g_objects_address{};
     std::uintptr_t g_world_address{};
-    std::uintptr_t state_query{};
     ObjectRegistry registry{};
     std::uintptr_t treasure_asset{};
     std::uintptr_t data_table{};
@@ -904,10 +898,7 @@ struct Context {
     bool scan_attempted{};
     bool scan_ready{};
     std::uint64_t update_sequence{};
-    std::uint64_t next_state_refresh_sequence{};
-    std::size_t state_refresh_cursor{};
-    std::map<std::int32_t, std::size_t> raw_state_counts;  // diagnostic, one pass
-    std::string last_raw_state_summary;
+    bool state_query_disabled_logged{};
 };
 
 constexpr auto kOracleRetryInterval = std::chrono::seconds(5);
@@ -1094,21 +1085,6 @@ bool OracleResolvePlayerState(Context& context) noexcept {
     return true;
 }
 
-bool OracleInvokeStateQuery(const std::uintptr_t function,
-                            const std::uintptr_t state_context,
-                            const FNameValue& id,
-                            std::int32_t& result) noexcept {
-    if (function == 0 || state_context == 0) return false;
-    // The current build returns one byte (movzx eax, bl).
-    using QueryFn = std::uint8_t(__fastcall*)(void*, const void*);
-    const auto query = reinterpret_cast<QueryFn>(function);
-    __try {
-        result = static_cast<std::int32_t>(query(reinterpret_cast<void*>(state_context), &id));
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
 
 bool OracleScanCatalog(Context& context) {
     if (context.scan_attempted) return context.scan_ready;
@@ -1216,73 +1192,19 @@ bool OracleScanCatalog(Context& context) {
 
 void OracleRefreshStates(Context& context) {
     if (!context.scan_ready) return;
-    if (context.state_query == 0) {
-        if (!OracleGateOpen(context.state_query_gate)) return;
-        std::uintptr_t fn{};
-        if (context.signature->resolve(
-                context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
-                anomaly::sdk::StringView(".text"),
-                anomaly::sdk::StringView(kOracleStoneStateQueryPattern), &fn)
-                .code != ANOMALY_STATUS_V1_OK ||
-            fn == 0) {
-            OracleGateFailed(context, context.state_query_gate, "oracle state query signature");
-            return;
-        }
-        OracleGateSucceeded(context, context.state_query_gate, "oracle state query signature");
-        context.state_query = fn;
-    }
-    if (!OracleResolvePlayerState(context)) return;
-    if (context.update_sequence < context.next_state_refresh_sequence) return;
-    const std::uintptr_t state_context =
-        context.player_state + kOracleStoneStateContextOffset;
-    std::scoped_lock lock(context.mutex);
-    const std::size_t count = context.records.size();
-    if (count == 0) {
-        context.state_refresh_cursor = 0;
-        context.next_state_refresh_sequence = context.update_sequence + 120;
-        return;
-    }
-    const std::size_t end =
-        context.state_refresh_cursor < count
-            ? (std::min)(count, context.state_refresh_cursor + kMaximumStateQueriesPerTick)
-            : count;
-    if (context.state_refresh_cursor == 0) context.raw_state_counts.clear();
-    while (context.state_refresh_cursor < end) {
-        auto& record = context.records[context.state_refresh_cursor++];
-        std::int32_t native_state{};
-        if (OracleInvokeStateQuery(context.state_query, state_context,
-                                   record.id_name, native_state)) {
-            // The old mapping (0 = available, 2 = collected) was for the int
-            // the previous build returned. This build returns a byte. Guess,
-            // not yet confirmed: 1 = available, 0 = collected -- the only
-            // reading consistent with a save where every stone is collected
-            // and all 267 read 0. If it is wrong, uncollected stones read 0
-            // too and are skipped (nothing is revisited); the raw-value log
-            // below is how it gets confirmed.
-            record.state = native_state == 1   ? OracleStoneAvailable
-                           : native_state == 0 ? OracleStoneCollected
-                                               : OracleStoneUnknown;
-            ++context.raw_state_counts[native_state];
-        } else {
-            ++context.raw_state_counts[-1];  // the call faulted
-        }
-    }
-    if (context.state_refresh_cursor >= count) {
-        context.state_refresh_cursor = 0;
-        context.next_state_refresh_sequence = context.update_sequence + 120;
-        // Diagnostic: the raw values of one full pass, logged once per
-        // distinct distribution (not every pass).
-        std::string summary;
-        for (const auto& [value, seen] : context.raw_state_counts) {
-            if (!summary.empty()) summary += ", ";
-            summary += (value == -1 ? std::string("fault") : std::to_string(value)) + "=" +
-                       std::to_string(seen);
-        }
-        if (summary != context.last_raw_state_summary) {
-            context.last_raw_state_summary = summary;
-            OracleLog(context, "state query raw values over " + std::to_string(count) +
-                                   " stones: " + summary);
-        }
+    // DISABLED. On the 9/26+ builds the function the old state-query pattern
+    // matched is not a query: it is AHTTreasureBoxActor::TryOpen's "open"
+    // step. Its helper (sub_14947F090 in the 9/26 dump) looks up the player's
+    // StaticTreasureBoxDataRec_* bitmap, ORs in `1 << (id % 64)` and syncs it
+    // to the party -- it marks the box opened in the save. Called with an
+    // oracle row name it bailed before writing and returned 0, which is why
+    // every stone read 0. It must not be called; stone states stay unknown
+    // until a read-only source is found (that bitmap read directly, or the
+    // map icons).
+    if (!context.state_query_disabled_logged) {
+        context.state_query_disabled_logged = true;
+        OracleLog(context, "state query disabled: the matched function writes the treasure-box "
+                           "opened bitmap; stone states stay unknown");
     }
 }
 
