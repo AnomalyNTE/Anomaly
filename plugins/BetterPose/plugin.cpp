@@ -25,6 +25,7 @@ using Microsoft::WRL::ComPtr;
 #include "orbit_camera.hpp"
 #include "pose_mirror.hpp"
 #include "morph_catalog.hpp"
+#include "mmd_morph_map.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -562,7 +563,22 @@ struct Context final {
     double mmd_leg_length{};
     std::string mesh_id;
     std::string path;
+    // Facial keys by MMD morph name, in VMD frames (the timeline firstFrame
+    // indexes into). Mapped onto the character's morphs at playback time.
+    std::vector<std::string> morph_names;
+    std::vector<std::vector<better_pose::mmd_morph::Key>> morph_keys;
   };
+  // MMD morphs -> this character's morph catalogue, rebuilt when either the
+  // motion or the catalogue changes. Game thread only.
+  std::vector<better_pose::mmd_morph::Resolved> motion_morph_map;
+  std::uintptr_t motion_morph_map_asset{};
+  std::string motion_morph_map_path;
+  std::atomic_bool motion_expression_enabled{true};  // panel: play the VMD's facial keys
+  std::atomic<std::uint32_t> motion_morph_mapped{};   // for the panel: MMD morphs with a target
+  std::atomic<std::uint32_t> motion_morph_total{};
+  // NTE morphs the motion is driving right now, so they can be handed back
+  // to the game when playback stops. Game thread only.
+  std::vector<std::uint8_t> motion_morph_driving;
   std::mutex motion_mutex;
   MotionTrack motion;
   // Guarded by motion_mutex: a worker started before unload/switch cannot
@@ -3879,6 +3895,29 @@ bool LoadMotionDocument(Context &context, const std::string &document,
       }
     }
     track.offsets_ready = true;
+  }
+  // Facial keys (optional; motions converted before this carry none).
+  const auto morphs = json.find("morphs");
+  if (morphs != json.end() && morphs->is_object()) {
+    for (auto it = morphs->begin(); it != morphs->end(); ++it) {
+      if (!it.value().is_array())
+        continue;
+      std::vector<better_pose::mmd_morph::Key> keys;
+      for (const auto &key : it.value()) {
+        if (!key.is_array() || key.size() != 2 || !key[0].is_number() || !key[1].is_number())
+          continue;
+        const float weight = key[1].get<float>();
+        if (!std::isfinite(weight))
+          continue;
+        keys.push_back({key[0].get<std::uint32_t>(), weight});
+      }
+      if (keys.empty())
+        continue;
+      std::stable_sort(keys.begin(), keys.end(),
+                       [](const auto &a, const auto &b) { return a.frame < b.frame; });
+      track.morph_names.push_back(it.key());
+      track.morph_keys.push_back(std::move(keys));
+    }
   }
   {
     std::lock_guard<std::mutex> lock(context.motion_mutex);
@@ -7530,6 +7569,81 @@ void StepExpression(Context &context) noexcept {
       context.morph_weights.Resize(count);
       context.morph_was_driven.assign(count, 0);
       context.morph_status = ok ? "" : "no morph targets on this character";
+      // Every name into the log once per mesh, in chunks under the log's
+      // line limit: the MMD mapping table is written against these names.
+      if (ok) {
+        std::string line;
+        std::size_t chunk{};
+        const auto flush = [&]() {
+          if (line.empty())
+            return;
+          LogDiagnostic(context, "betterpose morph names " + Hex(asset) + " part " +
+                                     std::to_string(++chunk) + ": " + line);
+          line.clear();
+        };
+        for (const auto &entry : context.morph_catalog.entries) {
+          if (line.size() + entry.name.size() + 2 > 900)
+            flush();
+          line += (line.empty() ? "" : ", ") + entry.name;
+        }
+        flush();
+      }
+    }
+
+    // The loaded motion's facial keys, sampled at the playhead and mapped onto
+    // this character's morphs. Only while a motion with morphs is loaded and
+    // the page's switch is on; a morph the user set by hand wins over it.
+    std::vector<float> motion_weights;
+    std::vector<std::uint8_t> motion_touched;
+    const bool motion_drives =
+        context.motion_loaded.load(std::memory_order_acquire) &&
+        context.motion_expression_enabled.load(std::memory_order_acquire);
+    if (motion_drives) {
+      std::vector<std::string> catalogue_names;
+      std::uintptr_t catalogue_asset{};
+      {
+        std::lock_guard<std::mutex> lock(context.morph_mutex);
+        catalogue_asset = context.morph_catalog.asset;
+        catalogue_names.reserve(context.morph_catalog.entries.size());
+        for (const auto &entry : context.morph_catalog.entries)
+          catalogue_names.push_back(entry.name);
+      }
+      std::lock_guard<std::mutex> lock(context.motion_mutex);
+      const auto &motion = context.motion;
+      if (!motion.morph_names.empty() && !catalogue_names.empty()) {
+        if (context.motion_morph_map_asset != catalogue_asset ||
+            context.motion_morph_map_path != motion.path) {
+          context.motion_morph_map =
+              better_pose::mmd_morph::Resolve(motion.morph_names, catalogue_names);
+          context.motion_morph_map_asset = catalogue_asset;
+          context.motion_morph_map_path = motion.path;
+          std::uint32_t mapped{};
+          std::string unmapped;
+          for (const auto &resolved : context.motion_morph_map) {
+            if (!resolved.drives.empty())
+              ++mapped;
+            else
+              unmapped += (unmapped.empty() ? "" : ", ") + resolved.mmd;
+          }
+          context.motion_morph_mapped.store(mapped, std::memory_order_release);
+          context.motion_morph_total.store(
+              static_cast<std::uint32_t>(context.motion_morph_map.size()),
+              std::memory_order_release);
+          LogDiagnostic(context, "betterpose motion morphs: " + std::to_string(mapped) + "/" +
+                                     std::to_string(context.motion_morph_map.size()) +
+                                     " mapped" +
+                                     (unmapped.empty() ? "" : "; no target: " + unmapped));
+        }
+        // The same frame the bone sampler uses: seconds * fps from firstFrame.
+        const double fps = motion.fps > 0.0 ? motion.fps : 30.0;
+        const double frame = static_cast<double>(motion.first_frame) +
+                             context.motion_seconds.load(std::memory_order_acquire) * fps;
+        std::vector<float> sampled(motion.morph_keys.size());
+        for (std::size_t i{}; i != sampled.size(); ++i)
+          sampled[i] = better_pose::mmd_morph::Sample(motion.morph_keys[i], frame);
+        better_pose::mmd_morph::Combine(context.motion_morph_map, sampled, catalogue_names.size(),
+                                        motion_weights, motion_touched);
+      }
     }
 
     std::vector<std::pair<std::array<std::uint8_t, 8>, float>> writes;
@@ -7542,14 +7656,20 @@ void StepExpression(Context &context) noexcept {
           weights.Release(i);
       const std::size_t count = (std::min)(entries.size(), weights.value.size());
       context.morph_was_driven.resize(count, 0);
+      context.motion_morph_driving.resize(count, 0);
       for (std::size_t i{}; i != count; ++i) {
+        const bool from_motion = i < motion_touched.size() && motion_touched[i] != 0;
         if (weights.driven[i] != 0) {
           writes.emplace_back(entries[i].fname, weights.value[i]);
+          context.morph_was_driven[i] = 1;
+        } else if (from_motion) {
+          writes.emplace_back(entries[i].fname, motion_weights[i]);
           context.morph_was_driven[i] = 1;
         } else if (context.morph_was_driven[i] != 0) {
           writes.emplace_back(entries[i].fname, 0.0F);  // released: back to neutral once
           context.morph_was_driven[i] = 0;
         }
+        context.motion_morph_driving[i] = from_motion ? 1 : 0;
       }
     }
     if (writes.empty())
@@ -10664,6 +10784,27 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         std::to_string(catalog.entries.size()) + "   " +
         context->localizer.Text("morph.driven", "set by you") + ": " + std::to_string(driven);
     ui->text(ui->user, anomaly::sdk::StringView(summary));
+    // The loaded MMD motion's facial keys: on by default, a hand-set morph
+    // always wins over the motion.
+    int motion_expression =
+        context->motion_expression_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string motion_expression_label = context->localizer.Text(
+        "morph.motion", "Play the MMD motion's expressions");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_expression_label),
+                     &motion_expression) != 0)
+      context->motion_expression_enabled.store(motion_expression != 0,
+                                               std::memory_order_release);
+    const std::uint32_t mapped = context->motion_morph_mapped.load(std::memory_order_acquire);
+    const std::uint32_t total = context->motion_morph_total.load(std::memory_order_acquire);
+    if (context->motion_loaded.load(std::memory_order_acquire) && total != 0) {
+      ui->same_line(ui->user, 0.0F, 8.0F);
+      const std::array<std::string_view, 2> counts{std::to_string(mapped),
+                                                   std::to_string(total)};
+      const std::string mapped_line = context->localizer.Format(
+          "morph.motion.mapped", "{0}/{1} MMD morphs mapped",
+          std::span<const std::string_view>(counts.data(), counts.size()));
+      ui->text(ui->user, anomaly::sdk::StringView(mapped_line));
+    }
     if (!context->morph_status.empty())
       ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
                              "morph.none", "No morph targets on this character.")));

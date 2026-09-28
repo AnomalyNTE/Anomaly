@@ -1,6 +1,8 @@
 #include "../morph_catalog.hpp"
 #include "../pose_history.hpp"
+#include "../mmd_morph_map.hpp"
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
@@ -124,14 +126,64 @@ void ExpressionHistory() {
   history.Observe(game_moved, false, 2000);
   Check(!history.Observe(game_moved, false, 2400), "a weight the game owns is not recorded");
 }
+
+void MmdMapping() {
+  namespace mm = better_pose::mmd_morph;
+  // The two measured NTE characters: one has vowel shapes, one does not.
+  const std::vector<std::string> with_vowels{"jawOpen", "jawOpen_a", "jawOpen_yi", "jawOpen_wu",
+                                             "jawOpen_ei", "jawOpen_o", "biyan", "biyan_L",
+                                             "biyan_R", "EL_Smile_01_CLO", "EB_UD_L", "EB_UD_R",
+                                             "mouthFunnel", "mouthPucker"};
+  const std::vector<std::string> without_vowels{"jawOpen", "mouthFunnel", "mouthPucker", "biyan",
+                                                "EL_Smile_01_CLO"};
+  const std::vector<std::string> mmd{"あ", "お", "ウィンク", "上", "まばたき", "ありえない"};
+
+  const auto a = mm::Resolve(mmd, with_vowels);
+  Check(a.size() == 6, "one entry per MMD morph");
+  Check(a[0].drives.size() == 1 && with_vowels[a[0].drives[0].entry] == "jawOpen_a",
+        "あ takes the vowel shape when the character has it");
+  Check(with_vowels[a[1].drives[0].entry] == "jawOpen_o", "お takes jawOpen_o");
+  Check(with_vowels[a[2].drives[0].entry] == "biyan_L", "ウィンク closes the left eye");
+  Check(a[3].drives.size() == 2 && with_vowels[a[3].drives[0].entry] == "EB_UD_L" &&
+            with_vowels[a[3].drives[1].entry] == "EB_UD_R",
+        "上 raises both brows");
+  Check(a[5].drives.empty(), "an unknown MMD morph maps to nothing");
+
+  const auto b = mm::Resolve(mmd, without_vowels);
+  Check(without_vowels[b[0].drives[0].entry] == "jawOpen", "あ falls back to jawOpen");
+  Check(without_vowels[b[1].drives[0].entry] == "mouthFunnel", "お falls back to mouthFunnel");
+  Check(b[2].drives.empty() && b[3].drives.empty(),
+        "a morph the character lacks entirely is skipped, not guessed");
+
+  // Sampling: linear between keys, held at the ends.
+  const std::vector<mm::Key> keys{{10, 0.0F}, {20, 1.0F}, {40, 0.5F}};
+  Check(mm::Sample(keys, 0.0) == 0.0F && mm::Sample(keys, 50.0) == 0.5F, "held at the ends");
+  Check(std::abs(mm::Sample(keys, 15.0) - 0.5F) < 1e-6F &&
+            std::abs(mm::Sample(keys, 30.0) - 0.75F) < 1e-6F,
+        "linear between keys");
+  Check(mm::Sample({}, 5.0) == 0.0F, "no keys, no weight");
+
+  // Combining: あ and ワ on the same NTE morph add up and clamp; untouched
+  // morphs are not driven at all.
+  const std::vector<std::string> both{"あ", "ワ", "まばたき"};
+  const auto resolved = mm::Resolve(both, with_vowels);
+  std::vector<float> weights;
+  std::vector<std::uint8_t> touched;
+  mm::Combine(resolved, {0.7F, 0.6F, 0.0F}, with_vowels.size(), weights, touched);
+  Check(weights[1] == 1.0F && touched[1] == 1, "two MMD morphs on one target add and clamp");
+  Check(touched[6] == 1 && weights[6] == 0.0F, "a keyed morph at zero is still driven (open eyes)");
+  Check(touched[0] == 0 && touched[9] == 0, "morphs the motion never keys are left alone");
+}
 }  // namespace
 
 int main() {
+  MmdMapping();
   Groups();
   OrderIsGroupedAndStable();
   WeightsDriveOnlyTouchedMorphs();
   SaveAndLoad();
   ExpressionHistory();
-  std::cout << "PASS groups, grouped order, driven weights, save and load, expression history\n";
+  std::cout << "PASS mmd mapping, groups, grouped order, driven weights, save and load, "
+               "expression history\n";
   return 0;
 }

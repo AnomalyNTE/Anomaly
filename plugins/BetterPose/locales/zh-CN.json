@@ -21,6 +21,8 @@
     "morph.group.brows": "眉毛",
     "morph.group.mouth": "嘴",
     "morph.group.other": "其他",
+    "morph.motion": "播放 MMD 动作里的表情",
+    "morph.motion.mapped": "{0}/{1} 个 MMD 表情有对应",
     "morph.export": "导出表情",
     "morph.import": "导入表情",
     "status": "状态",
