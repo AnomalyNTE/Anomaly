@@ -1230,6 +1230,9 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_executable(anomaly_better_pose_history_fixture
             plugins/BetterPose/tests/pose_history_test.cpp)
         target_compile_options(anomaly_better_pose_history_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_pose_document_fixture
+            plugins/BetterPose/tests/pose_document_test.cpp)
+        target_compile_options(anomaly_better_pose_pose_document_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
         add_executable(anomaly_better_pose_limits_fixture
             plugins/BetterPose/tests/joint_limits_test.cpp)
         target_compile_options(anomaly_better_pose_limits_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)

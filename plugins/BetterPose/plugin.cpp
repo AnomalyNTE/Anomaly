@@ -27,6 +27,7 @@ using Microsoft::WRL::ComPtr;
 #include "morph_catalog.hpp"
 #include "mmd_morph_map.hpp"
 #include "joint_limits.hpp"
+#include "pose_document.hpp"
 #include "retarget/motion_builder.hpp"
 #include "../common/localization.hpp"
 
@@ -963,11 +964,21 @@ void EnsurePoseAngleCapacity(Context &context) noexcept {
 // recreates the plugin on every reload, and re-picking the file plus re-enabling driving after
 // each rebuild is pure friction. Declared here, defined next to the UTF-8 helpers it needs.
 
-bool ApplyPoseDocument(Context &context, const nlohmann::json &json) noexcept {  try {
+// How the last pose document landed: bones matched by name, by index (old
+// files), and the named bones this character lacks. The import path turns it
+// into its status line.
+struct PoseApplyReport {
+  std::size_t by_name{};
+  std::size_t by_index{};
+  std::vector<std::string> missing;
+};
+
+bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
+                       PoseApplyReport *report = nullptr) noexcept {  try {
     if (!json.is_object() || !json.contains("bones") ||
         !json.at("bones").is_array())
       return false;
-    std::vector<std::array<double, 3>> loaded;
+    std::vector<better_pose::pose_document::SavedBone> saved;
     for (const auto &item : json.at("bones")) {
       if (!item.is_object() || !item.contains("index") ||
           !item.contains("pitch") || !item.contains("yaw") ||
@@ -992,9 +1003,29 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json) noexcept { 
       if (pitch < -180.0 || pitch > 180.0 || yaw < -180.0 || yaw > 180.0 ||
           roll < -180.0 || roll > 180.0)
         return false;
-      if (loaded.size() <= index)
-        loaded.resize(static_cast<std::size_t>(index) + 1);
-      loaded[static_cast<std::size_t>(index)] = {pitch, yaw, roll};
+      better_pose::pose_document::SavedBone bone;
+      bone.index = index;
+      if (item.contains("name") && item.at("name").is_string())
+        bone.name = item.at("name").get<std::string>();
+      bone.pitch = pitch;
+      bone.yaw = yaw;
+      bone.roll = roll;
+      saved.push_back(std::move(bone));
+    }
+    // Names first: an index only means something on the skeleton it was
+    // saved from (pose_document.hpp).
+    const auto placed =
+        better_pose::pose_document::Place(saved, context.bone_names, kMaximumBoneIndex);
+    std::vector<std::array<double, 3>> loaded;
+    for (const auto &bone : placed.placed) {
+      if (loaded.size() <= bone.bone)
+        loaded.resize(static_cast<std::size_t>(bone.bone) + 1);
+      loaded[bone.bone] = {bone.pitch, bone.yaw, bone.roll};
+    }
+    if (report != nullptr) {
+      report->by_name = placed.by_name;
+      report->by_index = placed.by_index;
+      report->missing = placed.missing;
     }
     std::array<double, 3> root_offset{};
     if (json.contains("rootOffset")) {
@@ -1041,10 +1072,15 @@ std::string BuildPoseDocument(Context &context) noexcept {
       const auto &angle = context.bone_angles[index];
       if (angle[0] == 0.0 && angle[1] == 0.0 && angle[2] == 0.0)
         continue;
-      bones.push_back({{"index", index},
-                       {"pitch", angle[0]},
-                       {"yaw", angle[1]},
-                       {"roll", angle[2]}});
+      nlohmann::json bone{{"index", index},
+                          {"pitch", angle[0]},
+                          {"yaw", angle[1]},
+                          {"roll", angle[2]}};
+      // The name is what another character is matched by; the index stays
+      // for older readers and for skeletons whose names are not loaded.
+      if (index < context.bone_names.size() && !context.bone_names[index].empty())
+        bone["name"] = context.bone_names[index];
+      bones.push_back(std::move(bone));
     }
   }
   std::array<double, 3> root_offset{};
@@ -6813,12 +6849,21 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
         SetReflectionStatus(*context, "pose import failed: unreadable file");
       } else {
         const auto json = nlohmann::json::parse(document);
-        if (!ApplyPoseDocument(*context, json)) {
+        PoseApplyReport report;
+        if (!ApplyPoseDocument(*context, json, &report)) {
           SetReflectionStatus(*context, "pose import failed: invalid document");
         } else {
           context->pose_override_enabled.store(true, std::memory_order_release);
           context->pose_settings_dirty.store(true, std::memory_order_release);
-          SetReflectionStatus(*context, "pose imported");
+          std::string status =
+              "pose imported: " + std::to_string(report.by_name) + " bones by name";
+          if (report.by_index != 0)
+            status += ", " + std::to_string(report.by_index) +
+                      " by index (old file: may not match another character)";
+          if (!report.missing.empty())
+            status += ", " + std::to_string(report.missing.size()) +
+                      " not on this character (e.g. " + report.missing.front() + ")";
+          SetReflectionStatus(*context, status);
         }
       }
     } else if (data->action == 4) {
@@ -10732,6 +10777,63 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
 
     ui->separator(ui->user);
 
+    // File: name, folder, export, import -- above the bone list.
+    if (context->pose_export_name[0] == '\0') {
+      std::snprintf(context->pose_export_name.data(), context->pose_export_name.size(),
+                  "pose.json");
+    }
+    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    ui->input_text(ui->user, anomaly::sdk::StringView("##pose-export-name"),
+                   context->pose_export_name.data(),
+                   context->pose_export_name.size(), 0);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string choose_folder_label =
+        context->localizer.Text("pose.choose.folder", "Choose folder");
+    if (ui->button(ui->user, anomaly::sdk::StringView(choose_folder_label), 90.0F,
+                   0.0F) != 0) {
+      const auto selected = ChooseFolder(context->pose_export_folder);
+      if (selected) {
+        const std::string folder_utf8 = WideToUtf8(selected->native());
+        if (!folder_utf8.empty())
+          context->pose_export_folder = folder_utf8;
+      }
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string export_label =
+        context->localizer.Text("pose.export", "Export");
+    if (ui->button(ui->user, anomaly::sdk::StringView(export_label), 60.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(1, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string export_skeleton_label =
+        context->localizer.Text("pose.export.skeleton", "Export Skeleton");
+    if (ui->button(ui->user, anomaly::sdk::StringView(export_skeleton_label), 110.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(3, std::memory_order_release);
+
+    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.import.file", "Import file")));
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string choose_file_label =
+        context->localizer.Text("pose.choose.file", "Choose file");
+    if (ui->button(ui->user, anomaly::sdk::StringView(choose_file_label), 90.0F,
+                   0.0F) != 0) {
+      const auto selected = ChooseFile(context->pose_import_file);
+      if (selected) {
+        const std::string file_utf8 = WideToUtf8(selected->native());
+        if (!file_utf8.empty())
+          context->pose_import_file = file_utf8;
+      }
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string import_label =
+        context->localizer.Text("pose.import", "Import");
+    if (ui->button(ui->user, anomaly::sdk::StringView(import_label), 60.0F,
+                   0.0F) != 0)
+      context->pose_file_action_requested.store(2, std::memory_order_release);
+
+    ui->separator(ui->user);
+
     const bool can_text_input =
         HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
             ui, offsetof(AnomalyUiServiceV1, input_text)) &&
@@ -10824,60 +10926,6 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       }
     }
 
-    ui->separator(ui->user);
-    if (context->pose_export_name[0] == '\0') {
-      std::snprintf(context->pose_export_name.data(), context->pose_export_name.size(),
-                  "pose.json");
-    }
-    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.file.name", "File name")));
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    ui->input_text(ui->user, anomaly::sdk::StringView("##pose-export-name"),
-                   context->pose_export_name.data(),
-                   context->pose_export_name.size(), 0);
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string choose_folder_label =
-        context->localizer.Text("pose.choose.folder", "Choose folder");
-    if (ui->button(ui->user, anomaly::sdk::StringView(choose_folder_label), 90.0F,
-                   0.0F) != 0) {
-      const auto selected = ChooseFolder(context->pose_export_folder);
-      if (selected) {
-        const std::string folder_utf8 = WideToUtf8(selected->native());
-        if (!folder_utf8.empty())
-          context->pose_export_folder = folder_utf8;
-      }
-    }
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string export_label =
-        context->localizer.Text("pose.export", "Export");
-    if (ui->button(ui->user, anomaly::sdk::StringView(export_label), 60.0F,
-                   0.0F) != 0)
-      context->pose_file_action_requested.store(1, std::memory_order_release);
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string export_skeleton_label =
-        context->localizer.Text("pose.export.skeleton", "Export Skeleton");
-    if (ui->button(ui->user, anomaly::sdk::StringView(export_skeleton_label), 110.0F,
-                   0.0F) != 0)
-      context->pose_file_action_requested.store(3, std::memory_order_release);
-
-    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text("pose.import.file", "Import file")));
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string choose_file_label =
-        context->localizer.Text("pose.choose.file", "Choose file");
-    if (ui->button(ui->user, anomaly::sdk::StringView(choose_file_label), 90.0F,
-                   0.0F) != 0) {
-      const auto selected = ChooseFile(context->pose_import_file);
-      if (selected) {
-        const std::string file_utf8 = WideToUtf8(selected->native());
-        if (!file_utf8.empty())
-          context->pose_import_file = file_utf8;
-      }
-    }
-    ui->same_line(ui->user, 0.0F, 6.0F);
-    const std::string import_label =
-        context->localizer.Text("pose.import", "Import");
-    if (ui->button(ui->user, anomaly::sdk::StringView(import_label), 60.0F,
-                   0.0F) != 0)
-      context->pose_file_action_requested.store(2, std::memory_order_release);
 
     if (can_confirm_popup) {
       int confirm_open = 1;
