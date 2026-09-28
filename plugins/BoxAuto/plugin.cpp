@@ -1253,12 +1253,15 @@ void OracleRefreshStates(Context& context) {
         if (OracleInvokeStateQuery(context.state_query, state_context,
                                    record.id_name, native_state)) {
             // The old mapping (0 = available, 2 = collected) was for the int
-            // the previous build returned. This build returns a byte whose
-            // meaning is not confirmed yet: with every stone collected all
-            // 267 read 0, which is also what a missing record returns. Until
-            // a stone reads 1, the state stays unknown, so auto teleport does
-            // not treat every collected stone as available.
-            record.state = OracleStoneUnknown;
+            // the previous build returned. This build returns a byte. Guess,
+            // not yet confirmed: 1 = available, 0 = collected -- the only
+            // reading consistent with a save where every stone is collected
+            // and all 267 read 0. If it is wrong, uncollected stones read 0
+            // too and are skipped (nothing is revisited); the raw-value log
+            // below is how it gets confirmed.
+            record.state = native_state == 1   ? OracleStoneAvailable
+                           : native_state == 0 ? OracleStoneCollected
+                                               : OracleStoneUnknown;
             ++context.raw_state_counts[native_state];
         } else {
             ++context.raw_state_counts[-1];  // the call faulted
@@ -4580,22 +4583,35 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         auto& oracle = *context.oracle;
         std::size_t oracle_total{};
         std::size_t oracle_uncollected{};
+        std::size_t oracle_unknown{};
         {
             std::scoped_lock lock(oracle.mutex);
             oracle_total = oracle.records.size();
             for (const auto& record : oracle.records) {
                 if (record.state == oracle_stone_locator::OracleStoneAvailable) {
                     ++oracle_uncollected;
+                } else if (record.state == oracle_stone_locator::OracleStoneUnknown) {
+                    ++oracle_unknown;
                 }
             }
         }
-        const std::string uncollected_str = std::to_string(oracle_uncollected);
         const std::string total_str = std::to_string(oracle_total);
-        const std::array oracle_args{std::string_view(uncollected_str),
-                                     std::string_view(total_str)};
-        const std::string oracle_progress = context.localizer.Format(
-            "oracle.progress", "乌鸦石头 未获取 {0} / 总 {1}", oracle_args);
-        ui->text(ui->user, anomaly::sdk::StringView(oracle_progress));
+        if (oracle_total != 0 && oracle_unknown == oracle_total) {
+            // Every state is unknown (the query's meaning is unconfirmed on
+            // this build): "0 uncollected" would read as "all collected".
+            const std::array unknown_args{std::string_view(total_str)};
+            const std::string unknown_text = context.localizer.Format(
+                "oracle.progress.unknown",
+                "乌鸦石头 总 {0}，收集状态暂时读不出来（游戏更新后未确认）", unknown_args);
+            ui->text(ui->user, anomaly::sdk::StringView(unknown_text));
+        } else {
+            const std::string uncollected_str = std::to_string(oracle_uncollected);
+            const std::array oracle_args{std::string_view(uncollected_str),
+                                         std::string_view(total_str)};
+            const std::string oracle_progress = context.localizer.Format(
+                "oracle.progress", "乌鸦石头 未获取 {0} / 总 {1}", oracle_args);
+            ui->text(ui->user, anomaly::sdk::StringView(oracle_progress));
+        }
     } else {
         std::string status;
         std::size_t total{};
@@ -4622,13 +4638,25 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     if (type_choice == 10 && context.oracle != nullptr) {
         auto& oracle = *context.oracle;
         std::vector<oracle_stone_impl::OracleStoneRecord> available;
+        bool all_unknown = false;
         {
             std::scoped_lock lock(oracle.mutex);
+            all_unknown = !oracle.records.empty();
             for (const auto& record : oracle.records) {
+                if (record.state != oracle_stone_locator::OracleStoneUnknown) all_unknown = false;
                 if (record.state == oracle_stone_locator::OracleStoneAvailable) {
                     available.push_back(record);
                 }
             }
+            // No state is known (the query's meaning is unconfirmed on this
+            // build): list every stone for a manual teleport instead of an
+            // empty list. Auto teleport still only goes to known-available ones.
+            if (all_unknown) available = oracle.records;
+        }
+        if (all_unknown) {
+            ui->text(ui->user, anomaly::sdk::StringView(context.localizer.Text(
+                "oracle.list.unknown",
+                "收集状态读不出来，下面列出全部，可手动传送；自动传送暂不可用")));
         }
         if (ui->begin_child != nullptr && ui->end_child != nullptr) {
             ui->begin_child(ui->user, anomaly::sdk::StringView("oracle-list"),
