@@ -32,6 +32,10 @@
 #define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_PICKUP_SERVICE_V1_ID "anomaly.nte.pickup"
 #define ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID "anomaly.nte.ui-buttons"
+#define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES 128u
+#define ANOMALY_NTE_UI_BUTTON_V1_TEXT_MAX_BYTES 256u
 // Service tables belong to one Host lifecycle generation. A cached table from a stopped or
 // replaced generation remains callable only to report UNAVAILABLE (or zero for scalar queries);
 // it never resumes against a later Start generation.
@@ -334,6 +338,199 @@ typedef struct AnomalyNtePickupServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *snapshot)(
         void* user, AnomalyNtePickupSnapshotV1* snapshot);
 } AnomalyNtePickupServiceV1;
+
+// In-game UI buttons (UMG Button, CommonUI CommonButtonBase and HTUI_Button). A plugin must
+// declare the explicit nte-ui-buttons capability. The Host scans the widget tree, classifies
+// every button as clickable, blocked or hidden, and clicks by invoking the button's own
+// press -> release -> click handlers; it never synthesizes mouse or keyboard input and never
+// exposes UE object pointers.
+//
+// Work is asynchronous. request_scan, request_pick and request_click only queue a request and
+// return a request handle; the Host runs it in bounded slices on later Game ticks. A request
+// moves QUEUED -> RUNNING -> COMPLETE (a click completes on the tick it runs), and its final
+// outcome is its status: OK, or CANCELLED, NOT_FOUND (stale handle), CONFLICT (not clickable),
+// UNAVAILABLE or FAILED. Every entry point may be called from any thread.
+//
+// A completed scan publishes an immutable catalog identified by catalog_sequence. Catalog
+// reads name the sequence they were enumerated from and fail with NOT_FOUND once a newer
+// catalog replaces it. Button handles stay valid until the object registry changes; the Host
+// re-validates the object and re-evaluates clickability, including whether another window now
+// covers the button, immediately before it clicks.
+typedef enum AnomalyNteUiButtonKindV1 {
+    ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG = 1,
+    ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON = 2,
+    ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI = 3
+} AnomalyNteUiButtonKindV1;
+
+typedef enum AnomalyNteUiButtonCategoryV1 {
+    ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE = 1,
+    ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED = 2,
+    ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN = 3
+} AnomalyNteUiButtonCategoryV1;
+
+// Why a button is not clickable. Visibility reasons place it in HIDDEN; any other reason in
+// BLOCKED.
+typedef uint32_t AnomalyNteUiButtonReasonsV1;
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_NONE 0u
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_SELF (1u << 0u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_ANCESTOR (1u << 1u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_IN_VIEWPORT (1u << 2u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_DETACHED (1u << 3u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_DISABLED (1u << 4u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_INTERACTABLE (1u << 5u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED (1u << 6u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_QUERY_FAILED (1u << 7u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_INACTIVE_PAGE (1u << 8u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_TRANSPARENT (1u << 9u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_HIT_TESTABLE (1u << 10u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_CLOSING (1u << 11u)
+#define ANOMALY_NTE_UI_BUTTON_REASON_V1_OCCLUDED (1u << 12u)
+
+// window, owner and root are UserWidget object names: the window shown by the UI layer that
+// holds the button, the UserWidget whose widget tree declares it, and the outermost layout.
+// path lists every UserWidget from the outermost to the innermost, separated by " / ".
+// depth counts the widgets above the button; a pick lists deeper (inner) buttons first.
+// cause names the widget or window behind the first hiding or blocking reason. Strings are
+// null-terminated UTF-8, truncated on a code point boundary.
+typedef struct AnomalyNteUiButtonSnapshotV1 {
+    uint32_t struct_size; uint32_t kind;
+    uint64_t catalog_sequence;
+    AnomalyGenerationHandleV1 button;
+    uint32_t index; uint32_t category;
+    uint32_t reasons; uint32_t depth;
+    char name[ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES + 1u];
+    char class_name[ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES + 1u];
+    char window[ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES + 1u];
+    char owner[ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES + 1u];
+    char root[ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES + 1u];
+    char cause[ANOMALY_NTE_UI_BUTTON_V1_TEXT_MAX_BYTES + 1u];
+    char text[ANOMALY_NTE_UI_BUTTON_V1_TEXT_MAX_BYTES + 1u];
+    char path[ANOMALY_NTE_UI_BUTTON_V1_TEXT_MAX_BYTES + 1u];
+} AnomalyNteUiButtonSnapshotV1;
+
+// A UI layer (CommonUI activatable-widget container) and the window it currently shows.
+typedef uint32_t AnomalyNteUiWindowFlagsV1;
+#define ANOMALY_NTE_UI_WINDOW_V1_ACTIVE (1u << 0u)
+#define ANOMALY_NTE_UI_WINDOW_V1_VISIBLE (1u << 1u)
+#define ANOMALY_NTE_UI_WINDOW_V1_CLOSING (1u << 2u)
+#define ANOMALY_NTE_UI_WINDOW_V1_MODAL (1u << 3u)
+#define ANOMALY_NTE_UI_WINDOW_V1_HIDES_MAIN_FORM (1u << 4u)
+#define ANOMALY_NTE_UI_WINDOW_V1_PAUSES_GAME (1u << 5u)
+#define ANOMALY_NTE_UI_WINDOW_V1_MENU_INPUT (1u << 6u)
+// Shown and covers the input of every window drawn beneath it.
+#define ANOMALY_NTE_UI_WINDOW_V1_BLOCKING (1u << 7u)
+
+typedef struct AnomalyNteUiWindowSnapshotV1 {
+    uint32_t struct_size; uint32_t flags;
+    uint64_t catalog_sequence;
+    uint32_t index; uint32_t reserved;
+    char layer[ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES + 1u];
+    char window[ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES + 1u];
+} AnomalyNteUiWindowSnapshotV1;
+
+typedef uint32_t AnomalyNteUiButtonsStatusFlagsV1;
+// The active Profile, the reflected UI types and ProcessEvent are all usable.
+#define ANOMALY_NTE_UI_BUTTONS_STATUS_V1_READY (1u << 0u)
+#define ANOMALY_NTE_UI_BUTTONS_STATUS_V1_CATALOG (1u << 1u)
+#define ANOMALY_NTE_UI_BUTTONS_STATUS_V1_SCANNING (1u << 2u)
+// The catalog hit a scan bound and may omit buttons.
+#define ANOMALY_NTE_UI_BUTTONS_STATUS_V1_TRUNCATED (1u << 3u)
+#define ANOMALY_NTE_UI_BUTTONS_STATUS_V1_PICK_AVAILABLE (1u << 4u)
+
+typedef struct AnomalyNteUiButtonsStatusV1 {
+    uint32_t struct_size; uint32_t flags;
+    uint64_t catalog_sequence;
+    uint32_t button_count; uint32_t window_count;
+    uint32_t clickable_count; uint32_t blocked_count;
+    uint32_t hidden_count; uint32_t open_requests;
+    uint32_t objects_scanned; uint32_t process_event_calls;
+    uint32_t scan_ticks; uint32_t scan_milliseconds;
+} AnomalyNteUiButtonsStatusV1;
+
+// Selects buttons from a catalog. Empty strings match anything. name and text match
+// exactly; window matches the button's window, owner, root or any UserWidget on its path.
+// category_mask is a set of ANOMALY_NTE_UI_BUTTON_QUERY_V1_CATEGORY bits, 0 for any.
+// catalog_sequence 0 selects the current catalog.
+#define ANOMALY_NTE_UI_BUTTON_QUERY_V1_CATEGORY(category) (1u << (uint32_t)(category))
+typedef struct AnomalyNteUiButtonQueryV1 {
+    uint32_t struct_size; uint32_t category_mask;
+    uint64_t catalog_sequence;
+    AnomalyStringViewV1 name;
+    AnomalyStringViewV1 window;
+    AnomalyStringViewV1 text;
+} AnomalyNteUiButtonQueryV1;
+
+// FORCE clicks even when the button is not clickable. The Host still refuses a stale handle.
+#define ANOMALY_NTE_UI_BUTTON_CLICK_V1_FORCE (1u << 0u)
+typedef struct AnomalyNteUiButtonClickRequestV1 {
+    uint32_t struct_size; uint32_t flags;
+    AnomalyGenerationHandleV1 button;
+} AnomalyNteUiButtonClickRequestV1;
+
+typedef enum AnomalyNteUiButtonRequestKindV1 {
+    ANOMALY_NTE_UI_BUTTON_REQUEST_V1_SCAN = 1,
+    ANOMALY_NTE_UI_BUTTON_REQUEST_V1_PICK = 2,
+    ANOMALY_NTE_UI_BUTTON_REQUEST_V1_CLICK = 3
+} AnomalyNteUiButtonRequestKindV1;
+
+typedef enum AnomalyNteUiButtonRequestStateV1 {
+    ANOMALY_NTE_UI_BUTTON_REQUEST_V1_QUEUED = 1,
+    ANOMALY_NTE_UI_BUTTON_REQUEST_V1_RUNNING = 2,
+    ANOMALY_NTE_UI_BUTTON_REQUEST_V1_COMPLETE = 3
+} AnomalyNteUiButtonRequestStateV1;
+
+typedef uint32_t AnomalyNteUiButtonOutcomeFlagsV1;
+#define ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_FORCED (1u << 0u)
+// HTUI_Button only: the press armed the button and the click passed its own gate. An HTUI
+// click that does not pass completes with FAILED because the game discarded it.
+#define ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_PRESS_ARMED (1u << 1u)
+#define ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED (1u << 2u)
+// Scan and pick: the catalog they used hit a scan bound.
+#define ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_TRUNCATED (1u << 3u)
+
+// catalog_sequence is the catalog a scan published, or the catalog a pick or click used.
+// reasons is set when a click is refused as not clickable. hit_count is the number of
+// hovered buttons a pick found, innermost first; read them with pick_hit_at.
+typedef struct AnomalyNteUiButtonRequestSnapshotV1 {
+    uint32_t struct_size; uint32_t kind;
+    AnomalyGenerationHandleV1 request;
+    uint32_t state; uint32_t status;
+    uint64_t catalog_sequence;
+    uint32_t reasons; uint32_t outcome;
+    uint32_t invocations; uint32_t hit_count;
+    uint32_t checked; uint32_t process_event_calls;
+    char detail[ANOMALY_NTE_UI_BUTTON_V1_TEXT_MAX_BYTES + 1u];
+} AnomalyNteUiButtonRequestSnapshotV1;
+
+typedef struct AnomalyNteUiButtonsServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *status)(void* user, AnomalyNteUiButtonsStatusV1* status);
+    AnomalyStatusV1 (ANOMALY_CALL *button_at)(
+        void* user, uint64_t catalog_sequence, uint32_t index,
+        AnomalyNteUiButtonSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *window_at)(
+        void* user, uint64_t catalog_sequence, uint32_t index,
+        AnomalyNteUiWindowSnapshotV1* snapshot);
+    // Copies the first match (catalog order: clickable, blocked, hidden) and the match count.
+    // Returns NOT_FOUND with a zero count when nothing matches.
+    AnomalyStatusV1 (ANOMALY_CALL *find)(
+        void* user, const AnomalyNteUiButtonQueryV1* query,
+        AnomalyNteUiButtonSnapshotV1* first, uint32_t* match_count);
+    AnomalyStatusV1 (ANOMALY_CALL *request_scan)(void* user, AnomalyGenerationHandleV1* request);
+    // Rescans, then reports the buttons Slate marks as hovered by the real cursor.
+    AnomalyStatusV1 (ANOMALY_CALL *request_pick)(void* user, AnomalyGenerationHandleV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *request_click)(
+        void* user, const AnomalyNteUiButtonClickRequestV1* click,
+        AnomalyGenerationHandleV1* request);
+    AnomalyStatusV1 (ANOMALY_CALL *request_snapshot)(
+        void* user, AnomalyGenerationHandleV1 request,
+        AnomalyNteUiButtonRequestSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *pick_hit_at)(
+        void* user, AnomalyGenerationHandleV1 request, uint32_t index,
+        AnomalyNteUiButtonSnapshotV1* snapshot);
+    // Completes a QUEUED or RUNNING request with CANCELLED; CONFLICT once it is complete.
+    AnomalyStatusV1 (ANOMALY_CALL *cancel)(void* user, AnomalyGenerationHandleV1 request);
+} AnomalyNteUiButtonsServiceV1;
 
 typedef enum AnomalyNteEntityFlagsV1 {
     ANOMALY_NTE_ENTITY_V1_NONE = 0,

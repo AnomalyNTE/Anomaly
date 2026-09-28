@@ -420,6 +420,7 @@ add_library(anomaly_adapter_services STATIC
     src/game/ue5/ue5_damage_function_hook.cpp
     src/game/ue5/ue5_nte_adapter.cpp
     src/game/nte/nte_navigation_input_policy.cpp
+    src/game/nte/nte_ui_buttons.cpp
     src/game/ue5/game_tick_hook.cpp
     src/game/ue5/ue5_streaming_source_override.cpp
     src/game/ue5/ue5_outbound_bit_count_probe.cpp)
@@ -1020,6 +1021,18 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     target_compile_options(anomaly_render_fixture PRIVATE /W4 /permissive- /EHsc)
     target_link_libraries(
         anomaly_render_fixture PRIVATE anomaly_runtime_kernel d3d12 dxgi dxguid)
+endif()
+
+# Drives the Host UI button engine (anomaly.nte.ui-buttons) against an in-memory widget
+# tree laid out from the SDK dump, with offsets read from the shipped NTE Profile.
+if(ANOMALY_BUILD_TEST_FIXTURES)
+    add_executable(anomaly_nte_ui_buttons_fixture apps/nte_ui_buttons_fixture/main.cpp)
+    target_compile_definitions(anomaly_nte_ui_buttons_fixture PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+        "ANOMALY_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
+    target_compile_options(anomaly_nte_ui_buttons_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_ui_buttons_fixture PRIVATE
+        anomaly_adapter_services anomaly_build_profile)
 endif()
 
 # Exercises the Present interception path against a D3D11 swap chain, which is

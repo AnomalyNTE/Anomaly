@@ -1,6 +1,7 @@
 #include "anomaly/nte_profile_runtime.hpp"
 
 #include "anomaly/nte_navigation_input_policy.hpp"
+#include "anomaly/nte_ui_buttons.hpp"
 #include "anomaly/ue5_actor_process_event_hook.hpp"
 #include "anomaly/ue5_damage_function_hook.hpp"
 #include "anomaly/ue5_object_lookup.hpp"
@@ -397,6 +398,19 @@ FeatureValidationResult ValidateNavigationLayout(
             return {false, "navigation layout exceeds the supported bound"};
         }
     }
+    return {true, {}};
+}
+
+FeatureValidationResult ValidateUiButtonsLayout(
+    const BuildProfile& profile,
+    const std::string_view feature,
+    const ProfileResolutionSnapshot&,
+    const SymbolMemory&) {
+    if (feature != kNteUiButtonsFeature) {
+        return {false, "UI button layout validator used by another feature"};
+    }
+    std::string error;
+    if (!ValidateNteUiButtonsLayout(profile, error)) return {false, std::move(error)};
     return {true, {}};
 }
 
@@ -797,6 +811,8 @@ FeatureLayoutValidatorRegistry NteFeatureLayoutValidators(
     validators.Register(
         std::string(kNavigationInputAbiValidator), ValidateNavigationInputAbi);
     validators.Register(std::string(kPickupLayoutValidator), ValidatePickupLayout);
+    validators.Register(
+        std::string(kNteUiButtonsLayoutValidator), ValidateUiButtonsLayout);
     validators.Register(
         std::string(kCombatReflectionValidator), ValidateCombatReflectionLayout);
     validators.Register(std::string(kSkillsLayoutValidator), ValidateSkillsLayout);

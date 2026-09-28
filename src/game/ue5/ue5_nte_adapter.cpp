@@ -1,6 +1,7 @@
 #include "anomaly/ue5_nte_adapter.hpp"
 #include "anomaly/nte_damage_capture.hpp"
 #include "anomaly/nte_monster_names.hpp"
+#include "anomaly/nte_ui_buttons.hpp"
 #include "anomaly/ue5_ftext.hpp"
 #include "anomaly/ue5_streaming_source_override.hpp"
 #include "anomaly/thread_local_value.hpp"
@@ -1091,6 +1092,9 @@ struct Ue5NteAdapter::State {
     } pickup_confirmation;
     AnomalyNtePickupSnapshotV1 pickup_snapshot{sizeof(AnomalyNtePickupSnapshotV1)};
     std::uint64_t pickup_sequence{};
+    // Created with the Profile. Ticked after the locked sampling pass because a click runs
+    // arbitrary game code; it takes this State's mutex only for name and object lookups.
+    std::unique_ptr<NteUiButtons> ui_buttons;
     enum class AhudFunctionKind : std::size_t {
         ReceiveDrawHud,
         Project,
@@ -1877,6 +1881,25 @@ struct Ue5NteAdapter::State {
             navigation_input_policy->Started();
     }
 
+    [[nodiscard]] bool NteUiButtonsAvailable() const noexcept {
+        if (ui_buttons == nullptr || !process_event_invoker || !ObjectFindAvailable() ||
+            !resolution.FeatureAvailable("nte.ui-buttons") ||
+            !resolution.FeatureAvailable("ue5.names") ||
+            !resolution.FeatureAvailable("ue5.objects") ||
+            !resolution.FeatureAvailable(kUe5ProcessEventFeature)) {
+            return false;
+        }
+        for (const std::string_view key : NteUiButtonsLayoutKeys()) {
+            if (Layout(profile, key) < 0) return false;
+        }
+        return FeatureDeclaresDependency(profile, "nte.ui-buttons", "ue5.names") &&
+            FeatureDeclaresDependency(profile, "nte.ui-buttons", "ue5.objects") &&
+            FeatureDeclaresDependency(profile, "nte.ui-buttons", kUe5ObjectFindFeature) &&
+            FeatureDeclaresDependency(profile, "nte.ui-buttons", kUe5ProcessEventFeature) &&
+            FeatureDeclaresLayoutValidator(
+                profile, "nte.ui-buttons", kNteUiButtonsLayoutValidator);
+    }
+
     [[nodiscard]] bool NtePickupAvailable() const noexcept {
         const auto* const process_event = resolution.FindSymbol(kUe5ProcessEventSymbol);
         return static_cast<bool>(process_event_invoker) && process_event != nullptr &&
@@ -2016,6 +2039,7 @@ struct Ue5NteAdapter::State {
         if (feature == "nte.map-landmarks") return NteMapLandmarksAvailable();
         if (feature == "nte.navigation") return NteNavigationAvailable();
         if (feature == "nte.pickup") return NtePickupAvailable();
+        if (feature == "nte.ui-buttons") return NteUiButtonsAvailable();
         if (feature == "nte.entities") {
             return NteEntitiesLayoutAvailable();
         }
@@ -2160,6 +2184,9 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_NTE_PICKUP_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.pickup");
         }
+        if (id == ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID) {
+            return framework_hook_ready && SemanticFeatureAvailable("nte.ui-buttons");
+        }
         if (id == ANOMALY_NTE_ENTITIES_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.entities");
         }
@@ -2248,7 +2275,7 @@ struct Ue5NteAdapter::State {
         if (feature == "nte.session" || feature == "nte.player" ||
             feature == "nte.player-esp" ||
             feature == "nte.player-teleport" || feature == "nte.navigation" ||
-            feature == "nte.pickup" ||
+            feature == "nte.pickup" || feature == "nte.ui-buttons" ||
             feature == "nte.entities" ||
             feature == "nte.combat" || feature == "nte.skills" ||
             feature == "nte.skill-invocation") {
@@ -2420,6 +2447,7 @@ struct Ue5NteAdapter::State {
         navigation = {};
         pickup_sequence = 0;
         InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
+        if (ui_buttons != nullptr) ui_buttons->Invalidate(ANOMALY_STATUS_V1_UNAVAILABLE);
         InvalidateAhudBindingLocked();
         InvalidateCombatSkillDiscoveryLocked();
         ResetDamageEvents();
@@ -2476,6 +2504,7 @@ struct Ue5NteAdapter::State {
         entity_demand.store(false, std::memory_order_release);
         navigation_demand.store(false, std::memory_order_release);
         InvalidatePickupLocked(ANOMALY_STATUS_V1_UNAVAILABLE);
+        if (ui_buttons != nullptr) ui_buttons->Invalidate(ANOMALY_STATUS_V1_UNAVAILABLE);
         InvalidatePlayer();
         InvalidateEntities();
         InvalidateActors();
@@ -12456,6 +12485,12 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             sizeof(AnomalyNtePickupServiceV1),
             ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
             this, PickupRequestNearbyThunk, PickupSnapshotThunk};
+        ui_buttons_service = {
+            sizeof(AnomalyNteUiButtonsServiceV1),
+            ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION,
+            this, UiButtonsStatusThunk, UiButtonAtThunk, UiWindowAtThunk, UiButtonFindThunk,
+            UiButtonRequestScanThunk, UiButtonRequestPickThunk, UiButtonRequestClickThunk,
+            UiButtonRequestSnapshotThunk, UiButtonPickHitAtThunk, UiButtonCancelThunk};
         entities_service = {
             sizeof(AnomalyNteEntitiesServiceV1), ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION,
             this, EntityFrameThunk, EntitySnapshotAtThunk, EntityClassNameThunk,
@@ -12517,6 +12552,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyNteMapLandmarksServiceV1 map_landmarks_service{};
     AnomalyNteNavigationServiceV1 navigation_service{};
     AnomalyNtePickupServiceV1 pickup_service{};
+    AnomalyNteUiButtonsServiceV1 ui_buttons_service{};
     AnomalyNteEntitiesServiceV1 entities_service{};
     AnomalyNteActorsServiceV1 actors_service{};
     AnomalyNteCombatServiceV1 combat_service{};
@@ -12788,6 +12824,90 @@ private:
         void* user, AnomalyNtePickupSnapshotV1* snapshot) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::PickupSnapshot(lease.User(), snapshot) : StoppedStatus();
+    }
+
+    // The engine is owned by State; the lease keeps State alive for the call.
+    template <typename Call>
+    static AnomalyStatusV1 UiButtonsCall(void* user, Call&& call) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        if (!lease) return StoppedStatus();
+        auto* const state = static_cast<State*>(lease.User());
+        if (state->ui_buttons == nullptr) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "UI button service is unavailable");
+        }
+        return call(*state->ui_buttons);
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonsStatusThunk(
+        void* user, AnomalyNteUiButtonsStatusV1* status) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) { return engine.Status(status); });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonAtThunk(
+        void* user, std::uint64_t catalog_sequence, std::uint32_t index,
+        AnomalyNteUiButtonSnapshotV1* snapshot) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.ButtonAt(catalog_sequence, index, snapshot);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiWindowAtThunk(
+        void* user, std::uint64_t catalog_sequence, std::uint32_t index,
+        AnomalyNteUiWindowSnapshotV1* snapshot) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.WindowAt(catalog_sequence, index, snapshot);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonFindThunk(
+        void* user, const AnomalyNteUiButtonQueryV1* query,
+        AnomalyNteUiButtonSnapshotV1* first, std::uint32_t* match_count) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.Find(query, first, match_count);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonRequestScanThunk(
+        void* user, AnomalyGenerationHandleV1* request) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.RequestScan(request);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonRequestPickThunk(
+        void* user, AnomalyGenerationHandleV1* request) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.RequestPick(request);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonRequestClickThunk(
+        void* user, const AnomalyNteUiButtonClickRequestV1* click,
+        AnomalyGenerationHandleV1* request) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.RequestClick(click, request);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonRequestSnapshotThunk(
+        void* user, AnomalyGenerationHandleV1 request,
+        AnomalyNteUiButtonRequestSnapshotV1* snapshot) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.RequestSnapshot(request, snapshot);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonPickHitAtThunk(
+        void* user, AnomalyGenerationHandleV1 request, std::uint32_t index,
+        AnomalyNteUiButtonSnapshotV1* snapshot) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) {
+            return engine.PickHitAt(request, index, snapshot);
+        });
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL UiButtonCancelThunk(
+        void* user, AnomalyGenerationHandleV1 request) noexcept {
+        return UiButtonsCall(user, [&](NteUiButtons& engine) { return engine.Cancel(request); });
     }
 
     static AnomalyStatusV1 ANOMALY_CALL EntityFrameThunk(
@@ -13929,6 +14049,15 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             semantic_lifetime)) {
         return false;
     }
+    if (framework_hook_ready && SemanticFeatureAvailable("nte.ui-buttons") &&
+        !PublishIfMissing(
+            ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID,
+            ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION,
+            &endpoint->ui_buttons_service,
+            {},
+            semantic_lifetime)) {
+        return false;
+    }
     if (framework_hook_ready && NteActorsLayoutAvailable() &&
         !PublishIfMissing(
             ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
@@ -14021,6 +14150,33 @@ Ue5NteAdapter::Ue5NteAdapter(
     state_->process_event_invoker = std::move(process_event_invoker);
     state_->object_lookup = std::move(object_lookup);
     state_->navigation_input_policy = std::move(navigation_input_policy);
+    {
+        State* const owner = state_.get();
+        NteUiButtonsBindings bindings;
+        bindings.resolve_name = [owner](std::uint32_t name_id) {
+            std::scoped_lock lock(owner->mutex);
+            return owner->ResolveNameSnapshotLocked(name_id);
+        };
+        if (state_->resolution.FeatureAvailable(kUe5FTextFeature)) {
+            bindings.read_ftext = [owner](std::uintptr_t address) {
+                std::scoped_lock lock(owner->mutex);
+                std::string value;
+                return owner->ResolveFTextLocked(address, value) ? value : std::string{};
+            };
+        }
+        bindings.find_object = [owner](const wchar_t* path) {
+            std::scoped_lock lock(owner->mutex);
+            std::uintptr_t object{};
+            return owner->FindExactObjectLocked(path, object) ? object : std::uintptr_t{0};
+        };
+        bindings.invoke = [invoker = state_->process_event_invoker](
+                              std::uintptr_t object, std::uintptr_t function,
+                              void* parameters, std::size_t size) {
+            return InvokeProcessEventGuarded(invoker, object, function, parameters, size);
+        };
+        state_->ui_buttons = std::make_unique<NteUiButtons>(
+            state_->profile, CreateInProcessSymbolMemory(), std::move(bindings));
+    }
     state_->sampling.player_tick_interval = (std::max)(1U, sampling.player_tick_interval);
     state_->sampling.entity_tick_interval = (std::max)(1U, sampling.entity_tick_interval);
     state_->sampling.combat_tick_interval = (std::max)(1U, sampling.combat_tick_interval);
@@ -14306,6 +14462,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
     const auto entry_epoch = state->lifecycle_epoch.load(std::memory_order_acquire);
     if (!state->started.load(std::memory_order_acquire)) return;
     const DWORD current = GetCurrentThreadId();
+    NteUiButtonsTickInput ui_buttons_input;
     {
         std::scoped_lock lock(state->mutex);
         if (!state->started.load(std::memory_order_acquire) ||
@@ -14402,7 +14559,15 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->total_snapshot_cost_micros += elapsed_micros;
         state->max_snapshot_cost_micros = (std::max)(
             state->max_snapshot_cost_micros, elapsed_micros);
+        const auto& registry = state->object_registry;
+        ui_buttons_input.available = registry.items != 0 &&
+            state->SemanticFeatureRunning("nte.ui-buttons");
+        ui_buttons_input.registry = {
+            registry.items, registry.count, registry.num_chunks, registry.chunk_size,
+            registry.item_stride, registry.object_offset, registry.serial_offset};
+        ui_buttons_input.object_generation = state->object_generation;
     }
+    if (state->ui_buttons != nullptr) state->ui_buttons->Tick(ui_buttons_input);
     state->ReassertMovementHold();
     state->ReleaseArrivalHold();
     const auto endpoint = state->callback_endpoint.load(std::memory_order_acquire);

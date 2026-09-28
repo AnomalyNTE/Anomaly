@@ -230,6 +230,12 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_V1_TEXT_MAX_BYTES\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_V1_TEXT_MAX_BYTES);
     output.append(",\n    \"ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION\": ");
@@ -296,6 +302,70 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_PICKUP_V1_CHECKING_FLAG);
     output.append(",\n    \"ANOMALY_NTE_PICKUP_V1_HAS_UNCONFIRMED\": ");
     AppendUnsigned(output, ANOMALY_NTE_PICKUP_V1_HAS_UNCONFIRMED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_NONE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_NONE);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_SELF\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_SELF);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_ANCESTOR\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_ANCESTOR);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_IN_VIEWPORT\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_IN_VIEWPORT);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_DETACHED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_DETACHED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_DISABLED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_DISABLED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_INTERACTABLE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_INTERACTABLE);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_QUERY_FAILED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_QUERY_FAILED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_INACTIVE_PAGE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_INACTIVE_PAGE);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_TRANSPARENT\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_TRANSPARENT);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_HIT_TESTABLE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_HIT_TESTABLE);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_CLOSING\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_CLOSING);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_REASON_V1_OCCLUDED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_REASON_V1_OCCLUDED);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_ACTIVE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_ACTIVE);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_VISIBLE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_VISIBLE);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_CLOSING\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_CLOSING);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_MODAL\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_MODAL);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_HIDES_MAIN_FORM\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_HIDES_MAIN_FORM);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_PAUSES_GAME\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_PAUSES_GAME);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_MENU_INPUT\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_MENU_INPUT);
+    output.append(",\n    \"ANOMALY_NTE_UI_WINDOW_V1_BLOCKING\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_WINDOW_V1_BLOCKING);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTONS_STATUS_V1_READY\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTONS_STATUS_V1_READY);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTONS_STATUS_V1_CATALOG\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTONS_STATUS_V1_CATALOG);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTONS_STATUS_V1_SCANNING\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTONS_STATUS_V1_SCANNING);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTONS_STATUS_V1_TRUNCATED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTONS_STATUS_V1_TRUNCATED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTONS_STATUS_V1_PICK_AVAILABLE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTONS_STATUS_V1_PICK_AVAILABLE);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_CLICK_V1_FORCE\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_CLICK_V1_FORCE);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_FORCED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_FORCED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_PRESS_ARMED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_PRESS_ARMED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED);
+    output.append(",\n    \"ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_TRUNCATED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_TRUNCATED);
     output.append("\n  },\n");
 
     output.append("  \"enums\": {\n");
@@ -424,6 +494,42 @@ std::string BuildSnapshot() {
          {"ANOMALY_NTE_PICKUP_V1_QUEUED", ANOMALY_NTE_PICKUP_V1_QUEUED},
          {"ANOMALY_NTE_PICKUP_V1_CHECKING", ANOMALY_NTE_PICKUP_V1_CHECKING},
          {"ANOMALY_NTE_PICKUP_V1_COMPLETE", ANOMALY_NTE_PICKUP_V1_COMPLETE}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteUiButtonKindV1",
+        sizeof(AnomalyNteUiButtonKindV1),
+        alignof(AnomalyNteUiButtonKindV1),
+        {{"ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG", ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG},
+         {"ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON", ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON},
+         {"ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI", ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteUiButtonCategoryV1",
+        sizeof(AnomalyNteUiButtonCategoryV1),
+        alignof(AnomalyNteUiButtonCategoryV1),
+        {{"ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE", ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE},
+         {"ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED", ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED},
+         {"ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN", ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteUiButtonRequestKindV1",
+        sizeof(AnomalyNteUiButtonRequestKindV1),
+        alignof(AnomalyNteUiButtonRequestKindV1),
+        {{"ANOMALY_NTE_UI_BUTTON_REQUEST_V1_SCAN", ANOMALY_NTE_UI_BUTTON_REQUEST_V1_SCAN},
+         {"ANOMALY_NTE_UI_BUTTON_REQUEST_V1_PICK", ANOMALY_NTE_UI_BUTTON_REQUEST_V1_PICK},
+         {"ANOMALY_NTE_UI_BUTTON_REQUEST_V1_CLICK", ANOMALY_NTE_UI_BUTTON_REQUEST_V1_CLICK}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyNteUiButtonRequestStateV1",
+        sizeof(AnomalyNteUiButtonRequestStateV1),
+        alignof(AnomalyNteUiButtonRequestStateV1),
+        {{"ANOMALY_NTE_UI_BUTTON_REQUEST_V1_QUEUED", ANOMALY_NTE_UI_BUTTON_REQUEST_V1_QUEUED},
+         {"ANOMALY_NTE_UI_BUTTON_REQUEST_V1_RUNNING", ANOMALY_NTE_UI_BUTTON_REQUEST_V1_RUNNING},
+         {"ANOMALY_NTE_UI_BUTTON_REQUEST_V1_COMPLETE", ANOMALY_NTE_UI_BUTTON_REQUEST_V1_COMPLETE}},
         false);
     AppendEnum(
         output,
@@ -1677,6 +1783,119 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyNteUiButtonSnapshotV1",
+        sizeof(AnomalyNteUiButtonSnapshotV1),
+        alignof(AnomalyNteUiButtonSnapshotV1),
+        {{"struct_size", offsetof(AnomalyNteUiButtonSnapshotV1, struct_size)},
+         {"kind", offsetof(AnomalyNteUiButtonSnapshotV1, kind)},
+         {"catalog_sequence", offsetof(AnomalyNteUiButtonSnapshotV1, catalog_sequence)},
+         {"button", offsetof(AnomalyNteUiButtonSnapshotV1, button)},
+         {"index", offsetof(AnomalyNteUiButtonSnapshotV1, index)},
+         {"category", offsetof(AnomalyNteUiButtonSnapshotV1, category)},
+         {"reasons", offsetof(AnomalyNteUiButtonSnapshotV1, reasons)},
+         {"depth", offsetof(AnomalyNteUiButtonSnapshotV1, depth)},
+         {"name", offsetof(AnomalyNteUiButtonSnapshotV1, name)},
+         {"class_name", offsetof(AnomalyNteUiButtonSnapshotV1, class_name)},
+         {"window", offsetof(AnomalyNteUiButtonSnapshotV1, window)},
+         {"owner", offsetof(AnomalyNteUiButtonSnapshotV1, owner)},
+         {"root", offsetof(AnomalyNteUiButtonSnapshotV1, root)},
+         {"cause", offsetof(AnomalyNteUiButtonSnapshotV1, cause)},
+         {"text", offsetof(AnomalyNteUiButtonSnapshotV1, text)},
+         {"path", offsetof(AnomalyNteUiButtonSnapshotV1, path)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteUiWindowSnapshotV1",
+        sizeof(AnomalyNteUiWindowSnapshotV1),
+        alignof(AnomalyNteUiWindowSnapshotV1),
+        {{"struct_size", offsetof(AnomalyNteUiWindowSnapshotV1, struct_size)},
+         {"flags", offsetof(AnomalyNteUiWindowSnapshotV1, flags)},
+         {"catalog_sequence", offsetof(AnomalyNteUiWindowSnapshotV1, catalog_sequence)},
+         {"index", offsetof(AnomalyNteUiWindowSnapshotV1, index)},
+         {"reserved", offsetof(AnomalyNteUiWindowSnapshotV1, reserved)},
+         {"layer", offsetof(AnomalyNteUiWindowSnapshotV1, layer)},
+         {"window", offsetof(AnomalyNteUiWindowSnapshotV1, window)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteUiButtonsStatusV1",
+        sizeof(AnomalyNteUiButtonsStatusV1),
+        alignof(AnomalyNteUiButtonsStatusV1),
+        {{"struct_size", offsetof(AnomalyNteUiButtonsStatusV1, struct_size)},
+         {"flags", offsetof(AnomalyNteUiButtonsStatusV1, flags)},
+         {"catalog_sequence", offsetof(AnomalyNteUiButtonsStatusV1, catalog_sequence)},
+         {"button_count", offsetof(AnomalyNteUiButtonsStatusV1, button_count)},
+         {"window_count", offsetof(AnomalyNteUiButtonsStatusV1, window_count)},
+         {"clickable_count", offsetof(AnomalyNteUiButtonsStatusV1, clickable_count)},
+         {"blocked_count", offsetof(AnomalyNteUiButtonsStatusV1, blocked_count)},
+         {"hidden_count", offsetof(AnomalyNteUiButtonsStatusV1, hidden_count)},
+         {"open_requests", offsetof(AnomalyNteUiButtonsStatusV1, open_requests)},
+         {"objects_scanned", offsetof(AnomalyNteUiButtonsStatusV1, objects_scanned)},
+         {"process_event_calls", offsetof(AnomalyNteUiButtonsStatusV1, process_event_calls)},
+         {"scan_ticks", offsetof(AnomalyNteUiButtonsStatusV1, scan_ticks)},
+         {"scan_milliseconds", offsetof(AnomalyNteUiButtonsStatusV1, scan_milliseconds)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteUiButtonQueryV1",
+        sizeof(AnomalyNteUiButtonQueryV1),
+        alignof(AnomalyNteUiButtonQueryV1),
+        {{"struct_size", offsetof(AnomalyNteUiButtonQueryV1, struct_size)},
+         {"category_mask", offsetof(AnomalyNteUiButtonQueryV1, category_mask)},
+         {"catalog_sequence", offsetof(AnomalyNteUiButtonQueryV1, catalog_sequence)},
+         {"name", offsetof(AnomalyNteUiButtonQueryV1, name)},
+         {"window", offsetof(AnomalyNteUiButtonQueryV1, window)},
+         {"text", offsetof(AnomalyNteUiButtonQueryV1, text)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteUiButtonClickRequestV1",
+        sizeof(AnomalyNteUiButtonClickRequestV1),
+        alignof(AnomalyNteUiButtonClickRequestV1),
+        {{"struct_size", offsetof(AnomalyNteUiButtonClickRequestV1, struct_size)},
+         {"flags", offsetof(AnomalyNteUiButtonClickRequestV1, flags)},
+         {"button", offsetof(AnomalyNteUiButtonClickRequestV1, button)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteUiButtonRequestSnapshotV1",
+        sizeof(AnomalyNteUiButtonRequestSnapshotV1),
+        alignof(AnomalyNteUiButtonRequestSnapshotV1),
+        {{"struct_size", offsetof(AnomalyNteUiButtonRequestSnapshotV1, struct_size)},
+         {"kind", offsetof(AnomalyNteUiButtonRequestSnapshotV1, kind)},
+         {"request", offsetof(AnomalyNteUiButtonRequestSnapshotV1, request)},
+         {"state", offsetof(AnomalyNteUiButtonRequestSnapshotV1, state)},
+         {"status", offsetof(AnomalyNteUiButtonRequestSnapshotV1, status)},
+         {"catalog_sequence", offsetof(AnomalyNteUiButtonRequestSnapshotV1, catalog_sequence)},
+         {"reasons", offsetof(AnomalyNteUiButtonRequestSnapshotV1, reasons)},
+         {"outcome", offsetof(AnomalyNteUiButtonRequestSnapshotV1, outcome)},
+         {"invocations", offsetof(AnomalyNteUiButtonRequestSnapshotV1, invocations)},
+         {"hit_count", offsetof(AnomalyNteUiButtonRequestSnapshotV1, hit_count)},
+         {"checked", offsetof(AnomalyNteUiButtonRequestSnapshotV1, checked)},
+         {"process_event_calls", offsetof(AnomalyNteUiButtonRequestSnapshotV1, process_event_calls)},
+         {"detail", offsetof(AnomalyNteUiButtonRequestSnapshotV1, detail)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyNteUiButtonsServiceV1",
+        sizeof(AnomalyNteUiButtonsServiceV1),
+        alignof(AnomalyNteUiButtonsServiceV1),
+        {{"struct_size", offsetof(AnomalyNteUiButtonsServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyNteUiButtonsServiceV1, service_version)},
+         {"user", offsetof(AnomalyNteUiButtonsServiceV1, user)},
+         {"status", offsetof(AnomalyNteUiButtonsServiceV1, status)},
+         {"button_at", offsetof(AnomalyNteUiButtonsServiceV1, button_at)},
+         {"window_at", offsetof(AnomalyNteUiButtonsServiceV1, window_at)},
+         {"find", offsetof(AnomalyNteUiButtonsServiceV1, find)},
+         {"request_scan", offsetof(AnomalyNteUiButtonsServiceV1, request_scan)},
+         {"request_pick", offsetof(AnomalyNteUiButtonsServiceV1, request_pick)},
+         {"request_click", offsetof(AnomalyNteUiButtonsServiceV1, request_click)},
+         {"request_snapshot", offsetof(AnomalyNteUiButtonsServiceV1, request_snapshot)},
+         {"pick_hit_at", offsetof(AnomalyNteUiButtonsServiceV1, pick_hit_at)},
+         {"cancel", offsetof(AnomalyNteUiButtonsServiceV1, cancel)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyNteEntityFrameV1",
         sizeof(AnomalyNteEntityFrameV1),
         alignof(AnomalyNteEntityFrameV1),
@@ -2135,6 +2354,8 @@ std::string BuildSnapshot() {
         ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION, "AnomalyNteNavigationServiceV1", false);
     AppendService(output, ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
         ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION, "AnomalyNtePickupServiceV1", false);
+    AppendService(output, ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID,
+        ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION, "AnomalyNteUiButtonsServiceV1", false);
     AppendService(output, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
         ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION, "AnomalyNteEntitiesServiceV1", false);
     AppendService(output, ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
