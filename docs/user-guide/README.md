@@ -10,8 +10,9 @@
 4. [第三方插件](third-party-plugins.md) — 在游戏内下载、更新、卸载插件，以及管理插件源。
 5. [故障排查与 FAQ](troubleshooting.md) — 界面不出现、下载失败、插件不加载等常见问题。
 6. [配置参考](configuration.md) — 修改切换键、语言、Profile 目录和插件源。
-7. [诊断 CLI](diagnostics-cli.md) — 用 `anomaly-cli` 查看 Runtime、Profile 和内存状态。
-8. [NTE Build Profile](nte-profiles.md) — 了解依赖游戏结构的功能为什么可能暂时不可用。
+7. [主题与背景](theme.md) — 换配色（含奶蛙主题）、贴背景图和贴纸，以及用网页编辑器做布局。
+8. [诊断 CLI](diagnostics-cli.md) — 用 `anomaly-cli` 查看 Runtime、Profile 和内存状态。
+9. [NTE Build Profile](nte-profiles.md) — 了解依赖游戏结构的功能为什么可能暂时不可用。
 
 ## 术语速查
 

@@ -27,6 +27,7 @@
 | `fixtures` | 额外构建开发夹具（`anomaly-platform-preview`、`anomaly-render-fixture`、`anomaly-d3d11-fixture`、BetterPose 与自动战斗测试程序） |
 | `probes` | 额外构建诊断探针插件包（传输 trace、BidKing 探针） |
 | `symbols` | 额外生成 linker PDB 并暂存 Symbols 组件，只用于本地调试 |
+| `testplugins` | 额外构建并安装开发者测试插件包（`MapSpawnExporter`、`NteMovementHold`、`NteNavmeshDemo`、`NtePickupDemo`、`TeleportLandmarksProbe`）；它们属于独立的 `TestPlugins` 组件，发布包永远不含 |
 | `package` | 额外把 Tools、SDK（开启 `symbols` 时含 Symbols）安装到 `.build\windows-vs2022\package`，与发布打包一致 |
 
 参数可以组合，例如 `.\build.cmd fixtures package`。开发夹具、诊断探针与 PDB 都不属于发布的
@@ -43,7 +44,8 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 
 可选开关只在需要时于 configure 阶段显式开启：
 `-DANOMALY_BUILD_TEST_FIXTURES=ON`、`-DANOMALY_BUILD_DIAGNOSTIC_PROBES=ON`、
-`-DANOMALY_BUILD_SYMBOLS=ON`。
+`-DANOMALY_BUILD_SYMBOLS=ON`、`-DANOMALY_BUILD_TEST_PLUGINS=ON`（等价于 `build.cmd testplugins`，
+且需要额外执行 `--component TestPlugins` 的安装步骤）。
 
 ### 产物位置
 
@@ -76,7 +78,7 @@ pwsh -NoProfile -File .\tools\package_release.ps1 `
 
 | 组件 ZIP | 内容 |
 | --- | --- |
-| **Runtime** | 代理、Core、配置、bundled Profile、17 个内建插件包与 1 个示例插件包（NteCombatDemo） |
+| **Runtime** | 代理、Core、配置、bundled Profile、默认内建插件包与 1 个示例插件包（NteCombatDemo）；开发者测试插件包不属于发布内容（见 `build.cmd testplugins`） |
 | **SDK** | 头文件、CMake 包、五个示例（源码 + 独立 CMake 工程） |
 | **Tools** | 六个正式命令行工具 |
 

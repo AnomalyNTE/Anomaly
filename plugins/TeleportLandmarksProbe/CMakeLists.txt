@@ -24,7 +24,4 @@ anomaly_add_plugin(anomaly_teleport_landmarks_probe
 target_compile_definitions(anomaly_teleport_landmarks_probe PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-install(TARGETS anomaly_teleport_landmarks_probe
-    RUNTIME DESTINATION TeleportLandmarksProbe
-    LIBRARY DESTINATION TeleportLandmarksProbe)
-install(FILES manifest.json DESTINATION TeleportLandmarksProbe)
+# `anomaly_add_plugin` installs the package into Anomaly/plugins/TeleportLandmarksProbe.

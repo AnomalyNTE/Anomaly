@@ -749,7 +749,7 @@ target_include_directories(anomaly_ui_resources PUBLIC include)
 target_compile_definitions(
     anomaly_ui_resources PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_ui_resources PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(anomaly_ui_resources PUBLIC anomaly_plugin_runtime ole32)
+target_link_libraries(anomaly_ui_resources PUBLIC anomaly_plugin_runtime ole32 shell32)
 
 add_library(anomaly_hook_manager STATIC src/hook/hook_manager.cpp)
 target_include_directories(anomaly_hook_manager PUBLIC include)
@@ -781,6 +781,16 @@ target_compile_options(anomaly_platform_settings PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
     anomaly_platform_settings PUBLIC anomaly_reliable_storage
     PRIVATE nlohmann_json::nlohmann_json)
+
+# Theme layout geometry and parsing. It has no ImGui or D3D dependency so the
+# launcher, the in-game shell and the standalone verification can share it.
+add_library(anomaly_platform_ui_layout STATIC src/ui/platform_ui_layout.cpp)
+target_include_directories(anomaly_platform_ui_layout PUBLIC include)
+target_compile_definitions(
+    anomaly_platform_ui_layout PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_platform_ui_layout PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(
+    anomaly_platform_ui_layout PRIVATE nlohmann_json::nlohmann_json)
 
 add_library(anomaly_minhook_backend STATIC src/hook/minhook_backend.cpp)
 target_include_directories(anomaly_minhook_backend PUBLIC include)
@@ -865,6 +875,7 @@ target_link_libraries(
     ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
     anomaly_platform_ui_model
     anomaly_platform_settings
+    anomaly_platform_ui_layout
     anomaly_scoped_platform
     anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
     anomaly_nte_profile_runtime
@@ -892,7 +903,15 @@ add_custom_command(TARGET anomaly_core POST_BUILD
             "$<TARGET_FILE_DIR:anomaly_core>/locales/host"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/assets/fonts"
-            "$<TARGET_FILE_DIR:anomaly_core>/assets/fonts")
+            "$<TARGET_FILE_DIR:anomaly_core>/assets/fonts"
+    # Theme artwork and presets ship with the runtime too: the preview fixture
+    # deploys them and the injected host resolves the same entry points.
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/images"
+            "$<TARGET_FILE_DIR:anomaly_core>/assets/images"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/config/themes"
+            "$<TARGET_FILE_DIR:anomaly_core>/config/themes")
 
 add_library(dwmapi SHARED
     src/bootstrap/dwmapi/proxy_main.cpp
@@ -966,10 +985,10 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         anomaly-platform-preview PRIVATE
         ue5mem_core anomaly_imgui anomaly_plugin_shadow anomaly_plugin_dependency_resolver
         anomaly_platform_ui_model anomaly_plugin_enablement anomaly_adapter_services
-        anomaly_platform_settings
+        anomaly_platform_settings anomaly_platform_ui_layout
         anomaly_plugin_runtime
         anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
-        anomaly_i18n nlohmann_json::nlohmann_json)
+        anomaly_i18n nlohmann_json::nlohmann_json ole32 shell32)
     add_dependencies(anomaly-platform-preview anomaly_stage_nte_profiles)
 endif()
 
@@ -986,8 +1005,9 @@ target_link_options(anomaly_launcher PRIVATE /MANIFESTUAC:NO /DELAYLOAD:dwmapi.d
 target_link_libraries(anomaly_launcher PRIVATE
     anomaly_config anomaly_imgui anomaly_launcher_configuration anomaly_launcher_proxy
     anomaly_manual_map anomaly_runtime_recovery
+    anomaly_platform_settings anomaly_platform_ui_layout
     anomaly_runtime_launch anomaly_ui_resources
-    ole32 shell32 delayimp)
+    ole32 shell32 delayimp dcomp)
 # The hook is part of the runtime payload the launcher is installed with, so it is built before the
 # launcher that would inject it.
 add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
@@ -1031,6 +1051,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
         anomaly_platform_ui_model
         anomaly_platform_settings
+        anomaly_platform_ui_layout
         anomaly_scoped_platform
         anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
         anomaly_nte_profile_runtime
@@ -1045,6 +1066,12 @@ endif()
 
 option(ANOMALY_BUILD_SDK_EXAMPLES "Build the Anomaly 1.0 SDK example plugins" ON)
 option(ANOMALY_BUILD_BUILTIN_PLUGINS "Build Anomaly bundled plugins" ON)
+# Developer test plugin packages are neither built nor installed unless asked for. They
+# install through the TestPlugins component alone, which no release component stages
+# (`tools/package_release.ps1` installs GameRuntime, SDK and Tools), and building them
+# would cost time on every default build. `build.cmd testplugins` turns both on.
+option(ANOMALY_BUILD_TEST_PLUGINS
+    "Build and install the developer test plugin packages" OFF)
 set(ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly"
@@ -1056,29 +1083,39 @@ set(ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
             "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/locales/host"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/assets/fonts"
-            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/assets/fonts")
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/assets/fonts"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/images"
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/assets/images")
+
+# Theme presets are shipped content, so the whole directory is deployed exactly
+# like locales and artwork. `layout.json` is deliberately absent from the source
+# directory: it is the shared document the running build creates the first time a
+# background is changed, and it lives in the deployed tree only.
+list(APPEND ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/config/themes"
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/config/themes")
+
 if(ANOMALY_BUILD_SDK_EXAMPLES)
-    anomaly_add_plugin(anomaly_example_hello_ui C_ONLY
+    # The SDK examples ship as sources in the SDK component; only NteCombatDemo is also a
+    # runtime package, so the others are built without installing one.
+    anomaly_add_plugin(anomaly_example_hello_ui C_ONLY NO_RELEASE
         SOURCES examples/hello_ui/plugin.c
         MANIFEST examples/hello_ui/manifest.json
         PACKAGE_NAME HelloUi
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/sdk-examples/HelloUi")
-    add_custom_command(TARGET anomaly_example_hello_ui POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${CMAKE_SOURCE_DIR}/examples/hello_ui/locales"
-                "$<TARGET_FILE_DIR:anomaly_example_hello_ui>/locales"
-        VERBATIM)
-    anomaly_add_plugin(anomaly_example_tick_counter
+    anomaly_add_plugin(anomaly_example_tick_counter NO_RELEASE
         SOURCES examples/tick_counter/plugin.cpp
         MANIFEST examples/tick_counter/manifest.json
         PACKAGE_NAME TickCounter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/sdk-examples/TickCounter")
-    anomaly_add_plugin(anomaly_example_reliable_config
+    anomaly_add_plugin(anomaly_example_reliable_config NO_RELEASE
         SOURCES examples/reliable_config/plugin.cpp
         MANIFEST examples/reliable_config/manifest.json
         PACKAGE_NAME ReliableConfig
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/sdk-examples/ReliableConfig")
-    anomaly_add_plugin(anomaly_example_nte_inspector
+    anomaly_add_plugin(anomaly_example_nte_inspector NO_RELEASE
         SOURCES examples/nte_inspector/plugin.cpp
         MANIFEST examples/nte_inspector/manifest.json
         PACKAGE_NAME NteInspector
@@ -1093,11 +1130,6 @@ if(ANOMALY_BUILD_SDK_EXAMPLES)
             anomaly_example_nte_combat_demo)
         target_compile_definitions(${example_target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     endforeach()
-    set_target_properties(anomaly_example_hello_ui PROPERTIES PDB_NAME HelloUi)
-    set_target_properties(anomaly_example_tick_counter PROPERTIES PDB_NAME TickCounter)
-    set_target_properties(anomaly_example_reliable_config PROPERTIES PDB_NAME ReliableConfig)
-    set_target_properties(anomaly_example_nte_inspector PROPERTIES PDB_NAME NteInspector)
-    set_target_properties(anomaly_example_nte_combat_demo PROPERTIES PDB_NAME NteCombatDemo)
     if(TARGET anomaly-platform-preview)
         add_dependencies(anomaly-platform-preview
             anomaly_example_hello_ui
@@ -1119,17 +1151,17 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteTeleport/manifest.json
         PACKAGE_NAME NteTeleport
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
-    anomaly_add_plugin(anomaly_builtin_nte_movement_hold
+    anomaly_add_plugin(anomaly_builtin_nte_movement_hold TEST_PLUGIN
         SOURCES plugins/NteMovementHold/plugin.cpp
         MANIFEST plugins/NteMovementHold/manifest.json
         PACKAGE_NAME NteMovementHold
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteMovementHold")
-    anomaly_add_plugin(anomaly_builtin_nte_navigation
+    anomaly_add_plugin(anomaly_builtin_nte_navigation TEST_PLUGIN
         SOURCES plugins/NteNavmeshDemo/plugin.cpp
         MANIFEST plugins/NteNavmeshDemo/manifest.json
         PACKAGE_NAME NteNavmeshDemo
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteNavmeshDemo")
-    anomaly_add_plugin(anomaly_builtin_nte_pickup_demo
+    anomaly_add_plugin(anomaly_builtin_nte_pickup_demo TEST_PLUGIN
         SOURCES plugins/NtePickupDemo/plugin.cpp
         MANIFEST plugins/NtePickupDemo/manifest.json
         PACKAGE_NAME NtePickupDemo
@@ -1195,6 +1227,21 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_include_directories(anomaly_better_pose_character_switch_fixture PRIVATE include)
         target_link_libraries(anomaly_better_pose_character_switch_fixture PRIVATE
             anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+        add_executable(anomaly_better_pose_history_fixture
+            plugins/BetterPose/tests/pose_history_test.cpp)
+        target_compile_options(anomaly_better_pose_history_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_mirror_fixture
+            plugins/BetterPose/tests/pose_mirror_test.cpp)
+        target_compile_options(anomaly_better_pose_mirror_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_orbit_fixture
+            plugins/BetterPose/tests/orbit_camera_test.cpp)
+        target_compile_options(anomaly_better_pose_orbit_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_joint_drag_fixture
+            plugins/BetterPose/tests/joint_drag_test.cpp)
+        target_compile_options(anomaly_better_pose_joint_drag_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_include_directories(anomaly_better_pose_joint_drag_fixture PRIVATE include)
+        target_link_libraries(anomaly_better_pose_joint_drag_fixture PRIVATE
+            anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
     endif()
     # The in-game conversion needs the reference MMD bone table next to the plugin.
     add_custom_command(TARGET anomaly_builtin_better_pose POST_BUILD
@@ -1206,12 +1253,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     set_target_properties(anomaly_mmd2bip PROPERTIES OUTPUT_NAME "anomaly-mmd2bip")
     target_compile_options(anomaly_mmd2bip PRIVATE /W4 /permissive- /EHsc)
     target_link_libraries(anomaly_mmd2bip PRIVATE anomaly_mmd2bip_converter)
-    anomaly_add_plugin(anomaly_builtin_teleport_landmarks_probe
+    anomaly_add_plugin(anomaly_builtin_teleport_landmarks_probe TEST_PLUGIN
         SOURCES plugins/TeleportLandmarksProbe/plugin.cpp
         MANIFEST plugins/TeleportLandmarksProbe/manifest.json
         PACKAGE_NAME TeleportLandmarksProbe
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/TeleportLandmarksProbe")
-    anomaly_add_plugin(anomaly_builtin_map_spawn_exporter
+    anomaly_add_plugin(anomaly_builtin_map_spawn_exporter TEST_PLUGIN
         SOURCES plugins/MapSpawnExporter/plugin.cpp
         MANIFEST plugins/MapSpawnExporter/manifest.json
         PACKAGE_NAME MapSpawnExporter
@@ -1236,6 +1283,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CloneEnter/manifest.json
         PACKAGE_NAME CloneEnter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CloneEnter")
+
+    anomaly_add_plugin(anomaly_builtin_nte_free_fly
+        SOURCES plugins/NteFreeFly/plugin.cpp
+        MANIFEST plugins/NteFreeFly/manifest.json
+        PACKAGE_NAME NteFreeFly
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteFreeFly")
     add_library(anomaly_quick_ultimate_sequence STATIC
         plugins/QuickUltimate/sequence.cpp)
     target_include_directories(anomaly_quick_ultimate_sequence PUBLIC
@@ -1285,90 +1338,39 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_link_libraries(anomaly_builtin_better_pose PRIVATE nlohmann_json::nlohmann_json)
     target_link_libraries(anomaly_builtin_dll_loader PRIVATE nlohmann_json::nlohmann_json)
 
-    foreach(builtin_target IN ITEMS
-            anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+    # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
+    # reaches their targets is built from the targets that actually exist.
+    set(ANOMALY_BUILTIN_PLUGIN_TARGETS
+        anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+        anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
+        anomaly_builtin_fake_uid anomaly_builtin_camera_tools
+        anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
+        anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
+        anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
+        anomaly_builtin_nte_free_fly
+        anomaly_builtin_dll_loader)
+    if(ANOMALY_BUILD_TEST_PLUGINS)
+        list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
             anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
-            anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-            anomaly_builtin_fake_uid anomaly_builtin_camera_tools
-            anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
             anomaly_builtin_teleport_landmarks_probe
-            anomaly_builtin_map_spawn_exporter
-            anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-            anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
-            anomaly_builtin_dll_loader)
+            anomaly_builtin_map_spawn_exporter)
+    endif()
+    foreach(builtin_target IN LISTS ANOMALY_BUILTIN_PLUGIN_TARGETS)
         target_include_directories(${builtin_target} PRIVATE "${CMAKE_SOURCE_DIR}")
         target_compile_definitions(${builtin_target} PRIVATE
             UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     endforeach()
-
-    function(anomaly_copy_builtin_locales target source_directory)
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                    "${CMAKE_SOURCE_DIR}/plugins/${source_directory}/locales"
-                    "$<TARGET_FILE_DIR:${target}>/locales"
-            VERBATIM)
-    endfunction()
-    anomaly_copy_builtin_locales(anomaly_builtin_nte_position NtePosition)
-    anomaly_copy_builtin_locales(anomaly_builtin_nte_teleport NteTeleport)
-    anomaly_copy_builtin_locales(anomaly_builtin_nte_navigation NteNavmeshDemo)
-    anomaly_copy_builtin_locales(anomaly_builtin_nte_pickup_demo NtePickupDemo)
-    anomaly_copy_builtin_locales(anomaly_builtin_entity_esp EntityESP)
-    anomaly_copy_builtin_locales(anomaly_builtin_pink_paw_heist_esp PinkPawHeistESP)
-    anomaly_copy_builtin_locales(anomaly_builtin_fake_uid FakeUID)
-    anomaly_copy_builtin_locales(anomaly_builtin_camera_tools CameraTools)
-    anomaly_copy_builtin_locales(anomaly_builtin_better_pose BetterPose)
-    anomaly_copy_builtin_locales(anomaly_builtin_wallet_collector WalletCollector)
-    anomaly_copy_builtin_locales(anomaly_builtin_box_auto BoxAuto)
-    anomaly_copy_builtin_locales(anomaly_builtin_combat_box CombatBox)
-    anomaly_copy_builtin_locales(anomaly_builtin_clone_enter CloneEnter)
-    anomaly_copy_builtin_locales(anomaly_builtin_nte_quick_ultimate QuickUltimate)
-    set_target_properties(anomaly_builtin_nte_position PROPERTIES PDB_NAME NtePosition)
-    set_target_properties(anomaly_builtin_nte_teleport PROPERTIES PDB_NAME NteTeleport)
-    set_target_properties(anomaly_builtin_nte_navigation PROPERTIES PDB_NAME NteNavmeshDemo)
-    set_target_properties(anomaly_builtin_nte_pickup_demo PROPERTIES PDB_NAME NtePickupDemo)
-    set_target_properties(anomaly_builtin_entity_esp PROPERTIES PDB_NAME EntityESP)
-    set_target_properties(anomaly_builtin_pink_paw_heist_esp PROPERTIES PDB_NAME PinkPawHeistESP)
-    set_target_properties(anomaly_builtin_fake_uid PROPERTIES PDB_NAME FakeUID)
-    set_target_properties(anomaly_builtin_camera_tools PROPERTIES PDB_NAME CameraTools)
-    set_target_properties(anomaly_builtin_camera_blur_fix PROPERTIES PDB_NAME CameraBlurFix)
-    set_target_properties(anomaly_builtin_better_pose PROPERTIES PDB_NAME BetterPose)
-    set_target_properties(anomaly_builtin_teleport_landmarks_probe PROPERTIES PDB_NAME TeleportLandmarksProbe)
-    set_target_properties(anomaly_builtin_map_spawn_exporter PROPERTIES PDB_NAME MapSpawnExporter)
-    set_target_properties(anomaly_builtin_wallet_collector PROPERTIES PDB_NAME WalletCollector)
-    set_target_properties(anomaly_builtin_box_auto PROPERTIES PDB_NAME BoxAuto)
-    set_target_properties(anomaly_builtin_combat_box PROPERTIES PDB_NAME CombatBox)
-    set_target_properties(anomaly_builtin_clone_enter PROPERTIES PDB_NAME CloneEnter)
-    set_target_properties(anomaly_builtin_nte_quick_ultimate PROPERTIES PDB_NAME QuickUltimate)
-    set_target_properties(anomaly_builtin_dll_loader PROPERTIES PDB_NAME DllLoader)
     if(MSVC)
         target_compile_options(anomaly_builtin_pink_paw_heist_esp PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_box_auto PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
     endif()
-    add_dependencies(anomaly_test_host
-        anomaly_builtin_nte_position anomaly_builtin_nte_teleport
-        anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
-        anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-        anomaly_builtin_fake_uid anomaly_builtin_camera_tools
-        anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
-        anomaly_builtin_teleport_landmarks_probe
-        anomaly_builtin_map_spawn_exporter
-        anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-        anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
-        anomaly_builtin_dll_loader)
+    add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     if(TARGET anomaly-platform-preview)
-        add_dependencies(anomaly-platform-preview
-            anomaly_builtin_nte_position anomaly_builtin_nte_teleport
-            anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
-            anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
-            anomaly_builtin_fake_uid anomaly_builtin_camera_tools
-            anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
-            anomaly_builtin_map_spawn_exporter
-            anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-            anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
-            anomaly_builtin_dll_loader)
+        add_dependencies(anomaly-platform-preview ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     endif()
 endif()
 
@@ -1415,6 +1417,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_combat_box CombatBox)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
 anomaly_stage_platform_preview_plugin(
     anomaly_builtin_nte_quick_ultimate QuickUltimate)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 
 if(TARGET anomaly-platform-preview)
@@ -1578,169 +1581,17 @@ install(TARGETS anomaly_crash_coordinator
 install(TARGETS anomaly_nte_game_hook
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
-if(TARGET anomaly_example_nte_combat_demo)
-    install(TARGETS anomaly_example_nte_combat_demo
-        RUNTIME DESTINATION Anomaly/plugins/NteCombatDemo COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/NteCombatDemo COMPONENT GameRuntime)
-    install(FILES examples/nte_combat_demo/manifest.json
-        DESTINATION Anomaly/plugins/NteCombatDemo COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_nte_position)
-    install(TARGETS anomaly_builtin_nte_position
-        RUNTIME DESTINATION Anomaly/plugins/NtePosition COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/NtePosition COMPONENT GameRuntime)
-    install(FILES plugins/NtePosition/manifest.json
-        DESTINATION Anomaly/plugins/NtePosition COMPONENT GameRuntime)
-    install(DIRECTORY plugins/NtePosition/locales/
-        DESTINATION Anomaly/plugins/NtePosition/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_nte_teleport)
-    install(TARGETS anomaly_builtin_nte_teleport
-        RUNTIME DESTINATION Anomaly/plugins/NteTeleport COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/NteTeleport COMPONENT GameRuntime)
-    install(FILES plugins/NteTeleport/manifest.json
-        DESTINATION Anomaly/plugins/NteTeleport COMPONENT GameRuntime)
-    install(DIRECTORY plugins/NteTeleport/locales/
-        DESTINATION Anomaly/plugins/NteTeleport/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_nte_movement_hold)
-    install(TARGETS anomaly_builtin_nte_movement_hold
-        RUNTIME DESTINATION Anomaly/plugins/NteMovementHold COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/NteMovementHold COMPONENT GameRuntime)
-    install(FILES plugins/NteMovementHold/manifest.json
-        DESTINATION Anomaly/plugins/NteMovementHold COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_nte_navigation)
-    install(TARGETS anomaly_builtin_nte_navigation
-        RUNTIME DESTINATION Anomaly/plugins/NteNavmeshDemo COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/NteNavmeshDemo COMPONENT GameRuntime)
-    install(FILES plugins/NteNavmeshDemo/manifest.json
-        DESTINATION Anomaly/plugins/NteNavmeshDemo COMPONENT GameRuntime)
-    install(DIRECTORY plugins/NteNavmeshDemo/locales/
-        DESTINATION Anomaly/plugins/NteNavmeshDemo/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_nte_pickup_demo)
-    install(TARGETS anomaly_builtin_nte_pickup_demo
-        RUNTIME DESTINATION Anomaly/plugins/NtePickupDemo COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/NtePickupDemo COMPONENT GameRuntime)
-    install(FILES plugins/NtePickupDemo/manifest.json
-        DESTINATION Anomaly/plugins/NtePickupDemo COMPONENT GameRuntime)
-    install(DIRECTORY plugins/NtePickupDemo/locales/
-        DESTINATION Anomaly/plugins/NtePickupDemo/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_entity_esp)
-    install(TARGETS anomaly_builtin_entity_esp
-        RUNTIME DESTINATION Anomaly/plugins/EntityESP COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/EntityESP COMPONENT GameRuntime)
-    install(FILES plugins/EntityESP/manifest.json
-        DESTINATION Anomaly/plugins/EntityESP COMPONENT GameRuntime)
-    install(DIRECTORY plugins/EntityESP/locales/
-        DESTINATION Anomaly/plugins/EntityESP/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_pink_paw_heist_esp)
-    install(TARGETS anomaly_builtin_pink_paw_heist_esp
-        RUNTIME DESTINATION Anomaly/plugins/PinkPawHeistESP COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/PinkPawHeistESP COMPONENT GameRuntime)
-    install(FILES plugins/PinkPawHeistESP/manifest.json
-        DESTINATION Anomaly/plugins/PinkPawHeistESP COMPONENT GameRuntime)
-    install(DIRECTORY plugins/PinkPawHeistESP/locales/
-        DESTINATION Anomaly/plugins/PinkPawHeistESP/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_fake_uid)
-    install(TARGETS anomaly_builtin_fake_uid
-        RUNTIME DESTINATION Anomaly/plugins/FakeUID COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/FakeUID COMPONENT GameRuntime)
-    install(FILES plugins/FakeUID/manifest.json
-        DESTINATION Anomaly/plugins/FakeUID COMPONENT GameRuntime)
-    install(DIRECTORY plugins/FakeUID/locales/
-        DESTINATION Anomaly/plugins/FakeUID/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_camera_tools)
-    install(TARGETS anomaly_builtin_camera_tools
-        RUNTIME DESTINATION Anomaly/plugins/CameraTools COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/CameraTools COMPONENT GameRuntime)
-    install(FILES plugins/CameraTools/manifest.json
-        DESTINATION Anomaly/plugins/CameraTools COMPONENT GameRuntime)
-    install(DIRECTORY plugins/CameraTools/locales/
-        DESTINATION Anomaly/plugins/CameraTools/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_camera_blur_fix)
-    install(TARGETS anomaly_builtin_camera_blur_fix
-        RUNTIME DESTINATION Anomaly/plugins/CameraBlurFix COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/CameraBlurFix COMPONENT GameRuntime)
-    install(FILES plugins/CameraBlurFix/manifest.json
-        DESTINATION Anomaly/plugins/CameraBlurFix COMPONENT GameRuntime)
-endif()
+# Plugin packages install themselves: `anomaly_add_plugin` emits the package rules for
+# `Anomaly/plugins/<PackageName>` in the GameRuntime component, or in the opt-in
+# TestPlugins component for TEST_PLUGIN packages, so a registered plugin cannot be
+# missing from the runtime tree.
 if(TARGET anomaly_builtin_better_pose)
-    install(TARGETS anomaly_builtin_better_pose
-        RUNTIME DESTINATION Anomaly/plugins/BetterPose COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/BetterPose COMPONENT GameRuntime)
-    install(FILES plugins/BetterPose/manifest.json
-        DESTINATION Anomaly/plugins/BetterPose COMPONENT GameRuntime)
-    install(DIRECTORY plugins/BetterPose/locales/
-        DESTINATION Anomaly/plugins/BetterPose/locales COMPONENT GameRuntime)
-    # The in-game conversion reads its reference bone tables from `data/` next to the DLL.
-    # The POST_BUILD copy above only fills the build tree; without this rule a release
+    # `data/` is plugin-specific content rather than part of the manifest package layout,
+    # so the package rules above do not carry it: the in-game conversion reads its
+    # reference bone tables from `data/` next to the DLL, and without this rule a release
     # install ships a plugin that cannot convert a motion.
     install(DIRECTORY plugins/BetterPose/data/
         DESTINATION Anomaly/plugins/BetterPose/data COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_teleport_landmarks_probe)
-    install(TARGETS anomaly_builtin_teleport_landmarks_probe
-        RUNTIME DESTINATION Anomaly/plugins/TeleportLandmarksProbe COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/TeleportLandmarksProbe COMPONENT GameRuntime)
-    install(FILES plugins/TeleportLandmarksProbe/manifest.json
-        DESTINATION Anomaly/plugins/TeleportLandmarksProbe COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_map_spawn_exporter)
-    install(TARGETS anomaly_builtin_map_spawn_exporter
-        RUNTIME DESTINATION Anomaly/plugins/MapSpawnExporter COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/MapSpawnExporter COMPONENT GameRuntime)
-    install(FILES plugins/MapSpawnExporter/manifest.json
-        DESTINATION Anomaly/plugins/MapSpawnExporter COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_wallet_collector)
-    install(TARGETS anomaly_builtin_wallet_collector
-        RUNTIME DESTINATION Anomaly/plugins/WalletCollector COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/WalletCollector COMPONENT GameRuntime)
-    install(FILES plugins/WalletCollector/manifest.json
-        DESTINATION Anomaly/plugins/WalletCollector COMPONENT GameRuntime)
-    install(DIRECTORY plugins/WalletCollector/locales/
-        DESTINATION Anomaly/plugins/WalletCollector/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_box_auto)
-    install(TARGETS anomaly_builtin_box_auto
-        RUNTIME DESTINATION Anomaly/plugins/BoxAuto COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/BoxAuto COMPONENT GameRuntime)
-    install(FILES plugins/BoxAuto/manifest.json
-        DESTINATION Anomaly/plugins/BoxAuto COMPONENT GameRuntime)
-    install(DIRECTORY plugins/BoxAuto/locales/
-        DESTINATION Anomaly/plugins/BoxAuto/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_combat_box)
-    install(TARGETS anomaly_builtin_combat_box
-        RUNTIME DESTINATION Anomaly/plugins/CombatBox COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/CombatBox COMPONENT GameRuntime)
-    install(FILES plugins/CombatBox/manifest.json
-        DESTINATION Anomaly/plugins/CombatBox COMPONENT GameRuntime)
-    install(DIRECTORY plugins/CombatBox/locales/
-        DESTINATION Anomaly/plugins/CombatBox/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_clone_enter)
-    install(TARGETS anomaly_builtin_clone_enter
-        RUNTIME DESTINATION Anomaly/plugins/CloneEnter COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/CloneEnter COMPONENT GameRuntime)
-    install(FILES plugins/CloneEnter/manifest.json
-        DESTINATION Anomaly/plugins/CloneEnter COMPONENT GameRuntime)
-    install(DIRECTORY plugins/CloneEnter/locales/
-        DESTINATION Anomaly/plugins/CloneEnter/locales COMPONENT GameRuntime)
-endif()
-if(TARGET anomaly_builtin_dll_loader)
-    install(TARGETS anomaly_builtin_dll_loader
-        RUNTIME DESTINATION Anomaly/plugins/DllLoader COMPONENT GameRuntime
-        LIBRARY DESTINATION Anomaly/plugins/DllLoader COMPONENT GameRuntime)
-    install(FILES plugins/DllLoader/manifest.json
-        DESTINATION Anomaly/plugins/DllLoader COMPONENT GameRuntime)
 endif()
 install(FILES CONTACT config/anomaly.ini config/repository.json config/plugin-repositories.json
     DESTINATION Anomaly COMPONENT GameRuntime)
@@ -1748,6 +1599,13 @@ install(DIRECTORY locales/host
     DESTINATION Anomaly/locales COMPONENT GameRuntime)
 install(FILES assets/fonts/NotoSansCJKsc-Regular.ttf
     DESTINATION Anomaly/assets/fonts COMPONENT GameRuntime)
+# Theme artwork and presets ship with the package: the game runtime and the
+# launcher both resolve `assets/images/...` and `config/themes/...` against the
+# same `Anomaly/` root. Users replace or extend these with their own files.
+install(DIRECTORY assets/images/
+    DESTINATION Anomaly/assets/images COMPONENT GameRuntime)
+install(DIRECTORY config/themes/
+    DESTINATION Anomaly/config/themes COMPONENT GameRuntime)
 install(CODE [[
     file(REMOVE_RECURSE
         "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/Anomaly/profiles/nte")
@@ -1756,6 +1614,10 @@ install(DIRECTORY profiles/
     DESTINATION Anomaly/profiles COMPONENT GameRuntime)
 install(TARGETS anomaly_cli anomaly_inspect anomaly-profile anomaly-plugin anomaly_abi_snapshot anomaly_test_host
     RUNTIME DESTINATION . COMPONENT Tools)
+# The layout editor is one offline HTML file: it needs no runtime, no network and
+# no build step, so it ships as data next to the command line tools.
+install(FILES tools/theme_layout_editor/index.html
+    DESTINATION theme-editor COMPONENT Tools)
 install(TARGETS anomaly_sdk EXPORT AnomalySDKTargets COMPONENT SDK)
 install(EXPORT AnomalySDKTargets
     FILE AnomalySDKTargets.cmake

@@ -27,13 +27,5 @@ target_include_directories(anomaly_wallet_collector BEFORE PRIVATE
 target_compile_definitions(anomaly_wallet_collector PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-add_custom_command(TARGET anomaly_wallet_collector POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/locales"
-        "$<TARGET_FILE_DIR:anomaly_wallet_collector>/locales")
-
-install(TARGETS anomaly_wallet_collector
-    RUNTIME DESTINATION WalletCollector
-    LIBRARY DESTINATION WalletCollector)
-install(FILES manifest.json DESTINATION WalletCollector)
-install(DIRECTORY locales/ DESTINATION WalletCollector/locales)
+# `anomaly_add_plugin` mirrors the manifest and the `locales` directory next to it into the
+# package directory, and installs the package into Anomaly/plugins/WalletCollector.

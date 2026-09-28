@@ -14,10 +14,14 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 ```
 
 默认构建只产出 Runtime、Tools、SDK 三个发布组件所需的 target。开发夹具（`fixtures`）、诊断探针
-（`probes`）与 PDB（`symbols`）不属于任何发布组件，默认不构建，只在需要时显式开启：
-`build.cmd fixtures|probes|symbols`，或在 configure 阶段传入 `ANOMALY_BUILD_TEST_FIXTURES=ON`、
-`ANOMALY_BUILD_DIAGNOSTIC_PROBES=ON`、`ANOMALY_BUILD_SYMBOLS=ON`。`build.cmd package` 额外把
-Tools、SDK（开启 symbols 时含 Symbols）暂存到 `.build\windows-vs2022\package`。
+（`probes`）、开发者测试插件包（`testplugins`）与 PDB（`symbols`）都不属于任何发布组件，默认
+不构建，只在需要时显式开启：`build.cmd fixtures|probes|testplugins|symbols`，或在 configure
+阶段传入 `ANOMALY_BUILD_TEST_FIXTURES=ON`、`ANOMALY_BUILD_DIAGNOSTIC_PROBES=ON`、
+`ANOMALY_BUILD_TEST_PLUGINS=ON`、`ANOMALY_BUILD_SYMBOLS=ON`。测试插件包
+（`MapSpawnExporter`、`NteMovementHold`、`NteNavmeshDemo`、`NtePickupDemo`、
+`TeleportLandmarksProbe`）通过独立的 `TestPlugins` 组件安装，任何发布组件都不含该组件。
+`build.cmd package` 额外把 Tools、SDK（开启 symbols 时含 Symbols）暂存到
+`.build\windows-vs2022\package`。
 
 日常二进制位于 `.build/windows-vs2022/bin/RelWithDebInfo`，可部署 Runtime 位于
 `.build/windows-vs2022/game-package`。

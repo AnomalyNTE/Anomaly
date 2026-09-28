@@ -12,6 +12,7 @@ enum class PlatformUiPalette : std::uint8_t {
     Ember,
     Paper,
     AnomalyHub,
+    Naiwa,
     Custom,
 };
 
@@ -70,10 +71,24 @@ struct PlatformUiThemeColors final {
     PlatformUiColor toast_background;
 };
 
+// A themed background image is painted behind the shell surfaces, and the host
+// draws one veil of the surface colour over it at this alpha: that veil is what
+// dims the wallpaper, while text, borders and accents stay fully opaque. 1.0
+// disables the effect and restores the palette exactly, 0.0 shows the picture at
+// full strength. Panel fills stay empty either way, so they never cover a
+// sticker.
+inline constexpr float kPlatformUiSurfaceAlphaMinimum = 0.0f;
+
 void SetPlatformUiPalette(PlatformUiPalette palette) noexcept;
 [[nodiscard]] PlatformUiPalette GetPlatformUiPalette() noexcept;
 void SetPlatformUiCustomColors(const PlatformUiCustomColors& colors) noexcept;
 [[nodiscard]] const PlatformUiCustomColors& GetPlatformUiCustomColors() noexcept;
+void SetPlatformUiSurfaceAlpha(float alpha) noexcept;
+[[nodiscard]] float GetPlatformUiSurfaceAlpha() noexcept;
+// The surface color at full opacity, for the veil the host paints under the
+// stickers and for windows that must keep a solid body while the shell itself
+// is drawn over a themed background.
+[[nodiscard]] PlatformUiColor PlatformUiSurfaceColor() noexcept;
 [[nodiscard]] const PlatformUiThemeColors& PlatformUiTheme() noexcept;
 [[nodiscard]] PlatformUiPalette ParsePlatformUiPalette(std::string_view value) noexcept;
 [[nodiscard]] std::string_view ToString(PlatformUiPalette palette) noexcept;
@@ -108,6 +123,18 @@ inline void SetPlatformUiCustomColors(const PlatformUiCustomColors& colors) noex
 
 [[nodiscard]] inline const PlatformUiCustomColors& GetPlatformUiCustomColors() noexcept {
     return ue5mem::GetPlatformUiCustomColors();
+}
+
+inline void SetPlatformUiSurfaceAlpha(const float alpha) noexcept {
+    ue5mem::SetPlatformUiSurfaceAlpha(alpha);
+}
+
+[[nodiscard]] inline float GetPlatformUiSurfaceAlpha() noexcept {
+    return ue5mem::GetPlatformUiSurfaceAlpha();
+}
+
+[[nodiscard]] inline ue5mem::PlatformUiColor PlatformUiSurfaceColor() noexcept {
+    return ue5mem::PlatformUiSurfaceColor();
 }
 
 [[nodiscard]] inline const PlatformUiThemeColors& PlatformUiTheme() noexcept {

@@ -9,6 +9,7 @@
 #include <Windows.h>
 
 #include <filesystem>
+#include <objbase.h>
 #include <string>
 #include <string_view>
 
@@ -25,7 +26,7 @@ std::string PreviewPaletteArgument() {
     const std::wstring command_line = GetCommandLineW();
     constexpr std::wstring_view prefix = L"--palette=";
     const std::size_t start = command_line.find(prefix);
-    if (start == std::wstring::npos) return "anomalyhub";
+    if (start == std::wstring::npos) return "naiwa";
     const std::size_t value_start = start + prefix.size();
     const std::size_t value_end = command_line.find_first_of(L" \t\r\n", value_start);
     const std::wstring value = command_line.substr(
@@ -39,12 +40,19 @@ std::string PreviewPaletteArgument() {
             result.push_back(static_cast<char>(character));
         }
     }
-    return result.empty() ? "anomalyhub" : result;
+    return result.empty() ? "naiwa" : result;
 }
 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // The launcher and the injected host both own a single-threaded apartment on
+    // the thread that drives the platform UI, and the shell file dialog only
+    // builds its view there. Entering it first keeps this fixture faithful to
+    // the hosts it stands in for.
+    const HRESULT com =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    static_cast<void>(com);
     const auto palette = ue5mem::ParsePlatformUiPalette(PreviewPaletteArgument());
     ue5mem::SetPlatformUiPalette(palette);
     const auto root = ExecutableDirectory() / L"Anomaly";

@@ -2,6 +2,7 @@
 
 #include "embedded_host_internal.hpp"
 
+#include "anomaly/platform_ui_layout.hpp"
 #include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/ui_resource_render_backend.hpp"
 
@@ -203,6 +204,65 @@ public:
                 texture_id,
                 ImVec2(resolved_width, resolved_height), ImVec2(0.0F, 0.0F),
                 ImVec2(1.0F, 1.0F), ImVec4(0.0F, 0.0F, 0.0F, 0.0F), tint);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool DrawTextureEx(
+        anomaly::UiResourceRegistry& registry,
+        const std::shared_ptr<anomaly::PluginScope>& scope,
+        const anomaly::UiResourceHandle handle,
+        const anomaly::UiTextureDrawRequest& request) noexcept override {
+        try {
+            if (scope == nullptr || !handle || ImGui::GetCurrentContext() == nullptr) return false;
+            const ImVec2 size(request.width, request.height);
+            if (!IsUsableDimension(size.x) || !IsUsableDimension(size.y)) return false;
+            const auto resource = registry.ResourceState(scope, handle);
+            if (!resource || resource->kind != anomaly::UiResourceKind::Texture ||
+                resource->resource_id == 0 || resource->state != anomaly::UiResourceState::Ready ||
+                resource->device_generation != device_generation_) {
+                return false;
+            }
+            const auto found = textures_.find(resource->resource_id);
+            if (found == textures_.end() || found->second.device_generation != device_generation_) {
+                return false;
+            }
+            const ImTextureID texture_id = ImmediateMode()
+                ? reinterpret_cast<ImTextureID>(found->second.d3d11_view.Get())
+                : static_cast<ImTextureID>(found->second.gpu.ptr);
+            if (texture_id == ImTextureID{}) return false;
+            ImDrawList* const draw_list = request.behind ? ImGui::GetBackgroundDrawList()
+                : request.on_top                            ? ImGui::GetForegroundDrawList()
+                                                            : ImGui::GetWindowDrawList();
+            if (draw_list == nullptr) return false;
+            TrackLease(found->second.leases, scope, handle);
+            found->second.release_fence =
+                (std::max)(found->second.release_fence, state_.next_fence_value);
+            const ImVec4 tint(
+                static_cast<float>(request.tint_rgba & 0xffU) / 255.0F,
+                static_cast<float>((request.tint_rgba >> 8U) & 0xffU) / 255.0F,
+                static_cast<float>((request.tint_rgba >> 16U) & 0xffU) / 255.0F,
+                static_cast<float>((request.tint_rgba >> 24U) & 0xffU) / 255.0F);
+            if (request.rotation_degrees == 0.0F) {
+                draw_list->AddImage(texture_id, ImVec2(request.x, request.y),
+                    ImVec2(request.x + size.x, request.y + size.y),
+                    ImVec2(request.uv0_x, request.uv0_y), ImVec2(request.uv1_x, request.uv1_y),
+                    ImGui::ColorConvertFloat4ToU32(tint));
+                return true;
+            }
+            const anomaly::PlatformUiStickerPlacement placement{
+                request.x, request.y, size.x, size.y, request.rotation_degrees,
+                request.uv0_x, request.uv0_y, request.uv1_x, request.uv1_y, 1.0F};
+            const anomaly::PlatformUiImageQuad quad =
+                anomaly::ComputePlatformUiImageQuad(placement);
+            draw_list->AddImageQuad(texture_id,
+                ImVec2(quad.x[0], quad.y[0]), ImVec2(quad.x[1], quad.y[1]),
+                ImVec2(quad.x[2], quad.y[2]), ImVec2(quad.x[3], quad.y[3]),
+                ImVec2(quad.u[0], quad.v[0]), ImVec2(quad.u[1], quad.v[1]),
+                ImVec2(quad.u[2], quad.v[2]), ImVec2(quad.u[3], quad.v[3]),
+                ImGui::ColorConvertFloat4ToU32(tint));
             return true;
         } catch (...) {
             return false;

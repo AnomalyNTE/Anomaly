@@ -7,6 +7,30 @@
 
 namespace anomaly {
 
+// A themed background or sticker draw. The rectangle is in absolute screen
+// space; the source rectangle is normalized image space, and rotation is
+// clockwise in degrees around the rectangle centre. A flipped source rectangle
+// (uv1 below uv0) is valid and must be honoured.
+struct UiTextureDrawRequest final {
+    float x{};
+    float y{};
+    float width{};
+    float height{};
+    float rotation_degrees{};
+    float uv0_x{};
+    float uv0_y{};
+    float uv1_x{1.0f};
+    float uv1_y{1.0f};
+    std::uint32_t tint_rgba{0xffffffffU};
+    // Draw above every ImGui window instead of into the current one. The caller
+    // is responsible for clipping the overlay to its own region.
+    bool on_top{};
+    // Draw behind every ImGui window. Stickers use this so they stay under the
+    // shell's labels while still being free to overhang the shell window, which
+    // the window's own clip rectangle would otherwise cut off.
+    bool behind{};
+};
+
 // Render-owned bridge for the logical resource registry. Implementations may
 // use ImGui and D3D12 internally, but neither type crosses this boundary.
 class UiResourceRenderBackend {
@@ -20,6 +44,12 @@ public:
     virtual bool DrawTexture(
         UiResourceRegistry& registry, const std::shared_ptr<PluginScope>& scope,
         UiResourceHandle handle, float width, float height, std::uint32_t tint_rgba) noexcept = 0;
+    // Draws an already-ready texture at an explicit screen rectangle. Used by
+    // the host theme layout, which positions images against the shell viewport
+    // instead of the current ImGui cursor.
+    virtual bool DrawTextureEx(
+        UiResourceRegistry& registry, const std::shared_ptr<PluginScope>& scope,
+        UiResourceHandle handle, const UiTextureDrawRequest& request) noexcept = 0;
 
     // Called before a plugin Draw callback. Font atlas work has to happen
     // before ImGui locks the frame; queued requests without Worker-staged

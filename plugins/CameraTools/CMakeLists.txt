@@ -25,13 +25,5 @@ target_compile_definitions(anomaly_camera_tools PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_include_directories(anomaly_camera_tools PRIVATE "${NLOHMANN_JSON_INCLUDE_DIR}")
 
-add_custom_command(TARGET anomaly_camera_tools POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/locales"
-        "$<TARGET_FILE_DIR:anomaly_camera_tools>/locales")
-
-install(TARGETS anomaly_camera_tools
-    RUNTIME DESTINATION CameraTools
-    LIBRARY DESTINATION CameraTools)
-install(FILES manifest.json DESTINATION CameraTools)
-install(DIRECTORY locales/ DESTINATION CameraTools/locales)
+# `anomaly_add_plugin` mirrors the manifest and the `locales` directory next to it into the
+# package directory, and installs the package into Anomaly/plugins/CameraTools.

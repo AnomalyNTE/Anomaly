@@ -5,6 +5,11 @@
 > [!NOTE]
 > 坐标、实体 ESP 和 WalletCollector 等功能都依赖 [Profile](nte-profiles.md)。活动 Profile 缺少签名、偏移或校验未通过时，插件仍然可以加载，但对应功能会显示为不可用。
 
+> [!NOTE]
+> `Nearby Pickup`、`Movement Hold Probe`、`Map Spawn Exporter`、`Teleport Landmarks Probe` 与
+> Navmesh Demo 属于开发者测试包：默认构建与发布的运行包都不含它们，只有用 `build.cmd testplugins`
+> 构建的运行包才会带上（见[从源码构建](../developer-guide/building.md)）。其余插件随发布运行包提供。
+
 ## Coordinate Display
 
 | | |
@@ -126,6 +131,27 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 窗口中的 **目标钱包数量** 默认是 `10`，可在 `1` 到 `500` 之间调整。点击 **开始捡钱包** 后，插件会等待扫描完成，以玩家当前位置为起点规划路线，逐点移动、等待交互并验证拾取结果；寻路停滞时会尝试其他接近方向，拾取未确认时会自动重试，仍未确认的点会计入“跳过”。**停止** 会停止当前移动并清空未完成路线。
 
 默认使用 **寻路捡钱包**。地图地标服务可用时，插件会利用它优化跨区路线；服务不可用时按常规寻路继续处理。
+
+## Free Fly
+
+| | |
+| --- | --- |
+| **ID** | `local.nte.free-fly` |
+| **作用** | 按住 WASD 水平飞行、空格上升、Ctrl 下降，让角色在空中自由移动并穿过墙体；开关快捷键可在面板里捕获并保存。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.input`；`anomaly.config`、`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport`、`anomaly.nte.player-hold`（均为 V1，可选） |
+| **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
+
+飞行期间角色由插件独占控制：被冻结抑制的常规移动改由插件按同一套按键驱动。位移通过
+`anomaly.nte.player-teleport` 落位，宿主以 `bSweep=false` 执行，不经过碰撞检测，因此可以直接
+穿过墙体；重力冻结优先走 `player` 服务表尾的 hold 入口，独立服务作为回退。相机朝向不可用时
+`WASD` 退化为沿世界坐标轴移动。开关快捷键默认 F6，可以在插件窗口里重新捕获并持久化。
+
+落位是按需触发的（有输入、或角色偏离目标超过 15 厘米），不是逐帧：宿主传送走 ProcessEvent，
+逐帧调用会明显掉帧。停用、`on_stop` 与 `on_unload` 都会 `release` hold 交还重力并关闭控制，
+不会留下持久修改。
+
+> [!WARNING]
+> 在离地较高的位置关闭飞行时角色会原地自由落体，可能受到坠落伤害；建议先降到贴近地面再关闭。
 
 ## 开发者模式调试插件
 

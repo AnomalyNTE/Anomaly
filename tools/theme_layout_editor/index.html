@@ -1,0 +1,3435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anomaly 主题布局编辑器</title>
+<!--
+  Anomaly 主题布局编辑器（单文件 / 纯离线）
+  ------------------------------------------------------------------
+  · 单文件 HTML，全部 CSS/JS 内联，无 CDN、无外链、无框架、无构建步骤。
+  · 直接双击用浏览器打开（file:// 协议）即可离线使用。
+  · 画布预览的几何算法与 C++ 端 DrawAnomalyThemeLayout 逐字一致。
+  · 导出的 JSON 字段名严格遵循 schemaVersion 1，不可增删改。
+-->
+<style>
+/* ============================ 基础主题 ============================ */
+:root {
+  --bg: #0f1116;
+  --panel: #171a22;
+  --panel-2: #1e222c;
+  --panel-3: #262b37;
+  --line: #2c313d;
+  --line-2: #3a4150;
+  --fg: #e7eaf2;
+  --muted: #8d95a8;
+  --muted-2: #6b7386;
+  --accent: #ff8a3d;
+  --accent-2: #ffb066;
+  --accent-dim: rgba(255, 138, 61, 0.14);
+  --ok: #4ec9a0;
+  --warn: #e0b341;
+  --err: #e35d5d;
+  --radius: 7px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+button, input, select, textarea { font-family: inherit; font-size: 12px; color: var(--fg); }
+
+/* ============================ 应用骨架 ============================ */
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  grid-template-columns: 272px minmax(360px, 1fr) 340px;
+  grid-template-areas:
+    "head head head"
+    "left center right";
+  height: 100vh;
+  width: 100vw;
+}
+
+header {
+  grid-area: head;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, #1c2029, #15181f);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.brand { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.brand b { font-size: 15px; letter-spacing: .4px; }
+.brand span { color: var(--muted-2); font-size: 11px; }
+
+.head-field { display: flex; align-items: center; gap: 6px; }
+.head-field label { color: var(--muted); white-space: nowrap; }
+.head-field input[type="text"] { width: 260px; }
+
+#status {
+  margin-left: auto;
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 42vw;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#status.ok { color: var(--ok); }
+#status.warn { color: var(--warn); }
+#status.err { color: var(--err); }
+
+aside, section.center { min-height: 0; overflow-y: auto; overflow-x: hidden; }
+aside { background: var(--panel); }
+aside.left { grid-area: left; border-right: 1px solid var(--line); }
+aside.right { grid-area: right; border-left: 1px solid var(--line); }
+section.center { grid-area: center; display: flex; flex-direction: column; padding: 10px; gap: 10px; }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #12151b; }
+::-webkit-scrollbar-thumb { background: #333a48; border-radius: 6px; border: 2px solid #12151b; }
+::-webkit-scrollbar-thumb:hover { background: #454e60; }
+
+/* ============================ 面板与控件 ============================ */
+.group { border-bottom: 1px solid var(--line); padding: 10px 12px 12px; }
+.group > h3 {
+  margin: 0 0 9px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  color: var(--accent-2);
+  text-transform: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.group > h3 .tag { margin-left: auto; color: var(--muted-2); font-weight: 400; font-size: 11px; }
+
+.row { display: flex; gap: 8px; align-items: center; }
+.row + .row { margin-top: 7px; }
+.row.wrap { flex-wrap: wrap; }
+.row > * { min-width: 0; }
+.field { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+.field > label { color: var(--muted); flex: 0 0 74px; }
+.field > label.wide { flex-basis: 96px; }
+.field .grow { flex: 1 1 auto; }
+
+input[type="text"], input[type="number"], select, textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 6px;
+  outline: none;
+  width: 100%;
+}
+input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus { border-color: var(--accent); }
+input[readonly] { color: var(--muted); background: #14171e; }
+input[type="number"] { width: 100%; }
+input[type="color"] {
+  width: 40px; height: 24px; padding: 0; border: 1px solid var(--line);
+  border-radius: 5px; background: var(--panel-2); cursor: pointer;
+}
+input[type="range"] { width: 100%; accent-color: var(--accent); height: 18px; }
+input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; vertical-align: -2px; }
+label.check { display: inline-flex; align-items: center; gap: 5px; color: var(--fg); cursor: pointer; white-space: nowrap; }
+.val { color: var(--accent-2); font-variant-numeric: tabular-nums; min-width: 42px; text-align: right; flex: 0 0 auto; }
+
+button {
+  background: var(--panel-3);
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+  white-space: nowrap;
+}
+button:hover:not(:disabled) { background: #313848; border-color: #4a5468; }
+button:active:not(:disabled) { background: #2a303d; }
+button:disabled { opacity: .42; cursor: not-allowed; }
+button.primary { background: var(--accent-dim); border-color: #7a4a24; color: var(--accent-2); }
+button.primary:hover:not(:disabled) { background: rgba(255, 138, 61, 0.24); }
+button.danger:hover:not(:disabled) { background: rgba(227, 93, 93, .22); border-color: #7d3a3a; color: #ffb4b4; }
+button.mini { padding: 2px 6px; font-size: 11px; line-height: 1.4; }
+button.icon { padding: 2px 5px; font-size: 12px; line-height: 1.4; }
+
+.hint { color: var(--muted-2); font-size: 11px; line-height: 1.6; margin: 6px 0 0; }
+.hint b { color: var(--muted); font-weight: 600; }
+.hint code { color: var(--accent-2); background: #10131a; padding: 0 3px; border-radius: 3px; }
+
+/* 拖放区 */
+.drop {
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius);
+  padding: 12px 10px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  background: #14171e;
+  transition: border-color .12s, background .12s, color .12s;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.drop:hover { border-color: var(--accent); color: var(--fg); }
+.drop.over { border-color: var(--accent); background: var(--accent-dim); color: var(--accent-2); }
+
+/* ============================ 画布 ============================ */
+.canvas-panel {
+  flex: 0 0 auto;
+  background: #0b0d12;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.canvas-host {
+  position: relative;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #14161c;
+  border-radius: 6px;
+}
+#view { display: block; box-shadow: 0 0 0 1px #3a4150, 0 8px 26px rgba(0, 0, 0, .55); cursor: default; touch-action: none; }
+.canvas-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+.canvas-bar .sep { width: 1px; height: 14px; background: var(--line); }
+.canvas-bar .kbd { color: var(--muted-2); }
+
+/* ============================ 导出面板 ============================ */
+.export-panel { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 240px; }
+.tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); padding-bottom: 6px; flex-wrap: wrap; }
+.tab { background: transparent; border: 1px solid transparent; color: var(--muted); padding: 4px 10px; border-radius: 5px; }
+.tab:hover:not(:disabled) { background: var(--panel-2); border-color: var(--line); }
+.tab.active { background: var(--accent-dim); border-color: #7a4a24; color: var(--accent-2); }
+.tab-body { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; gap: 8px; padding-top: 9px; }
+.tab-body.active { display: flex; }
+.tab-body textarea {
+  flex: 1 1 auto;
+  min-height: 170px;
+  resize: vertical;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 4;
+}
+.tab-body .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.msg { font-size: 11.5px; line-height: 1.6; color: var(--muted); white-space: pre-wrap; max-height: 150px; overflow: auto; }
+.msg.ok { color: var(--ok); }
+.msg.warn { color: var(--warn); }
+.msg.err { color: var(--err); }
+
+/* ============================ 图层列表 ============================ */
+.layer-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow: auto; padding-right: 2px; }
+.layer-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  cursor: pointer;
+  user-select: none;
+}
+.layer-item:hover { border-color: var(--line-2); background: var(--panel-3); }
+.layer-item.sel { border-color: var(--accent); background: var(--accent-dim); }
+.layer-item.hidden-item { opacity: .48; }
+.layer-item .thumb {
+  width: 34px; height: 34px; flex: 0 0 34px;
+  border-radius: 4px; background: #0e1015;
+  border: 1px solid var(--line);
+  object-fit: contain;
+}
+.layer-item .meta { flex: 1 1 auto; min-width: 0; }
+.layer-item .meta .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.layer-item .meta .sub { color: var(--muted-2); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.layer-item .ops { display: flex; gap: 2px; flex: 0 0 auto; }
+.layer-item .ops button { padding: 1px 4px; font-size: 11px; line-height: 1.5; border-radius: 4px; }
+.empty-note { color: var(--muted-2); font-size: 11.5px; padding: 8px 2px; line-height: 1.7; }
+
+/* ============================ 属性面板 ============================ */
+.props { display: flex; flex-direction: column; gap: 0; }
+.props.off { opacity: .45; pointer-events: none; }
+.props .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.props .fld { display: flex; align-items: center; gap: 5px; }
+.props .fld > span { color: var(--muted); flex: 0 0 auto; }
+.sub-title { color: var(--muted-2); font-size: 11px; margin: 10px 0 4px; border-top: 1px dashed var(--line); padding-top: 8px; }
+
+.badge { display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 15px; background: var(--panel-3); color: var(--muted); border: 1px solid var(--line); }
+.badge.behind { color: #9fb6d8; border-color: #38455c; }
+.badge.front { color: #ffcfa8; border-color: #6b4a2c; }
+.badge.ok { color: #96e8cd; border-color: #2f6b58; }
+.badge.plain { color: var(--muted-2); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============================ 顶栏 ============================ -->
+  <header>
+    <div class="brand"><b>Anomaly 主题布局编辑器</b><span>单文件 · 纯离线 · schemaVersion 1</span></div>
+    <div class="head-field">
+      <label for="pathPrefix">路径前缀</label>
+      <input type="text" id="pathPrefix" spellcheck="false" placeholder="assets/images/">
+    </div>
+    <div class="head-field">
+      <label for="canvasW">画布</label>
+      <input type="number" id="canvasW" min="1" max="32768" step="1" style="width:74px">
+      <span style="color:var(--muted-2)">×</span>
+      <input type="number" id="canvasH" min="1" max="32768" step="1" style="width:74px">
+    </div>
+    <div id="status"></div>
+  </header>
+
+  <!-- ============================ 左栏 ============================ -->
+  <aside class="left">
+
+    <div class="group">
+      <h3>背景图 <span class="tag" id="bgState">未绑定</span></h3>
+      <div class="drop" id="bgDrop">点击选择背景图<br><span style="color:var(--muted-2)">或把图片拖到这里<br>（拖到画布时，与背景同名的图片也会自动绑定为背景）</span></div>
+      <input type="file" id="bgFile" accept="image/*" hidden>
+      <div class="field"><label for="bgMode">模式</label>
+        <select id="bgMode">
+          <option value="disabled">disabled 禁用</option>
+          <option value="center">center 居中</option>
+          <option value="crop">crop 裁剪填满</option>
+          <option value="stretch">stretch 拉伸</option>
+        </select>
+      </div>
+      <div class="field"><label for="bgOpacity">不透明度</label>
+        <input type="range" id="bgOpacity" min="0" max="1" step="0.01">
+        <span class="val" id="bgOpacityVal">0.90</span>
+      </div>
+      <div class="field"><label for="bgTint">tint</label>
+        <input type="color" id="bgTint" value="#ffffff">
+        <input type="text" id="bgTintText" spellcheck="false" style="flex:1 1 auto">
+      </div>
+      <div class="field"><label for="bgPathOut">path</label>
+        <input type="text" id="bgPathOut" readonly spellcheck="false">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="bgClear" class="danger">解除背景绑定</button>
+        <span class="val" id="bgSize" style="text-align:left">—</span>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>贴纸 <span class="tag" id="stickerCount">0 个</span></h3>
+      <div class="drop" id="stickerDrop">点击选择多张图片<br><span style="color:var(--muted-2)">或把图片拖到这里（可多选）</span></div>
+      <input type="file" id="stickerFiles" accept="image/*" multiple hidden>
+      <p class="hint">
+        导入 JSON 后贴纸处于「未绑定」状态，再拖入<b>同名图片</b>即可自动重新绑定（几何参数保持不变）。
+      </p>
+    </div>
+
+    <div class="group">
+      <h3>吸附与辅助</h3>
+      <label class="check"><input type="checkbox" id="snapGrid" checked> 网格吸附</label>
+      <div class="field"><label for="snapStepPct">步长(%)</label>
+        <input type="number" id="snapStepPct" min="0.01" max="50" step="0.01" value="0.01">
+      </div>
+      <label class="check" style="margin-top:7px"><input type="checkbox" id="snapCenter" checked> 画布中线对齐参考线</label>
+      <label class="check" style="margin-top:7px"><input type="checkbox" id="showGrid"> 显示网格线</label>
+      <label class="check" style="margin-top:7px"><input type="checkbox" id="showChecker"> 预览显示棋盘格（8px，看透明区域）</label>
+      <p class="hint">棋盘格只是编辑辅助：<code>#ffffff</code> / <code>#cccccc</code> 交替的 8px 格子，
+        紧贴每个<b>背景图与贴纸的正下方</b>绘制，用来观察 PNG 素材的 alpha 透明区域；
+        空白区域仍显示主题表面。它不会进入导出 PNG。</p>
+      <div class="field"><label for="surfaceOpacity">表面不透明度</label>
+        <input type="range" id="surfaceOpacity" min="0.15" max="1" step="0.01">
+        <span class="val" id="surfaceOpacityVal">0.72</span>
+      </div>
+      <p class="hint">运行时会把这个值收敛到 <b>0 ~ 1</b>（<code>kPlatformUiLayoutSurfaceOpacityMinimum</code>），
+        所以滑块下限就是 0。</p>
+      <div class="row" style="margin-top:8px">
+        <button id="btnReset">重置为默认布局</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>运行时约束</h3>
+      <p class="hint">导入校验、属性面板输入、画布拖拽缩放都按运行时（<code>src/ui/platform_ui_layout.cpp</code>）的
+        同一套范围收敛，保证「编辑器里看到的 = 运行时画出来的」：</p>
+      <ul class="hint" style="margin:6px 0 0 0;padding-left:18px">
+        <li>贴纸 <code>x</code>/<code>y</code>：<b>-4 ~ 5</b>（非法回退 0.5）</li>
+        <li>贴纸 <code>width</code>/<code>height</code>：<b>0 ~ 8</b>（非法回退 0）</li>
+        <li>贴纸 <code>rotation</code>：<b>-3600 ~ 3600</b> 度（非法回退 0）</li>
+        <li><code>opacity</code> / 背景 <code>opacity</code>：<b>0 ~ 1</b>（非法回退 1）</li>
+        <li><code>surfaceOpacity</code>：<b>0.15 ~ 1</b>（非法回退 1）</li>
+        <li><code>canvas.width</code>/<code>height</code>：<b>1 ~ 32768</b>（非法回退 1180 / 700）</li>
+        <li>贴纸数量 ≤ <b>64</b>、<code>path</code> ≤ <b>512</b> 字符、文件 ≤ <b>256 KB</b>，超出则整个文件被运行时拒绝</li>
+        <li><code>schemaVersion</code> 为整数且 ≠ 1 时整个文件被拒绝；没有 <code>path</code> 的贴纸会被丢弃</li>
+      </ul>
+    </div>
+
+    <div class="group">
+      <h3>本地存档</h3>
+      <div class="row">
+        <button id="btnSaveNow">立即保存</button>
+        <button id="btnClearLocal" class="danger">清空存档</button>
+      </div>
+      <p class="hint">编辑状态会自动写入 <code>localStorage</code>（图片本体无法序列化，需重新绑定）。</p>
+    </div>
+
+    <div class="group" style="border-bottom:none">
+      <h3>操作提示</h3>
+      <p class="hint">
+        <b>拖动</b> 移动贴纸 · <b>角点</b> 缩放 · <b>顶部圆点</b> 旋转<br>
+        <b>Shift</b> 缩放等比 / 旋转 15° 吸附 / 拖动锁定单轴<br>
+        <b>方向键</b> 微调 1px · <b>Shift+方向键</b> 10px<br>
+        <b>Ctrl+Z / Ctrl+Shift+Z</b> 撤销 / 重做 · <b>Delete</b> 删除选中<br>
+        <b>Ctrl+S</b> 保存 · <b>Esc</b> 取消选择
+      </p>
+    </div>
+  </aside>
+
+  <!-- ============================ 中栏 ============================ -->
+  <section class="center">
+    <div class="canvas-panel">
+      <div class="canvas-host" id="canvasHost">
+        <canvas id="view" width="1180" height="700"></canvas>
+      </div>
+      <div class="canvas-bar">
+        <span id="canvasInfo">—</span>
+        <span class="sep"></span>
+        <span>显示比例 <b id="zoomInfo">100%</b></span>
+        <span class="sep"></span>
+        <span class="kbd" id="snapInfo">吸附 1%</span>
+        <span class="sep"></span>
+        <span class="kbd">预览与 C++ 端几何算法一致</span>
+      </div>
+    </div>
+
+    <div class="export-panel">
+      <div class="tabs">
+        <button class="tab active" data-tab="json">导出 JSON</button>
+        <button class="tab" data-tab="imgui">导出 ImGui 代码</button>
+        <button class="tab" data-tab="import">导入 JSON</button>
+        <button class="tab" data-tab="png">导出 PNG 预览</button>
+      </div>
+
+      <div class="tab-body active" id="tab-json">
+        <textarea id="jsonOut" readonly spellcheck="false"></textarea>
+        <div class="actions">
+          <button class="primary" id="btnJsonDownload">下载文件</button>
+          <button id="btnJsonCopy">复制到剪贴板</button>
+          <span class="msg" id="jsonMsg"></span>
+        </div>
+      </div>
+
+      <div class="tab-body" id="tab-imgui">
+        <textarea id="imguiOut" readonly spellcheck="false"></textarea>
+        <div class="actions">
+          <button class="primary" id="btnImguiCopy">复制到剪贴板</button>
+          <button id="btnImguiDownload">下载 .h</button>
+          <span class="msg" id="imguiMsg"></span>
+        </div>
+      </div>
+
+      <div class="tab-body" id="tab-import">
+        <textarea id="importText" spellcheck="false" placeholder="把导出的 JSON 粘贴到这里，然后点击「解析并导入」……"></textarea>
+        <div class="actions">
+          <button class="primary" id="btnImportApply">解析并导入</button>
+          <button id="btnImportFile">选择 JSON 文件</button>
+          <button id="btnImportClear" class="danger">清空输入</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
+        </div>
+        <div class="msg" id="importMsg"></div>
+      </div>
+
+      <div class="tab-body" id="tab-png">
+        <label class="check" style="margin-bottom:8px"><input type="checkbox" id="exportChecker">
+          导出时包含棋盘格（默认不勾 → PNG 保持透明背景）</label>
+        <div class="msg">
+          按画布逻辑尺寸（<b id="pngSize">1180 × 700</b>）导出干净渲染：仅包含表面、背景图与贴纸，
+          不含网格线、选中框与参考线；未绑定图片的贴纸不会出现在 PNG 中。
+          <b>默认不绘制棋盘格</b>，Surface 与贴图的 alpha 会原样保留（透明背景）；
+          勾选后才会把 #ffffff / #cccccc 的 8px 棋盘格烧进 PNG。
+        </div>
+        <div class="actions">
+          <button class="primary" id="btnPngExport">导出 PNG 预览</button>
+          <button id="btnPngCopy">复制 PNG 到剪贴板</button>
+          <span class="msg" id="pngMsg"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 右栏 ============================ -->
+  <aside class="right">
+    <div class="group">
+      <h3>图层 <span class="tag" id="layerTag">0</span></h3>
+      <div class="row" style="margin-bottom:7px">
+        <button class="mini" id="btnLayerFront">选中→front</button>
+        <button class="mini" id="btnLayerBehind">选中→behind</button>
+      </div>
+      <div class="layer-list" id="layerList"></div>
+    </div>
+
+    <div class="group" style="border-bottom:none">
+      <h3>属性 <span class="tag" id="propTag">未选中</span></h3>
+      <div class="props off" id="props">
+        <div class="fld"><span style="flex:0 0 74px">名称</span><input type="text" id="pName" spellcheck="false"></div>
+        <div class="fld" style="margin-top:6px"><span style="flex:0 0 74px">path</span><input type="text" id="pPath" readonly spellcheck="false"></div>
+        <div class="fld" style="margin-top:6px"><span style="flex:0 0 74px">目录</span><input type="text" id="pDir" spellcheck="false" placeholder="留空则使用全局前缀"></div>
+
+        <div class="sub-title">位置（归一化 0~1）</div>
+        <div class="grid2">
+          <div class="fld"><span>X</span><input type="number" id="pX" step="0.001"></div>
+          <div class="fld"><span>Y</span><input type="number" id="pY" step="0.001"></div>
+        </div>
+
+        <div class="sub-title">尺寸（归一化，0 = 按图片比例推导）</div>
+        <div class="grid2">
+          <div class="fld"><span>宽 W</span><input type="number" id="pW" step="0.001" min="0"></div>
+          <div class="fld"><span>高 H</span><input type="number" id="pH" step="0.001" min="0"></div>
+        </div>
+        <div class="row" style="margin-top:7px">
+          <button class="mini" id="pNatural">尺寸=原图像素</button>
+          <button class="mini" id="pAutoH">高度=0（按比例）</button>
+        </div>
+
+        <div class="sub-title">旋转 / 不透明度</div>
+        <div class="fld"><span style="flex:0 0 74px">旋转(°)</span><input type="number" id="pRot" step="1"></div>
+        <div class="fld" style="margin-top:6px"><span style="flex:0 0 74px">不透明度</span>
+          <input type="range" id="pOpacity" min="0" max="1" step="0.01"><span class="val" id="pOpacityVal">1.00</span>
+        </div>
+        <p class="hint"><b>opacity</b>：整张贴纸的透明叠加，导出为 <code>IM_COL32</code> 的 a 通道（1.0 → 255）。</p>
+
+        <div class="sub-title">锚点 / 层级 / tint</div>
+        <div class="fld"><span style="flex:0 0 74px">锚点</span>
+          <select id="pAnchor">
+            <option value="center">center 居中</option>
+            <option value="top_left">top_left 左上</option>
+            <option value="top_right">top_right 右上</option>
+            <option value="bottom_left">bottom_left 左下</option>
+            <option value="bottom_right">bottom_right 右下</option>
+          </select>
+        </div>
+        <div class="fld" style="margin-top:6px"><span style="flex:0 0 74px">层级</span>
+          <select id="pLayer">
+            <option value="behind">behind 背景层</option>
+            <option value="front">front 前景层</option>
+          </select>
+        </div>
+        <div class="fld" style="margin-top:6px"><span style="flex:0 0 74px">tint</span>
+          <input type="color" id="pTint" value="#ffffff">
+          <input type="text" id="pTintText" spellcheck="false" style="flex:1 1 auto">
+        </div>
+        <p class="hint"><b>tint</b> 只做颜色调制（RGB 直接写入 <code>IM_COL32</code> 的 r/g/b，<b>不做任何预乘</b>），
+          <b>opacity</b> 只决定 a 通道：两者都不改变 ImGui 后端 <code>SRC_ALPHA / INV_SRC_ALPHA</code> 直通 alpha 的混合语义。</p>
+
+        <div class="sub-title">Alpha 信息</div>
+        <div class="fld"><span style="flex:0 0 74px">透明像素</span>
+          <span class="badge plain" id="pAlphaBadge">未绑定</span>
+          <span class="val" id="pAlphaRatio" style="text-align:left;min-width:0;flex:1 1 auto"></span>
+        </div>
+        <p class="hint">按最长边缩到 128px 采样统计 a &lt; 255 的像素比例，用于确认素材确实带 alpha 通道。</p>
+
+        <div class="sub-title">翻转 / 状态</div>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="pFlipX"> 水平翻转</label>
+          <label class="check"><input type="checkbox" id="pFlipY"> 垂直翻转</label>
+        </div>
+        <div class="row" style="margin-top:7px">
+          <label class="check"><input type="checkbox" id="pVisible"> 显示</label>
+          <label class="check"><input type="checkbox" id="pLocked"> 锁定</label>
+          <span class="badge" id="pBind">未绑定</span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="mini" id="pDup">复制一份</button>
+          <button class="mini danger" id="pDel">删除</button>
+        </div>
+      </div>
+      <div class="empty-note" id="propsEmpty">在画布或图层列表中选择一个贴纸以编辑属性。</div>
+    </div>
+  </aside>
+</div>
+
+<script>
+'use strict';
+/* =====================================================================
+ * Anomaly 主题布局编辑器 —— 全部逻辑
+ * 段落划分：
+ *   1. 常量 / 状态 / DOM 引用 / 通用工具
+ *   2. 几何算法（与 C++ 端 DrawAnomalyThemeLayout 逐字一致）+ 渲染
+ *   3. 图片加载与绑定 / 画布自适应 / 命中测试 / 交互 / 快捷键
+ *   4. 图层列表 / 属性面板 / 撤销重做
+ *   5. 导出 JSON / 导出 ImGui / 导入 JSON / 导出 PNG / localStorage
+ *   6. 事件绑定与初始化
+ * ===================================================================== */
+
+/* ===================== 1. 常量 ===================== */
+
+var LS_KEY = 'anomaly.theme.layout.editor.v1';
+var DEFAULT_PREFIX = 'assets/images/';
+var DEFAULT_BG_FILE = 'background.png';
+var SCHEMA_VERSION = 1;
+
+var ANCHORS = ['center', 'top_left', 'top_right', 'bottom_left', 'bottom_right'];
+var ANCHOR_LABEL = {
+  center: 'center 居中', top_left: 'top_left 左上', top_right: 'top_right 右上',
+  bottom_left: 'bottom_left 左下', bottom_right: 'bottom_right 右下'
+};
+var ANCHOR_CODE = { center: 0, top_left: 1, top_right: 2, bottom_left: 3, bottom_right: 4 };
+var LAYERS = ['behind', 'front'];
+var LAYER_LABEL = { behind: 'behind 背景层', front: 'front 前景层' };
+var LAYER_CODE = { behind: 0, front: 1 };
+var MODES = ['disabled', 'center', 'crop', 'stretch'];
+
+var PLACEHOLDER_W = 256;   // 未绑定图片时使用的占位像素尺寸
+var PLACEHOLDER_H = 256;
+var MAX_UNDO = 60;
+
+/* ---------------------------------------------------------------------
+ * 运行时约束（与 src/ui/platform_ui_layout.cpp 逐字一致）
+ * 编辑器的导入校验、属性面板输入、画布拖拽缩放全部按这套范围收敛，
+ * 保证「编辑器里看到的 = 运行时画出来的」。
+ * ------------------------------------------------------------------- */
+var MIN_CANVAS = 1;
+var MAX_CANVAS = 32768;
+var MAX_STICKERS = 64;                 // 超过即整个文件被运行时拒绝
+var MAX_PATH_LENGTH = 512;             // path 超过即整个文件被运行时拒绝
+var MAX_LAYOUT_BYTES = 256 * 1024;     // 文件超过即整个文件被运行时拒绝
+var FIELD_LIMITS = {
+  x: { lo: -4, hi: 5, def: 0.5 },
+  y: { lo: -4, hi: 5, def: 0.5 },
+  width: { lo: 0, hi: 8, def: 0 },
+  height: { lo: 0, hi: 8, def: 0 },
+  rotation: { lo: -3600, hi: 3600, def: 0 },
+  opacity: { lo: 0, hi: 1, def: 1 },
+  surfaceOpacity: { lo: 0, hi: 1, def: 1 },   // kPlatformUiLayoutSurfaceOpacityMinimum
+  canvasWidth: { lo: MIN_CANVAS, hi: MAX_CANVAS, def: 1180 },
+  canvasHeight: { lo: MIN_CANVAS, hi: MAX_CANVAS, def: 700 }
+};
+
+var MIN_STICKER_PX = 4;    // 缩放时贴纸的最小像素边长
+var HANDLE_PX = 5;         // 控制点半径（CSS 像素）
+var HANDLE_HIT_PX = 9;     // 控制点命中半径（CSS 像素）
+var ROTATE_ARM_PX = 26;    // 旋转手柄距离（CSS 像素）
+var MAX_PREVIEW_PIXELS = 4096;   // 预览后备存储的单边上限（防止超大画布把显存撑爆）
+var MAX_EXPORT_PIXELS = 16384;   // PNG 导出的单边上限
+
+/* ===================== 2. 状态 ===================== */
+
+var state = {
+  canvas: { width: 1180, height: 700 },
+  surfaceOpacity: 0.72,
+  background: {
+    fileName: DEFAULT_BG_FILE,
+    dir: '',              // 空字符串 = 使用全局前缀
+    mode: 'crop',
+    opacity: 0.9,
+    tint: '#ffffff',
+    img: null,
+    naturalW: 0,
+    naturalH: 0
+  },
+  stickers: [],
+  pathPrefix: DEFAULT_PREFIX,
+  selectedId: null,
+  snap: { grid: true, step: 0.01, center: true },
+  view: {
+    showGrid: false,
+    showChecker: false,   // 画布棋盘格（默认关闭：透明贴纸直接压在画布底色上）
+    scale: 1,
+    guides: { x: false, y: false },
+    overlay: null         // 拖拽期间的临时覆盖数据（缩放/旋转预览）
+  },
+  export: {
+    includeChecker: false // 「导出时包含棋盘格」，默认关闭 → PNG 保持透明背景
+  }
+};
+
+var idSeq = 1;
+var drag = null;           // 当前交互
+var undoStack = [];          // 撤销栈
+var future = [];           // 重做栈
+var saveTimer = null;
+var renderQueued = false;
+var statusTimer = null;
+
+/* ===================== 3. DOM 引用 ===================== */
+
+function $(id) { return document.getElementById(id); }
+
+var dom = {};
+function cacheDom() {
+  var ids = [
+    'pathPrefix', 'canvasW', 'canvasH', 'status',
+    'bgDrop', 'bgFile', 'bgMode', 'bgOpacity', 'bgOpacityVal', 'bgTint', 'bgTintText',
+    'bgPathOut', 'bgClear', 'bgSize', 'bgState',
+    'stickerDrop', 'stickerFiles', 'stickerCount',
+    'snapGrid', 'snapStepPct', 'snapCenter', 'showGrid', 'showChecker', 'surfaceOpacity', 'surfaceOpacityVal',
+    'btnReset', 'btnSaveNow', 'btnClearLocal',
+    'canvasHost', 'view', 'canvasInfo', 'zoomInfo', 'snapInfo',
+    'jsonOut', 'btnJsonDownload', 'btnJsonCopy', 'jsonMsg',
+    'imguiOut', 'btnImguiCopy', 'btnImguiDownload', 'imguiMsg',
+    'importText', 'btnImportApply', 'btnImportFile', 'btnImportClear', 'importFile', 'importMsg',
+    'pngSize', 'exportChecker', 'btnPngExport', 'btnPngCopy', 'pngMsg',
+    'layerList', 'layerTag', 'btnLayerFront', 'btnLayerBehind',
+    'props', 'propsEmpty', 'propTag',
+    'pName', 'pPath', 'pDir', 'pX', 'pY', 'pW', 'pH', 'pNatural', 'pAutoH',
+    'pRot', 'pOpacity', 'pOpacityVal', 'pAnchor', 'pLayer', 'pTint', 'pTintText',
+    'pAlphaBadge', 'pAlphaRatio',
+    'pFlipX', 'pFlipY', 'pVisible', 'pLocked', 'pBind', 'pDup', 'pDel'
+  ];
+  for (var i = 0; i < ids.length; i++) { dom[ids[i]] = $(ids[i]); }
+}
+
+/* ===================== 4. 通用工具 ===================== */
+
+function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+function isNum(v) { return typeof v === 'number' && isFinite(v); }
+
+/** 保留 n 位小数（去掉浮点噪声） */
+function round(v, n) {
+  if (!isNum(v)) { return 0; }
+  var m = Math.pow(10, n);
+  var r = Math.round(v * m) / m;
+  return Object.is(r, -0) ? 0 : r;
+}
+
+function basename(p) {
+  if (typeof p !== 'string') { return ''; }
+  var s = p.replace(/\\/g, '/');
+  var i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+function dirname(p) {
+  if (typeof p !== 'string') { return ''; }
+  var s = p.replace(/\\/g, '/');
+  var i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(0, i + 1) : '';
+}
+
+/** 目录归一化：保证以 / 结尾，空串表示「使用全局前缀」 */
+function normalizeDir(d) {
+  if (typeof d !== 'string' || d === '') { return ''; }
+  var s = d.replace(/\\/g, '/');
+  if (s.charAt(s.length - 1) !== '/') { s += '/'; }
+  return s;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** C++ 字符串字面量转义 */
+function cppString(s) {
+  return String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+}
+
+/** 数值 → C++ float 字面量文本，最多 n 位小数，至少保留 1 位 */
+function cppFloat(v, n) {
+  if (!isNum(v)) { v = 0; }
+  var s = v.toFixed(n == null ? 4 : n);
+  if (s.indexOf('.') >= 0) {
+    s = s.replace(/0+$/, '');
+    if (s.charAt(s.length - 1) === '.') { s += '0'; }
+  }
+  return s;
+}
+
+/** '#rrggbb' → 0xAABBGGRR（ImGui IM_COL32 的位序），无效返回 0xFFFFFFFF */
+function hexToImGuiU32(hex) {
+  var m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex == null ? '' : hex).trim());
+  if (!m) { return 0xFFFFFFFF; }
+  var n = parseInt(m[1], 16);
+  var r = (n >> 16) & 0xFF, g = (n >> 8) & 0xFF, b = n & 0xFF;
+  return (0xFF000000 | (b << 16) | (g << 8) | r) >>> 0;
+}
+
+function isHexColor(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v.trim()); }
+
+function normHex(v) { return isHexColor(v) ? v.trim().toLowerCase() : null; }
+
+/** 统一的用户提示 */
+function setStatus(text, kind) {
+  if (!dom.status) { return; }
+  dom.status.textContent = text || '';
+  dom.status.className = kind || '';
+  if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+  if (text) {
+    statusTimer = setTimeout(function () {
+      dom.status.textContent = '';
+      dom.status.className = '';
+      statusTimer = null;
+    }, kind === 'err' ? 9000 : 5000);
+  }
+}
+
+function setMsg(el, text, kind) {
+  if (!el) { return; }
+  el.textContent = text || '';
+  el.className = 'msg' + (kind ? ' ' + kind : '');
+}
+
+/** 复制文本：优先 Clipboard API，file:// 下回退到 execCommand */
+function copyText(text) {
+  var done = function (ok, how) {
+    if (ok) { setStatus('已复制到剪贴板（' + how + '）', 'ok'); }
+    else { setStatus('复制失败：浏览器拒绝了剪贴板访问，请手动全选复制', 'err'); }
+    return ok;
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(function () { return done(true, 'Clipboard API'); },
+      function () { return done(legacyCopy(text), 'execCommand'); });
+  }
+  return Promise.resolve(done(legacyCopy(text), 'execCommand'));
+}
+
+function legacyCopy(text) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', 'readonly');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+function downloadText(fileName, text, mime) {
+  downloadBlob(fileName, new Blob([text], { type: mime || 'text/plain;charset=utf-8' }));
+}
+
+function downloadBlob(fileName, blob) {
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 400);
+}
+
+/** 读取本地文件为 data URL（file:// 下比 blob: 更可靠，且不会污染画布） */
+function readFileAsDataURL(file) {
+  return new Promise(function (resolve, reject) {
+    var fr = new FileReader();
+    fr.onload = function () { resolve(String(fr.result || '')); };
+    fr.onerror = function () { reject(new Error('文件读取失败：' + (file && file.name ? file.name : '未知文件'))); };
+    fr.readAsDataURL(file);
+  });
+}
+
+function loadImage(dataUrl, label) {
+  return new Promise(function (resolve, reject) {
+    var img = new Image();
+    img.onload = function () {
+      if (!img.naturalWidth || !img.naturalHeight) {
+        reject(new Error('图片尺寸无效：' + label));
+        return;
+      }
+      resolve(img);
+    };
+    img.onerror = function () { reject(new Error('图片解码失败：' + label)); };
+    img.src = dataUrl;
+  });
+}
+
+function isImageFile(file) {
+  if (!file) { return false; }
+  if (file.type && file.type.indexOf('image/') === 0) { return true; }
+  return /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name || '');
+}
+
+function uid() { return 's' + (idSeq++) + '_' + Math.random().toString(36).slice(2, 7); }
+
+function dist2(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+
+/** 角度归一化到 [0,360) */
+function normAngle(a) {
+  if (!isNum(a)) { return 0; }
+  var r = a % 360;
+  if (r < 0) { r += 360; }
+  return round(r, 2);
+}
+
+/* =====================================================================
+ * 5. 几何算法（画布预览必须与 C++ 端逐字一致）
+ *    视口 (vw,vh)，图片像素 (iw,ih)。
+ * ===================================================================== */
+
+/**
+ * 背景绘制参数。
+ * 返回 null 表示不绘制；否则 {dx,dy,dw,dh,u0,v0,u1,v1}（dx/dy/dw/dh 为逻辑像素）。
+ */
+function computeBackgroundDraw(vw, vh, iw, ih, mode) {
+  if (mode === 'disabled') { return null; }
+  if (!(iw > 0) || !(ih > 0)) { return null; }
+  if (!(vw > 0) || !(vh > 0)) { return null; }
+
+  if (mode === 'stretch') {
+    return { dx: 0, dy: 0, dw: vw, dh: vh, u0: 0, v0: 0, u1: 1, v1: 1 };
+  }
+  if (mode === 'center') {
+    var sc = Math.min(vw / iw, vh / ih);
+    var dw = iw * sc, dh = ih * sc;
+    return { dx: (vw - dw) / 2, dy: (vh - dh) / 2, dw: dw, dh: dh, u0: 0, v0: 0, u1: 1, v1: 1 };
+  }
+  // crop：目标 = 整个视口，UV 为居中子矩形
+  var s = Math.max(vw / iw, vh / ih);
+  var uw = vw / (iw * s);
+  var uh = vh / (ih * s);
+  return {
+    dx: 0, dy: 0, dw: vw, dh: vh,
+    u0: 0.5 - uw / 2, v0: 0.5 - uh / 2,
+    u1: 0.5 + uw / 2, v1: 0.5 + uh / 2
+  };
+}
+
+/**
+ * 贴纸绘制参数（未旋转的轴对齐矩形 + 中心点）。
+ * 返回 {left,top,w,h,cx,cy,iw,ih,u0,v0,u1,v1}。
+ */
+function computeStickerDraw(st, vw, vh) {
+  var iw = st.naturalW > 0 ? st.naturalW : PLACEHOLDER_W;
+  var ih = st.naturalH > 0 ? st.naturalH : PLACEHOLDER_H;
+
+  var wpx, hpx;
+  if (st.width > 0 && st.height > 0) {
+    wpx = st.width * vw; hpx = st.height * vh;
+  } else if (st.width > 0) {
+    wpx = st.width * vw; hpx = wpx * ih / iw;
+  } else if (st.height > 0) {
+    hpx = st.height * vh; wpx = hpx * iw / ih;
+  } else {
+    wpx = iw; hpx = ih;
+  }
+
+  var px = st.x * vw, py = st.y * vh;
+  var left, top;
+  switch (st.anchor) {
+    case 'top_left': left = px; top = py; break;
+    case 'top_right': left = px - wpx; top = py; break;
+    case 'bottom_left': left = px; top = py - hpx; break;
+    case 'bottom_right': left = px - wpx; top = py - hpx; break;
+    default: left = px - wpx / 2; top = py - hpx / 2; break;
+  }
+  return {
+    left: left, top: top, w: wpx, h: hpx,
+    cx: left + wpx / 2, cy: top + hpx / 2,
+    iw: iw, ih: ih, u0: 0, v0: 0, u1: 1, v1: 1
+  };
+}
+
+/** 由矩形反推锚点坐标（与 computeStickerDraw 的锚点分支互为逆运算） */
+function rectToAnchorPoint(left, top, w, h, anchor) {
+  switch (anchor) {
+    case 'top_left': return { x: left, y: top };
+    case 'top_right': return { x: left + w, y: top };
+    case 'bottom_left': return { x: left, y: top + h };
+    case 'bottom_right': return { x: left + w, y: top + h };
+    default: return { x: left + w / 2, y: top + h / 2 };
+  }
+}
+
+/** 旋转矩阵（y 轴向下，顺时针为正）：局部 → 世界 */
+function rotatePoint(dx, dy, cs, sn) {
+  return { x: dx * cs - dy * sn, y: dx * sn + dy * cs };
+}
+
+/** 贴纸控制点（逻辑坐标）：四角 + 旋转手柄 + 中心 */
+function stickerHandles(st, vw, vh) {
+  var d = computeStickerDraw(st, vw, vh);
+  var rad = st.rotation * Math.PI / 180;
+  var cs = Math.cos(rad), sn = Math.sin(rad);
+  var out = {};
+  var corners = [['nw', -d.w / 2, -d.h / 2], ['ne', d.w / 2, -d.h / 2],
+                 ['sw', -d.w / 2, d.h / 2], ['se', d.w / 2, d.h / 2]];
+  for (var i = 0; i < corners.length; i++) {
+    var p = rotatePoint(corners[i][1], corners[i][2], cs, sn);
+    out[corners[i][0]] = { x: d.cx + p.x, y: d.cy + p.y };
+  }
+  // 旋转手柄在局部坐标的正上方（-h/2 再往上 ROTATE_ARM 个 CSS 像素）
+  var arm = ROTATE_ARM_PX / (state.view.scale || 1);
+  var rp = rotatePoint(0, -d.h / 2 - arm, cs, sn);
+  out.rotate = { x: d.cx + rp.x, y: d.cy + rp.y };
+  out.center = { x: d.cx, y: d.cy };
+  return out;
+}
+
+/** 点是否落在贴纸（含旋转）内部 */
+function pointInSticker(st, lx, ly, vw, vh) {
+  var d = computeStickerDraw(st, vw, vh);
+  var rad = -st.rotation * Math.PI / 180;
+  var cs = Math.cos(rad), sn = Math.sin(rad);
+  var p = rotatePoint(lx - d.cx, ly - d.cy, cs, sn);
+  return Math.abs(p.x) <= d.w / 2 && Math.abs(p.y) <= d.h / 2;
+}
+
+/** 图层顺序：behind 在前（先绘制），front 在后；同层按数组顺序 */
+function effectiveOrder() {
+  var behind = [], front = [];
+  for (var i = 0; i < state.stickers.length; i++) {
+    (state.stickers[i].layer === 'front' ? front : behind).push(state.stickers[i]);
+  }
+  return behind.concat(front);
+}
+
+function findSticker(id) {
+  for (var i = 0; i < state.stickers.length; i++) {
+    if (state.stickers[i].id === id) { return state.stickers[i]; }
+  }
+  return null;
+}
+
+function selectedSticker() {
+  return state.selectedId ? findSticker(state.selectedId) : null;
+}
+
+/** 贴纸解析后的 path（目录为空则拼全局前缀） */
+function resolvePath(item) {
+  var dir = normalizeDir(item.dir) || normalizeDir(state.pathPrefix);
+  return dir + (item.fileName || '');
+}
+
+/* =====================================================================
+ * 6. 渲染
+ * ===================================================================== */
+
+/** tint 着色缓存：multiply 上色 + destination-in 还原 alpha */
+function tintedSource(obj, key) {
+  var img = obj.img;
+  if (!img) { return null; }
+  var tint = normHex(obj.tint) || '#ffffff';
+  if (tint === '#ffffff') { return img; }
+  if (obj._tintCache && obj._tintCache.key === key + '|' + tint) { return obj._tintCache.canvas; }
+  var c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  var g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  g.globalCompositeOperation = 'multiply';
+  g.fillStyle = tint;
+  g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = 'destination-in';
+  g.drawImage(img, 0, 0);
+  g.globalCompositeOperation = 'source-over';
+  obj._tintCache = { key: key + '|' + tint, canvas: c };
+  return c;
+}
+
+/* ---------- 棋盘格（观察 alpha 透明区域的编辑辅助） ----------
+ * 规格：8 逻辑像素一格，#ffffff / #cccccc 交替。
+ * 绘制位置：每个背景图 / 每个贴纸的「正下方」（紧贴贴图），因此贴图的透明像素
+ * 会直接透出棋盘格；棋盘格不会进入导出 PNG（除非显式勾选「导出时包含棋盘格」）。
+ */
+var CHECKER_CELL = 8;
+var CHECKER_LIGHT = '#ffffff';
+var CHECKER_DARK = '#cccccc';
+
+/** 取得（并按上下文缓存的）棋盘格 pattern */
+function getCheckerPattern(ctx) {
+  if (ctx.__anomalyChecker && ctx.__anomalyChecker.cell === CHECKER_CELL) {
+    return ctx.__anomalyChecker.pattern;
+  }
+  var pattern = null;
+  try {
+    var tile = document.createElement('canvas');
+    tile.width = CHECKER_CELL * 2;
+    tile.height = CHECKER_CELL * 2;
+    var g = tile.getContext('2d');
+    g.fillStyle = CHECKER_LIGHT;
+    g.fillRect(0, 0, tile.width, tile.height);
+    g.fillStyle = CHECKER_DARK;
+    g.fillRect(0, 0, CHECKER_CELL, CHECKER_CELL);
+    g.fillRect(CHECKER_CELL, CHECKER_CELL, CHECKER_CELL, CHECKER_CELL);
+    pattern = ctx.createPattern(tile, 'repeat');
+  } catch (e) {
+    pattern = null;
+  }
+  ctx.__anomalyChecker = { cell: CHECKER_CELL, pattern: pattern };
+  return pattern;
+}
+
+/** 在指定矩形内铺 8px 棋盘格（贴纸会连同旋转变换一起作用，格子随贴纸旋转） */
+function drawCheckerRect(ctx, x, y, w, h) {
+  if (!(w > 0) || !(h > 0)) { return; }
+  var pattern = getCheckerPattern(ctx);
+  ctx.save();
+  if (pattern) {
+    ctx.fillStyle = pattern;
+    ctx.fillRect(x, y, w, h);
+  } else {
+    // 极少数环境 createPattern 不可用时手绘
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    ctx.fillStyle = CHECKER_LIGHT;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = CHECKER_DARK;
+    var x0 = Math.floor(x / CHECKER_CELL) * CHECKER_CELL;
+    var y0 = Math.floor(y / CHECKER_CELL) * CHECKER_CELL;
+    for (var yy = y0; yy < y + h; yy += CHECKER_CELL) {
+      for (var xx = x0; xx < x + w; xx += CHECKER_CELL) {
+        if (((xx / CHECKER_CELL) + (yy / CHECKER_CELL)) % 2 === 0) {
+          ctx.fillRect(xx, yy, CHECKER_CELL, CHECKER_CELL);
+        }
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawGridLines(ctx, vw, vh) {
+  var step = state.snap.grid && state.snap.step > 0 ? state.snap.step : 0.05;
+  var px = step * vw, py = step * vh;
+  if (px < 4 && py < 4) { return; }
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.beginPath();
+  var x, y;
+  for (x = px; x < vw - 0.5; x += px) { ctx.moveTo(Math.round(x) + 0.5, 0); ctx.lineTo(Math.round(x) + 0.5, vh); }
+  for (y = py; y < vh - 0.5; y += py) { ctx.moveTo(0, Math.round(y) + 0.5); ctx.lineTo(vw, Math.round(y) + 0.5); }
+  ctx.stroke();
+  // 中线
+  ctx.strokeStyle = 'rgba(255,138,61,0.22)';
+  ctx.beginPath();
+  ctx.moveTo(Math.round(vw / 2) + 0.5, 0); ctx.lineTo(Math.round(vw / 2) + 0.5, vh);
+  ctx.moveTo(0, Math.round(vh / 2) + 0.5); ctx.lineTo(vw, Math.round(vh / 2) + 0.5);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 绘制背景图（严格按 mode 的几何算法） */
+function drawBackground(ctx, vw, vh, opts) {
+  var bg = state.background;
+  var d = computeBackgroundDraw(vw, vh, bg.naturalW, bg.naturalH, bg.mode);
+  if (!d) { return; }
+  ctx.save();
+  ctx.globalAlpha = clamp(bg.opacity, 0, 1);
+  var img = bg.img;
+  if (img) {
+    // 背景图正下方铺棋盘格，透明像素可见
+    if (opts && opts.checker) { drawCheckerRect(ctx, d.dx, d.dy, d.dw, d.dh); }
+    var src = tintedSource(bg, 'bg');
+    var sx = d.u0 * bg.naturalW, sy = d.v0 * bg.naturalH;
+    var sw = (d.u1 - d.u0) * bg.naturalW, sh = (d.v1 - d.v0) * bg.naturalH;
+    ctx.drawImage(src, sx, sy, sw, sh, d.dx, d.dy, d.dw, d.dh);
+  } else if (opts && opts.placeholders) {
+    ctx.fillStyle = 'rgba(90,140,255,0.10)';
+    ctx.fillRect(d.dx, d.dy, d.dw, d.dh);
+    ctx.strokeStyle = 'rgba(120,170,255,0.6)';
+    ctx.setLineDash([8, 5]);
+    ctx.lineWidth = Math.max(1, 2 / (state.view.scale || 1));
+    ctx.strokeRect(d.dx, d.dy, d.dw, d.dh);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(190,215,255,0.85)';
+    ctx.font = '12px "Segoe UI", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('背景图未绑定：' + (bg.fileName || '') + '（' + bg.mode + '）', d.dx + d.dw / 2, d.dy + d.dh / 2);
+  }
+  ctx.restore();
+}
+
+/** 绘制单个贴纸（旋转 + 翻转 + tint + 不透明度） */
+function drawSticker(ctx, st, vw, vh, opts) {
+  var d = computeStickerDraw(st, vw, vh);
+  if (!(d.w > 0) || !(d.h > 0)) { return; }
+
+  ctx.save();
+  ctx.translate(d.cx, d.cy);
+  ctx.rotate(st.rotation * Math.PI / 180);
+  // flipX/flipY 等价于交换 u0/u1、v0/v1：这里用镜像实现同一效果
+  ctx.scale(st.flipX ? -1 : 1, st.flipY ? -1 : 1);
+  ctx.globalAlpha = clamp(st.opacity, 0, 1);
+
+  if (st.img) {
+    // 贴纸正下方铺棋盘格（随贴纸的旋转 / 缩放变换），透明像素可见
+    if (opts && opts.checker) { drawCheckerRect(ctx, -d.w / 2, -d.h / 2, d.w, d.h); }
+    var src = tintedSource(st, 'sticker');
+    var sx = d.u0 * d.iw, sy = d.v0 * d.ih;
+    var sw = (d.u1 - d.u0) * d.iw, sh = (d.v1 - d.v0) * d.ih;
+    ctx.drawImage(src, sx, sy, sw, sh, -d.w / 2, -d.h / 2, d.w, d.h);
+  } else if (opts && opts.placeholders) {
+    // 仅预览时绘制占位框（PNG 导出为干净渲染，未绑定的贴纸不会出现）
+    ctx.fillStyle = 'rgba(255,138,61,0.10)';
+    ctx.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+    ctx.strokeStyle = 'rgba(255,138,61,0.8)';
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = Math.max(1, 2 / (state.view.scale || 1));
+    ctx.strokeRect(-d.w / 2, -d.h / 2, d.w, d.h);
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+
+  // 未绑定时在矩形中心标注文件名（不参与翻转/旋转的镜像）
+  if (!st.img && opts && opts.placeholders) {
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = '#ffd0a8';
+    ctx.font = '12px "Segoe UI", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(st.fileName || '(未命名)', d.cx, d.cy);
+    ctx.restore();
+  }
+}
+
+/** 选中框 + 控制点（按显示缩放反向补偿，保证屏幕上大小恒定） */
+function drawSelection(ctx, st, vw, vh) {
+  var d = computeStickerDraw(st, vw, vh);
+  var h = stickerHandles(st, vw, vh);
+  var inv = 1 / (state.view.scale || 1);
+
+  ctx.save();
+  ctx.lineWidth = 1.5 * inv;
+  ctx.strokeStyle = st.locked ? 'rgba(160,170,190,0.85)' : 'rgba(255,138,61,0.95)';
+  ctx.beginPath();
+  ctx.moveTo(h.nw.x, h.nw.y);
+  ctx.lineTo(h.ne.x, h.ne.y);
+  ctx.lineTo(h.se.x, h.se.y);
+  ctx.lineTo(h.sw.x, h.sw.y);
+  ctx.closePath();
+  ctx.stroke();
+
+  if (!st.locked) {
+    // 旋转手柄连线
+    ctx.beginPath();
+    ctx.moveTo((h.nw.x + h.ne.x) / 2, (h.nw.y + h.ne.y) / 2);
+    ctx.lineTo(h.rotate.x, h.rotate.y);
+    ctx.stroke();
+
+    var r = HANDLE_PX * inv;
+    ctx.fillStyle = '#ff8a3d';
+    ctx.strokeStyle = '#1a1d24';
+    ctx.lineWidth = 1 * inv;
+    var pts = [h.nw, h.ne, h.se, h.sw];
+    for (var i = 0; i < pts.length; i++) {
+      ctx.beginPath();
+      ctx.rect(pts[i].x - r, pts[i].y - r, r * 2, r * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // 旋转手柄画成圆点
+    ctx.beginPath();
+    ctx.arc(h.rotate.x, h.rotate.y, r * 1.15, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffb066';
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawGuides(ctx, vw, vh) {
+  var g = state.view.guides;
+  if (!g.x && !g.y) { return; }
+  ctx.save();
+  ctx.strokeStyle = 'rgba(78,201,160,0.95)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  if (g.x) { ctx.moveTo(Math.round(vw / 2) + 0.5, 0); ctx.lineTo(Math.round(vw / 2) + 0.5, vh); }
+  if (g.y) { ctx.moveTo(0, Math.round(vh / 2) + 0.5); ctx.lineTo(vw, Math.round(vh / 2) + 0.5); }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * 场景渲染。
+ * opts: { checker, placeholders, grid, guides, selection }
+ * checker = true 时在「表面之上、背景图与贴纸之下」铺 8px 棋盘格。
+ */
+/**
+ * 主界面参考骨架：按真实 Anomaly 主界面的比例画出标题栏、侧边导航、内容区和
+ * 状态栏，让贴纸在没有导入任何背景图时也能对着真实控件位置摆放。
+ * 只用于预览，不进入 PNG 导出。
+ */
+function drawShellGuide(ctx, vw, vh) {
+  var headerH = Math.round(vh * 0.080);
+  var navW = Math.round(vw * 0.170);
+  var statusH = Math.round(vh * 0.049);
+  var s = Math.max(0.6, Math.min(vw / 1180, vh / 700));
+  ctx.save();
+  ctx.lineWidth = Math.max(1, s);
+  ctx.strokeStyle = 'rgba(120,132,158,0.55)';
+  ctx.fillStyle = 'rgba(120,132,158,0.13)';
+  ctx.font = Math.round(11 * s) + 'px "Segoe UI", "Microsoft YaHei", sans-serif';
+  ctx.textBaseline = 'middle';
+
+  // 标题栏
+  ctx.fillRect(0, 0, vw, headerH);
+  ctx.strokeRect(0.5, 0.5, vw - 1, headerH - 1);
+  ctx.fillStyle = 'rgba(196,206,228,0.75)';
+  ctx.textAlign = 'left';
+  ctx.fillText('标题栏 / 搜索 / 右侧按钮', 10 * s, headerH / 2);
+
+  // 侧边导航
+  ctx.fillStyle = 'rgba(120,132,158,0.13)';
+  ctx.fillRect(0, headerH, navW, vh - headerH - statusH);
+  ctx.strokeRect(0.5, headerH + 0.5, navW - 1, vh - headerH - statusH - 1);
+  ctx.fillStyle = 'rgba(196,206,228,0.75)';
+  ctx.fillText('侧边导航', 10 * s, headerH + 18 * s);
+
+  // 状态栏
+  ctx.fillStyle = 'rgba(120,132,158,0.13)';
+  ctx.fillRect(0, vh - statusH, vw, statusH);
+  ctx.strokeRect(0.5, vh - statusH + 0.5, vw - 1, statusH - 1);
+  ctx.fillStyle = 'rgba(196,206,228,0.75)';
+  ctx.fillText('状态栏', 10 * s, vh - statusH / 2);
+
+  // 内容区若干卡片，示意插件列表与详情面板的常见落位
+  var cardX = navW + Math.round(vw * 0.022);
+  var cardW = Math.round(vw * 0.44);
+  var cardH = Math.round(vh * 0.13);
+  var gap = Math.round(vh * 0.035);
+  var top = headerH + Math.round(vh * 0.05);
+  for (var i = 0; i < 3; i++) {
+    var y = top + i * (cardH + gap);
+    if (y + cardH > vh - statusH) { break; }
+    ctx.fillStyle = 'rgba(120,132,158,0.10)';
+    ctx.fillRect(cardX, y, cardW, cardH);
+    ctx.strokeRect(cardX + 0.5, y + 0.5, cardW - 1, cardH - 1);
+  }
+  // 右侧详情面板
+  var sideX = cardX + cardW + Math.round(vw * 0.022);
+  var sideW = Math.max(60, vw - sideX - Math.round(vw * 0.022));
+  ctx.fillStyle = 'rgba(120,132,158,0.10)';
+  ctx.fillRect(sideX, top, sideW, vh - statusH - top - Math.round(vh * 0.05));
+  ctx.strokeRect(sideX + 0.5, top + 0.5, sideW - 1, vh - statusH - top - Math.round(vh * 0.05) - 1);
+  ctx.fillStyle = 'rgba(196,206,228,0.75)';
+  ctx.fillText('内容区 / 详情面板', sideX + 10 * s, top + 18 * s);
+  ctx.restore();
+}
+
+/**
+ * 负责把整个场景画到 ctx 上。
+ * opts.bleed > 0 时，逻辑原点 (0,0) 之外还有 bleed 像素的「窗口外」区域，
+ * 贴纸可以画到那里而不会被截断；PNG 导出传 0，只导出窗口本身。
+ */
+function renderScene(ctx, vw, vh, opts) {
+  opts = opts || {};
+  var bleed = Math.max(0, opts.bleed || 0);
+  ctx.save();
+  ctx.clearRect(-bleed, -bleed, vw + bleed * 2, vh + bleed * 2);
+
+  if (bleed > 0) {
+    // 窗口外区域：压暗一档，让「溢出窗口」的部分一眼可辨
+    ctx.fillStyle = 'rgba(6,8,12,0.72)';
+    ctx.fillRect(-bleed, -bleed, vw + bleed * 2, vh + bleed * 2);
+  }
+
+  // 主题表面（surfaceOpacity）
+  ctx.save();
+  ctx.globalAlpha = clamp(state.surfaceOpacity, 0, 1);
+  ctx.fillStyle = '#10131a';
+  ctx.fillRect(0, 0, vw, vh);
+  ctx.restore();
+
+  if (opts.shellGuide) { drawShellGuide(ctx, vw, vh); }
+
+  // 注意：棋盘格不在整块画布上铺，而是在 drawBackground / drawSticker 内部
+  // 紧贴每个背景图与每个贴纸的正下方绘制，这样主题表面在空白区域仍然可见。
+
+  if (opts.grid) { drawGridLines(ctx, vw, vh); }
+
+  drawBackground(ctx, vw, vh, opts);
+
+  // 贴纸：behind 先画，front 后画
+  var order = effectiveOrder();
+  for (var i = 0; i < order.length; i++) {
+    var st = order[i];
+    if (!st.visible) { continue; }
+    drawSticker(ctx, st, vw, vh, opts);
+  }
+
+  if (opts.guides) { drawGuides(ctx, vw, vh); }
+
+  if (opts.selection) {
+    var sel = selectedSticker();
+    if (sel && sel.visible) { drawSelection(ctx, sel, vw, vh); }
+  }
+
+  if (bleed > 0) {
+    // 窗口边界：贴纸越过这条线就是游戏里的溢出/裸眼 3D
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,138,61,0.85)';
+    ctx.lineWidth = Math.max(1, 1 / (state.view.scale || 1));
+    ctx.strokeRect(0, 0, vw, vh);
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+/** 请求一次重绘（合并到下一帧） */
+function requestRender() {
+  if (renderQueued) { return; }
+  renderQueued = true;
+  window.requestAnimationFrame(function () {
+    renderQueued = false;
+    render();
+  });
+}
+
+/** 主视图重绘（含 HiDPI 缩放） */
+/** 窗口外预留的逻辑像素：贴纸可以画到这里而不被截断，PNG 导出不含这块 */
+function bleedSize(vw, vh) {
+  return Math.round(Math.max(vw, vh) * 0.25);
+}
+
+function render() {
+  var cv = dom.view;
+  if (!cv) { return; }
+  var ctx = cv.getContext('2d');
+  var dpr = Math.min(window.devicePixelRatio || 1, 3);
+  var vw = state.canvas.width, vh = state.canvas.height;
+  var bleed = bleedSize(vw, vh);
+  var tw = vw + bleed * 2, th = vh + bleed * 2;
+
+  // 运行时允许画布到 32768，但预览后备存储必须限幅，否则会耗尽显存：
+  // 超大画布按比例降低后备存储倍率（显示尺寸不变，几何仍按逻辑像素计算）
+  var shrink = Math.min(1, MAX_PREVIEW_PIXELS / Math.max(tw, th));
+  var scale = dpr * shrink;
+  var pxW = Math.max(1, Math.round(tw * scale));
+  var pxH = Math.max(1, Math.round(th * scale));
+  if (cv.width !== pxW || cv.height !== pxH) {
+    cv.width = pxW;
+    cv.height = pxH;
+  }
+  // 逻辑原点 (0,0) 落在设计区左上角，左侧上方各留出 bleed 的溢出区
+  ctx.setTransform(scale, 0, 0, scale, bleed * scale, bleed * scale);
+  renderScene(ctx, vw, vh, {
+    checker: state.view.showChecker, placeholders: true, grid: state.view.showGrid,
+    guides: true, selection: true, shellGuide: true, bleed: bleed
+  });
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+/* =====================================================================
+ * 7. 贴纸工厂 / 图片绑定
+ * ===================================================================== */
+
+function makeSticker(fileName, dir, img) {
+  return {
+    id: uid(),
+    name: fileName,
+    fileName: fileName,
+    dir: dir || '',
+    x: 0.5, y: 0.5,
+    width: 0, height: 0,
+    rotation: 0, opacity: 1,
+    anchor: 'center', layer: 'behind',
+    tint: '#ffffff', flipX: false, flipY: false,
+    /* 以下为仅编辑器使用的状态，不写入导出 JSON */
+    visible: true,
+    locked: false,
+    img: img || null,
+    naturalW: img ? img.naturalWidth : 0,
+    naturalH: img ? img.naturalHeight : 0,
+    _tintCache: null
+  };
+}
+
+function applyImageToSticker(st, img) {
+  st.img = img;
+  st.naturalW = img.naturalWidth;
+  st.naturalH = img.naturalHeight;
+  st._tintCache = null;
+  st._alphaCache = null;
+}
+
+function bindBackgroundImage(img, name) {
+  var bg = state.background;
+  bg.img = img;
+  bg.naturalW = img.naturalWidth;
+  bg.naturalH = img.naturalHeight;
+  if (name) { bg.fileName = name; }
+  bg._tintCache = null;
+}
+
+/** 新贴纸的默认摆放：尺寸不超过画布 60%，多张时阶梯错开 */
+function placeNewSticker(st) {
+  var vw = state.canvas.width, vh = state.canvas.height;
+  var iw = st.naturalW || PLACEHOLDER_W, ih = st.naturalH || PLACEHOLDER_H;
+  var maxW = vw * 0.6, maxH = vh * 0.6;
+  if (iw > maxW || ih > maxH) {
+    var k = Math.min(maxW / iw, maxH / ih);
+    st.width = round(iw * k / vw, 4);
+    st.height = round(ih * k / vh, 4);
+  }
+  var n = state.stickers.length;
+  st.x = round(clamp(0.5 + ((n % 5) - 2) * 0.05, 0.05, 0.95), 4);
+  st.y = round(clamp(0.5 + ((Math.floor(n / 5) % 5) - 2) * 0.05, 0.05, 0.95), 4);
+}
+
+/**
+ * 拖入 / 选择图片的统一入口。
+ * 规则：
+ *   1) 背景未绑定且文件名与 background.fileName 相同 → 绑定为背景；
+ *   2) 存在同名「未绑定」贴纸 → 重新绑定（几何参数保持不变）；
+ *   3) 否则新建贴纸。
+ */
+function addFilesToEditor(files) {
+  var list = [];
+  for (var i = 0; i < files.length; i++) {
+    if (isImageFile(files[i])) { list.push(files[i]); }
+  }
+  if (!list.length) {
+    setStatus('没有可用的图片文件（仅支持 png/jpg/webp/gif/bmp/avif）', 'warn');
+    return Promise.resolve();
+  }
+  pushHistory();
+
+  var created = 0, rebound = 0, bgBound = 0, failed = [];
+  var chain = Promise.resolve();
+
+  list.forEach(function (file) {
+    chain = chain.then(function () {
+      return readFileAsDataURL(file).then(function (url) {
+        return loadImage(url, file.name);
+      }).then(function (img) {
+        var name = file.name || 'sticker.png';
+        var bg = state.background;
+
+        if (!bg.img && name === bg.fileName) {
+          bindBackgroundImage(img, name);
+          bgBound++;
+          return;
+        }
+        var target = null;
+        for (var k = 0; k < state.stickers.length; k++) {
+          var s = state.stickers[k];
+          if (!s.img && s.fileName === name) { target = s; break; }
+        }
+        if (target) {
+          applyImageToSticker(target, img);
+          rebound++;
+          return;
+        }
+        var st = makeSticker(name, '', img);
+        placeNewSticker(st);
+        state.stickers.push(st);
+        state.selectedId = st.id;
+        created++;
+      });
+    }).catch(function (err) {
+      failed.push((file.name || '未知文件') + '：' + (err && err.message ? err.message : '读取失败'));
+    });
+  });
+
+  return chain.then(function () {
+    var parts = [];
+    if (created) { parts.push('新增 ' + created + ' 个贴纸'); }
+    if (rebound) { parts.push('重新绑定 ' + rebound + ' 个贴纸'); }
+    if (bgBound) { parts.push('绑定背景图 ' + bgBound + ' 张'); }
+    if (!parts.length) { parts.push('没有发生变化'); }
+    if (failed.length) {
+      setStatus(parts.join('，') + '；失败 ' + failed.length + ' 项：' + failed.join(' / '), 'err');
+    } else {
+      setStatus(parts.join('，'), 'ok');
+    }
+    syncAll();
+  });
+}
+
+/** 背景拖放区专用：始终把第一张图作为背景 */
+function setBackgroundFromFiles(files) {
+  var file = null;
+  for (var i = 0; i < files.length; i++) {
+    if (isImageFile(files[i])) { file = files[i]; break; }
+  }
+  if (!file) {
+    setStatus('没有可用的图片文件', 'warn');
+    return Promise.resolve();
+  }
+  pushHistory();
+  return readFileAsDataURL(file).then(function (url) {
+    return loadImage(url, file.name);
+  }).then(function (img) {
+    bindBackgroundImage(img, file.name);
+    setStatus('已绑定背景图：' + file.name + '（' + img.naturalWidth + '×' + img.naturalHeight + '）', 'ok');
+    syncAll();
+  }).catch(function (err) {
+    setStatus('背景图加载失败：' + (err && err.message ? err.message : '未知错误'), 'err');
+  });
+}
+
+/* =====================================================================
+ * 8. 画布自适应
+ * ===================================================================== */
+
+function fitCanvas() {
+  var host = dom.canvasHost, cv = dom.view;
+  if (!host || !cv) { return; }
+  // 给宿主一个确定的像素高度，保证 clientHeight 可用来计算缩放
+  var h = clamp(window.innerHeight - 330, 200, 760);
+  host.style.height = h + 'px';
+
+  var pad = 16;
+  var availW = Math.max(80, host.clientWidth - pad);
+  var availH = Math.max(80, host.clientHeight - pad);
+  var vw = state.canvas.width, vh = state.canvas.height;
+  // 元素比设计区大一圈，多出来的就是贴纸可以溢出、不被截断的区域
+  var bleed = bleedSize(vw, vh);
+  var tw = vw + bleed * 2, th = vh + bleed * 2;
+  var scale = Math.min(availW / tw, availH / th);
+  scale = clamp(scale, 0.02, 2);
+  state.view.scale = scale;
+  cv.style.width = Math.round(tw * scale) + 'px';
+  cv.style.height = Math.round(th * scale) + 'px';
+  if (dom.zoomInfo) { dom.zoomInfo.textContent = Math.round(scale * 100) + '%'; }
+}
+
+/* =====================================================================
+ * 9. 命中测试与交互
+ * ===================================================================== */
+
+function pointerLogical(ev) {
+  var r = dom.view.getBoundingClientRect();
+  var scale = state.view.scale || 1;
+  var bleed = bleedSize(state.canvas.width, state.canvas.height);
+  return {
+    x: (ev.clientX - r.left) / scale - bleed,
+    y: (ev.clientY - r.top) / scale - bleed
+  };
+}
+
+function hitTest(lx, ly) {
+  var vw = state.canvas.width, vh = state.canvas.height;
+  var tol = HANDLE_HIT_PX / (state.view.scale || 1);
+  var tol2 = tol * tol;
+  var order = effectiveOrder();
+  for (var i = order.length - 1; i >= 0; i--) {   // 从最上层开始
+    var st = order[i];
+    if (!st.visible) { continue; }
+    var h = stickerHandles(st, vw, vh);
+    if (!st.locked) {
+      if (dist2(h.rotate.x, h.rotate.y, lx, ly) <= tol2) { return { st: st, part: 'rotate' }; }
+      var keys = ['nw', 'ne', 'sw', 'se'];
+      for (var k = 0; k < keys.length; k++) {
+        if (dist2(h[keys[k]].x, h[keys[k]].y, lx, ly) <= tol2) { return { st: st, part: keys[k] }; }
+      }
+    }
+    if (pointInSticker(st, lx, ly, vw, vh)) { return { st: st, part: 'body' }; }
+  }
+  return null;
+}
+
+function cursorForPart(part) {
+  if (part === 'nw' || part === 'se') { return 'nwse-resize'; }
+  if (part === 'ne' || part === 'sw') { return 'nesw-resize'; }
+  if (part === 'rotate') { return 'grab'; }
+  if (part === 'body') { return 'move'; }
+  return 'default';
+}
+
+function updateCursor(p) {
+  var hit = hitTest(p.x, p.y);
+  dom.view.style.cursor = hit ? cursorForPart(hit.part) : 'default';
+}
+
+function snapTo(v, step) {
+  if (!(step > 0)) { return v; }
+  return Math.round(v / step) * step;
+}
+
+function onCanvasPointerDown(ev) {
+  if (ev.button !== 0) { return; }
+  var p = pointerLogical(ev);
+  var hit = hitTest(p.x, p.y);
+  if (!hit) { select(null); return; }
+  select(hit.st.id);
+  var st = hit.st;
+  if (st.locked) { return; }        // 锁定贴纸只允许选中
+
+  var vw = state.canvas.width, vh = state.canvas.height;
+  var d = computeStickerDraw(st, vw, vh);
+  drag = {
+    part: hit.part,
+    st: st,
+    pointerId: ev.pointerId,
+    startLx: p.x, startLy: p.y,
+    startX: st.x, startY: st.y,
+    rect: { left: d.left, top: d.top, w: d.w, h: d.h },
+    cx: d.cx, cy: d.cy,
+    rotation: st.rotation,
+    startAngle: Math.atan2(p.y - d.cy, p.x - d.cx) * 180 / Math.PI,
+    preSnap: snapshot(),
+    pushed: false
+  };
+  try { dom.view.setPointerCapture(ev.pointerId); } catch (e) { /* 忽略 */ }
+  ev.preventDefault();
+}
+
+function onCanvasPointerMove(ev) {
+  var p = pointerLogical(ev);
+  if (!drag) { updateCursor(p); return; }
+  if (drag.pointerId !== undefined && ev.pointerId !== drag.pointerId) { return; }
+
+  var vw = state.canvas.width, vh = state.canvas.height;
+  var st = drag.st;
+  var scale = state.view.scale || 1;
+
+  if (drag.part === 'body') {
+    var nx = drag.startX + (p.x - drag.startLx) / vw;
+    var ny = drag.startY + (p.y - drag.startLy) / vh;
+    if (ev.shiftKey) {   // 锁定位移更大的轴
+      if (Math.abs(p.x - drag.startLx) / vw >= Math.abs(p.y - drag.startLy) / vh) { ny = drag.startY; }
+      else { nx = drag.startX; }
+    }
+    var guides = { x: false, y: false };
+    if (state.snap.grid) {
+      nx = snapTo(nx, state.snap.step);
+      ny = snapTo(ny, state.snap.step);
+    }
+    if (state.snap.center) {
+      var thX = 7 / scale / vw, thY = 7 / scale / vh;
+      if (Math.abs(nx - 0.5) <= thX) { nx = 0.5; guides.x = true; }
+      if (Math.abs(ny - 0.5) <= thY) { ny = 0.5; guides.y = true; }
+      if (!guides.x || !guides.y) {
+        var probe = {
+          x: nx, y: ny, width: st.width, height: st.height, anchor: st.anchor,
+          naturalW: st.naturalW, naturalH: st.naturalH
+        };
+        var pd = computeStickerDraw(probe, vw, vh);
+        if (!guides.x && Math.abs(pd.cx - vw / 2) <= 7 / scale) {
+          nx += (vw / 2 - pd.cx) / vw; guides.x = true;
+        }
+        if (!guides.y && Math.abs(pd.cy - vh / 2) <= 7 / scale) {
+          ny += (vh / 2 - pd.cy) / vh; guides.y = true;
+        }
+      }
+    }
+    st.x = round(nx, 6);
+    st.y = round(ny, 6);
+    state.view.guides = guides;
+
+  } else if (drag.part === 'rotate') {
+    var ang = Math.atan2(p.y - drag.cy, p.x - drag.cx) * 180 / Math.PI;
+    var rot = drag.rotation + (ang - drag.startAngle);
+    if (ev.shiftKey) { rot = Math.round(rot / 15) * 15; }
+    st.rotation = normAngle(rot);
+
+  } else {
+    // 角点缩放：在贴纸未旋转的局部坐标系中计算，固定对角保持不动
+    var rad0 = drag.rotation * Math.PI / 180;
+    var csW = Math.cos(-rad0), snW = Math.sin(-rad0);      // 世界 → 局部
+    var lp = rotatePoint(p.x - drag.cx, p.y - drag.cy, csW, snW);
+
+    var sx = (drag.part === 'ne' || drag.part === 'se') ? 1 : -1;
+    var sy = (drag.part === 'sw' || drag.part === 'se') ? 1 : -1;
+    var fx = -sx * drag.rect.w / 2;
+    var fy = -sy * drag.rect.h / 2;
+
+    var newW = Math.abs(lp.x - fx);
+    var newH = Math.abs(lp.y - fy);
+    if (ev.shiftKey && drag.rect.w > 0 && drag.rect.h > 0) {   // 等比缩放
+      var kk = Math.max(newW / drag.rect.w, newH / drag.rect.h);
+      newW = drag.rect.w * kk;
+      newH = drag.rect.h * kk;
+    }
+    newW = Math.max(MIN_STICKER_PX, newW);
+    newH = Math.max(MIN_STICKER_PX, newH);
+
+    var lLeft = sx > 0 ? fx : fx - newW;
+    var lTop = sy > 0 ? fy : fy - newH;
+    var csL = Math.cos(rad0), snL = Math.sin(rad0);        // 局部 → 世界
+    var wc = rotatePoint(lLeft + newW / 2, lTop + newH / 2, csL, snL);
+    var wcx = drag.cx + wc.x, wcy = drag.cy + wc.y;
+    var worldLeft = wcx - newW / 2, worldTop = wcy - newH / 2;
+
+    st.width = round(newW / vw, 6);
+    st.height = round(newH / vh, 6);
+    var ap = rectToAnchorPoint(worldLeft, worldTop, newW, newH, st.anchor);
+    st.x = round(ap.x / vw, 6);
+    st.y = round(ap.y / vh, 6);
+  }
+
+  // 拖拽 / 缩放 / 旋转结束后统一收敛到运行时范围，保证预览与运行时一致
+  clampStickerRuntime(st);
+  if (!drag.pushed) { pushSnapshot(drag.preSnap); drag.pushed = true; }
+  syncAll();
+}
+
+function onCanvasPointerUp(ev) {
+  if (!drag) { return; }
+  try { dom.view.releasePointerCapture(ev.pointerId); } catch (e) { /* 忽略 */ }
+  drag = null;
+  state.view.guides = { x: false, y: false };
+  syncAll();
+}
+
+function onCanvasWheel(ev) {
+  // 滚轮微调旋转（Alt 按下时），避免误触
+  if (!ev.altKey) { return; }
+  var sel = selectedSticker();
+  if (!sel || sel.locked) { return; }
+  ev.preventDefault();
+  sel.rotation = normAngle(sel.rotation + (ev.deltaY > 0 ? 1 : -1));
+  syncAll();
+}
+
+/* =====================================================================
+ * 10. 键盘快捷键
+ * ===================================================================== */
+
+function isEditingField() {
+  var el = document.activeElement;
+  if (!el) { return false; }
+  var tag = (el.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
+
+function isTextArea() {
+  var el = document.activeElement;
+  return !!el && (el.tagName || '').toLowerCase() === 'textarea';
+}
+
+function onKeyDown(ev) {
+  var ctrl = ev.ctrlKey || ev.metaKey;
+
+  if (ctrl && (ev.key === 'z' || ev.key === 'Z')) {
+    if (isTextArea()) { return; }   // 文本框内交给浏览器处理文本撤销
+    ev.preventDefault();
+    if (ev.shiftKey) { redo(); } else { undo(); }
+    return;
+  }
+  if (ctrl && (ev.key === 'y' || ev.key === 'Y')) {
+    if (isTextArea()) { return; }
+    ev.preventDefault();
+    redo();
+    return;
+  }
+  if (ctrl && (ev.key === 's' || ev.key === 'S')) {
+    ev.preventDefault();
+    saveLocal(true);
+    return;
+  }
+  if (isEditingField()) { return; }
+
+  if (ev.key === 'Escape') { select(null); return; }
+
+  var sel = selectedSticker();
+  if (ev.key === 'Delete' || ev.key === 'Backspace') {
+    if (sel) { ev.preventDefault(); deleteSticker(sel.id); }
+    return;
+  }
+  if (!sel) { return; }
+
+  var step = ev.shiftKey ? 10 : 1;
+  var vw = state.canvas.width, vh = state.canvas.height;
+  var dx = 0, dy = 0;
+  if (ev.key === 'ArrowLeft') { dx = -step; }
+  else if (ev.key === 'ArrowRight') { dx = step; }
+  else if (ev.key === 'ArrowUp') { dy = -step; }
+  else if (ev.key === 'ArrowDown') { dy = step; }
+  else { return; }
+
+  ev.preventDefault();
+  if (sel.locked) { setStatus('贴纸已锁定，无法微调', 'warn'); return; }
+  pushHistory();
+  sel.x = round(sel.x + dx / vw, 6);
+  sel.y = round(sel.y + dy / vh, 6);
+  clampStickerRuntime(sel);
+  syncAll();
+}
+
+/* =====================================================================
+ * 11. 撤销 / 重做（基于编辑器状态快照，图片按 id 复用）
+ * ===================================================================== */
+
+function stripImg(o) {
+  var c = {};
+  for (var k in o) {
+    if (!Object.prototype.hasOwnProperty.call(o, k)) { continue; }
+    if (k === 'img' || k === '_tintCache') { continue; }
+    c[k] = o[k];
+  }
+  return c;
+}
+
+function snapshot() {
+  return JSON.stringify({
+    v: 1,
+    canvas: { width: state.canvas.width, height: state.canvas.height },
+    surfaceOpacity: state.surfaceOpacity,
+    background: stripImg(state.background),
+    stickers: state.stickers.map(stripImg),
+    pathPrefix: state.pathPrefix,
+    selectedId: state.selectedId
+  });
+}
+
+function pushSnapshot(text) {
+  if (typeof text !== 'string') { return; }
+  undoStack.push(text);
+  if (undoStack.length > MAX_UNDO) { undoStack.shift(); }
+  future.length = 0;
+}
+
+function pushHistory() { pushSnapshot(snapshot()); }
+
+function applySnapshot(text) {
+  var d;
+  try { d = JSON.parse(text); } catch (e) { return false; }
+  if (!d || typeof d !== 'object') { return false; }
+
+  var imgMap = {};
+  imgMap[state.background.id || '__bg__'] = state.background.img;
+  for (var i = 0; i < state.stickers.length; i++) {
+    imgMap[state.stickers[i].id] = state.stickers[i].img;
+  }
+
+  state.canvas.width = Math.round(clampField(Number(d.canvas && d.canvas.width), FIELD_LIMITS.canvasWidth));
+  state.canvas.height = Math.round(clampField(Number(d.canvas && d.canvas.height), FIELD_LIMITS.canvasHeight));
+  state.surfaceOpacity = clampField(Number(d.surfaceOpacity), FIELD_LIMITS.surfaceOpacity);
+  state.pathPrefix = typeof d.pathPrefix === 'string' ? d.pathPrefix : DEFAULT_PREFIX;
+
+  var bg = d.background && typeof d.background === 'object' ? d.background : {};
+  bg.img = imgMap['__bg__'] || null;
+  bg._tintCache = null;
+  bg.fileName = typeof bg.fileName === 'string' ? bg.fileName : DEFAULT_BG_FILE;
+  bg.dir = normalizeDir(typeof bg.dir === 'string' ? bg.dir : '');
+  bg.mode = MODES.indexOf(bg.mode) >= 0 ? bg.mode : 'crop';
+  bg.opacity = isNum(bg.opacity) ? clamp(bg.opacity, 0, 1) : 0.9;
+  bg.tint = normHex(bg.tint) || '#ffffff';
+  bg.naturalW = isNum(bg.naturalW) ? bg.naturalW : 0;
+  bg.naturalH = isNum(bg.naturalH) ? bg.naturalH : 0;
+  state.background = bg;
+
+  var list = Array.isArray(d.stickers) ? d.stickers : [];
+  var out = [];
+  for (var j = 0; j < list.length; j++) {
+    var s = list[j];
+    if (!s || typeof s !== 'object') { continue; }
+    s.img = imgMap[s.id] || null;
+    s._tintCache = null;
+    if (ANCHORS.indexOf(s.anchor) < 0) { s.anchor = 'center'; }
+    if (LAYERS.indexOf(s.layer) < 0) { s.layer = 'behind'; }
+    s.tint = normHex(s.tint) || '#ffffff';
+    s.visible = s.visible !== false;
+    s.locked = s.locked === true;
+    s.name = typeof s.name === 'string' && s.name ? s.name : (s.fileName || '贴纸');
+    clampStickerRuntime(s);   // 旧存档 / 旧版本可能带越界值，按运行时范围收敛
+    out.push(s);
+  }
+  state.stickers = out;
+  state.selectedId = findSticker(d.selectedId) ? d.selectedId : null;
+
+  fitCanvas();
+  syncAll();
+  return true;
+}
+
+function undo() {
+  if (!undoStack.length) { setStatus('没有可撤销的操作', 'warn'); return; }
+  future.push(snapshot());
+  applySnapshot(undoStack.pop());
+  setStatus('已撤销（剩余 ' + undoStack.length + ' 步）', 'ok');
+}
+
+function redo() {
+  if (!future.length) { setStatus('没有可重做的操作', 'warn'); return; }
+  undoStack.push(snapshot());
+  applySnapshot(future.pop());
+  setStatus('已重做', 'ok');
+}
+
+/* =====================================================================
+ * 12. 贴纸操作
+ * ===================================================================== */
+
+function select(id) {
+  state.selectedId = id || null;
+  syncAll();
+}
+
+function deleteSticker(id) {
+  var st = findSticker(id);
+  if (!st) { return; }
+  pushHistory();
+  state.stickers = state.stickers.filter(function (s) { return s.id !== id; });
+  if (state.selectedId === id) { state.selectedId = null; }
+  setStatus('已删除贴纸：' + (st.fileName || ''), 'ok');
+  syncAll();
+}
+
+function duplicateSticker(id) {
+  var st = findSticker(id);
+  if (!st) { return; }
+  pushHistory();
+  var copy = stripImg(st);
+  copy.id = uid();
+  copy.name = (st.name || st.fileName) + ' 副本';
+  copy.x = round(st.x + 0.03, 4);
+  copy.y = round(st.y + 0.03, 4);
+  copy.img = st.img;
+  copy.naturalW = st.naturalW;
+  copy.naturalH = st.naturalH;
+  copy._tintCache = null;
+  state.stickers.push(copy);
+  state.selectedId = copy.id;
+  setStatus('已复制贴纸', 'ok');
+  syncAll();
+}
+
+/** dir: 'up' | 'down' | 'top' | 'bottom'（在有效图层顺序里移动） */
+function moveSticker(id, dir) {
+  var order = effectiveOrder();
+  var idx = -1;
+  for (var i = 0; i < order.length; i++) { if (order[i].id === id) { idx = i; break; } }
+  if (idx < 0) { return; }
+  var target = idx;
+  if (dir === 'up') { target = Math.min(order.length - 1, idx + 1); }
+  else if (dir === 'down') { target = Math.max(0, idx - 1); }
+  else if (dir === 'top') { target = order.length - 1; }
+  else if (dir === 'bottom') { target = 0; }
+  if (target === idx) { return; }
+  pushHistory();
+  var item = order.splice(idx, 1)[0];
+  order.splice(target, 0, item);
+  state.stickers = order;      // effectiveOrder 已保证 behind 在前
+  syncAll();
+}
+
+function setStickerLayer(id, layer) {
+  var st = findSticker(id);
+  if (!st || LAYERS.indexOf(layer) < 0 || st.layer === layer) { return; }
+  pushHistory();
+  st.layer = layer;
+  state.stickers = effectiveOrder();
+  syncAll();
+}
+
+/* =====================================================================
+ * 13. 图层列表
+ * ===================================================================== */
+
+function drawThumb(cv, st) {
+  var g = cv.getContext('2d');
+  var W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = '#0e1015';
+  g.fillRect(0, 0, W, H);
+  var iw = st.naturalW > 0 ? st.naturalW : PLACEHOLDER_W;
+  var ih = st.naturalH > 0 ? st.naturalH : PLACEHOLDER_H;
+  if (st.img) {
+    var s = Math.max(W / iw, H / ih);
+    var w = iw * s, h = ih * s;
+    var src = tintedSource(st, 'sticker');
+    g.globalAlpha = clamp(st.opacity, 0.15, 1);
+    g.drawImage(src, (W - w) / 2, (H - h) / 2, w, h);
+    g.globalAlpha = 1;
+  } else {
+    g.strokeStyle = 'rgba(255,138,61,0.7)';
+    g.setLineDash([3, 3]);
+    g.lineWidth = 1;
+    g.strokeRect(2.5, 2.5, W - 5, H - 5);
+    g.setLineDash([]);
+    g.fillStyle = 'rgba(255,176,102,0.85)';
+    g.font = '11px "Segoe UI", sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('?', W / 2, H / 2 + 1);
+  }
+  if (st.flipX || st.flipY) {
+    g.fillStyle = 'rgba(255,176,102,0.9)';
+    g.font = '9px "Segoe UI", sans-serif';
+    g.textAlign = 'right';
+    g.textBaseline = 'bottom';
+    g.fillText((st.flipX ? 'X' : '') + (st.flipY ? 'Y' : ''), W - 2, H - 1);
+  }
+}
+
+function renderLayerList() {
+  if (!dom.layerList) { return; }
+  var list = effectiveOrder();
+  if (dom.layerTag) { dom.layerTag.textContent = list.length; }
+  if (dom.stickerCount) { dom.stickerCount.textContent = state.stickers.length + ' 个'; }
+
+  if (!list.length) {
+    dom.layerList.innerHTML = '<div class="empty-note">还没有贴纸。<br>把图片拖到画布或左侧「贴纸」区域即可添加。</div>';
+    return;
+  }
+  var html = '';
+  for (var i = list.length - 1; i >= 0; i--) {   // 列表顶部 = 最上层
+    var st = list[i];
+    var cls = 'layer-item' + (st.id === state.selectedId ? ' sel' : '') + (st.visible ? '' : ' hidden-item');
+    html += '<div class="' + cls + '" data-id="' + escapeHtml(st.id) + '" title="' + escapeHtml(resolvePath(st)) + '">' +
+      '<canvas class="thumb" width="34" height="34" data-thumb="' + escapeHtml(st.id) + '"></canvas>' +
+      '<div class="meta">' +
+        '<div class="nm">' + escapeHtml(st.name || st.fileName) + (st.locked ? ' 🔒' : '') + '</div>' +
+        '<div class="sub">' + escapeHtml((st.layer === 'front' ? 'front' : 'behind') + ' · ' + st.anchor + ' · ' + (st.img ? (st.naturalW + '×' + st.naturalH) : '未绑定')) + '</div>' +
+      '</div>' +
+      '<div class="ops">' +
+        '<button class="mini" data-op="up" title="上移一层">↑</button>' +
+        '<button class="mini" data-op="down" title="下移一层">↓</button>' +
+        '<button class="mini" data-op="top" title="置顶">⤒</button>' +
+        '<button class="mini" data-op="bottom" title="置底">⤓</button>' +
+        '<button class="mini" data-op="visible" title="显示 / 隐藏">' + (st.visible ? '👁' : '🚫') + '</button>' +
+        '<button class="mini" data-op="lock" title="锁定 / 解锁">' + (st.locked ? '🔒' : '🔓') + '</button>' +
+        '<button class="mini" data-op="dup" title="复制一份">⧉</button>' +
+        '<button class="mini" data-op="del" title="删除">🗑</button>' +
+      '</div>' +
+    '</div>';
+  }
+  dom.layerList.innerHTML = html;
+  var thumbs = dom.layerList.querySelectorAll('canvas[data-thumb]');
+  for (var t = 0; t < thumbs.length; t++) {
+    var st2 = findSticker(thumbs[t].getAttribute('data-thumb'));
+    if (st2) { drawThumb(thumbs[t], st2); }
+  }
+}
+
+/* =====================================================================
+ * 14. 属性面板
+ * ===================================================================== */
+
+function setVal(el, v) {
+  if (!el) { return; }
+  if (document.activeElement === el) { return; }
+  var s = String(v);
+  if (el.value !== s) { el.value = s; }
+}
+
+function setChk(el, v) {
+  if (!el) { return; }
+  el.checked = !!v;
+}
+
+/**
+ * 统计图片的 alpha 情况（用于确认贴图确实带透明通道）。
+ * 最长边缩到 128px 内取样，统计 a<255（含透明）与 0<a<255（半透明）的像素比例。
+ * 结果为近似值：缩放会带来边缘插值误差。
+ */
+function computeAlphaStats(img) {
+  if (!img || !img.naturalWidth || !img.naturalHeight) { return null; }
+  var iw = img.naturalWidth, ih = img.naturalHeight;
+  var s = Math.min(1, 128 / Math.max(iw, ih));
+  var w = Math.max(1, Math.round(iw * s));
+  var h = Math.max(1, Math.round(ih * s));
+  try {
+    var c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    var g = c.getContext('2d');
+    g.clearRect(0, 0, w, h);
+    g.drawImage(img, 0, 0, w, h);
+    var data = g.getImageData(0, 0, w, h).data;
+    var total = w * h;
+    var transparent = 0, semi = 0;
+    for (var i = 3; i < data.length; i += 4) {
+      if (data[i] < 255) { transparent++; }
+      if (data[i] > 0 && data[i] < 255) { semi++; }
+    }
+    return {
+      ratio: transparent / total,
+      semiRatio: semi / total,
+      total: total,
+      sampleW: w,
+      sampleH: h
+    };
+  } catch (e) {
+    return null;   // getImageData 不可用（画布被污染等）
+  }
+}
+
+/** 带缓存的 alpha 统计（按图片对象缓存，换图后自动失效） */
+function alphaStatsFor(st) {
+  if (!st || !st.img) { return null; }
+  if (st._alphaCache && st._alphaCache.img === st.img) { return st._alphaCache.stats; }
+  var stats = computeAlphaStats(st.img);
+  st._alphaCache = { img: st.img, stats: stats };
+  return stats;
+}
+
+function syncProps() {
+  if (!dom.props) { return; }
+  var st = selectedSticker();
+  var has = !!st;
+  dom.props.className = 'props' + (has ? '' : ' off');
+  if (dom.propsEmpty) { dom.propsEmpty.style.display = has ? 'none' : ''; }
+  if (dom.propTag) { dom.propTag.textContent = has ? (st.locked ? '已锁定' : '编辑中') : '未选中'; }
+  if (!has) { return; }
+
+  setVal(dom.pName, st.name || '');
+  setVal(dom.pPath, resolvePath(st));
+  setVal(dom.pDir, st.dir || '');
+  if (dom.pDir) { dom.pDir.placeholder = '留空则使用全局前缀（' + state.pathPrefix + '）'; }
+  setVal(dom.pX, round(st.x, 6));
+  setVal(dom.pY, round(st.y, 6));
+  setVal(dom.pW, round(st.width, 6));
+  setVal(dom.pH, round(st.height, 6));
+  setVal(dom.pRot, round(st.rotation, 2));
+  setVal(dom.pOpacity, st.opacity);
+  if (dom.pOpacityVal) { dom.pOpacityVal.textContent = Number(st.opacity).toFixed(2); }
+  setVal(dom.pAnchor, st.anchor);
+  setVal(dom.pLayer, st.layer);
+  setVal(dom.pTint, st.tint);
+  setVal(dom.pTintText, st.tint);
+  setChk(dom.pFlipX, st.flipX);
+  setChk(dom.pFlipY, st.flipY);
+  setChk(dom.pVisible, st.visible);
+  setChk(dom.pLocked, st.locked);
+  if (dom.pBind) {
+    dom.pBind.textContent = st.img ? '已绑定' : '未绑定';
+    dom.pBind.className = 'badge ' + (st.layer === 'front' ? 'front' : 'behind');
+  }
+
+  // Alpha 提示：含透明通道 / 不透明 / 未绑定
+  var stats = alphaStatsFor(st);
+  if (dom.pAlphaBadge) {
+    if (!st.img) {
+      dom.pAlphaBadge.textContent = '未绑定图片';
+      dom.pAlphaBadge.className = 'badge plain';
+    } else if (!stats) {
+      dom.pAlphaBadge.textContent = 'alpha 未知';
+      dom.pAlphaBadge.className = 'badge plain';
+    } else if (stats.ratio > 0.0005 || stats.semiRatio > 0.0005) {
+      dom.pAlphaBadge.textContent = '含透明通道';
+      dom.pAlphaBadge.className = 'badge ok';
+    } else {
+      dom.pAlphaBadge.textContent = '完全不透明';
+      dom.pAlphaBadge.className = 'badge plain';
+    }
+  }
+  if (dom.pAlphaRatio) {
+    dom.pAlphaRatio.textContent = stats
+      ? ('透明像素约 ' + (stats.ratio * 100).toFixed(1) + '%（半透明 ' + (stats.semiRatio * 100).toFixed(1) + '%，' +
+         stats.sampleW + '×' + stats.sampleH + ' 取样）')
+      : '';
+  }
+}
+
+/* =====================================================================
+ * 15. 顶栏 / 左栏 / 状态同步
+ * ===================================================================== */
+
+function syncTop() {
+  setVal(dom.pathPrefix, state.pathPrefix);
+  setVal(dom.canvasW, state.canvas.width);
+  setVal(dom.canvasH, state.canvas.height);
+
+  var bg = state.background;
+  setVal(dom.bgMode, bg.mode);
+  setVal(dom.bgOpacity, bg.opacity);
+  if (dom.bgOpacityVal) { dom.bgOpacityVal.textContent = Number(bg.opacity).toFixed(2); }
+  setVal(dom.bgTint, bg.tint);
+  setVal(dom.bgTintText, bg.tint);
+  setVal(dom.bgPathOut, resolvePath(bg));
+  if (dom.bgState) { dom.bgState.textContent = bg.img ? '已绑定' : '未绑定'; }
+  if (dom.bgSize) {
+    dom.bgSize.textContent = bg.img ? (bg.naturalW + '×' + bg.naturalH) : '—';
+  }
+  setChk(dom.snapGrid, state.snap.grid);
+  setVal(dom.snapStepPct, round(state.snap.step * 100, 4));
+  setChk(dom.snapCenter, state.snap.center);
+  setChk(dom.showGrid, state.view.showGrid);
+  setChk(dom.showChecker, state.view.showChecker);
+  setChk(dom.exportChecker, state.export.includeChecker);
+  setVal(dom.surfaceOpacity, state.surfaceOpacity);
+  if (dom.surfaceOpacityVal) { dom.surfaceOpacityVal.textContent = Number(state.surfaceOpacity).toFixed(2); }
+
+  if (dom.canvasInfo) {
+    var bound = 0;
+    for (var i = 0; i < state.stickers.length; i++) { if (state.stickers[i].img) { bound++; } }
+    dom.canvasInfo.textContent = '画布 ' + state.canvas.width + ' × ' + state.canvas.height +
+      ' · 贴纸 ' + state.stickers.length + '（已绑定 ' + bound + '）· 背景 ' + (bg.img ? '已绑定' : '未绑定');
+  }
+  if (dom.snapInfo) {
+    dom.snapInfo.textContent = '吸附 ' + (state.snap.grid ? round(state.snap.step * 100, 4) + '%' : '关闭') +
+      ' · 中线参考线 ' + (state.snap.center ? '开' : '关');
+  }
+  if (dom.pngSize) { dom.pngSize.textContent = state.canvas.width + ' × ' + state.canvas.height; }
+  if (dom.zoomInfo) { dom.zoomInfo.textContent = Math.round((state.view.scale || 1) * 100) + '%'; }
+}
+
+/** 统一刷新：重绘 + 面板同步 + 存档 */
+function syncAll() {
+  requestRender();
+  renderLayerList();
+  syncProps();
+  syncTop();
+  refreshExportPanels();
+  saveLocal(false);
+}
+
+/* =====================================================================
+ * 16. 导出 JSON（字段名严格遵循 schemaVersion 1）
+ * ===================================================================== */
+
+function buildExportObject() {
+  var bg = state.background;
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    canvas: { width: state.canvas.width, height: state.canvas.height },
+    surfaceOpacity: round(state.surfaceOpacity, 3),
+    background: {
+      path: resolvePath(bg),
+      mode: bg.mode,
+      opacity: round(bg.opacity, 3),
+      tint: normHex(bg.tint) || '#ffffff'
+    },
+    stickers: state.stickers.map(function (st) {
+      return {
+        path: resolvePath(st),
+        x: round(st.x, 6),
+        y: round(st.y, 6),
+        width: round(st.width, 6),
+        height: round(st.height, 6),
+        rotation: round(st.rotation, 2),
+        opacity: round(st.opacity, 3),
+        anchor: st.anchor,
+        layer: st.layer,
+        tint: normHex(st.tint) || '#ffffff',
+        flipX: !!st.flipX,
+        flipY: !!st.flipY
+      };
+    })
+  };
+}
+
+function buildExportJsonText() {
+  return JSON.stringify(buildExportObject(), null, 2) + '\n';
+}
+
+/* =====================================================================
+ * 17. 导出 ImGui 代码
+ * ===================================================================== */
+
+var IMGUI_BODY = `namespace {
+
+// 逐字符比较模式字符串，避免额外依赖 <cstring>。
+bool AnomalyThemeModeEquals(const char* lhs, const char* rhs) {
+    if (lhs == nullptr || rhs == nullptr) { return false; }
+    while (*lhs != '\\0' && *rhs != '\\0') {
+        if (*lhs != *rhs) { return false; }
+        ++lhs;
+        ++rhs;
+    }
+    return *lhs == *rhs;
+}
+
+// tint(0xAABBGGRR) 与不透明度合成 ImU32。
+//   RGB = tint 的 r/g/b，原样写入 IM_COL32，不做任何预乘（premultiply）处理；
+//   a   = 只来自贴纸 / 背景的 opacity（opacity = 1.0 -> 255）。
+// ImGui 后端使用 SRC_ALPHA / INV_SRC_ALPHA 直通 alpha 混合，预乘会让半透明边缘发黑。
+unsigned int AnomalyThemeTint(unsigned int tint, float opacity) {
+    float alpha = opacity;
+    if (!(alpha > 0.0f)) { alpha = 0.0f; }  // NaN 归零
+    if (alpha > 1.0f) { alpha = 1.0f; }
+    const int r = static_cast<int>(tint & 0xFFu);
+    const int g = static_cast<int>((tint >> 8) & 0xFFu);
+    const int b = static_cast<int>((tint >> 16) & 0xFFu);
+    return IM_COL32(r, g, b, static_cast<int>(alpha * 255.0f + 0.5f));
+}
+
+}  // namespace
+
+void DrawAnomalyThemeLayout(ImDrawList* draw_list, const ImVec2& origin, const ImVec2& size, ImTextureID background_texture, const ImTextureID* sticker_textures, const ImVec2* sticker_sizes, int sticker_count) {
+    if (draw_list == nullptr || size.x <= 0.0f || size.y <= 0.0f) { return; }
+    const float vw = size.x;
+    const float vh = size.y;
+    draw_list->PushClipRect(origin, ImVec2(origin.x + vw, origin.y + vh), true);
+
+    // ---------- 背景图 ----------
+    if (background_texture != nullptr && !AnomalyThemeModeEquals(kAnomalyThemeBackground.mode, "disabled")) {
+        const float iw = kAnomalyThemeBackgroundWidth;
+        const float ih = kAnomalyThemeBackgroundHeight;
+        const unsigned int tint = AnomalyThemeTint(kAnomalyThemeBackground.tint, kAnomalyThemeBackground.opacity);
+        const ImVec2 p0 = origin;
+        const ImVec2 p1(origin.x + vw, origin.y + vh);
+        if (iw > 0.0f && ih > 0.0f && AnomalyThemeModeEquals(kAnomalyThemeBackground.mode, "center")) {
+            // center：s = min(vw/iw, vh/ih)，目标尺寸 (iw*s, ih*s) 居中，UV = (0,0)-(1,1)
+            const float s = ImMin(vw / iw, vh / ih);
+            const float dw = iw * s;
+            const float dh = ih * s;
+            const float dx = origin.x + (vw - dw) * 0.5f;
+            const float dy = origin.y + (vh - dh) * 0.5f;
+            draw_list->AddImage(background_texture, ImVec2(dx, dy), ImVec2(dx + dw, dy + dh), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
+        } else if (iw > 0.0f && ih > 0.0f && AnomalyThemeModeEquals(kAnomalyThemeBackground.mode, "crop")) {
+            // crop：s = max(vw/iw, vh/ih)，目标 = 整个视口，UV 为居中子矩形
+            const float s = ImMax(vw / iw, vh / ih);
+            const float uw = vw / (iw * s);
+            const float uh = vh / (ih * s);
+            draw_list->AddImage(background_texture, p0, p1, ImVec2(0.5f - uw * 0.5f, 0.5f - uh * 0.5f), ImVec2(0.5f + uw * 0.5f, 0.5f + uh * 0.5f), tint);
+        } else {
+            // stretch：目标 = 整个视口，UV = (0,0)-(1,1)（图片尺寸未知时同样回退到这里）
+            draw_list->AddImage(background_texture, p0, p1, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
+        }
+    }
+
+    // ---------- 贴纸：layer 0 = behind 先画，layer 1 = front 后画 ----------
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < sticker_count; ++i) {
+            if (i >= kAnomalyThemeStickerCount) { break; }
+            const AnomalyThemeSticker& s = kAnomalyThemeStickers[i];
+            if (s.layer != pass || !(s.opacity > 0.0f)) { continue; }
+            if (sticker_textures == nullptr || sticker_sizes == nullptr) { continue; }
+            const ImTextureID texture = sticker_textures[i];
+            if (texture == nullptr) { continue; }
+            const float iw = sticker_sizes[i].x;
+            const float ih = sticker_sizes[i].y;
+            if (iw <= 0.0f || ih <= 0.0f) { continue; }
+
+            // 贴纸像素尺寸
+            float wpx = 0.0f;
+            float hpx = 0.0f;
+            if (s.width > 0.0f && s.height > 0.0f) {
+                wpx = s.width * vw;
+                hpx = s.height * vh;
+            } else if (s.width > 0.0f) {
+                wpx = s.width * vw;
+                hpx = wpx * ih / iw;
+            } else if (s.height > 0.0f) {
+                hpx = s.height * vh;
+                wpx = hpx * iw / ih;
+            } else {
+                wpx = iw;
+                hpx = ih;
+            }
+
+            // 锚点 → 矩形左上角
+            const float px = origin.x + s.x * vw;
+            const float py = origin.y + s.y * vh;
+            float left = px - wpx * 0.5f;
+            float top = py - hpx * 0.5f;
+            if (s.anchor == 1) {          // top_left
+                left = px;
+                top = py;
+            } else if (s.anchor == 2) {   // top_right
+                left = px - wpx;
+                top = py;
+            } else if (s.anchor == 3) {   // bottom_left
+                left = px;
+                top = py - hpx;
+            } else if (s.anchor == 4) {   // bottom_right
+                left = px - wpx;
+                top = py - hpx;
+            }
+
+            // 绕矩形中心旋转，顺时针为正（y 轴向下）
+            const float cx = left + wpx * 0.5f;
+            const float cy = top + hpx * 0.5f;
+            const float rad = s.rotation * 0.017453292519943295f;
+            const float cs = std::cos(rad);
+            const float sn = std::sin(rad);
+            const float hw = wpx * 0.5f;
+            const float hh = hpx * 0.5f;
+            const ImVec2 p_tl(cx + (-hw * cs - -hh * sn), cy + (-hw * sn + -hh * cs));
+            const ImVec2 p_tr(cx + ( hw * cs - -hh * sn), cy + ( hw * sn + -hh * cs));
+            const ImVec2 p_br(cx + ( hw * cs -  hh * sn), cy + ( hw * sn +  hh * cs));
+            const ImVec2 p_bl(cx + (-hw * cs -  hh * sn), cy + (-hw * sn +  hh * cs));
+
+            // flipX 交换 u0/u1，flipY 交换 v0/v1
+            const float ua = s.flip_x ? 1.0f : 0.0f;
+            const float ub = s.flip_x ? 0.0f : 1.0f;
+            const float va = s.flip_y ? 1.0f : 0.0f;
+            const float vb = s.flip_y ? 0.0f : 1.0f;
+
+            draw_list->AddImageQuad(texture, p_tl, p_tr, p_br, p_bl,
+                                    ImVec2(ua, va), ImVec2(ub, va), ImVec2(ub, vb), ImVec2(ua, vb),
+                                    AnomalyThemeTint(s.tint, s.opacity));
+        }
+    }
+
+    draw_list->PopClipRect();
+}`;
+
+function hex8(tint) {
+  return ('00000000' + hexToImGuiU32(tint).toString(16).toUpperCase()).slice(-8);
+}
+
+function buildImGuiCode() {
+  var o = buildExportObject();
+  var bg = state.background;
+  var bgW = bg.naturalW > 0 ? bg.naturalW : state.canvas.width;
+  var bgH = bg.naturalH > 0 ? bg.naturalH : state.canvas.height;
+  var L = [];
+
+  L.push('// 由 Anomaly 主题布局编辑器生成。');
+  L.push('// 依赖：imgui.h 与 C++ 标准库 <cmath>（仅用于旋转的 std::cos / std::sin）。');
+  L.push('#include <cmath>');
+  L.push('');
+  L.push('namespace {');
+  L.push('struct AnomalyThemeBackground final {');
+  L.push('    const char* path; const char* mode; float opacity; unsigned int tint;');
+  L.push('};');
+  L.push('struct AnomalyThemeSticker final {');
+  L.push('    const char* path; float x; float y; float width; float height; float rotation;');
+  L.push('    float opacity; int anchor; int layer; unsigned int tint; bool flip_x; bool flip_y;');
+  L.push('};');
+  L.push('constexpr AnomalyThemeBackground kAnomalyThemeBackground{');
+  L.push('    "' + cppString(o.background.path) + '", "' + cppString(o.background.mode) + '", ' +
+    cppFloat(o.background.opacity) + 'f, 0x' + hex8(o.background.tint) + 'u};');
+  L.push('constexpr AnomalyThemeSticker kAnomalyThemeStickers[]{');
+  if (o.stickers.length) {
+    for (var i = 0; i < o.stickers.length; i++) {
+      var s = o.stickers[i];
+      L.push('    {"' + cppString(s.path) + '", ' +
+        cppFloat(s.x) + 'f, ' + cppFloat(s.y) + 'f, ' +
+        cppFloat(s.width) + 'f, ' + cppFloat(s.height) + 'f, ' +
+        cppFloat(s.rotation) + 'f, ' + cppFloat(s.opacity) + 'f, ' +
+        ANCHOR_CODE[s.anchor] + ', ' + LAYER_CODE[s.layer] + ', 0x' + hex8(s.tint) + 'u, ' +
+        (s.flipX ? 'true' : 'false') + ', ' + (s.flipY ? 'true' : 'false') + '},');
+    }
+  } else {
+    L.push('    {"", 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0, 0, 0xFFFFFFFFu, false, false},');
+  }
+  L.push('};');
+  L.push('constexpr int kAnomalyThemeStickerCount = ' + o.stickers.length + ';');
+  L.push('constexpr float kAnomalyThemeSurfaceOpacity = ' + cppFloat(o.surfaceOpacity) + 'f;');
+  L.push('// 背景图原始像素尺寸（center / crop 需要）；运行时换图请同步修改这两个常量。');
+  L.push('constexpr float kAnomalyThemeBackgroundWidth = ' + cppFloat(bgW) + 'f;');
+  L.push('constexpr float kAnomalyThemeBackgroundHeight = ' + cppFloat(bgH) + 'f;');
+  L.push('}  // namespace');
+  L.push('');
+  L.push(IMGUI_BODY);
+  L.push('');
+  return L.join('\n');
+}
+
+/* =====================================================================
+ * 18. 导入 JSON（非法字段给中文提示并回退默认值，绝不抛异常）
+ * ===================================================================== */
+
+/** 字段路径文本，例如 canvas.width；顶层字段不加前缀点 */
+function fieldPath(path, key) { return path ? path + '.' + key : key; }
+
+function warnType(path, got, def, out) {
+  out.push(path + ' 类型非法（' + JSON.stringify(got) + '），已回退为 ' + JSON.stringify(def));
+}
+
+/** 与运行时 ClampFinite 一致：非有限值回退默认值，越界收敛到边界 */
+function clampField(value, spec) {
+  if (!isNum(value)) { return spec.def; }
+  if (value < spec.lo) { return spec.lo; }
+  if (value > spec.hi) { return spec.hi; }
+  return value;
+}
+
+/** 读取数值并按运行时范围收敛；越界时提示「收敛到 X（运行时行为）」 */
+function readNumberSpec(obj, key, spec, path, out) {
+  var label = fieldPath(path, key);
+  var v = obj ? obj[key] : undefined;
+  if (v === undefined || v === null) { return spec.def; }
+  if (typeof v !== 'number' || !isFinite(v)) { warnType(label, v, spec.def, out); return spec.def; }
+  if (v < spec.lo) {
+    out.push(label + ' 从 ' + v + ' 收敛到 ' + spec.lo + '（运行时行为）');
+    return spec.lo;
+  }
+  if (v > spec.hi) {
+    out.push(label + ' 从 ' + v + ' 收敛到 ' + spec.hi + '（运行时行为）');
+    return spec.hi;
+  }
+  return v;
+}
+
+/** 画布尺寸：先按运行时范围收敛，再取整（编辑器画布按整数像素工作） */
+function readCanvasSize(obj, key, spec, path, out) {
+  var v = readNumberSpec(obj, key, spec, path, out);
+  var rounded = clampField(Math.round(v), spec);
+  if (rounded !== v) {
+    out.push(fieldPath(path, key) + ' ' + v + ' 已取整为 ' + rounded + '（编辑器画布为整数像素）');
+  }
+  return rounded;
+}
+
+function readString(obj, key, def, path, out) {
+  var v = obj ? obj[key] : undefined;
+  if (v === undefined || v === null) { return def; }
+  if (typeof v !== 'string') { warnType(fieldPath(path, key), v, def, out); return def; }
+  return v;
+}
+
+function readEnum(obj, key, allowed, def, path, out) {
+  var v = obj ? obj[key] : undefined;
+  if (v === undefined || v === null) { return def; }
+  if (typeof v !== 'string' || allowed.indexOf(v) < 0) {
+    out.push(fieldPath(path, key) + ' 取值非法（' + JSON.stringify(v) + '），已回退为 "' + def + '"（可选：' + allowed.join('/') + '）');
+    return def;
+  }
+  return v;
+}
+
+function readTint(obj, key, def, path, out) {
+  var v = obj ? obj[key] : undefined;
+  if (v === undefined || v === null) { return def; }
+  if (typeof v === 'string' && isHexColor(v)) { return v.trim().toLowerCase(); }
+  out.push(fieldPath(path, key) + ' 不是 #rrggbb 形式（' + JSON.stringify(v) + '），已回退为 "' + def + '"');
+  return def;
+}
+
+/** 与运行时 ReadBool 一致：只接受真正的布尔值（数字 0/1 也会被回退） */
+function readBool(obj, key, def, path, out) {
+  var v = obj ? obj[key] : undefined;
+  if (v === undefined || v === null) { return def; }
+  if (typeof v === 'boolean') { return v; }
+  warnType(fieldPath(path, key), v, def, out);
+  return def;
+}
+
+/**
+ * 解析 + 校验：返回 { data, warnings, error }，绝不抛异常。
+ * 判定与运行时 ParsePlatformUiLayout（src/ui/platform_ui_layout.cpp）逐字一致：
+ *   · 空文件 / 超过 256 KB / 不是合法 JSON / 顶层不是对象      → 整个文件被拒绝
+ *   · schemaVersion 为整数且 ≠ 1                              → 整个文件被拒绝
+ *   · stickers 不是数组 / 贴纸不是对象 / path 超过 512 字符     → 整个文件被拒绝
+ *   · 贴纸数量超过 64                                        → 整个文件被拒绝（不截断）
+ *   · 其余字段越界 → 按运行时的 clamp 值收敛，并给出中文警告
+ *   · 没有 path 的贴纸 → 与运行时一致地丢弃（运行时无法绘制它）
+ */
+function parseLayoutJson(text) {
+  var warnings = [];
+  if (typeof text !== 'string' || !text.trim()) {
+    return { data: null, warnings: warnings, error: '布局文件为空（运行时行为：拒绝）' };
+  }
+  if (text.length > MAX_LAYOUT_BYTES) {
+    return { data: null, warnings: warnings, error: '布局文件超过 ' + (MAX_LAYOUT_BYTES / 1024) + ' KB 上限（运行时行为：拒绝）' };
+  }
+  var raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    return { data: null, warnings: warnings, error: 'JSON 解析失败：' + (e && e.message ? e.message : '语法错误') };
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { data: null, warnings: warnings, error: 'JSON 顶层必须是一个对象（{ ... }）' };
+  }
+  if (raw.schemaVersion !== undefined && raw.schemaVersion !== null) {
+    var sv = raw.schemaVersion;
+    var svIsInteger = (typeof sv === 'number' && isFinite(sv) && Math.floor(sv) === sv);
+    if (svIsInteger && sv !== SCHEMA_VERSION) {
+      return { data: null, warnings: warnings, error: '不支持的 schemaVersion：' + sv + '（运行时只接受 ' + SCHEMA_VERSION + '，整个文件被拒绝）' };
+    }
+    if (!svIsInteger || sv !== SCHEMA_VERSION) {
+      warnings.push('schemaVersion = ' + JSON.stringify(sv) + ' 不是整数 ' + SCHEMA_VERSION + '，按 v1 解析（运行时同样忽略该字段）');
+    }
+  }
+
+  var canvasRaw = (raw.canvas && typeof raw.canvas === 'object' && !Array.isArray(raw.canvas)) ? raw.canvas : null;
+  if (raw.canvas !== undefined && !canvasRaw) {
+    warnings.push('canvas 类型非法，运行时按默认 1180×700 处理');
+  }
+  var out = {
+    schemaVersion: SCHEMA_VERSION,
+    canvas: {
+      width: readCanvasSize(canvasRaw, 'width', FIELD_LIMITS.canvasWidth, 'canvas', warnings),
+      height: readCanvasSize(canvasRaw, 'height', FIELD_LIMITS.canvasHeight, 'canvas', warnings)
+    },
+    surfaceOpacity: readNumberSpec(raw, 'surfaceOpacity', FIELD_LIMITS.surfaceOpacity, '', warnings),
+    background: { path: '', mode: 'disabled', opacity: 1, tint: '#ffffff' },
+    stickers: []
+  };
+
+  var bgRaw = (raw.background && typeof raw.background === 'object' && !Array.isArray(raw.background)) ? raw.background : null;
+  if (raw.background !== undefined && !bgRaw) {
+    warnings.push('background 类型非法，运行时按默认值处理（path="", mode="disabled", opacity=1, tint="#ffffff"）');
+  }
+  out.background.path = readString(bgRaw, 'path', '', 'background', warnings);
+  if (out.background.path.length > MAX_PATH_LENGTH) {
+    return { data: null, warnings: warnings, error: 'background.path 长度 ' + out.background.path.length + ' 超过 ' + MAX_PATH_LENGTH + ' 字符（运行时行为：整个文件被拒绝）' };
+  }
+  out.background.mode = readEnum(bgRaw, 'mode', MODES, 'disabled', 'background', warnings);
+  out.background.opacity = readNumberSpec(bgRaw, 'opacity', { lo: 0, hi: 1, def: 1 }, 'background', warnings);
+  out.background.tint = readTint(bgRaw, 'tint', '#ffffff', 'background', warnings);
+
+  if (raw.stickers !== undefined && raw.stickers !== null && !Array.isArray(raw.stickers)) {
+    return { data: null, warnings: warnings, error: 'stickers 必须是数组（运行时行为：整个文件被拒绝）' };
+  }
+  var list = Array.isArray(raw.stickers) ? raw.stickers : [];
+  if (list.length > MAX_STICKERS) {
+    return { data: null, warnings: warnings, error: '贴纸数量 ' + list.length + ' 超过上限 ' + MAX_STICKERS + '（运行时行为：整个文件被拒绝，不会截断）' };
+  }
+  var dropped = 0;
+  for (var i = 0; i < list.length; i++) {
+    var tag = 'stickers[' + i + ']';
+    var it = list[i];
+    if (!it || typeof it !== 'object' || Array.isArray(it)) {
+      return { data: null, warnings: warnings, error: tag + ' 不是对象（运行时行为：整个文件被拒绝）' };
+    }
+    var itemPath = readString(it, 'path', '', tag, warnings);
+    if (itemPath.length > MAX_PATH_LENGTH) {
+      return { data: null, warnings: warnings, error: tag + '.path 长度 ' + itemPath.length + ' 超过 ' + MAX_PATH_LENGTH + ' 字符（运行时行为：整个文件被拒绝）' };
+    }
+    if (!itemPath) {
+      dropped++;
+      continue;
+    }
+    out.stickers.push({
+      path: itemPath,
+      x: readNumberSpec(it, 'x', FIELD_LIMITS.x, tag, warnings),
+      y: readNumberSpec(it, 'y', FIELD_LIMITS.y, tag, warnings),
+      width: readNumberSpec(it, 'width', FIELD_LIMITS.width, tag, warnings),
+      height: readNumberSpec(it, 'height', FIELD_LIMITS.height, tag, warnings),
+      rotation: readNumberSpec(it, 'rotation', FIELD_LIMITS.rotation, tag, warnings),
+      opacity: readNumberSpec(it, 'opacity', FIELD_LIMITS.opacity, tag, warnings),
+      anchor: readEnum(it, 'anchor', ANCHORS, 'center', tag, warnings),
+      layer: readEnum(it, 'layer', LAYERS, 'behind', tag, warnings),
+      tint: readTint(it, 'tint', '#ffffff', tag, warnings),
+      flipX: readBool(it, 'flipX', false, tag, warnings),
+      flipY: readBool(it, 'flipY', false, tag, warnings)
+    });
+  }
+  if (dropped > 0) {
+    warnings.push('已丢弃 ' + dropped + ' 个没有 path 的贴纸条目（运行时不会绘制它们）');
+  }
+  return { data: out, warnings: warnings, error: null };
+}
+
+/** 依据导入的 path 列表决定全局前缀与逐项目录 */
+function adoptPrefix(paths) {
+  var seen = {};
+  var first = '';
+  var count = 0;
+  for (var i = 0; i < paths.length; i++) {
+    var d = dirname(paths[i]);
+    if (!first) { first = d; }
+    if (!seen[d]) { seen[d] = true; count++; }
+  }
+  if (!count) { return state.pathPrefix; }
+  if (count === 1) { return first; }
+  return first;
+}
+
+/** 把校验后的数据落到编辑器状态（尽量复用已绑定的图片） */
+function applyLayoutData(data) {
+  pushHistory();
+
+  var paths = [data.background.path];
+  for (var i = 0; i < data.stickers.length; i++) { paths.push(data.stickers[i].path); }
+  var prefix = adoptPrefix(paths);
+  if (prefix) { state.pathPrefix = prefix; }
+
+  var imgByName = {};
+  if (state.background.img && state.background.fileName) {
+    imgByName[state.background.fileName] = state.background.img;
+  }
+  for (var k = 0; k < state.stickers.length; k++) {
+    var old = state.stickers[k];
+    if (old.img && old.fileName && !imgByName[old.fileName]) { imgByName[old.fileName] = old.img; }
+  }
+
+  state.canvas.width = data.canvas.width;
+  state.canvas.height = data.canvas.height;
+  state.surfaceOpacity = data.surfaceOpacity;
+
+  // 背景
+  var bgFileName = basename(data.background.path) || DEFAULT_BG_FILE;
+  var bgImg = imgByName[bgFileName] || null;
+  state.background = {
+    fileName: bgFileName,
+    dir: normalizeDir(dirname(data.background.path)) === normalizeDir(prefix) ? '' : dirname(data.background.path),
+    mode: data.background.mode,
+    opacity: data.background.opacity,
+    tint: data.background.tint,
+    img: bgImg,
+    naturalW: bgImg ? bgImg.naturalWidth : 0,
+    naturalH: bgImg ? bgImg.naturalHeight : 0,
+    _tintCache: null
+  };
+
+  // 贴纸
+  var out = [];
+  for (var j = 0; j < data.stickers.length; j++) {
+    var s = data.stickers[j];
+    var fileName = basename(s.path);
+    var img = imgByName[fileName] || null;
+    var st = makeSticker(fileName, dirname(s.path), img);
+    st.dir = normalizeDir(dirname(s.path)) === normalizeDir(prefix) ? '' : dirname(s.path);
+    st.name = fileName || ('贴纸 ' + (j + 1));
+    st.x = s.x;
+    st.y = s.y;
+    st.width = s.width;
+    st.height = s.height;
+    st.rotation = s.rotation;
+    st.opacity = s.opacity;
+    st.anchor = s.anchor;
+    st.layer = s.layer;
+    st.tint = s.tint;
+    st.flipX = s.flipX;
+    st.flipY = s.flipY;
+    st.naturalW = img ? img.naturalWidth : 0;
+    st.naturalH = img ? img.naturalHeight : 0;
+    out.push(st);
+  }
+  state.stickers = out;
+  state.selectedId = out.length ? out[0].id : null;
+
+  fitCanvas();
+  syncAll();
+  return { total: out.length, bound: out.filter(function (s) { return !!s.img; }).length };
+}
+
+function doImport() {
+  var text = dom.importText ? dom.importText.value : '';
+  if (!text || !text.trim()) {
+    setMsg(dom.importMsg, '请先粘贴 JSON，或点击「选择 JSON 文件」。', 'warn');
+    setStatus('导入内容为空', 'warn');
+    return;
+  }
+  var res = parseLayoutJson(text);
+  if (res.error) {
+    setMsg(dom.importMsg, '导入失败：' + res.error, 'err');
+    setStatus('导入失败：' + res.error, 'err');
+    return;
+  }
+  var info = applyLayoutData(res.data);
+  var head = '导入成功：画布 ' + res.data.canvas.width + '×' + res.data.canvas.height +
+    '，贴纸 ' + info.total + ' 个（已按文件名自动重绑图片 ' + info.bound + ' 个）。';
+  if (res.warnings.length) {
+    setMsg(dom.importMsg, head + '\n以下字段被回退或收敛（共 ' + res.warnings.length + ' 条）：\n· ' + res.warnings.join('\n· '), 'warn');
+    setStatus('导入完成，但有 ' + res.warnings.length + ' 处字段被回退（详见导入面板）', 'warn');
+  } else {
+    setMsg(dom.importMsg, head + '\n所有字段校验通过。', 'ok');
+    setStatus('导入成功', 'ok');
+  }
+}
+
+function importFromFile(file) {
+  if (!file) { return; }
+  var fr = new FileReader();
+  fr.onload = function () {
+    if (dom.importText) { dom.importText.value = String(fr.result || ''); }
+    doImport();
+  };
+  fr.onerror = function () {
+    setMsg(dom.importMsg, '文件读取失败：' + file.name, 'err');
+  };
+  fr.readAsText(file);
+}
+
+/* =====================================================================
+ * 19. 导出 PNG
+ * ===================================================================== */
+
+function renderToCanvas(vw, vh, withChecker) {
+  if (vw > MAX_EXPORT_PIXELS || vh > MAX_EXPORT_PIXELS) {
+    throw new Error('画布 ' + vw + '×' + vh + ' 超过 PNG 导出上限 ' + MAX_EXPORT_PIXELS + ' 像素，请先调小画布尺寸');
+  }
+  var c = document.createElement('canvas');
+  c.width = vw;
+  c.height = vh;
+  var ctx = c.getContext('2d');
+  renderScene(ctx, vw, vh, {
+    checker: !!withChecker,   // 默认 false → PNG 保持透明背景
+    placeholders: false, grid: false, guides: false, selection: false
+  });
+  return c;
+}
+
+function pngBlob() {
+  return new Promise(function (resolve, reject) {
+    var vw = state.canvas.width, vh = state.canvas.height;
+    var c = renderToCanvas(vw, vh, state.export.includeChecker);
+    try {
+      c.toBlob(function (blob) {
+        if (blob) { resolve(blob); } else { reject(new Error('canvas.toBlob 返回空')); }
+      }, 'image/png');
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function exportPng() {
+  pngBlob().then(function (blob) {
+    downloadBlob('anomaly-theme-layout-' + state.canvas.width + 'x' + state.canvas.height + '.png', blob);
+    setMsg(dom.pngMsg, '已导出 PNG：' + state.canvas.width + '×' + state.canvas.height +
+      '（' + Math.round(blob.size / 1024) + ' KB，' +
+      (state.export.includeChecker ? '已烧入棋盘格' : '透明背景，未含棋盘格') + '）', 'ok');
+    setStatus('PNG 预览已导出', 'ok');
+  }).catch(function (err) {
+    setMsg(dom.pngMsg, 'PNG 导出失败：' + (err && err.message ? err.message : '未知错误'), 'err');
+    setStatus('PNG 导出失败', 'err');
+  });
+}
+
+function copyPng() {
+  if (!navigator.clipboard || !window.ClipboardItem) {
+    setMsg(dom.pngMsg, '当前浏览器不支持复制图片到剪贴板，请改用「导出 PNG 预览」。', 'warn');
+    return;
+  }
+  pngBlob().then(function (blob) {
+    return navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  }).then(function () {
+    setMsg(dom.pngMsg, '已复制 PNG 到剪贴板。', 'ok');
+    setStatus('PNG 已复制到剪贴板', 'ok');
+  }).catch(function (err) {
+    setMsg(dom.pngMsg, '复制 PNG 失败：' + (err && err.message ? err.message : '浏览器拒绝访问剪贴板') + '，请改用「导出 PNG 预览」。', 'err');
+  });
+}
+
+/* =====================================================================
+ * 20. localStorage 自动存档
+ * ===================================================================== */
+
+function saveLocal(now) {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  var doSave = function () {
+    try {
+      var payload = JSON.stringify({
+        v: 1,
+        savedAt: new Date().toISOString(),
+        canvas: { width: state.canvas.width, height: state.canvas.height },
+        surfaceOpacity: state.surfaceOpacity,
+        background: stripImg(state.background),
+        stickers: state.stickers.map(stripImg),
+        pathPrefix: state.pathPrefix,
+        selectedId: state.selectedId,
+        snap: state.snap,
+        showGrid: state.view.showGrid
+      });
+      localStorage.setItem(LS_KEY, payload);
+      if (now) {
+        setStatus('已保存到本地存档（' + Math.round(payload.length / 1024) + ' KB）', 'ok');
+      }
+    } catch (e) {
+      setStatus('本地存档写入失败：' + (e && e.message ? e.message : '存储空间不足或被禁用'), 'err');
+    }
+  };
+  if (now) { doSave(); } else { saveTimer = setTimeout(doSave, 400); }
+}
+
+function loadLocal() {
+  var text = null;
+  try { text = localStorage.getItem(LS_KEY); } catch (e) { return false; }
+  if (!text) { return false; }
+  var d;
+  try { d = JSON.parse(text); } catch (e) { return false; }
+  if (!d || typeof d !== 'object') { return false; }
+  var ok = applySnapshot(text);
+  if (!ok) { return false; }
+  if (d.snap && typeof d.snap === 'object') {
+    state.snap.grid = d.snap.grid !== false;
+    state.snap.step = isNum(d.snap.step) ? clamp(d.snap.step, 0.00001, 0.5) : 0.0001;
+    state.snap.center = d.snap.center !== false;
+  }
+  state.view.showGrid = d.showGrid === true;
+  // 棋盘格是纯粹的查看开关，不进存档：老存档里的 true 会让透明贴纸一打开就
+  // 被棋盘格盖住，而用户想要的恰恰是看贴纸本身。每次打开都从关闭开始。
+  state.view.showChecker = false;
+  state.export.includeChecker = false;
+  syncAll();
+  return true;
+}
+
+function clearLocal() {
+  try {
+    localStorage.removeItem(LS_KEY);
+    setStatus('本地存档已清空', 'ok');
+  } catch (e) {
+    setStatus('清空失败：' + (e && e.message ? e.message : '未知错误'), 'err');
+  }
+}
+
+/* =====================================================================
+ * 21. 重置
+ * ===================================================================== */
+
+function resetLayout() {
+  if (!window.confirm('确定要重置为默认布局吗？当前所有贴纸与背景绑定都会被清除（可用 Ctrl+Z 撤销）。')) { return; }
+  pushHistory();
+  state.canvas.width = 1180;
+  state.canvas.height = 700;
+  state.surfaceOpacity = 0.72;
+  state.background = {
+    fileName: DEFAULT_BG_FILE, dir: '', mode: 'crop', opacity: 0.9, tint: '#ffffff',
+    img: null, naturalW: 0, naturalH: 0, _tintCache: null
+  };
+  state.stickers = [];
+  state.selectedId = null;
+  state.pathPrefix = DEFAULT_PREFIX;
+  state.snap.grid = true;
+  state.snap.step = 0.0001;
+  state.snap.center = true;
+  state.view.showGrid = false;
+  state.view.showChecker = false;
+  state.export.includeChecker = false;
+  fitCanvas();
+  syncAll();
+  setStatus('已重置为默认布局', 'ok');
+}
+
+/* =====================================================================
+ * 22. 导出面板刷新
+ * ===================================================================== */
+
+function refreshExportPanels() {
+  if (currentTab === 'json' && dom.jsonOut) {
+    dom.jsonOut.value = buildExportJsonText();
+  } else if (currentTab === 'imgui' && dom.imguiOut) {
+    dom.imguiOut.value = buildImGuiCode();
+  }
+}
+
+/* =====================================================================
+ * 23. 事件绑定
+ * ===================================================================== */
+
+var currentTab = 'json';
+var armedSnapshot = null;
+
+function armHistory() {
+  if (armedSnapshot === null) { armedSnapshot = snapshot(); }
+}
+
+function commitHistory() {
+  if (armedSnapshot === null) { return; }
+  if (armedSnapshot !== snapshot()) { pushSnapshot(armedSnapshot); }
+  armedSnapshot = null;
+}
+
+/** 一次「可撤销」的修改：记录前态 → 执行 → 提交历史 → 刷新 */
+function mutate(fn) {
+  armHistory();
+  try { fn(); } catch (e) { setStatus('操作失败：' + (e && e.message ? e.message : '未知错误'), 'err'); }
+  commitHistory();
+  syncAll();
+}
+
+function mutateSelected(fn) {
+  var st = selectedSticker();
+  if (!st) { return; }
+  if (st.locked) { setStatus('贴纸已锁定，请先解锁再编辑', 'warn'); syncProps(); return; }
+  mutate(function () { fn(st); });
+}
+
+function on(el, type, handler, opts) {
+  if (el) { el.addEventListener(type, handler, opts); }
+}
+
+function numFrom(el, def) {
+  var v = parseFloat(el.value);
+  return isFinite(v) ? v : def;
+}
+
+/** 从输入框读数值并按运行时范围收敛；越界/非法时给出可见提示 */
+function numSpecFrom(el, spec, label) {
+  var v = parseFloat(el.value);
+  if (!isFinite(v)) {
+    setStatus(label + ' 不是有效数字，已回退为 ' + spec.def + '（运行时行为）', 'warn');
+    return spec.def;
+  }
+  if (v < spec.lo) {
+    setStatus(label + ' ' + v + ' 收敛到 ' + spec.lo + '（运行时行为）', 'warn');
+    return spec.lo;
+  }
+  if (v > spec.hi) {
+    setStatus(label + ' ' + v + ' 收敛到 ' + spec.hi + '（运行时行为）', 'warn');
+    return spec.hi;
+  }
+  return v;
+}
+
+/** 把贴纸字段收敛到运行时范围（拖拽 / 缩放 / 旋转 / 键盘微调共用） */
+function clampStickerRuntime(st) {
+  if (!st) { return; }
+  st.x = clampField(st.x, FIELD_LIMITS.x);
+  st.y = clampField(st.y, FIELD_LIMITS.y);
+  st.width = clampField(st.width, FIELD_LIMITS.width);
+  st.height = clampField(st.height, FIELD_LIMITS.height);
+  st.rotation = clampField(st.rotation, FIELD_LIMITS.rotation);
+  st.opacity = clampField(st.opacity, FIELD_LIMITS.opacity);
+}
+
+function bindDropZone(el, onFiles) {
+  if (!el) { return; }
+  on(el, 'dragover', function (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.dataTransfer) { ev.dataTransfer.dropEffect = 'copy'; }
+    el.classList.add('over');
+  });
+  on(el, 'dragleave', function () { el.classList.remove('over'); });
+  on(el, 'drop', function (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    el.classList.remove('over');
+    if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files.length) {
+      onFiles(ev.dataTransfer.files);
+    }
+  });
+}
+
+function switchTab(name) {
+  currentTab = name;
+  var tabs = document.querySelectorAll('.tab');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].className = 'tab' + (tabs[i].getAttribute('data-tab') === name ? ' active' : '');
+  }
+  var bodies = document.querySelectorAll('.tab-body');
+  for (var j = 0; j < bodies.length; j++) {
+    bodies[j].className = 'tab-body' + (bodies[j].id === 'tab-' + name ? ' active' : '');
+  }
+  refreshExportPanels();
+}
+
+function bindEvents() {
+  /* ---------- 顶栏 ---------- */
+  on(dom.pathPrefix, 'input', function () {
+    if (armedSnapshot === null) { armHistory(); }
+    state.pathPrefix = dom.pathPrefix.value;
+    syncTop();
+    renderLayerList();
+    requestRender();
+  });
+  on(dom.pathPrefix, 'change', function () { commitHistory(); syncAll(); });
+
+  var applyCanvasSize = function () {
+    // 与运行时一致：canvas 尺寸收敛到 [1, 32768]，非法值回退 1180 / 700
+    var w = Math.round(numSpecFrom(dom.canvasW, FIELD_LIMITS.canvasWidth, '画布宽度'));
+    var h = Math.round(numSpecFrom(dom.canvasH, FIELD_LIMITS.canvasHeight, '画布高度'));
+    mutate(function () {
+      state.canvas.width = w;
+      state.canvas.height = h;
+    });
+    fitCanvas();
+    syncAll();
+  };
+  on(dom.canvasW, 'change', applyCanvasSize);
+  on(dom.canvasH, 'change', applyCanvasSize);
+
+  /* ---------- 背景 ---------- */
+  on(dom.bgDrop, 'click', function () { dom.bgFile.click(); });
+  bindDropZone(dom.bgDrop, function (files) { setBackgroundFromFiles(files); });
+  on(dom.bgFile, 'change', function () {
+    if (dom.bgFile.files && dom.bgFile.files.length) { setBackgroundFromFiles(dom.bgFile.files); }
+    dom.bgFile.value = '';
+  });
+  on(dom.bgMode, 'change', function () {
+    mutate(function () { state.background.mode = dom.bgMode.value; });
+  });
+  on(dom.bgOpacity, 'input', function () {
+    if (armedSnapshot === null) { armHistory(); }
+    state.background.opacity = clamp(parseFloat(dom.bgOpacity.value) || 0, 0, 1);
+    if (dom.bgOpacityVal) { dom.bgOpacityVal.textContent = state.background.opacity.toFixed(2); }
+    requestRender();
+  });
+  on(dom.bgOpacity, 'change', function () { commitHistory(); syncAll(); });
+  on(dom.bgTint, 'input', function () {
+    if (armedSnapshot === null) { armHistory(); }
+    state.background.tint = dom.bgTint.value;
+    if (dom.bgTintText) { dom.bgTintText.value = dom.bgTint.value; }
+    state.background._tintCache = null;
+    requestRender();
+  });
+  on(dom.bgTint, 'change', function () { commitHistory(); syncAll(); });
+  on(dom.bgTintText, 'change', function () {
+    var hex = normHex(dom.bgTintText.value);
+    if (!hex) {
+      setStatus('tint 必须是 #rrggbb 形式，例如 #ffffff', 'warn');
+      dom.bgTintText.value = state.background.tint;
+      return;
+    }
+    mutate(function () {
+      state.background.tint = hex;
+      state.background._tintCache = null;
+    });
+  });
+  on(dom.bgClear, 'click', function () {
+    mutate(function () {
+      state.background.img = null;
+      state.background.naturalW = 0;
+      state.background.naturalH = 0;
+      state.background._tintCache = null;
+    });
+    setStatus('已解除背景图绑定（path 与 mode 保留）', 'ok');
+  });
+
+  /* ---------- 贴纸 ---------- */
+  on(dom.stickerDrop, 'click', function () { dom.stickerFiles.click(); });
+  bindDropZone(dom.stickerDrop, function (files) { addFilesToEditor(files); });
+  on(dom.stickerFiles, 'change', function () {
+    if (dom.stickerFiles.files && dom.stickerFiles.files.length) { addFilesToEditor(dom.stickerFiles.files); }
+    dom.stickerFiles.value = '';
+  });
+  bindDropZone(dom.canvasHost, function (files) { addFilesToEditor(files); });
+  bindDropZone(dom.view, function (files) { addFilesToEditor(files); });
+
+  /* ---------- 吸附与辅助 ---------- */
+  on(dom.snapGrid, 'change', function () {
+    mutate(function () { state.snap.grid = dom.snapGrid.checked; });
+  });
+  on(dom.snapStepPct, 'change', function () {
+    var pct = clamp(numFrom(dom.snapStepPct, 1), 0.01, 50);
+    mutate(function () { state.snap.step = pct / 100; });
+  });
+  on(dom.snapCenter, 'change', function () {
+    mutate(function () { state.snap.center = dom.snapCenter.checked; });
+  });
+  on(dom.showGrid, 'change', function () {
+    mutate(function () { state.view.showGrid = dom.showGrid.checked; });
+  });
+  on(dom.showChecker, 'change', function () {
+    state.view.showChecker = dom.showChecker.checked;
+    syncAll();
+    setStatus(state.view.showChecker
+      ? '预览已开启棋盘格（8px，#ffffff / #cccccc）'
+      : '预览已关闭棋盘格（不影响 PNG 导出）', 'ok');
+  });
+  on(dom.exportChecker, 'change', function () {
+    state.export.includeChecker = dom.exportChecker.checked;
+    syncAll();
+    setStatus(state.export.includeChecker
+      ? '导出 PNG 将包含棋盘格'
+      : '导出 PNG 将保持透明背景（不含棋盘格）', 'ok');
+  });
+  on(dom.surfaceOpacity, 'input', function () {
+    if (armedSnapshot === null) { armHistory(); }
+    // 与运行时一致：surfaceOpacity 下限 0（kPlatformUiLayoutSurfaceOpacityMinimum）
+    state.surfaceOpacity = clampField(parseFloat(dom.surfaceOpacity.value), FIELD_LIMITS.surfaceOpacity);
+    if (dom.surfaceOpacityVal) { dom.surfaceOpacityVal.textContent = state.surfaceOpacity.toFixed(2); }
+    requestRender();
+  });
+  on(dom.surfaceOpacity, 'change', function () { commitHistory(); syncAll(); });
+
+  /* ---------- 存档 / 重置 ---------- */
+  on(dom.btnSaveNow, 'click', function () { saveLocal(true); });
+  on(dom.btnClearLocal, 'click', function () { clearLocal(); });
+  on(dom.btnReset, 'click', resetLayout);
+
+  /* ---------- 画布交互 ---------- */
+  on(dom.view, 'pointerdown', onCanvasPointerDown);
+  on(dom.view, 'pointermove', onCanvasPointerMove);
+  on(dom.view, 'pointerup', onCanvasPointerUp);
+  on(dom.view, 'pointercancel', onCanvasPointerUp);
+  on(dom.view, 'pointerleave', function () { if (!drag) { dom.view.style.cursor = 'default'; } });
+  on(dom.view, 'wheel', onCanvasWheel, { passive: false });
+  on(dom.view, 'contextmenu', function (ev) { ev.preventDefault(); });
+
+  /* ---------- 标签页 ---------- */
+  var tabs = document.querySelectorAll('.tab');
+  for (var i = 0; i < tabs.length; i++) {
+    (function (btn) {
+      on(btn, 'click', function () { switchTab(btn.getAttribute('data-tab')); });
+    })(tabs[i]);
+  }
+
+  /* ---------- 导出 JSON ---------- */
+  on(dom.btnJsonDownload, 'click', function () {
+    downloadText('anomaly-theme-layout.json', buildExportJsonText(), 'application/json;charset=utf-8');
+    setMsg(dom.jsonMsg, '已下载 anomaly-theme-layout.json', 'ok');
+    setStatus('JSON 已下载', 'ok');
+  });
+  on(dom.btnJsonCopy, 'click', function () {
+    copyText(buildExportJsonText()).then(function (ok) {
+      setMsg(dom.jsonMsg, ok ? 'JSON 已复制到剪贴板。' : '复制失败，请手动全选复制。', ok ? 'ok' : 'err');
+    });
+  });
+
+  /* ---------- 导出 ImGui ---------- */
+  on(dom.btnImguiCopy, 'click', function () {
+    copyText(buildImGuiCode()).then(function (ok) {
+      setMsg(dom.imguiMsg, ok ? 'ImGui 代码已复制到剪贴板。' : '复制失败，请手动全选复制。', ok ? 'ok' : 'err');
+    });
+  });
+  on(dom.btnImguiDownload, 'click', function () {
+    downloadText('anomaly_theme_layout.h', buildImGuiCode(), 'text/plain;charset=utf-8');
+    setMsg(dom.imguiMsg, '已下载 anomaly_theme_layout.h', 'ok');
+  });
+
+  /* ---------- 导入 JSON ---------- */
+  on(dom.btnImportApply, 'click', doImport);
+  on(dom.btnImportFile, 'click', function () { dom.importFile.click(); });
+  on(dom.importFile, 'change', function () {
+    if (dom.importFile.files && dom.importFile.files.length) { importFromFile(dom.importFile.files[0]); }
+    dom.importFile.value = '';
+  });
+  on(dom.btnImportClear, 'click', function () {
+    if (dom.importText) { dom.importText.value = ''; }
+    setMsg(dom.importMsg, '');
+  });
+
+  /* ---------- 导出 PNG ---------- */
+  on(dom.btnPngExport, 'click', exportPng);
+  on(dom.btnPngCopy, 'click', copyPng);
+
+  /* ---------- 图层列表（事件委托） ---------- */
+  on(dom.layerList, 'click', function (ev) {
+    var item = ev.target.closest ? ev.target.closest('.layer-item') : null;
+    if (!item) { return; }
+    var id = item.getAttribute('data-id');
+    var opEl = ev.target.closest ? ev.target.closest('button[data-op]') : null;
+    if (!opEl) { select(id); return; }
+    var op = opEl.getAttribute('data-op');
+    var st = findSticker(id);
+    if (!st) { return; }
+    if (op === 'up' || op === 'down' || op === 'top' || op === 'bottom') { moveSticker(id, op); }
+    else if (op === 'del') { deleteSticker(id); }
+    else if (op === 'dup') { duplicateSticker(id); }
+    else if (op === 'visible') { mutate(function () { st.visible = !st.visible; }); }
+    else if (op === 'lock') { mutate(function () { st.locked = !st.locked; }); }
+  });
+
+  on(dom.btnLayerFront, 'click', function () {
+    if (!state.selectedId) { setStatus('请先选中一个贴纸', 'warn'); return; }
+    setStickerLayer(state.selectedId, 'front');
+  });
+  on(dom.btnLayerBehind, 'click', function () {
+    if (!state.selectedId) { setStatus('请先选中一个贴纸', 'warn'); return; }
+    setStickerLayer(state.selectedId, 'behind');
+  });
+
+  /* ---------- 属性面板 ---------- */
+  on(dom.pName, 'input', function () {
+    var st = selectedSticker();
+    if (!st) { return; }
+    if (armedSnapshot === null) { armHistory(); }
+    st.name = dom.pName.value;
+    renderLayerList();
+  });
+  on(dom.pName, 'change', function () { commitHistory(); syncAll(); });
+
+  on(dom.pDir, 'change', function () {
+    mutateSelected(function (st) { st.dir = normalizeDir(dom.pDir.value); });
+  });
+  on(dom.pX, 'change', function () { mutateSelected(function (st) { st.x = numSpecFrom(dom.pX, FIELD_LIMITS.x, 'X'); }); });
+  on(dom.pY, 'change', function () { mutateSelected(function (st) { st.y = numSpecFrom(dom.pY, FIELD_LIMITS.y, 'Y'); }); });
+  on(dom.pW, 'change', function () {
+    mutateSelected(function (st) { st.width = numSpecFrom(dom.pW, FIELD_LIMITS.width, '宽度'); });
+  });
+  on(dom.pH, 'change', function () {
+    mutateSelected(function (st) { st.height = numSpecFrom(dom.pH, FIELD_LIMITS.height, '高度'); });
+  });
+  on(dom.pRot, 'change', function () { mutateSelected(function (st) { st.rotation = numSpecFrom(dom.pRot, FIELD_LIMITS.rotation, '旋转'); }); });
+  on(dom.pOpacity, 'input', function () {
+    var st = selectedSticker();
+    if (!st || st.locked) { return; }
+    if (armedSnapshot === null) { armHistory(); }
+    st.opacity = clamp(parseFloat(dom.pOpacity.value) || 0, 0, 1);
+    if (dom.pOpacityVal) { dom.pOpacityVal.textContent = st.opacity.toFixed(2); }
+    requestRender();
+  });
+  on(dom.pOpacity, 'change', function () { commitHistory(); syncAll(); });
+  on(dom.pAnchor, 'change', function () {
+    mutateSelected(function (st) { st.anchor = dom.pAnchor.value; });
+  });
+  on(dom.pLayer, 'change', function () {
+    if (!state.selectedId) { return; }
+    setStickerLayer(state.selectedId, dom.pLayer.value);
+  });
+  on(dom.pTint, 'input', function () {
+    var st = selectedSticker();
+    if (!st || st.locked) { return; }
+    if (armedSnapshot === null) { armHistory(); }
+    st.tint = dom.pTint.value;
+    st._tintCache = null;
+    if (dom.pTintText) { dom.pTintText.value = dom.pTint.value; }
+    requestRender();
+  });
+  on(dom.pTint, 'change', function () { commitHistory(); syncAll(); });
+  on(dom.pTintText, 'change', function () {
+    var st = selectedSticker();
+    if (!st) { return; }
+    var hex = normHex(dom.pTintText.value);
+    if (!hex) {
+      setStatus('tint 必须是 #rrggbb 形式，例如 #ffffff', 'warn');
+      dom.pTintText.value = st.tint;
+      return;
+    }
+    mutateSelected(function (s) { s.tint = hex; s._tintCache = null; });
+  });
+  on(dom.pFlipX, 'change', function () { mutateSelected(function (st) { st.flipX = dom.pFlipX.checked; }); });
+  on(dom.pFlipY, 'change', function () { mutateSelected(function (st) { st.flipY = dom.pFlipY.checked; }); });
+  on(dom.pVisible, 'change', function () { mutateSelected(function (st) { st.visible = dom.pVisible.checked; }); });
+  on(dom.pLocked, 'change', function () { mutateSelected(function (st) { st.locked = dom.pLocked.checked; }); });
+  on(dom.pNatural, 'click', function () {
+    mutateSelected(function (st) { st.width = 0; st.height = 0; });
+  });
+  on(dom.pAutoH, 'click', function () {
+    mutateSelected(function (st) { st.height = 0; });
+  });
+  on(dom.pDup, 'click', function () { if (state.selectedId) { duplicateSticker(state.selectedId); } });
+  on(dom.pDel, 'click', function () { if (state.selectedId) { deleteSticker(state.selectedId); } });
+
+  /* ---------- 全局 ---------- */
+  on(window, 'keydown', onKeyDown);
+  on(window, 'resize', function () {
+    fitCanvas();
+    requestRender();
+  });
+  on(window, 'beforeunload', function () { saveLocal(true); });
+  // 阻止浏览器把拖到页面空白处的图片直接打开
+  on(window, 'dragover', function (ev) { ev.preventDefault(); });
+  on(window, 'drop', function (ev) { ev.preventDefault(); });
+}
+
+/* =====================================================================
+ * 24. 初始化
+ * ===================================================================== */
+
+function init() {
+  cacheDom();
+  currentTab = 'json';
+  bindEvents();
+
+  var restored = false;
+  try {
+    restored = loadLocal();
+  } catch (e) {
+    restored = false;
+  }
+  if (!restored) {
+    state.canvas.width = 1180;
+    state.canvas.height = 700;
+    state.surfaceOpacity = 0.72;
+    state.background.fileName = DEFAULT_BG_FILE;
+    state.background.dir = '';
+    state.background.mode = 'crop';
+    state.background.opacity = 0.9;
+    state.background.tint = '#ffffff';
+    state.pathPrefix = DEFAULT_PREFIX;
+  }
+  fitCanvas();
+  syncAll();
+  setStatus(restored
+    ? '已恢复上次的本地存档（图片需重新拖入绑定）'
+    : '就绪：把图片拖到画布即可添加贴纸；状态会自动保存到 localStorage', restored ? 'ok' : '');
+
+  // 初始选中第一个贴纸，方便直接编辑
+  if (!state.selectedId && state.stickers.length) {
+    state.selectedId = state.stickers[0].id;
+    syncAll();
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+</script>
+</body>
+</html>

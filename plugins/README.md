@@ -7,15 +7,28 @@
 - `PinkPawHeistESP`
 - `FakeUID`
 - `CameraTools`
+- `CameraBlurFix`
+- `BetterPose`
+- `BoxAuto`
+- `CombatBox`
+- `CloneEnter`
+- `QuickUltimate`
 - `WalletCollector`
+- `FreeFly`
 
 随运行包安装、仅在会话开发者模式启用时显示的调试插件：
 
 - `NteTeleport`
+- `DllLoader`
+
+开发者测试插件：默认不构建、不安装，只有 `build.cmd testplugins`（或
+`-DANOMALY_BUILD_TEST_PLUGINS=ON` 加 `--component TestPlugins` 安装）才会构建并放进运行包；
+它们属于独立的 `TestPlugins` 组件，发布包不含。
+
+- `NteMovementHold`
 - `NteNavmeshDemo`
 - `NtePickupDemo`
 - `TeleportLandmarksProbe`
 - `MapSpawnExporter`
-- `DllLoader`
 
 SDK 教学插件属于 `examples/`，不安装进游戏运行时。诊断插件源码留在 `tools/`；调试插件的 manifest 使用 `"audience": "developer"`，因此管理界面仅在会话开发者模式启用时才把它们纳入已安装插件视图。

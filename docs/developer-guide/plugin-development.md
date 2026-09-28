@@ -40,7 +40,11 @@ anomaly_add_plugin(my_plugin
   PACKAGE_NAME MyPlugin)
 ```
 
-`anomaly_add_plugin` 固定输出 `plugin.dll` 并把 Manifest 放入同一包目录。
+`anomaly_add_plugin` 固定输出 `plugin.dll`，把 Manifest 与 Manifest 同级的 `locales` 目录放进包目录，
+并负责这个包的安装：默认装到 `<prefix>/Anomaly/plugins/<PACKAGE_NAME>`（`GameRuntime` 组件）。
+两个可选关键字改变安装行为：`NO_RELEASE` 只构建、不产生安装规则；`TEST_PLUGIN` 装进独立的
+`TestPlugins` 组件，并只在 `ANOMALY_BUILD_TEST_PLUGINS=ON` 时构建与安装。插件自己的额外资源
+（例如 `data\`）仍需在工程里显式列出。
 
 源码入口：`<anomaly/sdk/anomaly_sdk.h>`（C）或 `<anomaly/sdk/cpp.hpp>`（C++，提供 `Host`、`ServiceRef`、`UiWindow` 等轻量 wrapper）。
 

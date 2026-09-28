@@ -21,8 +21,10 @@
     {"id": "anomaly.ue5.names", "minVersion": 1},
     {"id": "anomaly.ue5.objects", "minVersion": 1},
     {"id": "anomaly.ui", "minVersion": 1},
-    {"id": "anomaly.localization", "minVersion": 1}
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.ue5.ahud", "minVersion": 1, "optional": true},
+    {"id": "anomaly.input", "minVersion": 1, "optional": true}
   ],
   "capabilities": ["configuration", "storage", "scheduler", "interop-signature", "interop-hook", "memory-read", "memory-write", "ui",
-    "ue5-names", "ue5-objects"]
+    "ue5-names", "ue5-objects", "ue5-ahud", "input"]
 }

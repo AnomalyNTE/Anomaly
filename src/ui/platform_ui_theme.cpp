@@ -5,6 +5,7 @@
 #include "platform_ui_gb2312.hpp"
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -121,6 +122,28 @@ constexpr PlatformUiThemeColors kAnomalyHub{
     Color(0.350f, 0.350f, 0.350f), Color(0.161f, 0.161f, 0.161f, 0.98f),
 };
 
+// Naiwa (奶蛙) is a light, warm palette: the window surface is the cream
+// #ffeeba and the accent is the saturated #fcce44 used by buttons, selection
+// and focus. Text stays a dark cocoa so it keeps contrast on every cream tone.
+constexpr PlatformUiThemeColors kNaiwa{
+    Color(0.290f, 0.227f, 0.071f), Color(0.541f, 0.455f, 0.251f),
+    Color(1.000f, 0.933f, 0.729f), Color(1.000f, 0.965f, 0.847f),
+    Color(1.000f, 0.973f, 0.886f), Color(0.863f, 0.725f, 0.392f),
+    Color(1.000f, 0.965f, 0.847f), Color(1.000f, 0.925f, 0.690f),
+    Color(1.000f, 0.901f, 0.593f), Color(1.000f, 0.937f, 0.769f),
+    Color(1.000f, 0.890f, 0.564f), Color(1.000f, 0.855f, 0.418f),
+    Color(0.988f, 0.808f, 0.267f), Color(1.000f, 0.867f, 0.431f),
+    Color(0.910f, 0.706f, 0.141f), Color(0.988f, 0.808f, 0.267f, 0.16f),
+    Color(0.298f, 0.686f, 0.416f), Color(0.910f, 0.569f, 0.165f),
+    Color(0.851f, 0.325f, 0.310f), Color(0.290f, 0.565f, 0.851f),
+    Color(0.227f, 0.173f, 0.031f), Color(1.000f, 0.890f, 0.627f),
+    Color(1.000f, 0.910f, 0.682f), Color(1.000f, 0.945f, 0.788f),
+    Color(1.000f, 0.965f, 0.847f), Color(0.929f, 0.891f, 0.769f),
+    Color(0.941f, 0.863f, 0.682f), Color(0.863f, 0.725f, 0.392f),
+    Color(0.290f, 0.227f, 0.071f), Color(1.000f, 0.965f, 0.847f),
+    Color(0.863f, 0.725f, 0.392f), Color(1.000f, 0.973f, 0.886f, 0.98f),
+};
+
 constexpr PlatformUiColor MixColor(
     const PlatformUiColor& from, const PlatformUiColor& to, const float amount) noexcept {
     return Color(
@@ -170,7 +193,55 @@ PlatformUiThemeColors BuildCustomTheme(const PlatformUiCustomColors& colors) noe
 PlatformUiCustomColors g_platform_ui_custom_colors;
 PlatformUiThemeColors g_platform_ui_custom_theme =
     BuildCustomTheme(g_platform_ui_custom_colors);
-std::atomic<PlatformUiPalette> g_platform_ui_palette{PlatformUiPalette::AnomalyHub};
+std::atomic<PlatformUiPalette> g_platform_ui_palette{PlatformUiPalette::Naiwa};
+std::atomic<float> g_platform_ui_surface_alpha{1.0f};
+PlatformUiThemeColors g_platform_ui_surface_theme = kAnomalyHub;
+
+const PlatformUiThemeColors& BasePlatformUiTheme() noexcept {
+    switch (g_platform_ui_palette.load(std::memory_order_relaxed)) {
+    case PlatformUiPalette::Aurora: return kAurora;
+    case PlatformUiPalette::Ember: return kEmber;
+    case PlatformUiPalette::Paper: return kPaper;
+    case PlatformUiPalette::AnomalyHub: return kAnomalyHub;
+    case PlatformUiPalette::Naiwa: return kNaiwa;
+    case PlatformUiPalette::Custom: return g_platform_ui_custom_theme;
+    case PlatformUiPalette::Moss: return kMoss;
+    }
+    return kNaiwa;
+}
+
+constexpr PlatformUiColor WithAlpha(
+    const PlatformUiColor& color, const float alpha) noexcept {
+    return {color.red, color.green, color.blue, color.alpha * alpha};
+}
+
+// A themed background image is painted first inside the shell window, followed
+// by a single translucent veil of the surface color, the stickers, and finally
+// the shell's own content. The host draws that one veil itself, below the
+// stickers, so it is the veil -- not the panels -- that surfaceOpacity dims.
+//
+// That emptiness is the point: a panel that painted its own fill would land on
+// top of the stickers, which sit between the veil and the content. Scaling these
+// alphas instead of zeroing them does exactly that, which is why they stay empty
+// and the veil carries the whole setting. Tokens that fill a control -- buttons,
+// frames, toggles, icons, toasts, borders -- and popups keep their full opacity,
+// so a label, a button or an open dropdown stays readable over a sticker.
+void RefreshSurfaceTheme() noexcept {
+    PlatformUiThemeColors theme = BasePlatformUiTheme();
+    // The panel fills stay empty at every surface opacity, including 1.0. Restoring
+    // them at 1.0 looked harmless but was not: panels are painted above the
+    // stickers, so the slider's last step -- the one value that reaches 1.0 -- put an
+    // opaque fill straight over the artwork, while 99% left it in plain sight. The
+    // solid body a window needs comes from the veil the host paints under the
+    // stickers, which is opaque whenever no wallpaper is being revealed.
+    theme.window_background.alpha = 0.0f;
+    theme.child_background.alpha = 0.0f;
+    theme.navigation_background.alpha = 0.0f;
+    theme.header_background.alpha = 0.0f;
+    theme.toolbar_background.alpha = 0.0f;
+    theme.panel_background.alpha = 0.0f;
+    g_platform_ui_surface_theme = theme;
+}
 
 constexpr float kPlatformFontSizePixels = 13.0f;
 constexpr std::array kPlatformFontBakeScales{
@@ -256,6 +327,7 @@ const ImWchar* PlatformChineseGlyphRanges(ImFontAtlas& atlas) noexcept {
 
 void SetPlatformUiPalette(const PlatformUiPalette palette) noexcept {
     g_platform_ui_palette.store(palette, std::memory_order_relaxed);
+    RefreshSurfaceTheme();
 }
 
 PlatformUiPalette GetPlatformUiPalette() noexcept {
@@ -265,22 +337,30 @@ PlatformUiPalette GetPlatformUiPalette() noexcept {
 void SetPlatformUiCustomColors(const PlatformUiCustomColors& colors) noexcept {
     g_platform_ui_custom_colors = colors;
     g_platform_ui_custom_theme = BuildCustomTheme(colors);
+    RefreshSurfaceTheme();
 }
 
 const PlatformUiCustomColors& GetPlatformUiCustomColors() noexcept {
     return g_platform_ui_custom_colors;
 }
 
+void SetPlatformUiSurfaceAlpha(const float alpha) noexcept {
+    const float clamped = std::isfinite(alpha)
+        ? std::clamp(alpha, kPlatformUiSurfaceAlphaMinimum, 1.0f) : 1.0f;
+    g_platform_ui_surface_alpha.store(clamped, std::memory_order_relaxed);
+    RefreshSurfaceTheme();
+}
+
+float GetPlatformUiSurfaceAlpha() noexcept {
+    return g_platform_ui_surface_alpha.load(std::memory_order_relaxed);
+}
+
+PlatformUiColor PlatformUiSurfaceColor() noexcept {
+    return BasePlatformUiTheme().window_background;
+}
+
 const PlatformUiThemeColors& PlatformUiTheme() noexcept {
-    switch (GetPlatformUiPalette()) {
-    case PlatformUiPalette::Aurora: return kAurora;
-    case PlatformUiPalette::Ember: return kEmber;
-    case PlatformUiPalette::Paper: return kPaper;
-    case PlatformUiPalette::AnomalyHub: return kAnomalyHub;
-    case PlatformUiPalette::Custom: return g_platform_ui_custom_theme;
-    case PlatformUiPalette::Moss: return kMoss;
-    }
-    return kAnomalyHub;
+    return g_platform_ui_surface_theme;
 }
 
 PlatformUiPalette ParsePlatformUiPalette(const std::string_view value) noexcept {
@@ -288,8 +368,11 @@ PlatformUiPalette ParsePlatformUiPalette(const std::string_view value) noexcept 
     if (value == "ember") return PlatformUiPalette::Ember;
     if (value == "paper") return PlatformUiPalette::Paper;
     if (value == "anomalyhub") return PlatformUiPalette::AnomalyHub;
+    if (value == "naiwa") return PlatformUiPalette::Naiwa;
     if (value == "custom") return PlatformUiPalette::Custom;
-    return PlatformUiPalette::AnomalyHub;
+    // An unknown name falls back to the preset the shell ships wearing, not to the
+    // palette the settings were once written against.
+    return PlatformUiPalette::Naiwa;
 }
 
 std::string_view ToString(const PlatformUiPalette palette) noexcept {
@@ -298,10 +381,11 @@ std::string_view ToString(const PlatformUiPalette palette) noexcept {
     case PlatformUiPalette::Ember: return "ember";
     case PlatformUiPalette::Paper: return "paper";
     case PlatformUiPalette::AnomalyHub: return "anomalyhub";
+    case PlatformUiPalette::Naiwa: return "naiwa";
     case PlatformUiPalette::Custom: return "custom";
     case PlatformUiPalette::Moss: return "moss";
     }
-    return "anomalyhub";
+    return "naiwa";
 }
 
 namespace {

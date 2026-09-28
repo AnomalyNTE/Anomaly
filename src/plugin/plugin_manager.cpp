@@ -6002,6 +6002,23 @@ bool PluginManager::DrawUiTexture(
     }
 }
 
+bool PluginManager::DrawUiTextureEx(
+    const std::shared_ptr<anomaly::PluginScope>& scope,
+    const anomaly::UiResourceHandle handle,
+    const anomaly::UiTextureDrawRequest& request) noexcept {
+    try {
+        std::shared_ptr<anomaly::UiResourceRenderBackend> backend;
+        {
+            std::scoped_lock lock(ui_resource_backend_mutex_);
+            backend = ui_resource_render_backend_;
+        }
+        return backend != nullptr &&
+            backend->DrawTextureEx(*ui_resources_, scope, handle, request);
+    } catch (...) {
+        return false;
+    }
+}
+
 PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
     struct ServiceCandidate final {
         std::string_view id;
