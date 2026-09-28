@@ -39,6 +39,8 @@ struct Offsets {
     std::int64_t base_closing{}, base_pause{}, base_hide_main{}, base_input{};
     std::int64_t base_hide_children{};
     std::uint8_t base_input_menu{};
+    std::int64_t check_on_changed{}, text_block_text{};
+    std::int64_t radio_box{}, radio_text{}, radio_block_button{}, item_click_button{};
 };
 
 [[nodiscard]] Offsets LoadOffsets(const BuildProfile& profile);
@@ -56,6 +58,11 @@ struct Types {
     std::uintptr_t htui_button{}, htui_base{}, main_form{};
     std::uintptr_t is_visible{}, is_in_viewport{}, is_interaction_enabled{};
     std::uintptr_t pressed{}, released{}, clicked{}, is_button_locked{}, is_hovered{};
+    // Tabs and list entries; all optional.
+    std::uintptr_t check_box{}, ht_radio{}, htui_radio{}, list_item{};
+    std::uintptr_t check_is_checked{}, check_set_checked{}, ht_radio_select{};
+    std::uintptr_t radio_select{}, radio_is_checked{}, radio_feature_active{};
+    std::uintptr_t item_pressed{}, item_released{}, item_clicked{}, item_locked{};
 };
 
 enum Trait : std::uint8_t {
@@ -107,6 +114,10 @@ public:
 
     // ABI button kind of a class, 0 when it is not a button.
     [[nodiscard]] std::uint32_t Kind(std::uintptr_t cls);
+    // Kind of an object, 0 for a widget that is only a part of another listed control: the
+    // click button of a list entry, and the radio box and block button of an HTUI_RadioBox.
+    [[nodiscard]] std::uint32_t ObjectKind(const ObjRef& ref);
+    [[nodiscard]] bool IsA(std::uintptr_t cls, std::uintptr_t base) const noexcept;
     [[nodiscard]] std::uint8_t Traits(std::uintptr_t cls);
     [[nodiscard]] std::uint8_t ObjectTraits(std::uintptr_t object);
 
@@ -124,7 +135,6 @@ public:
                                  std::uintptr_t function, bool& value) const;
 
 private:
-    [[nodiscard]] bool IsA(std::uintptr_t cls, std::uintptr_t base) const noexcept;
     [[nodiscard]] const std::string& Name(std::uint64_t fname);
 
     std::shared_ptr<const SymbolMemory> memory_;
@@ -207,6 +217,16 @@ private:
                                     bool& on_screen);
     [[nodiscard]] ClickOutcome ClickCommon(const ButtonRecord& record, std::uint32_t& calls);
     [[nodiscard]] ClickOutcome ClickUmg(const ButtonRecord& record, std::uint32_t& calls);
+    [[nodiscard]] ClickOutcome ClickRadio(const ButtonRecord& record, std::uint32_t& calls);
+    [[nodiscard]] ClickOutcome ClickListEntry(const ButtonRecord& record, std::uint32_t& calls);
+
+    struct Bound {
+        std::uintptr_t target, function;
+    };
+    // Live bindings of the dynamic multicast delegate at object + offset whose function has
+    // the given signature.
+    [[nodiscard]] std::vector<Bound> Bindings(std::uintptr_t object, std::int64_t offset,
+                                              std::uint8_t num_parms, std::uint16_t parms_size);
 
     Reflection& r_;
     std::unordered_map<std::uintptr_t, std::int8_t> viewport_;
@@ -229,7 +249,7 @@ struct KeySpec {
 };
 
 // Masks and enum values are single bytes; everything else is a field offset.
-constexpr std::array<KeySpec, 41> kKeys{{
+constexpr std::array<KeySpec, 47> kKeys{{
     {"object.flags", 0, kMaxOffset},
     {"object.internalIndex", 0, kMaxOffset},
     {"object.class", 0, kMaxOffset},
@@ -271,6 +291,12 @@ constexpr std::array<KeySpec, 41> kKeys{{
     {"htuiBase.inputConfig", 0, kMaxOffset},
     {"htuiBase.inputConfigMenu", 0, 255},
     {"htuiBase.hideChildrenReason", 0, kMaxOffset},
+    {"checkBox.onCheckStateChanged", 0, kMaxOffset},
+    {"textBlock.text", 0, kMaxOffset},
+    {"htuiRadioBox.radioBox", 0, kMaxOffset},
+    {"htuiRadioBox.radioText", 0, kMaxOffset},
+    {"htuiRadioBox.blockButton", 0, kMaxOffset},
+    {"htuiListItem.clickButton", 0, kMaxOffset},
 }};
 
 std::int64_t Value(const BuildProfile& profile, std::string_view key) {
@@ -344,6 +370,12 @@ Offsets LoadOffsets(const BuildProfile& profile) {
     o.base_input = v("htuiBase.inputConfig");
     o.base_input_menu = static_cast<std::uint8_t>(v("htuiBase.inputConfigMenu"));
     o.base_hide_children = v("htuiBase.hideChildrenReason");
+    o.check_on_changed = v("checkBox.onCheckStateChanged");
+    o.text_block_text = v("textBlock.text");
+    o.radio_box = v("htuiRadioBox.radioBox");
+    o.radio_text = v("htuiRadioBox.radioText");
+    o.radio_block_button = v("htuiRadioBox.blockButton");
+    o.item_click_button = v("htuiListItem.clickButton");
     o.valid = true;
     return o;
 }
@@ -475,7 +507,15 @@ bool Reflection::IsA(std::uintptr_t cls, std::uintptr_t base) const noexcept {
 std::uint32_t Reflection::Kind(std::uintptr_t cls) {
     const auto [entry, inserted] = kinds_.try_emplace(cls, 0u);
     if (!inserted) return entry->second;
-    if (IsA(cls, types_.htui_button)) {
+    // HTUI_RadioBox and HTUI_ListItem are UserWidgets, not buttons; test them first.
+    if (IsA(cls, types_.htui_radio)) {
+        entry->second = ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO;
+    } else if (IsA(cls, types_.list_item)) {
+        entry->second = ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY;
+    } else if (IsA(cls, types_.check_box)) {
+        // HTRadioBox, HTCheckBox and plain UMG CheckBox.
+        entry->second = ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO;
+    } else if (IsA(cls, types_.htui_button)) {
         entry->second = ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI;
     } else if (IsA(cls, types_.common_button)) {
         entry->second = ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON;
@@ -484,6 +524,34 @@ std::uint32_t Reflection::Kind(std::uintptr_t cls) {
         entry->second = ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG;
     }
     return entry->second;
+}
+
+std::uint32_t Reflection::ObjectKind(const ObjRef& ref) {
+    const auto kind = Kind(ref.cls);
+    if (kind == 0 || kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY ||
+        (types_.list_item == 0 && types_.htui_radio == 0)) {
+        return kind;
+    }
+    if (kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO && IsA(ref.cls, types_.htui_radio)) {
+        return kind;
+    }
+    // The owning UserWidget: widget -> WidgetTree -> UserWidget.
+    const auto tree = Pointer(At(ref.object, offsets_.object_outer));
+    if (tree == 0 || (ObjectTraits(tree) & kTraitWidgetTree) == 0) return kind;
+    const auto owner = Pointer(At(tree, offsets_.object_outer));
+    const auto owner_cls = Pointer(At(owner, offsets_.object_class));
+    if (owner_cls == 0) return kind;
+    const auto owner_kind = Kind(owner_cls);
+    if (owner_kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY &&
+        Pointer(At(owner, offsets_.item_click_button)) == ref.object) {
+        return 0;
+    }
+    if (owner_kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO && IsA(owner_cls, types_.htui_radio) &&
+        (Pointer(At(owner, offsets_.radio_box)) == ref.object ||
+         Pointer(At(owner, offsets_.radio_block_button)) == ref.object)) {
+        return 0;
+    }
+    return kind;
 }
 
 std::uint8_t Reflection::Traits(std::uintptr_t cls) {
@@ -647,6 +715,21 @@ bool Reflection::Prepare(std::string& error) {
     t.main_form = find(L"/Script/HTGame.HTUI_MainForm");
     t.is_button_locked = find(L"/Script/HTGame.HTUI_Button.IsButtonLocked");
     t.is_hovered = find(L"/Script/UMG.Widget.IsHovered");
+    t.check_box = find(L"/Script/UMG.CheckBox");
+    t.check_is_checked = find(L"/Script/UMG.CheckBox.IsChecked");
+    t.check_set_checked = find(L"/Script/UMG.CheckBox.SetIsChecked");
+    t.ht_radio = find(L"/Script/HTGame.HTRadioBox");
+    t.ht_radio_select = find(L"/Script/HTGame.HTRadioBox.SetSelected");
+    t.htui_radio = find(L"/Script/HTGame.HTUI_RadioBox");
+    t.radio_select = find(L"/Script/HTGame.HTUI_RadioBox.SetSelected");
+    t.radio_is_checked = find(L"/Script/HTGame.HTUI_RadioBox.IsChecked");
+    t.radio_feature_active =
+        find(L"/Script/HTGame.HTUI_RadioBox.IsSystematicGameFeatureActivated");
+    t.list_item = find(L"/Script/HTGame.HTUI_ListItem");
+    t.item_pressed = find(L"/Script/HTGame.HTUI_ListItem.OnBtnPressed");
+    t.item_released = find(L"/Script/HTGame.HTUI_ListItem.OnBtnReleased");
+    t.item_clicked = find(L"/Script/HTGame.HTUI_ListItem.OnBtnClicked");
+    t.item_locked = find(L"/Script/HTGame.HTUI_ListItem.IsItemLocked");
     types_ = t;
     if (!Signature(t.is_visible, 1, 1) || !Signature(t.is_in_viewport, 1, 1) ||
         !Signature(t.is_interaction_enabled, 1, 1) || !Signature(t.pressed, 0, 0) ||
@@ -659,6 +742,26 @@ bool Reflection::Prepare(std::string& error) {
         types_.is_button_locked = 0;
     }
     if (types_.is_hovered != 0 && !Signature(types_.is_hovered, 1, 1)) types_.is_hovered = 0;
+    const auto keep = [this](std::uintptr_t& function, std::uint8_t num_parms,
+                             std::uint16_t parms_size) {
+        if (function != 0 && !Signature(function, num_parms, parms_size)) function = 0;
+    };
+    keep(types_.check_is_checked, 1, 1);
+    keep(types_.check_set_checked, 1, 1);
+    keep(types_.ht_radio_select, 2, 2);
+    keep(types_.radio_select, 2, 2);
+    keep(types_.radio_is_checked, 1, 1);
+    keep(types_.radio_feature_active, 1, 1);
+    keep(types_.item_pressed, 0, 0);
+    keep(types_.item_released, 0, 0);
+    keep(types_.item_clicked, 0, 0);
+    keep(types_.item_locked, 1, 1);
+    // A kind is only listed when it can be clicked.
+    if (types_.check_set_checked == 0) types_.check_box = 0;
+    if (types_.radio_select == 0) types_.htui_radio = 0;
+    if (types_.item_pressed == 0 || types_.item_released == 0 || types_.item_clicked == 0) {
+        types_.list_item = 0;
+    }
     prepared_ = true;
     return true;
 }
@@ -1021,7 +1124,10 @@ bool Evaluator::Evaluate(const Layers& layers, const ObjRef& ref, std::uint32_t 
     std::uintptr_t cause = chain.cause;
     record.cause = chain.cause_name;
 
-    const bool common = kind != ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG;
+    const bool common =
+        kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON || kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI;
+    const bool htui_radio =
+        kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO && r_.IsA(ref.cls, t.htui_radio);
     if (common) {
         std::uint8_t locked{};
         if (r_.Read(Reflection::At(ref.object, o.common_locked), locked) &&
@@ -1069,6 +1175,20 @@ bool Evaluator::Evaluate(const Layers& layers, const ObjRef& ref, std::uint32_t 
                 record.reasons |= ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED;
             }
         }
+        // A selected tab stays clickable: what a click leads to is decided by the window, not
+        // by the tab's checked state.
+        if (htui_radio && t.radio_feature_active != 0) {
+            bool active{};
+            if (r_.QueryBool(calls, ref.object, t.radio_feature_active, active) && !active) {
+                record.reasons |= ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED;
+            }
+        }
+        if (kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY && t.item_locked != 0) {
+            bool locked{};
+            if (r_.QueryBool(calls, ref.object, t.item_locked, locked) && locked) {
+                record.reasons |= ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED;
+            }
+        }
     }
     if ((record.reasons & kVisibilityReasons) != 0) {
         record.category = ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN;
@@ -1094,9 +1214,19 @@ bool Evaluator::Evaluate(const Layers& layers, const ObjRef& ref, std::uint32_t 
         if (!record.path.empty()) record.path += " / ";
         record.path += name;
     }
-    if (kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI &&
-        record.category != ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) {
-        record.text = r_.Text(Reflection::At(ref.object, o.htui_text));
+    if (record.category != ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) {
+        if (kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI) {
+            record.text = r_.Text(Reflection::At(ref.object, o.htui_text));
+        } else if (htui_radio) {
+            const auto text_block = r_.Pointer(Reflection::At(ref.object, o.radio_text));
+            if (text_block != 0) record.text = r_.Text(Reflection::At(text_block, o.text_block_text));
+        } else if (kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY) {
+            const auto button = r_.Pointer(Reflection::At(ref.object, o.item_click_button));
+            if (button != 0 && r_.IsA(r_.Pointer(Reflection::At(button, o.object_class)),
+                                      t.htui_button)) {
+                record.text = r_.Text(Reflection::At(button, o.htui_text));
+            }
+        }
     }
     return true;
 }
@@ -1143,54 +1273,56 @@ ClickOutcome Evaluator::ClickCommon(const ButtonRecord& record, std::uint32_t& c
     return result;
 }
 
+std::vector<Evaluator::Bound> Evaluator::Bindings(std::uintptr_t object, std::int64_t offset,
+                                                  std::uint8_t num_parms,
+                                                  std::uint16_t parms_size) {
+    const auto& o = r_.Layout();
+    std::vector<Bound> bound;
+    TArrayHeader list{};
+    if (!r_.Read(Reflection::At(object, offset), list) || list.data == 0 || list.count <= 0) {
+        return bound;
+    }
+    const auto limit =
+        std::min<std::uint32_t>(static_cast<std::uint32_t>(list.count), kMaxDelegateEntries);
+    for (std::uint32_t i = 0; i < limit; ++i) {
+        const auto entry = list.data + static_cast<std::uintptr_t>(i) *
+            static_cast<std::uintptr_t>(o.delegate_stride);
+        std::int32_t index{-1};
+        std::int32_t serial{};
+        std::uint64_t fname{};
+        if (!r_.Read(entry + static_cast<std::uintptr_t>(o.delegate_object_index), index) ||
+            !r_.Read(entry + static_cast<std::uintptr_t>(o.delegate_serial), serial) ||
+            !r_.Read(entry + static_cast<std::uintptr_t>(o.delegate_function_name), fname) ||
+            index < 0) {
+            continue;
+        }
+        // Resolve the weak target like FWeakObjectPtr::Get: slot serial must match.
+        std::uintptr_t target{};
+        std::uint32_t slot_serial{};
+        if (!r_.ReadSlot(static_cast<std::uint32_t>(index), target, slot_serial) ||
+            target == 0 || slot_serial == 0 ||
+            slot_serial != static_cast<std::uint32_t>(serial)) {
+            continue;
+        }
+        const auto function =
+            r_.FindFunction(r_.Pointer(Reflection::At(target, o.object_class)), fname);
+        if (r_.Signature(function, num_parms, parms_size)) bound.push_back({target, function});
+    }
+    return bound;
+}
+
 ClickOutcome Evaluator::ClickUmg(const ButtonRecord& record, std::uint32_t& calls) {
     const auto& o = r_.Layout();
     ClickOutcome result;
-    struct Bound {
-        std::uintptr_t target, function;
-    };
-    const auto resolve = [&](std::int64_t offset) {
-        std::vector<Bound> bound;
-        TArrayHeader list{};
-        if (!r_.Read(Reflection::At(record.ref.object, offset), list) || list.data == 0 ||
-            list.count <= 0) {
-            return bound;
-        }
-        const auto limit = std::min<std::uint32_t>(static_cast<std::uint32_t>(list.count),
-                                                   kMaxDelegateEntries);
-        for (std::uint32_t i = 0; i < limit; ++i) {
-            const auto entry = list.data + static_cast<std::uintptr_t>(i) *
-                static_cast<std::uintptr_t>(o.delegate_stride);
-            std::int32_t index{-1};
-            std::int32_t serial{};
-            std::uint64_t fname{};
-            if (!r_.Read(entry + static_cast<std::uintptr_t>(o.delegate_object_index), index) ||
-                !r_.Read(entry + static_cast<std::uintptr_t>(o.delegate_serial), serial) ||
-                !r_.Read(entry + static_cast<std::uintptr_t>(o.delegate_function_name), fname) ||
-                index < 0) {
-                continue;
-            }
-            // Resolve the weak target like FWeakObjectPtr::Get: slot serial must match.
-            std::uintptr_t target{};
-            std::uint32_t slot_serial{};
-            if (!r_.ReadSlot(static_cast<std::uint32_t>(index), target, slot_serial) ||
-                target == 0 || slot_serial == 0 ||
-                slot_serial != static_cast<std::uint32_t>(serial)) {
-                continue;
-            }
-            const auto function =
-                r_.FindFunction(r_.Pointer(Reflection::At(target, o.object_class)), fname);
-            if (r_.Signature(function, 0, 0)) bound.push_back({target, function});
-        }
-        return bound;
-    };
     const std::array<std::pair<std::int64_t, const char*>, 3> steps{{
         {o.button_on_pressed, "OnPressed"},
         {o.button_on_released, "OnReleased"},
         {o.button_on_clicked, "OnClicked"},
     }};
     std::array<std::vector<Bound>, 3> bound;
-    for (std::size_t i = 0; i < steps.size(); ++i) bound[i] = resolve(steps[i].first);
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        bound[i] = Bindings(record.ref.object, steps[i].first, 0, 0);
+    }
     if (bound[0].empty() && bound[1].empty() && bound[2].empty()) {
         result.status = ANOMALY_STATUS_V1_UNAVAILABLE;
         result.detail = "OnPressed, OnReleased and OnClicked have no bindings";
@@ -1211,9 +1343,98 @@ ClickOutcome Evaluator::ClickUmg(const ButtonRecord& record, std::uint32_t& call
     return result;
 }
 
+ClickOutcome Evaluator::ClickRadio(const ButtonRecord& record, std::uint32_t& calls) {
+    const auto& o = r_.Layout();
+    const auto& t = r_.Type();
+    const auto object = record.ref.object;
+    ClickOutcome result;
+    const auto fail = [&result](const char* detail) {
+        result.status = ANOMALY_STATUS_V1_FAILED;
+        result.detail = detail;
+        return result;
+    };
+    // SetSelected(bSelected, bSendEvent). HTUI_RadioBox forwards to its HTRadioBox, whose
+    // OnRadioBoxSeleced callback checks the feature lock and broadcasts OnChecked to the
+    // window; an unchanged state is a no-op, which is still a successful click.
+    struct SelectParms {
+        bool selected;
+        bool send_event;
+    };
+    const bool htui = r_.IsA(record.ref.cls, t.htui_radio);
+    const bool ht = !htui && r_.IsA(record.ref.cls, t.ht_radio) && t.ht_radio_select != 0;
+    bool checked{};
+    if (htui || ht) {
+        SelectParms parms{true, true};
+        if (!r_.Invoke(calls, object, htui ? t.radio_select : t.ht_radio_select, &parms,
+                       sizeof(parms))) {
+            return fail("SetSelected faulted");
+        }
+        ++result.invocations;
+        result.detail = "SetSelected(true, true)";
+        const auto query = htui ? t.radio_is_checked : t.check_is_checked;
+        if (query != 0 && r_.QueryBool(calls, object, query, checked)) {
+            result.outcome |= checked ? ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED : 0u;
+        }
+    } else {
+        // Plain CheckBox: SetIsChecked does not broadcast, so the bindings of
+        // OnCheckStateChanged are called as Slate would after a click.
+        std::array<std::uint8_t, 8> parms{};
+        parms[0] = 1;
+        if (!r_.Invoke(calls, object, t.check_set_checked, parms.data(), parms.size())) {
+            return fail("SetIsChecked faulted");
+        }
+        ++result.invocations;
+        for (const auto& entry : Bindings(object, o.check_on_changed, 1, 1)) {
+            std::array<std::uint8_t, 8> event{};
+            event[0] = 1;
+            if (!r_.Invoke(calls, entry.target, entry.function, event.data(), event.size())) {
+                return fail("OnCheckStateChanged binding faulted");
+            }
+            ++result.invocations;
+        }
+        result.detail = "SetIsChecked(true), OnCheckStateChanged(true)";
+        if (t.check_is_checked != 0 && r_.QueryBool(calls, object, t.check_is_checked, checked)) {
+            result.outcome |= checked ? ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED : 0u;
+        }
+    }
+    result.status = ANOMALY_STATUS_V1_OK;
+    return result;
+}
+
+ClickOutcome Evaluator::ClickListEntry(const ButtonRecord& record, std::uint32_t& calls) {
+    const auto& t = r_.Type();
+    ClickOutcome result;
+    // HTUI_ListItem's Btn_Click handlers; OnBtnClicked checks the entry and forwards the click
+    // to the owning list view's item-click handler.
+    const std::array<std::pair<std::uintptr_t, const char*>, 3> steps{{
+        {t.item_pressed, "OnBtnPressed"},
+        {t.item_released, "OnBtnReleased"},
+        {t.item_clicked, "OnBtnClicked"},
+    }};
+    for (const auto& [function, name] : steps) {
+        if (!r_.Invoke(calls, record.ref.object, function, nullptr, 0)) {
+            result.status = ANOMALY_STATUS_V1_FAILED;
+            result.detail = std::string(name) + " faulted";
+            return result;
+        }
+        ++result.invocations;
+    }
+    result.status = ANOMALY_STATUS_V1_OK;
+    result.detail = "press, release, click";
+    return result;
+}
+
 ClickOutcome Evaluator::Click(const ButtonRecord& record, std::uint32_t& calls) {
-    return record.kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG ? ClickUmg(record, calls)
-                                                             : ClickCommon(record, calls);
+    switch (record.kind) {
+    case ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG:
+        return ClickUmg(record, calls);
+    case ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO:
+        return ClickRadio(record, calls);
+    case ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY:
+        return ClickListEntry(record, calls);
+    default:
+        return ClickCommon(record, calls);
+    }
 }
 
 bool Evaluator::Hovered(const ObjRef& ref, std::uint32_t& calls, bool& hovered) {
@@ -1511,7 +1732,7 @@ struct NteUiButtons::Impl {
                 }
                 ObjRef ref;
                 if (!reflection.MakeRef(work.cursor++, ref)) continue;
-                if (const auto kind = reflection.Kind(ref.cls); kind != 0) {
+                if (const auto kind = reflection.ObjectKind(ref); kind != 0) {
                     work.candidates.emplace_back(ref, kind);
                     if (work.candidates.size() >= budget.max_buttons) {
                         work.truncated = true;
@@ -1617,7 +1838,7 @@ struct NteUiButtons::Impl {
             ref.serial != static_cast<std::uint32_t>(handle.id >> 32u)) {
             return false;
         }
-        kind = reflection.Kind(ref.cls);
+        kind = reflection.ObjectKind(ref);
         return kind != 0 && reflection.Alive(ref);
     }
 
@@ -1669,7 +1890,7 @@ struct NteUiButtons::Impl {
         std::vector<ButtonRecord> hits;
         for (const auto& ref : work.hover_matches) {
             ButtonRecord record;
-            const auto kind = reflection.Kind(ref.cls);
+            const auto kind = reflection.ObjectKind(ref);
             if (kind != 0 && evaluator.Evaluate(layers, ref, kind, false, calls, record)) {
                 hits.push_back(std::move(record));
             }

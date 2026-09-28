@@ -159,6 +159,8 @@ std::string_view KindName(std::uint32_t kind) noexcept {
     case ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG: return "UMG";
     case ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON: return "Common";
     case ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI: return "HTUI";
+    case ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO: return "Radio";
+    case ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY: return "List entry";
     default: return "?";
     }
 }

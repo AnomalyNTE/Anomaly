@@ -63,6 +63,10 @@ struct World {
         fn_pressed{}, fn_released{}, fn_clicked{}, fn_is_locked{}, fn_is_hovered{};
     std::set<std::uintptr_t> in_viewport, not_interactable, slate_missing, hovered, no_arm;
     std::set<std::uintptr_t> accepted;
+    // Tabs, check boxes and list entries.
+    std::uintptr_t fn_check_is_checked{}, fn_check_set_checked{}, fn_ht_radio_select{},
+        fn_radio_select{}, fn_radio_is_checked{}, fn_radio_feature{}, fn_item_locked{};
+    std::set<std::uintptr_t> checked, feature_locked, item_locked;
     struct Call {
         std::uintptr_t object, function;
     };
@@ -155,6 +159,20 @@ struct World {
             *result = 0;
         } else if (fn == fn_is_hovered) {
             *result = hovered.contains(self);
+        } else if (fn == fn_check_is_checked || fn == fn_radio_is_checked) {
+            *result = checked.contains(self);
+        } else if (fn == fn_radio_feature) {
+            *result = !feature_locked.contains(self);
+        } else if (fn == fn_item_locked) {
+            *result = item_locked.contains(self);
+        } else if (fn == fn_radio_select || fn == fn_ht_radio_select ||
+                   fn == fn_check_set_checked) {
+            // SetSelected(bSelected, bSendEvent) / SetIsChecked(bIsChecked).
+            if (result[0] != 0) {
+                checked.insert(self);
+            } else {
+                checked.erase(self);
+            }
         } else if (Get<std::uintptr_t>(self + kClass) == cls_htui) {
             // HTUI_Button: NativeOnPressed arms +0x17F1; NativeOnClicked runs only when armed,
             // then records the click time and disarms.
@@ -447,6 +465,93 @@ int main() {
     Bind(world, exit_button, kOnReleased, settle, "OnExitReleased");
     Bind(world, exit_button, kOnClicked, settle, "OnExitClicked");
 
+    // Tabs (HTUI_RadioBox wrapping an HTRadioBox), a plain CheckBox and list entries
+    // (HTUI_ListItem wrapping an HTUI_Button) in the award window.
+    const auto text_block_cls = world.Class("TextBlock", widget);
+    const auto check_box_cls = world.Class("CheckBox", widget, L"/Script/UMG.CheckBox");
+    const auto ht_check_cls = world.Class("HTCheckBox", check_box_cls);
+    const auto ht_radio_cls = world.Class("HTRadioBox", ht_check_cls, L"/Script/HTGame.HTRadioBox");
+    const auto radio_cls = world.Class("HTUI_RadioBox", user_widget, L"/Script/HTGame.HTUI_RadioBox");
+    const auto tab_cls = world.Class("WBP_Tab_C", radio_cls);
+    const auto item_cls = world.Class("HTUI_ListItem", user_widget, L"/Script/HTGame.HTUI_ListItem");
+    const auto entry_cls = world.Class("WBP_CharacterEntry_C", item_cls);
+    world.fn_check_is_checked =
+        world.Function(check_box_cls, "IsChecked", 1, 1, L"/Script/UMG.CheckBox.IsChecked");
+    world.fn_check_set_checked =
+        world.Function(check_box_cls, "SetIsChecked", 1, 1, L"/Script/UMG.CheckBox.SetIsChecked");
+    world.fn_ht_radio_select = world.Function(ht_radio_cls, "SetSelected", 2, 2,
+                                              L"/Script/HTGame.HTRadioBox.SetSelected");
+    world.fn_radio_select = world.Function(radio_cls, "SetSelected", 2, 2,
+                                           L"/Script/HTGame.HTUI_RadioBox.SetSelected");
+    world.fn_radio_is_checked = world.Function(radio_cls, "IsChecked", 1, 1,
+                                               L"/Script/HTGame.HTUI_RadioBox.IsChecked");
+    world.fn_radio_feature =
+        world.Function(radio_cls, "IsSystematicGameFeatureActivated", 1, 1,
+                       L"/Script/HTGame.HTUI_RadioBox.IsSystematicGameFeatureActivated");
+    const auto fn_item_pressed = world.Function(item_cls, "OnBtnPressed", 0, 0,
+                                                L"/Script/HTGame.HTUI_ListItem.OnBtnPressed");
+    const auto fn_item_released = world.Function(item_cls, "OnBtnReleased", 0, 0,
+                                                 L"/Script/HTGame.HTUI_ListItem.OnBtnReleased");
+    const auto fn_item_clicked = world.Function(item_cls, "OnBtnClicked", 0, 0,
+                                                L"/Script/HTGame.HTUI_ListItem.OnBtnClicked");
+    world.fn_item_locked = world.Function(item_cls, "IsItemLocked", 1, 1,
+                                          L"/Script/HTGame.HTUI_ListItem.IsItemLocked");
+    const auto fn_option_changed = world.Function(award_cls, "OnOptionChanged", 1, 1);
+    // HTGame_classes.hpp / UMG_classes.hpp
+    constexpr std::uintptr_t kRadioBox = 0x1360, kRadioText = 0x1368, kBlockBtn = 0x1370;
+    constexpr std::uintptr_t kItemButton = 0x650, kTextBlockText = 0x188;
+    constexpr std::uintptr_t kOnCheckStateChanged = 0xAF8;
+
+    struct Tab {
+        std::uintptr_t tab, radio, block;
+    };
+    const auto make_tab = [&](const std::string& name, const std::string& text) {
+        const auto tab = world.Object(tab_cls, name, tree);
+        set_widget(tab);
+        attach(tab, root, tree);
+        const auto [tab_tree, tab_root] = make_tree(tab);
+        const auto radio = world.Object(ht_radio_cls, "RadioBox", tab_tree);
+        set_widget(radio);
+        attach(radio, tab_root, tab_tree);
+        const auto label = world.Object(text_block_cls, "RadioText", tab_tree);
+        set_widget(label);
+        attach(label, tab_root, tab_tree);
+        world.texts[label + kTextBlockText] = text;
+        const auto block = world.Object(htui_cls, "BlockBtn", tab_tree);
+        set_widget(block);
+        attach(block, tab_root, tab_tree);
+        world.Put(tab + kRadioBox, radio);
+        world.Put(tab + kRadioText, label);
+        world.Put(tab + kBlockBtn, block);
+        return Tab{tab, radio, block};
+    };
+    const auto tab_characters = make_tab("TabCharacters", "Characters");
+    const auto tab_selected = make_tab("TabSelected", "Monsters");
+    world.checked.insert(tab_selected.tab);
+    const auto tab_locked = make_tab("TabLocked", "Locked");
+    world.feature_locked.insert(tab_locked.tab);
+
+    const auto option = world.Object(check_box_cls, "ChkOption", tree);
+    set_widget(option);
+    attach(option, root, tree);
+    Bind(world, option, kOnCheckStateChanged, award, "OnOptionChanged");
+
+    const auto make_entry = [&](const std::string& name, const std::string& text) {
+        const auto entry = world.Object(entry_cls, name, tree);
+        set_widget(entry);
+        attach(entry, root, tree);
+        const auto [entry_tree, entry_root] = make_tree(entry);
+        const auto button = world.Object(htui_cls, "Btn_Click", entry_tree);
+        set_widget(button);
+        attach(button, entry_root, entry_tree);
+        world.texts[button + kButtonText] = text;
+        world.Put(entry + kItemButton, button);
+        return entry;
+    };
+    const auto character_entry = make_entry("CharacterEntry", "Entry A");
+    const auto entry_locked = make_entry("EntryLocked", "Entry B");
+    world.item_locked.insert(entry_locked);
+
     anomaly::NteUiButtonsBindings bindings;
     bindings.resolve_name = [&world](std::uint32_t id) {
         return id == 0 || id > world.names.size() ? std::string{} : world.names[id - 1U];
@@ -529,7 +634,25 @@ int main() {
     AnomalyNteUiButtonSnapshotV1 scratch{};
     Check(!FindButton(engine, "InternalRootButton", scratch), "CommonButtonInternalBase excluded");
     Check(!FindButton(engine, "Default__HTUI_Button", scratch), "class default object excluded");
-    Check(status.button_count == 14, "button count " + std::to_string(status.button_count));
+    // Tabs, check boxes and list entries are listed once, as themselves; the buttons inside
+    // them are not listed separately. A selected tab stays clickable.
+    const auto tab_button = expect("TabCharacters", clickable, 0);
+    Check(tab_button.kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO &&
+              std::string(tab_button.text) == "Characters",
+          "tab kind and text: " + std::string(tab_button.text));
+    expect("TabSelected", clickable, 0);
+    expect("TabLocked", blocked, ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED);
+    const auto option_button = expect("ChkOption", clickable, 0);
+    Check(option_button.kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO, "check box kind");
+    const auto entry_button = expect("CharacterEntry", clickable, 0);
+    Check(entry_button.kind == ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY &&
+              std::string(entry_button.text) == "Entry A",
+          "list entry kind and text: " + std::string(entry_button.text));
+    expect("EntryLocked", blocked, ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED);
+    Check(!FindButton(engine, "RadioBox", scratch) && !FindButton(engine, "BlockBtn", scratch) &&
+              !FindButton(engine, "Btn_Click", scratch),
+          "buttons inside tabs and list entries excluded");
+    Check(status.button_count == 20, "button count " + std::to_string(status.button_count));
     Check(!world.Touched(in_hidden) && !world.Touched(on_page_b) && !world.Touched(character_info),
           "hidden and occluded buttons cost no game call");
 
@@ -544,8 +667,8 @@ int main() {
         query.window = {window.data(), window.size()};
         std::uint32_t matches{};
         Check(engine.Find(&query, &first_button, &matches).code == ANOMALY_STATUS_V1_OK &&
-                  matches == 3,
-              "three clickable buttons in the award window: " + std::to_string(matches));
+                  matches == 7,
+              "seven clickable buttons in the award window: " + std::to_string(matches));
         AnomalyNteUiWindowSnapshotV1 window_snapshot{sizeof(window_snapshot)};
         bool award_blocks = false;
         for (std::uint32_t i = 0; i < status.window_count; ++i) {
@@ -663,6 +786,65 @@ int main() {
               world.calls[world.calls.size() - 2].function == fn_exit_released &&
               world.calls.back().function == fn_exit,
           "UMG delegates run pressed, released, clicked");
+
+    // Tab: SetSelected(true, true) on the HTUI_RadioBox, never on the inner radio box.
+    world.calls.clear();
+    result = click(tab_button);
+    Check(result.status == ANOMALY_STATUS_V1_OK && result.invocations == 1 &&
+              (result.outcome & ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED) != 0 &&
+              world.Called(tab_characters.tab, world.fn_radio_select) &&
+              world.checked.contains(tab_characters.tab),
+          "tab click selects: " + std::string(result.detail));
+    Check(!world.Touched(tab_characters.radio) && !world.Touched(tab_characters.block),
+          "tab click leaves the inner widgets alone");
+    // Clicking the already selected tab is still a successful click.
+    AnomalyNteUiButtonSnapshotV1 selected_button{};
+    Check(FindButton(engine, "TabSelected", selected_button), "selected tab listed");
+    result = click(selected_button);
+    Check(result.status == ANOMALY_STATUS_V1_OK &&
+              world.Called(tab_selected.tab, world.fn_radio_select),
+          "selected tab click ok: " + std::string(result.detail));
+    AnomalyNteUiButtonSnapshotV1 locked_tab{};
+    Check(FindButton(engine, "TabLocked", locked_tab), "locked tab listed");
+    world.calls.clear();
+    result = click(locked_tab);
+    Check(result.status == ANOMALY_STATUS_V1_CONFLICT &&
+              !world.Called(tab_locked.tab, world.fn_radio_select),
+          "locked tab refused without a click: " + std::string(result.detail));
+
+    // Plain CheckBox: SetIsChecked(true), then its OnCheckStateChanged bindings with true.
+    world.calls.clear();
+    result = click(option_button);
+    Check(result.status == ANOMALY_STATUS_V1_OK && result.invocations == 2 &&
+              world.checked.contains(option) &&
+              world.Called(option, world.fn_check_set_checked) &&
+              world.Called(award, fn_option_changed),
+          "check box click checks and notifies: " + std::string(result.detail));
+
+    // List entry: the entry's own press, release, click handlers, in order.
+    world.calls.clear();
+    result = click(entry_button);
+    Check(result.status == ANOMALY_STATUS_V1_OK && result.invocations == 3,
+          "list entry click ok: " + std::string(result.detail));
+    {
+        std::vector<std::uintptr_t> order;
+        for (const auto& call : world.calls) {
+            if (call.object == character_entry) order.push_back(call.function);
+        }
+        const auto clicks = std::find(order.begin(), order.end(), fn_item_pressed);
+        Check(clicks != order.end() &&
+                  std::vector<std::uintptr_t>(clicks, order.end()) ==
+                      std::vector<std::uintptr_t>{fn_item_pressed, fn_item_released,
+                                                  fn_item_clicked},
+              "list entry press, release, click order");
+    }
+    AnomalyNteUiButtonSnapshotV1 locked_entry{};
+    Check(FindButton(engine, "EntryLocked", locked_entry), "locked entry listed");
+    world.calls.clear();
+    result = click(locked_entry);
+    Check(result.status == ANOMALY_STATUS_V1_CONFLICT &&
+              !world.Called(entry_locked, fn_item_clicked),
+          "locked entry refused");
 
     // Hover pick: the whole path under the cursor is hovered; innermost first.
     world.hovered = {on_page_a, inner, page_a, switcher, root, award};

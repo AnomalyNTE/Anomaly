@@ -247,7 +247,9 @@
       "values": {
         "ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG": 1,
         "ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON": 2,
-        "ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI": 3
+        "ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI": 3,
+        "ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO": 4,
+        "ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY": 5
       }
     },
     "AnomalyNteUiButtonCategoryV1": {

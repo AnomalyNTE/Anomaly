@@ -84,8 +84,9 @@ World、对象注册表或 Host generation 变化会清理当前请求并返回 
 - **ID**：`"anomaly.nte.ui-buttons"` · **版本** 1 · **capability** `nte-ui-buttons`
 
 该服务让插件直接点击游戏 UI 按钮（UMG `Button`、CommonUI `CommonButtonBase`、HTGame
-`HTUI_Button`）。Host 负责扫描控件树、判定按钮能否点击、识别鼠标下的按钮，并按真实点击的顺序
-调用按钮自己的 按下 → 抬起 → 点击 处理函数；**不合成任何鼠标或键盘输入**，也不向插件暴露 UE
+`HTUI_Button`），以及页签 / 单选框（HTGame `HTUI_RadioBox`、`HTRadioBox`，UMG `CheckBox`）
+和列表条目（HTGame `HTUI_ListItem`）。Host 负责扫描控件树、判定按钮能否点击、识别鼠标下的按钮，
+并按真实点击的顺序调用控件自己的点击处理函数；**不合成任何鼠标或键盘输入**，也不向插件暴露 UE
 对象指针、UFunction 或 Profile 偏移。
 
 ```c
@@ -167,6 +168,19 @@ QUEUED ──(Game tick 取出)──▶ RUNNING ──▶ COMPLETE(status)
 点击时间是否变化判断游戏是否接受，并在 `outcome` 中报告 `PRESS_ARMED` / `CLICK_ACCEPTED`；
 未被接受的点击以 `FAILED` 完成。
 
+页签和列表条目按控件本身列出（`kind` 分别为 `RADIO`、`LIST_ENTRY`），包在里面的
+`RadioBox` / `BlockBtn` / `Btn_Click` 不再单独列出：
+
+| kind | 控件 | 点击 | 锁定判定 |
+| --- | --- | --- | --- |
+| `RADIO` | `HTUI_RadioBox` | `SetSelected(true, true)`，由游戏广播选中事件 | `IsSystematicGameFeatureActivated` 为假 |
+| `RADIO` | `HTRadioBox` / `HTCheckBox` | `HTRadioBox.SetSelected(true, true)`；非单选框按 `CheckBox` 处理 | 无 |
+| `RADIO` | UMG `CheckBox` | `SetIsChecked(true)`，再以 `true` 调用 `OnCheckStateChanged` 的绑定 | 无 |
+| `LIST_ENTRY` | `HTUI_ListItem` | `OnBtnPressed` → `OnBtnReleased` → `OnBtnClicked` | `IsItemLocked` 为真 |
+
+**已选中的页签仍归为可点击**：点击之后界面变成什么由当前界面决定，而不是由页签的选中状态决定。
+点击后控件处于选中状态时 `outcome` 报告 `CLICK_ACCEPTED`。可见性与遮挡判定与普通按钮相同。
+
 ### 鼠标拾取
 
 `request_pick` 先重新扫描，再对所有未隐藏的按钮查询 `UWidget::IsHovered`（Slate 按真实光标
@@ -205,7 +219,8 @@ if (buttons->find(buttons->user, &query, &button, &matches).code == ANOMALY_STAT
 活动 Profile 必须声明 `nte.ui-buttons` Feature、`nte-ui-buttons-layout-v1` validator，以及
 `ue5.names`、`ue5.objects`、`ue5.object-find`、`ue5.process-event` 依赖；控件、CommonUI
 与 HTGame 字段偏移全部来自 Profile 的 `widget.*`、`panelSlot.*`、`activatableWidget.*`、
-`htuiButton.*`、`htuiBase.*` 等 layout 键。反射类型在对象注册表每一代首次就绪时解析一次，
+`htuiButton.*`、`htuiBase.*`、`checkBox.*`、`textBlock.*`、`htuiRadioBox.*`、`htuiListItem.*` 等 layout 键。
+缺少页签或列表条目相关的反射函数时，只是这一类控件不列出。反射类型在对象注册表每一代首次就绪时解析一次，
 `status` 的 `READY` 位报告结果；缺少 `UMG.Widget.IsHovered` 时拾取不可用（`PICK_AVAILABLE`
 为 0），其余功能照常。对象注册表换代时目录与全部按钮 handle 失效，未完成请求以
 `UNAVAILABLE` 或 `NOT_FOUND` 结束；Host 停止或重启后旧请求 handle 不再可寻址。

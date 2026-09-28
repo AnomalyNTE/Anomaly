@@ -339,7 +339,8 @@ typedef struct AnomalyNtePickupServiceV1 {
         void* user, AnomalyNtePickupSnapshotV1* snapshot);
 } AnomalyNtePickupServiceV1;
 
-// In-game UI buttons (UMG Button, CommonUI CommonButtonBase and HTUI_Button). A plugin must
+// In-game UI buttons (UMG Button, CommonUI CommonButtonBase, HTUI_Button, radio boxes and
+// check boxes used as tabs, and HTUI_ListItem list entries). A plugin must
 // declare the explicit nte-ui-buttons capability. The Host scans the widget tree, classifies
 // every button as clickable, blocked or hidden, and clicks by invoking the button's own
 // press -> release -> click handlers; it never synthesizes mouse or keyboard input and never
@@ -359,7 +360,12 @@ typedef struct AnomalyNtePickupServiceV1 {
 typedef enum AnomalyNteUiButtonKindV1 {
     ANOMALY_NTE_UI_BUTTON_KIND_V1_UMG = 1,
     ANOMALY_NTE_UI_BUTTON_KIND_V1_COMMON = 2,
-    ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI = 3
+    ANOMALY_NTE_UI_BUTTON_KIND_V1_HTUI = 3,
+    // HTUI_RadioBox, a bare HTRadioBox or a UMG CheckBox (tab pages). Clicking selects it; an
+    // already selected one stays clickable and the click changes nothing.
+    ANOMALY_NTE_UI_BUTTON_KIND_V1_RADIO = 4,
+    // HTUI_ListItem list entry; the click reaches the owning list's item-click handler.
+    ANOMALY_NTE_UI_BUTTON_KIND_V1_LIST_ENTRY = 5
 } AnomalyNteUiButtonKindV1;
 
 typedef enum AnomalyNteUiButtonCategoryV1 {
