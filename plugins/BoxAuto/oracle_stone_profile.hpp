@@ -23,9 +23,13 @@ inline constexpr std::string_view kProcessEventPattern =
     "48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E "
     "48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 "
     "B0 00 00 00 00 04 00 00";
+// The 9/28 build keeps the lookup by FName and replaces the tail: the
+// record is converted through a helper and the function returns one byte
+// (movzx eax, bl). Unique in .text at the time of writing.
 inline constexpr std::string_view kOracleStoneStateQueryPattern =
     "48 89 5C 24 08 57 48 83 EC 30 48 83 3A 00 48 8B F9 74 ?? "
-    "48 8B CA E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74 ?? 83 78 08 00 7C ??";
+    "48 8B CA E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74 ?? "
+    "48 8D 54 24 20 48 8B C8 E8 ?? ?? ?? ?? 44 8B 43 08";
 
 inline constexpr std::uint32_t kRipDisplacementOffset = 3;
 inline constexpr std::uint32_t kRipInstructionSize = 7;

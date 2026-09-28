@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <new>
 #include <string>
@@ -811,7 +812,6 @@ using oracle_stone_locator_profile::kTreasureboxDataAssetPath;
 using oracle_stone_locator::OracleStoneUnknown;
 using oracle_stone_locator::OracleStoneAvailable;
 using oracle_stone_locator::OracleStoneCollected;
-using oracle_stone_locator::TranslateOracleStoneState;
 
 constexpr std::size_t kMaximumOracleStones = 4096;
 constexpr std::size_t kMaximumStateQueriesPerTick = 64;
@@ -906,6 +906,8 @@ struct Context {
     std::uint64_t update_sequence{};
     std::uint64_t next_state_refresh_sequence{};
     std::size_t state_refresh_cursor{};
+    std::map<std::int32_t, std::size_t> raw_state_counts;  // diagnostic, one pass
+    std::string last_raw_state_summary;
 };
 
 constexpr auto kOracleRetryInterval = std::chrono::seconds(5);
@@ -1097,10 +1099,11 @@ bool OracleInvokeStateQuery(const std::uintptr_t function,
                             const FNameValue& id,
                             std::int32_t& result) noexcept {
     if (function == 0 || state_context == 0) return false;
-    using QueryFn = std::int32_t(__fastcall*)(void*, const void*);
+    // The current build returns one byte (movzx eax, bl).
+    using QueryFn = std::uint8_t(__fastcall*)(void*, const void*);
     const auto query = reinterpret_cast<QueryFn>(function);
     __try {
-        result = query(reinterpret_cast<void*>(state_context), &id);
+        result = static_cast<std::int32_t>(query(reinterpret_cast<void*>(state_context), &id));
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -1243,17 +1246,40 @@ void OracleRefreshStates(Context& context) {
         context.state_refresh_cursor < count
             ? (std::min)(count, context.state_refresh_cursor + kMaximumStateQueriesPerTick)
             : count;
+    if (context.state_refresh_cursor == 0) context.raw_state_counts.clear();
     while (context.state_refresh_cursor < end) {
         auto& record = context.records[context.state_refresh_cursor++];
         std::int32_t native_state{};
         if (OracleInvokeStateQuery(context.state_query, state_context,
                                    record.id_name, native_state)) {
-            record.state = TranslateOracleStoneState(native_state);
+            // The old mapping (0 = available, 2 = collected) was for the int
+            // the previous build returned. This build returns a byte whose
+            // meaning is not confirmed yet: with every stone collected all
+            // 267 read 0, which is also what a missing record returns. Until
+            // a stone reads 1, the state stays unknown, so auto teleport does
+            // not treat every collected stone as available.
+            record.state = OracleStoneUnknown;
+            ++context.raw_state_counts[native_state];
+        } else {
+            ++context.raw_state_counts[-1];  // the call faulted
         }
     }
     if (context.state_refresh_cursor >= count) {
         context.state_refresh_cursor = 0;
         context.next_state_refresh_sequence = context.update_sequence + 120;
+        // Diagnostic: the raw values of one full pass, logged once per
+        // distinct distribution (not every pass).
+        std::string summary;
+        for (const auto& [value, seen] : context.raw_state_counts) {
+            if (!summary.empty()) summary += ", ";
+            summary += (value == -1 ? std::string("fault") : std::to_string(value)) + "=" +
+                       std::to_string(seen);
+        }
+        if (summary != context.last_raw_state_summary) {
+            context.last_raw_state_summary = summary;
+            OracleLog(context, "state query raw values over " + std::to_string(count) +
+                                   " stones: " + summary);
+        }
     }
 }
 
