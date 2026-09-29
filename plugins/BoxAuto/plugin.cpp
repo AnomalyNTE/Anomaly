@@ -258,6 +258,7 @@ struct Context final {
     std::chrono::steady_clock::time_point landmark_arrival_time{};
     std::uintptr_t target_actor{};
     std::uint8_t interact_baseline{};
+    std::unordered_map<std::uintptr_t, std::ptrdiff_t> interact_finish_offsets;  // class -> offset
     std::unordered_map<std::uintptr_t, std::string> class_name_cache;
     std::unordered_map<std::string, std::unordered_set<std::uint32_t>> class_map;
     std::chrono::steady_clock::time_point due{};
@@ -774,7 +775,6 @@ namespace oracle_stone_impl {
 
 using oracle_stone_locator_profile::kGObjectsPattern;
 using oracle_stone_locator_profile::kGWorldPattern;
-using oracle_stone_locator_profile::kOracleStoneStateQueryPattern;
 using oracle_stone_locator_profile::kRipDisplacementOffset;
 using oracle_stone_locator_profile::kRipInstructionSize;
 using oracle_stone_locator_profile::kGObjectsAddend;
@@ -805,16 +805,13 @@ using oracle_stone_locator_profile::kOracleStoneLevelOffset;
 using oracle_stone_locator_profile::kOracleStoneFloorOffset;
 using oracle_stone_locator_profile::kOracleStoneLocationOffset;
 using oracle_stone_locator_profile::kOracleStoneMapExploreOffset;
-using oracle_stone_locator_profile::kOracleStoneStateContextOffset;
 using oracle_stone_locator_profile::kTreasureboxDataAssetPath;
 
 using oracle_stone_locator::OracleStoneUnknown;
 using oracle_stone_locator::OracleStoneAvailable;
 using oracle_stone_locator::OracleStoneCollected;
-using oracle_stone_locator::TranslateOracleStoneState;
 
 constexpr std::size_t kMaximumOracleStones = 4096;
-constexpr std::size_t kMaximumStateQueriesPerTick = 64;
 constexpr std::uint32_t kMaximumObjectCount = 16U * 1024U * 1024U;
 constexpr std::uint32_t kMaximumObjectChunks = 4096;
 
@@ -865,17 +862,31 @@ struct AutoTeleportState {
     std::string target_id;
 };
 
+// A step that failed is not retried until its gate opens again. Each of
+// these is either a signature scan over HTGame.exe's .text (hundreds of MB)
+// or a StaticFindObject by path, and all of them used to run again on every
+// frame after a failure -- a game update that moves one pattern turned that
+// into a scan per frame, which is what made the plugin stutter the moment it
+// was enabled. The first failure of a streak is logged with the step's name.
+struct RetryGate {
+    std::chrono::steady_clock::time_point next{};
+    bool failing{};
+};
+
 struct Context {
     const AnomalySignatureServiceV1* signature{};
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5ObjectsServiceV1* objects{};
+    const AnomalyCoreServiceV1* core{};
+    RetryGate scan_gate{};
+    RetryGate world_gate{};
+    RetryGate objects_gate{};
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
 
     std::uintptr_t g_objects_address{};
     std::uintptr_t g_world_address{};
-    std::uintptr_t state_query{};
     ObjectRegistry registry{};
     std::uintptr_t treasure_asset{};
     std::uintptr_t data_table{};
@@ -888,9 +899,34 @@ struct Context {
     bool scan_attempted{};
     bool scan_ready{};
     std::uint64_t update_sequence{};
-    std::uint64_t next_state_refresh_sequence{};
-    std::size_t state_refresh_cursor{};
+    bool state_query_disabled_logged{};
 };
+
+constexpr auto kOracleRetryInterval = std::chrono::seconds(5);
+
+void OracleLog(const Context& context, const std::string& message) {
+    if (context.core != nullptr && context.core->log != nullptr) {
+        context.core->log(context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                          anomaly::sdk::StringView("box-auto oracle: " + message));
+    }
+}
+
+// True when the step may run now.
+bool OracleGateOpen(const RetryGate& gate) noexcept {
+    return !gate.failing || std::chrono::steady_clock::now() >= gate.next;
+}
+
+void OracleGateFailed(const Context& context, RetryGate& gate, const char* step) {
+    if (!gate.failing)
+        OracleLog(context, std::string(step) + " failed; retrying every 5 s instead of every frame");
+    gate.failing = true;
+    gate.next = std::chrono::steady_clock::now() + kOracleRetryInterval;
+}
+
+void OracleGateSucceeded(const Context& context, RetryGate& gate, const char* step) {
+    if (gate.failing) OracleLog(context, std::string(step) + " recovered");
+    gate.failing = false;
+}
 
 bool OracleResolveRipRelative(const AnomalySignatureServiceV1* signature,
                               const std::string_view pattern,
@@ -945,10 +981,14 @@ bool OracleReadFString(const std::uintptr_t address, std::string& result) {
 }
 
 bool OracleRefreshObjectRegistry(Context& context) noexcept {
-    if (context.g_objects_address == 0 &&
-        !OracleResolveRipRelative(context.signature, kGObjectsPattern,
-                                  kGObjectsAddend, context.g_objects_address)) {
-        return false;
+    if (context.g_objects_address == 0) {
+        if (!OracleGateOpen(context.objects_gate)) return false;
+        if (!OracleResolveRipRelative(context.signature, kGObjectsPattern,
+                                      kGObjectsAddend, context.g_objects_address)) {
+            OracleGateFailed(context, context.objects_gate, "GObjects signature");
+            return false;
+        }
+        OracleGateSucceeded(context, context.objects_gate, "GObjects signature");
     }
     ObjectRegistry next{};
     if (!Read(reinterpret_cast<const void*>(
@@ -1011,10 +1051,14 @@ bool OracleFindExactObject(Context& context, const std::string_view path,
 
 bool OracleResolvePlayerState(Context& context) noexcept {
     if (context.player_state != 0) return true;
-    if (context.g_world_address == 0 &&
-        !OracleResolveRipRelative(context.signature, kGWorldPattern, 0,
-                                  context.g_world_address)) {
-        return false;
+    if (context.g_world_address == 0) {
+        if (!OracleGateOpen(context.world_gate)) return false;
+        if (!OracleResolveRipRelative(context.signature, kGWorldPattern, 0,
+                                      context.g_world_address)) {
+            OracleGateFailed(context, context.world_gate, "GWorld signature");
+            return false;
+        }
+        OracleGateSucceeded(context, context.world_gate, "GWorld signature");
     }
     std::uintptr_t world{};
     std::uintptr_t game_instance{};
@@ -1042,29 +1086,20 @@ bool OracleResolvePlayerState(Context& context) noexcept {
     return true;
 }
 
-bool OracleInvokeStateQuery(const std::uintptr_t function,
-                            const std::uintptr_t state_context,
-                            const FNameValue& id,
-                            std::int32_t& result) noexcept {
-    if (function == 0 || state_context == 0) return false;
-    using QueryFn = std::int32_t(__fastcall*)(void*, const void*);
-    const auto query = reinterpret_cast<QueryFn>(function);
-    __try {
-        result = query(reinterpret_cast<void*>(state_context), &id);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
 
 bool OracleScanCatalog(Context& context) {
     if (context.scan_attempted) return context.scan_ready;
+    if (!OracleGateOpen(context.scan_gate)) return false;
     if (!OracleFindExactObject(context, kTreasureboxDataAssetPath,
-                               context.treasure_asset) ||
-        !Read(reinterpret_cast<const void*>(
+                               context.treasure_asset)) {
+        OracleGateFailed(context, context.scan_gate, "TreasureboxDataAsset lookup");
+        return false;
+    }
+    if (!Read(reinterpret_cast<const void*>(
                   context.treasure_asset + kOracleStoneDataAssetTableOffset),
               context.data_table) ||
         context.data_table == 0) {
+        OracleGateFailed(context, context.scan_gate, "oracle data table read");
         return false;
     }
     std::uintptr_t data{};
@@ -1090,10 +1125,14 @@ bool OracleScanCatalog(Context& context) {
               flags_max) ||
         data == 0 || num <= 0 || num > kDataTableMaxRows || max < num ||
         flags_num < num || flags_max < flags_num) {
+        OracleGateFailed(context, context.scan_gate, "oracle row map header");
         return false;
     }
     const auto word_count = static_cast<std::size_t>((flags_num + 31) / 32);
-    if (word_count == 0 || word_count > 128) return false;
+    if (word_count == 0 || word_count > 128) {
+        OracleGateFailed(context, context.scan_gate, "oracle row map flags");
+        return false;
+    }
     std::vector<std::uint32_t> flags(word_count);
     if (flags_data != 0) {
         if (!ReadBytes(reinterpret_cast<const void*>(flags_data), flags.data(),
@@ -1140,7 +1179,11 @@ bool OracleScanCatalog(Context& context) {
         discovered.push_back(std::move(record));
         if (discovered.size() >= kMaximumOracleStones) break;
     }
-    if (discovered.empty()) return false;
+    if (discovered.empty()) {
+        OracleGateFailed(context, context.scan_gate, "oracle rows (none readable)");
+        return false;
+    }
+    OracleGateSucceeded(context, context.scan_gate, "oracle catalogue");
     std::scoped_lock lock(context.mutex);
     context.records = std::move(discovered);
     context.scan_ready = true;
@@ -1150,44 +1193,19 @@ bool OracleScanCatalog(Context& context) {
 
 void OracleRefreshStates(Context& context) {
     if (!context.scan_ready) return;
-    if (context.state_query == 0) {
-        std::uintptr_t fn{};
-        if (context.signature->resolve(
-                context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
-                anomaly::sdk::StringView(".text"),
-                anomaly::sdk::StringView(kOracleStoneStateQueryPattern), &fn)
-                .code != ANOMALY_STATUS_V1_OK ||
-            fn == 0) {
-            return;
-        }
-        context.state_query = fn;
-    }
-    if (!OracleResolvePlayerState(context)) return;
-    if (context.update_sequence < context.next_state_refresh_sequence) return;
-    const std::uintptr_t state_context =
-        context.player_state + kOracleStoneStateContextOffset;
-    std::scoped_lock lock(context.mutex);
-    const std::size_t count = context.records.size();
-    if (count == 0) {
-        context.state_refresh_cursor = 0;
-        context.next_state_refresh_sequence = context.update_sequence + 120;
-        return;
-    }
-    const std::size_t end =
-        context.state_refresh_cursor < count
-            ? (std::min)(count, context.state_refresh_cursor + kMaximumStateQueriesPerTick)
-            : count;
-    while (context.state_refresh_cursor < end) {
-        auto& record = context.records[context.state_refresh_cursor++];
-        std::int32_t native_state{};
-        if (OracleInvokeStateQuery(context.state_query, state_context,
-                                   record.id_name, native_state)) {
-            record.state = TranslateOracleStoneState(native_state);
-        }
-    }
-    if (context.state_refresh_cursor >= count) {
-        context.state_refresh_cursor = 0;
-        context.next_state_refresh_sequence = context.update_sequence + 120;
+    // DISABLED. On the 9/26+ builds the function the old state-query pattern
+    // matched is not a query: it is AHTTreasureBoxActor::TryOpen's "open"
+    // step. Its helper (sub_14947F090 in the 9/26 dump) looks up the player's
+    // StaticTreasureBoxDataRec_* bitmap, ORs in `1 << (id % 64)` and syncs it
+    // to the party -- it marks the box opened in the save. Called with an
+    // oracle row name it bailed before writing and returned 0, which is why
+    // every stone read 0. It must not be called; stone states stay unknown
+    // until a read-only source is found (that bitmap read directly, or the
+    // map icons).
+    if (!context.state_query_disabled_logged) {
+        context.state_query_disabled_logged = true;
+        OracleLog(context, "state query disabled: the matched function writes the treasure-box "
+                           "opened bitmap; stone states stay unknown");
     }
 }
 
@@ -1314,6 +1332,7 @@ void OracleInitialize(Context& context, const AnomalyHostApiV1* host) {
     const auto view = anomaly::sdk::Host(host);
     context.signature = view.Query<AnomalySignatureServiceV1>(
         ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).get();
+    context.core = view.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID, 1).get();
     context.names = view.Query<AnomalyUe5NamesServiceV1>(
         ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION).get();
     context.objects = view.Query<AnomalyUe5ObjectsServiceV1>(
@@ -1374,6 +1393,70 @@ bool FindFunction(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cl
         owner = super;
     }
     return false;
+}
+
+// Offset of a reflected property, looked up by name on `cls` and its supers
+// (UStruct::PropertyLink -> FProperty::PropertyLinkNext). Used instead of a
+// hard-coded offset for fields whose position moves between builds.
+constexpr std::ptrdiff_t kUStructPropertyLinkOffset = 112;
+constexpr std::ptrdiff_t kFPropertyLinkNextOffset = 72;
+constexpr std::ptrdiff_t kFFieldNameOffset = 32;
+constexpr std::ptrdiff_t kFPropertyOffsetInternalOffset = 68;
+
+bool FindPropertyOffset(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cls,
+                        const std::string_view target, std::int32_t& offset) noexcept {
+    std::uintptr_t owner = cls;
+    for (std::uint32_t depth{}; owner != 0 && depth < 64; ++depth) {
+        std::uintptr_t property{};
+        Read(reinterpret_cast<const void*>(owner + kUStructPropertyLinkOffset), property);
+        for (std::uint32_t count{}; property != 0 && count < 4096; ++count) {
+            std::uint32_t name_id{};
+            if (Read(reinterpret_cast<const void*>(property + kFFieldNameOffset), name_id) &&
+                ResolveName(names, name_id) == target &&
+                Read(reinterpret_cast<const void*>(property + kFPropertyOffsetInternalOffset),
+                     offset) &&
+                offset > 0) {
+                return true;
+            }
+            std::uintptr_t next{};
+            if (!Read(reinterpret_cast<const void*>(property + kFPropertyLinkNextOffset), next) ||
+                next == property) {
+                break;
+            }
+            property = next;
+        }
+        // PropertyLink already walks inherited properties; the super chain is
+        // only a fallback for classes whose link is not built yet.
+        std::uintptr_t super{};
+        if (!Read(reinterpret_cast<const void*>(owner + kUStructSuperStructOffset), super) ||
+            super == 0 || super == owner) {
+            break;
+        }
+        owner = super;
+    }
+    return false;
+}
+
+// AActor-derived interactables' `bInteractFinish`. It was at +976 before the
+// 9/26 update; that build inserted HTAIRVOComponent there and moved the flag
+// to +984, so the pickup check read a null pointer that never changed and
+// every shop steal waited for the actor to be garbage-collected instead
+// (~25 s). Resolved by name per class and cached; the old offset is the
+// fallback when reflection is unavailable.
+std::ptrdiff_t InteractFinishOffset(Context& context, const std::uintptr_t actor) noexcept {
+    std::uintptr_t cls{};
+    if (actor == 0 || !Read(reinterpret_cast<const void*>(actor + kObjectClassOffset), cls) ||
+        cls == 0) {
+        return kInteractFinishOffset;
+    }
+    const auto cached = context.interact_finish_offsets.find(cls);
+    if (cached != context.interact_finish_offsets.end()) return cached->second;
+    std::int32_t offset{};
+    const std::ptrdiff_t resolved =
+        FindPropertyOffset(context.names, cls, "bInteractFinish", offset) ? offset
+                                                                           : kInteractFinishOffset;
+    context.interact_finish_offsets.emplace(cls, resolved);
+    return resolved;
 }
 
 bool Invoke(void* object, void* function, void* parameters) noexcept {
@@ -3739,7 +3822,8 @@ void Tick(Context& context) {
         }
         std::uint8_t baseline{};
         Read(reinterpret_cast<const void*>(
-                 context.target_actor + kInteractFinishOffset), baseline);
+                 context.target_actor + InteractFinishOffset(context, context.target_actor)),
+             baseline);
         context.interact_baseline = baseline;
         std::uint8_t params[12]{};
         std::memcpy(params, &context.target_actor, sizeof(context.target_actor));
@@ -3904,7 +3988,9 @@ void Tick(Context& context) {
         std::uint8_t finish{};
         const bool disappeared = !IsObjectInGObjects(context, context.target_actor);
         bool completed = disappeared ||
-            (Read(reinterpret_cast<const void*>(context.target_actor + kInteractFinishOffset), finish) &&
+            (Read(reinterpret_cast<const void*>(
+                      context.target_actor + InteractFinishOffset(context, context.target_actor)),
+                  finish) &&
              finish != context.interact_baseline);
         if (!completed && now >= context.interact_verify_deadline) {
             RefreshUncollectedCatalog(context);
@@ -3997,7 +4083,8 @@ void Tick(Context& context) {
     // 验证消失
     std::uint8_t current_finish{};
     Read(reinterpret_cast<const void*>(
-             context.target_actor + kInteractFinishOffset), current_finish);
+             context.target_actor + InteractFinishOffset(context, context.target_actor)),
+         current_finish);
     if (current_finish == context.interact_baseline) {
         if (context.teleport_retry == 0) {
             context.teleport_retry = 1;
@@ -4431,78 +4518,38 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
             context.food_empty_region_run.store(empty_run, std::memory_order_relaxed);
         }
     }
-    const std::string start_index_label =
-        context.localizer.Text("label.start_index", "Start Index");
-    ui->input_uint32(ui->user, anomaly::sdk::StringView(start_index_label),
-                     &context.start_index, 1, 1);
-    const std::string start_label =
-        context.localizer.Text("action.start", "Start Auto Pickup");
-    if (ui->button(ui->user, anomaly::sdk::StringView(start_label), 0.0F, 0.0F) != 0) {
-        if (type_choice == 10 && context.oracle != nullptr) {
-            context.oracle->auto_teleport.start_index.store(
-                context.start_index, std::memory_order_release);
-            context.oracle->auto_teleport.enabled.store(true,
-                                                        std::memory_order_release);
-        } else {
+    // Oracle stones are teleport points only: the collected state cannot be
+    // read on the 9/26+ builds (see OracleRefreshStates), so there is no auto
+    // collect for them. Start Index / Start / Stop only drive the other types.
+    // The auto teleport code and the state fields are kept for when a
+    // read-only state source is found.
+    const bool oracle_type = type_choice == 10 && context.oracle != nullptr;
+    if (!oracle_type) {
+        const std::string start_index_label =
+            context.localizer.Text("label.start_index", "Start Index");
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(start_index_label),
+                         &context.start_index, 1, 1);
+        const std::string start_label =
+            context.localizer.Text("action.start", "Start Auto Pickup");
+        if (ui->button(ui->user, anomaly::sdk::StringView(start_label), 0.0F, 0.0F) != 0) {
             context.begin_pending.store(true, std::memory_order_release);
         }
-    }
-    const std::string stop_label = context.localizer.Text("action.stop", "Stop");
-    if (ui->button(ui->user, anomaly::sdk::StringView(stop_label), 0.0F, 0.0F) != 0) {
-        if (type_choice == 10 && context.oracle != nullptr) {
-            context.oracle->auto_teleport.enabled.store(false,
-                                                        std::memory_order_release);
-        } else {
+        const std::string stop_label = context.localizer.Text("action.stop", "Stop");
+        if (ui->button(ui->user, anomaly::sdk::StringView(stop_label), 0.0F, 0.0F) != 0) {
             Stop(context);
         }
     }
-    if (type_choice == 10 && context.oracle != nullptr) {
-        const std::string oracle_params =
-            context.localizer.Text("oracle.params", "乌鸦石头参数");
-        ui->text(ui->user, anomaly::sdk::StringView(oracle_params));
-        if (ui->input_uint32 != nullptr) {
-        auto& oracle = *context.oracle;
-        std::uint32_t delay_ms =
-            oracle.auto_teleport.delay_ms.load(std::memory_order_acquire);
-        const std::string delay_label =
-            context.localizer.Text("oracle.delay", "时间(毫秒)");
-        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(delay_label),
-                             &delay_ms, 100, 500)) {
-            oracle.auto_teleport.delay_ms.store(delay_ms,
-                                                std::memory_order_release);
-        }
-        std::uint32_t offset_cm =
-            oracle.auto_teleport.offset_cm.load(std::memory_order_acquire);
-        const std::string offset_label =
-            context.localizer.Text("oracle.offset", "距离(厘米)");
-        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(offset_label),
-                             &offset_cm, 100, 500)) {
-            oracle.auto_teleport.offset_cm.store(offset_cm,
-                                                 std::memory_order_release);
-        }
-        }
-    }
     ui->separator(ui->user);
-    if (type_choice == 10 && context.oracle != nullptr) {
-        auto& oracle = *context.oracle;
+    if (oracle_type) {
         std::size_t oracle_total{};
-        std::size_t oracle_uncollected{};
         {
-            std::scoped_lock lock(oracle.mutex);
-            oracle_total = oracle.records.size();
-            for (const auto& record : oracle.records) {
-                if (record.state == oracle_stone_locator::OracleStoneAvailable) {
-                    ++oracle_uncollected;
-                }
-            }
+            std::scoped_lock lock(context.oracle->mutex);
+            oracle_total = context.oracle->records.size();
         }
-        const std::string uncollected_str = std::to_string(oracle_uncollected);
         const std::string total_str = std::to_string(oracle_total);
-        const std::array oracle_args{std::string_view(uncollected_str),
-                                     std::string_view(total_str)};
-        const std::string oracle_progress = context.localizer.Format(
-            "oracle.progress", "乌鸦石头 未获取 {0} / 总 {1}", oracle_args);
-        ui->text(ui->user, anomaly::sdk::StringView(oracle_progress));
+        const std::array total_args{std::string_view(total_str)};
+        ui->text(ui->user, anomaly::sdk::StringView(context.localizer.Format(
+            "oracle.teleport_points", "乌鸦石头传送点 共 {0} 个（只能手动传送）", total_args)));
     } else {
         std::string status;
         std::size_t total{};
@@ -4526,16 +4573,12 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     }
 
     ui->separator(ui->user);
-    if (type_choice == 10 && context.oracle != nullptr) {
+    if (oracle_type) {
         auto& oracle = *context.oracle;
         std::vector<oracle_stone_impl::OracleStoneRecord> available;
         {
             std::scoped_lock lock(oracle.mutex);
-            for (const auto& record : oracle.records) {
-                if (record.state == oracle_stone_locator::OracleStoneAvailable) {
-                    available.push_back(record);
-                }
-            }
+            available = oracle.records;  // every stone: the state is not known
         }
         if (ui->begin_child != nullptr && ui->end_child != nullptr) {
             ui->begin_child(ui->user, anomaly::sdk::StringView("oracle-list"),
