@@ -258,6 +258,7 @@ struct Context final {
     std::chrono::steady_clock::time_point landmark_arrival_time{};
     std::uintptr_t target_actor{};
     std::uint8_t interact_baseline{};
+    std::unordered_map<std::uintptr_t, std::ptrdiff_t> interact_finish_offsets;  // class -> offset
     std::unordered_map<std::uintptr_t, std::string> class_name_cache;
     std::unordered_map<std::string, std::unordered_set<std::uint32_t>> class_map;
     std::chrono::steady_clock::time_point due{};
@@ -1392,6 +1393,70 @@ bool FindFunction(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cl
         owner = super;
     }
     return false;
+}
+
+// Offset of a reflected property, looked up by name on `cls` and its supers
+// (UStruct::PropertyLink -> FProperty::PropertyLinkNext). Used instead of a
+// hard-coded offset for fields whose position moves between builds.
+constexpr std::ptrdiff_t kUStructPropertyLinkOffset = 112;
+constexpr std::ptrdiff_t kFPropertyLinkNextOffset = 72;
+constexpr std::ptrdiff_t kFFieldNameOffset = 32;
+constexpr std::ptrdiff_t kFPropertyOffsetInternalOffset = 68;
+
+bool FindPropertyOffset(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cls,
+                        const std::string_view target, std::int32_t& offset) noexcept {
+    std::uintptr_t owner = cls;
+    for (std::uint32_t depth{}; owner != 0 && depth < 64; ++depth) {
+        std::uintptr_t property{};
+        Read(reinterpret_cast<const void*>(owner + kUStructPropertyLinkOffset), property);
+        for (std::uint32_t count{}; property != 0 && count < 4096; ++count) {
+            std::uint32_t name_id{};
+            if (Read(reinterpret_cast<const void*>(property + kFFieldNameOffset), name_id) &&
+                ResolveName(names, name_id) == target &&
+                Read(reinterpret_cast<const void*>(property + kFPropertyOffsetInternalOffset),
+                     offset) &&
+                offset > 0) {
+                return true;
+            }
+            std::uintptr_t next{};
+            if (!Read(reinterpret_cast<const void*>(property + kFPropertyLinkNextOffset), next) ||
+                next == property) {
+                break;
+            }
+            property = next;
+        }
+        // PropertyLink already walks inherited properties; the super chain is
+        // only a fallback for classes whose link is not built yet.
+        std::uintptr_t super{};
+        if (!Read(reinterpret_cast<const void*>(owner + kUStructSuperStructOffset), super) ||
+            super == 0 || super == owner) {
+            break;
+        }
+        owner = super;
+    }
+    return false;
+}
+
+// AActor-derived interactables' `bInteractFinish`. It was at +976 before the
+// 9/26 update; that build inserted HTAIRVOComponent there and moved the flag
+// to +984, so the pickup check read a null pointer that never changed and
+// every shop steal waited for the actor to be garbage-collected instead
+// (~25 s). Resolved by name per class and cached; the old offset is the
+// fallback when reflection is unavailable.
+std::ptrdiff_t InteractFinishOffset(Context& context, const std::uintptr_t actor) noexcept {
+    std::uintptr_t cls{};
+    if (actor == 0 || !Read(reinterpret_cast<const void*>(actor + kObjectClassOffset), cls) ||
+        cls == 0) {
+        return kInteractFinishOffset;
+    }
+    const auto cached = context.interact_finish_offsets.find(cls);
+    if (cached != context.interact_finish_offsets.end()) return cached->second;
+    std::int32_t offset{};
+    const std::ptrdiff_t resolved =
+        FindPropertyOffset(context.names, cls, "bInteractFinish", offset) ? offset
+                                                                           : kInteractFinishOffset;
+    context.interact_finish_offsets.emplace(cls, resolved);
+    return resolved;
 }
 
 bool Invoke(void* object, void* function, void* parameters) noexcept {
@@ -3757,7 +3822,8 @@ void Tick(Context& context) {
         }
         std::uint8_t baseline{};
         Read(reinterpret_cast<const void*>(
-                 context.target_actor + kInteractFinishOffset), baseline);
+                 context.target_actor + InteractFinishOffset(context, context.target_actor)),
+             baseline);
         context.interact_baseline = baseline;
         std::uint8_t params[12]{};
         std::memcpy(params, &context.target_actor, sizeof(context.target_actor));
@@ -3922,7 +3988,9 @@ void Tick(Context& context) {
         std::uint8_t finish{};
         const bool disappeared = !IsObjectInGObjects(context, context.target_actor);
         bool completed = disappeared ||
-            (Read(reinterpret_cast<const void*>(context.target_actor + kInteractFinishOffset), finish) &&
+            (Read(reinterpret_cast<const void*>(
+                      context.target_actor + InteractFinishOffset(context, context.target_actor)),
+                  finish) &&
              finish != context.interact_baseline);
         if (!completed && now >= context.interact_verify_deadline) {
             RefreshUncollectedCatalog(context);
@@ -4015,7 +4083,8 @@ void Tick(Context& context) {
     // 验证消失
     std::uint8_t current_finish{};
     Read(reinterpret_cast<const void*>(
-             context.target_actor + kInteractFinishOffset), current_finish);
+             context.target_actor + InteractFinishOffset(context, context.target_actor)),
+         current_finish);
     if (current_finish == context.interact_baseline) {
         if (context.teleport_retry == 0) {
             context.teleport_retry = 1;
