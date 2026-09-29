@@ -1322,7 +1322,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_features(anomaly_skin_changer_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_skin_changer_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
-        
+
     add_library(anomaly_quick_ultimate_sequence STATIC
         plugins/QuickUltimate/sequence.cpp)
     target_include_directories(anomaly_quick_ultimate_sequence PUBLIC
