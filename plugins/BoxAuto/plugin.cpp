@@ -4449,91 +4449,38 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
             context.food_empty_region_run.store(empty_run, std::memory_order_relaxed);
         }
     }
-    const std::string start_index_label =
-        context.localizer.Text("label.start_index", "Start Index");
-    ui->input_uint32(ui->user, anomaly::sdk::StringView(start_index_label),
-                     &context.start_index, 1, 1);
-    const std::string start_label =
-        context.localizer.Text("action.start", "Start Auto Pickup");
-    if (ui->button(ui->user, anomaly::sdk::StringView(start_label), 0.0F, 0.0F) != 0) {
-        if (type_choice == 10 && context.oracle != nullptr) {
-            context.oracle->auto_teleport.start_index.store(
-                context.start_index, std::memory_order_release);
-            context.oracle->auto_teleport.enabled.store(true,
-                                                        std::memory_order_release);
-        } else {
+    // Oracle stones are teleport points only: the collected state cannot be
+    // read on the 9/26+ builds (see OracleRefreshStates), so there is no auto
+    // collect for them. Start Index / Start / Stop only drive the other types.
+    // The auto teleport code and the state fields are kept for when a
+    // read-only state source is found.
+    const bool oracle_type = type_choice == 10 && context.oracle != nullptr;
+    if (!oracle_type) {
+        const std::string start_index_label =
+            context.localizer.Text("label.start_index", "Start Index");
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(start_index_label),
+                         &context.start_index, 1, 1);
+        const std::string start_label =
+            context.localizer.Text("action.start", "Start Auto Pickup");
+        if (ui->button(ui->user, anomaly::sdk::StringView(start_label), 0.0F, 0.0F) != 0) {
             context.begin_pending.store(true, std::memory_order_release);
         }
-    }
-    const std::string stop_label = context.localizer.Text("action.stop", "Stop");
-    if (ui->button(ui->user, anomaly::sdk::StringView(stop_label), 0.0F, 0.0F) != 0) {
-        if (type_choice == 10 && context.oracle != nullptr) {
-            context.oracle->auto_teleport.enabled.store(false,
-                                                        std::memory_order_release);
-        } else {
+        const std::string stop_label = context.localizer.Text("action.stop", "Stop");
+        if (ui->button(ui->user, anomaly::sdk::StringView(stop_label), 0.0F, 0.0F) != 0) {
             Stop(context);
         }
     }
-    if (type_choice == 10 && context.oracle != nullptr) {
-        const std::string oracle_params =
-            context.localizer.Text("oracle.params", "乌鸦石头参数");
-        ui->text(ui->user, anomaly::sdk::StringView(oracle_params));
-        if (ui->input_uint32 != nullptr) {
-        auto& oracle = *context.oracle;
-        std::uint32_t delay_ms =
-            oracle.auto_teleport.delay_ms.load(std::memory_order_acquire);
-        const std::string delay_label =
-            context.localizer.Text("oracle.delay", "时间(毫秒)");
-        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(delay_label),
-                             &delay_ms, 100, 500)) {
-            oracle.auto_teleport.delay_ms.store(delay_ms,
-                                                std::memory_order_release);
-        }
-        std::uint32_t offset_cm =
-            oracle.auto_teleport.offset_cm.load(std::memory_order_acquire);
-        const std::string offset_label =
-            context.localizer.Text("oracle.offset", "距离(厘米)");
-        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(offset_label),
-                             &offset_cm, 100, 500)) {
-            oracle.auto_teleport.offset_cm.store(offset_cm,
-                                                 std::memory_order_release);
-        }
-        }
-    }
     ui->separator(ui->user);
-    if (type_choice == 10 && context.oracle != nullptr) {
-        auto& oracle = *context.oracle;
+    if (oracle_type) {
         std::size_t oracle_total{};
-        std::size_t oracle_uncollected{};
-        std::size_t oracle_unknown{};
         {
-            std::scoped_lock lock(oracle.mutex);
-            oracle_total = oracle.records.size();
-            for (const auto& record : oracle.records) {
-                if (record.state == oracle_stone_locator::OracleStoneAvailable) {
-                    ++oracle_uncollected;
-                } else if (record.state == oracle_stone_locator::OracleStoneUnknown) {
-                    ++oracle_unknown;
-                }
-            }
+            std::scoped_lock lock(context.oracle->mutex);
+            oracle_total = context.oracle->records.size();
         }
         const std::string total_str = std::to_string(oracle_total);
-        if (oracle_total != 0 && oracle_unknown == oracle_total) {
-            // Every state is unknown (the query's meaning is unconfirmed on
-            // this build): "0 uncollected" would read as "all collected".
-            const std::array unknown_args{std::string_view(total_str)};
-            const std::string unknown_text = context.localizer.Format(
-                "oracle.progress.unknown",
-                "乌鸦石头 总 {0}，收集状态暂时读不出来（游戏更新后未确认）", unknown_args);
-            ui->text(ui->user, anomaly::sdk::StringView(unknown_text));
-        } else {
-            const std::string uncollected_str = std::to_string(oracle_uncollected);
-            const std::array oracle_args{std::string_view(uncollected_str),
-                                         std::string_view(total_str)};
-            const std::string oracle_progress = context.localizer.Format(
-                "oracle.progress", "乌鸦石头 未获取 {0} / 总 {1}", oracle_args);
-            ui->text(ui->user, anomaly::sdk::StringView(oracle_progress));
-        }
+        const std::array total_args{std::string_view(total_str)};
+        ui->text(ui->user, anomaly::sdk::StringView(context.localizer.Format(
+            "oracle.teleport_points", "乌鸦石头传送点 共 {0} 个（只能手动传送）", total_args)));
     } else {
         std::string status;
         std::size_t total{};
@@ -4557,28 +4504,12 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     }
 
     ui->separator(ui->user);
-    if (type_choice == 10 && context.oracle != nullptr) {
+    if (oracle_type) {
         auto& oracle = *context.oracle;
         std::vector<oracle_stone_impl::OracleStoneRecord> available;
-        bool all_unknown = false;
         {
             std::scoped_lock lock(oracle.mutex);
-            all_unknown = !oracle.records.empty();
-            for (const auto& record : oracle.records) {
-                if (record.state != oracle_stone_locator::OracleStoneUnknown) all_unknown = false;
-                if (record.state == oracle_stone_locator::OracleStoneAvailable) {
-                    available.push_back(record);
-                }
-            }
-            // No state is known (the query's meaning is unconfirmed on this
-            // build): list every stone for a manual teleport instead of an
-            // empty list. Auto teleport still only goes to known-available ones.
-            if (all_unknown) available = oracle.records;
-        }
-        if (all_unknown) {
-            ui->text(ui->user, anomaly::sdk::StringView(context.localizer.Text(
-                "oracle.list.unknown",
-                "收集状态读不出来，下面列出全部，可手动传送；自动传送暂不可用")));
+            available = oracle.records;  // every stone: the state is not known
         }
         if (ui->begin_child != nullptr && ui->end_child != nullptr) {
             ui->begin_child(ui->user, anomaly::sdk::StringView("oracle-list"),
