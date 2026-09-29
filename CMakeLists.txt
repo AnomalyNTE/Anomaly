@@ -1311,6 +1311,17 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteFreeFly/manifest.json
         PACKAGE_NAME NteFreeFly
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteFreeFly")
+    anomaly_add_plugin(anomaly_builtin_skin_changer
+        SOURCES plugins/SkinChanger/plugin.cpp plugins/SkinChanger/cosmetics.cpp
+        MANIFEST plugins/SkinChanger/manifest.json
+        PACKAGE_NAME SkinChanger
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SkinChanger")
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_skin_changer_fixture
+            plugins/SkinChanger/cosmetics_tests.cpp)
+        target_compile_features(anomaly_skin_changer_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_skin_changer_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
     add_library(anomaly_quick_ultimate_sequence STATIC
         plugins/QuickUltimate/sequence.cpp)
     target_include_directories(anomaly_quick_ultimate_sequence PUBLIC
@@ -1382,7 +1393,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
-        anomaly_builtin_nte_free_fly anomaly_builtin_ui_buttons
+        anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -1402,6 +1413,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
@@ -1454,6 +1466,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
 anomaly_stage_platform_preview_plugin(
     anomaly_builtin_nte_quick_ultimate QuickUltimate)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_skin_changer SkinChanger)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_ui_buttons UiButtons)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)
