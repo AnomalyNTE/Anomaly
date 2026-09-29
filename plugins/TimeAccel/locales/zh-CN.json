@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "时间加速",
+    "plugin.description": "给游戏世界设置时间膨胀倍率，整体加速游戏节奏。界面可改键，Backspace 解除绑定。窗口底部显示当前实际生效倍率。注意 2 倍以上角色伤害可能会异常。"
+  }
+}

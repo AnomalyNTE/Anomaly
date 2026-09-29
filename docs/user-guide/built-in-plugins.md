@@ -217,6 +217,19 @@ Actor/Entity 快照。点击 **Export JSON** 会通过 Host storage 原子写出
 
 默认目标为 `dumper-7.dll`。把目标 DLL 放进 `Anomaly\plugins\DllLoader\` 后启用该插件即可加载；也可以在插件窗口输入包内相对路径或绝对路径。路径修改在渲染回调中只保存在内存，随后从 **Plugins** 页重载该插件，生命周期会先保存设置、释放旧 DLL，再加载新路径。将路径清空并重载可禁用 DLL 加载。
 
+### Time Accel
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.builtin.nte-time-accel` |
+| **作用** | 给本地世界设置时间膨胀倍率，整体加速游戏节奏（动画、物理、本地移动、演出，含玩家角色）；支持「加速 N 秒」与「持续加速」，到点或停止后恢复 1 倍。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.core`（可选）、`anomaly.ue5.names/objects/process-event`（可选）、`anomaly.nte.player`（可选）、`anomaly.input`（可选）、`anomaly.storage`（可选）、`anomaly.scheduler`（可选） |
+| **需要 Profile** | 否（通过 `anomaly.core::write_memory` 写世界设置；依赖 `memory-read`/`memory-write` capability） |
+
+该插件只在**开发者模式**下可用（`audience` 为 `developer`，且运行时校验开发者模式开关）。
+倍率、时长与三个功能键（加速一次 / 持续加速 / 立即恢复）都可在窗口内调整，改动即持久化；
+三个功能键默认未绑定。时间膨胀是本地世界设置，服务端权威的结算（伤害、技能 CD 等）不会因此变快。
+
 ## 管理插件
 
 在 **Plugins** 页你可以：
