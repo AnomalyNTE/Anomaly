@@ -37,7 +37,6 @@ struct Offsets {
     std::int64_t container_list{}, container_displayed{};
     std::int64_t htui_text{}, htui_pressed{}, htui_last_click{};
     std::int64_t base_closing{}, base_pause{}, base_hide_main{}, base_input{};
-    std::int64_t base_hide_children{};
     std::uint8_t base_input_menu{};
     std::int64_t check_on_changed{}, text_block_text{};
     std::int64_t radio_box{}, radio_text{}, radio_block_button{}, item_click_button{};
@@ -249,7 +248,7 @@ struct KeySpec {
 };
 
 // Masks and enum values are single bytes; everything else is a field offset.
-constexpr std::array<KeySpec, 47> kKeys{{
+constexpr std::array<KeySpec, 46> kKeys{{
     {"object.flags", 0, kMaxOffset},
     {"object.internalIndex", 0, kMaxOffset},
     {"object.class", 0, kMaxOffset},
@@ -290,7 +289,6 @@ constexpr std::array<KeySpec, 47> kKeys{{
     {"htuiBase.hideMainForm", 0, kMaxOffset},
     {"htuiBase.inputConfig", 0, kMaxOffset},
     {"htuiBase.inputConfigMenu", 0, 255},
-    {"htuiBase.hideChildrenReason", 0, kMaxOffset},
     {"checkBox.onCheckStateChanged", 0, kMaxOffset},
     {"textBlock.text", 0, kMaxOffset},
     {"htuiRadioBox.radioBox", 0, kMaxOffset},
@@ -369,7 +367,6 @@ Offsets LoadOffsets(const BuildProfile& profile) {
     o.base_hide_main = v("htuiBase.hideMainForm");
     o.base_input = v("htuiBase.inputConfig");
     o.base_input_menu = static_cast<std::uint8_t>(v("htuiBase.inputConfigMenu"));
-    o.base_hide_children = v("htuiBase.hideChildrenReason");
     o.check_on_changed = v("checkBox.onCheckStateChanged");
     o.text_block_text = v("textBlock.text");
     o.radio_box = v("htuiRadioBox.radioBox");
@@ -1003,9 +1000,6 @@ Evaluator::Chain Evaluator::Walk(const Layers& layers, std::uintptr_t button) {
         if ((traits & kTraitHtuiBase) != 0 && widget != button) {
             if (r_.Flag(Reflection::At(widget, o.base_closing))) {
                 set_cause(ANOMALY_NTE_UI_BUTTON_REASON_V1_CLOSING, widget);
-            }
-            if (r_.Flag(Reflection::At(widget, o.base_hide_children))) {
-                set_cause(ANOMALY_NTE_UI_BUTTON_REASON_V1_OCCLUDED, widget);
             }
         }
         const auto member = layers.members.find(widget);

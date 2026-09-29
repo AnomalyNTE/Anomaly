@@ -756,10 +756,12 @@ int main() {
     Scan(engine, world);
     expect("ButtonCharacterInfo2", clickable, 0);
     expect("BtnConfirm", hidden, ANOMALY_NTE_UI_BUTTON_REASON_V1_DETACHED);
-    world.Put<std::uint8_t>(main_form + kHideChildren, 1);
+    // BeHideChildrenReason is only a tag (the open world leaves it set on the main
+    // form); HideChildren collapses what it hides, so visible buttons stay clickable.
+    world.Put<std::uint32_t>(main_form + kHideChildren, 2);
     Scan(engine, world);
-    expect("ButtonCharacterInfo2", blocked, ANOMALY_NTE_UI_BUTTON_REASON_V1_OCCLUDED);
-    world.Put<std::uint8_t>(main_form + kHideChildren, 0);
+    expect("ButtonCharacterInfo2", clickable, 0);
+    world.Put<std::uint32_t>(main_form + kHideChildren, 0);
     world.slate_missing.erase(award);
     activate(award, true);
     set_layer(menu_layer, {award}, award);
