@@ -116,6 +116,7 @@ constexpr std::string_view kSettingsSchema = R"json(
     "sinkRetries": {"type": "integer"},
     "preloadDelay": {"type": "number"},
     "forwardHotkey": {"type": "integer"},
+    "trackedHotkey": {"type": "integer"},
     "points": {
       "type": "array", "maxItems": 4096,
       "items": {
@@ -162,6 +163,7 @@ struct TeleportSettings {
     std::uint32_t sink_retries{2};
     double preload_delay{kPreloadDelayDefault};
     std::uint32_t forward_hotkey{};
+    std::uint32_t tracked_hotkey{};
     std::vector<ImportedPoint> points;
 };
 
@@ -217,6 +219,9 @@ struct Context {
     std::uint32_t forward_hotkey_key{};
     AnomalyGenerationHandleV1 forward_hotkey{};
     bool capturing_forward{};
+    std::uint32_t tracked_hotkey_key{};
+    AnomalyGenerationHandleV1 tracked_hotkey{};
+    bool capturing_tracked{};
     TeleportAction hotkey_action{TeleportAction::none};
     LandingMonitor landing{};
     std::string import_folder;
@@ -929,6 +934,8 @@ bool ParseSettingsDocument(const std::string_view document, TeleportSettings& se
             if (!reader.ReadNumber(settings.preload_delay)) return false;
         } else if (key == "forwardHotkey") {
             if (!reader.ReadUnsigned(settings.forward_hotkey)) return false;
+        } else if (key == "trackedHotkey") {
+            if (!reader.ReadUnsigned(settings.tracked_hotkey)) return false;
         } else if (key == "points") {
             if (!settings.points.empty() ||
                 !ReadImportedPoints(reader, settings.points)) {
@@ -947,7 +954,7 @@ bool ParseSettingsDocument(const std::string_view document, TeleportSettings& se
         settings.landing_lift <= 2000.0 && settings.sink_retries <= 8U &&
         std::isfinite(settings.preload_delay) && settings.preload_delay >= 0.0 &&
         settings.preload_delay <= kPreloadDelayMaximum &&
-        settings.forward_hotkey < 256U;
+        settings.forward_hotkey < 256U && settings.tracked_hotkey < 256U;
 }
 
 std::string EscapeJsonString(const std::string_view value) {
@@ -984,6 +991,7 @@ std::string SerializeSettings(const TeleportSettings& settings) {
         ",\"sinkRetries\":" + std::to_string(settings.sink_retries) +
         ",\"preloadDelay\":" + FormatDouble(settings.preload_delay) +
         ",\"forwardHotkey\":" + std::to_string(settings.forward_hotkey) +
+        ",\"trackedHotkey\":" + std::to_string(settings.tracked_hotkey) +
         ",\"points\":[";
     for (std::size_t index = 0; index < settings.points.size(); ++index) {
         if (index != 0) document.push_back(',');
@@ -1037,6 +1045,7 @@ bool LoadSettings() {
         g_context.sink_retries = settings.sink_retries;
         g_context.preload_delay = settings.preload_delay;
         g_context.forward_hotkey_key = settings.forward_hotkey;
+        g_context.tracked_hotkey_key = settings.tracked_hotkey;
         g_context.settings_dirty = false;
         return true;
     } catch (...) {
@@ -1057,6 +1066,7 @@ bool SaveSettings() {
         settings.sink_retries = g_context.sink_retries;
         settings.preload_delay = g_context.preload_delay;
         settings.forward_hotkey = g_context.forward_hotkey_key;
+        settings.tracked_hotkey = g_context.tracked_hotkey_key;
         settings.points = g_context.imported_points;
     }
     if (!ConfigMethodsAvailable(g_context.config)) return false;
@@ -1228,14 +1238,23 @@ std::string VirtualKeyName(const std::uint32_t key) {
 
 void SetTeleportAction(const TeleportAction action) noexcept {
     std::scoped_lock lock(g_context.mutex);
-    if (!g_context.capturing_forward) {
-        g_context.hotkey_action = action;
-    }
+    // A hotkey that is being captured must not also fire: pressing an already
+    // bound key starts the capture, and the same press would otherwise issue the
+    // teleport the user is only trying to rebind.
+    if (g_context.capturing_forward || g_context.capturing_tracked) return;
+    g_context.hotkey_action = action;
 }
 
 void ANOMALY_CALL ForwardHotkey(void*, AnomalyGenerationHandleV1,
                                 const AnomalyInputSnapshotV1*) noexcept {
     SetTeleportAction(TeleportAction::forward);
+}
+
+void ANOMALY_CALL TrackedTargetHotkey(void*, AnomalyGenerationHandleV1,
+                                      const AnomalyInputSnapshotV1*) noexcept {
+    std::scoped_lock lock(g_context.mutex);
+    if (g_context.capturing_forward || g_context.capturing_tracked) return;
+    g_context.tracked_target_teleport_requested = true;
 }
 
 bool RegisterHotkey(
@@ -1267,41 +1286,66 @@ bool RegisterForwardHotkey(Context& context, const std::uint32_t key,
         ForwardHotkey, handle);
 }
 
+bool RegisterTrackedHotkey(Context& context, const std::uint32_t key,
+                           AnomalyGenerationHandleV1& handle) noexcept {
+    return RegisterHotkey(
+        context.input, key, "nte-teleport-tracked-" + std::to_string(key),
+        TrackedTargetHotkey, handle);
+}
+
 void ReleaseHotkeys(Context& context) noexcept {
     if (context.forward_hotkey.id != 0 && InputMethodsAvailable(context.input)) {
         static_cast<void>(context.input->release_hotkey(
             context.input->user, context.forward_hotkey));
     }
     context.forward_hotkey = {};
+    if (context.tracked_hotkey.id != 0 && InputMethodsAvailable(context.input)) {
+        static_cast<void>(context.input->release_hotkey(
+            context.input->user, context.tracked_hotkey));
+    }
+    context.tracked_hotkey = {};
 }
 
-bool ReplaceForwardHotkey(Context& context, const std::uint32_t key) noexcept {
-    if (key == context.forward_hotkey_key) return true;
+using HotkeyRegister = bool (*)(Context&, std::uint32_t, AnomalyGenerationHandleV1&);
+
+bool ReplaceHotkey(
+    Context& context, const std::uint32_t key, std::uint32_t& current_key,
+    AnomalyGenerationHandleV1& current, const HotkeyRegister register_hotkey) noexcept {
+    if (key == current_key) return true;
     if (key == 0) {
-        const auto previous = context.forward_hotkey;
-        if (previous.id != 0 && InputMethodsAvailable(context.input)) {
-            static_cast<void>(context.input->release_hotkey(
-                context.input->user, previous));
+        if (current.id != 0 && InputMethodsAvailable(context.input)) {
+            static_cast<void>(context.input->release_hotkey(context.input->user, current));
         }
-        context.forward_hotkey = {};
-        context.forward_hotkey_key = 0;
+        current = {};
+        current_key = 0;
         context.settings_dirty = true;
         return true;
     }
     AnomalyGenerationHandleV1 replacement{};
-    if (!RegisterForwardHotkey(context, key, replacement)) return false;
-    const auto previous = context.forward_hotkey;
-    if (previous.id != 0 && InputMethodsAvailable(context.input) &&
-        context.input->release_hotkey(context.input->user, previous).code !=
+    if (!register_hotkey(context, key, replacement)) return false;
+    if (current.id != 0 && InputMethodsAvailable(context.input) &&
+        context.input->release_hotkey(context.input->user, current).code !=
             ANOMALY_STATUS_V1_OK) {
         static_cast<void>(context.input->release_hotkey(
             context.input->user, replacement));
         return false;
     }
-    context.forward_hotkey = replacement;
-    context.forward_hotkey_key = key;
+    current = replacement;
+    current_key = key;
     context.settings_dirty = true;
     return true;
+}
+
+bool ReplaceForwardHotkey(Context& context, const std::uint32_t key) noexcept {
+    return ReplaceHotkey(
+        context, key, context.forward_hotkey_key, context.forward_hotkey,
+        RegisterForwardHotkey);
+}
+
+bool ReplaceTrackedHotkey(Context& context, const std::uint32_t key) noexcept {
+    return ReplaceHotkey(
+        context, key, context.tracked_hotkey_key, context.tracked_hotkey,
+        RegisterTrackedHotkey);
 }
 
 bool CaptureHotkey(
@@ -2011,6 +2055,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.forward_hotkey_key = 0;
         g_context.forward_hotkey = {};
         g_context.capturing_forward = false;
+        g_context.tracked_hotkey_key = 0;
+        g_context.tracked_hotkey = {};
+        g_context.capturing_tracked = false;
         g_context.hotkey_action = TeleportAction::none;
         g_context.landing = {};
         g_context.import_folder.clear();
@@ -2067,6 +2114,10 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         static_cast<void>(RegisterForwardHotkey(
             g_context, g_context.forward_hotkey_key, g_context.forward_hotkey));
     }
+    if (g_context.tracked_hotkey_key != 0) {
+        static_cast<void>(RegisterTrackedHotkey(
+            g_context, g_context.tracked_hotkey_key, g_context.tracked_hotkey));
+    }
     return anomaly::sdk::Ok();
 }
 
@@ -2103,6 +2154,8 @@ void ANOMALY_CALL Unload(void* context) {
     g_context.imported_points.clear();
     g_context.forward_hotkey = {};
     g_context.capturing_forward = false;
+    g_context.tracked_hotkey = {};
+    g_context.capturing_tracked = false;
     g_context.hotkey_action = TeleportAction::none;
     g_context.landing = {};
     g_context.import_folder.clear();
@@ -2361,6 +2414,27 @@ void DrawTabTrackedTarget(const AnomalyUiServiceV1* ui) {
         g_context.tracked_target_teleport_requested = true;
     }
 
+    ui->separator(ui->user);
+    std::uint32_t tracked_key{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        tracked_key = g_context.tracked_hotkey_key;
+    }
+    const std::string hotkey_name = tracked_key == 0
+        ? g_context.localizer.Text("hotkey.none", "None")
+        : VirtualKeyName(tracked_key);
+    std::string hotkey_label = g_context.localizer.Text(
+        "action.tracked.hotkey", "Tracked target hotkey");
+    hotkey_label += ": ";
+    hotkey_label += hotkey_name;
+    hotkey_label += "###tracked-target-hotkey";
+    if (ui->button(
+            ui->user, anomaly::sdk::StringView(hotkey_label), 0.0F, 0.0F) != 0) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.capturing_tracked = true;
+        g_context.capturing_forward = false;
+    }
+
     ui->end_tab_item(ui->user);
 }
 
@@ -2563,7 +2637,6 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
     ui->separator(ui->user);
     DrawText(ui, g_context.localizer.Text("hotkey.title", "Teleport hotkeys"));
 
-    bool capturing_forward{};
     std::uint32_t forward_key{};
     double forward_distance{};
     double z_lift{};
@@ -2572,7 +2645,6 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
     double preload_delay{};
     {
         std::scoped_lock lock(g_context.mutex);
-        capturing_forward = g_context.capturing_forward;
         forward_key = g_context.forward_hotkey_key;
         forward_distance = g_context.forward_distance;
         z_lift = g_context.z_lift;
@@ -2584,19 +2656,13 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
     const std::string forward_name = forward_key == 0
         ? g_context.localizer.Text("hotkey.none", "None")
         : VirtualKeyName(forward_key);
-    if (capturing_forward) {
-        DrawText(ui, g_context.localizer.Text(
-            "hotkey.capture", "Press a key, Escape cancels, Backspace clears"));
-        static_cast<void>(CaptureHotkey(
-            g_context, g_context.capturing_forward, ReplaceForwardHotkey));
-    } else {
-        std::string capture_label = forward_name;
-        capture_label += "###capture-forward";
-        if (ui->button(
-                ui->user, anomaly::sdk::StringView(capture_label), 0.0F, 0.0F) != 0) {
-            std::scoped_lock lock(g_context.mutex);
-            g_context.capturing_forward = true;
-        }
+    std::string capture_label = forward_name;
+    capture_label += "###capture-forward";
+    if (ui->button(
+            ui->user, anomaly::sdk::StringView(capture_label), 0.0F, 0.0F) != 0) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.capturing_forward = true;
+        g_context.capturing_tracked = false;
     }
 
     ui->separator(ui->user);
@@ -2679,6 +2745,28 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) {
     anomaly::sdk::UiWindow window(input_ui, title, &open);
     if (!window) return;
 
+    // Hotkey capture belongs to the window, not to the tab that started it:
+    // polling it here keeps a capture from being stranded when the user switches
+    // tabs, which would otherwise leave the capture guard suppressing hotkeys.
+    bool capturing_forward{};
+    bool capturing_tracked{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        capturing_forward = g_context.capturing_forward;
+        capturing_tracked = g_context.capturing_tracked;
+    }
+    if (capturing_forward) {
+        DrawText(input_ui, g_context.localizer.Text(
+            "hotkey.capture", "Press a key, Escape cancels, Backspace clears"));
+        static_cast<void>(CaptureHotkey(
+            g_context, g_context.capturing_forward, ReplaceForwardHotkey));
+    } else if (capturing_tracked) {
+        DrawText(input_ui, g_context.localizer.Text(
+            "hotkey.capture", "Press a key, Escape cancels, Backspace clears"));
+        static_cast<void>(CaptureHotkey(
+            g_context, g_context.capturing_tracked, ReplaceTrackedHotkey));
+    }
+
     if (input_ui->begin_tab_bar(
             input_ui->user, anomaly::sdk::StringView("teleport-tabs"), 0) != 0) {
         DrawTabCoordinate(input_ui, host, target);
@@ -2701,6 +2789,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.builtin.nte-teleport"),
         anomaly::sdk::StringView("Teleport"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.4.0"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.5.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
