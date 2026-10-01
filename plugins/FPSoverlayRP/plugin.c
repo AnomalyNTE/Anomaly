@@ -41,6 +41,10 @@ static char g_frame_plugin[160];
 static char g_memory_plugin[160];
 static char g_thread_plugin[160];
 static AnomalyGenerationHandleV1 g_window_handle;
+/* Render runs on the Render thread while stop/unload run on the Lifecycle thread.
+   Serialize window-handle access so stop cannot release a window while draw is
+   inside begin()/end(). SRWLOCK has static initialization and needs no teardown. */
+static SRWLOCK g_window_lock = SRWLOCK_INIT;
 
 static AnomalyStringViewV1 sv(const char* s) {
     AnomalyStringViewV1 v = {s, s ? strlen(s) : 0};
@@ -231,11 +235,17 @@ static int valid_window_service(const AnomalyWindowServiceV1* service) {
         service->end != NULL;
 }
 
-static void release_window(void) {
+static void release_window_locked(void) {
     if (g_window_handle.id != 0 && g_window != NULL && g_window->release_window != NULL) {
         (void)g_window->release_window(g_window->user, g_window_handle);
     }
     g_window_handle = (AnomalyGenerationHandleV1){0};
+}
+
+static void release_window(void) {
+    AcquireSRWLockExclusive(&g_window_lock);
+    release_window_locked();
+    ReleaseSRWLockExclusive(&g_window_lock);
 }
 
 static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** context) {
@@ -247,8 +257,6 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     g_window=NULL;
     g_host=host;
     g_core=(const AnomalyCoreServiceV1*)query(host,ANOMALY_CORE_SERVICE_V1_ID,ANOMALY_CORE_SERVICE_V1_VERSION);
-    core_log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "RuntimeProfiler: build 0.10.3 load() reached");
-    return (AnomalyStatusV1){ANOMALY_STATUS_V1_FAILED,0,sv("RuntimeProfiler DIAGNOSTIC: NEW DLL REACHED load()")};
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
     g_base_memory=0; g_base_threads=0; g_fps=0; g_display_fps=0; g_fps_band=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
@@ -337,10 +345,34 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     if (!ui || !g_window || g_window_handle.id == 0) return;
     if (!HAS_FIELD(ui, AnomalyUiServiceV1, text) || !ui->text) return;
 
+    /* on_draw is Render-domain while stop/unload are Lifecycle-domain.
+       Keep the window handle locked for the entire begin/end pair so the
+       Lifecycle thread cannot release it underneath an active draw. */
+    AcquireSRWLockShared(&g_window_lock);
+    if (!g_window || g_window_handle.id == 0) {
+        ReleaseSRWLockShared(&g_window_lock);
+        return;
+    }
+
+    AnomalyWindowStateV1 state = {sizeof(state)};
+    if (g_window->state != NULL &&
+        !succeeded(g_window->state(g_window->user,g_window_handle,&state))) {
+        ReleaseSRWLockShared(&g_window_lock);
+        return;
+    }
+    if (g_window->state != NULL && state.open == 0) {
+        ReleaseSRWLockShared(&g_window_lock);
+        return;
+    }
+
     int visible=0;
-    if (!succeeded(g_window->begin(g_window->user,g_window_handle,0,&visible))) return;
+    if (!succeeded(g_window->begin(g_window->user,g_window_handle,0,&visible))) {
+        ReleaseSRWLockShared(&g_window_lock);
+        return;
+    }
     if (!visible) {
         (void)g_window->end(g_window->user,g_window_handle);
+        ReleaseSRWLockShared(&g_window_lock);
         return;
     }
 
@@ -352,6 +384,7 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
         snprintf(fps_line,sizeof(fps_line),"当前帧数：%.0f FPS（%s）",g_display_fps,fps_color);
         text(ui,fps_line);
         (void)g_window->end(g_window->user,g_window_handle);
+        ReleaseSRWLockShared(&g_window_lock);
         return;
     }
 
@@ -386,6 +419,7 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
         g_alert_acknowledged=1;
     }
     (void)g_window->end(g_window->user,g_window_handle);
+    ReleaseSRWLockShared(&g_window_lock);
 }
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* d){
     if(!d || d->struct_size<sizeof(*d)) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
