@@ -282,7 +282,7 @@ static int button(const AnomalyUiServiceV1* ui, const char* label, float width, 
    256 = NoSavedSettings
    Keep the overlay passive: it should look like text floating over the game.
 */
-#define RP_OVERLAY_FLAGS (1u | 2u | 4u | 8u | 128u | 256u)
+#define RP_OVERLAY_FLAGS (1u | 2u | 4u | 128u | 256u)
 
 static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     (void)context;
@@ -293,7 +293,7 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
         int open=1;
 
         /* Compact transparent HUD. The host keeps the saved position. */
-        if (ui->set_next_window_size) ui->set_next_window_size(ui->user,180.0f,72.0f,0);
+        if (ui->set_next_window_size) ui->set_next_window_size(ui->user,260.0f,120.0f,0);
 
         int visible=ui->begin_window(ui->user,sv("##RuntimeProfilerFPS"),&open,RP_OVERLAY_FLAGS);
         if(!visible){ ui->end_window(ui->user); return; }
