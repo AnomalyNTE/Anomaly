@@ -342,7 +342,7 @@ static void ANOMALY_CALL update(void* context,double delta){
 static void text(const AnomalyUiServiceV1* ui,const char* s){ if(ui&&ui->text)ui->text(ui->user,sv(s)); }
 static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     (void)context;
-    if (!ui || !g_window || g_window_handle.id == 0) return;
+    if (!ui) return;
     if (!HAS_FIELD(ui, AnomalyUiServiceV1, text) || !ui->text) return;
 
     /* on_draw is Render-domain while stop/unload are Lifecycle-domain.
