@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.tools.runtime-profiler",
+  "name": "运行异常监测",
+  "description": "常态以无边框透明文本显示当前 FPS，文字大小随 Windows DPI 缩放；检测到持续运行异常后切换为异常监测界面。",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "0.10.2",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.storage",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.diagnostics",
+      "minVersion": 1,
+      "optional": true
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "storage",
+    "diagnostics"
+  ]
+}
