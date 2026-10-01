@@ -268,7 +268,7 @@ static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
         g_host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
     if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text) {
         core_log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "RuntimeProfiler: anomaly.ui unavailable at start");
-        return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+        return (AnomalyStatusV1){ANOMALY_STATUS_V1_FAILED,0,sv("RuntimeProfiler: anomaly.ui unavailable at start")};
     }
 
     if (!g_window || !valid_window_service(g_window)) {
@@ -278,7 +278,7 @@ static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
     if (!valid_window_service(g_window)) {
         g_window=NULL;
         core_log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "RuntimeProfiler: anomaly.window unavailable at start");
-        return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+        return (AnomalyStatusV1){ANOMALY_STATUS_V1_FAILED,0,sv("RuntimeProfiler: anomaly.window unavailable at start")};
     }
 
     window.struct_size = sizeof(window);
