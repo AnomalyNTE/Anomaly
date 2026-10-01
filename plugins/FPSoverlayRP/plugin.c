@@ -272,29 +272,45 @@ static int button(const AnomalyUiServiceV1* ui, const char* label, float width, 
     return ui && ui->button ? ui->button(ui->user,sv(label),width,height) : 0;
 }
 
+/*
+   Dear ImGui window flags passed through AnomalyUiServiceV1:
+   1   = NoTitleBar
+   2   = NoResize
+   4   = NoMove
+   8   = NoScrollbar
+   128 = NoBackground
+   256 = NoSavedSettings
+   Keep the overlay passive: it should look like text floating over the game.
+*/
+#define RP_OVERLAY_FLAGS (1u | 2u | 4u | 8u | 128u | 256u)
+
 static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     (void)context;
     if (InterlockedCompareExchange(&g_active, 0, 0) == 0) return;
     if (!ui || !ui->begin_window || !ui->end_window) return;
 
-    /*
-       UI-only presentation:
-       - keep the normal window compact
-       - make the FPS value the visual focus
-       - use separators and fixed button sizes for a cleaner layout
-       - do not touch the monitoring/lifecycle logic
-    */
     if (!g_alert_active || g_alert_acknowledged) {
         int open=1;
-        if (ui->set_next_window_size) ui->set_next_window_size(ui->user,220.0f,96.0f,0);
 
-        int visible=ui->begin_window(ui->user,sv("运行状态"),&open,0);
+        /* Compact transparent HUD. The host keeps the saved position. */
+        if (ui->set_next_window_size) ui->set_next_window_size(ui->user,180.0f,72.0f,0);
+
+        int visible=ui->begin_window(ui->user,sv("##RuntimeProfilerFPS"),&open,RP_OVERLAY_FLAGS);
         if(!visible){ ui->end_window(ui->user); return; }
 
         char fps_line[64];
+
+        /*
+           anomaly.ui currently exposes no text-color or font-size primitive.
+           Use colored Unicode status markers as a safe fallback while keeping
+           the actual FPS value numeric and uncluttered.
+        */
+        const char* marker = (g_fps_band >= 2) ? "🟢" :
+                             (g_fps_band == 1 ? "🟠" : "🔴");
         const char* status = (g_fps_band >= 2) ? "流畅" :
                              (g_fps_band == 1 ? "正常" : "偏低");
-        snprintf(fps_line,sizeof(fps_line),"●  %.0f FPS",g_display_fps);
+
+        snprintf(fps_line,sizeof(fps_line),"%s  %.0f FPS",marker,g_display_fps);
         text(ui,fps_line);
         text(ui,status);
 
@@ -310,15 +326,15 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
 
     char line[512],a[64],b[64];
 
-    text(ui,"检测到持续异常");
+    text(ui,"⚠  检测到持续异常");
     if (ui->separator) ui->separator(ui->user);
 
     if(g_frame_bad){
         format_ms(a,sizeof(a),g_max_frame_ms);
         if(g_frame_plugin[0])
-            snprintf(line,sizeof(line),"画面延时 / 帧数下降   峰值 %s",a);
+            snprintf(line,sizeof(line),"帧数下降     峰值 %s",a);
         else
-            snprintf(line,sizeof(line),"画面延时 / 帧数下降   峰值 %s   未定位插件",a);
+            snprintf(line,sizeof(line),"帧数下降     峰值 %s   未定位插件",a);
         text(ui,line);
         if(g_frame_plugin[0]){
             snprintf(line,sizeof(line),"疑似插件：%s",g_frame_plugin);
@@ -329,7 +345,7 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     if(g_memory_bad){
         format_mib(a,sizeof(a),g_base_memory);
         format_mib(b,sizeof(b),g_last_memory);
-        snprintf(line,sizeof(line),"内存异常增加   %s → %s",a,b);
+        snprintf(line,sizeof(line),"内存增加     %s → %s",a,b);
         text(ui,line);
         if(g_memory_plugin[0]){
             snprintf(line,sizeof(line),"疑似插件：%s",g_memory_plugin);
@@ -338,16 +354,13 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     }
 
     if(g_thread_bad){
-        snprintf(line,sizeof(line),"线程异常增加   %u → %u",g_base_threads,g_last_threads);
+        snprintf(line,sizeof(line),"线程增加     %u → %u",g_base_threads,g_last_threads);
         text(ui,line);
         if(g_thread_plugin[0]){
             snprintf(line,sizeof(line),"疑似插件：%s",g_thread_plugin);
             text(ui,line);
         }
     }
-
-    if (!g_frame_bad && !g_memory_bad && !g_thread_bad)
-        text(ui,"当前未检测到持续异常。");
 
     if (ui->separator) ui->separator(ui->user);
 
