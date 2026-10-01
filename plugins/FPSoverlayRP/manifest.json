@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "anomaly.tools.runtime-profiler",
   "name": "运行异常监测",
-  "description": "常态以无边框透明文本显示当前 FPS，文字大小随 Windows DPI 缩放；检测到持续运行异常后切换为异常监测界面。",
+  "description": "常态低开销静默监测画面延时、帧数下降、进程内存和线程增长，仅在确认异常后弹出提示并分析疑似相关插件。",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "0.10.2",
+  "version": "0.10.1",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
