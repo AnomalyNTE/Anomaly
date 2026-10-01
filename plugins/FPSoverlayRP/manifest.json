@@ -5,7 +5,7 @@
   "description": "常态低开销静默监测画面延时、帧数下降、进程内存和线程增长，仅在确认异常后弹出提示并分析疑似相关插件。",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
