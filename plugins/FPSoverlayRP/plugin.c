@@ -239,8 +239,10 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     *context=NULL;
     const AnomalyUiServiceV1* ui=(const AnomalyUiServiceV1*)query(host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
     if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
-    g_window=(const AnomalyWindowServiceV1*)query(host,ANOMALY_WINDOW_SERVICE_V1_ID,ANOMALY_WINDOW_SERVICE_V1_VERSION);
-    if(!valid_window_service(g_window)) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+    /* The window service can come online after the plugin load phase.
+       Do not make load() fail just because the managed-window service is not
+       ready yet. start() will query it again when Anomaly retries activation. */
+    g_window=NULL;
     g_host=host;
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
@@ -256,6 +258,18 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
 static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
     AnomalyWindowSpecV1 window = {0};
     (void)context;
+
+    /* Window service availability is checked at start time, not load time.
+       Returning UNAVAILABLE here lets Anomaly retry when the service becomes ready. */
+    if (!g_window || !valid_window_service(g_window)) {
+        g_window=(const AnomalyWindowServiceV1*)query(
+            g_host,ANOMALY_WINDOW_SERVICE_V1_ID,ANOMALY_WINDOW_SERVICE_V1_VERSION);
+    }
+    if (!valid_window_service(g_window)) {
+        g_window=NULL;
+        return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+    }
+
     window.struct_size = sizeof(window);
     window.id = sv("runtime-profiler");
     window.title = sv("FPS");
