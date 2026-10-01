@@ -272,6 +272,27 @@ static int button(const AnomalyUiServiceV1* ui, const char* label, float width, 
     return ui && ui->button ? ui->button(ui->user,sv(label),width,height) : 0;
 }
 
+static void text_colored(const AnomalyUiServiceV1* ui, const char* s, uint32_t color) {
+    if (!ui) return;
+    if (HAS_FIELD(ui, AnomalyUiServiceV1, text_colored) && ui->text_colored)
+        ui->text_colored(ui->user,sv(s),color);
+    else if (ui->text)
+        ui->text(ui->user,sv(s));
+}
+
+static void text_large_colored(const AnomalyUiServiceV1* ui, const char* s, float size, uint32_t color) {
+    if (!ui) return;
+    if (HAS_FIELD(ui, AnomalyUiServiceV1, text_large_colored) && ui->text_large_colored)
+        ui->text_large_colored(ui->user,sv(s),size,color);
+    else
+        text_colored(ui,s,color);
+}
+
+#define RP_GREEN  ANOMALY_RGBA_V1(80,220,120,255)
+#define RP_ORANGE ANOMALY_RGBA_V1(255,170,60,255)
+#define RP_RED    ANOMALY_RGBA_V1(255,75,75,255)
+#define RP_WHITE  ANOMALY_RGBA_V1(245,245,245,255)
+
 /*
    Overlay presentation:
    - transparent background
