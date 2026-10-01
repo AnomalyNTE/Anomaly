@@ -37,15 +37,6 @@ static char g_frame_plugin[160];
 static char g_memory_plugin[160];
 static char g_thread_plugin[160];
 
-/* Native transparent FPS overlay. It is intentionally separate from the Anomaly UI
-   so the normal-state display has no window frame/background. */
-static HWND g_fps_overlay;
-static HINSTANCE g_module;
-static UINT g_overlay_dpi = 96;
-static char g_overlay_text[64];
-static int g_overlay_created;
-static const wchar_t* kOverlayClass = L"AnomalyRuntimeProfilerFpsOverlay";
-
 static AnomalyStringViewV1 sv(const char* s) {
     AnomalyStringViewV1 v = {s, s ? strlen(s) : 0};
     return v;
@@ -128,141 +119,6 @@ static const char* matching_object_end(const char* p, const char* end) {
 }
 static void clear_plugins(void) { g_frame_plugin[0]=g_memory_plugin[0]=g_thread_plugin[0]=0; }
 
-static int overlay_dpi_scale(int value) {
-    return (int)(((int64_t)value * (int64_t)g_overlay_dpi + 48) / 96);
-}
-
-static void overlay_paint(HWND hwnd) {
-    if (!hwnd || !g_overlay_created) return;
-
-    RECT rc; GetClientRect(hwnd, &rc);
-    const int width = rc.right - rc.left;
-    const int height = rc.bottom - rc.top;
-    if (width <= 0 || height <= 0) return;
-
-    HDC screen = GetDC(NULL);
-    HDC mem = CreateCompatibleDC(screen);
-    BITMAPINFO bi; memset(&bi, 0, sizeof(bi));
-    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
-    bi.bmiHeader.biWidth = width;
-    bi.bmiHeader.biHeight = -height;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    void* bits = NULL;
-    HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-    if (!bmp || !bits) {
-        if (bmp) DeleteObject(bmp);
-        DeleteDC(mem); ReleaseDC(NULL, screen); return;
-    }
-    HGDIOBJ old = SelectObject(mem, bmp);
-    memset(bits, 0, (size_t)width * (size_t)height * 4U);
-
-    SetBkMode(mem, TRANSPARENT);
-    HFONT font = CreateFontW(overlay_dpi_scale(20), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-        VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
-    HGDIOBJ old_font = font ? SelectObject(mem, font) : NULL;
-
-    wchar_t wide[64];
-    int converted = MultiByteToWideChar(CP_UTF8, 0, g_overlay_text, -1, wide, 64);
-    if (converted <= 0) wide[0] = L'\0';
-
-    RECT text_rc = {overlay_dpi_scale(2), overlay_dpi_scale(2), width - overlay_dpi_scale(2), height - overlay_dpi_scale(2)};
-    /* Subtle shadow keeps the text readable over both dark and bright scenes. */
-    SetTextColor(mem, RGB(0, 0, 0));
-    RECT shadow = text_rc; OffsetRect(&shadow, overlay_dpi_scale(1), overlay_dpi_scale(1));
-    DrawTextW(mem, wide, -1, &shadow, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
-    SetTextColor(mem, RGB(245, 245, 245));
-    DrawTextW(mem, wide, -1, &text_rc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
-
-    if (old_font) SelectObject(mem, old_font);
-    if (font) DeleteObject(font);
-    SelectObject(mem, old);
-
-    POINT src = {0, 0};
-    POINT pos; RECT wr; GetWindowRect(hwnd, &wr);
-    pos.x = wr.left; pos.y = wr.top;
-    SIZE size = {width, height};
-    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    UpdateLayeredWindow(hwnd, screen, &pos, &size, mem, &src, 0, &blend, ULW_ALPHA);
-
-    DeleteObject(bmp); DeleteDC(mem); ReleaseDC(NULL, screen);
-}
-
-static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    (void)wp; (void)lp;
-    if (msg == WM_DPICHANGED) {
-        g_overlay_dpi = HIWORD(wp);
-        RECT* suggested = (RECT*)lp;
-        if (suggested) SetWindowPos(hwnd, HWND_TOPMOST, suggested->left, suggested->top,
-            suggested->right - suggested->left, suggested->bottom - suggested->top,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        overlay_paint(hwnd);
-        return 0;
-    }
-    if (msg == WM_ERASEBKGND) return 1;
-    if (msg == WM_NCHITTEST) return HTTRANSPARENT;
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-static void overlay_hide(void) {
-    if (g_fps_overlay) ShowWindow(g_fps_overlay, SW_HIDE);
-}
-
-static void overlay_destroy(void) {
-    if (g_fps_overlay) DestroyWindow(g_fps_overlay);
-    g_fps_overlay = NULL; g_overlay_created = 0;
-}
-
-static void overlay_create(void) {
-    if (g_fps_overlay || !g_module) return;
-    WNDCLASSW wc; memset(&wc, 0, sizeof(wc));
-    wc.lpfnWndProc = overlay_proc; wc.hInstance = g_module; wc.lpszClassName = kOverlayClass;
-    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
-    RegisterClassW(&wc);
-    g_overlay_dpi = GetDpiForSystem(); if (!g_overlay_dpi) g_overlay_dpi = 96;
-    const int w = overlay_dpi_scale(180);
-    const int h = overlay_dpi_scale(38);
-    const int x = overlay_dpi_scale(20);
-    const int y = overlay_dpi_scale(20);
-    g_fps_overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-        kOverlayClass, L"", WS_POPUP, x, y, w, h, NULL, NULL, g_module, NULL);
-    if (!g_fps_overlay) return;
-    g_overlay_created = 1;
-    SetWindowPos(g_fps_overlay, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-}
-
-static int overlay_process_is_foreground(void) {
-    HWND fg = GetForegroundWindow();
-    if (!fg) return 0;
-    DWORD pid = 0;
-    GetWindowThreadProcessId(fg, &pid);
-    return pid == GetCurrentProcessId();
-}
-
-static void overlay_update(void) {
-    if (!g_fps_overlay || g_alert_active || g_alert_acknowledged) return;
-    if (!overlay_process_is_foreground()) {
-        ShowWindow(g_fps_overlay, SW_HIDE);
-        return;
-    }
-    ShowWindow(g_fps_overlay, SW_SHOWNOACTIVATE);
-    char next[64];
-    snprintf(next, sizeof(next), "FPS %.1f", g_fps);
-    if (strcmp(next, g_overlay_text) == 0) return;
-    snprintf(g_overlay_text, sizeof(g_overlay_text), "%s", next);
-    overlay_paint(g_fps_overlay);
-}
-
-static void overlay_pump(void) {
-    if (!g_fps_overlay) return;
-    MSG msg;
-    while (PeekMessageW(&msg, g_fps_overlay, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg); DispatchMessageW(&msg);
-    }
-}
-
 static void snapshot_diagnostics(void) {
     g_have_diag=0; g_diag_size=0; clear_plugins();
     if(!g_diagnostics || !g_diagnostics->snapshot_json) return;
@@ -335,7 +191,8 @@ static void recalc(double delta) {
     if ((g_frame_bad || g_memory_bad || g_thread_bad) && !g_alert_active) {
         g_alert_active = 1;
         g_alert_acknowledged = 0;
-        /* Diagnostics are fetched by update() after the alert state is established. */
+        /* Only pay the diagnostics cost when there is actually something to report. */
+        snapshot_diagnostics();
     }
 }
 
@@ -353,11 +210,6 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     const AnomalyUiServiceV1* ui=(const AnomalyUiServiceV1*)query(host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
     if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text || !ui->begin_window || !ui->end_window) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
     g_host=host;
-    g_module = NULL;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        (LPCWSTR)(const void*)&load, &g_module);
-    g_fps_overlay = NULL; g_overlay_created = 0; g_overlay_text[0] = 0;
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
     g_base_memory=0; g_base_threads=0; g_fps=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
@@ -378,14 +230,10 @@ static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
     return ok();
 }
 static AnomalyStatusV1 ANOMALY_CALL stop(void* context,uint32_t deadline){(void)context;(void)deadline;return ok();}
-static void ANOMALY_CALL unload(void* context){(void)context;overlay_destroy();g_host=NULL;g_storage=NULL;g_diagnostics=NULL;g_diag_size=0;}
+static void ANOMALY_CALL unload(void* context){(void)context;g_host=NULL;g_storage=NULL;g_diagnostics=NULL;g_diag_size=0;}
 static void ANOMALY_CALL update(void* context,double delta){
     (void)context;
     recalc(delta);
-    if (!g_fps_overlay) overlay_create();
-    overlay_pump();
-    if (g_alert_active) overlay_hide();
-    else overlay_update();
     if(g_alert_active && g_host){
         /* The first alert is the only time we ask the host for the expensive
            diagnostics snapshot. Normal operation does not touch diagnostics. */
@@ -401,8 +249,18 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     (void)context;
     if (!ui || !ui->begin_window || !ui->end_window) return;
 
-    /* Normal state uses a native layered overlay: no frame, no background, DPI-scaled text. */
-    if (!g_alert_active || g_alert_acknowledged) return;
+    /* Normal state: keep a tiny FPS-only window visible so the plugin is visibly
+       alive, while showing no monitoring details. The FPS value is not capped. */
+    if (!g_alert_active || g_alert_acknowledged) {
+        int open=1;
+        int visible=ui->begin_window(ui->user,sv("FPS"),&open,0);
+        if(!visible){ ui->end_window(ui->user); return; }
+        char fps_line[64];
+        snprintf(fps_line,sizeof(fps_line),"当前帧数：%.1f",g_fps);
+        text(ui,fps_line);
+        ui->end_window(ui->user);
+        return;
+    }
 
     int open=1;
     int visible=ui->begin_window(ui->user,sv("【运行异常监测】"),&open,0);
@@ -435,19 +293,13 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     if(ui->button && ui->button(ui->user,sv("保存当前原始监测日志"),0,0)) save_log();
     if(ui->button && ui->button(ui->user,sv("知道了，关闭提示"),0,0)) {
         g_alert_acknowledged=1;
-        g_alert_active=0;
-        g_frame_bad=0; g_memory_bad=0; g_thread_bad=0;
-        g_frame_bad_streak=0; g_memory_bad_streak=0; g_thread_bad_streak=0;
-        g_have_diag=0; g_diag_size=0;
-        g_max_frame_ms=0;
-        overlay_update();
     }
     ui->end_window(ui->user);
 }
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* d){
     if(!d || d->struct_size<sizeof(*d)) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *d=(AnomalyPluginDescriptorV1){sizeof(*d),ANOMALY_PLUGIN_API_V1_MAJOR,ANOMALY_PLUGIN_API_V1_MINOR,
-        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.10.2"),
+        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.10.0"),
         load,start,stop,unload,update,draw};
     return ok();
 }
