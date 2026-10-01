@@ -13,6 +13,7 @@
 
 static const AnomalyHostApiV1* g_host;
 static const AnomalyStorageServiceV1* g_storage;
+static const AnomalyCoreServiceV1* g_core;
 static const AnomalyDiagnosticsServiceV1* g_diagnostics;
 static const AnomalyWindowServiceV1* g_window;
 static uint64_t g_base_memory;
@@ -48,6 +49,9 @@ static AnomalyStringViewV1 sv(const char* s) {
 static AnomalyStatusV1 ok(void) { AnomalyStatusV1 s={ANOMALY_STATUS_V1_OK,0,{0,0}}; return s; }
 static AnomalyStatusV1 code(uint32_t c) { AnomalyStatusV1 s={c,0,{0,0}}; return s; }
 static int succeeded(AnomalyStatusV1 s) { return s.code == ANOMALY_STATUS_V1_OK; }
+static void core_log(uint32_t level, const char* message) {
+    if (g_core && g_core->log && message) g_core->log(g_core->user, level, sv(message));
+}
 
 static const void* query(const AnomalyHostApiV1* host, const char* id, uint32_t version) {
     const void* table = NULL;
@@ -242,6 +246,7 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
        start() will query them again when Anomaly activates the plugin. */
     g_window=NULL;
     g_host=host;
+    g_core=(const AnomalyCoreServiceV1*)query(host,ANOMALY_CORE_SERVICE_V1_ID,ANOMALY_CORE_SERVICE_V1_VERSION);
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
     g_base_memory=0; g_base_threads=0; g_fps=0; g_display_fps=0; g_fps_band=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
@@ -261,8 +266,10 @@ static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
        Returning UNAVAILABLE here lets Anomaly retry when the services become ready. */
     const AnomalyUiServiceV1* ui=(const AnomalyUiServiceV1*)query(
         g_host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
-    if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text)
+    if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text) {
+        core_log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "RuntimeProfiler: anomaly.ui unavailable at start");
         return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+    }
 
     if (!g_window || !valid_window_service(g_window)) {
         g_window=(const AnomalyWindowServiceV1*)query(
@@ -270,6 +277,7 @@ static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
     }
     if (!valid_window_service(g_window)) {
         g_window=NULL;
+        core_log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "RuntimeProfiler: anomaly.window unavailable at start");
         return code(ANOMALY_STATUS_V1_UNAVAILABLE);
     }
 
@@ -302,6 +310,7 @@ static void ANOMALY_CALL unload(void* context){
     (void)context;
     release_window();
     g_host=NULL;
+    g_core=NULL;
     g_storage=NULL;
     g_diagnostics=NULL;
     g_window=NULL;
