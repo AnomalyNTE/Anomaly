@@ -25,10 +25,6 @@
       "minVersion": 1
     },
     {
-      "id": "anomaly.window",
-      "minVersion": 1
-    },
-    {
       "id": "anomaly.storage",
       "minVersion": 1,
       "optional": true
@@ -41,7 +37,6 @@
   ],
   "capabilities": [
     "ui",
-    "ui-window",
     "storage",
     "diagnostics"
   ]
