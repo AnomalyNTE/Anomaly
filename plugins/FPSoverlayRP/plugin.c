@@ -267,57 +267,101 @@ static void ANOMALY_CALL update(void* context,double delta){
     }
 }
 static void text(const AnomalyUiServiceV1* ui,const char* s){ if(ui&&ui->text)ui->text(ui->user,sv(s)); }
+
+static int button(const AnomalyUiServiceV1* ui, const char* label, float width, float height) {
+    return ui && ui->button ? ui->button(ui->user,sv(label),width,height) : 0;
+}
+
 static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     (void)context;
     if (InterlockedCompareExchange(&g_active, 0, 0) == 0) return;
     if (!ui || !ui->begin_window || !ui->end_window) return;
 
-    /* Normal state: keep a tiny FPS-only window visible so the plugin is visibly
-       alive, while showing no monitoring details. The FPS value is not capped. */
+    /*
+       UI-only presentation:
+       - keep the normal window compact
+       - make the FPS value the visual focus
+       - use separators and fixed button sizes for a cleaner layout
+       - do not touch the monitoring/lifecycle logic
+    */
     if (!g_alert_active || g_alert_acknowledged) {
         int open=1;
-        int visible=ui->begin_window(ui->user,sv("FPS"),&open,0);
+        if (ui->set_next_window_size) ui->set_next_window_size(ui->user,220.0f,96.0f,0);
+
+        int visible=ui->begin_window(ui->user,sv("运行状态"),&open,0);
         if(!visible){ ui->end_window(ui->user); return; }
+
         char fps_line[64];
-        const char* fps_color = (g_fps_band >= 2) ? "绿色" : (g_fps_band == 1 ? "橙色" : "红色");
-        snprintf(fps_line,sizeof(fps_line),"当前帧数：%.0f FPS（%s）",g_display_fps,fps_color);
+        const char* status = (g_fps_band >= 2) ? "流畅" :
+                             (g_fps_band == 1 ? "正常" : "偏低");
+        snprintf(fps_line,sizeof(fps_line),"●  %.0f FPS",g_display_fps);
         text(ui,fps_line);
+        text(ui,status);
+
         ui->end_window(ui->user);
         return;
     }
 
     int open=1;
-    int visible=ui->begin_window(ui->user,sv("【运行异常监测】"),&open,0);
+    if (ui->set_next_window_size) ui->set_next_window_size(ui->user,430.0f,260.0f,0);
+
+    int visible=ui->begin_window(ui->user,sv("运行异常监测"),&open,0);
     if(!visible){ ui->end_window(ui->user); return; }
 
     char line[512],a[64],b[64];
-    text(ui,"检测到运行异常，请检查以下项目：");
+
+    text(ui,"检测到持续异常");
+    if (ui->separator) ui->separator(ui->user);
+
     if(g_frame_bad){
         format_ms(a,sizeof(a),g_max_frame_ms);
-        snprintf(line,sizeof(line),"画面延时 / 帧数下降：峰值 %s%s%s",a,
-            g_frame_plugin[0]?"；疑似相关插件：":"；暂未定位到插件",g_frame_plugin);
+        if(g_frame_plugin[0])
+            snprintf(line,sizeof(line),"画面延时 / 帧数下降   峰值 %s",a);
+        else
+            snprintf(line,sizeof(line),"画面延时 / 帧数下降   峰值 %s   未定位插件",a);
         text(ui,line);
+        if(g_frame_plugin[0]){
+            snprintf(line,sizeof(line),"疑似插件：%s",g_frame_plugin);
+            text(ui,line);
+        }
     }
+
     if(g_memory_bad){
         format_mib(a,sizeof(a),g_base_memory);
         format_mib(b,sizeof(b),g_last_memory);
-        snprintf(line,sizeof(line),"内存异常增加：基线 %s / 当前 %s%s%s",a,b,
-            g_memory_plugin[0]?"；疑似相关插件：":"；暂未定位到插件",g_memory_plugin);
+        snprintf(line,sizeof(line),"内存异常增加   %s → %s",a,b);
         text(ui,line);
+        if(g_memory_plugin[0]){
+            snprintf(line,sizeof(line),"疑似插件：%s",g_memory_plugin);
+            text(ui,line);
+        }
     }
-    if(g_thread_bad){
-        snprintf(line,sizeof(line),"线程异常增加：基线 %u / 当前 %u%s%s",g_base_threads,g_last_threads,
-            g_thread_plugin[0]?"；疑似相关插件：":"；暂未定位到插件",g_thread_plugin);
-        text(ui,line);
-    }
-    if(g_frame_plugin[0]){snprintf(line,sizeof(line),"画面疑似插件：%s",g_frame_plugin);text(ui,line);}
-    if(g_memory_plugin[0]){snprintf(line,sizeof(line),"资源疑似插件：%s",g_memory_plugin);text(ui,line);}
-    if(g_thread_plugin[0]){snprintf(line,sizeof(line),"线程疑似插件：%s",g_thread_plugin);text(ui,line);}
 
-    if(ui->button && ui->button(ui->user,sv("保存当前原始监测日志"),0,0)) save_log();
-    if(ui->button && ui->button(ui->user,sv("知道了，关闭提示"),0,0)) {
-        g_alert_acknowledged=1;
+    if(g_thread_bad){
+        snprintf(line,sizeof(line),"线程异常增加   %u → %u",g_base_threads,g_last_threads);
+        text(ui,line);
+        if(g_thread_plugin[0]){
+            snprintf(line,sizeof(line),"疑似插件：%s",g_thread_plugin);
+            text(ui,line);
+        }
     }
+
+    if (!g_frame_bad && !g_memory_bad && !g_thread_bad)
+        text(ui,"当前未检测到持续异常。");
+
+    if (ui->separator) ui->separator(ui->user);
+
+    if(ui->button){
+        if(button(ui,"保存原始监测日志",180.0f,32.0f))
+            save_log();
+
+        if(ui->same_line)
+            ui->same_line(ui->user,0.0f,8.0f);
+
+        if(button(ui,"知道了",90.0f,32.0f))
+            g_alert_acknowledged=1;
+    }
+
     ui->end_window(ui->user);
 }
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* d){
