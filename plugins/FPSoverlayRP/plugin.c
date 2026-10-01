@@ -17,6 +17,8 @@ static const AnomalyDiagnosticsServiceV1* g_diagnostics;
 static uint64_t g_base_memory;
 static uint32_t g_base_threads;
 static double g_fps;
+static double g_display_fps;
+static int g_fps_band;
 static double g_frame_ms;
 static int g_expanded;
 static int g_frame_bad, g_memory_bad, g_thread_bad;
@@ -158,6 +160,14 @@ static void recalc(double delta) {
        while expensive process sampling happens roughly once per second. */
     g_frame_ms = (delta > 0.0 && delta < 10.0) ? delta * 1000.0 : 0.0;
     g_fps = (delta > 0.0 && delta < 10.0) ? 1.0 / delta : 0.0;
+
+    /* FPS display uses 10-FPS bands. 60-69.99 stays at 60, 70-79.99 at 70, etc.
+       This deliberately avoids per-frame number jitter while the color still follows
+       the 60/30 thresholds. */
+    if (g_fps > 0.0) {
+        g_display_fps = (double)((uint32_t)(g_fps / 10.0) * 10U);
+        g_fps_band = (g_fps >= 60.0) ? 2 : (g_fps >= 30.0 ? 1 : 0);
+    }
     if (g_frame_ms > g_max_frame_ms) g_max_frame_ms = g_frame_ms;
 
     const int frame_sample_bad = (g_frame_ms >= 20.0 || (g_fps > 0.0 && g_fps < 50.0));
@@ -212,7 +222,7 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     g_host=host;
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
-    g_base_memory=0; g_base_threads=0; g_fps=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
+    g_base_memory=0; g_base_threads=0; g_fps=0; g_display_fps=0; g_fps_band=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
     g_alert_active=0; g_alert_acknowledged=0; g_sample_tick=0;
     g_frame_bad_streak=0; g_memory_bad_streak=0; g_thread_bad_streak=0;
     g_max_frame_ms=0; g_last_memory=0; g_last_threads=0;
@@ -256,7 +266,8 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
         int visible=ui->begin_window(ui->user,sv("FPS"),&open,0);
         if(!visible){ ui->end_window(ui->user); return; }
         char fps_line[64];
-        snprintf(fps_line,sizeof(fps_line),"当前帧数：%.1f",g_fps);
+        const char* fps_color = (g_fps_band >= 2) ? "绿色" : (g_fps_band == 1 ? "橙色" : "红色");
+        snprintf(fps_line,sizeof(fps_line),"当前帧数：%.0f FPS（%s）",g_display_fps,fps_color);
         text(ui,fps_line);
         ui->end_window(ui->user);
         return;
