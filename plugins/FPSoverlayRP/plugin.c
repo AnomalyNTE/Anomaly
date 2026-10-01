@@ -321,23 +321,25 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
             ui->user,sv("##RuntimeProfilerFPS"),&open,RP_OVERLAY_FLAGS);
         if(!visible){ ui->end_window(ui->user); return; }
 
-        char fps_line[64];
-        char status_line[64];
+        char fps_line[32];
+        snprintf(fps_line,sizeof(fps_line),"%.0f",g_display_fps);
 
-        /*
-           anomaly.ui does not expose arbitrary text color/font-size controls.
-           Keep the colored state marker and make the numeric FPS the focal line.
-        */
-        const char* marker = (g_fps_band >= 2) ? "🟢" :
-                             (g_fps_band == 1 ? "🟠" : "🔴");
         const char* status = (g_fps_band >= 2) ? "流畅" :
                              (g_fps_band == 1 ? "正常" : "偏低");
+        const uint32_t color = (g_fps_band >= 2) ? RP_GREEN :
+                               (g_fps_band == 1 ? RP_ORANGE : RP_RED);
 
-        snprintf(fps_line,sizeof(fps_line),"%s  %.0f FPS",marker,g_display_fps);
-        snprintf(status_line,sizeof(status_line),"%s",status);
+        if (ui->set_cursor_pos_x)
+            ui->set_cursor_pos_x(ui->user,70.0f);
+        text_large_colored(ui,fps_line,54.0f,color);
 
-        text(ui,fps_line);
-        text(ui,status_line);
+        if (ui->set_cursor_pos_x)
+            ui->set_cursor_pos_x(ui->user,91.0f);
+        text_colored(ui,"FPS",RP_WHITE);
+
+        if (ui->set_cursor_pos_x)
+            ui->set_cursor_pos_x(ui->user,91.0f);
+        text_colored(ui,status,color);
 
         ui->end_window(ui->user);
         return;
