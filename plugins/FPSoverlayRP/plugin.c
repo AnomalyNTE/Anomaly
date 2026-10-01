@@ -247,6 +247,7 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     g_window=NULL;
     g_host=host;
     g_core=(const AnomalyCoreServiceV1*)query(host,ANOMALY_CORE_SERVICE_V1_ID,ANOMALY_CORE_SERVICE_V1_VERSION);
+    core_log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "RuntimeProfiler: build 0.10.3 load() reached");
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
     g_base_memory=0; g_base_threads=0; g_fps=0; g_display_fps=0; g_fps_band=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
@@ -388,7 +389,7 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* d){
     if(!d || d->struct_size<sizeof(*d)) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *d=(AnomalyPluginDescriptorV1){sizeof(*d),ANOMALY_PLUGIN_API_V1_MAJOR,ANOMALY_PLUGIN_API_V1_MINOR,
-        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.10.2"),
+        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.10.3"),
         load,start,stop,unload,update,draw};
     return ok();
 }
