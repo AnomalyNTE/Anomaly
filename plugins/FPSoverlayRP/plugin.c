@@ -14,6 +14,7 @@
 static const AnomalyHostApiV1* g_host;
 static const AnomalyStorageServiceV1* g_storage;
 static const AnomalyDiagnosticsServiceV1* g_diagnostics;
+static const AnomalyWindowServiceV1* g_window;
 static uint64_t g_base_memory;
 static uint32_t g_base_threads;
 static double g_fps;
@@ -38,6 +39,7 @@ static size_t g_diag_size;
 static char g_frame_plugin[160];
 static char g_memory_plugin[160];
 static char g_thread_plugin[160];
+static AnomalyGenerationHandleV1 g_window_handle;
 
 static AnomalyStringViewV1 sv(const char* s) {
     AnomalyStringViewV1 v = {s, s ? strlen(s) : 0};
@@ -214,15 +216,36 @@ static void save_log(void) {
     g_saved=succeeded(g_storage->write_atomic(g_storage->user,sv(path),bytes));
 }
 
+static int valid_window_service(const AnomalyWindowServiceV1* service) {
+    return service != NULL &&
+        service->service_version >= ANOMALY_WINDOW_SERVICE_V1_VERSION &&
+        HAS_FIELD(service, AnomalyWindowServiceV1, end) &&
+        service->register_window != NULL &&
+        service->release_window != NULL &&
+        service->state != NULL &&
+        service->begin != NULL &&
+        service->end != NULL;
+}
+
+static void release_window(void) {
+    if (g_window_handle.id != 0 && g_window != NULL && g_window->release_window != NULL) {
+        (void)g_window->release_window(g_window->user, g_window_handle);
+    }
+    g_window_handle = (AnomalyGenerationHandleV1){0};
+}
+
 static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** context) {
     if(!host || !context) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *context=NULL;
     const AnomalyUiServiceV1* ui=(const AnomalyUiServiceV1*)query(host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
     if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text || !ui->begin_window || !ui->end_window) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+    g_window=(const AnomalyWindowServiceV1*)query(host,ANOMALY_WINDOW_SERVICE_V1_ID,ANOMALY_WINDOW_SERVICE_V1_VERSION);
+    if(!valid_window_service(g_window)) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
     g_host=host;
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
     g_base_memory=0; g_base_threads=0; g_fps=0; g_display_fps=0; g_fps_band=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
+    g_window_handle=(AnomalyGenerationHandleV1){0};
     g_alert_active=0; g_alert_acknowledged=0; g_sample_tick=0;
     g_frame_bad_streak=0; g_memory_bad_streak=0; g_thread_bad_streak=0;
     g_max_frame_ms=0; g_last_memory=0; g_last_threads=0;
@@ -231,7 +254,20 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     return ok();
 }
 static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
+    AnomalyWindowSpecV1 window = {0};
     (void)context;
+    window.struct_size = sizeof(window);
+    window.id = sv("runtime-profiler");
+    window.title = sv("FPS");
+    window.initial_width = 180.0F;
+    window.initial_height = 72.0F;
+    window.minimum_width = 120.0F;
+    window.minimum_height = 48.0F;
+    window.default_open = 1;
+    if (!succeeded(g_window->register_window(g_window->user, &window, &g_window_handle))) {
+        g_window_handle = (AnomalyGenerationHandleV1){0};
+        return code(ANOMALY_STATUS_V1_FAILED);
+    }
     g_base_memory=process_memory();
     g_base_threads=process_threads();
     g_last_memory=g_base_memory;
@@ -239,8 +275,21 @@ static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
     g_sample_tick=0;
     return ok();
 }
-static AnomalyStatusV1 ANOMALY_CALL stop(void* context,uint32_t deadline){(void)context;(void)deadline;return ok();}
-static void ANOMALY_CALL unload(void* context){(void)context;g_host=NULL;g_storage=NULL;g_diagnostics=NULL;g_diag_size=0;}
+static AnomalyStatusV1 ANOMALY_CALL stop(void* context,uint32_t deadline){
+    (void)context;
+    (void)deadline;
+    release_window();
+    return ok();
+}
+static void ANOMALY_CALL unload(void* context){
+    (void)context;
+    release_window();
+    g_host=NULL;
+    g_storage=NULL;
+    g_diagnostics=NULL;
+    g_window=NULL;
+    g_diag_size=0;
+}
 static void ANOMALY_CALL update(void* context,double delta){
     (void)context;
     recalc(delta);
@@ -257,25 +306,28 @@ static void ANOMALY_CALL update(void* context,double delta){
 static void text(const AnomalyUiServiceV1* ui,const char* s){ if(ui&&ui->text)ui->text(ui->user,sv(s)); }
 static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     (void)context;
-    if (!ui || !ui->begin_window || !ui->end_window) return;
+    if (!ui || !g_window || g_window_handle.id == 0) return;
+    if (!HAS_FIELD(ui, AnomalyUiServiceV1, text) || !ui->text) return;
 
-    /* Normal state: keep a tiny FPS-only window visible so the plugin is visibly
-       alive, while showing no monitoring details. The FPS value is not capped. */
+    int visible=0;
+    if (!succeeded(g_window->begin(g_window->user,g_window_handle,0,&visible))) return;
+    if (!visible) {
+        (void)g_window->end(g_window->user,g_window_handle);
+        return;
+    }
+
+    /* Normal state: keep a tiny FPS-only managed window visible so the plugin is
+       visibly alive, while showing no monitoring details. The FPS value is not capped. */
     if (!g_alert_active || g_alert_acknowledged) {
-        int open=1;
-        int visible=ui->begin_window(ui->user,sv("FPS"),&open,0);
-        if(!visible){ ui->end_window(ui->user); return; }
         char fps_line[64];
         const char* fps_color = (g_fps_band >= 2) ? "绿色" : (g_fps_band == 1 ? "橙色" : "红色");
         snprintf(fps_line,sizeof(fps_line),"当前帧数：%.0f FPS（%s）",g_display_fps,fps_color);
         text(ui,fps_line);
-        ui->end_window(ui->user);
+        (void)g_window->end(g_window->user,g_window_handle);
         return;
     }
 
-    int open=1;
-    int visible=ui->begin_window(ui->user,sv("【运行异常监测】"),&open,0);
-    if(!visible){ ui->end_window(ui->user); return; }
+    /* The same managed window switches its contents when an anomaly is active. */
 
     char line[512],a[64],b[64];
     text(ui,"检测到运行异常，请检查以下项目：");
@@ -305,7 +357,7 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     if(ui->button && ui->button(ui->user,sv("知道了，关闭提示"),0,0)) {
         g_alert_acknowledged=1;
     }
-    ui->end_window(ui->user);
+    (void)g_window->end(g_window->user,g_window_handle);
 }
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* d){
     if(!d || d->struct_size<sizeof(*d)) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
