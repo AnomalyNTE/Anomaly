@@ -273,14 +273,11 @@ static int button(const AnomalyUiServiceV1* ui, const char* label, float width, 
 }
 
 /*
-   Dear ImGui window flags passed through AnomalyUiServiceV1:
-   1   = NoTitleBar
-   2   = NoResize
-   4   = NoMove
-   8   = NoScrollbar
-   128 = NoBackground
-   256 = NoSavedSettings
-   Keep the overlay passive: it should look like text floating over the game.
+   Overlay presentation:
+   - transparent background
+   - no title bar / border / scrollbar
+   - fixed size so it behaves like the earlier floating HUD
+   - do not use anomaly.window or other unstable window services
 */
 #define RP_OVERLAY_FLAGS (1u | 2u | 4u | 128u | 256u)
 
@@ -292,18 +289,23 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     if (!g_alert_active || g_alert_acknowledged) {
         int open=1;
 
-        /* Compact transparent HUD. The host keeps the saved position. */
-        if (ui->set_next_window_size) ui->set_next_window_size(ui->user,260.0f,120.0f,0);
+        /*
+           Give the HUD enough room for the large two-line presentation.
+           The host may remember its position, but not its contents.
+        */
+        if (ui->set_next_window_size)
+            ui->set_next_window_size(ui->user,220.0f,110.0f,0);
 
-        int visible=ui->begin_window(ui->user,sv("##RuntimeProfilerFPS"),&open,RP_OVERLAY_FLAGS);
+        int visible=ui->begin_window(
+            ui->user,sv("##RuntimeProfilerFPS"),&open,RP_OVERLAY_FLAGS);
         if(!visible){ ui->end_window(ui->user); return; }
 
         char fps_line[64];
+        char status_line[64];
 
         /*
-           anomaly.ui currently exposes no text-color or font-size primitive.
-           Use colored Unicode status markers as a safe fallback while keeping
-           the actual FPS value numeric and uncluttered.
+           anomaly.ui does not expose arbitrary text color/font-size controls.
+           Keep the colored state marker and make the numeric FPS the focal line.
         */
         const char* marker = (g_fps_band >= 2) ? "🟢" :
                              (g_fps_band == 1 ? "🟠" : "🔴");
@@ -311,22 +313,29 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
                              (g_fps_band == 1 ? "正常" : "偏低");
 
         snprintf(fps_line,sizeof(fps_line),"%s  %.0f FPS",marker,g_display_fps);
+        snprintf(status_line,sizeof(status_line),"%s",status);
+
         text(ui,fps_line);
-        text(ui,status);
+        text(ui,status_line);
 
         ui->end_window(ui->user);
         return;
     }
 
+    /*
+       Exception panel keeps the earlier practical layout: only show the
+       categories that actually triggered, then offer raw-log saving.
+    */
     int open=1;
-    if (ui->set_next_window_size) ui->set_next_window_size(ui->user,430.0f,260.0f,0);
+    if (ui->set_next_window_size)
+        ui->set_next_window_size(ui->user,430.0f,280.0f,0);
 
     int visible=ui->begin_window(ui->user,sv("运行异常监测"),&open,0);
     if(!visible){ ui->end_window(ui->user); return; }
 
     char line[512],a[64],b[64];
 
-    text(ui,"⚠  检测到持续异常");
+    text(ui,"⚠  运行异常监测");
     if (ui->separator) ui->separator(ui->user);
 
     if(g_frame_bad){
@@ -334,11 +343,13 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
         if(g_frame_plugin[0])
             snprintf(line,sizeof(line),"帧数下降     峰值 %s",a);
         else
-            snprintf(line,sizeof(line),"帧数下降     峰值 %s   未定位插件",a);
+            snprintf(line,sizeof(line),"帧数下降     峰值 %s",a);
         text(ui,line);
         if(g_frame_plugin[0]){
             snprintf(line,sizeof(line),"疑似插件：%s",g_frame_plugin);
             text(ui,line);
+        } else {
+            text(ui,"疑似插件：未定位");
         }
     }
 
@@ -350,6 +361,8 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
         if(g_memory_plugin[0]){
             snprintf(line,sizeof(line),"疑似插件：%s",g_memory_plugin);
             text(ui,line);
+        } else {
+            text(ui,"疑似插件：未定位");
         }
     }
 
@@ -359,6 +372,8 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
         if(g_thread_plugin[0]){
             snprintf(line,sizeof(line),"疑似插件：%s",g_thread_plugin);
             text(ui,line);
+        } else {
+            text(ui,"疑似插件：未定位");
         }
     }
 
