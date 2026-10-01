@@ -238,7 +238,7 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     if(!host || !context) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *context=NULL;
     const AnomalyUiServiceV1* ui=(const AnomalyUiServiceV1*)query(host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
-    if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text || !ui->begin_window || !ui->end_window) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+    if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
     g_window=(const AnomalyWindowServiceV1*)query(host,ANOMALY_WINDOW_SERVICE_V1_ID,ANOMALY_WINDOW_SERVICE_V1_VERSION);
     if(!valid_window_service(g_window)) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
     g_host=host;
@@ -362,7 +362,7 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* d){
     if(!d || d->struct_size<sizeof(*d)) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *d=(AnomalyPluginDescriptorV1){sizeof(*d),ANOMALY_PLUGIN_API_V1_MAJOR,ANOMALY_PLUGIN_API_V1_MINOR,
-        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.10.0"),
+        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.10.2"),
         load,start,stop,unload,update,draw};
     return ok();
 }
