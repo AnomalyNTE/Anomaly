@@ -13,9 +13,8 @@
 
 static const AnomalyHostApiV1* g_host;
 static const AnomalyStorageServiceV1* g_storage;
-static const AnomalyCoreServiceV1* g_core;
 static const AnomalyDiagnosticsServiceV1* g_diagnostics;
-static const AnomalyWindowServiceV1* g_window;
+static volatile LONG g_active;
 static uint64_t g_base_memory;
 static uint32_t g_base_threads;
 static double g_fps;
@@ -40,11 +39,6 @@ static size_t g_diag_size;
 static char g_frame_plugin[160];
 static char g_memory_plugin[160];
 static char g_thread_plugin[160];
-static AnomalyGenerationHandleV1 g_window_handle;
-/* Render runs on the Render thread while stop/unload run on the Lifecycle thread.
-   Serialize window-handle access so stop cannot release a window while draw is
-   inside begin()/end(). SRWLOCK has static initialization and needs no teardown. */
-static SRWLOCK g_window_lock = SRWLOCK_INIT;
 
 static AnomalyStringViewV1 sv(const char* s) {
     AnomalyStringViewV1 v = {s, s ? strlen(s) : 0};
@@ -53,9 +47,6 @@ static AnomalyStringViewV1 sv(const char* s) {
 static AnomalyStatusV1 ok(void) { AnomalyStatusV1 s={ANOMALY_STATUS_V1_OK,0,{0,0}}; return s; }
 static AnomalyStatusV1 code(uint32_t c) { AnomalyStatusV1 s={c,0,{0,0}}; return s; }
 static int succeeded(AnomalyStatusV1 s) { return s.code == ANOMALY_STATUS_V1_OK; }
-static void core_log(uint32_t level, const char* message) {
-    if (g_core && g_core->log && message) g_core->log(g_core->user, level, sv(message));
-}
 
 static const void* query(const AnomalyHostApiV1* host, const char* id, uint32_t version) {
     const void* table = NULL;
@@ -224,43 +215,16 @@ static void save_log(void) {
     g_saved=succeeded(g_storage->write_atomic(g_storage->user,sv(path),bytes));
 }
 
-static int valid_window_service(const AnomalyWindowServiceV1* service) {
-    return service != NULL &&
-        service->service_version >= ANOMALY_WINDOW_SERVICE_V1_VERSION &&
-        HAS_FIELD(service, AnomalyWindowServiceV1, end) &&
-        service->register_window != NULL &&
-        service->release_window != NULL &&
-        service->state != NULL &&
-        service->begin != NULL &&
-        service->end != NULL;
-}
-
-static void release_window_locked(void) {
-    if (g_window_handle.id != 0 && g_window != NULL && g_window->release_window != NULL) {
-        (void)g_window->release_window(g_window->user, g_window_handle);
-    }
-    g_window_handle = (AnomalyGenerationHandleV1){0};
-}
-
-static void release_window(void) {
-    AcquireSRWLockExclusive(&g_window_lock);
-    release_window_locked();
-    ReleaseSRWLockExclusive(&g_window_lock);
-}
-
 static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** context) {
     if(!host || !context) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *context=NULL;
-    /* UI/window services may come online after the plugin load phase.
-       Do not make load() fail just because either service is not ready yet.
-       start() will query them again when Anomaly activates the plugin. */
-    g_window=NULL;
+    const AnomalyUiServiceV1* ui=(const AnomalyUiServiceV1*)query(host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
+    if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text || !ui->begin_window || !ui->end_window) return code(ANOMALY_STATUS_V1_UNAVAILABLE);
+    InterlockedExchange(&g_active, 0);
     g_host=host;
-    g_core=(const AnomalyCoreServiceV1*)query(host,ANOMALY_CORE_SERVICE_V1_ID,ANOMALY_CORE_SERVICE_V1_VERSION);
     g_storage=(const AnomalyStorageServiceV1*)query(host,"anomaly.storage",1);
     g_diagnostics=(const AnomalyDiagnosticsServiceV1*)query(host,"anomaly.diagnostics",1);
     g_base_memory=0; g_base_threads=0; g_fps=0; g_display_fps=0; g_fps_band=0; g_frame_ms=0; g_expanded=0; g_saved=0; g_have_diag=0; g_diag_size=0;
-    g_window_handle=(AnomalyGenerationHandleV1){0};
     g_alert_active=0; g_alert_acknowledged=0; g_sample_tick=0;
     g_frame_bad_streak=0; g_memory_bad_streak=0; g_thread_bad_streak=0;
     g_max_frame_ms=0; g_last_memory=0; g_last_threads=0;
@@ -269,65 +233,28 @@ static AnomalyStatusV1 ANOMALY_CALL load(const AnomalyHostApiV1* host, void** co
     return ok();
 }
 static AnomalyStatusV1 ANOMALY_CALL start(void* context) {
-    AnomalyWindowSpecV1 window = {0};
     (void)context;
-
-    /* UI and window services are checked at start time.
-       Returning UNAVAILABLE here lets Anomaly retry when the services become ready. */
-    const AnomalyUiServiceV1* ui=(const AnomalyUiServiceV1*)query(
-        g_host,ANOMALY_UI_SERVICE_V1_ID,ANOMALY_UI_SERVICE_V1_VERSION);
-    if(!ui || !HAS_FIELD(ui,AnomalyUiServiceV1,text) || !ui->text) {
-        core_log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "RuntimeProfiler: anomaly.ui unavailable at start");
-        return (AnomalyStatusV1){ANOMALY_STATUS_V1_FAILED,0,sv("RuntimeProfiler: anomaly.ui unavailable at start")};
-    }
-
-    if (!g_window || !valid_window_service(g_window)) {
-        g_window=(const AnomalyWindowServiceV1*)query(
-            g_host,ANOMALY_WINDOW_SERVICE_V1_ID,ANOMALY_WINDOW_SERVICE_V1_VERSION);
-    }
-    if (!valid_window_service(g_window)) {
-        g_window=NULL;
-        core_log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "RuntimeProfiler: anomaly.window unavailable at start");
-        return (AnomalyStatusV1){ANOMALY_STATUS_V1_FAILED,0,sv("RuntimeProfiler: anomaly.window unavailable at start")};
-    }
-
-    window.struct_size = sizeof(window);
-    window.id = sv("runtime-profiler");
-    window.title = sv("FPS");
-    window.initial_width = 180.0F;
-    window.initial_height = 72.0F;
-    window.minimum_width = 120.0F;
-    window.minimum_height = 48.0F;
-    window.default_open = 1;
-    if (!succeeded(g_window->register_window(g_window->user, &window, &g_window_handle))) {
-        g_window_handle = (AnomalyGenerationHandleV1){0};
-        return code(ANOMALY_STATUS_V1_FAILED);
-    }
     g_base_memory=process_memory();
     g_base_threads=process_threads();
     g_last_memory=g_base_memory;
     g_last_threads=g_base_threads;
     g_sample_tick=0;
+    InterlockedExchange(&g_active, 1);
     return ok();
 }
 static AnomalyStatusV1 ANOMALY_CALL stop(void* context,uint32_t deadline){
-    (void)context;
-    (void)deadline;
-    release_window();
+    (void)context; (void)deadline;
+    InterlockedExchange(&g_active, 0);
     return ok();
 }
 static void ANOMALY_CALL unload(void* context){
     (void)context;
-    release_window();
-    g_host=NULL;
-    g_core=NULL;
-    g_storage=NULL;
-    g_diagnostics=NULL;
-    g_window=NULL;
-    g_diag_size=0;
+    InterlockedExchange(&g_active, 0);
+    g_host=NULL; g_storage=NULL; g_diagnostics=NULL; g_diag_size=0;
 }
 static void ANOMALY_CALL update(void* context,double delta){
     (void)context;
+    if (InterlockedCompareExchange(&g_active, 0, 0) == 0) return;
     recalc(delta);
     if(g_alert_active && g_host){
         /* The first alert is the only time we ask the host for the expensive
@@ -342,53 +269,26 @@ static void ANOMALY_CALL update(void* context,double delta){
 static void text(const AnomalyUiServiceV1* ui,const char* s){ if(ui&&ui->text)ui->text(ui->user,sv(s)); }
 static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     (void)context;
-    if (!ui) return;
-    if (!HAS_FIELD(ui, AnomalyUiServiceV1, text) || !ui->text) return;
+    if (InterlockedCompareExchange(&g_active, 0, 0) == 0) return;
+    if (!ui || !ui->begin_window || !ui->end_window) return;
 
-    /* on_draw is Render-domain while stop/unload are Lifecycle-domain.
-       Keep the window handle locked for the entire begin/end pair so the
-       Lifecycle thread cannot release it underneath an active draw. */
-    AcquireSRWLockShared(&g_window_lock);
-    if (!g_window || g_window_handle.id == 0) {
-        ReleaseSRWLockShared(&g_window_lock);
-        return;
-    }
-
-    AnomalyWindowStateV1 state = {sizeof(state)};
-    if (g_window->state != NULL &&
-        !succeeded(g_window->state(g_window->user,g_window_handle,&state))) {
-        ReleaseSRWLockShared(&g_window_lock);
-        return;
-    }
-    if (g_window->state != NULL && state.open == 0) {
-        ReleaseSRWLockShared(&g_window_lock);
-        return;
-    }
-
-    int visible=0;
-    if (!succeeded(g_window->begin(g_window->user,g_window_handle,0,&visible))) {
-        ReleaseSRWLockShared(&g_window_lock);
-        return;
-    }
-    if (!visible) {
-        (void)g_window->end(g_window->user,g_window_handle);
-        ReleaseSRWLockShared(&g_window_lock);
-        return;
-    }
-
-    /* Normal state: keep a tiny FPS-only managed window visible so the plugin is
-       visibly alive, while showing no monitoring details. The FPS value is not capped. */
+    /* Normal state: keep a tiny FPS-only window visible so the plugin is visibly
+       alive, while showing no monitoring details. The FPS value is not capped. */
     if (!g_alert_active || g_alert_acknowledged) {
+        int open=1;
+        int visible=ui->begin_window(ui->user,sv("FPS"),&open,0);
+        if(!visible){ ui->end_window(ui->user); return; }
         char fps_line[64];
         const char* fps_color = (g_fps_band >= 2) ? "绿色" : (g_fps_band == 1 ? "橙色" : "红色");
         snprintf(fps_line,sizeof(fps_line),"当前帧数：%.0f FPS（%s）",g_display_fps,fps_color);
         text(ui,fps_line);
-        (void)g_window->end(g_window->user,g_window_handle);
-        ReleaseSRWLockShared(&g_window_lock);
+        ui->end_window(ui->user);
         return;
     }
 
-    /* The same managed window switches its contents when an anomaly is active. */
+    int open=1;
+    int visible=ui->begin_window(ui->user,sv("【运行异常监测】"),&open,0);
+    if(!visible){ ui->end_window(ui->user); return; }
 
     char line[512],a[64],b[64];
     text(ui,"检测到运行异常，请检查以下项目：");
@@ -418,13 +318,12 @@ static void ANOMALY_CALL draw(void* context,const AnomalyUiServiceV1* ui){
     if(ui->button && ui->button(ui->user,sv("知道了，关闭提示"),0,0)) {
         g_alert_acknowledged=1;
     }
-    (void)g_window->end(g_window->user,g_window_handle);
-    ReleaseSRWLockShared(&g_window_lock);
+    ui->end_window(ui->user);
 }
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* d){
     if(!d || d->struct_size<sizeof(*d)) return code(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *d=(AnomalyPluginDescriptorV1){sizeof(*d),ANOMALY_PLUGIN_API_V1_MAJOR,ANOMALY_PLUGIN_API_V1_MINOR,
-        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.10.3"),
+        sv("anomaly.tools.runtime-profiler"),sv("运行异常监测"),sv("Anomaly"),sv("0.12.1"),
         load,start,stop,unload,update,draw};
     return ok();
 }
