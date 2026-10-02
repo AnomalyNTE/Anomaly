@@ -751,6 +751,7 @@ struct Ue5NteAdapter::State {
         VehicleFunctionBinding current_vehicle{};
         VehicleFunctionBinding speed_kmh{};
         VehicleFunctionBinding set_top_speed_ratio{};
+        VehicleFunctionBinding summon_vehicle{};
         VehicleFunctionBinding set_wheel_friction{};
         std::uint64_t object_generation{};
         bool attempted{};
@@ -7433,7 +7434,12 @@ struct Ue5NteAdapter::State {
             const bool float_return = mode == "FloatReturn";
             const bool float_input = mode == "FloatInput";
             const bool bool_input = mode == "BoolInput";
-            if (object_return || float_return) {
+            const bool no_args = mode == "NoArgs";
+            if (no_args) {
+                if (num_parms != 0 || parms_size != 0 || return_offset != 0xFFFFu || property != 0) return false;
+                binding = {function, 0, 0, 0xFFFFu, false};
+                return true;
+            } else if (object_return || float_return) {
                 const std::uint16_t expected_size = object_return ? 8u : 4u;
                 if (num_parms != 1 || parms_size != expected_size || return_offset == 0xFFFFu) return false;
             } else if (float_input || bool_input) {
@@ -7512,6 +7518,13 @@ struct Ue5NteAdapter::State {
             if (vehicle_bindings.speed_kmh.function == 0) {
                 static_cast<void>(FindVehicleFunctionLocked("GetForwardSpeedKmH", vehicle_outers, "FloatReturn", vehicle_bindings.speed_kmh));
             }
+            if (vehicle_bindings.summon_vehicle.function == 0) {
+                static constexpr std::array<std::string_view, 2> summon_outers{
+                    "HTPlayerController", "HTPlayerCharacter"};
+                if (!FindVehicleFunctionLocked("TestSummonVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle)) {
+                    static_cast<void>(FindVehicleFunctionLocked("CheatSpawnVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle));
+                }
+            }
             if (vehicle_bindings.set_wheel_friction.function == 0) {
                 static_cast<void>(FindVehicleFunctionLocked("SetEnableWheelFriction", vehicle_outers, "BoolInput", vehicle_bindings.set_wheel_friction));
             }
@@ -7570,6 +7583,7 @@ struct Ue5NteAdapter::State {
             }
         }
         if (vehicle_bindings.set_wheel_friction.function != 0) snapshot->flags |= ANOMALY_NTE_VEHICLE_V1_HAS_WHEEL_FRICTION;
+        if (vehicle_bindings.summon_vehicle.function != 0) snapshot->flags |= ANOMALY_NTE_VEHICLE_V1_HAS_SUMMON;
         snapshot->vehicle = handle;
         snapshot->speed_kmh = vehicle_speed_kmh;
         snapshot->top_speed_ratio = vehicle_top_speed_ratio;
@@ -7593,6 +7607,18 @@ struct Ue5NteAdapter::State {
         if (!memory->Write(top_speed_address, &ratio, sizeof(ratio)))
             return Status(ANOMALY_STATUS_V1_FAILED, "vehicle speed ratio write failed");
         vehicle_top_speed_ratio = ratio;
+        return anomaly::sdk::Ok();
+    }
+
+    AnomalyStatusV1 VehicleSummon() noexcept {
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle summon must run on Game thread");
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked() || vehicle_bindings.summon_vehicle.function == 0)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "TestSummonVehicle/CheatSpawnVehicle zero-arg binding is not validated");
+        if (!InvokeProcessEventGuarded(process_event_invoker, player_controller,
+                vehicle_bindings.summon_vehicle.function, nullptr, 0))
+            return Status(ANOMALY_STATUS_V1_FAILED, "summon vehicle ProcessEvent failed");
         return anomaly::sdk::Ok();
     }
 
@@ -12779,7 +12805,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
         vehicle_service = {
             sizeof(AnomalyNteVehicleServiceV1), ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION,
             this, VehicleSnapshotThunk, VehicleSetTopSpeedRatioThunk,
-            VehicleSetWheelFrictionThunk, VehicleResetThunk};
+            VehicleSetWheelFrictionThunk, VehicleResetThunk, VehicleSummonThunk};
         pickup_service = {
             sizeof(AnomalyNtePickupServiceV1),
             ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
@@ -13123,6 +13149,11 @@ private:
     static AnomalyStatusV1 ANOMALY_CALL VehicleResetThunk(void* user) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::VehicleReset(lease.User()) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleSummonThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::VehicleSummon(lease.User()) : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
@@ -15196,34 +15227,3 @@ std::string Ue5NteAdapter::CombatEventsJson(const bool buffs_only) const {
         auto name = state->combat_event_names.find(event.name_id);
         if (name != state->combat_event_names.end() && !name->second.empty()) {
             result += ",\"name\":" + JsonQuote(name->second);
-            result += ",\"nameResolved\":true";
-        } else {
-            result += ",\"nameResolved\":false";
-        }
-        const auto participant_name = [&](const AnomalyGenerationHandleV1 handle) {
-            if (handle.id == 0 || handle.generation != state->object_generation) return std::string{};
-            const auto found = state->combat_participant_names.find(handle.id);
-            return found != state->combat_participant_names.end()
-                ? found->second : std::string{};
-        };
-        const std::string source_name = participant_name(event.source);
-        if (!source_name.empty()) result += ",\"sourceName\":" + JsonQuote(source_name);
-        const std::string target_name = participant_name(event.target);
-        if (!target_name.empty()) result += ",\"targetName\":" + JsonQuote(target_name);
-        if (event.kind == ANOMALY_NTE_COMBAT_EVENT_V1_DAMAGE &&
-            (event.flags & ANOMALY_NTE_COMBAT_EVENT_V1_CRITICAL) != 0) {
-            result += ",\"critical\":true";
-        }
-        result += '}';
-    }
-    result += "]}";
-    return result;
-}
-
-ProfileResolutionSnapshot Ue5NteAdapter::Resolution() const {
-    const auto state = state_;
-    std::scoped_lock lock(state->mutex);
-    return state->resolution;
-}
-
-}  // namespace anomaly
