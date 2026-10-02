@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "自动闪避",
+    "plugin.description": "监听系统音频回路，用 FFT 互相关匹配游戏内的闪避提示音，命中后自动向游戏窗口发送闪避按键。",
+    "window.title": "自动闪避"
+  }
+}

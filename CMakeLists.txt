@@ -1385,6 +1385,23 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_link_libraries(anomaly_builtin_better_pose PRIVATE nlohmann_json::nlohmann_json)
     target_link_libraries(anomaly_builtin_dll_loader PRIVATE nlohmann_json::nlohmann_json)
 
+    anomaly_add_plugin(anomaly_local_auto_dodge
+        SOURCES
+            plugins/AutoDodge/src/plugin.cpp
+            plugins/AutoDodge/src/audio_dodge.cpp
+            plugins/AutoDodge/src/sound_matcher.cpp
+            plugins/AutoDodge/src/sound_capture.cpp
+        MANIFEST plugins/AutoDodge/manifest.json
+        PACKAGE_NAME AutoDodge
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/AutoDodge")
+    # WASAPI 回路采集；参考波形 audio/ 随包发布（anomaly_add_plugin 只自动镜像 locales）。
+    target_link_libraries(anomaly_local_auto_dodge PRIVATE ole32)
+    add_custom_command(TARGET anomaly_local_auto_dodge POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/plugins/AutoDodge/audio"
+                "$<TARGET_FILE_DIR:anomaly_local_auto_dodge>/audio"
+        VERBATIM)
+
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
     set(ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -1395,7 +1412,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
-        anomaly_builtin_dll_loader)
+        anomaly_builtin_dll_loader anomaly_local_auto_dodge)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1416,6 +1433,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
+        target_compile_options(anomaly_local_auto_dodge PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     if(TARGET anomaly-platform-preview)

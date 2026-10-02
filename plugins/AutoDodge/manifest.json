@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.auto-dodge",
+  "name": "自动闪避",
+  "description": "监听系统音频回路，用 FFT 互相关匹配游戏内的闪避提示音，命中后自动闪避：优先用游戏自身的技能桥接激活闪避能力，不可用时双通道注入按键（SendInput + PostMessage）。界面只保留开关与阈值。",
+  "author": "YU-1021",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1, "optional": true},
+    {"id": "anomaly.plugin-state", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ue5.world", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skill-invocation", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": ["ui", "configuration", "ue5-world", "nte-skills-read", "nte-skill-invocation"]
+}
