@@ -30,8 +30,10 @@ struct Context {
     std::atomic_bool reset{};
     std::atomic_bool summon{};
     std::atomic_bool friction_toggle{};
+    std::atomic_bool summon_id{};
     std::atomic_bool started{};
     float speed_ratio{1.0F};
+    std::uint32_t summon_vehicle_id{};
     bool friction_enabled{true};
 } g_context;
 
@@ -103,6 +105,12 @@ void Draw() {
             std::scoped_lock lock(g_context.mutex);
             g_context.speed_ratio = ratio;
         }
+        if (ui->input_uint32) {
+            std::scoped_lock lock(g_context.mutex);
+            ui->input_uint32(ui->user, anomaly::sdk::StringView("车型 ID"), &g_context.summon_vehicle_id, 1, 10);
+        }
+        if (ui->button(ui->user, anomaly::sdk::StringView("召唤指定车型"), 0.0F, 0.0F))
+            g_context.summon_id.store(true, std::memory_order_release);
         if (ui->button(ui->user, anomaly::sdk::StringView("应用速度倍率"), 0.0F, 0.0F)) {
             g_context.apply_speed.store(true, std::memory_order_release);
         }
@@ -129,6 +137,13 @@ void Update() {
     if (g_context.reset.exchange(false, std::memory_order_acq_rel)) {
         const auto status = g_context.vehicle->reset(g_context.vehicle->user);
         SetStatus(status.code == ANOMALY_STATUS_V1_OK ? "已恢复默认载具设置" : "恢复失败");
+    }
+
+    if (g_context.summon_id.exchange(false, std::memory_order_acq_rel)) {
+        std::uint32_t vehicle_id;
+        { std::scoped_lock lock(g_context.mutex); vehicle_id = g_context.summon_vehicle_id; }
+        const auto status = g_context.vehicle->summon_vehicle_id(g_context.vehicle->user, vehicle_id);
+        SetStatus(status.code == ANOMALY_STATUS_V1_OK ? "指定车型召唤已发送" : "指定车型召唤不可用");
     }
 
     if (g_context.apply_speed.exchange(false, std::memory_order_acq_rel)) {
@@ -185,7 +200,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         host, ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
     if (!vehicle || !ui) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
     if (!vehicle->snapshot || !vehicle->set_top_speed_ratio || !vehicle->summon_vehicle ||
-        !vehicle->set_wheel_friction_enabled || !vehicle->reset ||
+        !vehicle->set_wheel_friction_enabled || !vehicle->reset || !vehicle->summon_vehicle_id ||
         !ui->begin_window || !ui->end_window || !ui->text ||
         !ui->button || !ui->slider_float) {
         return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
@@ -197,7 +212,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.reset.store(false, std::memory_order_release);
     g_context.summon.store(false, std::memory_order_release);
     g_context.friction_toggle.store(false, std::memory_order_release);
+    g_context.summon_id.store(false, std::memory_order_release);
     g_context.speed_ratio = 1.0F;
+    g_context.summon_vehicle_id = 0;
     g_context.friction_enabled = true;
     g_context.snapshot = {};
     g_context.status = "等待载具";
