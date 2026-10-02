@@ -739,6 +739,28 @@ struct Ue5NteAdapter::State {
         bool cooldown_layout_valid{};
         bool combat_event_bindings_attempted{};
     } combat_skill_discovery;
+
+    struct VehicleFunctionBinding {
+        std::uintptr_t function{};
+        std::uint16_t parms_size{};
+        std::uint16_t parameter_offset{};
+        std::uint16_t return_offset{};
+        bool has_return{};
+    };
+    struct VehicleBindings {
+        VehicleFunctionBinding current_vehicle{};
+        VehicleFunctionBinding speed_kmh{};
+        VehicleFunctionBinding set_top_speed_ratio{};
+        VehicleFunctionBinding set_wheel_friction{};
+        std::uint64_t object_generation{};
+        bool attempted{};
+    } vehicle_bindings;
+    std::uintptr_t current_vehicle_object{};
+    float vehicle_top_speed_ratio{1.0F};
+    bool vehicle_wheel_friction_enabled{true};
+    float vehicle_speed_kmh{};
+    bool vehicle_valid{};
+
     static constexpr std::size_t kDamageEventCapacity = 512;
     static constexpr std::uint64_t kDamageSourceBase = 0x8000000000000000ULL;
     struct DamageRecord {
@@ -1575,6 +1597,22 @@ struct Ue5NteAdapter::State {
             "cameraManager.fov"});
     }
 
+    [[nodiscard]] bool NteVehicleProfileAvailable() const noexcept {
+        return static_cast<bool>(process_event_invoker) && framework_hook_ready &&
+            resolution.FeatureAvailable("nte.player") &&
+            resolution.FeatureAvailable("ue5.names") &&
+            resolution.FeatureAvailable("ue5.objects") &&
+            resolution.FeatureAvailable(kUe5ProcessEventFeature) &&
+            NtePlayerLayoutAvailable() && LayoutKeysAvailable(profile, {
+                "object.internalIndex", "object.class", "object.outer",
+                "ustruct.propertyLink", "ufunction.numParms", "ufunction.parmsSize",
+                "ufunction.returnValueOffset", "ffield.name", "ffield.class",
+                "ffieldClass.name", "fproperty.arrayDim", "fproperty.elementSize",
+                "fproperty.offsetInternal", "fproperty.propertyLinkNext",
+                "fobjectProperty.propertyClass", "fstructProperty.struct"}) &&
+            true;
+    }
+
     [[nodiscard]] bool NteCombatProfileAvailable() const noexcept {
         return static_cast<bool>(process_event_invoker) && framework_hook_ready &&
             resolution.FeatureAvailable("nte.combat") &&
@@ -2038,6 +2076,7 @@ struct Ue5NteAdapter::State {
         if (feature == "ue5.streaming-source") return Ue5StreamingSourceAvailable();
         if (feature == "nte.map-landmarks") return NteMapLandmarksAvailable();
         if (feature == "nte.navigation") return NteNavigationAvailable();
+        if (feature == "nte.vehicle") return NteVehicleProfileAvailable();
         if (feature == "nte.pickup") return NtePickupAvailable();
         if (feature == "nte.ui-buttons") return NteUiButtonsAvailable();
         if (feature == "nte.entities") {
@@ -2181,6 +2220,9 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.navigation");
         }
+        if (id == ANOMALY_NTE_VEHICLE_SERVICE_V1_ID) {
+            return framework_hook_ready && NteVehicleProfileAvailable();
+        }
         if (id == ANOMALY_NTE_PICKUP_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.pickup");
         }
@@ -2275,7 +2317,7 @@ struct Ue5NteAdapter::State {
         if (feature == "nte.session" || feature == "nte.player" ||
             feature == "nte.player-esp" ||
             feature == "nte.player-teleport" || feature == "nte.navigation" ||
-            feature == "nte.pickup" || feature == "nte.ui-buttons" ||
+            feature == "nte.vehicle" || feature == "nte.pickup" || feature == "nte.ui-buttons" ||
             feature == "nte.entities" ||
             feature == "nte.combat" || feature == "nte.skills" ||
             feature == "nte.skill-invocation") {
@@ -7163,6 +7205,7 @@ struct Ue5NteAdapter::State {
         std::int32_t array_dim{};
         std::int32_t element_size{};
         std::int32_t offset{};
+        std::uintptr_t structure{};
     };
 
     [[nodiscard]] bool ReadReflectedPropertyLocked(
@@ -7190,6 +7233,10 @@ struct Ue5NteAdapter::State {
             !ReadValue(*memory, next_address, candidate.next) ||
             !(candidate.name = ResolveNameSnapshotLocked(name_id)).size() ||
             !ReadReflectedFieldClassNameLocked(property, candidate.type)) {
+            return false;
+        }
+        if (candidate.type == "StructProperty" &&
+            !ReadPointerAt(*memory, property, Layout(profile, "fstructProperty.struct"), candidate.structure)) {
             return false;
         }
         info = std::move(candidate);
@@ -7320,6 +7367,254 @@ struct Ue5NteAdapter::State {
             field_mask,
             byte_mask};
         return true;
+    }
+
+    [[nodiscard]] bool ResolveVehicleFloatPathLocked(
+        const std::uintptr_t root,
+        const std::span<const std::string_view> path,
+        std::uintptr_t& address) const noexcept {
+        if (root == 0 || path.empty()) return false;
+        std::uintptr_t current_address = root;
+        std::uintptr_t structure{};
+        if (!ReadPointerAt(*memory, root, Layout(profile, "object.class"), structure)) return false;
+        for (std::size_t index{}; index < path.size(); ++index) {
+            ReflectedPropertyInfo property;
+            if (!FindReflectedPropertyLocked(structure, path[index], property, true) || property.offset < 0) {
+                return false;
+            }
+            const auto field_address = current_address + static_cast<std::uintptr_t>(property.offset);
+            if (index + 1U == path.size()) {
+                if (property.type != "FloatProperty" || property.element_size != 4) return false;
+                address = field_address;
+                return true;
+            }
+            if (property.type == "ObjectProperty" && property.element_size == 8) {
+                if (!ReadValue(*memory, field_address, current_address) || current_address == 0 ||
+                    !ReadPointerAt(*memory, current_address, Layout(profile, "object.class"), structure)) {
+                    return false;
+                }
+            } else if (property.type == "StructProperty" && property.element_size > 0 && property.structure != 0) {
+                current_address = field_address;
+                structure = property.structure;
+            } else {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool BuildVehicleBindingLocked(
+        const std::uintptr_t function,
+        const std::string_view expected_name,
+        const std::string_view mode,
+        VehicleFunctionBinding& binding) const {
+        try {
+            std::string function_name;
+            if (!ReadReflectedObjectNameLocked(function, function_name) ||
+                function_name != expected_name) return false;
+            std::uintptr_t function_class{};
+            std::uintptr_t outer{};
+            std::string function_class_name;
+            std::string outer_name;
+            if (!ReadPointerAt(*memory, function, Layout(profile, "object.class"), function_class) ||
+                !ReadPointerAt(*memory, function, Layout(profile, "object.outer"), outer) ||
+                !ReadReflectedObjectNameLocked(function_class, function_class_name) ||
+                !ReadReflectedObjectNameLocked(outer, outer_name) ||
+                function_class_name != "Function") return false;
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            std::uint16_t return_offset{};
+            std::uintptr_t property{};
+            if (!ReadValue(*memory, function + Layout(profile, "ufunction.numParms"), num_parms) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+                !ReadValue(*memory, function + Layout(profile, "ufunction.returnValueOffset"), return_offset) ||
+                !ReadPointerAt(*memory, function, Layout(profile, "ustruct.propertyLink"), property)) return false;
+            const bool object_return = mode == "ObjectReturn";
+            const bool float_return = mode == "FloatReturn";
+            const bool float_input = mode == "FloatInput";
+            const bool bool_input = mode == "BoolInput";
+            if (object_return || float_return) {
+                const std::uint16_t expected_size = object_return ? 8u : 4u;
+                if (num_parms != 1 || parms_size != expected_size || return_offset == 0xFFFFu) return false;
+            } else if (float_input || bool_input) {
+                const std::uint16_t expected_size = float_input ? 4u : 1u;
+                if (num_parms != 1 || parms_size != expected_size || return_offset != 0xFFFFu) return false;
+            } else {
+                return false;
+            }
+            ReflectedPropertyInfo info;
+            if (!ReadReflectedPropertyLocked(property, info) || info.array_dim != 1 ||
+                info.offset < 0 || info.next != 0 || info.name.empty()) {
+                // The property-link chain normally ends at null. If the chain has
+                // more than one property, reject this narrow vehicle ABI rather than guessing.
+                return false;
+            }
+            const bool expected_return =
+                ((object_return && info.type == "ObjectProperty" && info.element_size == 8) ||
+                 (float_return && info.type == "FloatProperty" && info.element_size == 4)) &&
+                static_cast<std::uint16_t>(info.offset) == return_offset;
+            const bool expected_input =
+                (float_input && info.type == "FloatProperty" && info.element_size == 4) ||
+                (bool_input && info.type == "BoolProperty" && info.element_size == 1);
+            if (!expected_return && !expected_input) return false;
+            binding = {function, parms_size,
+                static_cast<std::uint16_t>(info.offset), return_offset,
+                object_return || float_return};
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool FindVehicleFunctionLocked(
+        const std::string_view name,
+        const std::span<const std::string_view> outers,
+        const std::string_view mode,
+        VehicleFunctionBinding& binding) const {
+        for (const auto outer : outers) {
+            std::wstring path = L"/Script/HTGame.";
+            path.reserve(path.size() + outer.size() + 1U + name.size());
+            for (char c : outer) path.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+            path.push_back(L'.');
+            for (char c : name) path.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+            std::uintptr_t function{};
+            if (FindExactObjectLocked(path.c_str(), function) &&
+                BuildVehicleBindingLocked(function, name, mode, binding)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool RefreshVehicleLocked() noexcept {
+        try {
+            if (!NteVehicleProfileAvailable() || player_controller == 0 || !process_event_invoker) {
+                vehicle_valid = false;
+                current_vehicle_object = 0;
+                return false;
+            }
+            if (vehicle_bindings.object_generation != object_generation) {
+                vehicle_bindings = {};
+                vehicle_bindings.object_generation = object_generation;
+            }
+            static constexpr std::array<std::string_view, 2> controller_outers{
+                "HTPlayerController", "HTPlayerCharacter"};
+            static constexpr std::array<std::string_view, 3> vehicle_outers{
+                "HTWheeledVehicle", "HTWheeledVehicleDrivable", "HTVehicleMovementComponent"};
+            if (vehicle_bindings.current_vehicle.function == 0 &&
+                !FindVehicleFunctionLocked("BP_GetCurrentDriveVehicle", controller_outers, "ObjectReturn",
+                    vehicle_bindings.current_vehicle)) {
+                static constexpr std::array<std::string_view, 2> fallback{
+                    "HTPlayerController", "HTPlayerCharacter"};
+                if (!FindVehicleFunctionLocked("BP_GetCurrentDirvingVehicle", fallback, "ObjectReturn",
+                        vehicle_bindings.current_vehicle)) return false;
+            }
+            if (vehicle_bindings.speed_kmh.function == 0) {
+                static_cast<void>(FindVehicleFunctionLocked("GetForwardSpeedKmH", vehicle_outers, "FloatReturn", vehicle_bindings.speed_kmh));
+            }
+            if (vehicle_bindings.set_wheel_friction.function == 0) {
+                static_cast<void>(FindVehicleFunctionLocked("SetEnableWheelFriction", vehicle_outers, "BoolInput", vehicle_bindings.set_wheel_friction));
+            }
+            alignas(8) std::array<std::uint8_t, 8> out{};
+            if (!InvokeProcessEventGuarded(process_event_invoker, player_controller,
+                    vehicle_bindings.current_vehicle.function, out.data(), out.size())) return false;
+            std::uintptr_t vehicle{};
+            std::memcpy(&vehicle, out.data() + vehicle_bindings.current_vehicle.return_offset, sizeof(vehicle));
+            if (vehicle == 0 || !ReadableRange(*memory, vehicle, 0x20U)) {
+                vehicle_valid = false;
+                current_vehicle_object = 0;
+                return false;
+            }
+            current_vehicle_object = vehicle;
+            vehicle_valid = true;
+            if (vehicle_bindings.speed_kmh.function != 0) {
+                alignas(8) std::array<std::uint8_t, 8> speed_bytes{};
+                if (InvokeProcessEventGuarded(process_event_invoker, vehicle,
+                        vehicle_bindings.speed_kmh.function, speed_bytes.data(), speed_bytes.size())) {
+                    float speed{};
+                    std::memcpy(&speed, speed_bytes.data() + vehicle_bindings.speed_kmh.return_offset, sizeof(speed));
+                    if (std::isfinite(speed)) vehicle_speed_kmh = speed;
+                }
+            }
+            return true;
+        } catch (...) {
+            vehicle_valid = false;
+            current_vehicle_object = 0;
+            return false;
+        }
+    }
+
+    AnomalyStatusV1 VehicleSnapshot(AnomalyNteVehicleSnapshotV1* snapshot) noexcept {
+        if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot))
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle snapshot must run on Game thread");
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked()) {
+            *snapshot = {sizeof(*snapshot), 0, {}, 0.0, vehicle_top_speed_ratio, vehicle_wheel_friction_enabled ? 1u : 0u};
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "current driving vehicle is unavailable");
+        }
+        AnomalyGenerationHandleV1 handle{};
+        static_cast<void>(ObjectHandleLocked(current_vehicle_object, handle));
+        snapshot->struct_size = sizeof(*snapshot);
+        snapshot->flags = ANOMALY_NTE_VEHICLE_V1_VALID;
+        if (vehicle_bindings.speed_kmh.function != 0) snapshot->flags |= ANOMALY_NTE_VEHICLE_V1_HAS_SPEED;
+        static constexpr std::array<std::string_view, 3> top_speed_path{
+            "Vehicle", "SetTopSpeedRatio", "Base"};
+        std::uintptr_t top_speed_address{};
+        if (ResolveVehicleFloatPathLocked(current_vehicle_object, top_speed_path, top_speed_address)) {
+            float ratio{};
+            if (ReadValue(*memory, top_speed_address, ratio) && std::isfinite(ratio)) {
+                vehicle_top_speed_ratio = ratio;
+                snapshot->flags |= ANOMALY_NTE_VEHICLE_V1_HAS_TOP_SPEED_RATIO;
+            }
+        }
+        if (vehicle_bindings.set_wheel_friction.function != 0) snapshot->flags |= ANOMALY_NTE_VEHICLE_V1_HAS_WHEEL_FRICTION;
+        snapshot->vehicle = handle;
+        snapshot->speed_kmh = vehicle_speed_kmh;
+        snapshot->top_speed_ratio = vehicle_top_speed_ratio;
+        snapshot->wheel_friction_enabled = vehicle_wheel_friction_enabled ? 1u : 0u;
+        return anomaly::sdk::Ok();
+    }
+
+    AnomalyStatusV1 VehicleSetTopSpeedRatio(float ratio) noexcept {
+        if (!std::isfinite(ratio) || ratio < 0.05F || ratio > 20.0F)
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "top speed ratio must be 0.05..20.0");
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle mutation must run on Game thread");
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked())
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "current driving vehicle is unavailable");
+        static constexpr std::array<std::string_view, 3> top_speed_path{
+            "Vehicle", "SetTopSpeedRatio", "Base"};
+        std::uintptr_t top_speed_address{};
+        if (!ResolveVehicleFloatPathLocked(current_vehicle_object, top_speed_path, top_speed_address))
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Vehicle.SetTopSpeedRatio.Base was not validated");
+        if (!memory->Write(top_speed_address, &ratio, sizeof(ratio)))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle speed ratio write failed");
+        vehicle_top_speed_ratio = ratio;
+        return anomaly::sdk::Ok();
+    }
+
+    AnomalyStatusV1 VehicleSetWheelFriction(bool enabled) noexcept {
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle mutation must run on Game thread");
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked() || vehicle_bindings.set_wheel_friction.function == 0)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "SetEnableWheelFriction is not validated");
+        std::array<std::uint8_t, 4> parameters{};
+        parameters[vehicle_bindings.set_wheel_friction.parameter_offset] = enabled ? 1 : 0;
+        if (!InvokeProcessEventGuarded(process_event_invoker, current_vehicle_object,
+                vehicle_bindings.set_wheel_friction.function, parameters.data(), parameters.size()))
+            return Status(ANOMALY_STATUS_V1_FAILED, "SetEnableWheelFriction ProcessEvent failed");
+        vehicle_wheel_friction_enabled = enabled;
+        return anomaly::sdk::Ok();
+    }
+
+    AnomalyStatusV1 VehicleReset() noexcept {
+        const auto speed = VehicleSetTopSpeedRatio(1.0F);
+        if (speed.code != ANOMALY_STATUS_V1_OK) return speed;
+        return VehicleSetWheelFriction(true);
     }
 
     [[nodiscard]] bool BuildNteFunctionBindingLocked(
@@ -12481,6 +12776,10 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             sizeof(AnomalyNteNavigationServiceV1),
             ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
             this, MoveToLocationThunk, StopMovementThunk};
+        vehicle_service = {
+            sizeof(AnomalyNteVehicleServiceV1), ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION,
+            this, VehicleSnapshotThunk, VehicleSetTopSpeedRatioThunk,
+            VehicleSetWheelFrictionThunk, VehicleResetThunk};
         pickup_service = {
             sizeof(AnomalyNtePickupServiceV1),
             ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
@@ -12551,6 +12850,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyUe5StreamingSourceServiceV1 streaming_source_service{};
     AnomalyNteMapLandmarksServiceV1 map_landmarks_service{};
     AnomalyNteNavigationServiceV1 navigation_service{};
+    AnomalyNteVehicleServiceV1 vehicle_service{};
     AnomalyNtePickupServiceV1 pickup_service{};
     AnomalyNteUiButtonsServiceV1 ui_buttons_service{};
     AnomalyNteEntitiesServiceV1 entities_service{};
@@ -12800,6 +13100,29 @@ private:
         const AnomalyNteMapLandmarkTeleportRequestV1* request) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::MapLandmarkTeleport(lease.User(), request) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleSnapshotThunk(
+        void* user, AnomalyNteVehicleSnapshotV1* snapshot) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::VehicleSnapshot(lease.User(), snapshot) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleSetTopSpeedRatioThunk(
+        void* user, float ratio) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::VehicleSetTopSpeedRatio(lease.User(), ratio) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleSetWheelFrictionThunk(
+        void* user, std::uint32_t enabled) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::VehicleSetWheelFriction(lease.User(), enabled != 0) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleResetThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::VehicleReset(lease.User()) : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
@@ -14011,6 +14334,13 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
                 locked->navigation_demand.store(true, std::memory_order_release);
             },
             semantic_lifetime)) {
+        return false;
+    }
+    if (framework_hook_ready && NteVehicleProfileAvailable() &&
+        !PublishIfMissing(
+            ANOMALY_NTE_VEHICLE_SERVICE_V1_ID,
+            ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION,
+            &endpoint->vehicle_service, {}, semantic_lifetime)) {
         return false;
     }
     if (framework_hook_ready && SemanticFeatureAvailable("nte.entities") &&
