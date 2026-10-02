@@ -28,6 +28,7 @@ struct Context {
     std::string status{"等待载具"};
     std::atomic_bool apply_speed{};
     std::atomic_bool reset{};
+    std::atomic_bool summon{};
     std::atomic_bool friction_toggle{};
     std::atomic_bool started{};
     float speed_ratio{1.0F};
@@ -108,6 +109,9 @@ void Draw() {
         if (ui->button(ui->user, anomaly::sdk::StringView("恢复 1.0x"), 0.0F, 0.0F)) {
             g_context.reset.store(true, std::memory_order_release);
         }
+        if (ui->button(ui->user, anomaly::sdk::StringView("召唤载具"), 0.0F, 0.0F)) {
+            g_context.summon.store(true, std::memory_order_release);
+        }
 
         const std::string friction_text = std::string("车轮摩擦：") + (friction ? "开启" : "关闭");
         DrawText(friction_text);
@@ -136,6 +140,11 @@ void Update() {
         const auto status = g_context.vehicle->set_top_speed_ratio(
             g_context.vehicle->user, ratio);
         SetStatus(status.code == ANOMALY_STATUS_V1_OK ? "速度倍率已应用" : "速度倍率应用失败");
+    }
+
+    if (g_context.summon.exchange(false, std::memory_order_acq_rel)) {
+        const auto status = g_context.vehicle->summon_vehicle(g_context.vehicle->user);
+        SetStatus(status.code == ANOMALY_STATUS_V1_OK ? "召唤载具请求已发送" : "召唤载具不可用");
     }
 
     if (g_context.friction_toggle.exchange(false, std::memory_order_acq_rel)) {
@@ -175,7 +184,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     const auto* ui = QueryService<AnomalyUiServiceV1>(
         host, ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
     if (!vehicle || !ui) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
-    if (!vehicle->snapshot || !vehicle->set_top_speed_ratio ||
+    if (!vehicle->snapshot || !vehicle->set_top_speed_ratio || !vehicle->summon_vehicle ||
         !vehicle->set_wheel_friction_enabled || !vehicle->reset ||
         !ui->begin_window || !ui->end_window || !ui->text ||
         !ui->button || !ui->slider_float) {
@@ -186,6 +195,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.started.store(false, std::memory_order_release);
     g_context.apply_speed.store(false, std::memory_order_release);
     g_context.reset.store(false, std::memory_order_release);
+    g_context.summon.store(false, std::memory_order_release);
     g_context.friction_toggle.store(false, std::memory_order_release);
     g_context.speed_ratio = 1.0F;
     g_context.friction_enabled = true;
@@ -233,7 +243,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.local.nte-vehicle"),
         anomaly::sdk::StringView("NTE Vehicle"),
-        anomaly::sdk::StringView("Anomaly"), anomaly::sdk::StringView("0.4.0"),
+        anomaly::sdk::StringView("Anomaly"), anomaly::sdk::StringView("0.5.0"),
         Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }
