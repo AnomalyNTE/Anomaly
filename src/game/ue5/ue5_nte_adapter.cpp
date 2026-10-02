@@ -746,6 +746,7 @@ struct Ue5NteAdapter::State {
         std::uint16_t parameter_offset{};
         std::uint16_t return_offset{};
         bool has_return{};
+        std::uint8_t input_kind{};
     };
     struct VehicleBindings {
         VehicleFunctionBinding current_vehicle{};
@@ -7434,6 +7435,8 @@ struct Ue5NteAdapter::State {
             const bool float_return = mode == "FloatReturn";
             const bool float_input = mode == "FloatInput";
             const bool bool_input = mode == "BoolInput";
+            const bool int32_input = mode == "Int32Input";
+            const bool uint32_input = mode == "UInt32Input";
             const bool no_args = mode == "NoArgs";
             if (no_args) {
                 if (num_parms != 0 || parms_size != 0 || return_offset != 0xFFFFu || property != 0) return false;
@@ -7442,8 +7445,8 @@ struct Ue5NteAdapter::State {
             } else if (object_return || float_return) {
                 const std::uint16_t expected_size = object_return ? 8u : 4u;
                 if (num_parms != 1 || parms_size != expected_size || return_offset == 0xFFFFu) return false;
-            } else if (float_input || bool_input) {
-                const std::uint16_t expected_size = float_input ? 4u : 1u;
+            } else if (float_input || bool_input || int32_input || uint32_input) {
+                const std::uint16_t expected_size = (float_input || int32_input || uint32_input) ? 4u : 1u;
                 if (num_parms != 1 || parms_size != expected_size || return_offset != 0xFFFFu) return false;
             } else {
                 return false;
@@ -7459,13 +7462,22 @@ struct Ue5NteAdapter::State {
                 ((object_return && info.type == "ObjectProperty" && info.element_size == 8) ||
                  (float_return && info.type == "FloatProperty" && info.element_size == 4)) &&
                 static_cast<std::uint16_t>(info.offset) == return_offset;
+            const bool numeric_input =
+                (int32_input || uint32_input) &&
+                (info.type == "IntProperty" || info.type == "UInt32Property") &&
+                info.element_size == 4;
             const bool expected_input =
                 (float_input && info.type == "FloatProperty" && info.element_size == 4) ||
-                (bool_input && info.type == "BoolProperty" && info.element_size == 1);
+                (bool_input && info.type == "BoolProperty" && info.element_size == 1) ||
+                numeric_input;
             if (!expected_return && !expected_input) return false;
+            std::uint8_t input_kind{};
+            if (float_input) input_kind = 1;
+            else if (bool_input) input_kind = 2;
+            else if (numeric_input) input_kind = 3;
             binding = {function, parms_size,
                 static_cast<std::uint16_t>(info.offset), return_offset,
-                object_return || float_return};
+                object_return || float_return, input_kind};
             return true;
         } catch (...) {
             return false;
@@ -7521,8 +7533,11 @@ struct Ue5NteAdapter::State {
             if (vehicle_bindings.summon_vehicle.function == 0) {
                 static constexpr std::array<std::string_view, 2> summon_outers{
                     "HTPlayerController", "HTPlayerCharacter"};
-                if (!FindVehicleFunctionLocked("TestSummonVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle)) {
-                    static_cast<void>(FindVehicleFunctionLocked("CheatSpawnVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle));
+                if (!FindVehicleFunctionLocked("CheatSpawnVehicle", summon_outers, "Int32Input", vehicle_bindings.summon_vehicle) &&
+                    !FindVehicleFunctionLocked("CheatSpawnVehicle", summon_outers, "UInt32Input", vehicle_bindings.summon_vehicle)) {
+                    static_cast<void>(FindVehicleFunctionLocked("TestSummonVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle));
+                    if (vehicle_bindings.summon_vehicle.function == 0)
+                        static_cast<void>(FindVehicleFunctionLocked("CheatSpawnVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle));
                 }
             }
             if (vehicle_bindings.set_wheel_friction.function == 0) {
@@ -7607,6 +7622,22 @@ struct Ue5NteAdapter::State {
         if (!memory->Write(top_speed_address, &ratio, sizeof(ratio)))
             return Status(ANOMALY_STATUS_V1_FAILED, "vehicle speed ratio write failed");
         vehicle_top_speed_ratio = ratio;
+        return anomaly::sdk::Ok();
+    }
+
+    AnomalyStatusV1 VehicleSummonById(std::uint32_t vehicle_id) noexcept {
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle summon must run on Game thread");
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked() || vehicle_bindings.summon_vehicle.function == 0 ||
+            vehicle_bindings.summon_vehicle.input_kind != 3)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "numeric vehicle-id summon binding is not validated");
+        std::array<std::uint8_t, 4> parameters{};
+        std::memcpy(parameters.data() + vehicle_bindings.summon_vehicle.parameter_offset,
+                    &vehicle_id, sizeof(vehicle_id));
+        if (!InvokeProcessEventGuarded(process_event_invoker, player_controller,
+                vehicle_bindings.summon_vehicle.function, parameters.data(), parameters.size()))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle-id summon ProcessEvent failed");
         return anomaly::sdk::Ok();
     }
 
@@ -12805,7 +12836,8 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
         vehicle_service = {
             sizeof(AnomalyNteVehicleServiceV1), ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION,
             this, VehicleSnapshotThunk, VehicleSetTopSpeedRatioThunk,
-            VehicleSetWheelFrictionThunk, VehicleResetThunk, VehicleSummonThunk};
+            VehicleSetWheelFrictionThunk, VehicleResetThunk, VehicleSummonThunk,
+            VehicleSummonIdThunk};
         pickup_service = {
             sizeof(AnomalyNtePickupServiceV1),
             ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
@@ -13154,6 +13186,12 @@ private:
     static AnomalyStatusV1 ANOMALY_CALL VehicleSummonThunk(void* user) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::VehicleSummon(lease.User()) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleSummonIdThunk(
+        void* user, std::uint32_t vehicle_id) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::VehicleSummonById(lease.User(), vehicle_id) : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
