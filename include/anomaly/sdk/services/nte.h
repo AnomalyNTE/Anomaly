@@ -322,6 +322,7 @@ typedef struct AnomalyNteVehicleServiceV1 {
         void* user, uint32_t enabled);
     AnomalyStatusV1 (ANOMALY_CALL *reset)(void* user);
     AnomalyStatusV1 (ANOMALY_CALL *summon_vehicle)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *summon_vehicle_id)(void* user, uint32_t vehicle_id);
 } AnomalyNteVehicleServiceV1;
 
 // Nearby pickup is a Host-owned interaction bridge. The request is accepted only from the
