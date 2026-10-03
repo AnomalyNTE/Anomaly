@@ -150,6 +150,40 @@ if(MSVC)
     target_compile_options(anomaly_miniz PRIVATE /w)
 endif()
 
+# miniaudio decodes the HiFiVehicleMusic library and drives WASAPI/DirectSound;
+# RtAudio supplies the ASIO host (built from source, its CMake project is skipped).
+FetchContent_Declare(
+    miniaudio
+    URL https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz
+    URL_HASH SHA256=b900edcffe979816e2560a0580b9b1216d674b4f17fbadeca8f777a7f8ab0274
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR anomaly-no-cmake
+)
+FetchContent_Declare(
+    rtaudio
+    URL https://github.com/thestk/rtaudio/archive/refs/tags/6.0.1.tar.gz
+    URL_HASH SHA256=7206c8b6cee43b474f43d64988fefaadfdcfc4264ed38d8de5f5d0e6ddb0a123
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR anomaly-no-cmake
+)
+FetchContent_MakeAvailable(miniaudio rtaudio)
+add_library(anomaly_miniaudio STATIC "${miniaudio_SOURCE_DIR}/miniaudio.c")
+target_include_directories(anomaly_miniaudio PUBLIC "${miniaudio_SOURCE_DIR}")
+add_library(anomaly_rtaudio_asio STATIC
+    "${rtaudio_SOURCE_DIR}/RtAudio.cpp"
+    "${rtaudio_SOURCE_DIR}/include/asio.cpp"
+    "${rtaudio_SOURCE_DIR}/include/asiodrivers.cpp"
+    "${rtaudio_SOURCE_DIR}/include/asiolist.cpp"
+    "${rtaudio_SOURCE_DIR}/include/iasiothiscallresolver.cpp")
+target_include_directories(anomaly_rtaudio_asio PUBLIC
+    "${rtaudio_SOURCE_DIR}" "${rtaudio_SOURCE_DIR}/include")
+target_compile_definitions(anomaly_rtaudio_asio PUBLIC __WINDOWS_ASIO__)
+target_link_libraries(anomaly_rtaudio_asio PUBLIC ole32 winmm user32 advapi32)
+if(MSVC)
+    target_compile_options(anomaly_miniaudio PRIVATE /w)
+    target_compile_options(anomaly_rtaudio_asio PRIVATE /w)
+endif()
+
 add_library(anomaly_imgui STATIC
     src/ui/host_ui_service.cpp
     src/ui/platform_ui_theme.cpp
@@ -1384,6 +1418,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_link_libraries(anomaly_builtin_camera_tools PRIVATE nlohmann_json::nlohmann_json)
     target_link_libraries(anomaly_builtin_better_pose PRIVATE nlohmann_json::nlohmann_json)
     target_link_libraries(anomaly_builtin_dll_loader PRIVATE nlohmann_json::nlohmann_json)
+    anomaly_add_plugin(anomaly_builtin_hifi_vehicle_music
+        SOURCES plugins/HiFiVehicleMusic/plugin.cpp plugins/HiFiVehicleMusic/audio_engine.cpp
+        MANIFEST plugins/HiFiVehicleMusic/manifest.json
+        PACKAGE_NAME HiFiVehicleMusic
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/HiFiVehicleMusic")
+    target_link_libraries(anomaly_builtin_hifi_vehicle_music PRIVATE
+        nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio ole32 shell32 uuid avrt winmm)
 
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
@@ -1395,7 +1436,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
-        anomaly_builtin_dll_loader)
+        anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1416,6 +1457,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     if(TARGET anomaly-platform-preview)
@@ -1471,6 +1513,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_skin_changer SkinChanger)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_ui_buttons UiButtons)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_hifi_vehicle_music HiFiVehicleMusic)
 
 if(TARGET anomaly-platform-preview)
     add_custom_command(TARGET anomaly-platform-preview POST_BUILD
@@ -1720,7 +1763,9 @@ set(ANOMALY_THIRD_PARTY_LICENSE_FILES
     third_party/licenses/minhook-LICENSE.txt
     third_party/licenses/nlohmann-json-LICENSE.txt
     third_party/licenses/json-schema-validator-LICENSE.txt
-    third_party/licenses/noto-sans-cjk-LICENSE.txt)
+    third_party/licenses/noto-sans-cjk-LICENSE.txt
+    third_party/licenses/miniaudio-LICENSE.txt
+    third_party/licenses/rtaudio-LICENSE.txt)
 set(ANOMALY_RELEASE_COMPONENTS GameRuntime SDK Tools)
 if(ANOMALY_BUILD_SYMBOLS)
     list(APPEND ANOMALY_RELEASE_COMPONENTS Symbols)
