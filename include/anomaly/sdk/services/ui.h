@@ -168,6 +168,11 @@ typedef struct AnomalyUiServiceV1 {
         uint32_t flags, int enabled);
     void (ANOMALY_CALL *end_tab_item)(void* user);
     void (ANOMALY_CALL *end_tab_bar)(void* user);
+    // Optional extended text primitives. Safe for older hosts when struct_size is checked.
+    void (ANOMALY_CALL *text_colored)(
+        void* user, AnomalyStringViewV1 text, uint32_t color_rgba);
+    void (ANOMALY_CALL *text_large_colored)(
+        void* user, AnomalyStringViewV1 text, float size_pixels, uint32_t color_rgba);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus
