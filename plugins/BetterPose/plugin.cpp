@@ -21,8 +21,12 @@ using Microsoft::WRL::ComPtr;
 #include "better_pose_profile.hpp"
 #include "accessory_dynamics.hpp"
 #include "secondary_rules.hpp"
+#include "edit_history.hpp"
 #include "pose_history.hpp"
 #include "orbit_camera.hpp"
+#include "keyframe_track.hpp"
+#include "rotation_gizmo.hpp"
+#include "timeline_overlay.hpp"
 #include "pose_mirror.hpp"
 #include "morph_catalog.hpp"
 #include "mmd_morph_map.hpp"
@@ -442,6 +446,58 @@ struct Context final {
     double hinge_minimum{};
     double hinge_maximum{};
   } overlay_drag;
+  // Rotate gizmo (rotation_gizmo.hpp): three rings around the selected bone's
+  // joint, one per local axis. The AHUD callback draws them and publishes
+  // their screen polylines (overlay_mutex); Draw picks a ring on a left press
+  // and publishes the cursor; the AHUD callback turns it into the rotation.
+  std::atomic_bool overlay_gizmo_enabled{true};
+  std::array<better_pose::gizmo::ScreenRing, 3> overlay_gizmo_rings;  // overlay_mutex
+  std::uint32_t overlay_gizmo_bone{(std::numeric_limits<std::uint32_t>::max)()};  // overlay_mutex
+  std::array<std::array<double, 3>, 3> overlay_gizmo_axes{};   // overlay_mutex, world
+  std::array<double, 3> overlay_gizmo_toward{};                 // overlay_mutex
+  std::array<float, 2> overlay_gizmo_centre{};                  // overlay_mutex
+  std::array<double, 3> overlay_gizmo_centre_world{};           // overlay_mutex
+  std::array<std::vector<std::array<double, 3>>, 3> overlay_gizmo_world;  // overlay_mutex
+  // Move arrows, shown with the rings when the selected bone is the skeleton's
+  // root: they drag the body offset (requested_root_offset), the same value
+  // as the joint page's body X/Y/Z sliders. overlay_mutex, like the rings.
+  std::array<better_pose::gizmo::ScreenArrow, 3> overlay_gizmo_arrows{};
+  double overlay_gizmo_arrow_cm{};
+  std::atomic<int> overlay_gizmo_arrow{-1};        // held arrow, -1 none
+  std::atomic<int> overlay_gizmo_arrow_hover{-1};
+  std::atomic<std::uint32_t> overlay_gizmo_arrow_generation{};
+  bool overlay_gizmo_arrow_pressed{};  // render thread
+  struct ArrowDrag {  // game thread
+    bool valid{};
+    std::uint32_t generation{};
+    int axis{};
+    better_pose::gizmo::Vec2 base{};
+    better_pose::gizmo::Vec2 tip{};
+    better_pose::gizmo::Vec2 start_cursor{};
+    double arrow_cm{};
+    std::array<double, 3> start_offset{};
+  } overlay_arrow_drag;
+  double overlay_gizmo_radius_pixels{};                         // overlay_mutex
+  // Render thread -> game thread: which ring is held (-1 none), where the
+  // cursor is, and a generation per press.
+  std::atomic<int> overlay_gizmo_ring{-1};
+  std::atomic<int> overlay_gizmo_hover{-1};
+  std::atomic<float> overlay_gizmo_cursor_x{};
+  std::atomic<float> overlay_gizmo_cursor_y{};
+  std::atomic<std::uint32_t> overlay_gizmo_generation{};
+  std::atomic_bool overlay_gizmo_cancel{};
+  // Render thread only.
+  bool overlay_gizmo_pressed{};
+  // Game thread only: the drag in progress.
+  struct GizmoDrag {
+    bool valid{};
+    std::uint32_t generation{};
+    std::uint32_t bone{};
+    better_pose::gizmo::Drag geometry;
+    std::array<double, 4> parent_world{};
+    std::array<double, 4> start_offset{};
+    std::array<double, 3> start_angles{};
+  } overlay_gizmo_drag;
   // Two-bone IK on for chains that have one (limbs); off = always rotate one bone.
   std::atomic_bool overlay_ik_enabled{true};
   // Joint limits: hinge bones (finger joints past the root, elbows, knees)
@@ -495,11 +551,18 @@ struct Context final {
   std::array<std::atomic<double>, 3> requested_root_offset{};
   std::array<std::atomic<double>, 3> edited_translation{};
   std::atomic_bool pose_reset_requested{};
-  // Undo/redo. The history lives on the game thread (UpdateRuntime); the panel
-  // and the Ctrl+Z / Ctrl+Y keys only post requests, and read back the counts.
-  better_pose::history::PoseHistory pose_history;
-  std::uintptr_t pose_history_mesh{};
-  std::atomic<int> pose_history_request{};  // 1 undo, 2 redo, 0 none
+  // Undo/redo: one history for the pose, the expression and the keyframe track
+  // (edit_history.hpp), the way MMD has it. It lives on the game thread
+  // (StepEditHistory); every page's buttons and Ctrl+Z / Ctrl+Y only post
+  // requests and read back the counts.
+  better_pose::history::EditHistory edit_history;
+  std::uintptr_t edit_history_mesh{};
+  std::atomic<int> edit_history_request{};  // 1 undo, 2 redo, 0 none
+  std::atomic<std::uint32_t> edit_undo_count{};
+  std::atomic<std::uint32_t> edit_redo_count{};
+  // Game thread: the pose as it was last edited, which the history uses in
+  // place of the live one while an MMD motion is driving the bones.
+  better_pose::history::PoseState edit_history_frozen_pose;
   // Mirror request from the panel: 1 flip, 2 left to right, 3 right to left.
   std::atomic<int> pose_mirror_request{};
 
@@ -521,23 +584,13 @@ struct Context final {
   std::uintptr_t morph_process_event{};
   std::vector<std::uint32_t> morph_released;  // written back to 0 once, then left alone
   std::vector<std::uint8_t> morph_was_driven;
-  // Expression undo/redo: its own history (Ctrl+Z on the expression page
-  // undoes expressions, on the pose page poses). Game thread owns it.
-  better_pose::history::ExpressionHistory morph_history;
-  std::uintptr_t morph_history_mesh{};
-  std::atomic<int> morph_history_request{};  // 1 undo, 2 redo
-  std::atomic<std::uint32_t> morph_undo_count{};
-  std::atomic<std::uint32_t> morph_redo_count{};
-  // Which page the panel showed last frame, so Ctrl+Z goes to the right one.
-  std::atomic_bool expression_page_active{};
+
   // Expression file: name typed in the panel; export/import run on the game
   // thread, which owns the catalogue's FNames.
   std::array<char, 128> morph_export_name{};
   std::string morph_file_status;  // guarded by morph_mutex
   std::atomic<int> morph_file_request{};  // 1 export, 2 import
   std::wstring morph_import_path;         // guarded by morph_mutex
-  std::atomic<std::uint32_t> pose_undo_count{};
-  std::atomic<std::uint32_t> pose_redo_count{};
   // Held while a mouse button is down over the panel or the canvas, so a slow
   // slider drag with a pause in the middle is still one step.
   std::atomic_bool pose_edit_held{};
@@ -646,6 +699,84 @@ struct Context final {
   std::atomic<float> orbit_fov{};
   std::atomic<float> orbit_game_fov{};
   std::atomic_bool orbit_fov_restore{};
+  // Keyframe animation (keyframe_track.hpp): the user's own timeline of poses,
+  // expressions and pose-camera shots. The track and the panel-facing copies
+  // are guarded by keyframe_mutex; the game thread owns the playhead, samples
+  // the track and writes the result into the same state the joint page,
+  // expression page and pose camera edit, so everything downstream (pose write,
+  // morph write, camera hook) is unchanged. A loaded MMD motion wins over it.
+  std::mutex keyframe_mutex;
+  better_pose::keyframes::Track keyframe_track;
+  std::string keyframe_status;          // guarded by keyframe_mutex
+  std::wstring keyframe_import_path;    // guarded by keyframe_mutex
+  std::array<char, 128> keyframe_export_name{};
+  // Requests from the panel, consumed on the game thread.
+  //   1 key the current state at the playhead, 2 delete the selected key,
+  //   3 move the selected key to the playhead, 4 clear, 5 export, 6 import,
+  //   7 set the selected key's ease (keyframe_ease_request), 8 jump to the
+  //   selected key (playhead to its frame).
+  std::atomic<int> keyframe_request{};
+  std::atomic<double> keyframe_move_frame{};
+  std::atomic<int> keyframe_ease_request{};
+  std::atomic<std::int32_t> keyframe_selected{-1};
+  // What a new key records. Pose is on by default; expression and camera only
+  // when asked for, so a pose-only animation does not take the face or the
+  // camera over from the game.
+  std::atomic_bool keyframe_record_pose{true};
+  std::atomic_bool keyframe_record_expression{};
+  std::atomic_bool keyframe_record_camera{};
+  std::atomic_bool keyframe_auto_record{};
+  // Playhead in frames (30 per second). seek < 0 means none.
+  std::atomic<double> keyframe_frame{};
+  std::atomic<double> keyframe_seek{-1.0};
+  std::atomic_bool keyframe_playing{};
+  std::atomic_bool keyframe_loop{true};
+  std::atomic<float> keyframe_speed{1.0F};
+  // Length of the timeline, frames: at least the last key, at least what the
+  // user set, so there is room to key beyond the last one.
+  std::atomic<std::uint32_t> keyframe_length{150};
+  // Set while the track is driving the pose/expression/camera this frame
+  // (playing, or the playhead was just moved), so the panel can say so.
+  std::atomic_bool keyframe_driving{};
+  // Game thread: the playhead the state was last written for, so a paused
+  // timeline does not keep overwriting the user's edits every frame.
+  double keyframe_applied_frame{-1.0};
+  std::uint64_t keyframe_applied_revision{};
+  std::uint64_t keyframe_revision{};  // bumped on every track change (guarded)
+  double keyframe_auto_last_frame{-1.0};
+  better_pose::keyframes::TrackState keyframe_auto_baseline;
+  bool keyframe_auto_baseline_valid{};
+  better_pose::keyframes::TrackState keyframe_auto_user_state;
+  bool keyframe_auto_user_state_valid{};
+  // Morphs the track drove last time it wrote, so they are handed back to the
+  // game when a later sample no longer drives them. Game thread only.
+  std::vector<std::string> keyframe_driven_morphs;
+  // Undo/redo of the track (adding, moving, deleting keys). Game thread.
+
+  // On-screen timeline (AHUD canvas). The game thread draws it and publishes
+  // the layout; the render thread uses that layout for picking and posts
+  // seek/key-move requests back through the existing atomics.
+  std::atomic_bool keyframe_overlay_enabled{};
+  std::mutex keyframe_overlay_mutex;
+  better_pose::timeline::Layout keyframe_overlay_layout;
+  bool keyframe_overlay_valid{};
+  std::atomic<int> keyframe_overlay_hit{static_cast<int>(better_pose::timeline::Hit::None)};
+  std::atomic<int> keyframe_overlay_key{-1};
+  std::atomic<float> keyframe_overlay_cursor_x{};
+  std::atomic<float> keyframe_overlay_cursor_y{};
+  std::atomic_bool keyframe_overlay_pressed{};
+  std::atomic_bool keyframe_overlay_dragging_playhead{};
+  std::atomic_bool keyframe_overlay_dragging_key{};
+  std::atomic<std::uint32_t> keyframe_overlay_generation{};
+  // The zoomed window onto the timeline (timeline_overlay.hpp View), in
+  // frames; both zero = everything. Guarded by keyframe_overlay_mutex. The
+  // render thread zooms/pans it; the game thread turns the page during play.
+  better_pose::timeline::View keyframe_overlay_view;
+  // Render thread only: middle-drag pan.
+  bool keyframe_overlay_panning{};
+  float keyframe_overlay_pan_x{};
+  // Render thread only: Space (play/pause), on the press.
+  bool keyframe_space_was_down{};
   // Render thread only.
   bool orbit_right_dragging{};
   bool orbit_middle_was_down{};
@@ -1201,33 +1332,9 @@ void RestorePoseState(Context &context, const better_pose::history::PoseState &s
 // change is an ordinary edit, so undo takes it back.
 bool MirrorPose(Context &context, const int request) noexcept;
 
-// Game thread, every update: record settled edits, apply a posted undo/redo.
-// A different mesh (character switch) starts a fresh history.
-void StepPoseHistory(Context &context) noexcept {
-  try {
-    const std::uint64_t now = GetTickCount64();
-    if (context.pose_history_mesh != context.runtime.mesh) {
-      context.pose_history_mesh = context.runtime.mesh;
-      context.pose_history.Reset(CapturePoseState(context));
-      context.pose_history_request.store(0, std::memory_order_release);
-    } else {
-      const int request = context.pose_history_request.exchange(0, std::memory_order_acq_rel);
-      const auto live = CapturePoseState(context);
-      better_pose::history::PoseState target;
-      if (request == 1 ? context.pose_history.Undo(live, target)
-                       : request == 2 ? context.pose_history.Redo(live, target) : false)
-        RestorePoseState(context, target);
-      else
-        static_cast<void>(context.pose_history.Observe(
-            live, context.pose_edit_held.load(std::memory_order_acquire), now));
-    }
-    context.pose_undo_count.store(static_cast<std::uint32_t>(context.pose_history.UndoCount()),
-                                  std::memory_order_release);
-    context.pose_redo_count.store(static_cast<std::uint32_t>(context.pose_history.RedoCount()),
-                                  std::memory_order_release);
-  } catch (...) {
-  }
-}
+// Game thread, every update: the one undo history (defined after the keyframe
+// code, which it snapshots too).
+void StepEditHistory(Context &context) noexcept;
 
 bool LoadPoseSettings(Context &context) noexcept {
   if (!ConfigReady(context.config))
@@ -7458,32 +7565,6 @@ void RestoreExpression(Context &context, const better_pose::history::ExpressionS
   }
 }
 
-// Game thread: undo/redo for the expression, the same settle-then-record
-// history as the pose (pose_history.hpp). A new mesh starts a fresh history.
-void StepExpressionHistory(Context &context) noexcept {
-  try {
-    if (context.morph_history_mesh != context.morph_mesh) {
-      context.morph_history_mesh = context.morph_mesh;
-      context.morph_history.Reset(CaptureExpression(context));
-      context.morph_history_request.store(0, std::memory_order_release);
-    } else {
-      const int request = context.morph_history_request.exchange(0, std::memory_order_acq_rel);
-      const auto live = CaptureExpression(context);
-      better_pose::history::ExpressionState target;
-      if (request == 1 ? context.morph_history.Undo(live, target)
-                       : request == 2 ? context.morph_history.Redo(live, target) : false)
-        RestoreExpression(context, target);
-      else
-        static_cast<void>(context.morph_history.Observe(
-            live, context.pose_edit_held.load(std::memory_order_acquire), GetTickCount64()));
-    }
-    context.morph_undo_count.store(static_cast<std::uint32_t>(context.morph_history.UndoCount()),
-                                   std::memory_order_release);
-    context.morph_redo_count.store(static_cast<std::uint32_t>(context.morph_history.RedoCount()),
-                                   std::memory_order_release);
-  } catch (...) {
-  }
-}
 
 // Game thread: expression file export/import. The document is small (a few
 // kilobytes), so it is written and read here rather than on a task.
@@ -7763,6 +7844,727 @@ void StepExpression(Context &context) noexcept {
   }
 }
 
+// --- Keyframe animation (game thread) -----------------------------------------
+// See keyframe_track.hpp. Keys are recorded from, and samples written back to,
+// the same state the three editing pages use: bone_angles + the body offset,
+// the morph weights, and the pose camera's orbit + lens.
+
+namespace keyframe_impl {
+
+namespace kf = better_pose::keyframes;
+
+void SetStatus(Context &context, const std::string_view key, const std::string_view fallback,
+               const std::string &a = {}, const std::string &b = {}) {
+  const std::array<std::string_view, 2> arguments{a, b};
+  const std::size_t used = !b.empty() ? 2U : !a.empty() ? 1U : 0U;
+  std::string text = context.localizer.Format(
+      key, fallback, std::span<const std::string_view>(arguments.data(), used));
+  std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+  context.keyframe_status = std::move(text);
+}
+
+// The pose, expression and camera as they are now, as one key.
+kf::Key CaptureKey(Context &context, const std::uint32_t frame) {
+  kf::Key key;
+  key.frame = frame;
+  if (context.keyframe_record_pose.load(std::memory_order_acquire)) {
+    key.has_pose = true;
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      for (std::size_t index{}; index != context.bone_angles.size(); ++index) {
+        const auto &angle = context.bone_angles[index];
+        if (angle[0] == 0.0 && angle[1] == 0.0 && angle[2] == 0.0)
+          continue;
+        // Without the skeleton's names a key could not be replayed by name;
+        // the bone list is loaded before any joint can be edited, so a bone
+        // with an offset and no name is not one the user posed.
+        if (index >= context.bone_names.size() || context.bone_names[index].empty())
+          continue;
+        key.bones.push_back({context.bone_names[index], angle[0], angle[1], angle[2]});
+      }
+    }
+    for (std::size_t axis{}; axis != 3; ++axis)
+      key.root_offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
+  }
+  if (context.keyframe_record_expression.load(std::memory_order_acquire)) {
+    key.has_expression = true;
+    std::lock_guard<std::mutex> lock(context.morph_mutex);
+    for (const auto &morph :
+         better_pose::morph::CollectDriven(context.morph_catalog, context.morph_weights))
+      key.morphs.push_back({morph.name, morph.weight});
+  }
+  if (context.keyframe_record_camera.load(std::memory_order_acquire) &&
+      context.orbit_enabled.load(std::memory_order_acquire) &&
+      context.orbit_initialized.load(std::memory_order_acquire)) {
+    key.has_camera = true;
+    std::lock_guard<std::mutex> lock(context.orbit_mutex);
+    key.camera.focus = context.orbit.focus;
+    key.camera.yaw = context.orbit.yaw;
+    key.camera.pitch = context.orbit.pitch;
+    key.camera.distance = context.orbit.distance;
+    key.camera.fov = context.orbit_fov.load(std::memory_order_acquire);
+  }
+  return key;
+}
+
+// Write a sample into the editing state. Bones not in the sample go to rest:
+// the track describes the whole pose, so a bone the animation does not move
+// must not keep a stray offset from an earlier edit.
+void ApplySample(Context &context, const kf::Sampled &sample) {
+  if (sample.has_pose) {
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      const std::size_t size = (std::max)(context.bone_angles.size(), context.bone_names.size());
+      context.bone_angles.assign(size, {0.0, 0.0, 0.0});
+      for (const auto &bone : sample.bones) {
+        const auto it = std::find(context.bone_names.begin(), context.bone_names.end(), bone.name);
+        if (it == context.bone_names.end())
+          continue;
+        context.bone_angles[static_cast<std::size_t>(it - context.bone_names.begin())] = {
+            bone.pitch, bone.yaw, bone.roll};
+      }
+    }
+    for (std::size_t axis{}; axis != 3; ++axis)
+      context.requested_root_offset[axis].store(sample.root_offset[axis],
+                                                std::memory_order_release);
+    context.pose_override_enabled.store(true, std::memory_order_release);
+  }
+  if (sample.has_expression) {
+    std::lock_guard<std::mutex> lock(context.morph_mutex);
+    auto &catalog = context.morph_catalog;
+    auto &weights = context.morph_weights;
+    std::vector<std::string> driving;
+    for (const auto &morph : sample.morphs) {
+      const auto it = std::find_if(catalog.entries.begin(), catalog.entries.end(),
+                                   [&](const auto &e) { return e.name == morph.name; });
+      if (it == catalog.entries.end())
+        continue;
+      weights.Set(static_cast<std::size_t>(it - catalog.entries.begin()), morph.weight);
+      driving.push_back(morph.name);
+    }
+    // A morph the track drove before but not now goes back to the game.
+    for (const auto &name : context.keyframe_driven_morphs) {
+      if (std::find(driving.begin(), driving.end(), name) != driving.end())
+        continue;
+      const auto it = std::find_if(catalog.entries.begin(), catalog.entries.end(),
+                                   [&](const auto &e) { return e.name == name; });
+      if (it != catalog.entries.end())
+        weights.Release(static_cast<std::size_t>(it - catalog.entries.begin()));
+    }
+    context.keyframe_driven_morphs = std::move(driving);
+  }
+  if (sample.has_camera && context.orbit_enabled.load(std::memory_order_acquire)) {
+    {
+      std::lock_guard<std::mutex> lock(context.orbit_mutex);
+      context.orbit.focus = sample.camera.focus;
+      context.orbit.yaw = sample.camera.yaw;
+      context.orbit.pitch = std::clamp(sample.camera.pitch, -better_pose::orbit::kMaximumPitch,
+                                       better_pose::orbit::kMaximumPitch);
+      context.orbit.distance =
+          std::clamp(sample.camera.distance, better_pose::orbit::kMinimumDistance,
+                     better_pose::orbit::kMaximumDistance);
+    }
+    // A key the orbit had not yet started from must not be undone by the
+    // detour's "start from the game's view" on the next frame.
+    context.orbit_initialized.store(true, std::memory_order_release);
+    if (sample.camera.fov >= better_pose::orbit::kMinimumFov)
+      context.orbit_fov.store(std::clamp(sample.camera.fov, better_pose::orbit::kMinimumFov,
+                                         better_pose::orbit::kMaximumFov),
+                              std::memory_order_release);
+  }
+}
+
+kf::TrackState CaptureTrack(Context &context) {
+  std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+  return {context.keyframe_track.Keys()};
+}
+
+void RestoreTrack(Context &context, const kf::TrackState &state) {
+  std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+  context.keyframe_track.Clear();
+  for (const auto &key : state.keys)
+    context.keyframe_track.Set(key);
+  ++context.keyframe_revision;
+  const auto selected = context.keyframe_selected.load(std::memory_order_acquire);
+  if (selected >= static_cast<std::int32_t>(context.keyframe_track.Size()))
+    context.keyframe_selected.store(-1, std::memory_order_release);
+}
+
+// Keyframe file: bones and morphs by name, so it carries over to another
+// character with the same rig, like pose and expression files.
+//   { "format": "betterpose-keyframes", "version": 1, "fps": 30,
+//     "length": 150,
+//     "keys": [ { "frame": 0, "ease": "inout",
+//                 "pose": { "bones": [ {"name", "pitch", "yaw", "roll"} ],
+//                           "rootOffset": [x, y, z] },
+//                 "expression": [ {"name", "weight"} ],
+//                 "camera": { "focus": [x,y,z], "yaw", "pitch", "distance",
+//                             "fov" } } ] }
+std::string BuildDocument(Context &context) {
+  nlohmann::json root;
+  root["format"] = "betterpose-keyframes";
+  root["version"] = 1;
+  root["fps"] = kf::kFramesPerSecond;
+  root["length"] = context.keyframe_length.load(std::memory_order_acquire);
+  auto keys = nlohmann::json::array();
+  std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+  for (const auto &key : context.keyframe_track.Keys()) {
+    nlohmann::json item;
+    item["frame"] = key.frame;
+    item["ease"] = key.ease == kf::Ease::InOut ? "inout" : "linear";
+    if (key.has_pose) {
+      auto bones = nlohmann::json::array();
+      for (const auto &bone : key.bones)
+        bones.push_back(
+            {{"name", bone.name}, {"pitch", bone.pitch}, {"yaw", bone.yaw}, {"roll", bone.roll}});
+      item["pose"] = {{"bones", std::move(bones)}, {"rootOffset", key.root_offset}};
+    }
+    if (key.has_expression) {
+      auto morphs = nlohmann::json::array();
+      for (const auto &morph : key.morphs)
+        morphs.push_back({{"name", morph.name}, {"weight", morph.weight}});
+      item["expression"] = std::move(morphs);
+    }
+    if (key.has_camera)
+      item["camera"] = {{"focus", key.camera.focus},     {"yaw", key.camera.yaw},
+                        {"pitch", key.camera.pitch},     {"distance", key.camera.distance},
+                        {"fov", key.camera.fov}};
+    keys.push_back(std::move(item));
+  }
+  root["keys"] = std::move(keys);
+  return root.dump(2);
+}
+
+bool Finite3(const nlohmann::json &value, std::array<double, 3> &out) {
+  if (!value.is_array() || value.size() != 3)
+    return false;
+  for (std::size_t axis{}; axis != 3; ++axis) {
+    if (!value[axis].is_number())
+      return false;
+    out[axis] = value[axis].get<double>();
+    if (!std::isfinite(out[axis]))
+      return false;
+  }
+  return true;
+}
+
+// Returns false when the document is not a keyframe file. Unreadable keys
+// inside one are skipped rather than failing the whole file.
+bool ParseDocument(const std::string &document, std::vector<kf::Key> &keys,
+                   std::uint32_t &length, std::size_t &skipped) {
+  const auto root = nlohmann::json::parse(document, nullptr, false);
+  if (!root.is_object() || root.value("format", std::string()) != "betterpose-keyframes" ||
+      !root.contains("keys") || !root["keys"].is_array())
+    return false;
+  length = 0;
+  if (root.contains("length") && root["length"].is_number_unsigned())
+    length = (std::min)(root["length"].get<std::uint32_t>(), kf::kMaximumFrame);
+  // A file authored at another rate is retimed to ours.
+  double scale = 1.0;
+  if (root.contains("fps") && root["fps"].is_number()) {
+    const double fps = root["fps"].get<double>();
+    if (std::isfinite(fps) && fps > 0.0)
+      scale = kf::kFramesPerSecond / fps;
+  }
+  length = static_cast<std::uint32_t>(std::lround(static_cast<double>(length) * scale));
+  skipped = 0;
+  for (const auto &item : root["keys"]) {
+    if (keys.size() >= kf::kMaximumKeys)
+      break;
+    if (!item.is_object() || !item.contains("frame") || !item["frame"].is_number()) {
+      ++skipped;
+      continue;
+    }
+    const double raw_frame = item["frame"].get<double>() * scale;
+    if (!std::isfinite(raw_frame) || raw_frame < 0.0) {
+      ++skipped;
+      continue;
+    }
+    kf::Key key;
+    key.frame = static_cast<std::uint32_t>(
+        (std::min)(std::llround(raw_frame), static_cast<long long>(kf::kMaximumFrame)));
+    key.ease = item.value("ease", std::string("inout")) == "linear" ? kf::Ease::Linear
+                                                                     : kf::Ease::InOut;
+    if (item.contains("pose") && item["pose"].is_object()) {
+      const auto &pose = item["pose"];
+      key.has_pose = true;
+      if (pose.contains("bones") && pose["bones"].is_array())
+        for (const auto &bone : pose["bones"]) {
+          if (!bone.is_object() || !bone.contains("name") || !bone["name"].is_string())
+            continue;
+          const double p = bone.value("pitch", 0.0), y = bone.value("yaw", 0.0),
+                       r = bone.value("roll", 0.0);
+          if (!std::isfinite(p) || !std::isfinite(y) || !std::isfinite(r))
+            continue;
+          key.bones.push_back({bone["name"].get<std::string>(), kf::WrapDegrees(p),
+                               kf::WrapDegrees(y), kf::WrapDegrees(r)});
+        }
+      if (pose.contains("rootOffset"))
+        static_cast<void>(Finite3(pose["rootOffset"], key.root_offset));
+    }
+    if (item.contains("expression") && item["expression"].is_array()) {
+      key.has_expression = true;
+      for (const auto &morph : item["expression"]) {
+        if (!morph.is_object() || !morph.contains("name") || !morph["name"].is_string() ||
+            !morph.contains("weight") || !morph["weight"].is_number())
+          continue;
+        const float weight = morph["weight"].get<float>();
+        if (std::isfinite(weight))
+          key.morphs.push_back({morph["name"].get<std::string>(), std::clamp(weight, 0.0F, 1.0F)});
+      }
+    }
+    if (item.contains("camera") && item["camera"].is_object()) {
+      const auto &camera = item["camera"];
+      kf::CameraKey shot;
+      const double yaw = camera.value("yaw", 0.0), pitch = camera.value("pitch", 0.0),
+                   distance = camera.value("distance", 300.0);
+      const float fov = camera.value("fov", 0.0F);
+      if (camera.contains("focus") && Finite3(camera["focus"], shot.focus) &&
+          std::isfinite(yaw) && std::isfinite(pitch) && std::isfinite(distance) &&
+          std::isfinite(fov)) {
+        shot.yaw = yaw;
+        shot.pitch = pitch;
+        shot.distance = distance;
+        shot.fov = fov;
+        key.has_camera = true;
+        key.camera = shot;
+      }
+    }
+    keys.push_back(std::move(key));
+  }
+  return true;
+}
+
+void ExportFile(Context &context) {
+  std::string name(context.keyframe_export_name.data());
+  if (name.empty())
+    name = "keyframes";
+  if (name.size() < 5 || name.substr(name.size() - 5) != ".json")
+    name += ".json";
+  const std::wstring folder = Utf8ToWide(context.pose_export_folder);
+  if (folder.empty()) {
+    SetStatus(context, "keyframe.file.no_folder", "Export failed: choose a folder first");
+    return;
+  }
+  std::size_t count{};
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    count = context.keyframe_track.Size();
+  }
+  if (count == 0) {
+    SetStatus(context, "keyframe.file.nothing", "Export failed: the timeline has no keys");
+    return;
+  }
+  std::wstring path = folder;
+  if (path.back() != L'\\' && path.back() != L'/')
+    path.push_back(L'\\');
+  path += Utf8ToWide(name);
+  const std::string document = BuildDocument(context);
+  std::ofstream file(path, std::ios::binary);
+  if (!file) {
+    SetStatus(context, "keyframe.file.open_failed", "Export failed: cannot open {0}",
+              WideToUtf8(path));
+    return;
+  }
+  file.write(document.data(), static_cast<std::streamsize>(document.size()));
+  file.close();
+  if (file)
+    SetStatus(context, "keyframe.file.exported", "Exported {0} keys to {1}", std::to_string(count),
+              WideToUtf8(path));
+  else
+    SetStatus(context, "keyframe.file.write_failed", "Export failed: write error");
+}
+
+void ImportFile(Context &context) {
+  std::wstring path;
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    path = context.keyframe_import_path;
+  }
+  if (path.empty()) {
+    SetStatus(context, "keyframe.file.no_file", "Import failed: choose a file first");
+    return;
+  }
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    SetStatus(context, "keyframe.file.read_failed", "Import failed: cannot open the file");
+    return;
+  }
+  std::string document((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  if (document.empty() || document.size() > 16U * 1024U * 1024U) {
+    SetStatus(context, "keyframe.file.unreadable", "Import failed: the file cannot be read");
+    return;
+  }
+  std::vector<kf::Key> keys;
+  std::uint32_t length{};
+  std::size_t skipped{};
+  if (!ParseDocument(document, keys, length, skipped)) {
+    SetStatus(context, "keyframe.file.wrong_format", "Import failed: not a keyframe file");
+    return;
+  }
+  // Bones this character does not have, for the status line.
+  std::vector<std::string> missing;
+  for (const auto &key : keys)
+    for (const auto &bone : key.bones)
+      if (std::find(context.bone_names.begin(), context.bone_names.end(), bone.name) ==
+              context.bone_names.end() &&
+          std::find(missing.begin(), missing.end(), bone.name) == missing.end())
+        missing.push_back(bone.name);
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    context.keyframe_track.Clear();
+    for (auto &key : keys)
+      context.keyframe_track.Set(std::move(key));
+    ++context.keyframe_revision;
+    length = (std::max)(length, context.keyframe_track.LastFrame());
+  }
+  context.keyframe_length.store((std::max)(length, 30U), std::memory_order_release);
+  context.keyframe_selected.store(-1, std::memory_order_release);
+  context.keyframe_seek.store(0.0, std::memory_order_release);
+  const std::string count = std::to_string(keys.size());
+  if (!missing.empty() && !context.bone_names.empty())
+    SetStatus(context, "keyframe.file.imported_missing",
+              "Imported {0} keys; {1} bones are not on this character", count,
+              std::to_string(missing.size()) + " (" + missing.front() + " ...)");
+  else if (skipped != 0)
+    SetStatus(context, "keyframe.file.imported_skipped", "Imported {0} keys; skipped {1} unreadable",
+              count, std::to_string(skipped));
+  else
+    SetStatus(context, "keyframe.file.imported", "Imported {0} keys", count);
+}
+
+void HandleRequest(Context &context) {
+  const int request = context.keyframe_request.exchange(0, std::memory_order_acq_rel);
+  if (request == 0)
+    return;
+  const auto playhead = static_cast<std::uint32_t>(
+      std::lround((std::max)(0.0, context.keyframe_frame.load(std::memory_order_acquire))));
+  const std::int32_t selected = context.keyframe_selected.load(std::memory_order_acquire);
+  switch (request) {
+  case 1: {  // key at the playhead
+    const bool want_pose = context.keyframe_record_pose.load(std::memory_order_acquire);
+    const bool want_camera = context.keyframe_record_camera.load(std::memory_order_acquire);
+    if (want_pose && context.bone_names.empty()) {
+      SetStatus(context, "keyframe.no_bones", "Load the bones first (Load Bones)");
+      return;
+    }
+    kf::Key key = CaptureKey(context, playhead);
+    // The camera cannot be captured with the pose camera off. Re-keying must
+    // not silently drop a shot the frame already had because of that, so the
+    // old shot is kept and the user is told.
+    const bool camera_unavailable = want_camera && !key.has_camera;
+    std::size_t index{};
+    bool replaced{};
+    bool removed{};
+    bool untouched{};
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      // Re-keying a frame *replaces* it with exactly what is ticked now: an
+      // unticked part is taken off this frame, so a face or camera key can be
+      // removed as easily as it was added. Only the ease is kept.
+      const std::size_t existing = context.keyframe_track.Find(playhead);
+      replaced = existing != context.keyframe_track.Size();
+      if (replaced) {
+        const auto &old = context.keyframe_track.Keys()[existing];
+        key.ease = old.ease;
+        if (camera_unavailable && old.has_camera) {
+          key.has_camera = true;
+          key.camera = old.camera;
+        }
+      }
+      if (!key.has_pose && !key.has_expression && !key.has_camera) {
+        // Nothing ticked (or only a camera that cannot be read): on an
+        // existing key that empties it, so the key goes; on an empty frame
+        // there is nothing to add.
+        if (replaced && !camera_unavailable) {
+          context.keyframe_track.Remove(existing);
+          ++context.keyframe_revision;
+          removed = true;
+          context.keyframe_selected.store(-1, std::memory_order_release);
+        } else {
+          untouched = true;
+        }
+      } else {
+        index = context.keyframe_track.Set(std::move(key));
+        ++context.keyframe_revision;
+        if (index == context.keyframe_track.Size()) {
+          context.keyframe_status =
+              context.localizer.Text("keyframe.full", "The timeline is full");
+          return;
+        }
+        context.keyframe_selected.store(static_cast<std::int32_t>(index),
+                                        std::memory_order_release);
+      }
+      // The state written for this frame is what was just keyed.
+      context.keyframe_applied_frame = static_cast<double>(playhead);
+      context.keyframe_applied_revision = context.keyframe_revision;
+    }
+    const std::string frame_text = std::to_string(playhead);
+    if (removed) {
+      SetStatus(context, "keyframe.removed_empty",
+                "Nothing ticked: removed the key at frame {0}", frame_text);
+      return;
+    }
+    if (untouched) {
+      // Only the camera was ticked and it cannot be read: nothing changed.
+      if (camera_unavailable)
+        SetStatus(context, "keyframe.camera_off", "Turn the pose camera on to key the camera");
+      else
+        SetStatus(context, "keyframe.nothing_to_record",
+                  "Nothing to record: tick pose, expression or camera");
+      return;
+    }
+    if (playhead + 30U > context.keyframe_length.load(std::memory_order_acquire))
+      context.keyframe_length.store(playhead + 30U, std::memory_order_release);
+    if (camera_unavailable)
+      SetStatus(context, "keyframe.camera_kept",
+                "Keyed frame {0}; the pose camera is off, so its camera was not recorded",
+                frame_text);
+    else
+      SetStatus(context, replaced ? "keyframe.replaced" : "keyframe.added",
+                replaced ? "Updated the key at frame {0}" : "Added a key at frame {0}",
+                frame_text);
+    return;
+  }
+  case 2: {  // delete selected
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    if (selected >= 0 && context.keyframe_track.Remove(static_cast<std::size_t>(selected))) {
+      ++context.keyframe_revision;
+      const auto size = static_cast<std::int32_t>(context.keyframe_track.Size());
+      context.keyframe_selected.store(size == 0 ? -1 : (std::min)(selected, size - 1),
+                                      std::memory_order_release);
+    }
+    return;
+  }
+  case 3: {  // move selected to the requested timeline frame
+    const auto requested = context.keyframe_move_frame.exchange(
+        -1.0, std::memory_order_acq_rel);
+    const std::uint32_t target = requested >= 0.0
+        ? static_cast<std::uint32_t>(std::lround(requested)) : playhead;
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    if (selected < 0)
+      return;
+    const std::size_t moved = context.keyframe_track.Move(static_cast<std::size_t>(selected), target);
+    if (moved < context.keyframe_track.Size()) {
+      ++context.keyframe_revision;
+      context.keyframe_selected.store(static_cast<std::int32_t>(moved), std::memory_order_release);
+    }
+    return;
+  }
+  case 4: {  // clear
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      context.keyframe_track.Clear();
+      ++context.keyframe_revision;
+    }
+    context.keyframe_selected.store(-1, std::memory_order_release);
+    context.keyframe_playing.store(false, std::memory_order_release);
+    return;
+  }
+  case 5:
+    ExportFile(context);
+    return;
+  case 6:
+    ImportFile(context);
+    return;
+  case 7: {  // ease of the selected key
+    const int ease = context.keyframe_ease_request.load(std::memory_order_acquire);
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    if (selected >= 0 &&
+        context.keyframe_track.SetEase(static_cast<std::size_t>(selected),
+                                       ease == 0 ? kf::Ease::Linear : kf::Ease::InOut))
+      ++context.keyframe_revision;
+    return;
+  }
+  case 8: {  // jump to the selected key
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    if (selected >= 0 && static_cast<std::size_t>(selected) < context.keyframe_track.Size())
+      context.keyframe_seek.store(
+          static_cast<double>(context.keyframe_track.Keys()[static_cast<std::size_t>(selected)].frame),
+          std::memory_order_release);
+    return;
+  }
+  default:
+    return;
+  }
+}
+
+}  // namespace keyframe_impl
+
+better_pose::history::EditState CaptureEdit(Context &context) {
+  return {CapturePoseState(context), CaptureExpression(context),
+          keyframe_impl::CaptureTrack(context)};
+}
+
+// Game thread, every update, after the keyframe step and before the pose is
+// applied: record settled edits into the one history, or apply a posted
+// undo/redo to all three parts at once. Things that move the state without
+// being edits -- keyframe playback, a loaded MMD motion driving the pose, a
+// character switch -- restart the history from where they leave it.
+void StepEditHistory(Context &context) noexcept {
+  try {
+    const bool motion_owns = context.motion_loaded.load(std::memory_order_acquire);
+    const bool not_an_edit = context.keyframe_driving.load(std::memory_order_acquire);
+    if (context.edit_history_mesh != context.runtime.mesh || not_an_edit) {
+      context.edit_history_mesh = context.runtime.mesh;
+      context.edit_history.Reset(CaptureEdit(context));
+      context.edit_history_request.store(0, std::memory_order_release);
+    } else {
+      const int request = context.edit_history_request.exchange(0, std::memory_order_acq_rel);
+      auto live = CaptureEdit(context);
+      // A loaded motion owns the pose: the frames it writes are not edits, so
+      // the history sees the pose as it was when the motion took over. The
+      // expression page and the track stay editable meanwhile and record.
+      if (motion_owns)
+        live.pose = context.edit_history_frozen_pose;
+      else
+        context.edit_history_frozen_pose = live.pose;
+      better_pose::history::EditState target;
+      const bool applied = request == 1   ? context.edit_history.Undo(live, target)
+                           : request == 2 ? context.edit_history.Redo(live, target)
+                                          : false;
+      if (applied) {
+        if (!motion_owns)
+          RestorePoseState(context, target.pose);
+        RestoreExpression(context, target.expression);
+        keyframe_impl::RestoreTrack(context, target.track);
+        // The restored state *is* the frame's state: the track must not be
+        // re-sampled over it, and auto-key must not take it for a new edit.
+        context.keyframe_applied_frame = context.keyframe_frame.load(std::memory_order_acquire);
+        {
+          std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+          context.keyframe_applied_revision = context.keyframe_revision;
+        }
+        context.keyframe_auto_user_state_valid = false;
+      } else {
+        static_cast<void>(context.edit_history.Observe(
+            live, context.pose_edit_held.load(std::memory_order_acquire), GetTickCount64()));
+      }
+    }
+    context.edit_undo_count.store(static_cast<std::uint32_t>(context.edit_history.UndoCount()),
+                                  std::memory_order_release);
+    context.edit_redo_count.store(static_cast<std::uint32_t>(context.edit_history.RedoCount()),
+                                  std::memory_order_release);
+  } catch (...) {
+  }
+}
+
+// Game thread, every update. Handles the panel's requests, advances the
+// playhead, and writes the sampled pose/expression/camera into the editing
+// state -- every frame while playing, and once when the playhead moves or the
+// track changes while paused, so a paused timeline leaves the user free to
+// edit the pose for the next key. A loaded MMD motion owns the character, so
+// the track only records and edits then, it does not drive.
+void StepKeyframes(Context &context, const double delta_seconds) noexcept {
+  try {
+    keyframe_impl::HandleRequest(context);
+
+    const double seek = context.keyframe_seek.exchange(-1.0, std::memory_order_acq_rel);
+    double frame = context.keyframe_frame.load(std::memory_order_acquire);
+    if (seek >= 0.0)
+      frame = seek;
+    std::uint32_t last{};
+    std::uint64_t revision{};
+    bool empty{};
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      last = context.keyframe_track.LastFrame();
+      revision = context.keyframe_revision;
+      empty = context.keyframe_track.Empty();
+    }
+    const std::uint32_t length =
+        (std::max)(context.keyframe_length.load(std::memory_order_acquire), last);
+    const bool motion_owns = context.motion_loaded.load(std::memory_order_acquire);
+    bool playing = context.keyframe_playing.load(std::memory_order_acquire);
+    if (playing && (empty || motion_owns)) {
+      playing = false;
+      context.keyframe_playing.store(false, std::memory_order_release);
+    }
+    if (playing && delta_seconds > 0.0) {
+      const double speed = std::clamp(
+          static_cast<double>(context.keyframe_speed.load(std::memory_order_acquire)), 0.05, 4.0);
+      frame += delta_seconds * better_pose::keyframes::kFramesPerSecond * speed;
+      // Playback runs to the last key: the empty tail of the timeline is room
+      // to add keys, not part of the animation.
+      const double end = static_cast<double>(last);
+      if (frame > end) {
+        if (context.keyframe_loop.load(std::memory_order_acquire) && end > 0.0)
+          frame = std::fmod(frame, end);
+        else {
+          frame = end;
+          context.keyframe_playing.store(false, std::memory_order_release);
+        }
+      }
+    }
+    frame = std::clamp(frame, 0.0, static_cast<double>(length));
+    context.keyframe_frame.store(frame, std::memory_order_release);
+
+    const bool moved = std::abs(frame - context.keyframe_applied_frame) > 1e-6;
+    const bool changed = revision != context.keyframe_applied_revision;
+    const bool user_editing = !playing && !moved && !motion_owns;
+    // Selection follows the playhead: a paused playhead that lands on a key
+    // selects it; one that leaves the selected key (scrub, step, play) drops
+    // it, so the timeline's DEL and the panel always mean the key under it.
+    if (moved || playing) {
+      const auto rounded = static_cast<std::uint32_t>(std::lround((std::max)(0.0, frame)));
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      const std::size_t at = context.keyframe_track.Find(rounded);
+      const bool on_key = !playing && at != context.keyframe_track.Size() &&
+                          std::abs(frame - static_cast<double>(rounded)) < 0.5;
+      const std::int32_t selected = context.keyframe_selected.load(std::memory_order_acquire);
+      if (on_key)
+        context.keyframe_selected.store(static_cast<std::int32_t>(at), std::memory_order_release);
+      else if (selected >= 0 && static_cast<std::size_t>(selected) < context.keyframe_track.Size() &&
+               context.keyframe_track.Keys()[static_cast<std::size_t>(selected)].frame != rounded)
+        context.keyframe_selected.store(-1, std::memory_order_release);
+    }
+    if (context.keyframe_auto_record.load(std::memory_order_acquire) && user_editing) {
+      const auto current_state = better_pose::keyframes::TrackState{{
+          keyframe_impl::CaptureKey(context,
+                                    static_cast<std::uint32_t>(std::lround(frame)))}};
+      const bool user_changed = !context.keyframe_auto_user_state_valid ||
+          !current_state.SameAs(context.keyframe_auto_user_state);
+      if (user_changed && context.keyframe_auto_user_state_valid) {
+        // The user changed the live pose/expression/camera on the current
+        // frame. Write that frame immediately; playback and timeline drags
+        // never enter this branch, so they cannot generate keys.
+        context.keyframe_request.store(1, std::memory_order_release);
+      }
+      context.keyframe_auto_user_state = current_state;
+      context.keyframe_auto_user_state_valid = true;
+    } else if (playing || moved || motion_owns) {
+      context.keyframe_auto_user_state_valid = false;
+    }
+    if (moved) {
+      context.keyframe_auto_last_frame = frame;
+      context.keyframe_auto_baseline = better_pose::keyframes::TrackState{{
+          keyframe_impl::CaptureKey(context,
+                                    static_cast<std::uint32_t>(std::lround(frame)))}};
+      context.keyframe_auto_baseline_valid = true;
+    }
+    // A track change re-samples the frame (delete, move, import, clear), so the
+    // character shows the track. Recording and undo/redo both mark the frame
+    // as applied themselves: the live state already *is* that frame.
+    const bool drive = !empty && !motion_owns && (playing || moved || changed);
+    context.keyframe_driving.store(drive && playing, std::memory_order_release);
+    if (!drive) {
+      if (empty)
+        context.keyframe_applied_frame = frame;
+      context.keyframe_applied_revision = revision;
+      return;
+    }
+    better_pose::keyframes::Sampled sample;
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      sample = context.keyframe_track.Sample(frame);
+    }
+    keyframe_impl::ApplySample(context, sample);
+    context.keyframe_applied_frame = frame;
+    context.keyframe_applied_revision = revision;
+  } catch (...) {
+  }
+}
+
 void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   if (!RefreshRuntime(context)) {
     PublishSnapshot(context, "local player character is unavailable");
@@ -7770,8 +8572,10 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   }
 
   EnsureActiveCharacterProfile(context);
+  // Before the expression and pose steps: the keyframe sample is written into
+  // the same weights and angles they then apply this frame.
+  StepKeyframes(context, delta_seconds);
   StepExpressionFile(context);
-  StepExpressionHistory(context);
   StepExpression(context);
 
   const bool freeze_enabled =
@@ -7901,10 +8705,12 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     if (mirror != 0 && !MirrorPose(context, mirror))
       SetReflectionStatus(context, "mirror unavailable: load the bones and make the character "
                                    "visible first");
-    StepPoseHistory(context);
   } else {
     context.pose_mirror_request.store(0, std::memory_order_release);
   }
+  // After every edit source of this update (keyframe requests, expression
+  // file, mirror), so each lands in the history as it happened.
+  StepEditHistory(context);
 
   const bool master_enabled =
       context.pose_override_enabled.load(std::memory_order_acquire);  std::size_t active_joints{};
@@ -9260,6 +10066,636 @@ void MeasureOrbitFocal(Context &context, const AnomalyUe5AhudFrameV1 *frame) noe
     context.orbit_focal_pixels.store(pixels * 100.0, std::memory_order_release);
 }
 
+// --- Rotate gizmo (game thread, inside the AHUD callback) --------------------
+// Rings around the selected bone's joint, about the bone's own local X/Y/Z
+// (MMD's local mode). Not the sliders' axes: a slider offset is applied as
+// offset * base, i.e. in the parent's frame. Dragging a ring turns the bone
+// about that axis only, as a world rotation converted into the slider offset
+// through the same write as the joint drag, so undo, limits and keyframes
+// all see an ordinary edit.
+
+constexpr std::uint32_t kGizmoColors[3]{ANOMALY_RGBA_V1(235, 70, 70, 235),
+                                        ANOMALY_RGBA_V1(80, 210, 90, 235),
+                                        ANOMALY_RGBA_V1(80, 140, 255, 235)};
+constexpr std::uint32_t kGizmoBackColors[3]{ANOMALY_RGBA_V1(235, 70, 70, 70),
+                                            ANOMALY_RGBA_V1(80, 210, 90, 70),
+                                            ANOMALY_RGBA_V1(80, 140, 255, 70)};
+constexpr std::uint32_t kGizmoActiveColor = ANOMALY_RGBA_V1(255, 230, 0, 255);
+constexpr double kGizmoRadiusPixels = 70.0;  // how big the rings look on screen
+
+constexpr double kGizmoArrowPixels = 95.0;  // arrows reach past the rings
+
+// The skeleton's root: the bone with no parent. The move arrows only show for
+// it, because the body offset moves the whole skeleton from there.
+bool IsSkeletonRoot(const Context &context, const std::uint32_t bone) noexcept {
+  return bone < context.bone_parents.size() && context.bone_parents[bone] < 0;
+}
+
+// Applies a held move arrow to the body offset. Returns true while one runs.
+bool StepArrowDrag(Context &context) noexcept {
+  auto &drag = context.overlay_arrow_drag;
+  if (context.overlay_gizmo_cancel.load(std::memory_order_acquire) && drag.valid) {
+    context.overlay_gizmo_cancel.store(false, std::memory_order_release);
+    for (std::size_t axis{}; axis != 3; ++axis)
+      context.requested_root_offset[axis].store(drag.start_offset[axis],
+                                                std::memory_order_release);
+    drag.valid = false;
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+  }
+  const bool owner_alive =
+      GetTickCount64() - context.overlay_hover_tick.load(std::memory_order_acquire) < 250U;
+  const int axis = owner_alive ? context.overlay_gizmo_arrow.load(std::memory_order_acquire)
+                               : better_pose::gizmo::kNoRing;
+  if (axis < 0 || axis > 2 || context.motion_loaded.load(std::memory_order_acquire)) {
+    if (drag.valid) {
+      drag.valid = false;
+      context.pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    return false;
+  }
+  const std::uint32_t generation =
+      context.overlay_gizmo_arrow_generation.load(std::memory_order_acquire);
+  const better_pose::gizmo::Vec2 cursor{
+      context.overlay_gizmo_cursor_x.load(std::memory_order_acquire),
+      context.overlay_gizmo_cursor_y.load(std::memory_order_acquire)};
+  if (!drag.valid || drag.generation != generation) {
+    if (drag.generation == generation)
+      return true;
+    drag.generation = generation;
+    std::lock_guard<std::mutex> lock(context.overlay_mutex);
+    const auto &arrow = context.overlay_gizmo_arrows[static_cast<std::size_t>(axis)];
+    if (!arrow.visible || !(context.overlay_gizmo_arrow_cm > 1e-6))
+      return true;
+    drag.axis = axis;
+    drag.base = arrow.base;
+    drag.tip = arrow.tip;
+    drag.arrow_cm = context.overlay_gizmo_arrow_cm;
+    drag.start_cursor = cursor;
+    for (std::size_t a{}; a != 3; ++a)
+      drag.start_offset[a] = context.requested_root_offset[a].load(std::memory_order_acquire);
+    drag.valid = true;
+    context.pose_override_enabled.store(true, std::memory_order_release);
+    return true;
+  }
+  const double travel =
+      better_pose::gizmo::ArrowTravel(drag.base, drag.tip, drag.arrow_cm, drag.start_cursor, cursor);
+  // The slider range, so a wild drag cannot throw the body out of reach.
+  const double value =
+      std::clamp(drag.start_offset[static_cast<std::size_t>(drag.axis)] + travel, -1000.0, 1000.0);
+  context.requested_root_offset[static_cast<std::size_t>(drag.axis)].store(
+      value, std::memory_order_release);
+  return true;
+}
+
+// Applies the held ring to the bone. Returns true while a gizmo drag runs, so
+// the joint drag below stays out of it.
+bool StepGizmoDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame) noexcept {
+  if (StepArrowDrag(context))
+    return true;
+  auto &drag = context.overlay_gizmo_drag;
+  if (context.overlay_gizmo_cancel.exchange(false, std::memory_order_acq_rel) && drag.valid) {
+    WriteDragAngles(context, drag.bone, drag.start_angles);
+    drag.valid = false;
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+  }
+  const bool owner_alive =
+      GetTickCount64() - context.overlay_hover_tick.load(std::memory_order_acquire) < 250U;
+  const int ring = owner_alive ? context.overlay_gizmo_ring.load(std::memory_order_acquire)
+                               : better_pose::gizmo::kNoRing;
+  if (ring == better_pose::gizmo::kNoRing ||
+      context.motion_loaded.load(std::memory_order_acquire)) {
+    if (drag.valid) {
+      drag.valid = false;
+      context.pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    return false;
+  }
+  const std::uint32_t generation =
+      context.overlay_gizmo_generation.load(std::memory_order_acquire);
+  const better_pose::gizmo::Vec2 cursor{
+      context.overlay_gizmo_cursor_x.load(std::memory_order_acquire),
+      context.overlay_gizmo_cursor_y.load(std::memory_order_acquire)};
+  if (!drag.valid || drag.generation != generation) {
+    if (drag.generation == generation)
+      return true;  // this press already failed to start
+    drag.valid = false;
+    drag.generation = generation;
+    std::lock_guard<std::mutex> lock(context.overlay_mutex);
+    const std::uint32_t bone = context.overlay_gizmo_bone;
+    if (bone == kOverlayNoBone || ring < 0 || ring > 2 || bone >= context.bone_parents.size())
+      return true;
+    const auto &axis = context.overlay_gizmo_axes[static_cast<std::size_t>(ring)];
+    const auto &toward = context.overlay_gizmo_toward;
+    auto &geometry = drag.geometry;
+    geometry = {};
+    geometry.ring = ring;
+    geometry.axis = axis;
+    geometry.centre_screen = context.overlay_gizmo_centre;
+    geometry.radius_pixels = context.overlay_gizmo_radius_pixels;
+    geometry.openness = better_pose::gizmo::Openness(axis, toward);
+    // The grabbed point: the ring's near-side point nearest the cursor -- the
+    // one the picker hit. Its motion for a small +angle is *measured* with the
+    // real projection (turn the world point, project it again), so the drag
+    // direction holds in UE's left-handed world with the canvas's y down, from
+    // every side and every tilt of the camera.
+    const auto &screen_ring = context.overlay_gizmo_rings[static_cast<std::size_t>(ring)];
+    const auto &world_ring = context.overlay_gizmo_world[static_cast<std::size_t>(ring)];
+    std::size_t nearest = screen_ring.points.size();
+    float nearest_distance = (std::numeric_limits<float>::max)();
+    for (std::size_t i = 0; i + 1 < screen_ring.points.size(); ++i) {
+      if (screen_ring.visible[i] == 0 || screen_ring.front[i] == 0)
+        continue;
+      const float dx = screen_ring.points[i][0] - cursor[0];
+      const float dy = screen_ring.points[i][1] - cursor[1];
+      if (dx * dx + dy * dy < nearest_distance) {
+        nearest_distance = dx * dx + dy * dy;
+        nearest = i;
+      }
+    }
+    if (nearest >= screen_ring.points.size() || nearest >= world_ring.size())
+      return true;
+    constexpr double kProbeRadians = 0.05;
+    const auto &grab_world = world_ring[nearest];
+    const auto &centre_world = context.overlay_gizmo_centre_world;
+    const Vec3d offset{grab_world[0] - centre_world[0], grab_world[1] - centre_world[1],
+                       grab_world[2] - centre_world[2]};
+    const Vec3d turned_offset = QuatRotateVector(
+        QuatFromRotationVector({axis[0] * kProbeRadians, axis[1] * kProbeRadians,
+                                axis[2] * kProbeRadians}),
+        offset);
+    const double turned_world[3]{centre_world[0] + turned_offset.x,
+                                 centre_world[1] + turned_offset.y,
+                                 centre_world[2] + turned_offset.z};
+    float turned_screen[2]{};
+    double turned_depth{};
+    if (frame->project(frame->user, turned_world, turned_screen, &turned_depth) == 0 ||
+        !(turned_depth > 0.0) || !std::isfinite(turned_screen[0]) ||
+        !std::isfinite(turned_screen[1]))
+      return true;
+    better_pose::gizmo::BeginDrag(geometry, cursor, screen_ring.points[nearest],
+                                  {turned_screen[0], turned_screen[1]});
+    // The bone's parent's world rotation, for turning a world rotation into
+    // the bone's slider offset (ApplyWorldRotationToOffset).
+    Transformd component_world;
+    if (!ReadMeshComponentToWorld(context, context.runtime.mesh, component_world) ||
+        context.overlay_raw_pose.size() <
+            static_cast<std::size_t>(context.bone_parents.size()) * kTransformSize)
+      return true;
+    const std::int32_t parent = context.bone_parents[bone];
+    const Quatd parent_rotation =
+        parent >= 0 && static_cast<std::size_t>(parent) < context.bone_parents.size()
+            ? OverlayJointWorld(context, component_world, static_cast<std::uint32_t>(parent))
+                  .rotation
+            : component_world.rotation;
+    std::array<double, 3> start_angles{};
+    {
+      std::lock_guard<std::mutex> angles_lock(context.pose_angles_mutex);
+      if (bone < context.bone_angles.size())
+        start_angles = context.bone_angles[bone];
+    }
+    const Quatd start_offset = RotatorToQuat(start_angles[0], start_angles[1], start_angles[2]);
+    drag.bone = bone;
+    drag.parent_world = {parent_rotation.x, parent_rotation.y, parent_rotation.z,
+                         parent_rotation.w};
+    drag.start_offset = {start_offset.x, start_offset.y, start_offset.z, start_offset.w};
+    drag.start_angles = start_angles;
+    drag.valid = true;
+    context.pose_override_enabled.store(true, std::memory_order_release);
+    return true;
+  }
+  const double angle = better_pose::gizmo::DragAngle(drag.geometry, cursor);
+  const auto &axis = drag.geometry.axis;
+  const Quatd turn = QuatFromRotationVector({axis[0] * angle, axis[1] * angle, axis[2] * angle});
+  const Quatd parent_world{drag.parent_world[0], drag.parent_world[1], drag.parent_world[2],
+                           drag.parent_world[3]};
+  const Quatd start_offset{drag.start_offset[0], drag.start_offset[1], drag.start_offset[2],
+                           drag.start_offset[3]};
+  const Quatd next = ApplyWorldRotationToOffset(parent_world, turn, start_offset);
+  WriteDragAngles(context, drag.bone, QuatToRotator(LimitBallOffset(context, drag.bone, next)));
+  return true;
+}
+
+// Builds this frame's rings for the selected bone, draws them, and publishes
+// their screen polylines for the picker. The axes are the bone's local axes as
+// it stands *at the start of a drag*: while a ring is held the gizmo keeps its
+// orientation, so the ring under the cursor does not turn away from it.
+void DrawGizmo(Context &context, const AnomalyUe5AhudFrameV1 *frame,
+               const Transformd &component_world, const std::uint32_t count,
+               const std::vector<std::array<float, 2>> &screen,
+               const std::vector<std::uint8_t> &valid) noexcept {
+  namespace gz = better_pose::gizmo;
+  const auto clear = [&] {
+    std::lock_guard<std::mutex> lock(context.overlay_mutex);
+    context.overlay_gizmo_bone = kOverlayNoBone;
+    for (auto &ring : context.overlay_gizmo_rings)
+      ring = {};
+    context.overlay_gizmo_arrows = {};
+  };
+  if (!context.overlay_gizmo_enabled.load(std::memory_order_acquire) ||
+      context.motion_loaded.load(std::memory_order_acquire)) {
+    clear();
+    return;
+  }
+  // The joint drag edits the pivot, not the selection; no rings meanwhile.
+  if (context.overlay_drag.valid) {
+    clear();
+    return;
+  }
+  const std::uint32_t bone = context.requested_bone_index.load(std::memory_order_acquire);
+  if (bone >= count || valid[bone] == 0) {
+    clear();
+    return;
+  }
+  const auto project = [frame](const double world[3], float out[2]) {
+    double depth{};
+    return frame->project(frame->user, world, out, &depth) != 0 && depth > 0.0 &&
+           std::isfinite(out[0]) && std::isfinite(out[1]);
+  };
+  const Transformd joint = OverlayJointWorld(context, component_world, bone);
+  const gz::Vec3 centre{joint.translation.x, joint.translation.y, joint.translation.z};
+  Vec3d toward_vec;
+  if (!TowardCamera(project, joint.translation, toward_vec)) {
+    clear();
+    return;
+  }
+  const gz::Vec3 toward{toward_vec.x, toward_vec.y, toward_vec.z};
+  // World size of kGizmoRadiusPixels at the joint: project a 10 cm step
+  // across the view and scale.
+  gz::Vec3 across_u, across_v;
+  gz::PlaneBasis(toward, across_u, across_v);
+  const double a[3]{centre[0], centre[1], centre[2]};
+  const double b[3]{centre[0] + across_u[0] * 10.0, centre[1] + across_u[1] * 10.0,
+                    centre[2] + across_u[2] * 10.0};
+  float pa[2]{}, pb[2]{};
+  if (!project(a, pa) || !project(b, pb)) {
+    clear();
+    return;
+  }
+  const double pixels_per_10cm =
+      std::hypot(static_cast<double>(pb[0]) - pa[0], static_cast<double>(pb[1]) - pa[1]);
+  if (!(pixels_per_10cm > 1e-3)) {
+    clear();
+    return;
+  }
+  const double radius = kGizmoRadiusPixels / pixels_per_10cm * 10.0;
+
+  // The bone's local axes in world space. Held still during a gizmo drag.
+  const bool dragging = context.overlay_gizmo_drag.valid;
+  std::array<gz::Vec3, 3> axes;
+  if (dragging) {
+    std::lock_guard<std::mutex> lock(context.overlay_mutex);
+    axes = context.overlay_gizmo_axes;
+  } else {
+    const Vec3d x = QuatRotateVector(joint.rotation, Vec3d{1.0, 0.0, 0.0});
+    const Vec3d y = QuatRotateVector(joint.rotation, Vec3d{0.0, 1.0, 0.0});
+    const Vec3d z = QuatRotateVector(joint.rotation, Vec3d{0.0, 0.0, 1.0});
+    axes = {gz::Normalize({x.x, x.y, x.z}), gz::Normalize({y.x, y.y, y.z}),
+            gz::Normalize({z.x, z.y, z.z})};
+  }
+
+  std::array<gz::ScreenRing, 3> rings;
+  std::array<std::vector<gz::Vec3>, 3> world_rings;
+  for (std::size_t r = 0; r != 3; ++r) {
+    world_rings[r] = gz::RingPoints(centre, axes[r], radius);
+    const auto &points = world_rings[r];
+    auto &ring = rings[r];
+    ring.points.resize(points.size());
+    ring.visible.assign(points.size(), 0);
+    ring.front.assign(points.size(), 0);
+    for (std::size_t i = 0; i != points.size(); ++i) {
+      const double world[3]{points[i][0], points[i][1], points[i][2]};
+      float out[2]{};
+      if (project(world, out)) {
+        ring.points[i] = {out[0], out[1]};
+        ring.visible[i] = 1;
+      }
+      ring.front[i] = gz::FacesCamera(points[i], centre, toward) ? 1 : 0;
+    }
+  }
+
+  // Back halves first, faint; then the near halves; the held or hovered ring
+  // on top in yellow.
+  const int held = context.overlay_gizmo_ring.load(std::memory_order_acquire);
+  const int hover = context.overlay_gizmo_hover.load(std::memory_order_acquire);
+  const int highlight = held != gz::kNoRing ? held : hover;
+  for (int pass = 0; pass != 2; ++pass)
+    for (std::size_t r = 0; r != 3; ++r) {
+      const auto &ring = rings[r];
+      const bool lit = static_cast<int>(r) == highlight;
+      for (std::size_t i = 1; i < ring.points.size(); ++i) {
+        if (ring.visible[i - 1] == 0 || ring.visible[i] == 0)
+          continue;
+        const bool front = ring.front[i - 1] != 0 || ring.front[i] != 0;
+        if ((pass == 0) == front)
+          continue;
+        const std::uint32_t color =
+            lit && front ? kGizmoActiveColor : front ? kGizmoColors[r] : kGizmoBackColors[r];
+        frame->draw_line(frame->user, ring.points[i - 1][0], ring.points[i - 1][1],
+                         ring.points[i][0], ring.points[i][1], color,
+                         front ? (lit ? 3.0F : 2.0F) : 1.0F);
+      }
+    }
+
+  // The root also gets three move arrows, along world X/Y/Z: the body offset
+  // the joint page's body sliders edit is added to every bone in component
+  // space, which the mesh's own transform then places in the world, so the
+  // arrows follow the mesh's axes. During an arrow drag they stay where they
+  // were at the press, like the rings, so the one under the cursor holds still.
+  std::array<gz::ScreenArrow, 3> arrows{};
+  double arrow_cm{};
+  const bool root = IsSkeletonRoot(context, bone);
+  if (root) {
+    const bool arrow_held = context.overlay_arrow_drag.valid;
+    if (arrow_held) {
+      std::lock_guard<std::mutex> lock(context.overlay_mutex);
+      arrows = context.overlay_gizmo_arrows;
+      arrow_cm = context.overlay_gizmo_arrow_cm;
+    } else {
+      arrow_cm = kGizmoArrowPixels / pixels_per_10cm * 10.0;
+      const std::array<Vec3d, 3> mesh_axes{
+          QuatRotateVector(component_world.rotation, Vec3d{1.0, 0.0, 0.0}),
+          QuatRotateVector(component_world.rotation, Vec3d{0.0, 1.0, 0.0}),
+          QuatRotateVector(component_world.rotation, Vec3d{0.0, 0.0, 1.0})};
+      for (std::size_t a = 0; a != 3; ++a) {
+        const double tip[3]{centre[0] + mesh_axes[a].x * arrow_cm,
+                            centre[1] + mesh_axes[a].y * arrow_cm,
+                            centre[2] + mesh_axes[a].z * arrow_cm};
+        float tip_screen[2]{};
+        if (project(tip, tip_screen))
+          arrows[a] = {screen[bone], {tip_screen[0], tip_screen[1]}, true};
+      }
+    }
+    const int arrow_held_axis = context.overlay_gizmo_arrow.load(std::memory_order_acquire);
+    const int arrow_hover = context.overlay_gizmo_arrow_hover.load(std::memory_order_acquire);
+    const int arrow_lit = arrow_held_axis != gz::kNoRing ? arrow_held_axis : arrow_hover;
+    for (std::size_t a = 0; a != 3; ++a) {
+      const auto &arrow = arrows[a];
+      if (!arrow.visible)
+        continue;
+      const bool lit = static_cast<int>(a) == arrow_lit;
+      const std::uint32_t color = lit ? kGizmoActiveColor : kGizmoColors[a];
+      const float width = lit ? 4.0F : 3.0F;
+      frame->draw_line(frame->user, arrow.base[0], arrow.base[1], arrow.tip[0], arrow.tip[1],
+                       color, width);
+      // Head: two short strokes back from the tip.
+      const float dx = arrow.tip[0] - arrow.base[0];
+      const float dy = arrow.tip[1] - arrow.base[1];
+      const float length = std::sqrt(dx * dx + dy * dy);
+      if (length < 12.0F)
+        continue;
+      const float ux = dx / length, uy = dy / length;
+      const float head = (std::min)(12.0F, length * 0.3F);
+      for (const float side : {1.0F, -1.0F})
+        frame->draw_line(frame->user, arrow.tip[0], arrow.tip[1],
+                         arrow.tip[0] - ux * head - uy * head * 0.5F * side,
+                         arrow.tip[1] - uy * head + ux * head * 0.5F * side, color, width);
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(context.overlay_mutex);
+  context.overlay_gizmo_arrows = root ? arrows : std::array<gz::ScreenArrow, 3>{};
+  context.overlay_gizmo_arrow_cm = root ? arrow_cm : 0.0;
+  context.overlay_gizmo_rings = std::move(rings);
+  context.overlay_gizmo_world = std::move(world_rings);
+  context.overlay_gizmo_centre_world = centre;
+  context.overlay_gizmo_bone = bone;
+  if (!dragging)
+    context.overlay_gizmo_axes = axes;
+  context.overlay_gizmo_toward = toward;
+  context.overlay_gizmo_centre = screen[bone];
+  context.overlay_gizmo_radius_pixels = kGizmoRadiusPixels;
+}
+
+// --- On-screen keyframe timeline --------------------------------------------
+// Dark panel, dark buttons with a coloured outline (bright = usable, grey =
+// not), white text everywhere so it reads on any of them.
+constexpr std::uint32_t kTimelineBackground = ANOMALY_RGBA_V1(14, 16, 22, 215);
+constexpr std::uint32_t kTimelineEdge = ANOMALY_RGBA_V1(60, 66, 80, 255);
+constexpr std::uint32_t kTimelineTrack = ANOMALY_RGBA_V1(32, 36, 46, 255);
+constexpr std::uint32_t kTimelineTick = ANOMALY_RGBA_V1(78, 86, 104, 255);
+constexpr std::uint32_t kTimelineButton = ANOMALY_RGBA_V1(30, 34, 44, 255);
+constexpr std::uint32_t kTimelineButtonHot = ANOMALY_RGBA_V1(48, 54, 68, 255);
+constexpr std::uint32_t kTimelineText = ANOMALY_RGBA_V1(240, 242, 248, 255);
+constexpr std::uint32_t kTimelineMuted = ANOMALY_RGBA_V1(120, 126, 140, 255);
+constexpr std::uint32_t kTimelinePlayhead = ANOMALY_RGBA_V1(255, 214, 64, 255);
+constexpr std::uint32_t kTimelinePose = ANOMALY_RGBA_V1(75, 170, 255, 255);
+constexpr std::uint32_t kTimelineExpression = ANOMALY_RGBA_V1(240, 105, 175, 255);
+constexpr std::uint32_t kTimelineCamera = ANOMALY_RGBA_V1(100, 220, 140, 255);
+constexpr std::uint32_t kTimelineRecord = ANOMALY_RGBA_V1(255, 150, 60, 255);
+constexpr std::uint32_t kTimelineDelete = ANOMALY_RGBA_V1(240, 80, 80, 255);
+constexpr std::uint32_t kTimelineUnsaved = ANOMALY_RGBA_V1(255, 150, 60, 255);
+
+// A rectangle outline from four lines.
+void TimelineFrame(const AnomalyUe5AhudFrameV1 *frame, const better_pose::timeline::Rect &r,
+                   const std::uint32_t color, const float thickness) noexcept {
+  frame->draw_line(frame->user, r.left, r.top, r.right, r.top, color, thickness);
+  frame->draw_line(frame->user, r.right, r.top, r.right, r.bottom, color, thickness);
+  frame->draw_line(frame->user, r.right, r.bottom, r.left, r.bottom, color, thickness);
+  frame->draw_line(frame->user, r.left, r.bottom, r.left, r.top, color, thickness);
+}
+
+// A canvas button: dark fill, outline in `accent` when usable (grey when not),
+// a lighter fill under the cursor, and the label centred in white.
+void TimelineButton(const AnomalyUe5AhudFrameV1 *frame, const better_pose::timeline::Rect &r,
+                    const std::string_view label, const std::uint32_t accent, const bool enabled,
+                    const bool hot) noexcept {
+  frame->draw_rect(frame->user, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                   enabled && hot ? kTimelineButtonHot : kTimelineButton);
+  TimelineFrame(frame, r, enabled ? accent : kTimelineEdge, enabled ? 1.5F : 1.0F);
+  float width = 0.0F;
+  float height = 0.0F;
+  const bool measured = frame->measure_text != nullptr &&
+                        frame->measure_text(frame->user, anomaly::sdk::StringView(label), 0.85F,
+                                            &width, &height) != 0;
+  if (!measured) {
+    width = static_cast<float>(label.size()) * 7.0F;
+    height = 14.0F;
+  }
+  frame->draw_text(frame->user, anomaly::sdk::StringView(label),
+                   (r.left + r.right - width) * 0.5F, (r.top + r.bottom - height) * 0.5F,
+                   enabled ? kTimelineText : kTimelineMuted, 0.85F);
+}
+
+void TimelineLine(const AnomalyUe5AhudFrameV1 *frame, const float x1, const float y1,
+                  const float x2, const float y2, const std::uint32_t color,
+                  const float thickness = 1.0F) noexcept {
+  frame->draw_line(frame->user, x1, y1, x2, y2, color, thickness);
+}
+
+void TimelineDiamond(const AnomalyUe5AhudFrameV1 *frame, const float x, const float y,
+                     const std::uint32_t color, const float size = 6.0F) noexcept {
+  TimelineLine(frame, x, y - size, x + size, y, color, 2.0F);
+  TimelineLine(frame, x + size, y, x, y + size, color, 2.0F);
+  TimelineLine(frame, x, y + size, x - size, y, color, 2.0F);
+  TimelineLine(frame, x - size, y, x, y - size, color, 2.0F);
+}
+
+void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) noexcept {
+  namespace tl = better_pose::timeline;
+  if (!context.keyframe_overlay_enabled.load(std::memory_order_acquire) ||
+      context.motion_loaded.load(std::memory_order_acquire) || frame == nullptr ||
+      frame->viewport_width < 400 || frame->viewport_height < 200) {
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+    context.keyframe_overlay_valid = false;
+    return;
+  }
+  std::vector<tl::KeyMark> marks;
+  std::uint32_t length{};
+  std::size_t key_count{};
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    key_count = context.keyframe_track.Size();
+    length = context.keyframe_track.LastFrame();
+    marks.reserve(key_count);
+    for (const auto &key : context.keyframe_track.Keys())
+      marks.push_back({key.frame, key.has_pose, key.has_expression, key.has_camera, 0.0F});
+  }
+  length = (std::max)(length, context.keyframe_length.load(std::memory_order_acquire));
+  const double playhead = context.keyframe_frame.load(std::memory_order_acquire);
+  tl::View view;
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+    // Playing, the zoomed window turns the page to keep the playhead in it.
+    if (context.keyframe_playing.load(std::memory_order_acquire))
+      context.keyframe_overlay_view = tl::FollowPlayhead(context.keyframe_overlay_view, length,
+                                                         playhead);
+    context.keyframe_overlay_view = tl::ClampView(context.keyframe_overlay_view, length);
+    view = context.keyframe_overlay_view;
+  }
+  const auto layout = tl::MakeLayout(static_cast<float>(frame->viewport_width),
+                                     static_cast<float>(frame->viewport_height), length,
+                                     playhead, marks, view);
+  const bool zoomed = view.start > 0.0 || view.end < static_cast<double>((std::max)(length, 1U));
+  frame->draw_rect(frame->user, layout.panel.left, layout.panel.top,
+                   layout.panel.right - layout.panel.left, layout.panel.bottom - layout.panel.top,
+                   kTimelineBackground);
+  TimelineFrame(frame, layout.panel, kTimelineEdge, 1.0F);
+  frame->draw_rect(frame->user, layout.track.left, layout.track.top,
+                   layout.track.right - layout.track.left, layout.track.bottom - layout.track.top,
+                   kTimelineTrack);
+  // Ticks over the visible window. The step is the finest of 1 frame, 5,
+  // 1 s, 5 s, 30 s that keeps ticks at least 6 px apart; every fifth tick is
+  // taller and labelled, in frames up to 1 s steps and in seconds above.
+  const float track_width = layout.track.right - layout.track.left;
+  const double view_width = (std::max)(1.0, static_cast<double>(layout.frame_end -
+                                                                 layout.frame_start));
+  const double pixels_per_frame = track_width / view_width;
+  std::uint32_t tick_step = 900U;
+  for (const std::uint32_t step : {1U, 5U, 30U, 150U, 900U})
+    if (pixels_per_frame * step >= 6.0) {
+      tick_step = step;
+      break;
+    }
+  const std::uint32_t major_step = tick_step * 5U;
+  const auto first_tick = static_cast<std::uint32_t>(
+      std::ceil(static_cast<double>(layout.frame_start) / tick_step) * tick_step);
+  for (std::uint32_t tick = first_tick;
+       static_cast<double>(tick) <= static_cast<double>(layout.frame_end); tick += tick_step) {
+    const float x = tl::FrameToX(layout, tick);
+    const bool major = tick % major_step == 0;
+    TimelineLine(frame, x, layout.track.bottom - (major ? 10.0F : 5.0F), x, layout.track.bottom,
+                 kTimelineTick, 1.0F);
+    if (major) {
+      char label[16]{};
+      if (major_step >= 30U)
+        std::snprintf(label, sizeof(label), "%us", tick / 30U);
+      else
+        std::snprintf(label, sizeof(label), "%u", tick);
+      frame->draw_text(frame->user, anomaly::sdk::StringView(label), x + 2.0F,
+                       layout.track.bottom + 2.0F, kTimelineMuted, 0.7F);
+    }
+  }
+  // The selection is only "real" when it points at a key: an index left over
+  // from a key that was moved away from the playhead must not light DEL.
+  const std::int32_t selected = context.keyframe_selected.load(std::memory_order_acquire);
+  const bool has_selected_key = selected >= 0 && static_cast<std::size_t>(selected) < key_count;
+  // Under the cursor (render thread's last position), for the button hover.
+  const float cursor_x = context.keyframe_overlay_cursor_x.load(std::memory_order_acquire);
+  const float cursor_y = context.keyframe_overlay_cursor_y.load(std::memory_order_acquire);
+  const auto hot = [&](const tl::Rect &r) { return tl::Contains(r, cursor_x, cursor_y); };
+  const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
+  TimelineButton(frame, layout.play_button, playing ? "||" : ">", kTimelinePlayhead, true,
+                 hot(layout.play_button));
+  TimelineButton(frame, layout.stop_button, "|<", kTimelinePlayhead, true, hot(layout.stop_button));
+  TimelineButton(frame, layout.delete_button, "删除关键帧", kTimelineDelete, has_selected_key,
+                 hot(layout.delete_button));
+  TimelineButton(frame, layout.record_button, "记录关键帧", kTimelineRecord, true,
+                 hot(layout.record_button));
+  // Usable only when zoomed in; the accent is the playhead's, like the other
+  // view/playback buttons.
+  TimelineButton(frame, layout.fit_button, "显示全部", kTimelinePlayhead, zoomed,
+                 hot(layout.fit_button));
+  const float key_y = (layout.track.top + layout.track.bottom) * 0.5F;
+  for (std::size_t i{}; i != layout.keys.size(); ++i) {
+    const auto &key = layout.keys[i];
+    if (!key.visible)
+      continue;
+    if (has_selected_key && static_cast<std::size_t>(selected) == i)
+      TimelineDiamond(frame, key.x, key_y, kTimelineText, 10.0F);  // selection frame
+    if (key.pose) TimelineDiamond(frame, key.x, key_y, kTimelinePose);
+    if (key.expression) TimelineDiamond(frame, key.x + 2.0F, key_y, kTimelineExpression, 4.0F);
+    if (key.camera) TimelineDiamond(frame, key.x - 2.0F, key_y, kTimelineCamera, 3.0F);
+  }
+  if (layout.playhead_visible) {
+    TimelineLine(frame, layout.playhead_x, layout.track.top - 8.0F, layout.playhead_x,
+                 layout.track.bottom + 4.0F, kTimelinePlayhead, 2.0F);
+    // Playhead handle: a small triangle above the track.
+    TimelineLine(frame, layout.playhead_x - 5.0F, layout.track.top - 9.0F,
+                 layout.playhead_x + 5.0F, layout.track.top - 9.0F, kTimelinePlayhead, 2.0F);
+    TimelineLine(frame, layout.playhead_x - 5.0F, layout.track.top - 9.0F, layout.playhead_x,
+                 layout.track.top - 3.0F, kTimelinePlayhead, 2.0F);
+    TimelineLine(frame, layout.playhead_x + 5.0F, layout.track.top - 9.0F, layout.playhead_x,
+                 layout.track.top - 3.0F, kTimelinePlayhead, 2.0F);
+  } else {
+    // Off the zoomed window: an arrow at the edge it went past.
+    const bool right = playhead > static_cast<double>(layout.frame_end);
+    const float edge = right ? layout.track.right - 2.0F : layout.track.left + 2.0F;
+    const float tip = right ? edge + 6.0F : edge - 6.0F;
+    const float mid = (layout.track.top + layout.track.bottom) * 0.5F;
+    TimelineLine(frame, edge, mid - 6.0F, tip, mid, kTimelinePlayhead, 2.0F);
+    TimelineLine(frame, tip, mid, edge, mid + 6.0F, kTimelinePlayhead, 2.0F);
+  }
+  const double current_frame = context.keyframe_frame.load(std::memory_order_acquire);
+  std::size_t current_key{};
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    current_key = context.keyframe_track.Find(
+        static_cast<std::uint32_t>(std::lround((std::max)(0.0, current_frame))));
+  }
+  const bool unsaved = !context.keyframe_playing.load(std::memory_order_acquire) &&
+      context.keyframe_applied_frame >= 0.0 &&
+      std::abs(context.keyframe_applied_frame - current_frame) < 0.5 &&
+      current_key == key_count && key_count != 0;
+  if (unsaved)
+    frame->draw_text(frame->user, anomaly::sdk::StringView("*未记录"), layout.track.left,
+                     layout.panel.bottom - 18.0F, kTimelineUnsaved, 0.85F);
+  else
+    frame->draw_text(frame->user, anomaly::sdk::StringView("关键帧"), layout.track.left,
+                     layout.panel.bottom - 18.0F, kTimelineMuted, 0.85F);
+  char count_text[96]{};
+  if (zoomed)
+    std::snprintf(count_text, sizeof(count_text), "%zu keys  %.0f / %u   [%.0f-%.0f]",
+                  key_count, current_frame, length, static_cast<double>(layout.frame_start),
+                  static_cast<double>(layout.frame_end));
+  else
+    std::snprintf(count_text, sizeof(count_text), "%zu keys  %.0f / %u", key_count,
+                  current_frame, length);
+  float count_width = 0.0F;
+  float count_height = 0.0F;
+  if (frame->measure_text == nullptr ||
+      frame->measure_text(frame->user, anomaly::sdk::StringView(count_text), 0.75F, &count_width,
+                          &count_height) == 0)
+    count_width = static_cast<float>(std::strlen(count_text)) * 6.0F;
+  frame->draw_text(frame->user, anomaly::sdk::StringView(count_text),
+                   layout.track.right - count_width, layout.panel.bottom - 18.0F,
+                   kTimelineMuted, 0.75F);
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+    context.keyframe_overlay_layout = layout;
+    context.keyframe_overlay_valid = true;
+  }
+}
+
 void ANOMALY_CALL DrawSkeletonOverlay(void *user,
                                       const AnomalyUe5AhudFrameV1 *frame) noexcept {
   auto *context = static_cast<Context *>(user);
@@ -9268,6 +10704,8 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
   try {
     if (AhudFrameReady(frame))
       MeasureOrbitFocal(*context, frame);
+    if (AhudFrameReady(frame))
+      DrawKeyframeOverlay(*context, frame);
     if (!context->skeleton_overlay_enabled.load(std::memory_order_acquire) ||
         !AhudFrameReady(frame)) {
       ClearOverlayScreen(*context);
@@ -9323,7 +10761,9 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
 
     // The drag needs every joint (a hidden bone can still be the pivot's
     // parent), so the body-only mask applies after it, to drawing and picking.
-    StepSkeletonDrag(*context, frame, component_world, count, screen, valid);
+    // A held gizmo ring owns the bone; the joint drag waits.
+    if (!StepGizmoDrag(*context, frame))
+      StepSkeletonDrag(*context, frame, component_world, count, screen, valid);
     if (context->overlay_body_only.load(std::memory_order_acquire)) {
       const bool parents_ready = context->bone_parents.size() == count;
       const bool hide_face = !context->overlay_show_face.load(std::memory_order_acquire);
@@ -9405,6 +10845,8 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       DrawOverlayCircle(frame, screen[dragged][0], screen[dragged][1], big, kOverlayHoverFill,
                         kOverlayHoverColor, 2.0F, kOverlayHoverColor);
     }
+    // The rotate gizmo goes on top of everything else.
+    DrawGizmo(*context, frame, component_world, count, screen, valid);
 
     auto &weight = context->overlay_frame_weight;
     if (parents.size() == count)
@@ -9452,6 +10894,129 @@ void UnsubscribeSkeletonOverlay(Context &context) noexcept {
   context.overlay_published = false;
 }
 
+// Render thread: the on-screen timeline owns mouse input inside its panel.
+// It posts the same seek/key-edit requests as the keyframe page. Returns true
+// when the mouse belongs to the timeline and bone picking must not see it.
+bool UpdateKeyframeOverlayPicking(Context &context, const AnomalyUiServiceV1 * /*ui*/) noexcept {
+  namespace tl = better_pose::timeline;
+  if (!context.keyframe_overlay_enabled.load(std::memory_order_acquire) ||
+      context.motion_loaded.load(std::memory_order_acquire) || !InputReady(context.input))
+    return false;
+  tl::Layout layout;
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+    if (!context.keyframe_overlay_valid) return false;
+    layout = context.keyframe_overlay_layout;
+  }
+  AnomalyInputSnapshotV1 input{};
+  input.struct_size = sizeof(input);
+  if (context.input->snapshot(context.input->user, &input).code != ANOMALY_STATUS_V1_OK)
+    return false;
+  // The snapshot is in window client pixels and the layout in AHUD canvas
+  // pixels, which differ under a render scale; map one onto the other, as the
+  // joint picker does.
+  float x = input.mouse_x;
+  float y = input.mouse_y;
+  {
+    std::lock_guard<std::mutex> lock(context.overlay_mutex);
+    if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+      RECT client{};
+      if (GetClientRect(window, &client) != FALSE && client.right > 0 && client.bottom > 0 &&
+          context.overlay_viewport_width > 0.0F && context.overlay_viewport_height > 0.0F) {
+        x *= context.overlay_viewport_width / static_cast<float>(client.right);
+        y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+      }
+    }
+  }
+  const bool left_down = (input.mouse_buttons & 1U) != 0;
+  const bool middle_down = (input.mouse_buttons & 4U) != 0;
+  const bool left_pressed = left_down && !context.keyframe_overlay_pressed.load(std::memory_order_acquire);
+  if (!left_down) {
+    context.keyframe_overlay_pressed.store(false, std::memory_order_release);
+    context.keyframe_overlay_dragging_playhead.store(false, std::memory_order_release);
+    context.keyframe_overlay_dragging_key.store(false, std::memory_order_release);
+  }
+  if (!middle_down)
+    context.keyframe_overlay_panning = false;
+  int key_index = -1;
+  const tl::Hit hit = tl::HitTest(layout, x, y, key_index);
+  const bool dragging = context.keyframe_overlay_pressed.load(std::memory_order_acquire) ||
+                        context.keyframe_overlay_panning;
+  const bool in_panel = tl::Contains(layout.panel, x, y) || dragging;
+  // The cursor is published wherever it is, for the buttons' hover look.
+  context.keyframe_overlay_cursor_x.store(x, std::memory_order_release);
+  context.keyframe_overlay_cursor_y.store(y, std::memory_order_release);
+  if (!in_panel) return false;
+
+  // Zoom and pan the view. The wheel over the panel zooms around the frame
+  // under the cursor; a middle drag that starts on the panel slides it. Both
+  // are the timeline's here, so the pose camera does not also take them.
+  std::uint32_t length{};
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    length = (std::max)(context.keyframe_track.LastFrame(),
+                        context.keyframe_length.load(std::memory_order_acquire));
+  }
+  if (input.mouse_wheel != 0) {
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+    context.keyframe_overlay_view = tl::ZoomView(context.keyframe_overlay_view, length,
+                                                 tl::XToFrame(layout, x), input.mouse_wheel);
+  }
+  if (middle_down) {
+    if (!context.keyframe_overlay_panning) {
+      context.keyframe_overlay_panning = true;
+    } else {
+      std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+      context.keyframe_overlay_view =
+          tl::PanView(context.keyframe_overlay_view, length,
+                      layout.track.right - layout.track.left, x - context.keyframe_overlay_pan_x);
+    }
+    context.keyframe_overlay_pan_x = x;
+  }
+
+  if (left_pressed) {
+    context.keyframe_overlay_pressed.store(true, std::memory_order_release);
+    if (hit == tl::Hit::Fit) {
+      // Zoom back out to the whole timeline.
+      std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+      context.keyframe_overlay_view = {};
+    } else if (hit == tl::Hit::Play) {
+      const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
+      context.keyframe_playing.store(!playing, std::memory_order_release);
+    } else if (hit == tl::Hit::Stop) {
+      context.keyframe_playing.store(false, std::memory_order_release);
+      context.keyframe_seek.store(0.0, std::memory_order_release);
+    } else if (hit == tl::Hit::Record) {
+      context.keyframe_request.store(1, std::memory_order_release);
+    } else if (hit == tl::Hit::Delete) {
+      if (context.keyframe_selected.load(std::memory_order_acquire) >= 0)
+        context.keyframe_request.store(2, std::memory_order_release);
+    } else if (hit == tl::Hit::Key) {
+      context.keyframe_selected.store(key_index, std::memory_order_release);
+      context.keyframe_overlay_dragging_key.store(true, std::memory_order_release);
+      context.keyframe_playing.store(false, std::memory_order_release);
+    } else if (hit == tl::Hit::Playhead || hit == tl::Hit::Track) {
+      context.keyframe_overlay_dragging_playhead.store(true, std::memory_order_release);
+      context.keyframe_playing.store(false, std::memory_order_release);
+      // Scrubbing leaves the key it was on; landing on one selects it again
+      // (StepKeyframes), so DEL always means the key under the playhead.
+      context.keyframe_selected.store(-1, std::memory_order_release);
+    }
+  }
+  if (context.keyframe_overlay_dragging_playhead.load(std::memory_order_acquire) ||
+      context.keyframe_overlay_dragging_key.load(std::memory_order_acquire)) {
+    const double frame = tl::XToFrame(layout, x);
+    if (context.keyframe_overlay_dragging_key.load(std::memory_order_acquire)) {
+      context.keyframe_move_frame.store(frame, std::memory_order_release);
+      context.keyframe_request.store(3, std::memory_order_release);
+      context.keyframe_seek.store(frame, std::memory_order_release);
+    } else {
+      context.keyframe_seek.store(frame, std::memory_order_release);
+    }
+  }
+  return true;
+}
+
 // Render thread, inside Draw. Hover highlights the joint nearest the cursor;
 // a fresh left press on it selects that joint. Picking only happens while the
 // host menu owns the cursor and the cursor is not over any ImGui window, so
@@ -9468,6 +11033,13 @@ void UpdateSkeletonOverlayPicking(Context &context,
     context.overlay_drag_joint.store(kOverlayNoBone, std::memory_order_release);
     context.overlay_dragging = false;
     context.overlay_press_joint = kOverlayNoBone;
+    context.overlay_gizmo_pressed = false;
+    context.overlay_gizmo_ring.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+    context.overlay_gizmo_hover.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+    context.overlay_gizmo_arrow_pressed = false;
+    context.overlay_gizmo_arrow.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+    context.overlay_gizmo_arrow_hover.store(better_pose::gizmo::kNoRing,
+                                            std::memory_order_release);
   };
   if (!context.skeleton_overlay_enabled.load(std::memory_order_acquire) ||
       !InputReady(context.input)) {
@@ -9522,9 +11094,20 @@ void UpdateSkeletonOverlayPicking(Context &context,
       can_frame_state &&
       (ui->frame_state(ui->user) & ANOMALY_UI_FRAME_V1_WANT_CAPTURE_MOUSE) != 0;
   // The panel check only gates starting a pick: a drag that began on the
-  // canvas keeps going when the cursor passes over a window.
+  // canvas keeps going when the cursor passes over a window. That includes a
+  // held gizmo ring.
   if (!menu_owns_mouse ||
-      (over_ui && context.overlay_press_joint == kOverlayNoBone)) {
+      (over_ui && context.overlay_press_joint == kOverlayNoBone &&
+       !context.overlay_gizmo_pressed && !context.overlay_gizmo_arrow_pressed)) {
+    if (!menu_owns_mouse) {
+      context.overlay_gizmo_pressed = false;
+      context.overlay_gizmo_ring.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+      context.overlay_gizmo_arrow_pressed = false;
+      context.overlay_gizmo_arrow.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+    }
+    context.overlay_gizmo_hover.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+    context.overlay_gizmo_arrow_hover.store(better_pose::gizmo::kNoRing,
+                                            std::memory_order_release);
     clear_hover();
     return;
   }
@@ -9547,6 +11130,71 @@ void UpdateSkeletonOverlayPicking(Context &context,
       mouse_x *= context.overlay_viewport_width / static_cast<float>(client.right);
       mouse_y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
     }
+  }
+  // Rotate gizmo: a held ring keeps the cursor until the left button is let
+  // go (right click cancels); a fresh left press on a ring starts one. Rings
+  // are tested before joints, so the joints inside the rings stay pickable
+  // everywhere except on the ring lines themselves.
+  if (context.overlay_gizmo_pressed || context.overlay_gizmo_arrow_pressed) {
+    if (!left_down || !menu_owns_mouse || right_pressed) {
+      if (right_pressed)
+        context.overlay_gizmo_cancel.store(true, std::memory_order_release);
+      context.overlay_gizmo_pressed = false;
+      context.overlay_gizmo_arrow_pressed = false;
+      context.overlay_gizmo_ring.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+      context.overlay_gizmo_arrow.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+      if (right_pressed) {
+        clear_hover();
+        return;
+      }
+    } else {
+      context.overlay_gizmo_cursor_x.store(mouse_x, std::memory_order_release);
+      context.overlay_gizmo_cursor_y.store(mouse_y, std::memory_order_release);
+      context.overlay_hover_tick.store(GetTickCount64(), std::memory_order_release);
+      return;
+    }
+  }
+  if (context.overlay_press_joint == kOverlayNoBone &&
+      context.overlay_gizmo_enabled.load(std::memory_order_acquire) &&
+      context.overlay_gizmo_bone != kOverlayNoBone &&
+      !context.motion_loaded.load(std::memory_order_acquire)) {
+    // Arrows first: their tips stick out past the rings, and where an arrow
+    // crosses a ring the straight line is the easier one to aim for.
+    const int arrow = better_pose::gizmo::PickArrow(context.overlay_gizmo_arrows,
+                                                    {mouse_x, mouse_y}, 7.0F);
+    context.overlay_gizmo_arrow_hover.store(arrow, std::memory_order_release);
+    if (arrow != better_pose::gizmo::kNoRing) {
+      context.overlay_gizmo_hover.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+      clear_hover();
+      context.overlay_hover_tick.store(GetTickCount64(), std::memory_order_release);
+      if (left_pressed && !over_ui) {
+        context.overlay_gizmo_arrow_pressed = true;
+        context.overlay_gizmo_cursor_x.store(mouse_x, std::memory_order_release);
+        context.overlay_gizmo_cursor_y.store(mouse_y, std::memory_order_release);
+        context.overlay_gizmo_arrow_generation.fetch_add(1, std::memory_order_acq_rel);
+        context.overlay_gizmo_arrow.store(arrow, std::memory_order_release);
+      }
+      return;
+    }
+    const int ring = better_pose::gizmo::PickRing(context.overlay_gizmo_rings,
+                                                  {mouse_x, mouse_y}, 7.0F);
+    context.overlay_gizmo_hover.store(ring, std::memory_order_release);
+    if (ring != better_pose::gizmo::kNoRing) {
+      clear_hover();
+      context.overlay_hover_tick.store(GetTickCount64(), std::memory_order_release);
+      if (left_pressed && !over_ui) {
+        context.overlay_gizmo_pressed = true;
+        context.overlay_gizmo_cursor_x.store(mouse_x, std::memory_order_release);
+        context.overlay_gizmo_cursor_y.store(mouse_y, std::memory_order_release);
+        context.overlay_gizmo_generation.fetch_add(1, std::memory_order_acq_rel);
+        context.overlay_gizmo_ring.store(ring, std::memory_order_release);
+      }
+      return;
+    }
+  } else {
+    context.overlay_gizmo_hover.store(better_pose::gizmo::kNoRing, std::memory_order_release);
+    context.overlay_gizmo_arrow_hover.store(better_pose::gizmo::kNoRing,
+                                            std::memory_order_release);
   }
   if (context.overlay_press_joint != kOverlayNoBone) {
     const float dx = mouse_x - context.overlay_press_x;
@@ -9611,7 +11259,8 @@ void UpdateSkeletonOverlayPicking(Context &context,
 // drag running) drives the orbit: right drag rotates, middle drag pans, the
 // wheel zooms. Every one is a mouse message the host keeps from the game while
 // the menu is open, so nothing here can make the character move.
-void UpdateOrbitCameraInput(Context &context, const AnomalyUiServiceV1 *ui) noexcept {
+void UpdateOrbitCameraInput(Context &context, const AnomalyUiServiceV1 *ui,
+                            const bool timeline_owns_mouse) noexcept {
   if (!context.orbit_enabled.load(std::memory_order_acquire) || !InputReady(context.input)) {
     context.orbit_right_dragging = false;
     context.orbit_middle_was_down = false;
@@ -9648,7 +11297,8 @@ void UpdateOrbitCameraInput(Context &context, const AnomalyUiServiceV1 *ui) noex
       context.overlay_press_joint != kOverlayNoBone ||
       (context.skeleton_overlay_enabled.load(std::memory_order_acquire) &&
        context.overlay_hover_index.load(std::memory_order_acquire) != kOverlayNoBone);
-  const bool free = menu_owns_mouse && !over_ui && !joint_busy;
+  // The on-screen timeline's wheel (zoom) and middle drag (pan) are its own.
+  const bool free = menu_owns_mouse && !over_ui && !joint_busy && !timeline_owns_mouse;
 
   const float dx = x - context.orbit_last_x;
   const float dy = y - context.orbit_last_y;
@@ -9714,16 +11364,31 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
   const bool undo_down = menu_owns_mouse && control && !shift && key_down('Z');
   const bool redo_down =
       menu_owns_mouse && control && (key_down('Y') || (shift && key_down('Z')));
-  // The shortcut goes to the page on screen: expressions on the expression
-  // page (they are not tied to motion playback), the pose everywhere else.
-  const bool expression = context.expression_page_active.load(std::memory_order_acquire);
-  if (!typing && (expression || !context.motion_loaded.load(std::memory_order_acquire))) {
-    auto &request = expression ? context.morph_history_request : context.pose_history_request;
+  // One history for every edit, so the shortcut means the same on every page.
+  if (!typing) {
     if (undo_down && !context.pose_undo_key_was_down)
-      request.store(1, std::memory_order_release);
+      context.edit_history_request.store(1, std::memory_order_release);
     if (redo_down && !context.pose_redo_key_was_down)
-      request.store(2, std::memory_order_release);
+      context.edit_history_request.store(2, std::memory_order_release);
   }
+  // Space plays/pauses the keyframe timeline, on the press. Not while typing,
+  // and not while an MMD motion is loaded (it owns the character, and the
+  // track does not play then). The game sees the key too: the host does not
+  // let a plugin swallow keyboard input.
+  const bool space_down = menu_owns_mouse && !control && key_down(VK_SPACE);
+  if (space_down && !context.keyframe_space_was_down && !typing &&
+      !context.motion_loaded.load(std::memory_order_acquire)) {
+    bool has_keys{};
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      has_keys = !context.keyframe_track.Empty();
+    }
+    if (has_keys) {
+      const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
+      context.keyframe_playing.store(!playing, std::memory_order_release);
+    }
+  }
+  context.keyframe_space_was_down = space_down;
   context.pose_undo_key_was_down = undo_down;
   context.pose_redo_key_was_down = redo_down;
 }
@@ -9977,13 +11642,346 @@ bool ReadCurrentBoneTranslation(Context &context,
   return Read(context, transform, translation);
 }
 
+// Render thread: the keyframe page. Every action is a request the game thread
+// carries out (StepKeyframes); the page reads back the track under its mutex.
+void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
+  namespace kf = better_pose::keyframes;
+  const auto text = [&](const std::string &value) {
+    ui->text(ui->user, anomaly::sdk::StringView(value));
+  };
+  const bool can_enable_button =
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
+          ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
+      ui->button_enabled != nullptr;
+  const auto button = [&](const std::string &label, const bool enabled = true,
+                          const float width = 0.0F) {
+    return can_enable_button
+               ? ui->button_enabled(ui->user, anomaly::sdk::StringView(label), width, 0.0F,
+                                    enabled ? 1 : 0) != 0 &&
+                     enabled
+               : ui->button(ui->user, anomaly::sdk::StringView(label), width, 0.0F) != 0 &&
+                     enabled;
+  };
+  const auto checkbox = [&](const std::string &label, std::atomic_bool &value) {
+    int on = value.load(std::memory_order_acquire) ? 1 : 0;
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &on) != 0)
+      value.store(on != 0, std::memory_order_release);
+  };
+
+  const bool motion_owns = context.motion_loaded.load(std::memory_order_acquire);
+  if (motion_owns)
+    text(context.localizer.Text(
+        "keyframe.motion_loaded",
+        "An MMD motion is loaded and owns the character: unload it on the MMD page to play "
+        "keyframes. Keys can still be edited."));
+  text(context.localizer.Text(
+      "keyframe.hint",
+      "Diamonds on the timeline are keys: click the track to seek, drag a diamond to move "
+      "it, Space plays/pauses.\n"
+      "Key records this frame; select a key and Delete removes it.\n"
+      "Screen timeline: wheel zooms, middle drag pans, Show all (lower left) resets.\n"
+      "With Auto-key on, pose/expression/camera edits are saved to the current frame."));
+  ui->separator(ui->user);
+
+  // What a key records.
+  int auto_record = context.keyframe_auto_record.load(std::memory_order_acquire) ? 1 : 0;
+  if (ui->checkbox(ui->user, anomaly::sdk::StringView(context.localizer.Label(
+                       "keyframe.auto", "Auto-key", "keyframe-auto")), &auto_record) != 0)
+    context.keyframe_auto_record.store(auto_record != 0, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 10.0F);
+  int show_timeline = context.keyframe_overlay_enabled.load(std::memory_order_acquire) ? 1 : 0;
+  if (ui->checkbox(ui->user, anomaly::sdk::StringView(context.localizer.Label(
+                       "keyframe.timeline", "Show screen timeline", "keyframe-timeline")),
+                   &show_timeline) != 0)
+    context.keyframe_overlay_enabled.store(show_timeline != 0, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 10.0F);
+  text(context.localizer.Text("keyframe.record", "Record into keys:"));
+  ui->same_line(ui->user, 0.0F, 8.0F);
+  checkbox(context.localizer.Label("keyframe.record.pose", "Pose", "keyframe-record-pose"),
+           context.keyframe_record_pose);
+  ui->same_line(ui->user, 0.0F, 8.0F);
+  checkbox(context.localizer.Label("keyframe.record.expression", "Expression",
+                                   "keyframe-record-expression"),
+           context.keyframe_record_expression);
+  ui->same_line(ui->user, 0.0F, 8.0F);
+  checkbox(context.localizer.Label("keyframe.record.camera", "Pose camera",
+                                   "keyframe-record-camera"),
+           context.keyframe_record_camera);
+  if (context.keyframe_record_camera.load(std::memory_order_acquire) &&
+      !context.orbit_enabled.load(std::memory_order_acquire))
+    text(context.localizer.Text("keyframe.record.camera_hint",
+                                "Turn the pose camera on (Joint pose page) to key camera shots."));
+
+  // Transport.
+  std::size_t key_count{};
+  std::uint32_t last_frame{};
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    key_count = context.keyframe_track.Size();
+    last_frame = context.keyframe_track.LastFrame();
+  }
+  const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
+  const std::string play_label =
+      playing ? context.localizer.Label("keyframe.pause", "Pause", "keyframe-play")
+              : context.localizer.Label("keyframe.play", "Play", "keyframe-play");
+  if (button(play_label, key_count >= 2 && !motion_owns, 70.0F))
+    context.keyframe_playing.store(!playing, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  if (button(context.localizer.Label("keyframe.stop", "To start", "keyframe-stop"), true, 70.0F)) {
+    context.keyframe_playing.store(false, std::memory_order_release);
+    context.keyframe_seek.store(0.0, std::memory_order_release);
+  }
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  checkbox(context.localizer.Label("keyframe.loop", "Loop", "keyframe-loop"), context.keyframe_loop);
+
+  // Playhead. Whole frames: a key sits on a frame, and a slider in seconds
+  // could not land on one.
+  const std::uint32_t length =
+      (std::max)(context.keyframe_length.load(std::memory_order_acquire), last_frame);
+  float frame = static_cast<float>(context.keyframe_frame.load(std::memory_order_acquire));
+  const std::string frame_label =
+      context.localizer.Label("keyframe.frame", "Frame", "keyframe-frame");
+  if (ui->slider_float(ui->user, anomaly::sdk::StringView(frame_label), &frame, 0.0F,
+                       static_cast<float>((std::max)(length, 1U))) != 0) {
+    context.keyframe_playing.store(false, std::memory_order_release);
+    context.keyframe_seek.store(std::round(static_cast<double>(frame)), std::memory_order_release);
+  }
+  {
+    const double now = context.keyframe_frame.load(std::memory_order_acquire);
+    char line[160]{};
+    std::snprintf(line, sizeof(line), "%.0f / %u   (%.2f s / %.2f s)", now, length,
+                  now / kf::kFramesPerSecond, static_cast<double>(length) / kf::kFramesPerSecond);
+    text(line);
+  }
+  // Step one frame, and jump between keys.
+  const auto step_to = [&](const double target) {
+    context.keyframe_playing.store(false, std::memory_order_release);
+    context.keyframe_seek.store((std::max)(0.0, target), std::memory_order_release);
+  };
+  const double now_frame = std::round(context.keyframe_frame.load(std::memory_order_acquire));
+  if (button(context.localizer.Label("keyframe.prev_key", "|< Key", "keyframe-prev-key"))) {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    double target = 0.0;
+    for (const auto &key : context.keyframe_track.Keys())
+      if (static_cast<double>(key.frame) < now_frame)
+        target = static_cast<double>(key.frame);
+    step_to(target);
+  }
+  ui->same_line(ui->user, 0.0F, 4.0F);
+  if (button(context.localizer.Label("keyframe.prev_frame", "< 1", "keyframe-prev-frame")))
+    step_to(now_frame - 1.0);
+  ui->same_line(ui->user, 0.0F, 4.0F);
+  if (button(context.localizer.Label("keyframe.next_frame", "1 >", "keyframe-next-frame")))
+    step_to(now_frame + 1.0);
+  ui->same_line(ui->user, 0.0F, 4.0F);
+  if (button(context.localizer.Label("keyframe.next_key", "Key >|", "keyframe-next-key"))) {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    double target = now_frame;
+    for (const auto &key : context.keyframe_track.Keys())
+      if (static_cast<double>(key.frame) > now_frame) {
+        target = static_cast<double>(key.frame);
+        break;
+      }
+    step_to(target);
+  }
+
+  // Speed and timeline length.
+  float speed = context.keyframe_speed.load(std::memory_order_acquire);
+  if (ui->slider_float(ui->user,
+                       anomaly::sdk::StringView(context.localizer.Label(
+                           "keyframe.speed", "Speed", "keyframe-speed")),
+                       &speed, 0.1F, 2.0F) != 0)
+    context.keyframe_speed.store(std::clamp(speed, 0.1F, 2.0F), std::memory_order_release);
+  if (HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_uint32)>(
+          ui, offsetof(AnomalyUiServiceV1, input_uint32)) &&
+      ui->input_uint32 != nullptr) {
+    std::uint32_t user_length = context.keyframe_length.load(std::memory_order_acquire);
+    if (ui->input_uint32(ui->user,
+                         anomaly::sdk::StringView(context.localizer.Label(
+                             "keyframe.length", "Timeline length (frames)", "keyframe-length")),
+                         &user_length, 30U, 300U) != 0)
+      context.keyframe_length.store(std::clamp(user_length, 30U, kf::kMaximumFrame),
+                                    std::memory_order_release);
+  }
+  ui->separator(ui->user);
+
+  // Keying.
+  if (button(context.localizer.Label("keyframe.key", "Key at this frame", "keyframe-key"), true,
+             140.0F))
+    context.keyframe_request.store(1, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  const std::uint32_t undo = context.edit_undo_count.load(std::memory_order_acquire);
+  const std::uint32_t redo = context.edit_redo_count.load(std::memory_order_acquire);
+  if (button(context.localizer.Text("pose.undo", "Undo") + " (" + std::to_string(undo) +
+                 ")##keyframe-undo",
+             undo != 0, 84.0F))
+    context.edit_history_request.store(1, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  if (button(context.localizer.Text("pose.redo", "Redo") + " (" + std::to_string(redo) +
+                 ")##keyframe-redo",
+             redo != 0, 84.0F))
+    context.edit_history_request.store(2, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  if (button(context.localizer.Label("keyframe.clear", "Clear all", "keyframe-clear"),
+             key_count != 0))
+    context.keyframe_request.store(4, std::memory_order_release);
+
+  // Selected key.
+  const std::int32_t selected = context.keyframe_selected.load(std::memory_order_acquire);
+  const bool has_selection = selected >= 0 && static_cast<std::size_t>(selected) < key_count;
+  if (has_selection) {
+    kf::Ease ease{};
+    std::uint32_t key_frame{};
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      const auto &key = context.keyframe_track.Keys()[static_cast<std::size_t>(selected)];
+      ease = key.ease;
+      key_frame = key.frame;
+    }
+    // The string must outlive the view: a view of a temporary dangles as soon
+    // as this statement ends, and the panel then prints garbage ("?").
+    const std::string frame_text = std::to_string(key_frame);
+    const std::array<std::string_view, 1> args{frame_text};
+    text(context.localizer.Format("keyframe.selected", "Selected key: frame {0}",
+                                  std::span<const std::string_view>(args.data(), args.size())));
+    ui->same_line(ui->user, 0.0F, 8.0F);
+    if (button(context.localizer.Label("keyframe.jump", "Go to", "keyframe-jump")))
+      context.keyframe_request.store(8, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    if (button(context.localizer.Label("keyframe.move", "Move to playhead", "keyframe-move")))
+      context.keyframe_request.store(3, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    if (button(context.localizer.Label("keyframe.delete", "Delete", "keyframe-delete")))
+      context.keyframe_request.store(2, std::memory_order_release);
+    int smooth = ease == kf::Ease::InOut ? 1 : 0;
+    if (ui->checkbox(ui->user,
+                     anomaly::sdk::StringView(context.localizer.Label(
+                         "keyframe.ease", "Ease in/out to the next key (off: linear)",
+                         "keyframe-ease")),
+                     &smooth) != 0) {
+      context.keyframe_ease_request.store(smooth, std::memory_order_release);
+      context.keyframe_request.store(7, std::memory_order_release);
+    }
+  }
+
+  // Key list.
+  const bool can_list =
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_child)>(
+          ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+      ui->begin_child != nullptr &&
+      HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_child)>(
+          ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+      ui->end_child != nullptr;
+  {
+    const std::string count_text = std::to_string(key_count);
+    const std::array<std::string_view, 1> args{count_text};
+    text(context.localizer.Format("keyframe.count", "Keys: {0}",
+                                  std::span<const std::string_view>(args.data(), args.size())));
+  }
+  if (can_list && key_count != 0) {
+    const int open = ui->begin_child(ui->user, anomaly::sdk::StringView("keyframe-list"), 0.0F,
+                                     220.0F, 0U);
+    if (open != 0) {
+      std::vector<std::string> rows;
+      {
+        std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+        for (std::size_t i{}; i != context.keyframe_track.Size(); ++i) {
+          const auto &key = context.keyframe_track.Keys()[i];
+          std::string row = (static_cast<std::int32_t>(i) == selected ? "> " : "  ");
+          char head[48]{};
+          std::snprintf(head, sizeof(head), "%5u  %6.2fs  ", key.frame,
+                        static_cast<double>(key.frame) / kf::kFramesPerSecond);
+          row += head;
+          if (key.has_pose)
+            row += context.localizer.Text("keyframe.part.pose", "pose") + "(" +
+                   std::to_string(key.bones.size()) + ") ";
+          if (key.has_expression)
+            row += context.localizer.Text("keyframe.part.expression", "face") + "(" +
+                   std::to_string(key.morphs.size()) + ") ";
+          if (key.has_camera)
+            row += context.localizer.Text("keyframe.part.camera", "camera") + " ";
+          row += key.ease == kf::Ease::InOut
+                     ? context.localizer.Text("keyframe.part.ease", "ease")
+                     : context.localizer.Text("keyframe.part.linear", "linear");
+          row += "##keyframe-row-" + std::to_string(i);
+          rows.push_back(std::move(row));
+        }
+      }
+      for (std::size_t i{}; i != rows.size(); ++i)
+        if (ui->button(ui->user, anomaly::sdk::StringView(rows[i]), -1.0F, 0.0F) != 0) {
+          context.keyframe_selected.store(static_cast<std::int32_t>(i), std::memory_order_release);
+          context.keyframe_request.store(8, std::memory_order_release);  // and go there
+        }
+    }
+    ui->end_child(ui->user);
+  }
+  ui->separator(ui->user);
+
+  // File. The folder is the one chosen on the pose page.
+  if (context.keyframe_export_name[0] == '\0')
+    std::snprintf(context.keyframe_export_name.data(), context.keyframe_export_name.size(),
+                  "keyframes.json");
+  bool folder_requested = false;
+  bool import_requested = false;
+  text(context.localizer.Text("pose.file.name", "File name"));
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  if (HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
+          ui, offsetof(AnomalyUiServiceV1, input_text)) &&
+      ui->input_text != nullptr)
+    ui->input_text(ui->user, anomaly::sdk::StringView("##keyframe-export-name"),
+                   context.keyframe_export_name.data(), context.keyframe_export_name.size(), 0);
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  if (button(context.localizer.Label("pose.choose.folder", "Choose folder",
+                                     "keyframe-choose-folder"),
+             true, 90.0F))
+    folder_requested = true;
+  if (button(context.localizer.Label("keyframe.export", "Export keyframes", "keyframe-export"),
+             key_count != 0))
+    context.keyframe_request.store(5, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  if (button(context.localizer.Label("keyframe.import", "Import keyframes", "keyframe-import")))
+    import_requested = true;
+  {
+    std::string status;
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+      status = context.keyframe_status;
+    }
+    if (!status.empty())
+      text(status);
+  }
+  if (!context.pose_export_folder.empty())
+    text(context.localizer.Text("keyframe.folder", "Folder: ") + context.pose_export_folder);
+  // The dialogs are modal and pump messages; no lock is held here.
+  if (folder_requested) {
+    const auto chosen = ChooseFolder(context.pose_export_folder);
+    if (chosen) {
+      const std::string folder_utf8 = WideToUtf8(chosen->native());
+      if (!folder_utf8.empty())
+        context.pose_export_folder = folder_utf8;
+    }
+  }
+  if (import_requested) {
+    const auto chosen = ChooseFile(context.pose_export_folder);
+    if (chosen) {
+      {
+        std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+        context.keyframe_import_path = chosen->native();
+      }
+      context.keyframe_request.store(6, std::memory_order_release);
+    }
+  }
+}
+
 void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   auto *context = static_cast<Context *>(plugin_context);
   if (context == nullptr || !UiReady(ui))
     return;
 
-  UpdateSkeletonOverlayPicking(*context, ui);
-  UpdateOrbitCameraInput(*context, ui);
+  const bool timeline_owns_mouse = UpdateKeyframeOverlayPicking(*context, ui);
+  if (!timeline_owns_mouse)
+    UpdateSkeletonOverlayPicking(*context, ui);
+  UpdateOrbitCameraInput(*context, ui, timeline_owns_mouse);
   UpdatePoseHistoryInput(*context, ui);
 
   RenderSnapshot snapshot{};
@@ -10029,8 +12027,18 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   const std::string refresh_anim_label =
       context->localizer.Text("action.refresh_anim", "Refresh Anim");
   if (ui->button(ui->user, anomaly::sdk::StringView(refresh_anim_label), 80.0F,
-                 0.0F) != 0)
+                 0.0F) != 0) {
+    // Refresh is the "hand the character back to the game" button. Anything
+    // the plugin still writes into the bones would fight the re-evaluated
+    // animation (the character flickers between the two), so both writers
+    // stop first: a loaded MMD motion is unloaded, and the manual pose is
+    // reset the same way the pose page's Reset does it (undoable there).
+    if (context->motion_loaded.load(std::memory_order_acquire))
+      UnloadMotion(*context);
+    context->keyframe_playing.store(false, std::memory_order_release);
+    context->pose_reset_requested.store(true, std::memory_order_release);
     context->reflection_action_requested.store(4, std::memory_order_release);
+  }
   ui->same_line(ui->user, 0.0F, 6.0F);
   const std::string load_bones_label =
       context->localizer.Text("action.load_bones", "Load Bones");
@@ -10545,6 +12553,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
           context->overlay_joint_radius.store(
               std::clamp(joint_radius, kOverlayMinimumRadius, kOverlayMaximumRadius),
               std::memory_order_release);
+        int gizmo = context->overlay_gizmo_enabled.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string gizmo_label = context->localizer.Text(
+            "pose.skeleton.gizmo",
+            "Rotate rings on the selected joint (X red, Y green, Z blue; move arrows on the root)");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(gizmo_label), &gizmo) != 0)
+          context->overlay_gizmo_enabled.store(gizmo != 0, std::memory_order_release);
         int ik = context->overlay_ik_enabled.load(std::memory_order_acquire) ? 1 : 0;
         const std::string ik_label =
             context->localizer.Text("pose.skeleton.ik", "Limb IK (hands, feet)");
@@ -10560,10 +12574,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       if (overlay_enabled != 0 && context->input != nullptr) {
         const std::string overlay_hint = context->localizer.Text(
             "pose.skeleton.overlay.hint",
-            "Click a joint to select it. Left drag swings its parent bone (hands and feet "
-            "move the limb with IK); scroll while dragging to push it toward or away from "
-            "the camera. Right drag left/right twists the bone. The other button cancels. "
-            "Not while an MMD motion is loaded.");
+            "Click a joint to select it.\n"
+            "Rings: left drag one to turn the bone about that axis only (X red, Y green, "
+            "Z blue). The root also gets three arrows that move the whole body.\n"
+            "Joints: left drag swings the parent bone (limb IK moves the whole arm/leg), "
+            "scroll while dragging to push it toward/away; right drag twists.\n"
+            "The other button cancels a drag. Not while an MMD motion is loaded.");
         ui->text(ui->user, anomaly::sdk::StringView(overlay_hint));
       }
     }
@@ -10731,10 +12747,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         context->pose_reset_requested.store(true, std::memory_order_release);
     }
 
-    // Undo / redo. Disabled while a motion is loaded: it owns the pose.
-    const bool history_open = !context->motion_loaded.load(std::memory_order_acquire);
-    const std::uint32_t undo_count = context->pose_undo_count.load(std::memory_order_acquire);
-    const std::uint32_t redo_count = context->pose_redo_count.load(std::memory_order_acquire);
+    // Undo / redo: the one history every page shares. While a motion is
+    // loaded it owns the pose, so an undo leaves the pose alone then (the
+    // history keeps the pose as it was) and still takes back the rest.
+    const std::uint32_t undo_count = context->edit_undo_count.load(std::memory_order_acquire);
+    const std::uint32_t redo_count = context->edit_redo_count.load(std::memory_order_acquire);
     const bool can_enable =
         HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
             ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
@@ -10752,11 +12769,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         context->localizer.Text("pose.undo", "Undo") + " (" + std::to_string(undo_count) + ")##pose-undo";
     const std::string redo_label =
         context->localizer.Text("pose.redo", "Redo") + " (" + std::to_string(redo_count) + ")##pose-redo";
-    if (history_button(undo_label, history_open && undo_count != 0))
-      context->pose_history_request.store(1, std::memory_order_release);
+    if (history_button(undo_label, undo_count != 0))
+      context->edit_history_request.store(1, std::memory_order_release);
     ui->same_line(ui->user, 0.0F, 6.0F);
-    if (history_button(redo_label, history_open && redo_count != 0))
-      context->pose_history_request.store(2, std::memory_order_release);
+    if (history_button(redo_label, redo_count != 0))
+      context->edit_history_request.store(2, std::memory_order_release);
     ui->same_line(ui->user, 0.0F, 6.0F);
     const std::string history_hint =
         context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y");
@@ -10766,7 +12783,8 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     const auto mirror_button = [&](const char *key, const char *fallback, const char *id,
                                    const int request) {
       const std::string label = context->localizer.Label(key, fallback, id);
-      if (history_button(label, history_open, 0.0F))
+      // A loaded motion owns the pose, so there is nothing to mirror then.
+      if (history_button(label, !context->motion_loaded.load(std::memory_order_acquire), 0.0F))
         context->pose_mirror_request.store(request, std::memory_order_release);
     };
     mirror_button("pose.mirror.flip", "Flip left and right", "pose-mirror-flip", 1);
@@ -10969,7 +12987,6 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       ui->begin_tab_item(ui->user, anomaly::sdk::StringView(expression_tab_label), nullptr, 0U,
                          1) != 0;
   // Without tabs every section is on one page; Ctrl+Z then stays with the pose.
-  context->expression_page_active.store(use_tabs && expression_page, std::memory_order_release);
   if (expression_page) {
     const bool can_list =
         HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
@@ -11014,8 +13031,9 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     const std::uint32_t total = context->motion_morph_total.load(std::memory_order_acquire);
     if (context->motion_loaded.load(std::memory_order_acquire) && total != 0) {
       ui->same_line(ui->user, 0.0F, 8.0F);
-      const std::array<std::string_view, 2> counts{std::to_string(mapped),
-                                                   std::to_string(total)};
+      const std::string mapped_text = std::to_string(mapped);
+      const std::string total_text = std::to_string(total);
+      const std::array<std::string_view, 2> counts{mapped_text, total_text};
       const std::string mapped_line = context->localizer.Format(
           "morph.motion.mapped", "{0}/{1} MMD morphs mapped",
           std::span<const std::string_view>(counts.data(), counts.size()));
@@ -11039,9 +13057,9 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         "Dragging a slider takes that morph over from the game; the reset button hands it back.");
     ui->text(ui->user, anomaly::sdk::StringView(hint));
 
-    // Undo/redo: the expression's own history.
-    const std::uint32_t morph_undo = context->morph_undo_count.load(std::memory_order_acquire);
-    const std::uint32_t morph_redo = context->morph_redo_count.load(std::memory_order_acquire);
+    // Undo/redo: the one history every page shares.
+    const std::uint32_t morph_undo = context->edit_undo_count.load(std::memory_order_acquire);
+    const std::uint32_t morph_redo = context->edit_redo_count.load(std::memory_order_acquire);
     const bool can_enable_button =
         HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
             ui, offsetof(AnomalyUiServiceV1, button_enabled)) &&
@@ -11058,10 +13076,10 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     const std::string morph_redo_label = context->localizer.Text("pose.redo", "Redo") + " (" +
                                          std::to_string(morph_redo) + ")##morph-redo";
     if (morph_button(morph_undo_label, morph_undo != 0))
-      context->morph_history_request.store(1, std::memory_order_release);
+      context->edit_history_request.store(1, std::memory_order_release);
     ui->same_line(ui->user, 0.0F, 6.0F);
     if (morph_button(morph_redo_label, morph_redo != 0))
-      context->morph_history_request.store(2, std::memory_order_release);
+      context->edit_history_request.store(2, std::memory_order_release);
     ui->same_line(ui->user, 0.0F, 6.0F);
     ui->text(ui->user, anomaly::sdk::StringView(
                            context->localizer.Text("pose.history.hint", "Ctrl+Z / Ctrl+Y")));
@@ -11163,6 +13181,17 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     if (use_tabs)
       ui->end_tab_item(ui->user);
   }
+
+  // --- Keyframes: the user's own timeline ------------------------------------
+  const std::string keyframe_tab_label = context->localizer.Text("tab.keyframes", "Keyframes");
+  const bool keyframe_page =
+      !use_tabs ||
+      ui->begin_tab_item(ui->user, anomaly::sdk::StringView(keyframe_tab_label), nullptr, 0U,
+                         1) != 0;
+  if (keyframe_page)
+    DrawKeyframePage(*context, ui);
+  if (keyframe_page && use_tabs)
+    ui->end_tab_item(ui->user);
 
   if (use_tabs)
     ui->end_tab_bar(ui->user);
