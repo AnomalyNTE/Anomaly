@@ -376,6 +376,11 @@ struct Context final {
       (std::numeric_limits<std::uint32_t>::max)()};
   // Draw only runs while the window is open; a hover older than this is stale.
   std::atomic<std::uint64_t> overlay_hover_tick{};
+  // Name tooltip: a joint the cursor rests on for kBoneTooltipDelayMs shows
+  // its bone name beside it. Game thread (AHUD callback) only.
+  std::atomic_bool overlay_tooltip_enabled{true};
+  std::uint32_t overlay_tooltip_bone{(std::numeric_limits<std::uint32_t>::max)()};
+  std::uint64_t overlay_tooltip_since{};
   // Joint drag. Draw (render thread) owns the mouse and publishes which joint
   // is being dragged and where the cursor is, in AHUD canvas pixels; the AHUD
   // callback (game thread) turns that into a rotation of the joint's parent.
@@ -415,6 +420,7 @@ struct Context final {
     // (shoulder/hip); the end joint is placed on the cursor, on the view plane
     // at the depth it had at the press.
     bool ik{};
+    bool ik_leg{};  // the IK end joint is a foot (the plane lock applies to legs only)
     std::uint32_t root{};
     std::array<double, 3> root_world{};
     std::array<double, 3> mid_world{};
@@ -437,6 +443,10 @@ struct Context final {
     // hinge_base * bend(new); `hinge_sign` makes positive = bending.
     bool hinge{};
     bool limb_hinge{};  // IK drag: clamp the elbow/knee bend to its range
+    // IK drag: the elbow/knee's hinge axis in world space at the press, so the
+    // solver bends the limb the way the joint can (always set, limits or not).
+    bool has_limb_hinge_axis{};
+    std::array<double, 3> limb_hinge_axis{};
     std::array<double, 3> hinge_axis_world{};
     std::array<double, 4> hinge_base{};       // offset with the bend removed
     std::array<double, 4> hinge_rest_base{};  // the bone's base (rest) rotation
@@ -500,6 +510,10 @@ struct Context final {
   } overlay_gizmo_drag;
   // Two-bone IK on for chains that have one (limbs); off = always rotate one bone.
   std::atomic_bool overlay_ik_enabled{true};
+  // IK drags of a foot keep it in the leg's own plane (the plane the knee
+  // bends in): the cursor's motion across it is dropped, so a camera that is
+  // not quite side-on cannot lean the leg sideways. Arms stay free.
+  std::atomic_bool overlay_ik_plane_lock{};
   // Joint limits: hinge bones (finger joints past the root, elbows, knees)
   // only bend about their own axis and within a range. Off = free rotation.
   std::atomic_bool overlay_limits_enabled{};
@@ -9412,6 +9426,12 @@ bool IsIkEndBone(std::string_view name) {
   return low.find("hand") != std::string::npos || low.find("foot") != std::string::npos;
 }
 
+// The IK end joints that are feet (the leg plane lock applies to these).
+bool IsIkFootBone(std::string_view name) {
+  return IsIkEndBone(name) &&
+         better_pose::secondary::Lower(name).find("foot") != std::string::npos;
+}
+
 // Two-bone IK in world space. Given the root, middle and end joints at the
 // press and a target for the end, returns the world rotations to add to the
 // root bone and (after the root's) to the middle bone. The bend stays in the
@@ -9424,7 +9444,7 @@ struct TwoBoneRotations {
 };
 
 TwoBoneRotations SolveTwoBone(const Vec3d &root, const Vec3d &mid, const Vec3d &end,
-                              const Vec3d &target) noexcept {
+                              const Vec3d &target, const Vec3d *hinge_axis = nullptr) noexcept {
   TwoBoneRotations out;
   const Vec3d upper = V3Sub(mid, root);
   const Vec3d lower = V3Sub(end, mid);
@@ -9452,6 +9472,21 @@ TwoBoneRotations SolveTwoBone(const Vec3d &root, const Vec3d &mid, const Vec3d &
   const double reach_length = V3Length(reach);
   if (reach_length > 1e-6)
     bend = perpendicular(upper, V3Scale(reach, 1.0 / reach_length));
+  // A hinge (knee, elbow) can only bend about its own axis, so the joint must
+  // stick out perpendicular to that axis -- MMD's knee does exactly this. The
+  // measured offset says which side (forward for a knee); the hinge says the
+  // direction. Without it, a near-straight limb's offset is a few millimetres
+  // and any sideways part of them is as large as the bend itself: lifting a
+  // straight leg seen from the side swung the knee 17 cm inward.
+  if (hinge_axis != nullptr && V3Length(*hinge_axis) > 1e-9) {
+    const Vec3d across = V3Cross(*hinge_axis, direction);
+    if (V3Length(across) > 1e-6) {
+      const double side = V3Dot(bend, across);
+      // No measurable bend: keep the side the upper bone leans to, as below.
+      const double fallback = V3Dot(perpendicular(upper, direction), across);
+      bend = V3Scale(across, (side != 0.0 ? side : fallback) < 0.0 ? -1.0 : 1.0);
+    }
+  }
   bend = perpendicular(bend, direction);
   if (V3Length(bend) < 1e-3 * a)  // straight limb: bend the way the upper bone leans
     bend = perpendicular(upper, direction);
@@ -9468,9 +9503,82 @@ TwoBoneRotations SolveTwoBone(const Vec3d &root, const Vec3d &mid, const Vec3d &
 
   // Shortest-arc rotations add no twist about the bones themselves.
   out.root = QuatFromTo(upper, new_upper);
+  // With a hinge, the upper bone turns as a frame instead: its direction goes
+  // to the new direction *and* the hinge stays the limb plane's normal, so a
+  // knee keeps bending forward after a big lift. The shortest arc alone would
+  // tilt the hinge by a degree or so per large lift -- small, but on a leg
+  // that is the thigh rolling inward, which is what had to be reset by hand.
+  if (hinge_axis != nullptr && V3Length(*hinge_axis) > 1e-9) {
+    // Before: the hinge itself, not the plane the bones happen to span -- on a
+    // near-straight limb that plane is set by millimetres and can lie 45
+    // degrees off the hinge, and carrying it over is the lean being fixed.
+    // After: the solved limb plane, which the bend direction above put
+    // perpendicular to the hinge, oriented to agree with it.
+    const Vec3d before = *hinge_axis;
+    Vec3d after = V3Cross(new_upper, V3Sub(wanted, new_upper));
+    if (V3Length(after) < 1e-6 * a * b)
+      after = *hinge_axis;
+    if (V3Dot(after, *hinge_axis) < 0.0)
+      after = V3Scale(after, -1.0);
+    // Orthonormal frames {bone, normal x bone, normal} before and after.
+    const auto frame = [](const Vec3d &bone, const Vec3d &normal, Vec3d &x, Vec3d &y, Vec3d &z) {
+      x = V3Scale(bone, 1.0 / V3Length(bone));
+      z = V3Sub(normal, V3Scale(x, V3Dot(normal, x)));
+      const double zl = V3Length(z);
+      if (!(zl > 1e-9))
+        return false;
+      z = V3Scale(z, 1.0 / zl);
+      y = V3Cross(z, x);
+      return true;
+    };
+    Vec3d x0, y0, z0, x1, y1, z1;
+    if (frame(upper, before, x0, y0, z0) && frame(new_upper, after, x1, y1, z1)) {
+      // R = F1 * F0^T as a quaternion, from its rotation matrix.
+      const double m00 = x1.x * x0.x + y1.x * y0.x + z1.x * z0.x;
+      const double m01 = x1.x * x0.y + y1.x * y0.y + z1.x * z0.y;
+      const double m02 = x1.x * x0.z + y1.x * y0.z + z1.x * z0.z;
+      const double m10 = x1.y * x0.x + y1.y * y0.x + z1.y * z0.x;
+      const double m11 = x1.y * x0.y + y1.y * y0.y + z1.y * z0.y;
+      const double m12 = x1.y * x0.z + y1.y * y0.z + z1.y * z0.z;
+      const double m20 = x1.z * x0.x + y1.z * y0.x + z1.z * z0.x;
+      const double m21 = x1.z * x0.y + y1.z * y0.y + z1.z * z0.y;
+      const double m22 = x1.z * x0.z + y1.z * y0.z + z1.z * z0.z;
+      Quatd q;
+      const double trace = m00 + m11 + m22;
+      if (trace > 0.0) {
+        const double s = std::sqrt(trace + 1.0) * 2.0;
+        q = {(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s};
+      } else if (m00 > m11 && m00 > m22) {
+        const double s = std::sqrt(1.0 + m00 - m11 - m22) * 2.0;
+        q = {0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s};
+      } else if (m11 > m22) {
+        const double s = std::sqrt(1.0 + m11 - m00 - m22) * 2.0;
+        q = {(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s};
+      } else {
+        const double s = std::sqrt(1.0 + m22 - m00 - m11) * 2.0;
+        q = {(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s};
+      }
+      out.root = QuatNormalize(q);
+    }
+  }
   const Vec3d carried_lower = QuatRotateVector(out.root, lower);
   out.mid = QuatFromTo(carried_lower, V3Sub(wanted, new_upper));
   return out;
+}
+
+// The IK target with its motion across the limb's plane taken out. The plane
+// goes through `root` with normal `hinge` (the elbow/knee's bend axis); the
+// target keeps the end joint's own distance from that plane, so a limb that
+// already sits a little off it (a rest pose with the foot under the body) is
+// not snapped into it, only kept from drifting further.
+Vec3d LockToLimbPlane(const Vec3d &root, const Vec3d &hinge, const Vec3d &end,
+                      const Vec3d &target) noexcept {
+  const double length = V3Length(hinge);
+  if (!(length > 1e-9))
+    return target;
+  const Vec3d normal = V3Scale(hinge, 1.0 / length);
+  const double drift = V3Dot(V3Sub(target, root), normal) - V3Dot(V3Sub(end, root), normal);
+  return V3Sub(target, V3Scale(normal, drift));
 }
 
 void ClearOverlayScreen(Context &context) noexcept {
@@ -9716,6 +9824,7 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
         drag.plane_right = {right.x, right.y, right.z};
         drag.plane_down = {down.x, down.y, down.z};
         drag.ik = true;
+        drag.ik_leg = IsIkFootBone(context.bone_names[joint]);
       }
     }
     // Depth: the direction toward the camera at the joint is minus the view
@@ -9747,6 +9856,43 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     // kept as it is while the drag changes only the bend.
     drag.hinge = false;
     drag.limb_hinge = false;
+    // An IK drag's middle bone (elbow/knee): its hinge axis in world space, at
+    // the press, so the solver bends the limb about it (see SolveTwoBone).
+    // The knee's local Z, carried through its base and current offset and its
+    // parent's world rotation -- the same axis the joint limits measure.
+    drag.has_limb_hinge_axis = false;
+    if (drag.ik && drag.pivot < context.bone_names.size()) {
+      const auto limit = better_pose::limits::LimitFor(context.bone_names[drag.pivot]);
+      std::array<double, 4> base_rotation{0.0, 0.0, 0.0, 1.0};
+      bool have_base = false;
+      {
+        std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+        if (drag.pivot < context.pose_base_locals.size()) {
+          const auto &raw = context.pose_base_locals[drag.pivot];
+          base_rotation = {raw[0], raw[1], raw[2], raw[3]};
+          have_base = true;
+        }
+      }
+      if (limit.kind == better_pose::limits::Kind::Hinge && have_base) {
+        const auto base = better_pose::limits::Normalize(base_rotation);
+        std::array<double, 3> unit{0.0, 0.0, 0.0};
+        unit[static_cast<std::size_t>(limit.axis)] = 1.0;
+        const Quatd base_q{base[0], base[1], base[2], base[3]};
+        const Quatd parent_q{drag.parent_world[0], drag.parent_world[1], drag.parent_world[2],
+                             drag.parent_world[3]};
+        const Quatd mid_offset{drag.start_offset[0], drag.start_offset[1], drag.start_offset[2],
+                               drag.start_offset[3]};
+        const Vec3d axis_world = QuatRotateVector(
+            parent_q,
+            QuatRotateVector(QuatMultiply(mid_offset, base_q), Vec3d{unit[0], unit[1], unit[2]}));
+        const double axis_length = V3Length(axis_world);
+        if (axis_length > 1e-9) {
+          drag.limb_hinge_axis = {axis_world.x / axis_length, axis_world.y / axis_length,
+                                  axis_world.z / axis_length};
+          drag.has_limb_hinge_axis = true;
+        }
+      }
+    }
     // An IK drag's middle bone (elbow/knee) with limits on: only the range is
     // enforced (the solver already bends in its plane).
     if (context.overlay_limits_enabled.load(std::memory_order_acquire) && drag.ik &&
@@ -9850,13 +9996,30 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     const double dy = context.overlay_drag_delta_y.load(std::memory_order_acquire);
     const Vec3d end{drag.end_world[0], drag.end_world[1], drag.end_world[2]};
     const Vec3d toward{drag.toward_camera[0], drag.toward_camera[1], drag.toward_camera[2]};
-    const Vec3d target = V3Add(
+    Vec3d target = V3Add(
         V3Add(end, V3Scale(toward, wheel_notches * kDepthCmPerNotch)),
         V3Add(V3Scale(Vec3d{drag.plane_right[0], drag.plane_right[1], drag.plane_right[2]}, dx),
               V3Scale(Vec3d{drag.plane_down[0], drag.plane_down[1], drag.plane_down[2]}, dy)));
+    // Plane lock, legs only: the leg's plane goes through the hip with the
+    // knee hinge as its normal -- the plane the knee bends in. Dropping the
+    // target's offset along the hinge keeps the foot in it, whatever angle the
+    // camera sees the leg from. Arms are left free: they swing out to the side
+    // and across the chest, which is all motion out of the elbow's plane.
+    if (drag.ik_leg && drag.has_limb_hinge_axis &&
+        context.overlay_ik_plane_lock.load(std::memory_order_acquire))
+      target = LockToLimbPlane(Vec3d{drag.root_world[0], drag.root_world[1], drag.root_world[2]},
+                               Vec3d{drag.limb_hinge_axis[0], drag.limb_hinge_axis[1],
+                                     drag.limb_hinge_axis[2]},
+                               end, target);
+    // The knee/elbow bends about its own hinge: hand that to the solver so a
+    // near-straight limb bends the way the joint can (always, not only with
+    // joint limits on -- this is where the bend goes, not how far).
+    const Vec3d limb_hinge{drag.limb_hinge_axis[0], drag.limb_hinge_axis[1],
+                           drag.limb_hinge_axis[2]};
     const TwoBoneRotations turn = SolveTwoBone(
         Vec3d{drag.root_world[0], drag.root_world[1], drag.root_world[2]},
-        Vec3d{drag.mid_world[0], drag.mid_world[1], drag.mid_world[2]}, end, target);
+        Vec3d{drag.mid_world[0], drag.mid_world[1], drag.mid_world[2]}, end, target,
+        drag.has_limb_hinge_axis ? &limb_hinge : nullptr);
     const Quatd root_parent{drag.root_parent_world[0], drag.root_parent_world[1],
                             drag.root_parent_world[2], drag.root_parent_world[3]};
     const Quatd root_offset{drag.root_start_offset[0], drag.root_start_offset[1],
@@ -10696,6 +10859,83 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
   }
 }
 
+// --- Bone name tooltip -------------------------------------------------------
+constexpr std::uint64_t kBoneTooltipDelayMs = 500;
+
+// Hover dwell: returns true once `bone` has been the hovered joint for
+// `delay` ms without a break. A change of joint (or none) restarts the clock.
+bool BoneTooltipDue(std::uint32_t &tracked, std::uint64_t &since, const std::uint32_t bone,
+                    const std::uint64_t now, const std::uint64_t delay) noexcept {
+  if (bone != tracked) {
+    tracked = bone;
+    since = now;
+    return false;
+  }
+  return bone != kOverlayNoBone && now - since >= delay;
+}
+
+// Where a `width` x `height` box goes for a joint at (x, y): up and to the
+// right of the marker by `gap`, flipped left or below when that would leave
+// the `screen_width` x `screen_height` canvas, and kept fully on it.
+struct TooltipBox {
+  float left{};
+  float top{};
+};
+
+TooltipBox PlaceBoneTooltip(const float x, const float y, const float width, const float height,
+                            const float gap, const float screen_width,
+                            const float screen_height) noexcept {
+  TooltipBox box{x + gap, y - gap - height};
+  if (box.left + width > screen_width)
+    box.left = x - gap - width;  // no room on the right: go left
+  if (box.top < 0.0F)
+    box.top = y + gap;  // no room above: go below
+  box.left = std::clamp(box.left, 0.0F, (std::max)(0.0F, screen_width - width));
+  box.top = std::clamp(box.top, 0.0F, (std::max)(0.0F, screen_height - height));
+  return box;
+}
+
+void DrawBoneTooltip(Context &context, const AnomalyUe5AhudFrameV1 *frame,
+                     const std::uint32_t hovered, const std::uint32_t selected,
+                     const std::vector<std::array<float, 2>> &screen,
+                     const std::vector<std::uint8_t> &valid, const bool busy) noexcept {
+  // While something is being dragged the name would only get in the way.
+  const std::uint32_t bone =
+      context.overlay_tooltip_enabled.load(std::memory_order_acquire) && !busy
+          ? hovered
+          : kOverlayNoBone;
+  if (!BoneTooltipDue(context.overlay_tooltip_bone, context.overlay_tooltip_since, bone,
+                      GetTickCount64(), kBoneTooltipDelayMs))
+    return;
+  if (bone >= screen.size() || bone >= valid.size() || valid[bone] == 0 ||
+      bone >= context.bone_names.size() || context.bone_names[bone].empty())
+    return;
+  std::string label = context.bone_names[bone];
+  if (bone == selected)
+    label += "  " + context.localizer.Text("pose.skeleton.tooltip.selected", "(selected)");
+  constexpr float kScale = 0.9F;
+  constexpr float kPadX = 6.0F;
+  constexpr float kPadY = 3.0F;
+  float text_width = 0.0F;
+  float text_height = 0.0F;
+  if (frame->measure_text == nullptr ||
+      frame->measure_text(frame->user, anomaly::sdk::StringView(label), kScale, &text_width,
+                          &text_height) == 0) {
+    text_width = static_cast<float>(label.size()) * 7.0F;
+    text_height = 14.0F;
+  }
+  const float width = text_width + kPadX * 2.0F;
+  const float height = text_height + kPadY * 2.0F;
+  const TooltipBox box = PlaceBoneTooltip(
+      screen[bone][0], screen[bone][1], width, height, 12.0F,
+      static_cast<float>(frame->viewport_width), static_cast<float>(frame->viewport_height));
+  frame->draw_rect(frame->user, box.left, box.top, width, height, kTimelineBackground);
+  TimelineFrame(frame, {box.left, box.top, box.left + width, box.top + height},
+                bone == selected ? kOverlaySelectedColor : kTimelineEdge, 1.0F);
+  frame->draw_text(frame->user, anomaly::sdk::StringView(label), box.left + kPadX,
+                   box.top + kPadY, kTimelineText, kScale);
+}
+
 void ANOMALY_CALL DrawSkeletonOverlay(void *user,
                                       const AnomalyUe5AhudFrameV1 *frame) noexcept {
   auto *context = static_cast<Context *>(user);
@@ -10847,6 +11087,10 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
     }
     // The rotate gizmo goes on top of everything else.
     DrawGizmo(*context, frame, component_world, count, screen, valid);
+    // The hovered joint's name, last, over the gizmo too.
+    DrawBoneTooltip(*context, frame, hovered, selected, screen, valid,
+                    drag.valid || context->overlay_gizmo_drag.valid ||
+                        context->overlay_arrow_drag.valid);
 
     auto &weight = context->overlay_frame_weight;
     if (parents.size() == count)
@@ -12559,11 +12803,25 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             "Rotate rings on the selected joint (X red, Y green, Z blue; move arrows on the root)");
         if (ui->checkbox(ui->user, anomaly::sdk::StringView(gizmo_label), &gizmo) != 0)
           context->overlay_gizmo_enabled.store(gizmo != 0, std::memory_order_release);
+        ui->same_line(ui->user, 0.0F, 12.0F);
+        int tooltip = context->overlay_tooltip_enabled.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string tooltip_label =
+            context->localizer.Text("pose.skeleton.tooltip", "Bone name on hover");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(tooltip_label), &tooltip) != 0)
+          context->overlay_tooltip_enabled.store(tooltip != 0, std::memory_order_release);
         int ik = context->overlay_ik_enabled.load(std::memory_order_acquire) ? 1 : 0;
         const std::string ik_label =
             context->localizer.Text("pose.skeleton.ik", "Limb IK (hands, feet)");
         if (ui->checkbox(ui->user, anomaly::sdk::StringView(ik_label), &ik) != 0)
           context->overlay_ik_enabled.store(ik != 0, std::memory_order_release);
+        if (ik != 0) {
+          ui->same_line(ui->user, 0.0F, 12.0F);
+          int plane_lock = context->overlay_ik_plane_lock.load(std::memory_order_acquire) ? 1 : 0;
+          const std::string plane_lock_label = context->localizer.Text(
+              "pose.skeleton.ik_plane", "Keep legs in their plane (no sideways lean)");
+          if (ui->checkbox(ui->user, anomaly::sdk::StringView(plane_lock_label), &plane_lock) != 0)
+            context->overlay_ik_plane_lock.store(plane_lock != 0, std::memory_order_release);
+        }
         ui->same_line(ui->user, 0.0F, 12.0F);
         int limits = context->overlay_limits_enabled.load(std::memory_order_acquire) ? 1 : 0;
         const std::string limits_label = context->localizer.Text(
