@@ -124,6 +124,72 @@ inline constexpr std::string_view kMusicEndPattern =
 // Optional: a miss leaves the game's title on the song it last picked.
 inline constexpr std::string_view kSetCurrentIdPattern =
     "48 8B 02 48 39 81 00 04 00 00 74 13 48 89 81 00 04 00 00 48 81 C1 F0 02 00 00 E9";
+// In-game player progress. The UI reads the position of PlayingID through
+// these Wwise wrappers and skips it while PlayingID is 0; a taken-over library
+// song therefore gets kPlayingId, which these detours answer from the engine.
+// float GetPlayingFraction(uint32 playing_id) / float GetPlayingSeconds(uint32 playing_id)
+inline constexpr std::string_view kPositionFractionPattern =
+    "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 48 8B D9 E8 ?? ?? ?? ?? "
+    "48 8B 0D ?? ?? ?? ?? 48 85 C9 75 32 80 3D ?? ?? ?? ?? 03 72 78";
+inline constexpr std::string_view kPositionSecondsPattern =
+    "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 48 8B D9 E8 ?? ?? ?? ?? "
+    "48 8B 0D ?? ?? ?? ?? 48 85 C9 75 32 80 3D ?? ?? ?? ?? 03 72 77";
+// void MusicDurationCallback({uint32 playing_id; UHTUI_MusicPlayer* ui}*, info*):
+// the song length shown by the player, float seconds at info+0x58. Synthetic
+// rows carry the template's event, so its duration is the template song's.
+inline constexpr std::string_view kDurationCallbackPattern =
+    "48 89 5C 24 10 57 48 83 EC 30 4C 8B 41 08 48 8B F9 8B 42 58 48 89 74 24 40 41 89 80 DC 10 00 00";
+inline constexpr std::uint32_t kDurationInfoSecondsOffset = 0x58;
+// The same length callback on the album view's play/resume path:
+// void ({UHTUI_MusicPlayer* ui}*, info** info).
+inline constexpr std::string_view kDurationCallback2Pattern =
+    "40 57 48 83 EC 30 48 8B 02 48 8B 11 8B 40 58 89 82 DC 10 00 00 48 8B 09 48 8B B9 18 10 00 00";
+// UHTSoundSubsystem::PlayingID (int32; the Pause/Resume/Stop paths test > 0).
+inline constexpr std::uint32_t kSubsystemPlayingIdOffset = 0x420;
+// UHTSoundSubsystem::bPaused (uint8; Pause writes 1, Resume 0).
+inline constexpr std::uint32_t kSubsystemPausedOffset = 0x424;
+// Never issued by Wwise in practice (IDs count up from 1); Wwise ignores it.
+inline constexpr std::uint32_t kPlayingId = 0x7FFFFF00;
+// void UHTSoundSubsystem::ChangePlayerMusicSound(this, float position): the
+// progress slider's seek. It reloads the row's event asynchronously and posts
+// it again, which for a library song never reaches the engine as a seek.
+inline constexpr std::string_view kChangeSoundPattern =
+    "48 89 5C 24 18 57 48 81 EC C0 00 00 00 48 8B F9 0F 29 BC 24 A0 00 00 00 8B 89 00 04 00 00 "
+    "0F 28 F9 E8";
+// void UHTUI_MusicListPanel::OnMusicDetailedViewEntryClicked(this, const FName* id):
+// a song clicked in the album view. It only plays songs it finds among the
+// panel's own list entries, which with few library songs lack them.
+inline constexpr std::string_view kEntryClickPattern =
+    "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 48 8B 12 E8 ?? ?? ?? ?? 48 8B 13 48 8B CF "
+    "48 8B 5C 24 30 48 83 C4 20 5F";
+// Album cover widgets. Each sets its UImage from the album row's cover soft
+// pointer; after the original runs, a library album's image gets the imported
+// texture through UImage::SetBrushFromTexture (vtable +0x320).
+// void UHTUI_MusicDetailedView::SetAlbumCover(this, FName album)
+inline constexpr std::string_view kDetailCoverPattern =
+    "48 89 54 24 10 56 48 83 EC 50 48 8B 81 98 0F 00 00 48 8B F1 48 85 C0 0F 84";
+inline constexpr std::uint32_t kDetailCoverImageOffset = 0xF98;
+// void UHTUI_MusicAlbumPageListItem::SetListItem(this, UHTMusicAlbumPageListObject*)
+inline constexpr std::string_view kPageCoverPattern =
+    "48 89 5C 24 10 56 48 83 EC 50 48 8B DA 48 8B F1 E8 ?? ?? ?? ?? 48 85 DB 0F 84 ?? ?? ?? ?? E8";
+inline constexpr std::uint32_t kPageCoverImageOffset = 0x658;
+inline constexpr std::uint32_t kPageItemAlbumIdOffset = 0x180;
+inline constexpr std::uint32_t kImageSetBrushFromTextureSlot = 0x320;
+// void UHTUI_VehicleMusicPanel::OnMusicItemSelected(this, UHTVehicleMusicListObject*):
+// hooked only to log when a list entry is selected (diagnostic). The entry's
+// song id (FName) is at kVehicleItemSongIdOffset.
+inline constexpr std::uint32_t kVehicleItemSongIdOffset = 0x180;
+inline constexpr std::string_view kItemSelectedPattern =
+    "48 85 D2 0F 84 ?? ?? ?? ?? 53 57 48 83 EC 68 48 8B FA 48 8B D9 E8 ?? ?? ?? ?? 48 8B 57 10 4C 8D 40 30";
+// Diagnostic: the list row's click handler and the list's click broadcaster.
+// Hooked only to log whether a single click reaches them and which gate fields
+// the row has (row +0x420 click method, +0x38C, +0x4B8, +0x35E).
+// bool SObjectTableRow::ProcessClick(this)
+inline constexpr std::string_view kRowClickPattern =
+    "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8B 01 48 8B F9 FF 90 C0 04 00 00 84 C0 0F 84";
+// bool BroadcastListObjectClicked(UListView** list, UObject* item)
+inline constexpr std::string_view kListClickPattern =
+    "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 48 8B 7A 10 48 8B DA 48 8B F1 48 85 FF 74 ?? E8";
 // UHTSoundSubsystem* GetSoundSubsystem(const UObject* world_context), called at
 // the E8 rel32 `kSoundSubsystemCallOffset` bytes into the match.
 inline constexpr std::string_view kSoundSubsystemCallPattern =

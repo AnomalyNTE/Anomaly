@@ -97,6 +97,8 @@ public:
     // Playlist index of the song now playing, also after the engine moved on
     // by itself; empty when nothing from the playlist plays.
     [[nodiscard]] std::optional<std::size_t> PlayingSlot() const;
+    // Length in seconds of a playlist song, measured at scan time; 0 = unknown.
+    [[nodiscard]] float Duration(std::size_t index) const;
     // Playlist song titles (file stems) in playlist order, and a counter that
     // changes whenever a scan replaces them.
     [[nodiscard]] std::vector<std::wstring> Titles() const;

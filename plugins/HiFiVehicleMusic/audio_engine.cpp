@@ -102,6 +102,7 @@ struct AudioEngine::Impl final {
     bool output_failed{};
     std::vector<std::wstring> titles;           // playlist stems, playlist order
     std::wstring cover;                         // album art in the library root
+    std::vector<float> durations;               // seconds per playlist song, 0 = unknown
     std::atomic<std::uint64_t> library_generation{0};
     std::optional<std::size_t> playing_slot;    // album song now playing
     std::optional<std::size_t> requested_slot;  // worker-owned: album song the game last picked
@@ -310,13 +311,30 @@ struct AudioEngine::Impl final {
         }
         std::sort(list.begin(), list.end());
         std::vector<std::wstring> stems;
+        std::vector<float> lengths;
         stems.reserve(list.size());
-        for (const std::wstring& path : list) stems.push_back(std::filesystem::path(path).stem().wstring());
+        lengths.reserve(list.size());
+        for (const std::wstring& path : list) {
+            stems.push_back(std::filesystem::path(path).stem().wstring());
+            // The game asks for a song's length before it plays.
+            float seconds{};
+            if (auto probe = OpenDecoder(path, 0, 0)) {
+                ma_uint64 frames{};
+                ma_uint32 rate{};
+                ma_decoder_get_data_format(probe.get(), nullptr, nullptr, &rate, nullptr, 0);
+                if (ma_decoder_get_length_in_pcm_frames(probe.get(), &frames) == MA_SUCCESS && rate != 0) {
+                    seconds = static_cast<float>(static_cast<double>(frames) / rate);
+                }
+                ma_decoder_uninit(probe.get());
+            }
+            lengths.push_back(seconds);
+        }
         playlist = std::move(list);
         cursor = 0;
         requested_slot.reset();
         std::scoped_lock lock(state_mutex);
         titles = std::move(stems);
+        durations = std::move(lengths);
         cover = std::move(art);
         tracks = std::move(found);
         snapshot.track_count = titles.size();
@@ -552,6 +570,13 @@ struct AudioEngine::Impl final {
             // it last asked for; that re-post must not restart it either.
             if (playlist_mode && decoder != nullptr &&
                 (current_slot == index || requested_slot == index)) {
+                // The game's progress slider re-posts the current song with
+                // the dragged position.
+                if (current_slot == index && position > 0.0F && position < 1.0F) {
+                    Command seek{Command::Kind::Seek};
+                    seek.position = position;
+                    Handle(seek);
+                }
                 paused.store(false, std::memory_order_relaxed);
                 return;
             }
@@ -776,6 +801,11 @@ EngineSnapshot AudioEngine::Snapshot() const {
 std::optional<std::size_t> AudioEngine::PlayingSlot() const {
     std::scoped_lock lock(impl_->state_mutex);
     return impl_->snapshot.playing ? impl_->playing_slot : std::nullopt;
+}
+
+float AudioEngine::Duration(const std::size_t index) const {
+    std::scoped_lock lock(impl_->state_mutex);
+    return index < impl_->durations.size() ? impl_->durations[index] : 0.0F;
 }
 
 std::vector<std::wstring> AudioEngine::Titles() const {

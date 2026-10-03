@@ -1,6 +1,7 @@
 #include "anomaly/sdk/cpp.hpp"
 
 #include <Windows.h>
+#include <intrin.h>
 #include <shobjidl.h>
 
 #include <nlohmann/json.hpp>
@@ -10,10 +11,12 @@
 #include "plugins/HiFiVehicleMusic/hifi_vehicle_music_profile.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -23,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -72,7 +76,8 @@ enum HookIndex : std::size_t {
     kPost, kStop, kPause, kResume, kSetPlayerType, kEndGetOff, kCoreHookCount,
     kFindRow = kCoreHookCount, kForEachRow, kAlbumRow, kAlbumForEach, kOwnedCopy, kReGenerate,
     kSetCurrent, kItemRefresh, kVehiclePanel, kResolveCurrent, kSyncCurrent, kPageList, kMusicEnd,
-    kHookCount
+    kPositionFraction, kPositionSeconds, kDuration, kChangeSound, kEntryClick, kDetailCover,
+    kPageCover, kItemSelected, kRowClick, kListClick, kSetCurrentIdHook, kDuration2, kHookCount
 };
 
 using PostFn = std::int64_t(__fastcall*)(void*, void*, void*, float);
@@ -135,7 +140,8 @@ struct AlbumState final {
     std::vector<std::uint64_t> game_songs;
     // Library generation whose cover image was last applied to the album row.
     std::uint64_t cover_generation{(std::numeric_limits<std::uint64_t>::max)()};
-    std::wstring cover;  // image the album row shows; empty = the template's cover
+    std::wstring cover;          // image last imported; empty = none tried
+    void* cover_texture{};       // its rooted UTexture2D, or null
 };
 
 struct Settings final {
@@ -159,6 +165,10 @@ struct Context final {
     // song id on the library song the engine actually plays.
     const AnomalyUe5AhudServiceV1* ahud{};
     AnomalyGenerationHandleV1 ahud_subscription{};
+    // Optional, diagnostic: logs UI events (clicks, selections) to find the
+    // album list's single-click path.
+    const AnomalyUe5ProcessEventServiceV1* process_event{};
+    AnomalyGenerationHandleV1 trace_subscription{};
     anomaly::plugins::Localizer localizer;
     AnomalyGenerationHandleV1 settings_schema{};
     AudioEngine engine;
@@ -210,6 +220,8 @@ std::atomic<std::uintptr_t> g_set_item_flags{0};
 std::atomic<std::uintptr_t> g_object_array{0};
 std::atomic<std::uintptr_t> g_serial_counter{0};
 std::atomic<std::uintptr_t> g_set_current_id{0};
+// The album view last seen by the cover detour; its song list is a UHTListView.
+std::atomic<void*> g_detail_view{nullptr};
 HMODULE g_plugin_module{};
 
 AnomalyStatusV1 Status(const std::uint32_t code, const char* message = nullptr) noexcept {
@@ -257,6 +269,10 @@ bool NamesReady(const AnomalyUe5NamesServiceV1* service) noexcept {
 
 bool AhudReady(const AnomalyUe5AhudServiceV1* service) noexcept {
     return HIFI_HAS(AnomalyUe5AhudServiceV1, unsubscribe) && service->subscribe != nullptr;
+}
+
+bool ProcessEventReady(const AnomalyUe5ProcessEventServiceV1* service) noexcept {
+    return HIFI_HAS(AnomalyUe5ProcessEventServiceV1, unsubscribe) && service->subscribe != nullptr;
 }
 
 bool UiReady(const AnomalyUiServiceV1* service) noexcept {
@@ -589,6 +605,22 @@ void NotifyEngine(void (AudioEngine::*action)()) noexcept {
     }
 }
 
+void WritePlayingId(void* subsystem, const std::uint32_t id) noexcept {
+    __try {
+        *reinterpret_cast<volatile std::uint32_t*>(
+            static_cast<std::byte*>(subsystem) + profile::kSubsystemPlayingIdOffset) = id;
+    } __except (1) {
+    }
+}
+
+void WritePausedFlag(void* subsystem, const std::uint8_t paused) noexcept {
+    __try {
+        *reinterpret_cast<volatile std::uint8_t*>(
+            static_cast<std::byte*>(subsystem) + profile::kSubsystemPausedOffset) = paused;
+    } __except (1) {
+    }
+}
+
 std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const float position) {
     const AnomalyHookServiceV1* api{};
     AnomalyGenerationHandleV1 lease{};
@@ -601,6 +633,13 @@ std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const
         // through the original so the engine is not notified.
         const std::uintptr_t stop = g_slots[kStop].original.load(std::memory_order_acquire);
         if (stop != 0) CallStop(stop, self, 0);
+        // The player UI shows progress only for a non-zero PlayingID; the
+        // position detours answer this one from the engine.
+        WritePlayingId(self, profile::kPlayingId);
+        // The skipped Post would also have cleared the Paused flag. Left set
+        // (e.g. after resuming through a repost) the next pause click is taken
+        // for a resume and seems to do nothing.
+        WritePausedFlag(self, 0);
     } else {
         result = CallPost(original, self, event, list_id, position);
     }
@@ -916,40 +955,54 @@ std::int32_t ObjectSerial(const Context& context, const std::int32_t index) noex
     }
 }
 
-// Imports the library's cover image as a rooted transient texture and points
-// the album row's cover at it by path. Keeps the current cover on any failure.
-void ApplyCover(Context& context, AlbumState& album) {
-    if (g_import_texture.load(std::memory_order_acquire) == 0) return;
+// The library's cover image as a rooted transient texture, imported on the
+// game thread the first time a cover widget shows the library album; null when
+// there is no image or it cannot be imported (the widget keeps the template's
+// cover). The album row is never changed: doing that hid the album.
+void* CoverTexture(Context& context) {
+    if (g_import_texture.load(std::memory_order_acquire) == 0) return nullptr;
+    AlbumState& album = context.album;
     std::wstring path = context.engine.Cover();
-    if (path.empty() || path == album.cover) return;
+    if (path.empty()) return nullptr;
+    if (path == album.cover) return album.cover_texture;
     album.cover = path;  // one attempt per image
-    const auto texture = reinterpret_cast<std::uintptr_t>(CallImportTexture(path));
+    album.cover_texture = nullptr;
+    void* const texture = CallImportTexture(path);
     std::int32_t index{};
-    std::uintptr_t package{};
-    std::uint64_t asset_name{};
-    std::uint64_t package_name{};
-    if (texture == 0 || !ReadValue(context, texture + profile::kObjectIndexOffset, index) ||
-        !ReadValue(context, texture + profile::kObjectNameOffset, asset_name) ||
-        !ReadValue(context, texture + profile::kObjectOuterOffset, package) || package == 0 ||
-        !ReadValue(context, package + profile::kObjectNameOffset, package_name) ||
+    if (texture == nullptr ||
+        !ReadValue(context, reinterpret_cast<std::uintptr_t>(texture) + profile::kObjectIndexOffset, index) ||
         !CallSetItemFlags(ObjectItem(context, index), static_cast<std::int32_t>(profile::kRootSetFlag))) {
         Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "album cover could not be imported");
-        return;
+        return nullptr;
     }
-    const std::int32_t serial = ObjectSerial(context, index);
-    if (serial == 0) {
-        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "album cover has no serial number");
-        return;
-    }
-    // Weak pointer {index, serial} resolves to the texture without a load; the
-    // path keeps the UI's "has a cover" check true.
-    std::byte* const cover = album.album + profile::kAlbumCoverOffset;
-    std::memset(cover, 0, profile::kSoftPtrSize);
-    Put(cover, 0, index);
-    Put(cover, sizeof(std::int32_t), serial);
-    Put(cover, profile::kSoftPtrAssetPathOffset, package_name);
-    Put(cover, profile::kSoftPtrAssetPathOffset + sizeof(std::uint64_t), asset_name);
+    album.cover_texture = texture;
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "album cover imported");
+    return texture;
+}
+
+using SetBrushFromTextureFn = void(__fastcall*)(void*, void*, std::uint8_t);
+
+void SetImageTexture(void* image, void* texture) noexcept {
+    __try {
+        const auto vtable = *static_cast<std::uintptr_t* const*>(image);
+        reinterpret_cast<SetBrushFromTextureFn>(
+            vtable[profile::kImageSetBrushFromTextureSlot / sizeof(std::uintptr_t)])(image, texture, 0);
+    } __except (1) {
+    }
+}
+
+bool AlbumActive(const AlbumState& album) noexcept;
+
+// Puts the library cover on `image` when `album` is the library album.
+void ApplyCover(Context& context, const std::uint64_t album, void* image) noexcept {
+    if (image == nullptr) return;
+    try {
+        std::scoped_lock lock(context.album_mutex);
+        if (!AlbumActive(context.album) || album != AlbumId(context.album)) return;
+        void* const texture = CoverTexture(context);
+        if (texture != nullptr) SetImageTexture(image, texture);
+    } catch (...) {
+    }
 }
 
 void PrimeTemplate(Context& context);
@@ -1368,11 +1421,40 @@ void __fastcall ReGenerateDetour(void* self) {
     EndCallback(api, lease);
 }
 
+// Diagnostic: names the game call site of a hooked function as HTGame+offset.
+void LogCaller(const char* what, void* return_address, const std::uint64_t id) noexcept {
+    auto* const context = g_context.load(std::memory_order_acquire);
+    if (context == nullptr) return;
+    try {
+        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(L"HTGame.exe"));
+        const auto address = reinterpret_cast<std::uintptr_t>(return_address);
+        char offset[32]{};
+        std::snprintf(offset, sizeof(offset), "0x%llx",
+            static_cast<unsigned long long>(base != 0 && address > base ? address - base : address));
+        // The 24 bytes before the return address, so the call site can be found
+        // by pattern even if this build's layout differs from the analysed one.
+        std::string bytes;
+        std::array<std::uint8_t, 24> code{};
+        if (address > code.size() && ReadValue(*context, address - code.size(), code)) {
+            for (const std::uint8_t b : code) {
+                char hex[4]{};
+                std::snprintf(hex, sizeof(hex), "%02X ", b);
+                bytes += hex;
+            }
+        }
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            std::string(what) + " from HTGame+" + offset + ", library " +
+                (IsLibrarySongId(*context, id) ? "yes" : "no") + ", code before: " + bytes);
+    } catch (...) {
+    }
+}
+
 void __fastcall SetCurrentDetour(void* self, const std::uint64_t id) {
     const AnomalyHookServiceV1* api{};
     AnomalyGenerationHandleV1 lease{};
     std::uintptr_t original{};
     if (!BeginCallback(kSetCurrent, api, lease, original)) return;
+    LogCaller("SetCurrentMusicListID", _ReturnAddress(), id);
     g_last_subsystem.store(self, std::memory_order_release);
     WithQueueIds(self, id, [&] { CallSetCurrent(original, self, id); });
     EndCallback(api, lease);
@@ -1463,27 +1545,427 @@ void CallSetCurrentId(void* subsystem, const std::uint64_t id) noexcept {
 // song by itself (song end or the window's previous/next), the game still
 // names the old one. Point the game's current id at the song really playing,
 // so the title, the list highlight and the game's own next/previous follow.
+// True while the takeover owns playback: the PlayingID is the one Post wrote.
+// A game song's post replaces it with a real Wwise id.
+bool TakenOver(const Context& context, void* subsystem) noexcept {
+    std::uint32_t id{};
+    return subsystem != nullptr &&
+        ReadValue(context, reinterpret_cast<std::uintptr_t>(subsystem) + profile::kSubsystemPlayingIdOffset, id) &&
+        id == profile::kPlayingId;
+}
+
 void ANOMALY_CALL SyncCurrentSong(void* user, const AnomalyUe5AhudFrameV1*) {
     auto* const context = static_cast<Context*>(user);
     if (context == nullptr || g_set_current_id.load(std::memory_order_acquire) == 0) return;
     try {
         void* const subsystem = g_last_subsystem.load(std::memory_order_acquire);
         const std::optional<std::size_t> slot = context->engine.PlayingSlot();
-        if (subsystem == nullptr || !slot) return;
+        static std::optional<std::size_t> last_slot;
+        static std::optional<std::chrono::steady_clock::time_point> mismatch_since;
+        const bool engine_moved = slot != last_slot;
+        last_slot = slot;
+        if (subsystem == nullptr || !slot || !TakenOver(*context, subsystem)) {
+            mismatch_since.reset();
+            return;
+        }
         const std::uint64_t current = CurrentSongId(subsystem);
         std::uint64_t wanted{};
+        bool current_is_library{};
         {
             std::scoped_lock lock(context->album_mutex);
-            // Only a library song is ever replaced: a game song stays the game's.
-            if (!AlbumActive(context->album) || !SongIndex(context->album, current) ||
-                *slot >= context->album.songs.size()) {
-                return;
-            }
+            if (!AlbumActive(context->album) || *slot >= context->album.songs.size()) return;
             wanted = SongId(context->album, *slot);
+            current_is_library = SongIndex(context->album, current).has_value();
         }
-        if (wanted != current) CallSetCurrentId(subsystem, wanted);
+        if (wanted == current) {
+            mismatch_since.reset();
+            return;
+        }
+        // The engine moved on by itself (song end, the window's previous/next):
+        // follow at once. Otherwise the game changed its current song without a
+        // post (it restores the saved last song, a game song, when it rebuilds
+        // its state), while the library song keeps playing. A song the player
+        // picked posts within moments and ends the takeover, so only a mismatch
+        // that outlasts that is corrected; acting at once made picks need a
+        // second click.
+        const auto now = std::chrono::steady_clock::now();
+        if (!mismatch_since) mismatch_since = now;
+        if ((engine_moved && current_is_library) || now - *mismatch_since >= std::chrono::seconds(2)) {
+            mismatch_since.reset();
+            CallSetCurrentId(subsystem, wanted);
+        }
     } catch (...) {
     }
+}
+
+using PositionFn = float(__fastcall*)(std::uint32_t);
+using DurationFn = std::uintptr_t(__fastcall*)(void*, void*);
+
+float CallPosition(const std::uintptr_t original, const std::uint32_t id) noexcept {
+    __try {
+        return reinterpret_cast<PositionFn>(original)(id);
+    } __except (1) {
+        return 0.0F;
+    }
+}
+
+std::uintptr_t CallDuration(const std::uintptr_t original, void* user, void* info) noexcept {
+    __try {
+        return reinterpret_cast<DurationFn>(original)(user, info);
+    } __except (1) {
+        return 0;
+    }
+}
+
+void WriteDuration(void* info, const float seconds) noexcept {
+    __try {
+        *reinterpret_cast<float*>(static_cast<std::byte*>(info) + profile::kDurationInfoSecondsOffset) =
+            seconds;
+    } __except (1) {
+    }
+}
+
+// Wwise position queries for the player UI. The takeover's PlayingID is
+// answered from the engine; any other id goes to Wwise.
+float PositionDetour(const HookIndex index, const std::uint32_t id, const bool fraction) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(index, api, lease, original)) return 0.0F;
+    float result = 0.0F;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    if (id == profile::kPlayingId && context != nullptr) {
+        const AudioEngine::Progress progress = context->engine.Position();
+        if (!fraction) {
+            result = progress.seconds;
+        } else if (progress.duration > 0.0F) {
+            result = std::clamp(progress.seconds / progress.duration, 0.0F, 1.0F);
+        }
+    } else {
+        result = CallPosition(original, id);
+    }
+    EndCallback(api, lease);
+    return result;
+}
+
+float __fastcall PositionFractionDetour(const std::uint32_t id) {
+    return PositionDetour(kPositionFraction, id, true);
+}
+
+float __fastcall PositionSecondsDetour(const std::uint32_t id) {
+    return PositionDetour(kPositionSeconds, id, false);
+}
+
+// The player shows the length Wwise reports for the row's event, which for a
+// library song is the template song's; replace it with the file's length.
+// The current library song's file length, or 0 when a game song is current.
+float CurrentLibraryDuration(Context& context) noexcept {
+    void* const subsystem = g_last_subsystem.load(std::memory_order_acquire);
+    if (subsystem == nullptr) return 0.0F;
+    try {
+        // The song the engine plays while it owns playback; otherwise the
+        // game's current song if it is a library song (about to be posted).
+        std::optional<std::size_t> song;
+        if (TakenOver(context, subsystem)) song = context.engine.PlayingSlot();
+        if (!song) {
+            std::scoped_lock lock(context.album_mutex);
+            if (AlbumActive(context.album)) song = SongIndex(context.album, CurrentSongId(subsystem));
+        }
+        return song ? context.engine.Duration(*song) : 0.0F;
+    } catch (...) {
+        return 0.0F;
+    }
+}
+
+std::uintptr_t __fastcall DurationDetour(void* user, void* info) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kDuration, api, lease, original)) return 0;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    if (context != nullptr && info != nullptr) {
+        const float seconds = CurrentLibraryDuration(*context);
+        if (seconds > 0.0F) WriteDuration(info, seconds);
+    }
+    const std::uintptr_t result = CallDuration(original, user, info);
+    EndCallback(api, lease);
+    return result;
+}
+
+// The album view's play/resume path reports the length through a second
+// callback whose info argument is one pointer further away.
+std::uintptr_t __fastcall Duration2Detour(void* user, void** info) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kDuration2, api, lease, original)) return 0;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    std::uintptr_t inner{};
+    if (context != nullptr && info != nullptr &&
+        ReadValue(*context, reinterpret_cast<std::uintptr_t>(info), inner) && inner != 0) {
+        const float seconds = CurrentLibraryDuration(*context);
+        if (seconds > 0.0F) WriteDuration(reinterpret_cast<void*>(inner), seconds);
+    }
+    const std::uintptr_t result = CallDuration(original, user, info);
+    EndCallback(api, lease);
+    return result;
+}
+
+using ChangeSoundFn = void(__fastcall*)(void*, float);
+
+void CallChangeSound(const std::uintptr_t original, void* self, const float position) noexcept {
+    __try {
+        reinterpret_cast<ChangeSoundFn>(original)(self, position);
+    } __except (1) {
+    }
+}
+
+// The progress slider seeks through ChangePlayerMusicSound(position). For a
+// library song that would reload and repost the template event; seek the
+// engine instead. Callers that change song (position 0) are left alone.
+void __fastcall ChangeSoundDetour(void* self, const float position) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kChangeSound, api, lease, original)) return;
+    LogCaller("ChangePlayerMusicSound", _ReturnAddress(), CurrentSongId(self));
+    auto* const context = g_context.load(std::memory_order_acquire);
+    // Seek the engine whenever it owns playback, also when the game's current
+    // song id has drifted to a game song.
+    const bool seek = context != nullptr && position > 0.0F && position < 1.0F && TakenOver(*context, self) &&
+        context->engine.PlayingSlot().has_value();
+    if (seek) {
+        try {
+            context->engine.Seek(position);
+        } catch (...) {
+        }
+    } else {
+        CallChangeSound(original, self, position);
+    }
+    EndCallback(api, lease);
+}
+
+using EntryClickFn = std::uintptr_t(__fastcall*)(void*, const std::uint64_t*);
+
+std::uintptr_t CallEntryClick(const std::uintptr_t original, void* self, const std::uint64_t* id) noexcept {
+    __try {
+        return reinterpret_cast<EntryClickFn>(original)(self, id);
+    } __except (1) {
+        return 0;
+    }
+}
+
+// A song clicked in the album view. The game plays it only when it finds the
+// song among the panel's list entries, which it does not when the album has
+// fewer songs than the list shows at once. When a library song was clicked
+// and the game did not switch to it, switch the way a song end does: queue
+// it, make it current and post it (the post is taken over as usual).
+std::uintptr_t __fastcall EntryClickDetour(void* self, const std::uint64_t* id) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kEntryClick, api, lease, original)) return 0;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    void* const before_subsystem = context != nullptr ? CallSoundSubsystem(self) : nullptr;
+    const std::uint64_t before = CurrentSongId(before_subsystem);
+    const std::uintptr_t result = CallEntryClick(original, self, id);
+    std::uint64_t song{};
+    if (context != nullptr && id != nullptr &&
+        ReadValue(*context, reinterpret_cast<std::uintptr_t>(id), song)) {
+        // Diagnostic for the "needs two clicks" report: which song was clicked
+        // and whether the game itself switched to it.
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "album entry clicked: library " + std::string(IsLibrarySongId(*context, song) ? "yes" : "no") +
+                ", game switched " + (CurrentSongId(before_subsystem) == song && before != song ? "yes" : "no"));
+    }
+    song = 0;
+    if (context != nullptr && id != nullptr &&
+        ReadValue(*context, reinterpret_cast<std::uintptr_t>(id), song) && IsLibrarySongId(*context, song)) {
+        void* subsystem = CallSoundSubsystem(self);
+        if (subsystem == nullptr) subsystem = g_last_subsystem.load(std::memory_order_acquire);
+        const std::uintptr_t set_current = g_slots[kSetCurrent].original.load(std::memory_order_acquire);
+        const std::uintptr_t change = g_slots[kChangeSound].original.load(std::memory_order_acquire);
+        if (subsystem != nullptr && set_current != 0 && change != 0 && CurrentSongId(subsystem) != song) {
+            WithQueueIds(subsystem, song, [&] { CallSetCurrent(set_current, subsystem, song); });
+            CallSetCurrentId(subsystem, song);
+            CallChangeSound(change, subsystem, 0.0F);
+        }
+    }
+    EndCallback(api, lease);
+    return result;
+}
+
+using DetailCoverFn = char(__fastcall*)(void*, std::uint64_t);
+using PageCoverFn = std::uintptr_t(__fastcall*)(void*, void*);
+
+char CallDetailCover(const std::uintptr_t original, void* self, const std::uint64_t album) noexcept {
+    __try {
+        return reinterpret_cast<DetailCoverFn>(original)(self, album);
+    } __except (1) {
+        return 0;
+    }
+}
+
+std::uintptr_t CallPageCover(const std::uintptr_t original, void* self, void* item) noexcept {
+    __try {
+        return reinterpret_cast<PageCoverFn>(original)(self, item);
+    } __except (1) {
+        return 0;
+    }
+}
+
+void* ReadPointer(const Context& context, void* base, const std::uint32_t offset) noexcept {
+    std::uintptr_t value{};
+    if (base == nullptr || !ReadValue(context, reinterpret_cast<std::uintptr_t>(base) + offset, value)) {
+        return nullptr;
+    }
+    return reinterpret_cast<void*>(value);
+}
+
+// The album view's cover image.
+char __fastcall DetailCoverDetour(void* self, const std::uint64_t album) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kDetailCover, api, lease, original)) return 0;
+    g_detail_view.store(self, std::memory_order_release);
+    const char result = CallDetailCover(original, self, album);
+    auto* const context = g_context.load(std::memory_order_acquire);
+    if (context != nullptr) {
+        ApplyCover(*context, album, ReadPointer(*context, self, profile::kDetailCoverImageOffset));
+    }
+    EndCallback(api, lease);
+    return result;
+}
+
+// An album tile in the album list.
+std::uintptr_t __fastcall PageCoverDetour(void* self, void* item) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kPageCover, api, lease, original)) return 0;
+    const std::uintptr_t result = CallPageCover(original, self, item);
+    auto* const context = g_context.load(std::memory_order_acquire);
+    std::uint64_t album{};
+    if (context != nullptr && item != nullptr &&
+        ReadValue(*context, reinterpret_cast<std::uintptr_t>(item) + profile::kPageItemAlbumIdOffset, album)) {
+        ApplyCover(*context, album, ReadPointer(*context, self, profile::kPageCoverImageOffset));
+    }
+    EndCallback(api, lease);
+    return result;
+}
+
+using RowClickFn = std::uint8_t(__fastcall*)(void*);
+using ListClickFn = std::uint8_t(__fastcall*)(void*, void*);
+
+std::uint8_t CallRowClick(const std::uintptr_t original, void* self) noexcept {
+    __try {
+        return reinterpret_cast<RowClickFn>(original)(self);
+    } __except (1) {
+        return 0;
+    }
+}
+
+std::uint8_t CallListClick(const std::uintptr_t original, void* list, void* item) noexcept {
+    __try {
+        return reinterpret_cast<ListClickFn>(original)(list, item);
+    } __except (1) {
+        return 0;
+    }
+}
+
+// Diagnostic: a list row handling a click. Logs the row's click-related fields
+// (click method at +0x420, +0x38C, +0x4B8, +0x35E) and what the handler returned.
+std::uint8_t __fastcall RowClickDetour(void* self) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kRowClick, api, lease, original)) return 0;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    std::int32_t method{}, mode{};
+    std::uint8_t flag_4b8{}, flag_35e{};
+    if (context != nullptr && self != nullptr) {
+        const auto row = reinterpret_cast<std::uintptr_t>(self);
+        static_cast<void>(ReadValue(*context, row + 0x420, method));
+        static_cast<void>(ReadValue(*context, row + 0x38C, mode));
+        static_cast<void>(ReadValue(*context, row + 0x4B8, flag_4b8));
+        static_cast<void>(ReadValue(*context, row + 0x35E, flag_35e));
+    }
+    const std::uint8_t result = CallRowClick(original, self);
+    if (context != nullptr) {
+        char text[128]{};
+        std::snprintf(text, sizeof(text), "row click: method %d mode %d f4b8 %d f35e %d -> %d", method, mode,
+            static_cast<int>(flag_4b8), static_cast<int>(flag_35e), static_cast<int>(result));
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, text);
+    }
+    EndCallback(api, lease);
+    return result;
+}
+
+// Diagnostic: the list broadcasting that an item was clicked.
+std::uint8_t __fastcall ListClickDetour(void* list, void* item) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kListClick, api, lease, original)) return 0;
+    const std::uint8_t result = CallListClick(original, list, item);
+    auto* const context = g_context.load(std::memory_order_acquire);
+    if (context != nullptr) {
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "list click broadcast -> " + std::to_string(static_cast<int>(result)));
+    }
+    EndCallback(api, lease);
+    return result;
+}
+
+void CallSetCurrentIdOriginal(const std::uintptr_t original, void* self, const std::uint64_t* id) noexcept {
+    __try {
+        reinterpret_cast<void(__fastcall*)(void*, const std::uint64_t*)>(original)(self, id);
+    } __except (1) {
+    }
+}
+
+// Diagnostic: who makes a song current. Logs the game call site (as code bytes)
+// so the album view's real click handler can be found.
+void __fastcall SetCurrentIdDetour(void* self, const std::uint64_t* id) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kSetCurrentIdHook, api, lease, original)) return;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    std::uint64_t song{};
+    if (context != nullptr && id != nullptr && ReadValue(*context, reinterpret_cast<std::uintptr_t>(id), song) &&
+        song != CurrentSongId(self)) {
+        LogCaller("SetCurrentPlayerMusicListID", _ReturnAddress(), song);
+    }
+    CallSetCurrentIdOriginal(original, self, id);
+    EndCallback(api, lease);
+}
+
+using ItemSelectedFn = void(__fastcall*)(void*, void*);
+
+void CallItemSelected(const std::uintptr_t original, void* self, void* item) noexcept {
+    __try {
+        reinterpret_cast<ItemSelectedFn>(original)(self, item);
+    } __except (1) {
+    }
+}
+
+// Diagnostic only: logs each list-entry selection with the entry's song.
+void __fastcall ItemSelectedDetour(void* self, void* item) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kItemSelected, api, lease, original)) return;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    std::uint64_t song{};
+    if (context != nullptr && item != nullptr &&
+        ReadValue(*context, reinterpret_cast<std::uintptr_t>(item) + profile::kVehicleItemSongIdOffset, song)) {
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "list entry selected: library " + std::string(IsLibrarySongId(*context, song) ? "yes" : "no"));
+    }
+    CallItemSelected(original, self, item);
+    EndCallback(api, lease);
 }
 
 // The vehicle music panel builds its list from the owned array.
@@ -1568,6 +2050,30 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
             "hifi-vehicle-music-page-list", false},
         {profile::kMusicEndPattern, reinterpret_cast<void*>(&MusicEndDetour),
             "hifi-vehicle-music-music-end", false},
+        {profile::kPositionFractionPattern, reinterpret_cast<void*>(&PositionFractionDetour),
+            "hifi-vehicle-music-position-fraction", false},
+        {profile::kPositionSecondsPattern, reinterpret_cast<void*>(&PositionSecondsDetour),
+            "hifi-vehicle-music-position-seconds", false},
+        {profile::kDurationCallbackPattern, reinterpret_cast<void*>(&DurationDetour),
+            "hifi-vehicle-music-duration", false},
+        {profile::kChangeSoundPattern, reinterpret_cast<void*>(&ChangeSoundDetour),
+            "hifi-vehicle-music-change-sound", false},
+        {profile::kEntryClickPattern, reinterpret_cast<void*>(&EntryClickDetour),
+            "hifi-vehicle-music-entry-click", false},
+        {profile::kDetailCoverPattern, reinterpret_cast<void*>(&DetailCoverDetour),
+            "hifi-vehicle-music-detail-cover", false},
+        {profile::kPageCoverPattern, reinterpret_cast<void*>(&PageCoverDetour),
+            "hifi-vehicle-music-page-cover", false},
+        {profile::kItemSelectedPattern, reinterpret_cast<void*>(&ItemSelectedDetour),
+            "hifi-vehicle-music-item-selected", false},
+        {profile::kRowClickPattern, reinterpret_cast<void*>(&RowClickDetour),
+            "hifi-vehicle-music-row-click", false},
+        {profile::kListClickPattern, reinterpret_cast<void*>(&ListClickDetour),
+            "hifi-vehicle-music-list-click", false},
+        {profile::kSetCurrentIdPattern, reinterpret_cast<void*>(&SetCurrentIdDetour),
+            "hifi-vehicle-music-set-current-id", false},
+        {profile::kDurationCallback2Pattern, reinterpret_cast<void*>(&Duration2Detour),
+            "hifi-vehicle-music-duration-2", false},
     }};
 
     const auto resolve = [&context](const std::string_view pattern) {
@@ -1678,6 +2184,70 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
     return {HookState::Installed, {}};
 }
 
+// Diagnostic trace of UI events, to find what a single click in the album list
+// does. Names are resolved once per UFunction and cached; at most kTraceLines
+// lines are logged per session so the log is not flooded.
+constexpr std::uint32_t kTraceLines = 400;
+std::atomic<std::uint32_t> g_trace_lines{0};
+
+std::string ObjectName(const Context& context, const std::uintptr_t object) {
+    std::uint32_t id{};
+    if (object == 0 || !ReadValue(context, object + profile::kObjectNameOffset, id)) return {};
+    std::array<char, 256> buffer{};
+    std::size_t size = buffer.size();
+    if (context.names->resolve_utf8(context.names->user, id, buffer.data(), &size).code !=
+            ANOMALY_STATUS_V1_OK ||
+        size > buffer.size()) {
+        return {};
+    }
+    std::string name(buffer.data(), size);
+    while (!name.empty() && name.back() == '\0') name.pop_back();
+    return name;
+}
+
+bool TraceWorthy(const std::string& name) {
+    static constexpr std::array<std::string_view, 9> kKeep{
+        "Click", "Select", "Pressed", "Released", "Entry", "Album", "Music", "Item", "Focus"};
+    static constexpr std::array<std::string_view, 4> kDrop{"Tick", "Anim", "Hover", "Paint"};
+    for (const auto drop : kDrop) {
+        if (name.find(drop) != std::string::npos) return false;
+    }
+    for (const auto keep : kKeep) {
+        if (name.find(keep) != std::string::npos) return true;
+    }
+    return false;
+}
+
+void ANOMALY_CALL TraceEvent(void* user, const std::uintptr_t object, const std::uintptr_t function, void*) {
+    auto* const context = static_cast<Context*>(user);
+    if (context == nullptr || function == 0 || g_trace_lines.load(std::memory_order_relaxed) >= kTraceLines) {
+        return;
+    }
+    try {
+        // Game thread only (the service serializes callbacks), so no lock.
+        static std::unordered_map<std::uintptr_t, std::string> names;
+        auto found = names.find(function);
+        if (found == names.end()) {
+            std::string name = ObjectName(*context, function);
+            found = names.emplace(function, TraceWorthy(name) ? std::move(name) : std::string{}).first;
+        }
+        if (found->second.empty()) return;
+        std::uintptr_t object_class{};
+        static_cast<void>(ReadValue(*context, object + 0x10, object_class));
+        g_trace_lines.fetch_add(1, std::memory_order_relaxed);
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "ui event " + ObjectName(*context, object_class) + "::" + found->second);
+    } catch (...) {
+    }
+}
+
+void UnsubscribeTrace(Context& context) noexcept {
+    if (context.trace_subscription.id == 0 || context.process_event == nullptr) return;
+    const AnomalyGenerationHandleV1 handle = context.trace_subscription;
+    context.trace_subscription = {};
+    static_cast<void>(context.process_event->unsubscribe(context.process_event->user, handle));
+}
+
 // A successful unsubscribe drains a callback already in flight.
 void UnsubscribeSync(Context& context) noexcept {
     if (context.ahud_subscription.id == 0 || context.ahud == nullptr) return;
@@ -1714,6 +2284,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         context->ahud = host_view.Query<AnomalyUe5AhudServiceV1>(
             ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION).get();
         if (!AhudReady(context->ahud)) context->ahud = nullptr;
+        context->process_event = host_view.Query<AnomalyUe5ProcessEventServiceV1>(
+            ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION).get();
+        if (!ProcessEventReady(context->process_event)) context->process_event = nullptr;
         context->localizer = anomaly::plugins::Localizer(host);
         if (!CoreReady(context->core) || !ConfigReady(context->config) ||
             !SignatureReady(context->signature) || !HookReady(context->hook) ||
@@ -1745,6 +2318,18 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
         auto [state, detail] = InstallHooks(*context);
         if (state == HookState::Installed) {
             Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "music hooks installed");
+        {
+            // Diagnostic: where this build's ChangePlayerMusicSound lives, to
+            // calibrate the caller offsets logged by LogCaller.
+            const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(L"HTGame.exe"));
+            const std::uintptr_t target = context->hooks[kChangeSound].id != 0
+                ? g_slots[kChangeSound].original.load(std::memory_order_acquire)
+                : 0;
+            char text[96]{};
+            std::snprintf(text, sizeof(text), "module base 0x%llx, change-sound trampoline 0x%llx",
+                static_cast<unsigned long long>(base), static_cast<unsigned long long>(target));
+            Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, text);
+        }
         } else {
             Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 std::string(state == HookState::SignatureMissing ? "signature not found: "
@@ -1768,6 +2353,14 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
             Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 "current song sync unavailable; the game's title may lag behind the library song");
         }
+        if (context->process_event != nullptr) {
+            AnomalyGenerationHandleV1 handle{};
+            if (context->process_event->subscribe(context->process_event->user, TraceEvent, context, &handle)
+                        .code == ANOMALY_STATUS_V1_OK &&
+                handle.id != 0) {
+                context->trace_subscription = handle;
+            }
+        }
         std::scoped_lock lock(context->mutex);
         context->hook_state = state;
         context->hook_detail = std::move(detail);
@@ -1786,6 +2379,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
             if (context->stopped) return anomaly::sdk::Ok();
             context->stopped = true;
         }
+        UnsubscribeTrace(*context);
         UnsubscribeSync(*context);
         ReleaseHooks(*context);
         g_context.store(nullptr, std::memory_order_release);
@@ -1817,6 +2411,7 @@ void ANOMALY_CALL Unload(void* plugin_context) {
     auto* const context = static_cast<Context*>(plugin_context);
     if (context == nullptr) return;
     try {
+        UnsubscribeTrace(*context);
         UnsubscribeSync(*context);
         ReleaseHooks(*context);
         g_context.store(nullptr, std::memory_order_release);
