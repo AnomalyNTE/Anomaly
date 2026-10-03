@@ -20,6 +20,10 @@ anomaly_add_plugin(anomaly_pink_paw_heist_esp
     PACKAGE_NAME PinkPawHeistESP
     OUTPUT_DIRECTORY "${PINK_PAW_HEIST_ESP_PACKAGE_DIRECTORY}")
 
+# plugin.cpp includes shared headers as `plugins/common/...`, which resolves against
+# the owning Anomaly checkout when this directory is configured on its own.
+target_include_directories(anomaly_pink_paw_heist_esp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+
 target_compile_definitions(anomaly_pink_paw_heist_esp PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
