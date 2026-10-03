@@ -54,7 +54,7 @@ constexpr std::ptrdiff_t kGameInstanceLocalPlayersOffset = 56;
 constexpr std::ptrdiff_t kLocalPlayerControllerOffset = 48;
 constexpr std::ptrdiff_t kControllerPlayerStateOffset = 720;
 constexpr std::ptrdiff_t kActorRootComponentOffset = 456;
-// UE5-HT 1.4 exposes the RobBank interaction interface as a secondary base subobject: the
+// UE5-HT exposes the RobBank interaction interface as a secondary base subobject: the
 // subobject starts here, its first member is its own vtable pointer, and the pickup entry
 // still sits at byte offset 24 of that vtable. The subobject address is the interface
 // `this` pointer the entry expects.
@@ -77,16 +77,17 @@ constexpr std::uint32_t kObjectItemStride = 24;
 constexpr std::uint32_t kObjectPointerOffset = 0;
 constexpr std::uint32_t kObjectSerialOffset = 16;
 
+// AHTRobBankItemActor::CanInteract, replicated from the server. Only item actors carry
+// this field; container actors (AHTRobBankContainerActor) have none, so the flag is
+// consulted only for classes that derive from AHTRobBankItemActor.
 constexpr std::ptrdiff_t kRobBankCanInteractOffset = 0xC18;
 constexpr std::uint8_t kRobBankCanInteractMask = 1;
-constexpr std::ptrdiff_t kRobBankDelayInteractOffset = 0xC60;
-constexpr std::uint8_t kRobBankDelayInteractMask = 1;
 constexpr std::ptrdiff_t kRobBankPointUidOffset = 2976;
 constexpr std::ptrdiff_t kRobBankPointKeyDoorIdOffset = 196;
 constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3080;
 constexpr std::ptrdiff_t kRobBankCloneDataAssetItemOffset = 104;
-// AHTPlayerState::ClientRobBankKeyDoorDataArray in UE5-HT 1.4.
-constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 0x9AD0;
+// AHTPlayerState::ClientRobBankKeyDoorDataArray in UE5-HT 5.6.1.
+constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 0x9A90;
 constexpr std::int32_t kMaximumKeyDoors = 4096;
 
 constexpr std::ptrdiff_t kDataTableRowMapOffset = 48;
@@ -428,6 +429,7 @@ struct RobBankRuntime::Impl final {
     RobBankItemTables item_tables;
     std::unordered_set<std::uint64_t> unlocked_key_doors;
     std::unordered_map<std::uintptr_t, bool> rob_bank_classes;
+    std::unordered_map<std::uintptr_t, bool> rob_bank_item_classes;
     std::unordered_map<std::uintptr_t, bool> rob_bank_clone_data_asset_classes;
     bool key_door_context_available{};
     bool started{};
@@ -652,8 +654,21 @@ struct RobBankRuntime::Impl final {
             found != rob_bank_classes.end()) {
             return found->second;
         }
-        const bool matches = ClassIsOrDerivesFrom(class_object, "HTRobBankItemActor");
+        // 5.6.1 splits the former HTRobBankItemActor hierarchy into the siblings
+        // AHTRobBankItemActor and AHTRobBankContainerActor under AHTRobBankItemActorBase,
+        // so spawn classes of either flavor must resolve through the base class name.
+        const bool matches = ClassIsOrDerivesFrom(class_object, "HTRobBankItemActorBase");
         rob_bank_classes.emplace(class_object, matches);
+        return matches;
+    }
+
+    [[nodiscard]] bool HasCanInteract(const std::uintptr_t class_object) {
+        if (const auto found = rob_bank_item_classes.find(class_object);
+            found != rob_bank_item_classes.end()) {
+            return found->second;
+        }
+        const bool matches = ClassIsOrDerivesFrom(class_object, "HTRobBankItemActor");
+        rob_bank_item_classes.emplace(class_object, matches);
         return matches;
     }
 
@@ -801,6 +816,7 @@ struct RobBankRuntime::Impl final {
         item_tables = {};
         unlocked_key_doors.clear();
         rob_bank_classes.clear();
+        rob_bank_item_classes.clear();
         rob_bank_clone_data_asset_classes.clear();
         key_door_context_available = false;
     }
@@ -1223,25 +1239,27 @@ struct RobBankRuntime::Impl final {
 
     [[nodiscard]] bool EvaluatePickability(
         const std::uintptr_t actor,
+        const std::uintptr_t class_object,
         bool& blocked) {
         blocked = false;
         std::uintptr_t root_address{};
         std::uintptr_t root{};
-        bool delay_interact{};
-        bool can_interact{};
         if (!AddSignedAddress(actor, kActorRootComponentOffset, root_address) ||
-            !Read(root_address, root) ||
-            !ReadFlag(
-                actor, kRobBankDelayInteractOffset,
-                kRobBankDelayInteractMask, delay_interact) ||
-            !ReadFlag(
-                actor, kRobBankCanInteractOffset,
-                kRobBankCanInteractMask, can_interact)) {
+            !Read(root_address, root)) {
             return false;
         }
-        // Preserve the verified pre-update path. These two actor bytes are the new-layout
-        // equivalents of the previously validated CanInteract and DelayInteract fields.
-        blocked = root == 0 || !delay_interact || !can_interact;
+        blocked = root == 0;
+        if (!blocked && HasCanInteract(class_object)) {
+            bool can_interact{};
+            if (!ReadFlag(
+                    actor, kRobBankCanInteractOffset,
+                    kRobBankCanInteractMask, can_interact)) {
+                return false;
+            }
+            // The DelayInteract field of the 1.4 layout no longer exists; server
+            // replication of CanInteract is the remaining actor-local gate.
+            blocked = !can_interact;
+        }
         if (blocked) return true;
         if (!point_table.available || !key_door_context_available) return false;
 
@@ -1278,7 +1296,7 @@ struct RobBankRuntime::Impl final {
             }
             ResolveItemMetadata(actor, inspection);
             bool blocked{};
-            if (!EvaluatePickability(actor, blocked)) return inspection;
+            if (!EvaluatePickability(actor, class_object, blocked)) return inspection;
             inspection.pickability = blocked
                 ? RobBankPickability::blocked
                 : RobBankPickability::candidate;
@@ -1365,6 +1383,7 @@ void RobBankRuntime::Stop() noexcept {
     impl_->item_tables = {};
     impl_->unlocked_key_doors.clear();
     impl_->rob_bank_classes.clear();
+    impl_->rob_bank_item_classes.clear();
     impl_->rob_bank_clone_data_asset_classes.clear();
     impl_->key_door_context_available = false;
     impl_->started = false;
@@ -1389,6 +1408,7 @@ bool RobBankRuntime::Refresh() noexcept {
             impl_->point_table = {};
             impl_->item_tables = {};
             impl_->rob_bank_classes.clear();
+            impl_->rob_bank_item_classes.clear();
             impl_->rob_bank_clone_data_asset_classes.clear();
         }
         impl_->world = next_world;
@@ -1458,7 +1478,7 @@ AnomalyStatusV1 RobBankRuntime::Pickup(const RobBankEntity entity) noexcept {
                 "RobBank entity identity changed");
         }
         bool blocked{};
-        if (!impl_->EvaluatePickability(actor, blocked)) {
+        if (!impl_->EvaluatePickability(actor, class_object, blocked)) {
             return Status(
                 ANOMALY_STATUS_V1_UNAVAILABLE,
                 "RobBank pickability is unavailable");
