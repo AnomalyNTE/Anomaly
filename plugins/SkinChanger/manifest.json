@@ -5,7 +5,7 @@
   "description": "为不同角色分别选择眼部、头顶配饰和滑翔翼外观。",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -14,11 +14,12 @@
   "services": [
     {"id": "anomaly.core", "minVersion": 1},
     {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.window", "minVersion": 1, "optional": true},
     {"id": "anomaly.ue5.names", "minVersion": 1},
     {"id": "anomaly.ue5.objects", "minVersion": 1},
     {"id": "anomaly.ue5.framework", "minVersion": 1},
     {"id": "anomaly.interop.signature", "minVersion": 1},
     {"id": "anomaly.interop.hook", "minVersion": 1}
   ],
-  "capabilities": ["ui", "memory-read", "ue5-names", "ue5-objects", "game-events", "interop-signature", "interop-hook"]
+  "capabilities": ["ui", "ui-window", "memory-read", "ue5-names", "ue5-objects", "game-events", "interop-signature", "interop-hook"]
 }
