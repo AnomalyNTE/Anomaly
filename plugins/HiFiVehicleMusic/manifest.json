@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.builtin.hifi-vehicle-music",
+  "name": "HiFi Vehicle Music",
+  "description": "Replaces vehicle background music with local lossless files played through WASAPI exclusive, WASAPI shared, DirectSound or ASIO.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.config", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.interop.hook", "minVersion": 1},
+    {"id": "anomaly.scheduler", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1, "optional": true},
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.ue5.ahud", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "configuration", "interop-signature", "interop-hook", "memory-read", "scheduler", "ui",
+    "ue5-names", "ue5-ahud"
+  ]
+}
