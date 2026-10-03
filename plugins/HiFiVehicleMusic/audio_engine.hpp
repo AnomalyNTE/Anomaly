@@ -17,8 +17,18 @@ enum class Backend : std::uint32_t {
     Asio = 3,
 };
 
+// How DSF/DFF reach the DAC. Native (ASIO DSD mode) and DoP pass the
+// bitstream unchanged and need the ASIO backend; PCM (dsd2pcm) is the last
+// resort and the only way on the other backends.
+enum class DsdMode : std::uint32_t {
+    PcmOnly = 0,
+    NativeThenDop = 1,  // Native > DoP > PCM
+    DopThenNative = 2,  // DoP > Native > PCM
+};
+
 struct EngineSettings final {
     Backend backend{Backend::WasapiExclusive};
+    DsdMode dsd_mode{DsdMode::NativeThenDop};
     std::string device;          // UTF-8 device name; empty selects the default device
     std::uint32_t buffer_ms{20};
     float volume{1.0F};
@@ -104,6 +114,8 @@ public:
     [[nodiscard]] std::vector<std::wstring> Titles() const;
     // cover/folder/front/album .png|.jpg|.jpeg|.bmp in the library root, or empty.
     [[nodiscard]] std::wstring Cover() const;
+    // Name of the scanned library folder (its last path component), or empty.
+    [[nodiscard]] std::wstring LibraryName() const;
     [[nodiscard]] std::uint64_t LibraryGeneration() const noexcept;
 
     struct Impl;

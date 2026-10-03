@@ -6,6 +6,11 @@
 #include "miniaudio.h"
 #include "RtAudio.h"
 
+#include "plugins/HiFiVehicleMusic/ape_decoder.hpp"
+#include "plugins/HiFiVehicleMusic/dsd_asio_output.hpp"
+#include "plugins/HiFiVehicleMusic/dsd_pcm_decoder.hpp"
+#include "plugins/HiFiVehicleMusic/dsd_reader.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -39,8 +44,12 @@ std::string Utf8(const std::wstring_view value) {
 bool IsTrackExtension(std::wstring extension) {
     std::transform(extension.begin(), extension.end(), extension.begin(),
         [](const wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-    return extension == L".flac" || extension == L".wav" || extension == L".mp3";
+    return extension == L".flac" || extension == L".wav" || extension == L".mp3" || extension == L".ape" ||
+        extension == L".dsf" || extension == L".dff";
 }
+
+// Idle DSD pattern (01101001, MSB first) for paused and padded output.
+constexpr std::uint8_t kDsdSilence = 0x69;
 
 std::wstring Lower(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -102,6 +111,7 @@ struct AudioEngine::Impl final {
     bool output_failed{};
     std::vector<std::wstring> titles;           // playlist stems, playlist order
     std::wstring cover;                         // album art in the library root
+    std::wstring library_name;                  // the library folder's own name
     std::vector<float> durations;               // seconds per playlist song, 0 = unknown
     std::atomic<std::uint64_t> library_generation{0};
     std::optional<std::size_t> playing_slot;    // album song now playing
@@ -121,6 +131,9 @@ struct AudioEngine::Impl final {
     // when it cannot get the decoder immediately.
     std::mutex audio_mutex;
     ma_decoder* decoder{};
+    // A DSF/DFF song instead of `decoder`: its bitstream goes to the ASIO
+    // driver in DSD mode; frames are bytes per channel (8 DSD samples).
+    std::unique_ptr<DsdReader> dsd;
     std::atomic<float> volume{1.0F};
     std::atomic<bool> paused{};
     // Current decoder: frames played since its start, its length and rate.
@@ -137,6 +150,21 @@ struct AudioEngine::Impl final {
     std::unique_ptr<RtAudio> asio;
     unsigned int asio_channels{};
     unsigned int asio_rate{};
+    // Native DSD output; shares the ASIO driver slot with `asio`, so the two
+    // are never open at the same time.
+    DsdAsioOutput dsd_output;
+    // DoP fallback on the RtAudio stream when the driver has no native DSD
+    // mode. The scratch buffer and marker belong to the realtime callback
+    // while the stream runs.
+    bool asio_dop{};
+    bool dop_marker{};
+    // Worker-owned: the driver refused ASIO DSD mode (reset when the output
+    // changes), and why the current DSD song is not native.
+    bool native_refused{};
+    std::string dsd_fallback;
+    std::vector<std::uint8_t> dop_scratch;
+
+    [[nodiscard]] bool Loaded() const noexcept { return decoder != nullptr || dsd != nullptr; }
 
     void Post(Command command) {
         {
@@ -203,12 +231,14 @@ struct AudioEngine::Impl final {
             const bool folder_changed = command.settings.folder != settings.folder;
             const bool output_changed = command.settings.backend != settings.backend ||
                 command.settings.device != settings.device ||
-                command.settings.buffer_ms != settings.buffer_ms || !context && !asio;
+                command.settings.buffer_ms != settings.buffer_ms ||
+                command.settings.dsd_mode != settings.dsd_mode || !context && !asio;
             settings = command.settings;
             volume.store(settings.volume, std::memory_order_relaxed);
             if (output_changed) {
                 CloseOutput();
                 ReleaseDecoder();
+                native_refused = false;
                 CloseContext();
                 OpenContext();
                 {
@@ -231,7 +261,7 @@ struct AudioEngine::Impl final {
         case Command::Kind::Stop:
             // The game may stop its music right before posting the next
             // track; a playlist song only stops if no Play follows quickly.
-            if (playlist_mode && decoder != nullptr) {
+            if (playlist_mode && Loaded()) {
                 if (!stop_deadline) stop_deadline = std::chrono::steady_clock::now() + kStopGrace;
             } else {
                 StopOutput();
@@ -242,14 +272,14 @@ struct AudioEngine::Impl final {
             break;
         case Command::Kind::Previous:
             // cursor already points past the current song.
-            if (decoder != nullptr && playlist_mode && !playlist.empty()) {
+            if (Loaded() && playlist_mode && !playlist.empty()) {
                 stop_deadline.reset();
                 cursor = (cursor % playlist.size() + playlist.size() * 2 - 2) % playlist.size();
                 PlayNext();
             }
             break;
         case Command::Kind::Next:
-            if (decoder != nullptr) {
+            if (Loaded()) {
                 stop_deadline.reset();
                 PlayNext();
             }
@@ -263,11 +293,15 @@ struct AudioEngine::Impl final {
         case Command::Kind::Seek: {
             std::scoped_lock lock(audio_mutex);
             const std::uint64_t length = length_frames.load(std::memory_order_relaxed);
-            if (decoder != nullptr && length > 0) {
+            if (Loaded() && length > 0) {
                 const float fraction = std::clamp(command.position, 0.0F, 1.0F);
                 const auto frame = std::min<std::uint64_t>(
                     static_cast<std::uint64_t>(static_cast<double>(length) * fraction), length - 1);
-                if (ma_decoder_seek_to_pcm_frame(decoder, frame) == MA_SUCCESS) {
+                if (dsd) {
+                    dsd->Seek(frame);
+                    position_frames.store(frame, std::memory_order_relaxed);
+                    track_ended.store(false, std::memory_order_relaxed);
+                } else if (ma_decoder_seek_to_pcm_frame(decoder, frame) == MA_SUCCESS) {
                     position_frames.store(frame, std::memory_order_relaxed);
                     track_ended.store(false, std::memory_order_relaxed);
                 }
@@ -318,7 +352,11 @@ struct AudioEngine::Impl final {
             stems.push_back(std::filesystem::path(path).stem().wstring());
             // The game asks for a song's length before it plays.
             float seconds{};
-            if (auto probe = OpenDecoder(path, 0, 0)) {
+            if (IsDsdPath(path)) {
+                if (const auto probe = DsdReader::Open(path)) {
+                    seconds = static_cast<float>(static_cast<double>(probe->Frames()) * 8 / probe->Rate());
+                }
+            } else if (auto probe = OpenDecoder(path, 0, 0)) {
                 ma_uint64 frames{};
                 ma_uint32 rate{};
                 ma_decoder_get_data_format(probe.get(), nullptr, nullptr, &rate, nullptr, 0);
@@ -336,6 +374,10 @@ struct AudioEngine::Impl final {
         titles = std::move(stems);
         durations = std::move(lengths);
         cover = std::move(art);
+        // "D:\Music\Jay" and "D:\Music\Jay\" both give "Jay"; a drive root keeps its "D:\".
+        std::filesystem::path folder = std::filesystem::path(settings.folder);
+        if (!folder.has_filename()) folder = folder.parent_path();
+        library_name = folder.has_filename() ? folder.filename().wstring() : folder.wstring();
         tracks = std::move(found);
         snapshot.track_count = titles.size();
         library_generation.fetch_add(1, std::memory_order_acq_rel);
@@ -379,6 +421,8 @@ struct AudioEngine::Impl final {
 
     void EnumerateDevices() {
         std::vector<std::string> names;
+        // RtAudio would reload drivers into the slot the DSD output holds.
+        if (dsd_output.IsOpen()) return;
         if (asio) {
             for (const unsigned int id : asio->getDeviceIds()) {
                 const RtAudio::DeviceInfo info = asio->getDeviceInfo(id);
@@ -401,15 +445,19 @@ struct AudioEngine::Impl final {
             device.reset();
         }
         if (asio && asio->isStreamOpen()) asio->closeStream();
+        dsd_output.Close();
         device_channels = device_rate = 0;
         asio_channels = asio_rate = 0;
+        asio_dop = false;
     }
 
     void ReleaseDecoder() {
         ma_decoder* old{};
+        std::unique_ptr<DsdReader> old_dsd;
         {
             std::scoped_lock lock(audio_mutex);
             old = std::exchange(decoder, nullptr);
+            old_dsd = std::move(dsd);
             position_frames.store(0, std::memory_order_relaxed);
             length_frames.store(0, std::memory_order_relaxed);
             decoder_rate.store(0, std::memory_order_relaxed);
@@ -448,6 +496,31 @@ struct AudioEngine::Impl final {
         }
     }
 
+    // Native DSD: the file's bytes unchanged. Volume cannot apply to a 1-bit
+    // stream; pause and gaps send the idle pattern.
+    void RenderDsd(std::uint8_t* output, const std::size_t frames) noexcept {
+        const unsigned channels = dsd_output.Channels();
+        std::fill_n(output, frames * channels, kDsdSilence);
+        if (paused.load(std::memory_order_relaxed)) return;
+        std::unique_lock lock(audio_mutex, std::try_to_lock);
+        if (!lock.owns_lock() || dsd == nullptr || dsd->Channels() != channels) return;
+        std::size_t read{};
+        try {
+            read = dsd->Read(output, frames);
+        } catch (...) {
+            read = 0;
+        }
+        position_frames.fetch_add(read, std::memory_order_relaxed);
+        if (read < frames) {
+            std::fill(output + read * channels, output + frames * channels, kDsdSilence);
+            track_ended.store(true, std::memory_order_relaxed);
+        }
+    }
+
+    static void DsdCallback(void* user, std::uint8_t* output, const std::size_t frames) {
+        static_cast<Impl*>(user)->RenderDsd(output, frames);
+    }
+
     static void MiniaudioCallback(ma_device* device, void* output, const void*, ma_uint32 frames) {
         auto* const self = static_cast<Impl*>(device->pUserData);
         self->Render(static_cast<float*>(output), frames, device->playback.channels);
@@ -459,12 +532,60 @@ struct AudioEngine::Impl final {
         return 0;
     }
 
+    // DoP (DSD over PCM, v1.1): every PCM frame carries 16 DSD samples per
+    // channel as marker | older byte | newer byte in the top 24 bits, the
+    // marker alternating 0x05 / 0xFA. The DAC detects the markers and decodes
+    // the bits as DSD; nothing is converted. Pauses keep the markers running
+    // with idle DSD so the DAC stays in DSD mode.
+    void RenderDop(std::int32_t* output, const std::size_t frames) noexcept {
+        const unsigned channels = asio_channels;
+        const std::size_t bytes = frames * 2 * channels;
+        if (bytes > dop_scratch.size()) {
+            std::fill_n(output, frames * channels, 0);
+            return;
+        }
+        std::uint8_t* const dsd_bytes = dop_scratch.data();
+        std::fill_n(dsd_bytes, bytes, kDsdSilence);
+        if (!paused.load(std::memory_order_relaxed)) {
+            std::unique_lock lock(audio_mutex, std::try_to_lock);
+            if (lock.owns_lock() && dsd != nullptr && dsd->Channels() == channels) {
+                std::size_t read{};
+                try {
+                    read = dsd->Read(dsd_bytes, frames * 2);
+                } catch (...) {
+                    read = 0;
+                }
+                position_frames.fetch_add(read, std::memory_order_relaxed);
+                if (read < frames * 2) track_ended.store(true, std::memory_order_relaxed);
+            }
+        }
+        for (std::size_t f = 0; f < frames; ++f) {
+            const std::uint32_t marker = dop_marker ? 0xFAU : 0x05U;
+            dop_marker = !dop_marker;
+            for (unsigned c = 0; c < channels; ++c) {
+                const std::uint32_t older = dsd_bytes[(2 * f) * channels + c];
+                const std::uint32_t newer = dsd_bytes[(2 * f + 1) * channels + c];
+                output[f * channels + c] = static_cast<std::int32_t>(marker << 24 | older << 16 | newer << 8);
+            }
+        }
+    }
+
+    static int AsioDopCallback(void* output, void*, unsigned int frames, double, RtAudioStreamStatus, void* user) {
+        static_cast<Impl*>(user)->RenderDop(static_cast<std::int32_t*>(output), frames);
+        return 0;
+    }
+
     // ---- playback ---------------------------------------------------------
 
     std::unique_ptr<ma_decoder> OpenDecoder(
         const std::wstring& path, const ma_uint32 channels, const ma_uint32 rate) {
         auto result = std::make_unique<ma_decoder>();
-        const ma_decoder_config config = ma_decoder_config_init(ma_format_f32, channels, rate);
+        ma_decoder_config config = ma_decoder_config_init(ma_format_f32, channels, rate);
+        // APE goes through the Monkey's Audio SDK; other files skip it.
+        // DSF/DFF as PCM through dsd2pcm, used only when the bitstream cannot pass.
+        ma_decoding_backend_vtable* custom[] = {ApeBackend(), DsdPcmBackend()};
+        config.ppCustomBackendVTables = custom;
+        config.customBackendCount = 2;
         if (ma_decoder_init_file_w(path.c_str(), &config, result.get()) != MA_SUCCESS) return {};
         return result;
     }
@@ -519,8 +640,12 @@ struct AudioEngine::Impl final {
         return std::nullopt;
     }
 
-    bool EnsureAsioStream(const ma_uint32 file_channels, const ma_uint32 file_rate) {
+    // `dop`: a DoP carrier, which only works at exactly `file_rate` with every
+    // channel and integer samples.
+    bool EnsureAsioStream(const ma_uint32 file_channels, const ma_uint32 file_rate, const bool dop = false) {
         if (!asio) return false;
+        // Probing loads drivers into the slot the DSD output holds.
+        dsd_output.Close();
         const auto selected = AsioDevice();
         if (!selected) return false;
         const RtAudio::DeviceInfo& info = selected->second;
@@ -528,10 +653,31 @@ struct AudioEngine::Impl final {
         // Prefer the file rate so the driver receives the samples unchanged.
         const bool native = std::find(info.sampleRates.begin(), info.sampleRates.end(), file_rate) !=
             info.sampleRates.end();
+        if (dop && (!native || channels != file_channels)) return false;
         const unsigned int rate = native ? file_rate
             : info.preferredSampleRate != 0 ? info.preferredSampleRate : info.currentSampleRate;
-        if (asio->isStreamOpen() && asio_channels == channels && asio_rate == rate) return true;
+        if (asio->isStreamOpen() && asio_channels == channels && asio_rate == rate && asio_dop == dop) return true;
         CloseOutput();
+        if (dop) {
+            RtAudio::StreamParameters parameters;
+            parameters.deviceId = selected->first;
+            parameters.nChannels = channels;
+            unsigned int frames = (std::max)(16U, rate * settings.buffer_ms / 1000U);
+            RtAudio::StreamOptions options;
+            options.flags = RTAUDIO_SCHEDULE_REALTIME;
+            asio_channels = channels;
+            asio_rate = rate;
+            dop_marker = false;
+            if (asio->openStream(&parameters, nullptr, RTAUDIO_SINT32, rate, &frames,
+                    &Impl::AsioDopCallback, this, &options) != RTAUDIO_NO_ERROR) {
+                asio_channels = asio_rate = 0;
+                return false;
+            }
+            // Sized for the buffer the driver granted; the stream is not running yet.
+            dop_scratch.assign(static_cast<std::size_t>(frames) * 2 * channels, kDsdSilence);
+            asio_dop = true;
+            return true;
+        }
 
         RtAudio::StreamParameters parameters;
         parameters.deviceId = selected->first;
@@ -568,7 +714,7 @@ struct AudioEngine::Impl final {
             // quickly) keeps it playing.
             // After the engine moved on by itself the game still names the song
             // it last asked for; that re-post must not restart it either.
-            if (playlist_mode && decoder != nullptr &&
+            if (playlist_mode && Loaded() &&
                 (current_slot == index || requested_slot == index)) {
                 // The game's progress slider re-posts the current song with
                 // the dragged position.
@@ -588,7 +734,7 @@ struct AudioEngine::Impl final {
         if (path.empty()) {
             // The playlist replaces the game's radio: a station or track change
             // in the game keeps the current song playing.
-            if (playlist_mode && decoder != nullptr) {
+            if (playlist_mode && Loaded()) {
                 paused.store(false, std::memory_order_relaxed);
                 return;
             }
@@ -632,9 +778,108 @@ struct AudioEngine::Impl final {
         }
     }
 
-    // Returns false only when the file cannot be decoded; output failures are
-    // terminal for this play request.
+    bool OpenNativeDsd(const unsigned channels, const unsigned rate) {
+        if (native_refused) return false;
+        std::string driver = settings.device;
+        // Closed first: RtAudio's device probe reuses the driver slot.
+        CloseOutput();
+        if (driver.empty()) {
+            if (const auto selected = AsioDevice()) driver = selected->second.name;
+        }
+        {
+            // The driver thread may already call back during Open.
+            std::scoped_lock lock(audio_mutex);
+            dsd.reset();
+        }
+        std::string error;
+        if (!driver.empty() && dsd_output.Open(driver, channels, rate, &Impl::DsdCallback, this, error)) return true;
+        // A driver without DSD mode refuses it for every song; don't reload
+        // it each time. A rejected rate may still work for other songs.
+        if (error.rfind("native ASIO DSD refused", 0) == 0) native_refused = true;
+        dsd_fallback = error.empty() ? "native DSD: no ASIO driver" : error;
+        return false;
+    }
+
+    bool OpenDop(const unsigned channels, const unsigned rate) {
+        {
+            std::scoped_lock lock(audio_mutex);
+            dsd.reset();
+        }
+        if (EnsureAsioStream(channels, rate / 16, true)) return true;
+        dsd_fallback = "DoP: device has no " + std::to_string(rate / 16) + " Hz PCM";
+        return false;
+    }
+
+    // DSF/DFF as an unchanged bitstream over ASIO, native DSD mode or DoP
+    // (DSD over PCM) in the configured order. Empty when neither reaches the
+    // DAC; the caller then converts to PCM. False when the file is unreadable.
+    std::optional<bool> PlayDsdBitstream(const std::wstring& path, const float position) {
+        auto next = DsdReader::Open(path);
+        if (!next) return std::nullopt;  // the PCM path reports the decode failure
+        const unsigned channels = next->Channels();
+        const unsigned rate = next->Rate();
+        const unsigned dop_rate = rate / 16;
+        const bool native_ready = dsd_output.IsOpen() && dsd_output.Channels() == channels &&
+            dsd_output.Rate() == rate;
+        const bool dop_ready = asio_dop && asio->isStreamOpen() && asio_channels == channels &&
+            asio_rate == dop_rate;
+        if (!native_ready && !dop_ready) {
+            dsd_fallback.clear();
+            const bool opened = settings.dsd_mode == DsdMode::DopThenNative
+                ? OpenDop(channels, rate) || OpenNativeDsd(channels, rate)
+                : OpenNativeDsd(channels, rate) || OpenDop(channels, rate);
+            if (!opened) return std::nullopt;
+        }
+        const bool via_dop = asio_dop;
+        const std::uint64_t length = next->Frames();
+        std::uint64_t start{};
+        if (position > 0.0F && position < 1.0F) {
+            start = static_cast<std::uint64_t>(static_cast<double>(length) * position);
+            next->Seek(start);
+        }
+        ma_decoder* old{};
+        {
+            std::scoped_lock lock(audio_mutex);
+            old = std::exchange(decoder, nullptr);
+            dsd = std::move(next);
+            position_frames.store(start, std::memory_order_relaxed);
+            length_frames.store(length, std::memory_order_relaxed);
+            decoder_rate.store(rate / 8, std::memory_order_relaxed);  // frames are bytes
+            track_ended.store(false, std::memory_order_relaxed);
+        }
+        if (old != nullptr) {
+            ma_decoder_uninit(old);
+            delete old;
+        }
+        paused.store(false, std::memory_order_relaxed);
+        if (via_dop && !asio->isStreamRunning() && asio->startStream() != RTAUDIO_NO_ERROR) {
+            FailOutput(EngineStatus::StartFailed);
+            return true;
+        }
+        std::scoped_lock lock(state_mutex);
+        snapshot.playing = true;
+        snapshot.track = Utf8(std::filesystem::path(path).filename().wstring());
+        snapshot.output = via_dop
+            ? "ASIO DoP DSD" + std::to_string(rate / 44100) + " (" + std::to_string(dop_rate) + " Hz carrier), " +
+                std::to_string(channels) + " ch"
+            : "ASIO native DSD" + std::to_string(rate / 44100) + " (" + std::to_string(rate) + " Hz, " +
+                (dsd_output.LsbFirst() ? "LSB" : "MSB") + " first), " + std::to_string(channels) + " ch";
+        snapshot.resampled = false;
+        snapshot.status = EngineStatus::Playing;
+        snapshot.detail.clear();
+        return true;
+    }
+
     bool PlayFile(const std::wstring& path, const float position, const bool loop) {
+        const bool dsd_file = IsDsdPath(path);
+        if (dsd_file) {
+            if (settings.dsd_mode != DsdMode::PcmOnly && settings.backend == Backend::Asio && asio) {
+                if (const auto played = PlayDsdBitstream(path, position)) return *played;
+            } else {
+                dsd_fallback.clear();
+            }
+        }
+        // DSF/DFF reaching here are converted by dsd2pcm (DsdPcmBackend).
         auto next = OpenDecoder(path, 0, 0);
         if (!next) {
             SetStatus(EngineStatus::DecodeFailed, Utf8(path));
@@ -673,6 +918,10 @@ struct AudioEngine::Impl final {
                 ", " + std::to_string(playback.internalChannels) + " ch";
             resampled = playback.internalSampleRate != rate;
         }
+        if (dsd_file) {
+            output = "DSD -> PCM (dsd2pcm), " + output;
+            if (!dsd_fallback.empty()) output += "; " + dsd_fallback;
+        }
 
         // The game seeks Wwise with a percentage; map it onto the file length.
         ma_data_source_set_looping(next.get(), loop ? MA_TRUE : MA_FALSE);
@@ -693,6 +942,7 @@ struct AudioEngine::Impl final {
             length_frames.store(length, std::memory_order_relaxed);
             decoder_rate.store(decoded_rate, std::memory_order_relaxed);
             old = std::exchange(decoder, next.release());
+            dsd.reset();
             // Cleared under the lock so the previous track cannot re-raise it.
             track_ended.store(false, std::memory_order_relaxed);
         }
@@ -816,6 +1066,11 @@ std::vector<std::wstring> AudioEngine::Titles() const {
 std::wstring AudioEngine::Cover() const {
     std::scoped_lock lock(impl_->state_mutex);
     return impl_->cover;
+}
+
+std::wstring AudioEngine::LibraryName() const {
+    std::scoped_lock lock(impl_->state_mutex);
+    return impl_->library_name;
 }
 
 std::uint64_t AudioEngine::LibraryGeneration() const noexcept {

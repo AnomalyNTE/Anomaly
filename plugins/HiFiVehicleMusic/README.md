@@ -18,13 +18,13 @@
    排除 NPC/AIController）则立即停止引擎。原因：接管时跳过了原始 Post，PlayingID 为 0，
    游戏自己的下车停止路径都按 PlayingID 判断而被跳过，所以必须用下车动作本身作信号。
    `SetMusicPlayerType` 切到非载具、非载具事件的 Post 同样立即停止，不走宽限期。
-4. 曲库：`musicFolder` 目录（含子目录）下所有 `.flac|.wav|.mp3`，文件名无需修改，按路径排序
+4. 曲库：`musicFolder` 目录（含子目录）下所有 `.flac|.wav|.mp3|.ape|.dsf|.dff`，文件名无需修改，按路径排序
    组成歌单，替代游戏电台：首个载具音乐事件开始播放，之后游戏切歌/切台不打断当前歌曲，
    只有歌曲播完（自动接下一首，末尾循环）或点「下一首」才切换。游戏 Stop 后 1.5 s 内没有新的
    载具 Post 才真正停止并释放设备；本地玩家下车（`EndGetOffVehicle`）立即停止。可选：若存在与事件名同名
    的文件（如 `Play_Music_Radio_Progressive_Metal_001.flac`），该事件固定播放它并单曲循环、
    跟随游戏 seek。目录扫描在引擎线程完成，Hook 与 Draw 只读取内存快照，不做文件 I/O。
-5. 游戏内专辑「HiFi 曲库」：曲库有几首，专辑里就有几首（追加在游戏歌曲之后，不替换、不隐藏游戏歌曲）。
+5. 游戏内专辑（名称为曲库文件夹名，如 `D:\Music\周杰伦` → 「周杰伦」；换文件夹后重建专辑行）：曲库有几首，专辑里就有几首（追加在游戏歌曲之后，不替换、不隐藏游戏歌曲）。
    - 合成行：音乐表 `ForeachRow` 遍历时记下第一行作模板，按曲库标题复制出 `FPlayerMusicData` 行
      （标题用游戏自己的 `FText::FromString`，`AlbumID` 指向新专辑，排序在所有游戏条目之后）；
      专辑行复制模板歌曲所属专辑的 `FMusicAlbumData`。行名 FName = 真实行的 ComparisonIndex +
@@ -46,7 +46,22 @@
 | 库 | 用途 | 许可证 |
 | --- | --- | --- |
 | [miniaudio](https://github.com/mackron/miniaudio) 0.11.25 | 解码（FLAC/WAV/MP3）、WASAPI 独占/共享、DirectSound | MIT-0 / Public Domain |
-| [RtAudio](https://github.com/thestk/rtaudio) 6.0.1 | ASIO 输出（只启用 ASIO API） | MIT（内含 Steinberg ASIO 宿主代码） |
+| [RtAudio](https://github.com/thestk/rtaudio) 6.0.1 | ASIO 输出（只启用 ASIO API）；其 Steinberg ASIO 宿主代码也用于原生 DSD 输出 | MIT（内含 Steinberg ASIO 宿主代码） |
+| [Monkey's Audio SDK](https://monkeysaudio.com/developers.html) 13.27 | APE 解码（作为 miniaudio 自定义解码后端） | BSD-3-Clause |
+| [dsd2pcm](https://github.com/GiangLH/dsd2pcm)（Sebastian Gesemann） | DSD 无法直通时转 PCM（8:1 抽取，DSD64 → 352.8 kHz） | BSD-2-Clause |
+
+DSD 输出方式（设置 `dsdMode`，界面「DSD 输出」）：`pcm` 仅 PCM / `native-dop-pcm` Native > DoP > PCM（默认）/
+`dop-native-pcm` DoP > Native > PCM。Native 与 DoP 只在 `asio` 后端尝试，失败的原因会附在输出说明里；
+驱动拒绝 ASIO DSD 模式后，在换后端/设备/模式前不再重复尝试。其余后端直接走 PCM。
+
+DSF / DFF 为原生 DSD 直通，不转 PCM：插件自己解析文件（DSF 按声道块存放、LSB 在前；DFF 按字节交错、
+MSB 在前；不支持 DST 压缩的 DFF），用 `ASIOFuture(kAsioSetIoFormat, kASIODSDFormat)` 把驱动切到 DSD 模式，
+采样率设为 DSD 速率（DSD64 = 2822400 Hz），按驱动报告的 `ASIOSTDSDInt8LSB1/MSB1` 位序原样写入比特流。
+只在 `asio` 后端可用。驱动拒绝 ASIO 原生 DSD 模式时（如 xDuoo 驱动，返回码会显示在状态里），回退到 DoP
+（DSD over PCM v1.1）：同一个 ASIO 设备以 DSD 速率的 1/16 开 32 位整数流（DSD64 → 176400 Hz），每帧每声道
+高 24 位放 `0x05/0xFA` 交替标记 + 两个 DSD 字节，DAC 识别标记后按 DSD 解码，比特流同样不经任何转换。
+两种都不行时跳过这首并显示原因。DSD 流不能做数字音量，音量设置对其无效；
+暂停和曲尾填 DSD 静音码 `0x69`。
 
 WASAPI 独占模式按文件原生采样率打开设备，设备不支持时由 miniaudio 回退到设备原生格式并重采样。
 
@@ -152,6 +167,14 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
 - [x] 专辑封面：不再改专辑行；Hook 专辑详情页（`+0xF98`）和专辑列表条目（`+0x658`）的封面设置，
   原函数设完后，若是 HiFi 专辑就对 UImage 调 `SetBrushFromTexture`（vtable `+0x320`）换成导入的纹理
   （首次显示时导入并 RootSet）。没有图片或导入失败保留模板封面；构建通过，待实测
+- [x] 实测：暂停、歌名与进度一致、拖动正常；7 首门槛按用户要求暂缓
+- [x] 新格式：APE（Monkey's Audio SDK，走原有 PCM 路径，所有后端可用）；DSF/DFF 原生 DSD 直通
+  （仅 ASIO，驱动切 DSD 模式，不转 PCM），时长、进度、拖动同样生效；构建通过，待实测
+- [x] 实测：xDuoo ASIO 驱动拒绝 `kAsioSetIoFormat`。加 DoP 回退（同样是原生 DSD 比特流，DAC 显示 DSD），
+  状态里显示驱动返回码；构建通过，待实测
+- [x] 实测：xDuoo 只能 DoP。加 DSD 输出选项（仿 QQ 音乐）：仅 PCM / Native > DoP > PCM / DoP > Native > PCM，
+  逐级回退，最后一级用 dsd2pcm 转 PCM；实测正常
+- [x] 专辑名改为曲库文件夹名；窗口去掉设备说明和「最近事件」两行；构建通过，待实测
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
   专辑沿用模板封面；导入代码保留未调用
