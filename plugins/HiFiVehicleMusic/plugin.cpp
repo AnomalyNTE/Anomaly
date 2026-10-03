@@ -35,6 +35,7 @@ namespace {
 namespace profile = hifi_vehicle_music_profile;
 using hifi_vehicle_music::AudioEngine;
 using hifi_vehicle_music::Backend;
+using hifi_vehicle_music::DsdMode;
 using hifi_vehicle_music::EngineSettings;
 using hifi_vehicle_music::EngineStatus;
 
@@ -50,6 +51,7 @@ constexpr std::string_view kSettingsSchema = R"json(
     "enabled":{"type":"boolean"},
     "backend":{"enum":["wasapi-exclusive","wasapi-shared","directsound","asio"]},
     "device":{"type":"string","maxLength":512},
+    "dsdMode":{"enum":["pcm","native-dop-pcm","dop-native-pcm"]},
     "bufferMs":{"type":"integer","minimum":2,"maximum":500},
     "volume":{"type":"number","minimum":0,"maximum":1},
     "musicFolder":{"type":"string","maxLength":4096}
@@ -68,6 +70,16 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 4> kBackendL
     {"backend.wasapi_shared", "WASAPI shared"},
     {"backend.directsound", "DirectSound"},
     {"backend.asio", "ASIO"},
+}};
+constexpr std::array<std::pair<DsdMode, std::string_view>, 3> kDsdModeKeys{{
+    {DsdMode::PcmOnly, "pcm"},
+    {DsdMode::NativeThenDop, "native-dop-pcm"},
+    {DsdMode::DopThenNative, "dop-native-pcm"},
+}};
+constexpr std::array<std::pair<std::string_view, std::string_view>, 3> kDsdModeLabels{{
+    {"dsd.pcm", "PCM only"},
+    {"dsd.native_dop_pcm", "Native > DoP > PCM"},
+    {"dsd.dop_native_pcm", "DoP > Native > PCM"},
 }};
 
 // Hooks before kCoreHookCount are required for the takeover; the album hooks
@@ -135,6 +147,7 @@ struct AlbumState final {
     // Rows are never freed: the game keeps row pointers in its UI objects.
     std::vector<std::byte*> songs;
     std::byte* album{};
+    std::wstring album_name;  // name written into `album`: the library folder's
     // Every listed game song (IsList set, IsHidden clear); owned while the game
     // reads the owned ids, so locked game songs show as unlocked too.
     std::vector<std::uint64_t> game_songs;
@@ -147,6 +160,7 @@ struct AlbumState final {
 struct Settings final {
     bool enabled{true};
     Backend backend{Backend::WasapiExclusive};
+    DsdMode dsd_mode{DsdMode::NativeThenDop};
     std::string device;
     std::uint32_t buffer_ms{20};
     float volume{1.0F};
@@ -322,6 +336,7 @@ bool IsAbsoluteFolder(const std::string_view folder) {
 EngineSettings ToEngineSettings(const Settings& settings) {
     EngineSettings result;
     result.backend = settings.backend;
+    result.dsd_mode = settings.dsd_mode;
     result.device = settings.device;
     result.buffer_ms = settings.buffer_ms;
     result.volume = settings.volume;
@@ -363,6 +378,10 @@ void ReadSettings(Context& context) {
                 for (const auto& [value, key] : kBackendKeys) {
                     if (backend == key) settings.backend = value;
                 }
+                const std::string dsd_mode = json.value("dsdMode", std::string{});
+                for (const auto& [value, key] : kDsdModeKeys) {
+                    if (dsd_mode == key) settings.dsd_mode = value;
+                }
                 settings.device = json.value("device", settings.device);
                 settings.buffer_ms = std::clamp(json.value("bufferMs", settings.buffer_ms), 2U, 500U);
                 settings.volume = std::clamp(json.value("volume", settings.volume), 0.0F, 1.0F);
@@ -388,9 +407,14 @@ bool SaveSettings(Context& context) {
     for (const auto& [value, key] : kBackendKeys) {
         if (settings.backend == value) backend = key;
     }
+    std::string_view dsd_mode;
+    for (const auto& [value, key] : kDsdModeKeys) {
+        if (settings.dsd_mode == value) dsd_mode = key;
+    }
     const std::string document = nlohmann::json{
         {"enabled", settings.enabled},
         {"backend", backend},
+        {"dsdMode", dsd_mode},
         {"device", settings.device},
         {"bufferMs", settings.buffer_ms},
         {"volume", settings.volume},
@@ -1025,13 +1049,17 @@ void EnsureRows(Context& context) {
                 static_cast<const std::byte*>(CallAlbumRow(original, game_instance, &name, 0));
         }
     }
-    if (album.album == nullptr && album.album_template != nullptr) {
+    // The album is named after the library folder; choosing another folder
+    // writes a fresh row (the old one leaks like replaced song rows).
+    const std::wstring name = context.engine.LibraryName();
+    if ((album.album == nullptr || name != album.album_name) && album.album_template != nullptr &&
+        !name.empty()) {
         std::byte* const row = NewRow(album.album_template, profile::kAlbumRowSize);
-        const std::wstring name = Utf8ToWide(context.localizer.Text("album.name", "HiFi Library"));
         if (row != nullptr && MakeText(row + profile::kAlbumNameOffset, name.c_str()) &&
             MakeText(row + profile::kAlbumDescriptionOffset, L"")) {
             Put(row, profile::kAlbumSortIndexOffset, profile::kSortIndexBase);
             album.album = row;
+            album.album_name = name;
         }
     }
 
@@ -2531,24 +2559,9 @@ void DrawStatus(Context& context, const AnomalyUiServiceV1* ui,
     Text(ui, EngineStatusText(l10n, snapshot));
     {
         const std::string count = std::to_string(snapshot.track_count);
-        const std::array<std::string_view, 1> args{count};
-        Text(ui, l10n.Format("library.count", "Library: {0} tracks (in-game album \"HiFi Library\")",
-            args));
-    }
-    if (context.has_event) {
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kDecisions{{
-            {"event.replaced", "replaced"},
-            {"event.disabled", "game audio: replacement disabled"},
-            {"event.not_vehicle", "game audio: not vehicle music"},
-            {"event.no_track", "game audio: library empty or output failed"},
-            {"event.game_song", "game audio: game song"},
-        }};
-        const auto& [key, fallback] = kDecisions[static_cast<std::size_t>(context.last_decision)];
-        const std::string decision = l10n.Text(key, fallback);
-        const std::array<std::string_view, 2> args{context.last_event, decision};
-        Text(ui, l10n.Format("event.last", "Last event: {0} ({1})", args));
-    } else {
-        Text(ui, l10n.Text("event.none", "Last event: none yet"));
+        const std::string album = WideToUtf8(context.engine.LibraryName());
+        const std::array<std::string_view, 2> args{count, album};
+        Text(ui, l10n.Format("library.count", "Library: {0} tracks (in-game album \"{1}\")", args));
     }
     if (snapshot.playing) {
         const std::array<std::string_view, 1> track{snapshot.track};
@@ -2685,8 +2698,19 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
                 apply = true;
             }
         }
-        Text(ui, l10n.Text("device.note",
-            "This device only carries the replacement music; game audio keeps its own device."));
+        Text(ui, l10n.Text("dsd.title", "DSD output"));
+        for (std::size_t i = 0; i < kDsdModeKeys.size(); ++i) {
+            if (i != 0) ui->same_line(ui->user, 0.0F, -1.0F);
+            if (Button(ui, l10n.Label(kDsdModeLabels[i].first, kDsdModeLabels[i].second,
+                               kDsdModeKeys[i].second),
+                    settings.dsd_mode != kDsdModeKeys[i].first)) {
+                settings.dsd_mode = kDsdModeKeys[i].first;
+                apply = true;
+            }
+        }
+        Text(ui, l10n.Text("dsd.note",
+            "Native and DoP pass the DSD bitstream unchanged and need the ASIO backend; "
+            "volume does not apply to them"));
         std::uint32_t buffer_ms = settings.buffer_ms;
         if (ui->input_uint32(ui->user, anomaly::sdk::StringView(l10n.Label(
                 "option.buffer", "Buffer (ms)", "buffer")), &buffer_ms, 1, 10) != 0) {

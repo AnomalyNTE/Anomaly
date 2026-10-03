@@ -183,6 +183,56 @@ if(MSVC)
     target_compile_options(anomaly_miniaudio PRIVATE /w)
     target_compile_options(anomaly_rtaudio_asio PRIVATE /w)
 endif()
+# Monkey's Audio SDK decodes .ape for HiFiVehicleMusic (official SDK archive,
+# built as a static library from its library sources; its CMake project is skipped).
+FetchContent_Declare(
+    monkeys_audio
+    URL https://monkeysaudio.com/files/MAC_1327_SDK.zip
+    URL_HASH SHA256=c47c6b36f6a7bd50d990f2eb36a70915c0074a7b9634be396c94464905e76686
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR anomaly-no-cmake
+)
+FetchContent_MakeAvailable(monkeys_audio)
+set(ANOMALY_MONKEYS_AUDIO_INCLUDE_DIRS
+    "${monkeys_audio_SOURCE_DIR}/Source/Shared" "${monkeys_audio_SOURCE_DIR}/Source/MACLib")
+set(anomaly_monkeys_audio_sources)
+foreach(anomaly_mac_source IN ITEMS
+        Shared/BufferIO Shared/CharacterHelper Shared/CircleBuffer Shared/CPUFeatures Shared/CRC
+        Shared/GlobalFunctions Shared/MemoryIO Shared/Semaphore Shared/Thread Shared/WholeFileIO
+        Shared/WinFileIO
+        MACLib/APECompress MACLib/APECompressCore MACLib/APECompressCreate MACLib/APEDecompress
+        MACLib/APEDecompressCore MACLib/APEHeader MACLib/APEInfo MACLib/APELink MACLib/APETag
+        MACLib/BitArray MACLib/FloatTransform MACLib/MACLib MACLib/MACProgressHelper MACLib/MD5
+        MACLib/NewPredictor MACLib/NNFilter MACLib/NNFilterGeneric MACLib/NNFilterSSE2
+        MACLib/NNFilterSSE4.1 MACLib/NNFilterAVX2 MACLib/NNFilterAVX512 MACLib/Prepare
+        MACLib/UnBitArray MACLib/UnBitArrayBase MACLib/WAVInputSource MACLib/Interim
+        MACLib/Old/NewPredictorOld MACLib/Old/AntiPredictorOld MACLib/Old/AntiPredictorExtraHighOld
+        MACLib/Old/AntiPredictorFastOld MACLib/Old/AntiPredictorHighOld MACLib/Old/AntiPredictorNormalOld
+        MACLib/Old/APEDecompressCoreOld MACLib/Old/APEDecompressOld MACLib/Old/UnBitArrayOld
+        MACLib/Old/UnMACOld)
+    list(APPEND anomaly_monkeys_audio_sources "${monkeys_audio_SOURCE_DIR}/Source/${anomaly_mac_source}.cpp")
+endforeach()
+# dsd2pcm converts DSD to PCM when neither native DSD nor DoP reaches the DAC.
+FetchContent_Declare(
+    dsd2pcm
+    URL https://github.com/GiangLH/dsd2pcm/archive/354fcb539d11920980ecd88249954f883a3d16f4.tar.gz
+    URL_HASH SHA256=bd01b056e8e82ddb6c6859cce4f359925cdee4459c8b2bc11d0ebe8a5599f2ba
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR anomaly-no-cmake
+)
+FetchContent_MakeAvailable(dsd2pcm)
+add_library(anomaly_dsd2pcm STATIC "${dsd2pcm_SOURCE_DIR}/dsd2pcm.c")
+target_include_directories(anomaly_dsd2pcm PUBLIC "${dsd2pcm_SOURCE_DIR}")
+if(MSVC)
+    target_compile_options(anomaly_dsd2pcm PRIVATE /w)
+endif()
+add_library(anomaly_monkeys_audio STATIC ${anomaly_monkeys_audio_sources})
+# Kept private: the SDK headers (All.h, Thread.h, Version.h, ...) would shadow others.
+target_include_directories(anomaly_monkeys_audio PRIVATE ${ANOMALY_MONKEYS_AUDIO_INCLUDE_DIRS})
+target_compile_definitions(anomaly_monkeys_audio PRIVATE PLATFORM_WINDOWS UNICODE _UNICODE)
+if(MSVC)
+    target_compile_options(anomaly_monkeys_audio PRIVATE /w)
+endif()
 
 add_library(anomaly_imgui STATIC
     src/ui/host_ui_service.cpp
@@ -1420,11 +1470,18 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_link_libraries(anomaly_builtin_dll_loader PRIVATE nlohmann_json::nlohmann_json)
     anomaly_add_plugin(anomaly_builtin_hifi_vehicle_music
         SOURCES plugins/HiFiVehicleMusic/plugin.cpp plugins/HiFiVehicleMusic/audio_engine.cpp
+            plugins/HiFiVehicleMusic/ape_decoder.cpp plugins/HiFiVehicleMusic/dsd_reader.cpp
+            plugins/HiFiVehicleMusic/dsd_asio_output.cpp plugins/HiFiVehicleMusic/dsd_pcm_decoder.cpp
         MANIFEST plugins/HiFiVehicleMusic/manifest.json
         PACKAGE_NAME HiFiVehicleMusic
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/HiFiVehicleMusic")
     target_link_libraries(anomaly_builtin_hifi_vehicle_music PRIVATE
-        nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio ole32 shell32 uuid avrt winmm)
+        nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio anomaly_monkeys_audio anomaly_dsd2pcm
+        ole32 shell32 uuid avrt winmm)
+    # Only the APE wrapper sees the Monkey's Audio headers and their defines.
+    set_source_files_properties(plugins/HiFiVehicleMusic/ape_decoder.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${ANOMALY_MONKEYS_AUDIO_INCLUDE_DIRS}"
+        COMPILE_DEFINITIONS "PLATFORM_WINDOWS;UNICODE;_UNICODE")
 
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
@@ -1765,7 +1822,9 @@ set(ANOMALY_THIRD_PARTY_LICENSE_FILES
     third_party/licenses/json-schema-validator-LICENSE.txt
     third_party/licenses/noto-sans-cjk-LICENSE.txt
     third_party/licenses/miniaudio-LICENSE.txt
-    third_party/licenses/rtaudio-LICENSE.txt)
+    third_party/licenses/rtaudio-LICENSE.txt
+    third_party/licenses/monkeys-audio-LICENSE.txt
+    third_party/licenses/dsd2pcm-LICENSE.txt)
 set(ANOMALY_RELEASE_COMPONENTS GameRuntime SDK Tools)
 if(ANOMALY_BUILD_SYMBOLS)
     list(APPEND ANOMALY_RELEASE_COMPONENTS Symbols)
