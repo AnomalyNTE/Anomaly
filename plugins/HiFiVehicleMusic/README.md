@@ -189,6 +189,10 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
 - [ ] 开机启用时 `current song sync unavailable`：`ue5.ahud` 是可选服务，开机时反射门还没就绪，
   插件订阅失败后不再重试，导致歌名/进度每帧同步这条链在开机流程下关闭（游戏内启用时正常）。
   需要插件在后续事件里重新查询该服务（要先把 host 指针存进 Context）
+- [x] 诊断探针全部停用：`LogCaller`（调用点 + 24 字节 code before）、专辑条目/行/列表点击、
+  `SetCurrentPlayerMusicListID` 调用点、开机的 module base/trampoline，以及这次为定位专辑问题
+  临时加的 `library album not built: <原因>`。代码按注释保留在原地，需要时整段解注释即可；
+  保留的是状态日志（hooks installed、音乐事件 replaced/skipped、签名/hook 失败告警）
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
   专辑沿用模板封面；导入代码保留未调用
