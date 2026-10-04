@@ -179,6 +179,9 @@ struct Context final {
     // song id on the library song the engine actually plays.
     const AnomalyUe5AhudServiceV1* ahud{};
     AnomalyGenerationHandleV1 ahud_subscription{};
+    // Kept so the AHUD service can be looked up again: it is published only after
+    // the game's reflection gate opens, which is after a boot-time load.
+    const AnomalyHostApiV1* host{};
     anomaly::plugins::Localizer localizer;
     AnomalyGenerationHandleV1 settings_schema{};
     AudioEngine engine;
@@ -534,10 +537,11 @@ std::optional<std::size_t> SongIndex(const AlbumState& album, const std::uint64_
     return number - profile::kSongNumberBase - 1U;
 }
 
+void EnsureRows(Context& context);
+void EnsureSyncSubscription(Context& context) noexcept;
+
 // Returns true when the plugin plays the event itself and the original must be
 // skipped.
-void EnsureRows(Context& context);
-
 bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
     const float position) noexcept {
     try {
@@ -570,6 +574,9 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
         // Build them here; once they exist this only compares the library
         // generation.
         if (g_enabled.load(std::memory_order_acquire)) EnsureRows(context);
+        // Subscribed here as well: a boot-time load happens before the game's
+        // reflection gate opens, so the first music events retry it.
+        EnsureSyncSubscription(context);
 
         // Only songs of the library album are taken over; game songs play natively.
         std::optional<std::size_t> song;
@@ -2359,6 +2366,34 @@ void UnsubscribeSync(Context& context) noexcept {
     static_cast<void>(context.ahud->unsubscribe(context.ahud->user, handle));
 }
 
+// Subscribing is idempotent, so the paths that need the per-frame sync call this
+// every time: at boot the plugin starts before the game's reflection gate opens,
+// so the Host publishes no AHUD service yet. It republishes services without
+// notifying plugins, hence the lookup here. Calling into a service that is
+// already available is safe from the Game thread; only touching one whose state
+// is still initializing is not, and that is what the lookup rules out.
+void EnsureSyncSubscription(Context& context) noexcept {
+    if (context.ahud_subscription.id != 0) return;
+    if (context.ahud == nullptr && context.host != nullptr) {
+        context.ahud = anomaly::sdk::Host(context.host)
+                           .Query<AnomalyUe5AhudServiceV1>(
+                               ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION)
+                           .get();
+    }
+    if (context.ahud == nullptr || !AhudReady(context.ahud) ||
+        g_set_current_id.load(std::memory_order_acquire) == 0) {
+        return;
+    }
+    AnomalyGenerationHandleV1 handle{};
+    if (context.ahud->subscribe(context.ahud->user, SyncCurrentSong, &context, &handle).code !=
+            ANOMALY_STATUS_V1_OK ||
+        handle.id == 0) {
+        return;
+    }
+    context.ahud_subscription = handle;
+    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "current song sync subscribed");
+}
+
 // ---- plugin callbacks ------------------------------------------------------------
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) {
@@ -2370,6 +2405,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         auto* context = new (std::nothrow) Context();
         if (context == nullptr) return Status(ANOMALY_STATUS_V1_FAILED, "context allocation failed");
         const anomaly::sdk::Host host_view(host);
+        context->host = host;
         context->core = host_view.Query<AnomalyCoreServiceV1>(
             ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION).get();
         context->config = host_view.Query<AnomalyConfigServiceV1>(
@@ -2440,19 +2476,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
             Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 "no music folder selected; vehicle music is not replaced");
         }
-        if (state == HookState::Installed && context->ahud != nullptr &&
-            g_set_current_id.load(std::memory_order_acquire) != 0) {
-            AnomalyGenerationHandleV1 handle{};
-            if (context->ahud->subscribe(context->ahud->user, SyncCurrentSong, context, &handle).code ==
-                    ANOMALY_STATUS_V1_OK &&
-                handle.id != 0) {
-                context->ahud_subscription = handle;
-            }
-        }
-        if (context->ahud_subscription.id == 0) {
-            Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-                "current song sync unavailable; the game's title may lag behind the library song");
-        }
+        if (state == HookState::Installed) EnsureSyncSubscription(*context);
         std::scoped_lock lock(context->mutex);
         context->hook_state = state;
         context->hook_detail = std::move(detail);

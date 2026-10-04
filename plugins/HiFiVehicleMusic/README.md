@@ -186,9 +186,12 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
   曲库代次，之后要等下一次扫描才会重建。现在空曲库视为「还没扫完」不发布、不记代次，
   且在投递事件判断前先建一次行（已建好时这里只比一次代次）。日志证据：正常那次是
   `library yes` + `... (playerType 1): replaced`，开机那次是 `library no` + `... skipped: game song`。
-- [ ] 开机启用时 `current song sync unavailable`：`ue5.ahud` 是可选服务，开机时反射门还没就绪，
-  插件订阅失败后不再重试，导致歌名/进度每帧同步这条链在开机流程下关闭（游戏内启用时正常）。
-  需要插件在后续事件里重新查询该服务（要先把 host 指针存进 Context）
+- [x] 开机启用时 `current song sync unavailable`：`ue5.ahud` 是可选服务，宿主只在游戏的反射门
+  就绪后才发布它，而开机加载发生在门打开之前；插件当时拿到空指针就永久放弃，这一局的歌名/进度
+  每帧同步一直是关的（游戏内启用或热载入时门已开，所以以前看不到这个问题）。
+  现在 `EnsureSyncSubscription` 是幂等的：每次音乐事件都会用 `Context` 里保存的 host 指针重新
+  查询该服务，拿到后订阅一次。查询本身就代表服务已发布，因此能避开「在 Game 线程上调用尚未就绪
+  的宿主状态」那种卡死；日志改为成功时的 `current song sync subscribed`
 - [x] 诊断探针全部停用：`LogCaller`（调用点 + 24 字节 code before）、专辑条目/行/列表点击、
   `SetCurrentPlayerMusicListID` 调用点、开机的 module base/trampoline，以及这次为定位专辑问题
   临时加的 `library album not built: <原因>`。代码按注释保留在原地，需要时整段解注释即可；
