@@ -37,6 +37,7 @@ using hifi_vehicle_music::Backend;
 using hifi_vehicle_music::DsdMode;
 using hifi_vehicle_music::EngineSettings;
 using hifi_vehicle_music::EngineStatus;
+using hifi_vehicle_music::EngineSnapshot;
 
 constexpr std::string_view kSettingsSchemaId = "hifi-vehicle-music-settings";
 constexpr std::uint32_t kSettingsSchemaVersion = 1;
@@ -564,16 +565,17 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
         std::transform(key.begin(), key.end(), key.begin(),
             [](const char c) { return static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c); });
 
+        // A session that drives straight from boot never opens the music UI, so
+        // nothing built the album rows yet and every event was left to the game.
+        // Build them here; once they exist this only compares the library
+        // generation.
+        if (g_enabled.load(std::memory_order_acquire)) EnsureRows(context);
+
         // Only songs of the library album are taken over; game songs play natively.
         std::optional<std::size_t> song;
         std::uint64_t id{};
         if (list_id != nullptr &&
             ReadValue(context, reinterpret_cast<std::uintptr_t>(list_id), id)) {
-            // A session that drives straight from boot never opens the music UI,
-            // so nothing built the album rows yet and every event was left to the
-            // game. Build them here; once they exist this only compares the
-            // library generation.
-            EnsureRows(context);
             std::scoped_lock lock(context.album_mutex);
             song = SongIndex(context.album, id);
         }
@@ -1042,6 +1044,57 @@ void ApplyCover(Context& context, const std::uint64_t album, void* image) noexce
 
 void PrimeTemplate(Context& context);
 
+// Why the library album is not in the game's list. The hooks that call
+// EnsureRows run per music event and per UI read, so each reason is logged at
+// most once a second.
+enum class AlbumBlocked : std::size_t {
+    MusicTemplate,
+    AlbumTemplate,
+    AlbumRow,
+    Titles,
+    SongRow,
+    RowsReplaced,
+    Count,
+};
+
+std::string ScanDetail(const AudioEngine& engine) {
+    const EngineSnapshot snapshot = engine.Snapshot();
+    std::string detail = " (" + std::to_string(snapshot.track_count) + " tracks, ";
+    if (snapshot.status == EngineStatus::FolderUnavailable) {
+        detail += "folder unavailable";
+    } else if (snapshot.status == EngineStatus::Starting) {
+        detail += "scan still starting";
+    } else {
+        detail += "status " + std::to_string(static_cast<std::uint32_t>(snapshot.status));
+    }
+    return detail + ")";
+}
+
+void ReportAlbumBlocked(Context& context, const AlbumBlocked reason,
+    const std::string& detail = {}) noexcept {
+    try {
+        constexpr std::size_t kCount = static_cast<std::size_t>(AlbumBlocked::Count);
+        static std::atomic<std::int64_t> last[kCount];
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+        std::atomic<std::int64_t>& slot = last[static_cast<std::size_t>(reason)];
+        if (now - slot.load(std::memory_order_relaxed) < 1000) return;
+        slot.store(now, std::memory_order_relaxed);
+        static constexpr std::array<std::string_view, kCount> kReasons{
+            "no music row template: the game's music table walk has not run",
+            "no album row template: the game's album table is not readable",
+            "the album row could not be created",
+            "the scan has no songs",
+            "a song row could not be created",
+            "the rows were replaced while building"};
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "library album not built: " +
+                std::string(kReasons[static_cast<std::size_t>(reason)]) + detail);
+    } catch (...) {
+    }
+}
+
 // Builds the album row and one song row per library title. Called on the game
 // thread; rows replaced by a rescan are leaked on purpose.
 //
@@ -1071,7 +1124,10 @@ void EnsureRows(Context& context) {
         album_template = album.album_template;
         base = album.base;
     }
-    if (music_template == nullptr) return;
+    if (music_template == nullptr) {
+        ReportAlbumBlocked(context, AlbumBlocked::MusicTemplate);
+        return;
+    }
     if (album_template == nullptr) {
         // Any real album works as a template: the template song's own album.
         const std::uintptr_t original = g_slots[kAlbumRow].original.load(std::memory_order_acquire);
@@ -1113,6 +1169,15 @@ void EnsureRows(Context& context) {
         }
     }
 
+    {
+        std::scoped_lock lock(context.album_mutex);
+        if (album.album == nullptr) {
+            ReportAlbumBlocked(context, AlbumBlocked::AlbumRow,
+                name.empty() ? " (library folder name is empty)"
+                             : " (the row copy or FText failed)");
+        }
+    }
+
     // Custom cover is off: both ways of pointing the album row at an imported
     // texture made the album vanish from the list in game. The album keeps the
     // template album's cover until that is understood.
@@ -1127,7 +1192,10 @@ void EnsureRows(Context& context) {
     // would record the generation and leave the album inactive until the next
     // scan, so the vehicle music stays the game's; leave the state alone and let
     // the next caller build the rows once the scan has titles.
-    if (titles.empty()) return;
+    if (titles.empty()) {
+        ReportAlbumBlocked(context, AlbumBlocked::Titles, ScanDetail(context.engine));
+        return;
+    }
     std::vector<std::byte*> songs;
     songs.reserve(titles.size());
     const std::array<std::byte, profile::kFStringSize> empty_string{};
@@ -1135,6 +1203,7 @@ void EnsureRows(Context& context) {
         std::byte* const row = NewRow(music_template, profile::kMusicRowSize);
         if (row == nullptr || !MakeText(row + profile::kMusicTitleOffset, titles[i].c_str()) ||
             !MakeText(row + profile::kMusicDescriptionOffset, L"")) {
+            ReportAlbumBlocked(context, AlbumBlocked::SongRow);
             return;  // retried on the next lookup
         }
         Put(row, profile::kMusicSortIndexOffset,
@@ -1156,9 +1225,14 @@ void EnsureRows(Context& context) {
         // A template from another row base (or another scan) replaced what these
         // rows name while they were built; they are leaked and rebuilt by the
         // next lookup instead of being published under the wrong album id.
-        if (album.base != base || library_generation != album.generation) return;
+        if (album.base != base || library_generation != album.generation) {
+            ReportAlbumBlocked(context, AlbumBlocked::RowsReplaced);
+            return;
+        }
         album.songs = std::move(songs);
         album.generation = library_generation;
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "library album built: " + std::to_string(album.songs.size()) + " songs");
     }
 }
 
