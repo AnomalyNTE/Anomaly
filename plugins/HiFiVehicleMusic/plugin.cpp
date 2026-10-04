@@ -523,8 +523,12 @@ std::uint64_t SongId(const AlbumState& album, const std::size_t index) noexcept 
         (static_cast<std::uint64_t>(profile::kSongNumberBase + index + 1U) << 32U);
 }
 
+std::uint64_t AlbumId(const std::uint32_t base) noexcept {
+    return base | (static_cast<std::uint64_t>(profile::kAlbumNumber) << 32U);
+}
+
 std::uint64_t AlbumId(const AlbumState& album) noexcept {
-    return album.base | (static_cast<std::uint64_t>(profile::kAlbumNumber) << 32U);
+    return AlbumId(album.base);
 }
 
 // Library index of a synthetic song id.
@@ -983,14 +987,18 @@ std::int32_t ObjectSerial(const Context& context, const std::int32_t index) noex
 // game thread the first time a cover widget shows the library album; null when
 // there is no image or it cannot be imported (the widget keeps the template's
 // cover). The album row is never changed: doing that hid the album.
+// The import runs game code, so album_mutex is not held across it (see
+// EnsureRows); only the remembered attempt and the texture are guarded.
 void* CoverTexture(Context& context) {
     if (g_import_texture.load(std::memory_order_acquire) == 0) return nullptr;
-    AlbumState& album = context.album;
-    std::wstring path = context.engine.Cover();
+    const std::wstring path = context.engine.Cover();
     if (path.empty()) return nullptr;
-    if (path == album.cover) return album.cover_texture;
-    album.cover = path;  // one attempt per image
-    album.cover_texture = nullptr;
+    {
+        std::scoped_lock lock(context.album_mutex);
+        if (path == context.album.cover) return context.album.cover_texture;
+        context.album.cover = path;  // one attempt per image
+        context.album.cover_texture = nullptr;
+    }
     void* const texture = CallImportTexture(path);
     std::int32_t index{};
     if (texture == nullptr ||
@@ -999,7 +1007,10 @@ void* CoverTexture(Context& context) {
         Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "album cover could not be imported");
         return nullptr;
     }
-    album.cover_texture = texture;
+    {
+        std::scoped_lock lock(context.album_mutex);
+        context.album.cover_texture = texture;
+    }
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "album cover imported");
     return texture;
 }
@@ -1021,8 +1032,10 @@ bool AlbumActive(const AlbumState& album) noexcept;
 void ApplyCover(Context& context, const std::uint64_t album, void* image) noexcept {
     if (image == nullptr) return;
     try {
-        std::scoped_lock lock(context.album_mutex);
-        if (!AlbumActive(context.album) || album != AlbumId(context.album)) return;
+        {
+            std::scoped_lock lock(context.album_mutex);
+            if (!AlbumActive(context.album) || album != AlbumId(context.album)) return;
+        }
         void* const texture = CoverTexture(context);
         if (texture != nullptr) SetImageTexture(image, texture);
     } catch (...) {
@@ -1032,49 +1045,91 @@ void ApplyCover(Context& context, const std::uint64_t album, void* image) noexce
 void PrimeTemplate(Context& context);
 
 // Builds the album row and one song row per library title. Called on the game
-// thread with album_mutex held; rows replaced by a rescan are leaked on purpose.
+// thread; rows replaced by a rescan are leaked on purpose.
+//
+// The game calls below (GetGameInstance, GetAlbumData, ForeachRow, FText, the
+// row copies) run with album_mutex released, and only the state they produce is
+// published under it. Holding the lock across a game call is what freezes the
+// game at boot and on a map switch: both rebuild the music tables on loading
+// threads, a thread running one of the hooked table lookups then blocks on
+// album_mutex while the game thread inside it -- holding the lock -- waits for
+// the game lock that thread holds.
 void EnsureRows(Context& context) {
     AlbumState& album = context.album;
+    const std::byte* music_template{};
+    const std::byte* album_template{};
+    std::uint32_t base{};
+    {
+        std::scoped_lock lock(context.album_mutex);
+        music_template = album.music_template;
+        album_template = album.album_template;
+        base = album.base;
+    }
     // The album list can be built before any music list walked the table.
-    if (album.music_template == nullptr) PrimeTemplate(context);
-    if (album.music_template == nullptr) return;
-    if (album.album_template == nullptr) {
+    if (music_template == nullptr) {
+        PrimeTemplate(context);
+        std::scoped_lock lock(context.album_mutex);
+        music_template = album.music_template;
+        album_template = album.album_template;
+        base = album.base;
+    }
+    if (music_template == nullptr) return;
+    if (album_template == nullptr) {
         // Any real album works as a template: the template song's own album.
         const std::uintptr_t original = g_slots[kAlbumRow].original.load(std::memory_order_acquire);
         void* const game_instance = CallGameInstance();
-        std::uint64_t name{};
+        std::uint64_t album_name_id{};
         if (original != 0 && game_instance != nullptr &&
-            CopyBytes(&name, album.music_template + profile::kMusicAlbumIdOffset, sizeof(name))) {
-            album.album_template =
-                static_cast<const std::byte*>(CallAlbumRow(original, game_instance, &name, 0));
+            CopyBytes(&album_name_id, music_template + profile::kMusicAlbumIdOffset,
+                sizeof(album_name_id))) {
+            album_template = static_cast<const std::byte*>(
+                CallAlbumRow(original, game_instance, &album_name_id, 0));
         }
-    }
-    // The album is named after the library folder; choosing another folder
-    // writes a fresh row (the old one leaks like replaced song rows).
-    const std::wstring name = context.engine.LibraryName();
-    if ((album.album == nullptr || name != album.album_name) && album.album_template != nullptr &&
-        !name.empty()) {
-        std::byte* const row = NewRow(album.album_template, profile::kAlbumRowSize);
-        if (row != nullptr && MakeText(row + profile::kAlbumNameOffset, name.c_str()) &&
-            MakeText(row + profile::kAlbumDescriptionOffset, L"")) {
-            Put(row, profile::kAlbumSortIndexOffset, profile::kSortIndexBase);
-            album.album = row;
-            album.album_name = name;
+        try {
+            std::scoped_lock lock(context.album_mutex);
+            if (album.album_template == nullptr) album.album_template = album_template;
+            else album_template = album.album_template;
+        } catch (...) {
         }
     }
 
-    const std::uint64_t generation = context.engine.LibraryGeneration();
+    // The album is named after the library folder; choosing another folder
+    // writes a fresh row (the old one leaks like replaced song rows).
+    const std::wstring name = context.engine.LibraryName();
+    bool album_row_needed = false;
+    {
+        std::scoped_lock lock(context.album_mutex);
+        album_row_needed = (album.album == nullptr || name != album.album_name) &&
+            album_template != nullptr && !name.empty();
+    }
+    if (album_row_needed) {
+        std::byte* const row = NewRow(album_template, profile::kAlbumRowSize);
+        if (row != nullptr && MakeText(row + profile::kAlbumNameOffset, name.c_str()) &&
+            MakeText(row + profile::kAlbumDescriptionOffset, L"")) {
+            Put(row, profile::kAlbumSortIndexOffset, profile::kSortIndexBase);
+            std::scoped_lock lock(context.album_mutex);
+            if (album.album == nullptr || name != album.album_name) {
+                album.album = row;
+                album.album_name = name;
+            }
+        }
+    }
+
     // Custom cover is off: both ways of pointing the album row at an imported
     // texture made the album vanish from the list in game. The album keeps the
     // template album's cover until that is understood.
-    if (generation == album.generation) return;
+    const std::uint64_t library_generation = context.engine.LibraryGeneration();
+    {
+        std::scoped_lock lock(context.album_mutex);
+        if (library_generation == album.generation) return;
+    }
     std::vector<std::wstring> titles = context.engine.Titles();
     if (titles.size() > profile::kMaxSongs) titles.resize(profile::kMaxSongs);
     std::vector<std::byte*> songs;
     songs.reserve(titles.size());
     const std::array<std::byte, profile::kFStringSize> empty_string{};
     for (std::size_t i = 0; i < titles.size(); ++i) {
-        std::byte* const row = NewRow(album.music_template, profile::kMusicRowSize);
+        std::byte* const row = NewRow(music_template, profile::kMusicRowSize);
         if (row == nullptr || !MakeText(row + profile::kMusicTitleOffset, titles[i].c_str()) ||
             !MakeText(row + profile::kMusicDescriptionOffset, L"")) {
             return;  // retried on the next lookup
@@ -1082,7 +1137,7 @@ void EnsureRows(Context& context) {
         Put(row, profile::kMusicSortIndexOffset,
             profile::kSortIndexBase + static_cast<std::int32_t>(i));
         std::memcpy(row + profile::kMusicCommentOffset, empty_string.data(), empty_string.size());
-        Put(row, profile::kMusicAlbumIdOffset, AlbumId(album));
+        Put(row, profile::kMusicAlbumIdOffset, AlbumId(base));
         // The event keeps the template's asset (song end posts it) but owns no
         // string buffer of the template.
         std::memcpy(row + profile::kMusicEventOffset + profile::kMusicEventSubPathOffset,
@@ -1093,8 +1148,15 @@ void EnsureRows(Context& context) {
         Put(row, profile::kMusicIsHiddenOffset, std::uint8_t{0});
         songs.push_back(row);
     }
-    album.songs = std::move(songs);
-    album.generation = generation;
+    {
+        std::scoped_lock lock(context.album_mutex);
+        // A template from another row base (or another scan) replaced what these
+        // rows name while they were built; they are leaked and rebuilt by the
+        // next lookup instead of being published under the wrong album id.
+        if (album.base != base || library_generation != album.generation) return;
+        album.songs = std::move(songs);
+        album.generation = library_generation;
+    }
 }
 
 bool AlbumActive(const AlbumState& album) noexcept {
@@ -1106,8 +1168,9 @@ bool AlbumActive(const AlbumState& album) noexcept {
 std::vector<std::pair<std::uint64_t, std::byte*>> ActiveSongs(Context& context) noexcept {
     std::vector<std::pair<std::uint64_t, std::byte*>> result;
     try {
-        std::scoped_lock lock(context.album_mutex);
+        // Builds rows through game calls: outside the lock, see EnsureRows.
         EnsureRows(context);
+        std::scoped_lock lock(context.album_mutex);
         if (!AlbumActive(context.album)) return result;
         result.reserve(context.album.songs.size());
         for (std::size_t i = 0; i < context.album.songs.size(); ++i) {
@@ -1193,7 +1256,11 @@ void __fastcall RecordRow(void* user, void* element, void* row) {
 void __fastcall NoopVisit(void*, void*, void*) {}
 
 // Walks the music table with the original ForeachRow to record the template
-// row, the name base and the listed game songs. Called with album_mutex held.
+// row, the name base and the listed game songs. The game runs without
+// album_mutex and only the recorded state is published under it: a game call
+// under the lock lets a thread running a hooked table lookup -- a level load
+// does -- block on the lock while this thread waits for that thread's own
+// locks (see EnsureRows).
 void PrimeTemplate(Context& context) {
     const std::uintptr_t original = g_slots[kForEachRow].original.load(std::memory_order_acquire);
     const std::uintptr_t table = GameTable(context, profile::kGameInstanceMusicTableOffset);
@@ -1204,9 +1271,15 @@ void PrimeTemplate(Context& context) {
     RowCallback wrapped{&RecordRow, &recorder};
     CallForEach(original, reinterpret_cast<void*>(table), L"", &wrapped);
     if (recorder.first == nullptr) return;
-    context.album.music_template = recorder.first;
-    context.album.base = recorder.base;
-    if (!listed.empty()) context.album.game_songs = std::move(listed);
+    try {
+        std::scoped_lock lock(context.album_mutex);
+        if (context.album.music_template == nullptr) {
+            context.album.music_template = recorder.first;
+            context.album.base = recorder.base;
+        }
+        if (!listed.empty()) context.album.game_songs = std::move(listed);
+    } catch (...) {
+    }
 }
 
 void* __fastcall FindRowDetour(void* table, const std::uint64_t name, const wchar_t* context_name,
@@ -1218,12 +1291,15 @@ void* __fastcall FindRowDetour(void* table, const std::uint64_t name, const wcha
     void* row = nullptr;
     auto* const context = g_context.load(std::memory_order_acquire);
     if (context != nullptr) {
+        // Read the table the album rows belong to before taking the lock: the
+        // lookup calls into the game.
+        const std::uintptr_t music_table =
+            GameTable(*context, profile::kGameInstanceMusicTableOffset);
         try {
             std::scoped_lock lock(context->album_mutex);
             const auto song = SongIndex(context->album, name);
             if (song && AlbumActive(context->album) &&
-                reinterpret_cast<std::uintptr_t>(table) ==
-                    GameTable(*context, profile::kGameInstanceMusicTableOffset)) {
+                reinterpret_cast<std::uintptr_t>(table) == music_table) {
                 row = context->album.songs[*song];
             }
         } catch (...) {
@@ -1302,9 +1378,13 @@ void __fastcall AlbumForEachDetour(void* table, const wchar_t* context_name, voi
             GameTable(*context, profile::kGameInstanceAlbumTableOffset)) {
         std::uint64_t id{};
         std::byte* row = nullptr;
+        // Builds rows through game calls: outside the lock, see EnsureRows.
+        try {
+            EnsureRows(*context);
+        } catch (...) {
+        }
         try {
             std::scoped_lock lock(context->album_mutex);
-            EnsureRows(*context);
             if (AlbumActive(context->album)) {
                 id = AlbumId(context->album);
                 row = context->album.album;
@@ -1337,6 +1417,43 @@ thread_local std::uint32_t t_owned_depth = 0;
 // The sound subsystem last seen as `this` of a subsystem detour; the UI detours
 // fall back to it when the world-context lookup fails.
 std::atomic<void*> g_last_subsystem{nullptr};
+// Its vtable, remembered with it. The subsystem belongs to the world it was
+// resolved in and a map switch destroys that world; the object at the address
+// then carries another vtable. Reading and writing through a destroyed
+// subsystem (the per-frame sync posts the current song id into it) corrupts
+// whatever the allocator handed that memory to, so a stale one is dropped.
+std::atomic<std::uintptr_t> g_last_subsystem_vtable{0};
+
+void RememberSubsystem(void* subsystem) noexcept {
+    auto* const context = g_context.load(std::memory_order_acquire);
+    std::uintptr_t vtable{};
+    if (subsystem == nullptr || context == nullptr ||
+        !ReadValue(*context, reinterpret_cast<std::uintptr_t>(subsystem), vtable) || vtable == 0) {
+        g_last_subsystem.store(nullptr, std::memory_order_release);
+        g_last_subsystem_vtable.store(0, std::memory_order_release);
+        return;
+    }
+    g_last_subsystem_vtable.store(vtable, std::memory_order_release);
+    g_last_subsystem.store(subsystem, std::memory_order_release);
+}
+
+// The remembered subsystem while it is still the object that was remembered;
+// null once the world it belonged to is gone.
+void* CachedSubsystem() noexcept {
+    void* const subsystem = g_last_subsystem.load(std::memory_order_acquire);
+    const std::uintptr_t vtable = g_last_subsystem_vtable.load(std::memory_order_acquire);
+    if (subsystem == nullptr || vtable == 0) return nullptr;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    std::uintptr_t current{};
+    if (context != nullptr &&
+        ReadValue(*context, reinterpret_cast<std::uintptr_t>(subsystem), current) &&
+        current == vtable) {
+        return subsystem;
+    }
+    g_last_subsystem.store(nullptr, std::memory_order_release);
+    g_last_subsystem_vtable.store(0, std::memory_order_release);
+    return nullptr;
+}
 
 bool IsLibrarySongId(Context& context, const std::uint64_t id) noexcept {
     try {
@@ -1383,7 +1500,7 @@ void WriteIds(void* array, const std::vector<std::uint64_t>& ids) noexcept {
 }
 
 void* OwnedArray(void* subsystem) noexcept {
-    if (subsystem == nullptr) subsystem = g_last_subsystem.load(std::memory_order_acquire);
+    if (subsystem == nullptr) subsystem = CachedSubsystem();
     return subsystem == nullptr ? nullptr : static_cast<std::byte*>(subsystem) + profile::kSubsystemOwnedIdsOffset;
 }
 
@@ -1444,7 +1561,7 @@ void __fastcall ReGenerateDetour(void* self) {
     AnomalyGenerationHandleV1 lease{};
     std::uintptr_t original{};
     if (!BeginCallback(kReGenerate, api, lease, original)) return;
-    g_last_subsystem.store(self, std::memory_order_release);
+    RememberSubsystem(self);
     WithQueueIds(self, CurrentSongId(self), [&] { CallVoid(original, self); });
     EndCallback(api, lease);
 }
@@ -1483,7 +1600,7 @@ void __fastcall SetCurrentDetour(void* self, const std::uint64_t id) {
     std::uintptr_t original{};
     if (!BeginCallback(kSetCurrent, api, lease, original)) return;
     LogCaller("SetCurrentMusicListID", _ReturnAddress(), id);
-    g_last_subsystem.store(self, std::memory_order_release);
+    RememberSubsystem(self);
     WithQueueIds(self, id, [&] { CallSetCurrent(original, self, id); });
     EndCallback(api, lease);
 }
@@ -1495,7 +1612,7 @@ std::uintptr_t SubsystemSelfDetour(const HookIndex index, void* self) {
     std::uintptr_t original{};
     if (!BeginCallback(index, api, lease, original)) return 0;
     std::uintptr_t result{};
-    g_last_subsystem.store(self, std::memory_order_release);
+    RememberSubsystem(self);
     WithQueueIds(self, CurrentSongId(self), [&] { result = CallSelf(original, self); });
     EndCallback(api, lease);
     return result;
@@ -1586,7 +1703,7 @@ void ANOMALY_CALL SyncCurrentSong(void* user, const AnomalyUe5AhudFrameV1*) {
     auto* const context = static_cast<Context*>(user);
     if (context == nullptr || g_set_current_id.load(std::memory_order_acquire) == 0) return;
     try {
-        void* const subsystem = g_last_subsystem.load(std::memory_order_acquire);
+        void* const subsystem = CachedSubsystem();
         const std::optional<std::size_t> slot = context->engine.PlayingSlot();
         static std::optional<std::size_t> last_slot;
         static std::optional<std::chrono::steady_clock::time_point> mismatch_since;
@@ -1688,7 +1805,7 @@ float __fastcall PositionSecondsDetour(const std::uint32_t id) {
 // library song is the template song's; replace it with the file's length.
 // The current library song's file length, or 0 when a game song is current.
 float CurrentLibraryDuration(Context& context) noexcept {
-    void* const subsystem = g_last_subsystem.load(std::memory_order_acquire);
+    void* const subsystem = CachedSubsystem();
     if (subsystem == nullptr) return 0.0F;
     try {
         // The song the engine plays while it owns playback; otherwise the
@@ -1810,7 +1927,7 @@ std::uintptr_t __fastcall EntryClickDetour(void* self, const std::uint64_t* id) 
     if (context != nullptr && id != nullptr &&
         ReadValue(*context, reinterpret_cast<std::uintptr_t>(id), song) && IsLibrarySongId(*context, song)) {
         void* subsystem = CallSoundSubsystem(self);
-        if (subsystem == nullptr) subsystem = g_last_subsystem.load(std::memory_order_acquire);
+        if (subsystem == nullptr) subsystem = CachedSubsystem();
         const std::uintptr_t set_current = g_slots[kSetCurrent].original.load(std::memory_order_acquire);
         const std::uintptr_t change = g_slots[kChangeSound].original.load(std::memory_order_acquire);
         if (subsystem != nullptr && set_current != 0 && change != 0 && CurrentSongId(subsystem) != song) {
@@ -2031,6 +2148,7 @@ void ReleaseHooks(Context& context) noexcept {
     g_object_array.store(0, std::memory_order_release);
     g_serial_counter.store(0, std::memory_order_release);
     g_last_subsystem.store(nullptr, std::memory_order_release);
+    g_last_subsystem_vtable.store(0, std::memory_order_release);
     g_set_current_id.store(0, std::memory_order_release);
 }
 
