@@ -175,6 +175,27 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
 - [x] 实测：xDuoo 只能 DoP。加 DSD 输出选项（仿 QQ 音乐）：仅 PCM / Native > DoP > PCM / DoP > Native > PCM，
   逐级回退，最后一级用 dsd2pcm 转 PCM；实测正常
 - [x] 专辑名改为曲库文件夹名；窗口去掉设备说明和「最近事件」两行；构建通过，待实测
+- [x] 修复「带插件开机必卡死、切图也挂起」：诊断用的 ProcessEvent 追踪在 Game 线程上调
+  `anomaly.ue5.names` 的 `resolve_utf8`，而宿主在这条调用里会等待自己的语义状态发布完成；
+  Game 线程一旦等在那里，整个游戏就不再推进（dump 显示 GameThread 停在
+  `msvcp140!Cnd_wait → SleepConditionVariableSRW`，调用链正是本插件的追踪回调）。追踪已移除，
+  它此前的结论保留在上面第 7 条；宿主不再阻塞 Game 线程调用者后可以再加回来。
+- [x] 修复「开机启用后专辑和音乐都没了」：`EnsureRows` 只在游戏遍历专辑/音乐表（开音乐播放器、
+  上下车建列表）时被驱动，开机直接开车时它没跑过，`AlbumActive` 为假，于是专辑不进列表、
+  车载音乐全部 `skipped: game song`；另外首次扫描还没出结果时它会发布一张空专辑并记下当时的
+  曲库代次，之后要等下一次扫描才会重建。现在空曲库视为「还没扫完」不发布、不记代次，
+  且在投递事件判断前先建一次行（已建好时这里只比一次代次）。日志证据：正常那次是
+  `library yes` + `... (playerType 1): replaced`，开机那次是 `library no` + `... skipped: game song`。
+- [x] 开机启用时 `current song sync unavailable`：`ue5.ahud` 是可选服务，宿主只在游戏的反射门
+  就绪后才发布它，而开机加载发生在门打开之前；插件当时拿到空指针就永久放弃，这一局的歌名/进度
+  每帧同步一直是关的（游戏内启用或热载入时门已开，所以以前看不到这个问题）。
+  现在 `EnsureSyncSubscription` 是幂等的：每次音乐事件都会用 `Context` 里保存的 host 指针重新
+  查询该服务，拿到后订阅一次。查询本身就代表服务已发布，因此能避开「在 Game 线程上调用尚未就绪
+  的宿主状态」那种卡死；日志改为成功时的 `current song sync subscribed`
+- [x] 诊断探针全部停用：`LogCaller`（调用点 + 24 字节 code before）、专辑条目/行/列表点击、
+  `SetCurrentPlayerMusicListID` 调用点、开机的 module base/trampoline，以及这次为定位专辑问题
+  临时加的 `library album not built: <原因>`。代码按注释保留在原地，需要时整段解注释即可；
+  保留的是状态日志（hooks installed、音乐事件 replaced/skipped、签名/hook 失败告警）
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
   专辑沿用模板封面；导入代码保留未调用
