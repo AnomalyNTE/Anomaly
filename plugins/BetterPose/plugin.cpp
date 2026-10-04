@@ -27,6 +27,7 @@ using Microsoft::WRL::ComPtr;
 #include "keyframe_track.hpp"
 #include "rotation_gizmo.hpp"
 #include "timeline_overlay.hpp"
+#include "library.hpp"
 #include "pose_mirror.hpp"
 #include "morph_catalog.hpp"
 #include "mmd_morph_map.hpp"
@@ -617,6 +618,36 @@ struct Context final {
   std::string pose_export_folder;
   std::string pose_import_file;
 
+  // User library. The host storage service owns the durable state directory;
+  // this cache is the sole directory listing (storage has no enumeration API).
+  std::mutex library_mutex;
+  std::vector<better_pose::library::Entry> library_entries;
+  std::string library_status;
+  std::atomic<int> library_request{};  // 1 save pose, 2 apply pose, 3 save motion, 4 apply motion, 5 rename, 6 delete
+  std::string library_selected_id;
+  std::array<char, 128> library_name_input{};
+  std::string library_request_id;
+  std::string library_request_name;
+  int library_confirm_request{};  // 4 apply motion, 6 delete
+  std::string library_confirm_id;
+  struct LibraryIoRequest {
+    int operation{};  // save pose/motion, load/apply pose/motion, rename, delete
+    std::string id;
+    std::string name;
+    std::string document;
+    better_pose::library::Kind kind{better_pose::library::Kind::Pose};
+  };
+  struct LibraryIoResult {
+    LibraryIoRequest request;
+    std::vector<better_pose::library::Entry> entries;
+    std::string document;
+    bool ok{};
+    std::string status;
+  };
+  std::mutex library_io_mutex;
+  std::mutex library_storage_mutex;  // serializes index read-modify-write on scheduler workers
+  std::vector<LibraryIoResult> library_io_results;
+
   // MMD motion tracks loaded from the offline converter's JSON. Rotation-only:
   // every driven bone gets an absolute local rotation, everything else keeps the
   // captured base pose.
@@ -1070,6 +1101,223 @@ bool SchedulerReady(const AnomalySchedulerServiceV1 *service) noexcept {
   return service != nullptr && service->schedule != nullptr;
 }
 
+bool StorageReadFile(const AnomalyStorageServiceV1 *storage, const std::string_view path,
+                     std::string &out, bool *missing = nullptr,
+                     std::uint32_t *error_code = nullptr) noexcept {
+  if (error_code != nullptr)
+    *error_code = ANOMALY_STATUS_V1_FAILED;
+  if (missing != nullptr)
+    *missing = false;
+  if (!StorageReady(storage))
+    return false;
+  try {
+    std::size_t size{};
+    auto status = storage->read(storage->user, anomaly::sdk::StringView(path), {nullptr, 0}, &size);
+    if (error_code != nullptr)
+      *error_code = status.code;
+    if (status.code == ANOMALY_STATUS_V1_NOT_FOUND) {
+      if (missing != nullptr)
+        *missing = true;
+      return false;
+    }
+    if (status.code != ANOMALY_STATUS_V1_BUFFER_TOO_SMALL && status.code != ANOMALY_STATUS_V1_OK)
+      return false;
+    out.assign(size, '\0');
+    if (out.empty())
+      return true;
+    AnomalyMutableByteSpanV1 destination{
+        reinterpret_cast<std::uint8_t *>(out.data()), out.size()};
+    status = storage->read(storage->user, anomaly::sdk::StringView(path), destination, &size);
+    if (error_code != nullptr)
+      *error_code = status.code;
+    if (status.code != ANOMALY_STATUS_V1_OK)
+      return false;
+    out.resize(size);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+std::uint32_t StorageWriteFile(const AnomalyStorageServiceV1 *storage,
+                               const std::string_view path,
+                               const std::string_view document) noexcept {
+  if (!StorageReady(storage))
+    return ANOMALY_STATUS_V1_UNAVAILABLE;
+  const AnomalyByteSpanV1 source{
+      reinterpret_cast<const std::uint8_t *>(document.data()), document.size()};
+  return storage->write_atomic(storage->user, anomaly::sdk::StringView(path), source).code;
+}
+
+bool StorageRemoveFile(const AnomalyStorageServiceV1 *storage, const std::string_view path) noexcept {
+  return storage != nullptr && storage->remove != nullptr &&
+         storage->remove(storage->user, anomaly::sdk::StringView(path)).code ==
+             ANOMALY_STATUS_V1_OK;
+}
+
+std::string NewLibraryId(better_pose::library::Kind kind);
+
+struct LibraryTaskData {
+  Context *context{};
+  Context::LibraryIoRequest request;
+};
+
+void ANOMALY_CALL LibraryTask(void *user, AnomalyGenerationHandleV1) noexcept {
+  std::unique_ptr<LibraryTaskData> task(static_cast<LibraryTaskData *>(user));
+  if (!task || task->context == nullptr)
+    return;
+  auto &context = *task->context;
+  Context::LibraryIoResult result;
+  result.request = std::move(task->request);
+  std::lock_guard<std::mutex> storage_lock(context.library_storage_mutex);
+  try {
+    std::vector<better_pose::library::Entry> entries;
+    std::string index_document;
+    const bool has_index = result.request.operation == 7 ||
+                           StorageReadFile(context.storage, better_pose::library::kIndexPath,
+                                           index_document);
+    if (result.request.operation != 7 && has_index) {
+      const auto index = nlohmann::json::parse(index_document, nullptr, false);
+      if (index.is_object() && index.value("format", std::string()) == "betterpose-library" &&
+          index.value("version", 0U) == 1U && index.contains("entries") &&
+          index["entries"].is_array()) {
+        for (const auto &item : index["entries"]) {
+          if (!item.is_object())
+            continue;
+          better_pose::library::Entry entry;
+          entry.id = item.value("id", std::string());
+          entry.name = better_pose::library::TrimName(item.value("name", std::string()));
+          entry.kind = item.value("type", std::string("pose")) == "motion"
+                           ? better_pose::library::Kind::Motion
+                           : better_pose::library::Kind::Pose;
+          entry.version = item.value("version", 1U);
+          if (better_pose::library::ValidId(entry.id) && !entry.name.empty())
+            entries.push_back(std::move(entry));
+        }
+      }
+    }
+    auto write_index = [&]() {
+      nlohmann::json root{{"format", "betterpose-library"}, {"version", 1}};
+      auto array = nlohmann::json::array();
+      for (const auto &entry : entries)
+        array.push_back({{"id", entry.id}, {"name", entry.name},
+                         {"type", entry.kind == better_pose::library::Kind::Motion ? "motion" : "pose"},
+                         {"version", entry.version}});
+      root["entries"] = std::move(array);
+      return StorageWriteFile(context.storage, better_pose::library::kIndexPath, root.dump(2));
+    };
+    const auto found = [&]() {
+      return std::find_if(entries.begin(), entries.end(), [&](const auto &entry) {
+        return entry.id == result.request.id;
+      });
+    };
+    if (result.request.operation == 7) {
+      bool missing = false;
+      std::uint32_t code{};
+      const bool read = StorageReadFile(context.storage, better_pose::library::kIndexPath,
+                                        result.document, &missing, &code);
+      result.ok = read || missing;
+      result.status = missing ? std::string("__empty_library__")
+                              : result.ok ? std::string{}
+                                          : "库索引读取失败（状态码 " + std::to_string(code) + "）";
+    } else if (result.request.operation == 1 || result.request.operation == 3) {
+      const auto kind = result.request.operation == 1 ? better_pose::library::Kind::Pose
+                                                       : better_pose::library::Kind::Motion;
+      if (result.request.name.empty() || entries.size() >= better_pose::library::kMaximumEntries ||
+          better_pose::library::HasName(entries, kind, result.request.name)) {
+        result.status = "名称无效、重复或库已满";
+      } else {
+        better_pose::library::Entry entry{NewLibraryId(kind), result.request.name, kind, 1};
+        const std::uint32_t entry_code = StorageWriteFile(
+            context.storage, better_pose::library::PathFor(entry), result.request.document);
+        if (entry_code == ANOMALY_STATUS_V1_OK) {
+          entries.push_back(entry);
+          const std::uint32_t index_code = write_index();
+          result.ok = index_code == ANOMALY_STATUS_V1_OK;
+          result.status = result.ok ? "已保存：" + entry.name
+                                    : "保存库索引失败（状态码 " + std::to_string(index_code) + "）";
+          if (!result.ok)
+            static_cast<void>(StorageRemoveFile(context.storage, better_pose::library::PathFor(entry)));
+        } else {
+          result.status = "保存库文件失败（状态码 " + std::to_string(entry_code) + "）";
+        }
+      }
+    } else {
+      auto it = found();
+      if (it == entries.end()) {
+        result.status = "库条目不存在";
+      } else if (result.request.operation == 2 || result.request.operation == 4) {
+        std::uint32_t code{};
+        result.ok = StorageReadFile(context.storage, better_pose::library::PathFor(*it),
+                                    result.document, nullptr, &code);
+        result.status = result.ok ? std::string{}
+                                  : "库条目读取失败（状态码 " + std::to_string(code) + "）";
+      } else if (result.request.operation == 5) {
+        if (result.request.name.empty() || better_pose::library::HasName(
+                                                  entries, it->kind, result.request.name, it->id)) {
+          result.status = "名称为空或已存在";
+        } else {
+          it->name = result.request.name;
+          const std::uint32_t code = write_index();
+          result.ok = code == ANOMALY_STATUS_V1_OK;
+          result.status = result.ok ? "已重命名：" + it->name
+                                    : "重命名失败（状态码 " + std::to_string(code) + "）";
+        }
+      } else if (result.request.operation == 6) {
+        const auto old_entry = *it;
+        if (!StorageRemoveFile(context.storage, better_pose::library::PathFor(old_entry))) {
+          result.status = "删除库文件失败";
+        } else {
+          entries.erase(it);
+          const std::uint32_t code = write_index();
+          result.ok = code == ANOMALY_STATUS_V1_OK;
+          result.status = result.ok ? "已删除：" + old_entry.name
+                                    : "保存库索引失败（状态码 " + std::to_string(code) + "）";
+        }
+      }
+    }
+    if (result.ok && result.request.operation != 2 && result.request.operation != 4)
+      result.entries = std::move(entries);
+  } catch (...) {
+    result.ok = false;
+    result.status = "库文件操作失败";
+  }
+  std::lock_guard<std::mutex> lock(context.library_io_mutex);
+  context.library_io_results.push_back(std::move(result));
+}
+
+bool QueueLibraryTask(Context &context, Context::LibraryIoRequest request) noexcept {
+  if (!SchedulerReady(context.scheduler))
+    return false;
+  auto *data = new (std::nothrow) LibraryTaskData{&context, std::move(request)};
+  if (data == nullptr)
+    return false;
+  AnomalyGenerationHandleV1 handle{};
+  const auto status = context.scheduler->schedule(context.scheduler->user, 0, LibraryTask, data,
+                                                   &handle);
+  if (status.code != ANOMALY_STATUS_V1_OK || handle.id == 0) {
+    delete data;
+    return false;
+  }
+  return true;
+}
+
+void SetLibraryStatus(Context &context, const std::string_view status) {
+  std::lock_guard<std::mutex> lock(context.library_mutex);
+  context.library_status.assign(status);
+}
+
+std::string NewLibraryId(const better_pose::library::Kind kind) {
+  static std::atomic<std::uint64_t> serial{1};
+  const std::uint64_t value =
+      serial.fetch_add(1, std::memory_order_relaxed) ^ GetTickCount64();
+  char buffer[32]{};
+  std::snprintf(buffer, sizeof(buffer), "%c-%016llx",
+                kind == better_pose::library::Kind::Pose ? 'p' : 'm',
+                static_cast<unsigned long long>(value));
+  return buffer;
+}
+
 bool AhudReady(const AnomalyUe5AhudServiceV1 *service) noexcept {
   return HasField<AnomalyUe5AhudServiceV1,
                   decltype(AnomalyUe5AhudServiceV1::unsubscribe)>(
@@ -1349,6 +1597,8 @@ bool MirrorPose(Context &context, const int request) noexcept;
 // Game thread, every update: the one undo history (defined after the keyframe
 // code, which it snapshots too).
 void StepEditHistory(Context &context) noexcept;
+
+void StepLibrary(Context &context) noexcept;
 
 bool LoadPoseSettings(Context &context) noexcept {
   if (!ConfigReady(context.config))
@@ -7584,6 +7834,33 @@ void RestoreExpression(Context &context, const better_pose::history::ExpressionS
 // kilobytes), so it is written and read here rather than on a task.
 //   { "format": "betterpose-expression", "version": 1,
 //     "morphs": [ { "name": "jawOpen", "weight": 0.8 }, ... ] }
+nlohmann::json BuildLibraryExpression(Context &context) {
+  nlohmann::json morphs = nlohmann::json::array();
+  std::lock_guard<std::mutex> lock(context.morph_mutex);
+  for (const auto &morph :
+       better_pose::morph::CollectDriven(context.morph_catalog, context.morph_weights))
+    morphs.push_back({{"name", morph.name}, {"weight", morph.weight}});
+  return morphs;
+}
+
+bool ApplyLibraryExpression(Context &context, const nlohmann::json &morphs) {
+  if (!morphs.is_array())
+    return false;
+  std::vector<better_pose::morph::SavedMorph> saved;
+  for (const auto &item : morphs) {
+    if (!item.is_object() || !item.contains("name") || !item["name"].is_string() ||
+        !item.contains("weight") || !item["weight"].is_number())
+      continue;
+    const float weight = item["weight"].get<float>();
+    if (std::isfinite(weight))
+      saved.push_back({item["name"].get<std::string>(), weight});
+  }
+  std::vector<std::string> missing;
+  std::lock_guard<std::mutex> lock(context.morph_mutex);
+  better_pose::morph::ApplySaved(context.morph_catalog, saved, context.morph_weights, missing);
+  return true;
+}
+
 void StepExpressionFile(Context &context) noexcept {
   const int request = context.morph_file_request.exchange(0, std::memory_order_acq_rel);
   if (request == 0)
@@ -8410,6 +8687,162 @@ better_pose::history::EditState CaptureEdit(Context &context) {
           keyframe_impl::CaptureTrack(context)};
 }
 
+void StepLibrary(Context &context) noexcept {
+  std::vector<Context::LibraryIoResult> completed;
+  {
+    std::lock_guard<std::mutex> lock(context.library_io_mutex);
+    completed.swap(context.library_io_results);
+  }
+  for (auto &result : completed) {
+    if (result.ok && result.request.operation != 2 && result.request.operation != 4 &&
+        result.request.operation != 7) {
+      std::lock_guard<std::mutex> lock(context.library_mutex);
+      context.library_entries = std::move(result.entries);
+    }
+    if (result.request.operation == 7 && result.status == "__empty_library__") {
+      std::lock_guard<std::mutex> lock(context.library_mutex);
+      context.library_entries.clear();
+      context.library_status = "库为空，可以保存姿态或动作";
+      continue;
+    }
+    if (!result.ok && result.request.operation == 7) {
+      std::lock_guard<std::mutex> lock(context.library_mutex);
+      context.library_entries.clear();
+      context.library_status = "库为空，可以保存姿态或动作";
+      continue;
+    }
+    if (!result.ok) {
+      SetLibraryStatus(context, result.status);
+      continue;
+    }
+    if (result.request.operation == 7) {
+      std::vector<better_pose::library::Entry> loaded;
+      const auto root = nlohmann::json::parse(result.document, nullptr, false);
+      if (!root.is_object() || root.value("format", std::string()) != "betterpose-library" ||
+          root.value("version", 0U) != 1U || !root.contains("entries") ||
+          !root["entries"].is_array()) {
+        SetLibraryStatus(context, "库索引损坏");
+        continue;
+      }
+      for (const auto &item : root["entries"]) {
+        if (!item.is_object() || loaded.size() >= better_pose::library::kMaximumEntries)
+          continue;
+        better_pose::library::Entry entry;
+        entry.id = item.value("id", std::string());
+        entry.name = better_pose::library::TrimName(item.value("name", std::string()));
+        entry.kind = item.value("type", std::string()) == "motion"
+                         ? better_pose::library::Kind::Motion
+                         : better_pose::library::Kind::Pose;
+        entry.version = item.value("version", 1U);
+        if (better_pose::library::ValidId(entry.id) && !entry.name.empty() &&
+            !better_pose::library::HasName(loaded, entry.kind, entry.name))
+          loaded.push_back(std::move(entry));
+      }
+      {
+        std::lock_guard<std::mutex> lock(context.library_mutex);
+        context.library_entries = std::move(loaded);
+        context.library_status.clear();
+      }
+      continue;
+    }
+    if (result.request.operation == 2) {
+      const auto root = nlohmann::json::parse(result.document, nullptr, false);
+      if (!root.is_object() || root.value("format", std::string()) != "betterpose-library-pose" ||
+          !ApplyPoseDocument(context, root)) {
+        SetLibraryStatus(context, "姿态库条目格式错误");
+        continue;
+      }
+      if (root.contains("morphs") && !ApplyLibraryExpression(context, root["morphs"])) {
+        SetLibraryStatus(context, "姿态表情数据损坏");
+        continue;
+      }
+      context.pose_edit_held.store(false, std::memory_order_release);
+      context.keyframe_auto_user_state_valid = false;
+      context.keyframe_applied_frame = context.keyframe_frame.load(std::memory_order_acquire);
+      SetLibraryStatus(context, "已应用姿态：" + result.request.name);
+    } else if (result.request.operation == 4) {
+      std::vector<better_pose::keyframes::Key> keys;
+      std::uint32_t length{};
+      std::size_t skipped{};
+      if (!keyframe_impl::ParseDocument(result.document, keys, length, skipped)) {
+        SetLibraryStatus(context, "动作库条目格式错误");
+        continue;
+      }
+      {
+        std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+        context.keyframe_track.Clear();
+        for (const auto &key : keys)
+          context.keyframe_track.Set(key);
+        ++context.keyframe_revision;
+      }
+      context.keyframe_length.store(length, std::memory_order_release);
+      context.keyframe_frame.store(0.0, std::memory_order_release);
+      context.keyframe_seek.store(0.0, std::memory_order_release);
+      context.keyframe_playing.store(false, std::memory_order_release);
+      context.keyframe_selected.store(-1, std::memory_order_release);
+      context.keyframe_applied_frame = 0.0;
+      context.keyframe_auto_user_state_valid = false;
+      SetLibraryStatus(context, "已加载动作：" + result.request.name);
+    } else {
+      SetLibraryStatus(context, result.status);
+    }
+  }
+
+  const int request = context.library_request.exchange(0, std::memory_order_acq_rel);
+  if (request == 0)
+    return;
+  std::string id;
+  std::string name;
+  {
+    std::lock_guard<std::mutex> lock(context.library_mutex);
+    id = context.library_request_id;
+    name = better_pose::library::TrimName(context.library_request_name);
+  }
+  const auto fail = [&](const std::string_view message) { SetLibraryStatus(context, message); };
+  try {
+    Context::LibraryIoRequest io;
+    io.operation = request;
+    io.id = id;
+    io.name = name;
+    if (request == 1 || request == 3) {  // save pose / save motion
+      io.kind = request == 1 ? better_pose::library::Kind::Pose
+                             : better_pose::library::Kind::Motion;
+      if (name.empty()) {
+        fail("名称不能为空");
+        return;
+      }
+      if (request == 1) {
+        auto pose = nlohmann::json::parse(BuildPoseDocument(context), nullptr, false);
+        if (!pose.is_object()) {
+          fail("姿态快照失败");
+          return;
+        }
+        pose["format"] = "betterpose-library-pose";
+        pose["version"] = 1;
+        pose["morphs"] = BuildLibraryExpression(context);
+        io.document = pose.dump(2);
+      } else {
+        io.document = keyframe_impl::BuildDocument(context);
+      }
+    } else if (request == 2 || request == 4) {
+      std::lock_guard<std::mutex> lock(context.library_mutex);
+      const auto *entry = better_pose::library::FindById(context.library_entries, id);
+      if (entry == nullptr) {
+        fail("库条目不存在");
+        return;
+      }
+      io.name = entry->name;
+      io.kind = entry->kind;
+    }
+    if (!QueueLibraryTask(context, std::move(io)))
+      fail("后台存储任务启动失败");
+    return;
+
+  } catch (...) {
+    fail("库请求准备失败");
+  }
+}
+
 // Game thread, every update, after the keyframe step and before the pose is
 // applied: record settled edits into the one history, or apply a posted
 // undo/redo to all three parts at once. Things that move the state without
@@ -8591,6 +9024,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   StepKeyframes(context, delta_seconds);
   StepExpressionFile(context);
   StepExpression(context);
+  StepLibrary(context);
 
   const bool freeze_enabled =
       context.freeze_enabled.load(std::memory_order_acquire);
@@ -11789,6 +12223,11 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
     return Status(ANOMALY_STATUS_V1_FAILED,
                   "character pose settings are invalid");
   }
+  context->library_status = "正在读取库索引…";
+  Context::LibraryIoRequest library_load;
+  library_load.operation = 7;  // load index
+  if (!QueueLibraryTask(*context, std::move(library_load)))
+    context->library_status = "库索引读取任务启动失败";
   *plugin_context = context;
   return anomaly::sdk::Ok();
 }
@@ -12310,6 +12749,8 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       context->localizer.Text("tab.mmd", "MMD motion");
   const std::string pose_tab_label =
       context->localizer.Text("tab.pose", "Joint pose");
+  const std::string library_tab_label =
+      context->localizer.Text("tab.library", "库");
   const bool use_tabs =
       can_tabs &&
       ui->begin_tab_bar(ui->user,
@@ -13450,6 +13891,145 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     DrawKeyframePage(*context, ui);
   if (keyframe_page && use_tabs)
     ui->end_tab_item(ui->user);
+
+  const bool library_page =
+      !use_tabs ||
+      ui->begin_tab_item(ui->user, anomaly::sdk::StringView(library_tab_label), nullptr, 0U, 1) != 0;
+  if (library_page) {
+    const auto text = [&](const std::string &value) {
+      ui->text(ui->user, anomaly::sdk::StringView(value));
+    };
+    const bool can_input = HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::input_text)>(
+                               ui, offsetof(AnomalyUiServiceV1, input_text)) &&
+                           ui->input_text != nullptr;
+    const bool can_enable_button =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::button_enabled)>(
+            ui, offsetof(AnomalyUiServiceV1, button_enabled)) && ui->button_enabled != nullptr;
+    const auto library_button = [&](const std::string &label, const bool enabled = true) {
+      if (can_enable_button)
+        return ui->button_enabled(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F,
+                                  enabled ? 1 : 0) != 0 && enabled;
+      return enabled && ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F) != 0;
+    };
+    if (can_input) {
+      text(context->localizer.Text("library.name", "名称"));
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      ui->input_text(ui->user, anomaly::sdk::StringView("##library-name"),
+                     context->library_name_input.data(), context->library_name_input.size(), 0);
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    if (library_button(context->localizer.Text("library.save_pose", "保存当前姿态"))) {
+      std::lock_guard<std::mutex> lock(context->library_mutex);
+      context->library_request_name = context->library_name_input.data();
+      context->library_request.store(1, std::memory_order_release);
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    if (library_button(context->localizer.Text("library.save_motion", "保存当前动作"))) {
+      std::lock_guard<std::mutex> lock(context->library_mutex);
+      context->library_request_name = context->library_name_input.data();
+      context->library_request.store(3, std::memory_order_release);
+    }
+
+    const bool library_can_confirm =
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::open_popup)>(
+            ui, offsetof(AnomalyUiServiceV1, open_popup)) && ui->open_popup != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_popup_modal)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_popup_modal)) && ui->begin_popup_modal != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_popup)>(
+            ui, offsetof(AnomalyUiServiceV1, end_popup)) && ui->end_popup != nullptr &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::close_current_popup)>(
+            ui, offsetof(AnomalyUiServiceV1, close_current_popup)) && ui->close_current_popup != nullptr;
+    const auto request_entry = [&](const int request, const better_pose::library::Entry &entry) {
+      std::lock_guard<std::mutex> lock(context->library_mutex);
+      context->library_request_id = entry.id;
+      context->library_request_name = context->library_name_input.data();
+      context->library_request.store(request, std::memory_order_release);
+    };
+    const auto confirm_entry = [&](const int request, const better_pose::library::Entry &entry) {
+      if (library_can_confirm) {
+        std::lock_guard<std::mutex> lock(context->library_mutex);
+        context->library_confirm_request = request;
+        context->library_confirm_id = entry.id;
+        ui->open_popup(ui->user, anomaly::sdk::StringView(
+                                      request == 6 ? "library-delete-confirm" : "library-motion-confirm"));
+      } else {
+        request_entry(request, entry);
+      }
+    };
+    std::vector<better_pose::library::Entry> entries;
+    std::string library_status;
+    {
+      std::lock_guard<std::mutex> lock(context->library_mutex);
+      entries = context->library_entries;
+      library_status = context->library_status;
+    }
+    ui->separator(ui->user);
+    text(context->localizer.Text("library.poses", "姿态库"));
+    for (const auto &entry : entries) {
+      if (entry.kind != better_pose::library::Kind::Pose)
+        continue;
+      const std::string pose_button_id = entry.name + "###library-pose-" + entry.id;
+      if (library_button(pose_button_id))
+        request_entry(2, entry);
+      ui->same_line(ui->user, 0.0F, 4.0F);
+      if (library_button("重命名##" + entry.id))
+        request_entry(5, entry);
+      ui->same_line(ui->user, 0.0F, 4.0F);
+      if (library_button("删除##" + entry.id))
+        confirm_entry(6, entry);
+    }
+    ui->separator(ui->user);
+    text(context->localizer.Text("library.motions", "动作库"));
+    for (const auto &entry : entries) {
+      if (entry.kind != better_pose::library::Kind::Motion)
+        continue;
+      const std::string motion_button_id = entry.name + "###library-motion-" + entry.id;
+      if (library_button(motion_button_id))
+        confirm_entry(4, entry);
+      ui->same_line(ui->user, 0.0F, 4.0F);
+      if (library_button("重命名##" + entry.id))
+        request_entry(5, entry);
+      ui->same_line(ui->user, 0.0F, 4.0F);
+      if (library_button("删除##" + entry.id))
+        confirm_entry(6, entry);
+    }
+    if (!library_status.empty())
+      text(library_status);
+    if (library_can_confirm) {
+      for (const auto &popup : {std::string("library-motion-confirm"),
+                                std::string("library-delete-confirm")}) {
+        int open = 1;
+        if (ui->begin_popup_modal(ui->user, anomaly::sdk::StringView(popup), &open, 0U) != 0) {
+          const int request = popup == "library-delete-confirm" ? 6 : 4;
+          const std::string prompt = request == 6
+              ? context->localizer.Text("library.confirm_delete", "确定删除这个库条目？")
+              : context->localizer.Text("library.confirm_motion", "确定替换当前关键帧动作？");
+          text(prompt);
+          if (library_button(context->localizer.Text("library.confirm_yes", "确定"))) {
+            std::string id;
+            {
+              std::lock_guard<std::mutex> lock(context->library_mutex);
+              id = context->library_confirm_id;
+              context->library_confirm_request = 0;
+            }
+            {
+              std::lock_guard<std::mutex> lock(context->library_mutex);
+              context->library_request_id = id;
+              context->library_request_name = context->library_name_input.data();
+            }
+            context->library_request.store(request, std::memory_order_release);
+            ui->close_current_popup(ui->user);
+          }
+          ui->same_line(ui->user, 0.0F, 6.0F);
+          if (library_button(context->localizer.Text("library.confirm_cancel", "取消")))
+            ui->close_current_popup(ui->user);
+          ui->end_popup(ui->user);
+        }
+      }
+    }
+    if (use_tabs)
+      ui->end_tab_item(ui->user);
+  }
 
   if (use_tabs)
     ui->end_tab_bar(ui->user);
