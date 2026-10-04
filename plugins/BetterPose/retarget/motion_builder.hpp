@@ -109,6 +109,17 @@ struct VmdCameraKey {
   bool perspective = false;
 };
 
+// One morph (facial expression) keyframe. MMD interpolates morphs linearly.
+struct VmdMorphKey {
+  std::uint32_t frame = 0;
+  float weight = 0.0F;
+};
+
+struct VmdMorphTrack {
+  std::string name;  // UTF-8 (the file stores Shift-JIS)
+  std::vector<VmdMorphKey> keys;  // ascending frame order
+};
+
 struct VmdDocument {
   bool ok = false;
   std::string error;
@@ -116,6 +127,7 @@ struct VmdDocument {
   std::string model_name;
   std::vector<std::uint32_t> bone_frame_range;  // empty when there are no keys
   std::vector<VmdTrack> tracks;
+  std::vector<VmdMorphTrack> morphs;  // file order of first appearance
   std::vector<VmdIkState> ik_states;  // file order; one entry per record
   std::vector<VmdCameraKey> camera;              // ascending frame order
   std::vector<std::uint32_t> camera_frame_range;  // empty when there are no camera keys

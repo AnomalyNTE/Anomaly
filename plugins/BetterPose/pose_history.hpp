@@ -42,14 +42,42 @@ struct PoseState {
   }
 };
 
-class PoseHistory {
+// Morph weights for the expression page, as snapshots. A morph that is not
+// driven belongs to the game, so `driven` is part of the state: undoing a
+// "take this morph over" hands it back, which a weight alone cannot say.
+struct ExpressionState {
+  std::vector<float> weights;
+  std::vector<std::uint8_t> driven;
+
+  bool SameAs(const ExpressionState &other) const noexcept {
+    constexpr float kEpsilon = 1e-6F;
+    const std::size_t count = (std::max)(weights.size(), other.weights.size());
+    for (std::size_t i{}; i != count; ++i) {
+      const bool a_driven = i < driven.size() && driven[i] != 0;
+      const bool b_driven = i < other.driven.size() && other.driven[i] != 0;
+      if (a_driven != b_driven)
+        return false;
+      if (!a_driven)
+        continue;  // an undriven weight is the game's, not part of the edit
+      const float a = i < weights.size() ? weights[i] : 0.0F;
+      const float b = i < other.weights.size() ? other.weights[i] : 0.0F;
+      if (std::abs(a - b) > kEpsilon)
+        return false;
+    }
+    return true;
+  }
+};
+
+// Snapshot history over any state with `SameAs`: see the comment at the top.
+template <typename State>
+class History {
 public:
   static constexpr std::size_t kMaximumSteps = 64;
   static constexpr std::uint64_t kSettleMilliseconds = 250;
 
   // Forget everything and treat `state` as the starting point (plugin load,
   // character switch: steps from another pose must not be undone into).
-  void Reset(const PoseState &state) {
+  void Reset(const State &state) {
     undo_.clear();
     redo_.clear();
     committed_ = state;
@@ -61,7 +89,7 @@ public:
   // is still held (mouse button down); a step is only closed once it is
   // released and the state has stopped changing for kSettleMilliseconds.
   // Returns true when a new undo step was recorded.
-  bool Observe(const PoseState &state, const bool editing, const std::uint64_t now) {
+  bool Observe(const State &state, const bool editing, const std::uint64_t now) {
     if (!initialized_) {
       Reset(state);
       return false;
@@ -94,7 +122,7 @@ public:
 
   // Undo/redo return the state to apply. An edit still settling is closed
   // first, so undo goes back to before it rather than one step further.
-  bool Undo(const PoseState &live, PoseState &out) {
+  bool Undo(const State &live, State &out) {
     Flush(live);
     if (undo_.empty())
       return false;
@@ -105,7 +133,7 @@ public:
     return true;
   }
 
-  bool Redo(const PoseState &live, PoseState &out) {
+  bool Redo(const State &live, State &out) {
     Flush(live);
     if (redo_.empty())
       return false;
@@ -120,7 +148,7 @@ public:
   std::size_t RedoCount() const noexcept { return redo_.size(); }
 
 private:
-  void Flush(const PoseState &live) {
+  void Flush(const State &live) {
     if (!initialized_) {
       Reset(live);
       return;
@@ -135,13 +163,16 @@ private:
     committed_ = live;
   }
 
-  std::deque<PoseState> undo_;
-  std::deque<PoseState> redo_;
-  PoseState committed_;
-  PoseState last_;
+  std::deque<State> undo_;
+  std::deque<State> redo_;
+  State committed_;
+  State last_;
   std::uint64_t changed_at_{};
   bool pending_{};
   bool initialized_{};
 };
+
+using PoseHistory = History<PoseState>;
+using ExpressionHistory = History<ExpressionState>;
 
 }  // namespace better_pose::history

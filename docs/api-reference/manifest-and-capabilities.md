@@ -126,6 +126,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | `anomaly.nte.map-landmarks` | `nte-map-landmarks` |
 | `anomaly.nte.navigation` | `nte-navigation` |
 | `anomaly.nte.pickup` | `nte-pickup` |
+| `anomaly.nte.ui-buttons` | `nte-ui-buttons` |
 | `anomaly.nte.entities` | `nte-entity-snapshot` |
 | `anomaly.nte.actors` | `nte-actor-snapshot` |
 | `anomaly.nte.combat` | `nte-combat-read` |

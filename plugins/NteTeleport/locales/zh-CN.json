@@ -12,6 +12,7 @@
     "tracked.unavailable": "暂无追踪目标",
     "action.tracked.refresh": "读取追踪目标",
     "action.tracked.teleport": "传送到追踪目标",
+    "action.tracked.hotkey": "追踪目标快捷键",
     "action.apply": "传送",
     "action.current": "填入当前坐标",
     "current.unavailable": "当前坐标不可用",
