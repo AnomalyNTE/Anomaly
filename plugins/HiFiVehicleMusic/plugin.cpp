@@ -535,6 +535,8 @@ std::optional<std::size_t> SongIndex(const AlbumState& album, const std::uint64_
 
 // Returns true when the plugin plays the event itself and the original must be
 // skipped.
+void EnsureRows(Context& context);
+
 bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
     const float position) noexcept {
     try {
@@ -567,6 +569,11 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
         std::uint64_t id{};
         if (list_id != nullptr &&
             ReadValue(context, reinterpret_cast<std::uintptr_t>(list_id), id)) {
+            // A session that drives straight from boot never opens the music UI,
+            // so nothing built the album rows yet and every event was left to the
+            // game. Build them here; once they exist this only compares the
+            // library generation.
+            EnsureRows(context);
             std::scoped_lock lock(context.album_mutex);
             song = SongIndex(context.album, id);
         }
@@ -1116,6 +1123,11 @@ void EnsureRows(Context& context) {
     }
     std::vector<std::wstring> titles = context.engine.Titles();
     if (titles.size() > profile::kMaxSongs) titles.resize(profile::kMaxSongs);
+    // An empty library is usually the first scan still running. Publishing it
+    // would record the generation and leave the album inactive until the next
+    // scan, so the vehicle music stays the game's; leave the state alone and let
+    // the next caller build the rows once the scan has titles.
+    if (titles.empty()) return;
     std::vector<std::byte*> songs;
     songs.reserve(titles.size());
     const std::array<std::byte, profile::kFStringSize> empty_string{};
