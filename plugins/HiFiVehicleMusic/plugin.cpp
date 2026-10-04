@@ -26,7 +26,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -179,10 +178,6 @@ struct Context final {
     // song id on the library song the engine actually plays.
     const AnomalyUe5AhudServiceV1* ahud{};
     AnomalyGenerationHandleV1 ahud_subscription{};
-    // Optional, diagnostic: logs UI events (clicks, selections) to find the
-    // album list's single-click path.
-    const AnomalyUe5ProcessEventServiceV1* process_event{};
-    AnomalyGenerationHandleV1 trace_subscription{};
     anomaly::plugins::Localizer localizer;
     AnomalyGenerationHandleV1 settings_schema{};
     AudioEngine engine;
@@ -283,10 +278,6 @@ bool NamesReady(const AnomalyUe5NamesServiceV1* service) noexcept {
 
 bool AhudReady(const AnomalyUe5AhudServiceV1* service) noexcept {
     return HIFI_HAS(AnomalyUe5AhudServiceV1, unsubscribe) && service->subscribe != nullptr;
-}
-
-bool ProcessEventReady(const AnomalyUe5ProcessEventServiceV1* service) noexcept {
-    return HIFI_HAS(AnomalyUe5ProcessEventServiceV1, unsubscribe) && service->subscribe != nullptr;
 }
 
 bool UiReady(const AnomalyUiServiceV1* service) noexcept {
@@ -2330,69 +2321,12 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
     return {HookState::Installed, {}};
 }
 
-// Diagnostic trace of UI events, to find what a single click in the album list
-// does. Names are resolved once per UFunction and cached; at most kTraceLines
-// lines are logged per session so the log is not flooded.
-constexpr std::uint32_t kTraceLines = 400;
-std::atomic<std::uint32_t> g_trace_lines{0};
-
-std::string ObjectName(const Context& context, const std::uintptr_t object) {
-    std::uint32_t id{};
-    if (object == 0 || !ReadValue(context, object + profile::kObjectNameOffset, id)) return {};
-    std::array<char, 256> buffer{};
-    std::size_t size = buffer.size();
-    if (context.names->resolve_utf8(context.names->user, id, buffer.data(), &size).code !=
-            ANOMALY_STATUS_V1_OK ||
-        size > buffer.size()) {
-        return {};
-    }
-    std::string name(buffer.data(), size);
-    while (!name.empty() && name.back() == '\0') name.pop_back();
-    return name;
-}
-
-bool TraceWorthy(const std::string& name) {
-    static constexpr std::array<std::string_view, 9> kKeep{
-        "Click", "Select", "Pressed", "Released", "Entry", "Album", "Music", "Item", "Focus"};
-    static constexpr std::array<std::string_view, 4> kDrop{"Tick", "Anim", "Hover", "Paint"};
-    for (const auto drop : kDrop) {
-        if (name.find(drop) != std::string::npos) return false;
-    }
-    for (const auto keep : kKeep) {
-        if (name.find(keep) != std::string::npos) return true;
-    }
-    return false;
-}
-
-void ANOMALY_CALL TraceEvent(void* user, const std::uintptr_t object, const std::uintptr_t function, void*) {
-    auto* const context = static_cast<Context*>(user);
-    if (context == nullptr || function == 0 || g_trace_lines.load(std::memory_order_relaxed) >= kTraceLines) {
-        return;
-    }
-    try {
-        // Game thread only (the service serializes callbacks), so no lock.
-        static std::unordered_map<std::uintptr_t, std::string> names;
-        auto found = names.find(function);
-        if (found == names.end()) {
-            std::string name = ObjectName(*context, function);
-            found = names.emplace(function, TraceWorthy(name) ? std::move(name) : std::string{}).first;
-        }
-        if (found->second.empty()) return;
-        std::uintptr_t object_class{};
-        static_cast<void>(ReadValue(*context, object + 0x10, object_class));
-        g_trace_lines.fetch_add(1, std::memory_order_relaxed);
-        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-            "ui event " + ObjectName(*context, object_class) + "::" + found->second);
-    } catch (...) {
-    }
-}
-
-void UnsubscribeTrace(Context& context) noexcept {
-    if (context.trace_subscription.id == 0 || context.process_event == nullptr) return;
-    const AnomalyGenerationHandleV1 handle = context.trace_subscription;
-    context.trace_subscription = {};
-    static_cast<void>(context.process_event->unsubscribe(context.process_event->user, handle));
-}
+// The UI event trace that used to sit here resolved FName ids through the Host's
+// names service from the Game thread. The Host waits inside that call while it
+// publishes its semantic state, and a Game thread that waits there freezes the
+// game, so a boot-time or map-switch event killed the process's input. The trace
+// is removed until the Host stops blocking a Game thread caller; what it found is
+// recorded in README.md.
 
 // A successful unsubscribe drains a callback already in flight.
 void UnsubscribeSync(Context& context) noexcept {
@@ -2430,9 +2364,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         context->ahud = host_view.Query<AnomalyUe5AhudServiceV1>(
             ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION).get();
         if (!AhudReady(context->ahud)) context->ahud = nullptr;
-        context->process_event = host_view.Query<AnomalyUe5ProcessEventServiceV1>(
-            ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION).get();
-        if (!ProcessEventReady(context->process_event)) context->process_event = nullptr;
         context->localizer = anomaly::plugins::Localizer(host);
         if (!CoreReady(context->core) || !ConfigReady(context->config) ||
             !SignatureReady(context->signature) || !HookReady(context->hook) ||
@@ -2499,14 +2430,6 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
             Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 "current song sync unavailable; the game's title may lag behind the library song");
         }
-        if (context->process_event != nullptr) {
-            AnomalyGenerationHandleV1 handle{};
-            if (context->process_event->subscribe(context->process_event->user, TraceEvent, context, &handle)
-                        .code == ANOMALY_STATUS_V1_OK &&
-                handle.id != 0) {
-                context->trace_subscription = handle;
-            }
-        }
         std::scoped_lock lock(context->mutex);
         context->hook_state = state;
         context->hook_detail = std::move(detail);
@@ -2525,7 +2448,6 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
             if (context->stopped) return anomaly::sdk::Ok();
             context->stopped = true;
         }
-        UnsubscribeTrace(*context);
         UnsubscribeSync(*context);
         ReleaseHooks(*context);
         g_context.store(nullptr, std::memory_order_release);
@@ -2557,7 +2479,6 @@ void ANOMALY_CALL Unload(void* plugin_context) {
     auto* const context = static_cast<Context*>(plugin_context);
     if (context == nullptr) return;
     try {
-        UnsubscribeTrace(*context);
         UnsubscribeSync(*context);
         ReleaseHooks(*context);
         g_context.store(nullptr, std::memory_order_release);

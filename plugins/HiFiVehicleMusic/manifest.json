@@ -20,11 +20,10 @@
     {"id": "anomaly.ui", "minVersion": 1, "optional": true},
     {"id": "anomaly.localization", "minVersion": 1},
     {"id": "anomaly.ue5.names", "minVersion": 1},
-    {"id": "anomaly.ue5.ahud", "minVersion": 1, "optional": true},
-    {"id": "anomaly.ue5.process-event", "minVersion": 1, "optional": true}
+    {"id": "anomaly.ue5.ahud", "minVersion": 1, "optional": true}
   ],
   "capabilities": [
     "configuration", "interop-signature", "interop-hook", "memory-read", "scheduler", "ui",
-    "ue5-names", "ue5-ahud", "game-events"
+    "ue5-names", "ue5-ahud"
   ]
 }

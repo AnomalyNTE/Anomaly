@@ -175,6 +175,11 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
 - [x] 实测：xDuoo 只能 DoP。加 DSD 输出选项（仿 QQ 音乐）：仅 PCM / Native > DoP > PCM / DoP > Native > PCM，
   逐级回退，最后一级用 dsd2pcm 转 PCM；实测正常
 - [x] 专辑名改为曲库文件夹名；窗口去掉设备说明和「最近事件」两行；构建通过，待实测
+- [x] 修复「带插件开机必卡死、切图也挂起」：诊断用的 ProcessEvent 追踪在 Game 线程上调
+  `anomaly.ue5.names` 的 `resolve_utf8`，而宿主在这条调用里会等待自己的语义状态发布完成；
+  Game 线程一旦等在那里，整个游戏就不再推进（dump 显示 GameThread 停在
+  `msvcp140!Cnd_wait → SleepConditionVariableSRW`，调用链正是本插件的追踪回调）。追踪已移除，
+  它此前的结论保留在上面第 7 条；宿主不再阻塞 Game 线程调用者后可以再加回来。
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
   专辑沿用模板封面；导入代码保留未调用
