@@ -1182,9 +1182,14 @@ void EnsureRows(Context& context) {
     // texture made the album vanish from the list in game. The album keeps the
     // template album's cover until that is understood.
     const std::uint64_t library_generation = context.engine.LibraryGeneration();
+    std::uint64_t published{};
     {
         std::scoped_lock lock(context.album_mutex);
         if (library_generation == album.generation) return;
+        // What the state must still show when these rows are ready: comparing the
+        // new generation instead rejects every first build, because the recorded
+        // one is then still 0.
+        published = album.generation;
     }
     std::vector<std::wstring> titles = context.engine.Titles();
     if (titles.size() > profile::kMaxSongs) titles.resize(profile::kMaxSongs);
@@ -1222,10 +1227,11 @@ void EnsureRows(Context& context) {
     }
     {
         std::scoped_lock lock(context.album_mutex);
-        // A template from another row base (or another scan) replaced what these
-        // rows name while they were built; they are leaked and rebuilt by the
-        // next lookup instead of being published under the wrong album id.
-        if (album.base != base || library_generation != album.generation) {
+        // Another thread published rows for another scan, or the template these
+        // rows name was replaced while they were built; they are leaked and
+        // rebuilt by the next lookup instead of being published under the wrong
+        // album id.
+        if (album.base != base || album.generation != published) {
             ReportAlbumBlocked(context, AlbumBlocked::RowsReplaced);
             return;
         }
