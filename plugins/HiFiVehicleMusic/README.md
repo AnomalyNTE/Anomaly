@@ -31,6 +31,9 @@
    （纯存储，无游戏调用），查表 detour 命中合成名时从已发布的不可变快照返回合成行；后台 builder 线程
    （250ms 轮询）把捕获变成行（`FText::FromString`、行复制都在这里）并整体发布下一个快照。
    快照从不释放（UI 持有行指针），builder 在 Stop/Unload 里先于 Hook 与引擎被 join。
+   builder 还会主动补模板（`PrimeTemplates`）：游戏构建专辑列表早于任何音乐表遍历，只靠 detour
+   被动捕获会让专辑首屏不显示（播一首歌才出现）；模板缺失时 builder 持各自 Hook 的租约，用原始
+   `ForeachRow` 空串遍历一次表补齐模板与 base。
    - 合成行：音乐表模板行按曲库标题复制出 `FPlayerMusicData` 行（标题用游戏自己的
      `FText::FromString`，`AlbumID` 指向新专辑，排序在所有游戏条目之后）；专辑行复制模板专辑的
      `FMusicAlbumData`。行名 FName = 真实行的 ComparisonIndex + 自定义 Number（第 k 首
@@ -212,6 +215,14 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
   全部有界并全部安装（功能不缩水），跨 Hook 调用统一走 `CallUnderLease` 嵌套租约，事件名经
   `ResolveEventName` 缓存。`anomaly-test-host --reload 30`（tick=10ms 极速重载）与
   `--reload 5 --ticks 400` 全部通过，资源零泄漏；游戏内验证待做
+- [x] 修复游戏内「关闭/热重载仍 quarantine」的另一半根因（宿主侧）：插件 30 个 Hook 的撤销走
+  `RevokeScope` 逐个 `Disable`+`Remove`，MinHook 每次都全进程挂起/恢复线程（系统线程快照），
+  真实游戏 100+ 线程下 60 次挂起耗尽宿主 1 秒停止预算（test host 线程少测不出）。宿主改为批量：
+  `RemoveOwner` 一次 `MH_ApplyQueued` 挂起完成整批 disable，再逐个 remove（已禁用的 Hook 移除
+  不再挂起）；装/卸 30 Hook 从 60 次挂起降到 1 次
+- [x] 修复「专辑必须播一首歌才显示」：快照发布依赖 detour 被动捕获的表模板，而游戏构建专辑列表
+  早于任何音乐表遍历；builder 的 `PrimeTemplates` 在模板缺失时持 Hook 租约主动用原始
+  `ForeachRow` 遍历一次表补齐（时长显示依赖快照的 SongIndex/引擎时长，首屏快照及时发布后一并恢复）
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
   专辑沿用模板封面；导入代码保留未调用

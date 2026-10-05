@@ -1186,6 +1186,8 @@ void RefreshTables(const Context& context) {
     }
 }
 
+void PrimeTemplates();
+
 // Builds the album row and one song row per library title from the latest
 // captures and publishes the next snapshot. Runs on the builder thread: the
 // game calls (FText, the row copies) happen here, never inside a callback
@@ -1196,6 +1198,7 @@ void BuildAlbumSnapshot(Context& context) {
     if (context.builder_stopping.load(std::memory_order_acquire)) return;
     AlbumBuild& build = context.build;
     RefreshTables(context);
+    PrimeTemplates();
 
     const std::byte* music_template{};
     const std::byte* album_template{};
@@ -1381,6 +1384,48 @@ void __fastcall RecordRow(void* user, void* element, void* row) {
         }
     }
     recorder->inner->fn(recorder->inner->user, element, row);
+}
+
+void __fastcall NoopVisit(void*, void*, void*) {}
+
+// The game builds the album list before it ever walks the music table, so
+// waiting for the table detours to observe a walk leaves the library album
+// invisible until the first song plays. When a template is still missing, walk
+// the table once with the original ForeachRow and record what the detours
+// would have recorded. Runs on the builder thread under the walk hook's own
+// lease; the trampoline's inner FindRow calls enter their detours normally and
+// take their own leases.
+void PrimeTemplates() {
+    bool need_music = false;
+    bool need_album = false;
+    {
+        std::scoped_lock lock(g_capture_mutex);
+        need_music = g_capture.music_template == nullptr;
+        need_album = g_capture.album_template == nullptr;
+    }
+    const std::uintptr_t music_table = g_music_table.load(std::memory_order_acquire);
+    if (need_music && music_table != 0) {
+        CallUnderLease(kForEachRow, [music_table](const std::uintptr_t original) {
+            static const RowCallback noop{&NoopVisit, nullptr};
+            std::vector<std::uint64_t> listed;
+            RowRecorder recorder{&noop, nullptr, 0, &listed};
+            RowCallback wrapped{&RecordRow, &recorder};
+            CallForEach(original, reinterpret_cast<void*>(music_table), L"", &wrapped);
+            if (recorder.first != nullptr) {
+                CaptureMusicWalk(recorder.first, recorder.base, std::move(listed));
+            }
+        });
+    }
+    const std::uintptr_t album_table = g_album_table.load(std::memory_order_acquire);
+    if (need_album && album_table != 0) {
+        CallUnderLease(kAlbumForEach, [album_table](const std::uintptr_t original) {
+            static const RowCallback noop{&NoopVisit, nullptr};
+            RowRecorder recorder{&noop, nullptr, 0, nullptr};
+            RowCallback wrapped{&RecordRow, &recorder};
+            CallForEach(original, reinterpret_cast<void*>(album_table), L"", &wrapped);
+            if (recorder.first != nullptr) CaptureAlbumRow(recorder.first);
+        });
+    }
 }
 
 // Bounded: the lookup only reads the published snapshot; a real row of the
