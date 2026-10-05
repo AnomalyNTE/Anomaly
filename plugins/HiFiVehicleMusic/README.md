@@ -6,10 +6,10 @@
 ## 工作方式
 
 1. 通过 `anomaly.interop.signature` 在 `HTGame.exe` `.text` 中解析函数签名，用 `anomaly.interop.hook` 挂
-   detour。当前只装 4 个稳定 Hook（Post / Stop / Pause / Resume），它们的回调有严格上界：只读原子快照、
-   向音频引擎投递命令、经缓存解析事件名，不做表遍历、行构建或任何可能阻塞的调用。其余 Hook
-   （SetPlayerType、EndGetOffVehicle 及整个专辑链）已重构为快照模型但默认关闭（`kEnableAlbumHooks` /
-   `HookInstalled`），待游戏内验证生命周期后再启用。必需签名或任一 Hook 失败则释放全部 Hook，插件退化为不接管。
+   detour（全部 30 个，见 `HookIndex`）。每个 detour 都有严格上界：读原子快照、有界内存读写、向音频引擎
+   投递命令、经缓存解析事件名、经 `CallUnderLease` 的嵌套租约调其他 Hook 的原函数；不做表遍历、行构建、
+   纹理导入或任何可能阻塞的调用——重活全部在后台 builder 线程（见第 5 条），保证宿主 1 秒停止预算内能
+   排空回调。必需签名或任一核心 Hook 失败则释放全部 Hook，插件退化为不接管。
 2. `PostPlayerMusicSound` detour：读取 `PlayerType`（载具 = 1）与 `UAkAudioEvent` 的 FName，
    经 `anomaly.ue5.names` 解析出事件名。若插件启用、为载具音乐且曲库非空，则跳过原函数（Wwise 不发声），先调用原始 `StopPlayerMusicSound` 停掉正在播的 Wwise
    音乐，再把播放命令投递给音频引擎；否则停止引擎并调用原函数。
@@ -208,9 +208,9 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
   （`EnsureRows` 在 `TakeOverPost`/`AlbumForEach` 里建行、FText 创建、`CoverTexture` 导入、宿主 names
   服务调用），MinHook 撤销 Hook 要冻结全进程线程并等回调排空，宿主只有 1 秒预算；加上跨 Hook 的
   trampoline 调用（Post detour 里调 Stop 原函数、点歌补切里调 SetCurrent/ChangeSound 原函数）没有
-  嵌套租约，撤销期间可能踩已释放的跳板。重构为快照 + builder 线程（见上），detour 全部有界，
-  跨 Hook 调用统一走 `CallUnderLease` 嵌套租约，事件名经 `ResolveEventName` 缓存；稳定 4 Hook 之外的
-  全部默认不装（`kEnableAlbumHooks`）。`anomaly-test-host --reload 30`（tick=10ms 极速重载）与
+  嵌套租约，撤销期间可能踩已释放的跳板。重构为快照 + builder 线程（见上），30 个 Hook 的 detour
+  全部有界并全部安装（功能不缩水），跨 Hook 调用统一走 `CallUnderLease` 嵌套租约，事件名经
+  `ResolveEventName` 缓存。`anomaly-test-host --reload 30`（tick=10ms 极速重载）与
   `--reload 5 --ticks 400` 全部通过，资源零泄漏；游戏内验证待做
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，

@@ -86,6 +86,15 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 3> kDsdModeL
 
 // Hooks before kCoreHookCount are required for the takeover; the album hooks
 // after it add the library to the in-game music list and are all-or-nothing.
+//
+// The stop path drains every hook with the host stop deadline (1s) as its only
+// bound, so a detour that can outlive that budget -- a table walk, a row
+// build, any call that blocks -- quarantines the plugin with "host stop
+// deadline exceeded" (hifi-vehicle-music-hook-unload-quarantine.md). Every
+// detour in this set is therefore bounded: snapshot reads, atomic stores,
+// engine enqueues, cached name lookups, and original calls through their own
+// (possibly nested) lease. The heavy work -- row builds, FText creation, the
+// cover import -- lives on the builder thread, never under a callback lease.
 enum HookIndex : std::size_t {
     kPost, kStop, kPause, kResume, kSetPlayerType, kEndGetOff, kCoreHookCount,
     kFindRow = kCoreHookCount, kForEachRow, kAlbumRow, kAlbumForEach, kOwnedCopy, kReGenerate,
@@ -93,21 +102,6 @@ enum HookIndex : std::size_t {
     kPositionFraction, kPositionSeconds, kDuration, kChangeSound, kEntryClick, kDetailCover,
     kPageCover, kItemSelected, kRowClick, kListClick, kSetCurrentIdHook, kDuration2, kHookCount
 };
-
-// Which hooks are installed. The stop path drains every hook with the host
-// stop deadline as its only bound, so a detour that can outlive that budget
-// (a table walk, a row build, any call that blocks) quarantines the plugin:
-// "host stop deadline exceeded" (hifi-vehicle-music-hook-unload-quarantine.md).
-// Only the four hooks whose detours are strictly bounded are installed; the
-// album chain is rebuilt on the immutable-snapshot model below and stays off
-// until that lifecycle has been validated in game. Flipping this to true
-// enables it without further code changes.
-constexpr bool kEnableAlbumHooks = false;
-constexpr bool HookInstalled(const std::size_t index) {
-    if (index == kSetPlayerType || index == kEndGetOff) return false;
-    if (index >= kFindRow) return kEnableAlbumHooks;
-    return true;
-}
 
 using PostFn = std::int64_t(__fastcall*)(void*, void*, void*, float);
 // Also EndGetOffVehicle(this, bool).
@@ -1199,11 +1193,7 @@ void RefreshTables(const Context& context) {
 // Rows replaced by a rescan are leaked on purpose: the game keeps row pointers
 // in its UI objects.
 void BuildAlbumSnapshot(Context& context) {
-    if constexpr (!kEnableAlbumHooks) {
-        return;
-    } else if (context.builder_stopping.load(std::memory_order_acquire)) {
-        return;
-    }
+    if (context.builder_stopping.load(std::memory_order_acquire)) return;
     AlbumBuild& build = context.build;
     RefreshTables(context);
 
@@ -2357,9 +2347,6 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
     std::array<std::uintptr_t, kHookCount> addresses{};
     std::string_view album_missing;
     for (std::size_t i = 0; i < kHookCount; ++i) {
-        // Stable set first: the hooks whose detours are bounded run always; the
-        // rest wait for their lifecycle to be validated (see HookInstalled).
-        if (!HookInstalled(i)) continue;
         addresses[i] = resolve(targets[i].pattern);
         if (targets[i].call_site) addresses[i] = call_target(addresses[i]);
         if (addresses[i] != 0) continue;
@@ -2490,8 +2477,8 @@ void EnsureSyncSubscription(Context& context) noexcept {
 
 // Background worker: retries the AHUD subscription that a boot-time load
 // misses (TakeOverPost used to retry it, but that query ran inside a callback
-// lease) and, when the album hooks are enabled, builds and publishes the
-// album snapshot from what the table detours captured.
+// lease) and builds and publishes the album snapshot from what the table
+// detours captured.
 void BuilderLoop(Context* context) {
     while (!context->builder_stopping.load(std::memory_order_acquire)) {
         std::unique_lock<std::mutex> lock(context->builder_wake_mutex);
