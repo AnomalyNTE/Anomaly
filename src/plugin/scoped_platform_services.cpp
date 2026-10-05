@@ -1480,9 +1480,26 @@ bool ScopedPlatformServices::RevokeScope(
     std::sort(hooks.begin(), hooks.end(), [](const auto& left, const auto& right) {
         return left->token > right->token;
     });
-    for (const auto& state : hooks) {
-        if (!RemoveHook(*impl_, state, deadline)) return false;
-        static_cast<void>(owner.scope->Release(state->token));
+    if (!hooks.empty()) {
+        // One batched removal instead of one suspend-and-remove cycle per
+        // hook: the owner teardown disables every hook in a single backend
+        // batch, drains the callback leases, and removes them in a second
+        // batch.
+        if (impl_->hooks_ == nullptr ||
+            !impl_->hooks_->RemoveOwner(
+                owner.scope->Owner(), owner.scope->Generation(),
+                RemainingUntil(deadline))) {
+            return false;
+        }
+        for (const auto& state : hooks) {
+            state->installed = false;
+            state->active.store(false, std::memory_order_release);
+            static_cast<void>(owner.scope->Release(state->token));
+        }
+        std::scoped_lock lock(impl_->mutex_);
+        for (const auto& state : hooks) {
+            impl_->hooks_by_token_.erase(state->token);
+        }
     }
     std::sort(other_tokens.begin(), other_tokens.end(), std::greater<>());
     other_tokens.erase(std::unique(other_tokens.begin(), other_tokens.end()), other_tokens.end());
