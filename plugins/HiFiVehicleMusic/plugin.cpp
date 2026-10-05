@@ -282,6 +282,10 @@ std::atomic<std::uintptr_t> g_music_table{0};
 std::atomic<std::uintptr_t> g_album_table{0};
 std::mutex g_capture_mutex;
 AlbumCapture g_capture;  // last observation of the game's table walks
+// Serializes snapshot builds between the builder thread and the game thread
+// (a list detour publishing on first open). The builder skips its cycle when
+// the lock is held; a game-thread detour waits at most one build.
+std::mutex g_build_mutex;
 
 AnomalyStatusV1 Status(const std::uint32_t code, const char* message = nullptr) noexcept {
     return {code, 0, {message, message == nullptr ? 0U : std::strlen(message)}};
@@ -1186,8 +1190,6 @@ void RefreshTables(const Context& context) {
     }
 }
 
-void PrimeTemplates();
-
 // Builds the album row and one song row per library title from the latest
 // captures and publishes the next snapshot. Runs on the builder thread: the
 // game calls (FText, the row copies) happen here, never inside a callback
@@ -1198,7 +1200,6 @@ void BuildAlbumSnapshot(Context& context) {
     if (context.builder_stopping.load(std::memory_order_acquire)) return;
     AlbumBuild& build = context.build;
     RefreshTables(context);
-    PrimeTemplates();
 
     const std::byte* music_template{};
     const std::byte* album_template{};
@@ -1390,42 +1391,42 @@ void __fastcall NoopVisit(void*, void*, void*) {}
 
 // The game builds the album list before it ever walks the music table, so
 // waiting for the table detours to observe a walk leaves the library album
-// invisible until the first song plays. When a template is still missing, walk
-// the table once with the original ForeachRow and record what the detours
-// would have recorded. Runs on the builder thread under the walk hook's own
-// lease; the trampoline's inner FindRow calls enter their detours normally and
-// take their own leases.
-void PrimeTemplates() {
+// invisible until the first song plays. When the music template is still
+// missing, walk the music table once with the original ForeachRow and record
+// what the detours would have recorded. Game thread only (called from a list
+// detour): UE table structures are not safe to walk from another thread while
+// the game builds them, which crashed startup when this ran on the builder
+// thread. The walk hook's lease pins the trampoline; FindRow calls the
+// trampoline makes inside enter their own detours and take their own leases.
+void PrimeMusicTemplate() {
     bool need_music = false;
-    bool need_album = false;
     {
         std::scoped_lock lock(g_capture_mutex);
         need_music = g_capture.music_template == nullptr;
-        need_album = g_capture.album_template == nullptr;
     }
+    if (!need_music) return;
     const std::uintptr_t music_table = g_music_table.load(std::memory_order_acquire);
-    if (need_music && music_table != 0) {
-        CallUnderLease(kForEachRow, [music_table](const std::uintptr_t original) {
-            static const RowCallback noop{&NoopVisit, nullptr};
-            std::vector<std::uint64_t> listed;
-            RowRecorder recorder{&noop, nullptr, 0, &listed};
-            RowCallback wrapped{&RecordRow, &recorder};
-            CallForEach(original, reinterpret_cast<void*>(music_table), L"", &wrapped);
-            if (recorder.first != nullptr) {
-                CaptureMusicWalk(recorder.first, recorder.base, std::move(listed));
-            }
-        });
-    }
-    const std::uintptr_t album_table = g_album_table.load(std::memory_order_acquire);
-    if (need_album && album_table != 0) {
-        CallUnderLease(kAlbumForEach, [album_table](const std::uintptr_t original) {
-            static const RowCallback noop{&NoopVisit, nullptr};
-            RowRecorder recorder{&noop, nullptr, 0, nullptr};
-            RowCallback wrapped{&RecordRow, &recorder};
-            CallForEach(original, reinterpret_cast<void*>(album_table), L"", &wrapped);
-            if (recorder.first != nullptr) CaptureAlbumRow(recorder.first);
-        });
-    }
+    if (music_table == 0) return;
+    CallUnderLease(kForEachRow, [music_table](const std::uintptr_t original) {
+        static const RowCallback noop{&NoopVisit, nullptr};
+        std::vector<std::uint64_t> listed;
+        RowRecorder recorder{&noop, nullptr, 0, &listed};
+        RowCallback wrapped{&RecordRow, &recorder};
+        CallForEach(original, reinterpret_cast<void*>(music_table), L"", &wrapped);
+        if (recorder.first != nullptr) {
+            CaptureMusicWalk(recorder.first, recorder.base, std::move(listed));
+        }
+    });
+}
+
+// Builds and publishes the snapshot synchronously when a game-thread list
+// detour needs rows the builder thread has not published yet (first open of
+// the music or album list). g_build_mutex serializes this against the builder
+// thread's own build; the builder skips its cycle when the lock is held
+// instead of making the game thread's detour wait behind it.
+void BuildSnapshotInline(Context& context) {
+    std::scoped_lock lock(g_build_mutex);
+    BuildAlbumSnapshot(context);
 }
 
 // Bounded: the lookup only reads the published snapshot; a real row of the
@@ -1453,8 +1454,10 @@ void* __fastcall FindRowDetour(void* table, const std::uint64_t name, const wcha
 }
 
 // Bounded: the original walk runs with a recording wrapper (stores only), and
-// the library rows come from the published snapshot -- no table walk, no row
-// build, no game lookup runs inside this lease.
+// the library rows come from the published snapshot. The first walk (nothing
+// published yet) builds and publishes the snapshot inline on this game thread
+// so the very first list is complete -- afterwards the builder thread keeps it
+// current.
 void __fastcall ForEachRowDetour(void* table, const wchar_t* context_name, void* callback) {
     const AnomalyHookServiceV1* api{};
     AnomalyGenerationHandleV1 lease{};
@@ -1473,6 +1476,10 @@ void __fastcall ForEachRowDetour(void* table, const wchar_t* context_name, void*
     CallForEach(original, table, context_name, &wrapped);
     if (recorder.first != nullptr) {
         CaptureMusicWalk(recorder.first, recorder.base, std::move(listed));
+    }
+    auto* const context = g_context.load(std::memory_order_acquire);
+    if (context != nullptr && g_album.load(std::memory_order_acquire) == nullptr) {
+        BuildSnapshotInline(*context);
     }
     const auto album = g_album.load(std::memory_order_acquire);
     if (album != nullptr) {
@@ -1509,6 +1516,9 @@ void* __fastcall AlbumRowDetour(void* self, const std::uint64_t* album_name, con
 
 // Bounded: the original walk runs with a recording wrapper that also captures
 // an album-row template; the library album row is visited from the snapshot.
+// The first walk (nothing published yet) primes the missing music template on
+// this game thread and builds and publishes the snapshot inline, so the album
+// list is complete the first time it is shown.
 void __fastcall AlbumForEachDetour(void* table, const wchar_t* context_name, void* callback) {
     const AnomalyHookServiceV1* api{};
     AnomalyGenerationHandleV1 lease{};
@@ -1522,6 +1532,12 @@ void __fastcall AlbumForEachDetour(void* table, const wchar_t* context_name, voi
         RowCallback wrapped{&RecordRow, &recorder};
         CallForEach(original, table, context_name, &wrapped);
         if (recorder.first != nullptr) CaptureAlbumRow(recorder.first);
+        auto* const context = g_context.load(std::memory_order_acquire);
+        const auto current = g_album.load(std::memory_order_acquire);
+        if (context != nullptr && (current == nullptr || current->album == nullptr)) {
+            PrimeMusicTemplate();
+            BuildSnapshotInline(*context);
+        }
     } else {
         CallForEach(original, table, context_name, callback);
     }
@@ -2534,7 +2550,10 @@ void BuilderLoop(Context* context) {
         lock.unlock();
         try {
             EnsureSyncSubscription(*context);
-            BuildAlbumSnapshot(*context);
+            // Skip the cycle while a game-thread detour is publishing under
+            // g_build_mutex; the next cycle picks up the remaining work.
+            std::unique_lock<std::mutex> build_lock(g_build_mutex, std::try_to_lock);
+            if (build_lock.owns_lock()) BuildAlbumSnapshot(*context);
         } catch (...) {
         }
     }
