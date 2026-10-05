@@ -5,9 +5,11 @@
 
 ## 工作方式
 
-1. 通过 `anomaly.interop.signature` 在 `HTGame.exe` `.text` 中解析 6 个必需函数和 7 个专辑函数（外加
-   3 个辅助函数），用 `anomaly.interop.hook` 挂 detour。必需签名或任一 Hook 失败则释放全部 Hook，插件退化为不接管；
-   专辑部分全有或全无：任一缺失则不加专辑，游戏歌单保持原样。
+1. 通过 `anomaly.interop.signature` 在 `HTGame.exe` `.text` 中解析函数签名，用 `anomaly.interop.hook` 挂
+   detour。当前只装 4 个稳定 Hook（Post / Stop / Pause / Resume），它们的回调有严格上界：只读原子快照、
+   向音频引擎投递命令、经缓存解析事件名，不做表遍历、行构建或任何可能阻塞的调用。其余 Hook
+   （SetPlayerType、EndGetOffVehicle 及整个专辑链）已重构为快照模型但默认关闭（`kEnableAlbumHooks` /
+   `HookInstalled`），待游戏内验证生命周期后再启用。必需签名或任一 Hook 失败则释放全部 Hook，插件退化为不接管。
 2. `PostPlayerMusicSound` detour：读取 `PlayerType`（载具 = 1）与 `UAkAudioEvent` 的 FName，
    经 `anomaly.ue5.names` 解析出事件名。若插件启用、为载具音乐且曲库非空，则跳过原函数（Wwise 不发声），先调用原始 `StopPlayerMusicSound` 停掉正在播的 Wwise
    音乐，再把播放命令投递给音频引擎；否则停止引擎并调用原函数。
@@ -25,11 +27,16 @@
    的文件（如 `Play_Music_Radio_Progressive_Metal_001.flac`），该事件固定播放它并单曲循环、
    跟随游戏 seek。目录扫描在引擎线程完成，Hook 与 Draw 只读取内存快照，不做文件 I/O。
 5. 游戏内专辑（名称为曲库文件夹名，如 `D:\Music\周杰伦` → 「周杰伦」；换文件夹后重建专辑行）：曲库有几首，专辑里就有几首（追加在游戏歌曲之后，不替换、不隐藏游戏歌曲）。
-   - 合成行：音乐表 `ForeachRow` 遍历时记下第一行作模板，按曲库标题复制出 `FPlayerMusicData` 行
-     （标题用游戏自己的 `FText::FromString`，`AlbumID` 指向新专辑，排序在所有游戏条目之后）；
-     专辑行复制模板歌曲所属专辑的 `FMusicAlbumData`。行名 FName = 真实行的 ComparisonIndex +
-     自定义 Number（第 k 首 `0x48460000+k+1`，专辑 `0x4846FFFF`）。行常驻不释放（UI 持有行指针）。
-   - 查找/遍历：`FindRow` / `GetAlbumData` 命中合成名时返回合成行；两个 `ForeachRow` 遍历完原表后追加合成行。
+   快照架构：detour 只读写有界的共享状态——表遍历 detour 把模板行/已列出的游戏歌曲 ID 记入捕获缓冲
+   （纯存储，无游戏调用），查表 detour 命中合成名时从已发布的不可变快照返回合成行；后台 builder 线程
+   （250ms 轮询）把捕获变成行（`FText::FromString`、行复制都在这里）并整体发布下一个快照。
+   快照从不释放（UI 持有行指针），builder 在 Stop/Unload 里先于 Hook 与引擎被 join。
+   - 合成行：音乐表模板行按曲库标题复制出 `FPlayerMusicData` 行（标题用游戏自己的
+     `FText::FromString`，`AlbumID` 指向新专辑，排序在所有游戏条目之后）；专辑行复制模板专辑的
+     `FMusicAlbumData`。行名 FName = 真实行的 ComparisonIndex + 自定义 Number（第 k 首
+     `0x48460000+k+1`，专辑 `0x4846FFFF`）。行常驻不释放（UI 持有行指针）。
+   - 查找/遍历：`FindRow` / `GetAlbumData` 命中合成名时返回合成行；两个 `ForeachRow` 用记录包装跑完
+     原表（顺带捕获模板）后追加快照里的合成行。
    - 已拥有列表：`GetOwnedMusicListIDs` 的副本追加曲库 ID；`ReGenerateNewMusicListIDs` /
      `SetCurrentMusicListID` 直接读 `+0x3E0`，调用前临时加入、调用后原位移除，存档不会写入合成 ID。
    - 播放：只有专辑里的歌（list ID 解析出曲库序号 k）走 HiFi 引擎播放曲库第 k 首；游戏自带歌曲照常由 Wwise 播放。
@@ -37,9 +44,10 @@
    - 锁定状态：音乐面板 `RefreshItemStates`、载具音乐面板列表构建、`ResolveCurrentMusicListID`、
      `SyncCurrentMusicListID` 也直接读 `+0x3E0`（不经 `GetOwnedMusicListIDs`），不加入就会被判为未拥有
      （state 3 = 锁定）或把当前歌切回游戏歌曲；同样只在调用期间临时加入（嵌套调用只加一次）。
-   - 专辑封面：曲库根目录下的 `cover|folder|front|album` + `.png|.jpg|.jpeg|.bmp`，用游戏自带的
-     `ImportFileAsTexture2D` 导入为 Transient 纹理，`FUObjectItem::SetFlags(RootSet)` 防 GC，
-     专辑行的 `TSoftObjectPtr` 只写路径（弱指针置空，由引擎按名解析）。没有图片或任一步失败则保留模板封面。
+   - 专辑封面：曲库根目录下的 `cover|folder|front|album` + `.png|.jpg|.jpeg|.bmp`，由 builder 线程用
+     游戏自带的 `ImportFileAsTexture2D` 导入为 Transient 纹理，`FUObjectItem::SetFlags(RootSet)` 防 GC，
+     封面 detour 只把已导入的纹理 `SetBrushFromTexture` 到显示的 UImage 上。没有图片或任一步失败则
+     保留模板封面。
 
 ## 开源依赖
 
@@ -196,6 +204,14 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
   `SetCurrentPlayerMusicListID` 调用点、开机的 module base/trampoline，以及这次为定位专辑问题
   临时加的 `library album not built: <原因>`。代码按注释保留在原地，需要时整段解注释即可；
   保留的是状态日志（hooks installed、音乐事件 replaced/skipped、签名/hook 失败告警）
+- [x] 修复「停用/热重载触发 host stop deadline exceeded → quarantine」：detour 在回调租约内做无界工作
+  （`EnsureRows` 在 `TakeOverPost`/`AlbumForEach` 里建行、FText 创建、`CoverTexture` 导入、宿主 names
+  服务调用），MinHook 撤销 Hook 要冻结全进程线程并等回调排空，宿主只有 1 秒预算；加上跨 Hook 的
+  trampoline 调用（Post detour 里调 Stop 原函数、点歌补切里调 SetCurrent/ChangeSound 原函数）没有
+  嵌套租约，撤销期间可能踩已释放的跳板。重构为快照 + builder 线程（见上），detour 全部有界，
+  跨 Hook 调用统一走 `CallUnderLease` 嵌套租约，事件名经 `ResolveEventName` 缓存；稳定 4 Hook 之外的
+  全部默认不装（`kEnableAlbumHooks`）。`anomaly-test-host --reload 30`（tick=10ms 极速重载）与
+  `--reload 5 --ticks 400` 全部通过，资源零泄漏；游戏内验证待做
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
   专辑沿用模板封面；导入代码保留未调用
