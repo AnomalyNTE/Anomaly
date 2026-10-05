@@ -119,13 +119,7 @@ bool Initialize(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     if (Clock::now() < retry_init) return false;
     retry_init = Clock::now() + std::chrono::seconds(5);
     Host host(api);
-    const auto build = host.Query<AnomalyUe5BuildServiceV1>(ANOMALY_UE5_BUILD_SERVICE_V1_ID).get();
     const auto sig = host.Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-    char hash[256]{}; size_t size = sizeof(hash);
-    const bool read_profile = build && build->profile_hash &&
-        build->profile_hash(build->user, hash, &size).code == ANOMALY_STATUS_V1_OK;
-    const bool approved_profile = skin_awakening_profile::Supports(hash);
-    if (!read_profile || !approved_profile) return false;
     uintptr_t instruction{}; int32_t displacement{};
     if (!sig || !sig->resolve || !objects || !objects->find_exact ||
         sig->resolve(sig->user, StringView("HTGame.exe"), StringView(".text"),

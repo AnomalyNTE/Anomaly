@@ -1,15 +1,10 @@
 #pragma once
 #include "profile.hpp"
 #include <cstdint>
-#include <string_view>
 
 namespace skin_awakening_profile {
-// Supported active Profile revisions. Every field is checked against loaded
-// reflection metadata before use; an unsupported layout disables the feature.
-inline bool Supports(std::string_view hash) {
-    return hash == "bca4b8ee59fc101040de4d0f097ca8654b897d56e3ffed589b985d4c3aedba18" ||
-        hash == "c25c6a3b3d47f3f2f073666748b1f477c9c02cdfd3453a778e95460d5afddec2";
-}
+// Check the fields against loaded reflection metadata before use. Unrelated
+// Profile updates do not disable a compatible awakening layout.
 inline constexpr std::uint32_t WorldGameInstance = 0x230;
 inline constexpr std::uint32_t GameInstanceLocalPlayers = 0x38;
 inline constexpr std::uint32_t LocalPlayerController = 0x30;
