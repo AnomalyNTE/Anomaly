@@ -37,6 +37,13 @@ inline constexpr std::uint32_t kLocalPlayerControllerOffset = 0x30;
 inline constexpr std::uint32_t kControllerCameraManagerOffset = 0x380;
 inline constexpr std::uint32_t kControllerPlayerInputOffset = 0x440;
 inline constexpr std::uint32_t kCameraViewPointVtableOffset = 0x850;
+// The POV the view-point getter copies its result from. The getter's own body reaches it through
+// this vtable slot (the `call [rax+A0 07 00 00]` inside kCameraViewPointPattern), and the slot
+// holds a `lea rax,[rcx+disp32]; ret` accessor naming the manager's cached FMinimalViewInfo.
+// FOV follows that struct's location and rotation vectors and is the one part of the view the
+// getter's out-parameters cannot carry.
+inline constexpr std::uint32_t kCameraPovAccessorVtableOffset = 0x7A0;
+inline constexpr std::uint32_t kCameraPovFovOffset = 0x30;
 inline constexpr std::uint32_t kPlayerInputKeyVtableOffset = 0x2B8;
 inline constexpr std::uint32_t kInputKeyEventArgsKeyOffset = 0x10;
 

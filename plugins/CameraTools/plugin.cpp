@@ -27,6 +27,10 @@ constexpr std::size_t kMaximumSettingsBytes = 2048;
 constexpr std::uint64_t kSettingsSaveDelayMilliseconds = 500;
 constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
 constexpr double kDefaultDistance = 0.0;
+// 0 leaves the game's own lens alone; other values are lens degrees.
+constexpr float kDefaultFov = 0.0F;
+constexpr float kMinimumFov = 15.0F;
+constexpr float kMaximumFov = 170.0F;
 constexpr float kDefaultSpeed = 800.0F;
 constexpr std::uint32_t kDefaultTeleportKey = '1';
 constexpr float kMinimumSpeed = 100.0F;
@@ -47,6 +51,7 @@ constexpr std::string_view kSettingsSchema = R"json(
   "required":["distance","freeCameraEnabled","speed","toggle"],
   "properties":{
     "distance":{"type":"number","minimum":0.0},
+    "fov":{"type":"number","minimum":0.0,"maximum":170.0,"default":0.0},
     "freeCameraEnabled":{"type":"boolean"},
     "lodFollowsCamera":{"type":"boolean","default":false},
     "speed":{"type":"number","minimum":100.0,"maximum":5000.0},
@@ -74,6 +79,11 @@ struct Context final {
   AnomalyGenerationHandleV1 view_point_hook{};
   AnomalyGenerationHandleV1 input_key_hook{};
   std::atomic<double> distance{kDefaultDistance};
+  std::atomic<float> fov{kDefaultFov};
+  std::atomic<float> fov_game{};
+  std::atomic_bool fov_restore{};
+  // The POV the game's own lens was read from, so it is read once per POV and never after a write.
+  std::atomic<std::uintptr_t> fov_game_pov{};
   std::atomic<float> speed{kDefaultSpeed};
   std::atomic<std::uint32_t> toggle_key{VK_F6};
   std::atomic<std::uint32_t> teleport_key{kDefaultTeleportKey};
@@ -99,6 +109,7 @@ struct Context final {
   std::uintptr_t view_point_target{};
   std::uintptr_t input_key_target{};
   std::atomic<std::uintptr_t> camera_manager{};
+  std::atomic<std::uintptr_t> camera_pov{};
   std::atomic<std::uintptr_t> player_input{};
   std::array<std::atomic<double>, 3> position{};
   std::array<std::atomic<double>, 3> rotation{};
@@ -148,7 +159,10 @@ bool CoreReady(const AnomalyCoreServiceV1 *service) noexcept {
   return HasField<AnomalyCoreServiceV1,
                   decltype(AnomalyCoreServiceV1::read_memory)>(
              service, offsetof(AnomalyCoreServiceV1, read_memory)) &&
-         service->read_memory != nullptr;
+         HasField<AnomalyCoreServiceV1,
+                  decltype(AnomalyCoreServiceV1::write_memory)>(
+             service, offsetof(AnomalyCoreServiceV1, write_memory)) &&
+         service->read_memory != nullptr && service->write_memory != nullptr;
 }
 
 bool ConfigReady(const AnomalyConfigServiceV1 *service) noexcept {
@@ -249,6 +263,19 @@ bool Read(Context &context, const std::uintptr_t address, T &value) noexcept {
   AnomalyMutableByteSpanV1 destination{reinterpret_cast<std::uint8_t *>(&value),
                                        sizeof(value)};
   return context.core->read_memory(context.core->user, address, destination)
+             .code == ANOMALY_STATUS_V1_OK;
+}
+
+template <typename T>
+bool Write(Context &context, const std::uintptr_t address,
+           const T &value) noexcept {
+  if (context.core == nullptr || context.core->write_memory == nullptr ||
+      address == 0) {
+    return false;
+  }
+  AnomalyByteSpanV1 source{reinterpret_cast<const std::uint8_t *>(&value),
+                           sizeof(value)};
+  return context.core->write_memory(context.core->user, address, source)
              .code == ANOMALY_STATUS_V1_OK;
 }
 
@@ -447,10 +474,49 @@ void SyncStreamingSourceOverride(Context &context) noexcept {
   context.streaming_source_armed = armed;
 }
 
+// The manager's cached POV is where the lens lives. Both steps are shape-checked -- the accessor
+// slot must hold a `lea rax,[rcx+disp32]` returning into the manager -- so a stale slot cannot turn
+// the FOV write into an arbitrary one.
+bool ResolveCameraPov(Context &context, const std::uintptr_t manager,
+                      std::uintptr_t &pov) noexcept {
+  pov = 0;
+  std::uintptr_t vtable{};
+  std::uintptr_t accessor{};
+  if (!Read(context, manager, vtable) || vtable == 0 ||
+      !ReadPointerAtOffset(context, vtable, kCameraPovAccessorVtableOffset,
+                           accessor)) {
+    return false;
+  }
+  std::array<std::uint8_t, 8> body{};
+  if (!Read(context, accessor, body) || body[0] != 0x48 || body[1] != 0x8D ||
+      body[2] != 0x81 || body[7] != 0xC3) {
+    return false;
+  }
+  const std::uint32_t displacement =
+      static_cast<std::uint32_t>(body[3]) |
+      (static_cast<std::uint32_t>(body[4]) << 8U) |
+      (static_cast<std::uint32_t>(body[5]) << 16U) |
+      (static_cast<std::uint32_t>(body[6]) << 24U);
+  return AddAddress(manager, displacement, pov) && pov != 0;
+}
+
+void RefreshCameraPov(Context &context, const std::uintptr_t manager) noexcept {
+  std::uintptr_t pov{};
+  if (ResolveCameraPov(context, manager, pov)) {
+    context.camera_pov.store(pov, std::memory_order_release);
+    return;
+  }
+  context.camera_pov.store(0, std::memory_order_release);
+  Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+      "camera tools field of view unavailable: camera POV accessor was not "
+      "validated");
+}
+
 void RefreshCameraManager(Context &context) noexcept {
   std::uintptr_t manager{};
   if (!ResolveActiveCameraManager(context, manager)) {
     context.camera_manager.store(0, std::memory_order_release);
+    context.camera_pov.store(0, std::memory_order_release);
     context.camera_position_valid.store(false, std::memory_order_release);
     context.active.store(false, std::memory_order_release);
     return;
@@ -460,6 +526,7 @@ void RefreshCameraManager(Context &context) noexcept {
   if (previous != manager) {
     context.camera_position_valid.store(false, std::memory_order_release);
     context.active.store(false, std::memory_order_release);
+    RefreshCameraPov(context, manager);
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
         "camera tools active CameraManager validated");
   }
@@ -481,6 +548,17 @@ void RefreshPlayerInput(Context &context) noexcept {
 
 bool DistanceValid(const double distance) noexcept {
   return std::isfinite(distance) && distance >= 0.0;
+}
+
+// 0 uses the game's own lens; every other value has to be a supported lens.
+bool FovValid(const float fov) noexcept {
+  return std::isfinite(fov) &&
+         (fov == 0.0F || (fov >= kMinimumFov && fov <= kMaximumFov));
+}
+
+float FovValue(const float fov) noexcept {
+  return fov == 0.0F ? kDefaultFov
+                     : (std::clamp)(fov, kMinimumFov, kMaximumFov);
 }
 
 bool KeyDown(const AnomalyInputSnapshotV1 &input,
@@ -574,10 +652,10 @@ std::string VirtualKeyName(const Context &context, const std::uint32_t key) {
                     : context.localizer.Text("key.unknown", "Unknown key");
 }
 
-bool SettingsValid(const double distance, const float speed,
+bool SettingsValid(const double distance, const float fov, const float speed,
                    const std::uint32_t toggle,
                    const std::uint32_t teleport) noexcept {
-  return DistanceValid(distance) && std::isfinite(speed) &&
+  return DistanceValid(distance) && FovValid(fov) && std::isfinite(speed) &&
          speed >= kMinimumSpeed && speed <= kMaximumSpeed && toggle > 0 &&
          toggle < 256U && teleport > 0 && teleport < 256U;
 }
@@ -590,11 +668,12 @@ void MarkSettingsDirty(Context &context) noexcept {
 
 bool PersistSettings(Context &context) noexcept {
   const double distance = context.distance.load(std::memory_order_acquire);
+  const float fov = context.fov.load(std::memory_order_acquire);
   const float speed = context.speed.load(std::memory_order_acquire);
   const auto toggle = context.toggle_key.load(std::memory_order_acquire);
   const auto teleport = context.teleport_key.load(std::memory_order_acquire);
   if (!ConfigReady(context.config) ||
-      !SettingsValid(distance, speed, toggle, teleport)) {
+      !SettingsValid(distance, fov, speed, toggle, teleport)) {
     return false;
   }
   const auto revision =
@@ -603,6 +682,7 @@ bool PersistSettings(Context &context) noexcept {
     const auto document =
         nlohmann::json{
             {"distance", distance},
+            {"fov", fov},
             {"freeCameraEnabled",
              context.configured_enabled.load(std::memory_order_acquire)},
             {"lodFollowsCamera",
@@ -636,6 +716,7 @@ bool LoadSettings(Context &context) noexcept {
         &version, {nullptr, 0}, &size);
     if (status.code == ANOMALY_STATUS_V1_NOT_FOUND) {
       context.distance.store(kDefaultDistance, std::memory_order_release);
+      context.fov.store(kDefaultFov, std::memory_order_release);
       context.speed.store(kDefaultSpeed, std::memory_order_release);
       context.toggle_key.store(VK_F6, std::memory_order_release);
       context.teleport_key.store(kDefaultTeleportKey,
@@ -667,22 +748,26 @@ bool LoadSettings(Context &context) noexcept {
         nlohmann::json::parse(document.begin(), document.begin() + copied);
     const bool has_lod = json.is_object() && json.contains("lodFollowsCamera");
     const bool has_teleport = json.is_object() && json.contains("teleport");
-    if (!json.is_object() || json.size() < 4 || json.size() > 6 ||
+    const bool has_fov = json.is_object() && json.contains("fov");
+    if (!json.is_object() || json.size() < 4 || json.size() > 7 ||
         !json.contains("distance") || !json.contains("freeCameraEnabled") ||
         !json.contains("speed") || !json.contains("toggle") ||
         json.size() != 4U + static_cast<std::size_t>(has_lod) +
-                           static_cast<std::size_t>(has_teleport))
+                           static_cast<std::size_t>(has_teleport) +
+                           static_cast<std::size_t>(has_fov))
       return false;
     const double distance = json.at("distance").get<double>();
+    const float fov = json.value("fov", kDefaultFov);
     const float speed = json.at("speed").get<float>();
     const auto toggle = json.at("toggle").get<std::uint32_t>();
     const auto teleport = json.value("teleport", kDefaultTeleportKey);
     const bool enabled = json.at("freeCameraEnabled").get<bool>();
     const bool streaming_source_follows_camera =
         json.value("lodFollowsCamera", false);
-    if (!SettingsValid(distance, speed, toggle, teleport))
+    if (!SettingsValid(distance, fov, speed, toggle, teleport))
       return false;
     context.distance.store(distance, std::memory_order_release);
+    context.fov.store(FovValue(fov), std::memory_order_release);
     context.speed.store(speed, std::memory_order_release);
     context.toggle_key.store(toggle, std::memory_order_release);
     context.teleport_key.store(teleport, std::memory_order_release);
@@ -925,6 +1010,43 @@ void ApplyViewDistance(double *location, const double *rotation,
   location[2] -= std::sin(pitch) * distance;
 }
 
+// The window the host itself accepts for the game's own horizontal FOV at cameraManager.fov.
+bool GameFovValid(const float fov) noexcept {
+  return std::isfinite(fov) && fov > 5.0F && fov < 175.0F;
+}
+
+// The lens is not one of the getter's out-parameters, so it goes into the manager's cached POV --
+// the struct the getter has just copied -- which keeps it the last write before the view is built.
+// "Game default" (0) stops writing and hands the game's own lens back once.
+void ApplyViewLens(Context &context) noexcept {
+  const std::uintptr_t pov = context.camera_pov.load(std::memory_order_acquire);
+  std::uintptr_t address{};
+  if (pov == 0 || !AddAddress(pov, kCameraPovFovOffset, address))
+    return;
+  // The game's own lens, read out of the POV before this plugin writes to it: that read is both
+  // the number the settings row shows while the setting is "game default" and the value it hands
+  // back. The write waits until the read is plausible -- a lens of this plugin's own must never be
+  // mistaken for the game's, which is exactly what a read taken after the first write would do.
+  if (context.fov_game_pov.load(std::memory_order_acquire) != pov) {
+    float game{};
+    if (!Read(context, address, game) || !GameFovValid(game))
+      return;
+    context.fov_game.store(game, std::memory_order_release);
+    context.fov_game_pov.store(pov, std::memory_order_release);
+  }
+  const float lens = context.fov.load(std::memory_order_acquire);
+  if (lens >= kMinimumFov && lens <= kMaximumFov) {
+    if (Write(context, address, lens))
+      context.fov_restore.store(true, std::memory_order_release);
+    return;
+  }
+  if (context.fov_restore.exchange(false, std::memory_order_acq_rel)) {
+    const float game = context.fov_game.load(std::memory_order_acquire);
+    if (GameFovValid(game))
+      static_cast<void>(Write(context, address, game));
+  }
+}
+
 void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
                                         double *rotation) noexcept {
   Context *context = g_active.load(std::memory_order_acquire);
@@ -986,6 +1108,7 @@ void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
           context->rotation[axis].store(rotation[axis],
                                         std::memory_order_release);
         }
+        ApplyViewLens(*context);
         context->camera_position_valid.store(true, std::memory_order_release);
       }
     }
@@ -1485,6 +1608,46 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         ui->end_table(ui->user);
       } else {
         draw_distance();
+      }
+
+      const float stored_fov = context->fov.load(std::memory_order_acquire);
+      const float game_fov = context->fov_game.load(std::memory_order_acquire);
+      const std::string fov_label = context->localizer.Label(
+          "setting.fov", "Field of view", "camera-fov");
+      const std::string restore_fov_label = context->localizer.Label(
+          "action.restore_game_default", "Restore game default",
+          "restore-game-fov");
+      const auto draw_fov = [&]() {
+        // A stored 0 means "leave the lens to the game", and the field then shows the lens the
+        // game's own POV carries instead of a sentinel, so stepping it walks away from that value
+        // rather than jumping across the band below the minimum lens. It stays at the stored 0
+        // until the game's own lens has been read.
+        double fov = stored_fov == kDefaultFov && game_fov > 0.0F
+                         ? static_cast<double>((std::clamp)(
+                               game_fov, kMinimumFov, kMaximumFov))
+                         : static_cast<double>(stored_fov);
+        if (ui->input_double(ui->user, anomaly::sdk::StringView(fov_label),
+                             &fov, 1.0, 10.0) != 0 &&
+            std::isfinite(fov) && fov >= 0.0) {
+          context->fov.store(FovValue(static_cast<float>(fov)),
+                             std::memory_order_release);
+          MarkSettingsDirty(*context);
+        }
+      };
+      if (ui->begin_table(ui->user, anomaly::sdk::StringView("camera-fov-row"),
+                          2, 0, 0.0F, 0.0F) != 0) {
+        ui->table_next_row(ui->user);
+        static_cast<void>(ui->table_next_column(ui->user));
+        draw_fov();
+        static_cast<void>(ui->table_next_column(ui->user));
+        if (ui->button(ui->user, anomaly::sdk::StringView(restore_fov_label),
+                       0.0F, 0.0F) != 0) {
+          context->fov.store(kDefaultFov, std::memory_order_release);
+          MarkSettingsDirty(*context);
+        }
+        ui->end_table(ui->user);
+      } else {
+        draw_fov();
       }
 
       ui->separator(ui->user);
