@@ -100,7 +100,8 @@ enum HookIndex : std::size_t {
     kFindRow = kCoreHookCount, kForEachRow, kAlbumRow, kAlbumForEach, kOwnedCopy, kReGenerate,
     kSetCurrent, kItemRefresh, kVehiclePanel, kResolveCurrent, kSyncCurrent, kPageList, kMusicEnd,
     kPositionFraction, kPositionSeconds, kDuration, kChangeSound, kEntryClick, kDetailCover,
-    kPageCover, kItemSelected, kRowClick, kListClick, kSetCurrentIdHook, kDuration2, kHookCount
+    kPageCover, kItemSelected, kRowClick, kListClick, kSetCurrentIdHook, kDuration2,
+    kPositionTick, kHookCount
 };
 
 using PostFn = std::int64_t(__fastcall*)(void*, void*, void*, float);
@@ -280,6 +281,14 @@ std::atomic<void*> g_album_cover{nullptr};  // rooted UTexture2D built by the bu
 // leases; detours compare their table argument against these.
 std::atomic<std::uintptr_t> g_music_table{0};
 std::atomic<std::uintptr_t> g_album_table{0};
+// Music player widgets owning a time label: the controllers the duration
+// callbacks reveal (the mount path's and the play path's views differ) and the
+// label hosts the position tick renders (the strips). Pushes fan out to all
+// so every live panel follows a switch.
+std::atomic<std::uintptr_t> g_music_views[8]{};
+// Resolved second duration callback: the takeover drives it directly so the
+// label follows library songs even though their Post never runs.
+std::atomic<std::uintptr_t> g_duration2{0};
 std::mutex g_capture_mutex;
 AlbumCapture g_capture;  // last observation of the game's table walks
 // Serializes snapshot builds between the builder thread and the game thread
@@ -747,6 +756,10 @@ void WritePausedFlag(void* subsystem, const std::uint8_t paused) noexcept {
     }
 }
 
+// Defined with the duration callbacks: writes the player's duration label
+// through the game's own second duration callback.
+void PushDurationLabel(Context& context) noexcept;
+
 std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const float position) {
     const AnomalyHookServiceV1* api{};
     AnomalyGenerationHandleV1 lease{};
@@ -767,6 +780,14 @@ std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const
         // (e.g. after resuming through a repost) the next pause click is taken
         // for a resume and seems to do nothing.
         WritePausedFlag(self, 0);
+        // The Stop above broadcast the paused state; the replaced Post would
+        // have broadcast the resume, so panels following the delegate would
+        // disagree with the flag. Replay the resume through the original.
+        CallUnderLease(kResume, [self](const std::uintptr_t resume) { CallVoid(resume, self); });
+        // The replaced Post's chain never runs the duration query the player
+        // label follows, so it would keep the previous song's length; write it
+        // from the engine through the game's own callback.
+        PushDurationLabel(*context);
     } else {
         result = CallPost(original, self, event, list_id, position);
     }
@@ -1865,6 +1886,10 @@ void ANOMALY_CALL SyncCurrentSong(void* user, const AnomalyUe5AhudFrameV1*) {
         const auto album = g_album.load(std::memory_order_acquire);
         if (album == nullptr || !AlbumActive(*album) || *slot >= album->songs.size()) return;
         const std::uint64_t wanted = SongId(*album, *slot);
+        // The engine moved to another song (switch or auto-advance): the game
+        // never queries the length on that path, so write the player UI's
+        // duration label from the engine.
+        if (engine_moved) PushDurationLabel(*context);
         const bool current_is_library = SongIndex(*album, current).has_value();
         if (wanted == current) {
             mismatch_since.reset();
@@ -1912,6 +1937,28 @@ void WriteDuration(void* info, const float seconds) noexcept {
             seconds;
     } __except (1) {
     }
+}
+
+// A duration callback revealed this panel view; true when it was newly added.
+// Slots hold distinct views: a single register would lose the second panel
+// the moment any callback for the first one fires again.
+bool RegisterMusicView(const std::uintptr_t ui) noexcept {
+    if (ui == 0) return false;
+    for (auto& slot : g_music_views) {
+        if (slot.load(std::memory_order_relaxed) == ui) return false;
+    }
+    for (auto& slot : g_music_views) {
+        std::uintptr_t expected = 0;
+        if (slot.compare_exchange_strong(expected, ui,
+                std::memory_order_release, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    // Full: replace round-robin; live panels re-register on every callback.
+    static std::atomic<std::size_t> next{0};
+    g_music_views[next.fetch_add(1, std::memory_order_relaxed) % std::size(g_music_views)]
+        .store(ui, std::memory_order_release);
+    return true;
 }
 
 // Wwise position queries for the player UI. The takeover's PlayingID is
@@ -1975,6 +2022,12 @@ std::uintptr_t __fastcall DurationDetour(void* user, void* info) {
     if (!BeginCallback(kDuration, api, lease, original)) return 0;
     auto* const context = g_context.load(std::memory_order_acquire);
     if (context != nullptr && info != nullptr) {
+        // user is {uint32 playing_id; UHTUI_MusicPlayer* ui}: the label owner.
+        std::uintptr_t ui{};
+        if (user != nullptr) {
+            ReadValue(*context, reinterpret_cast<std::uintptr_t>(user) + 8, ui);
+            RegisterMusicView(ui);
+        }
         const float seconds = CurrentLibraryDuration(*context);
         if (seconds > 0.0F) WriteDuration(info, seconds);
     }
@@ -1994,12 +2047,55 @@ std::uintptr_t __fastcall Duration2Detour(void* user, void** info) {
     std::uintptr_t inner{};
     if (context != nullptr && info != nullptr &&
         ReadValue(*context, reinterpret_cast<std::uintptr_t>(info), inner) && inner != 0) {
+        // user is {UHTUI_MusicPlayer* ui}: the label owner.
+        std::uintptr_t ui{};
+        if (user != nullptr) {
+            ReadValue(*context, reinterpret_cast<std::uintptr_t>(user), ui);
+            RegisterMusicView(ui);
+        }
         const float seconds = CurrentLibraryDuration(*context);
         if (seconds > 0.0F) WriteDuration(reinterpret_cast<void*>(inner), seconds);
     }
     const std::uintptr_t result = CallDuration(original, user, info);
     EndCallback(api, lease);
     return result;
+}
+
+// The strip's per-frame position refresh: the game calls it with the widget
+// that owns the visible time labels, so this is the one place every live
+// label host is revealed -- including the strip itself, which no duration
+// callback ever sees on the song-switch path.
+void __fastcall PositionTickDetour(void* self, const float fraction) {
+    const AnomalyHookServiceV1* api{};
+    AnomalyGenerationHandleV1 lease{};
+    std::uintptr_t original{};
+    if (!BeginCallback(kPositionTick, api, lease, original)) return;
+    auto* const context = g_context.load(std::memory_order_acquire);
+    if (context != nullptr && self != nullptr &&
+        RegisterMusicView(reinterpret_cast<std::uintptr_t>(self))) {
+        // A newly seen widget still shows whatever the panel last had; land
+        // the current song's length at once instead of waiting for a switch.
+        PushDurationLabel(*context);
+    }
+    reinterpret_cast<void(__fastcall*)(void*, float)>(original)(self, fraction);
+    EndCallback(api, lease);
+}
+
+void PushDurationLabel(Context& context) noexcept {
+    const std::uintptr_t function = g_duration2.load(std::memory_order_acquire);
+    if (function == 0) return;
+    const float seconds = CurrentLibraryDuration(context);
+    if (seconds <= 0.0F) return;
+    // The callback reads the seconds from *info + 0x58.
+    std::byte info[96] = {};
+    *reinterpret_cast<float*>(info + profile::kDurationInfoSecondsOffset) = seconds;
+    for (const auto& slot : g_music_views) {
+        const std::uintptr_t ui = slot.load(std::memory_order_acquire);
+        if (ui == 0) continue;
+        void* inner = info;
+        void* user[1] = {reinterpret_cast<void*>(ui)};
+        static_cast<void>(CallDuration(function, user, &inner));
+    }
 }
 
 using ChangeSoundFn = void(__fastcall*)(void*, float);
@@ -2057,20 +2153,8 @@ std::uintptr_t __fastcall EntryClickDetour(void* self, const std::uint64_t* id) 
     std::uintptr_t original{};
     if (!BeginCallback(kEntryClick, api, lease, original)) return 0;
     auto* const context = g_context.load(std::memory_order_acquire);
-    // Probe inputs, commented out with the probe below (they were only read by it).
-    // void* const before_subsystem = context != nullptr ? CallSoundSubsystem(self) : nullptr;
-    // const std::uint64_t before = CurrentSongId(before_subsystem);
     const std::uintptr_t result = CallEntryClick(original, self, id);
     std::uint64_t song{};
-    // Diagnostic probe (off): which song was clicked and whether the game itself
-    // switched to it, for the "needs two clicks" report.
-    // if (context != nullptr && id != nullptr &&
-    //     ReadValue(*context, reinterpret_cast<std::uintptr_t>(id), song)) {
-    //     Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-    //         "album entry clicked: library " + std::string(IsLibrarySongId(*context, song) ? "yes" : "no") +
-    //             ", game switched " + (CurrentSongId(before_subsystem) == song && before != song ? "yes" : "no"));
-    // }
-    song = 0;
     if (context != nullptr && id != nullptr &&
         ReadValue(*context, reinterpret_cast<std::uintptr_t>(id), song) && IsLibrarySongId(song)) {
         void* subsystem = CallSoundSubsystem(self);
@@ -2300,10 +2384,12 @@ void ReleaseHooks(Context& context) noexcept {
     g_last_subsystem.store(nullptr, std::memory_order_release);
     g_last_subsystem_vtable.store(0, std::memory_order_release);
     g_set_current_id.store(0, std::memory_order_release);
+    g_duration2.store(0, std::memory_order_release);
     g_album.store(nullptr, std::memory_order_release);
     g_album_cover.store(nullptr, std::memory_order_release);
     g_music_table.store(0, std::memory_order_release);
     g_album_table.store(0, std::memory_order_release);
+    for (auto& slot : g_music_views) slot.store(0, std::memory_order_release);
     {
         std::scoped_lock lock(g_capture_mutex);
         g_capture = {};
@@ -2383,6 +2469,8 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
             "hifi-vehicle-music-set-current-id", false},
         {profile::kDurationCallback2Pattern, reinterpret_cast<void*>(&Duration2Detour),
             "hifi-vehicle-music-duration-2", false},
+        {profile::kPositionTickPattern, reinterpret_cast<void*>(&PositionTickDetour),
+            "hifi-vehicle-music-position-tick", false},
     }};
 
     const auto resolve = [&context](const std::string_view pattern) {
@@ -2435,6 +2523,7 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
         g_ftext_from_string.store(from_string, std::memory_order_release);
         g_sound_subsystem.store(sound_subsystem, std::memory_order_release);
         g_set_current_id.store(resolve(profile::kSetCurrentIdPattern), std::memory_order_release);
+        g_duration2.store(resolve(profile::kDurationCallback2Pattern), std::memory_order_release);
         // Cover helpers: optional, all or none.
         const std::uintptr_t import_texture = resolve(profile::kImportTexturePattern);
         const std::uintptr_t set_item_flags = resolve(profile::kSetItemFlagsPattern);

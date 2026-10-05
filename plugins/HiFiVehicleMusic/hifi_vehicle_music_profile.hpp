@@ -140,10 +140,26 @@ inline constexpr std::string_view kPositionSecondsPattern =
 inline constexpr std::string_view kDurationCallbackPattern =
     "48 89 5C 24 10 57 48 83 EC 30 4C 8B 41 08 48 8B F9 8B 42 58 48 89 74 24 40 41 89 80 DC 10 00 00";
 inline constexpr std::uint32_t kDurationInfoSecondsOffset = 0x58;
+// UHTUI_MusicPlayer's cached song length: the [reg+0x10DC] store both duration
+// callbacks make.
+inline constexpr std::uint32_t kUiDurationCacheOffset = 0x10DC;
 // The same length callback on the album view's play/resume path:
-// void ({UHTUI_MusicPlayer* ui}*, info** info).
+// void ({UHTUI_MusicPlayer* ui}*, info** info). Also resolved for the
+// takeover, which drives it directly: a replaced Post never runs the query
+// this callback answers, so the plugin writes the label itself.
 inline constexpr std::string_view kDurationCallback2Pattern =
     "40 57 48 83 EC 30 48 8B 02 48 8B 11 8B 40 58 89 82 DC 10 00 00 48 8B 09 48 8B B9 18 10 00 00";
+// The player strip's per-frame position refresh: it sets the strip's position
+// label (+0x1010) from the playing fraction times the strip's cached length
+// (+0x10DC) -- the same fields the duration callbacks write (+0x10DC cache,
+// +0x1018 length label). Its first argument is therefore the widget that
+// owns the labels the player actually shows; capturing it lets the takeover's
+// length pushes reach that widget, which no game callback ever reveals on the
+// song-switch path (the click issues no query; the replaced Post skips the
+// HUD notification that arms the refresh chain).
+// void UHTUI_MusicPlayer::TickPosition(this, float fraction)
+inline constexpr std::string_view kPositionTickPattern =
+    "40 57 48 83 EC 30 48 8B B9 10 10 00 00 48 85 FF 74 42 48 8B 07 F3 0F 58 C9";
 // UHTSoundSubsystem::PlayingID (int32; the Pause/Resume/Stop paths test > 0).
 inline constexpr std::uint32_t kSubsystemPlayingIdOffset = 0x420;
 // UHTSoundSubsystem::bPaused (uint8; Pause writes 1, Resume 0).
