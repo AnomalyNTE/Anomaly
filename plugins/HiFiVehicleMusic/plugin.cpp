@@ -281,11 +281,11 @@ std::atomic<void*> g_album_cover{nullptr};  // rooted UTexture2D built by the bu
 // leases; detours compare their table argument against these.
 std::atomic<std::uintptr_t> g_music_table{0};
 std::atomic<std::uintptr_t> g_album_table{0};
-// Music player widgets owning a time label: the controllers the duration
-// callbacks reveal (the mount path's and the play path's views differ) and the
-// label hosts the position tick renders (the strips). Pushes fan out to all
-// so every live panel follows a switch.
-std::atomic<std::uintptr_t> g_music_views[8]{};
+// UHTUI_MusicPlayer views owning a duration label. The game keeps more than
+// one music panel alive (the mount path's and the play path's views differ,
+// and only the panel that issued a query gets its label refreshed), so every
+// duration callback registers its view here and the pushes fan out to all.
+std::atomic<std::uintptr_t> g_music_views[4]{};
 // Resolved second duration callback: the takeover drives it directly so the
 // label follows library songs even though their Post never runs.
 std::atomic<std::uintptr_t> g_duration2{0};
@@ -1999,10 +1999,12 @@ float CurrentLibraryDuration(Context& context) noexcept {
     void* const subsystem = CachedSubsystem();
     if (subsystem == nullptr) return 0.0F;
     try {
-        // The song the engine plays while it owns playback; otherwise the
-        // game's current song if it is a library song (about to be posted).
-        std::optional<std::size_t> song;
-        if (TakenOver(context, subsystem)) song = context.engine.PlayingSlot();
+        // The song the engine plays: whenever it has a slot it owns playback,
+        // whatever the subsystem's playing-id field says -- the game rewrites
+        // that field when it rebuilds its panel state, and gating on it made
+        // the length vanish exactly then. Otherwise the game's current song
+        // if it is a library song (about to be posted).
+        std::optional<std::size_t> song = context.engine.PlayingSlot();
         if (!song) {
             const auto album = g_album.load(std::memory_order_acquire);
             if (album != nullptr && AlbumActive(*album)) {
@@ -2061,21 +2063,41 @@ std::uintptr_t __fastcall Duration2Detour(void* user, void** info) {
     return result;
 }
 
-// The strip's per-frame position refresh: the game calls it with the widget
-// that owns the visible time labels, so this is the one place every live
-// label host is revealed -- including the strip itself, which no duration
-// callback ever sees on the song-switch path.
+// The strip's per-frame position refresh. Its widget owns the visible time
+// labels (the cached length at +0x10DC drives both the position label's scale
+// and the length label next to it), and the game calls this tick every frame
+// for as long as the widget lives -- so this is the one place that both knows
+// the real label host and is guaranteed to run again. The switch path never
+// refreshes the length itself (the click issues no query and the replaced
+// Post skips the HUD notification that arms the game's refresh chain), and a
+// one-shot push from any single moment can miss (the game resets the cache
+// when it rebuilds panel state), so instead re-assert the engine's length
+// here whenever the widget's cache disagrees with it. The nested lease pins
+// the duration callback's trampoline for the call; the callback writes the
+// cache and the length label the way the game's own query would have.
 void __fastcall PositionTickDetour(void* self, const float fraction) {
     const AnomalyHookServiceV1* api{};
     AnomalyGenerationHandleV1 lease{};
     std::uintptr_t original{};
     if (!BeginCallback(kPositionTick, api, lease, original)) return;
     auto* const context = g_context.load(std::memory_order_acquire);
-    if (context != nullptr && self != nullptr &&
-        RegisterMusicView(reinterpret_cast<std::uintptr_t>(self))) {
-        // A newly seen widget still shows whatever the panel last had; land
-        // the current song's length at once instead of waiting for a switch.
-        PushDurationLabel(*context);
+    if (context != nullptr && self != nullptr) {
+        const float seconds = CurrentLibraryDuration(*context);
+        float cached = 0.0F;
+        if (seconds > 0.0F &&
+            (!ReadValue(*context, reinterpret_cast<std::uintptr_t>(self) +
+                              profile::kUiDurationCacheOffset,
+                 cached) ||
+             cached != seconds)) {
+            CallUnderLease(kDuration2, [&](const std::uintptr_t duration) {
+                // The callback reads the seconds from *info + 0x58.
+                std::byte info[96] = {};
+                *reinterpret_cast<float*>(info + profile::kDurationInfoSecondsOffset) = seconds;
+                void* inner = info;
+                void* user[1] = {self};
+                static_cast<void>(CallDuration(duration, user, &inner));
+            });
+        }
     }
     reinterpret_cast<void(__fastcall*)(void*, float)>(original)(self, fraction);
     EndCallback(api, lease);

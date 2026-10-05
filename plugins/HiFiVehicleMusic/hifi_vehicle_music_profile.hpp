@@ -153,10 +153,13 @@ inline constexpr std::string_view kDurationCallback2Pattern =
 // label (+0x1010) from the playing fraction times the strip's cached length
 // (+0x10DC) -- the same fields the duration callbacks write (+0x10DC cache,
 // +0x1018 length label). Its first argument is therefore the widget that
-// owns the labels the player actually shows; capturing it lets the takeover's
-// length pushes reach that widget, which no game callback ever reveals on the
-// song-switch path (the click issues no query; the replaced Post skips the
-// HUD notification that arms the refresh chain).
+// owns the labels the player actually shows, and the game calls it every
+// frame the widget lives: the takeover re-asserts the engine's song length
+// onto that widget's cache and label right here whenever they disagree,
+// because no game path refreshes them on the song-switch path (the click
+// issues no query; the replaced Post skips the HUD notification that arms
+// the refresh chain) and a one-shot push can be missed when the game resets
+// its panel state.
 // void UHTUI_MusicPlayer::TickPosition(this, float fraction)
 inline constexpr std::string_view kPositionTickPattern =
     "40 57 48 83 EC 30 48 8B B9 10 10 00 00 48 85 FF 74 42 48 8B 07 F3 0F 58 C9";
