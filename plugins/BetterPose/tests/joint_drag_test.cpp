@@ -266,6 +266,184 @@ void BodyOnlyMask() {
   Check(BuildOverlayHiddenMask({"a", "b"}, cycle, hidden) == 0, "a cyclic hierarchy ends");
 }
 
+// The reported bug: posing a walk from the side, a near-straight leg lifted
+// with IK ends up leaning inward. UE frame: X forward, Y right, Z up. A left
+// leg hangs straight down from the hip at y = -10, its knee bent forward by
+// the rest pose's few degrees. The camera looks at it from the left side, so
+// the cursor moves the foot only forward/up (the X-Z plane); the leg must
+// stay in that plane (no inward/outward component), and the knee must keep
+// pointing forward -- which is where the knee's own hinge axis (+Y, across
+// the body) says it bends.
+void StraightLegSideView() {
+  const Vec3d hip{0, -10, 90};
+  // ~0.8 degrees of rest bend forward, and the knee 0.6 cm inward of the
+  // hip-foot line: on a near-straight leg that tiny inward part is as large as
+  // the forward bend, and taking the knee's offset as the bend direction made
+  // the lifted knee swing 17 cm inward (measured on this solver before the fix).
+  const Vec3d knee{0.6, -9.4, 47};
+  const Vec3d foot{0, -10, 5};
+  const Vec3d hinge{0, 1, 0};       // the knee bends about the body's left-right axis
+  const double thigh = V3Length(V3Sub(knee, hip));
+  const double calf = V3Length(V3Sub(foot, knee));
+  // Lift the foot forward and up, as a side-view drag does.
+  const Vec3d targets[]{{30, -10, 25}, {45, -10, 50}, {15, -10, 15}};
+  for (const auto &target : targets) {
+    const auto turn = SolveTwoBone(hip, knee, foot, target, &hinge);
+    const Vec3d new_knee = V3Add(hip, QuatRotateVector(turn.root, V3Sub(knee, hip)));
+    const Vec3d new_foot =
+        V3Add(new_knee, QuatRotateVector(turn.mid, QuatRotateVector(turn.root, V3Sub(foot, knee))));
+    Check(std::abs(V3Length(V3Sub(new_knee, hip)) - thigh) < 1e-9, "leg IK keeps the thigh length");
+    Check(std::abs(V3Length(V3Sub(new_foot, new_knee)) - calf) < 1e-9, "leg IK keeps the calf length");
+    Check(V3Length(V3Sub(new_foot, target)) < 1e-6, "leg IK reaches the lifted foot target");
+    // No inward lean: the knee stays within a millimetre of the leg's
+    // sagittal plane (y = -10; the rest pose's own 0.6 cm is not amplified).
+    if (std::abs(new_knee.y - hip.y) > 0.7) {
+      std::cerr << "knee y " << new_knee.y << " vs hip y " << hip.y << " for target ("
+                << target.x << ", " << target.y << ", " << target.z << ")\n";
+      Check(false, "a side-view leg lift keeps the knee in the leg's plane (no inward lean)");
+    }
+    // And the knee points forward, the way it bends: ahead of the hip-foot line.
+    const Vec3d line = V3Sub(new_foot, hip);
+    const Vec3d off = V3Sub(V3Sub(new_knee, hip),
+                            V3Scale(line, V3Dot(V3Sub(new_knee, hip), line) / V3Dot(line, line)));
+    Check(V3Dot(off, Vec3d{1, 0, 0}) > 0.0, "the knee bends forward, not backward");
+    // No lean added to the thigh: the knee's hinge still runs left-right
+    // after the lift, to within a degree.
+    const Vec3d hinge_after = QuatRotateVector(turn.root, hinge);
+    const double hinge_tilt =
+        std::acos((std::min)(1.0, std::abs(V3Dot(hinge_after, Vec3d{0, 1, 0})))) * 180.0 /
+        3.14159265358979;
+    if (hinge_tilt > 1.0) {
+      std::cerr << "hinge tilt " << hinge_tilt << " deg for target (" << target.x << ", "
+                << target.y << ", " << target.z << ")\n";
+      Check(false, "the knee's hinge still runs left-right after the lift (no thigh lean)");
+    }
+  }
+
+  // An already-bent arm with no hinge given keeps the old behaviour: the bend
+  // side it had wins (the hinge is only a hint for a limb with no bend).
+  const Vec3d shoulder{0, 0, 0};
+  const Vec3d elbow{0, -30, 0};
+  const Vec3d hand{8, -52, -6};
+  const auto old_turn = SolveTwoBone(shoulder, elbow, hand, Vec3d{15, -40, 10});
+  const auto hinted = SolveTwoBone(shoulder, elbow, hand, Vec3d{15, -40, 10}, nullptr);
+  Check(QuatDistance(old_turn.root, hinted.root) < 1e-12 &&
+            QuatDistance(old_turn.mid, hinted.mid) < 1e-12,
+        "no hinge given: the solve is unchanged");
+}
+
+// A side view that is not quite side-on: the camera's drag plane is turned by
+// `yaw` degrees, so dragging the foot "forward" in it also moves it across the
+// body. Without the plane lock the leg follows the foot sideways (that is the
+// drag doing what the screen says: 4.7 deg of lean at 10 deg off, 13.7 at 30);
+// with it, the foot stays in the leg's plane and the thigh does not lean.
+void OffAngleSideViewLean() {
+  const Vec3d hip{0, -10, 90};
+  const Vec3d knee{0.6, -9.4, 47};
+  const Vec3d foot{0, -10, 5};
+  const Vec3d hinge{0, 1, 0};
+  const auto thigh_lean = [&](const Vec3d &target) {
+    const auto turn = SolveTwoBone(hip, knee, foot, target, &hinge);
+    const Vec3d thigh = QuatRotateVector(turn.root, V3Sub(knee, hip));
+    return std::atan2(thigh.y, std::hypot(thigh.x, thigh.z)) * 180.0 / 3.14159265358979;
+  };
+  for (const double yaw : {10.0, 20.0, 30.0}) {
+    const double r = yaw * 3.14159265358979 / 180.0;
+    // Screen "right" in a camera on the leg's left, turned toward the front.
+    const Vec3d right{std::cos(r), std::sin(r), 0.0};
+    const Vec3d target = V3Add(foot, V3Add(V3Scale(right, 40.0), Vec3d{0, 0, 30.0}));
+    Check(std::abs(thigh_lean(target)) > yaw * 0.3,
+          "unlocked: an off-angle drag leans the leg (the drag follows the screen)");
+    const Vec3d locked = LockToLimbPlane(hip, hinge, foot, target);
+    Check(std::abs(locked.y - foot.y) < 1e-9, "locked: the foot keeps its distance from the plane");
+    Check(std::abs(locked.x - target.x) < 1e-9 && std::abs(locked.z - target.z) < 1e-9,
+          "locked: forward and up are kept, only the sideways part is dropped");
+    const double lean = thigh_lean(locked);
+    if (std::abs(lean) > 1.0) {
+      std::cerr << "camera " << yaw << " deg off side, plane locked: thigh leans " << lean
+                << " deg\n";
+      Check(false, "locked: an off-angle side-view drag does not lean the thigh");
+    }
+  }
+  // A foot already a little off the leg's plane (feet under the body) is not
+  // snapped into it: the lock keeps that offset, it only stops new drift.
+  const Vec3d off_foot{0, -8, 5};
+  const Vec3d locked = LockToLimbPlane(hip, hinge, off_foot, Vec3d{30, -2, 30});
+  Check(std::abs(locked.y - off_foot.y) < 1e-9, "locked: an existing offset is kept, not snapped");
+  // A degenerate hinge leaves the target alone.
+  const Vec3d same = LockToLimbPlane(hip, Vec3d{0, 0, 0}, foot, Vec3d{30, -2, 30});
+  Check(std::abs(same.y + 2.0) < 1e-12, "no hinge: the target is unchanged");
+}
+
+// The same side-view lift with joint limits on: the thigh's turn goes through
+// the hip's ball-joint clamp (LimitBallOffset -> ClampBall), which limits its
+// twist to +-45 and its swing per direction. A lift that the hip allows must
+// come out of the clamp unchanged -- otherwise the clamp is what bends the
+// thigh inward. The thigh's rest frame is the measured Biped one (joint_limits
+// .hpp): bone along local X, local Y back, local Z to the body's right; with
+// the thigh hanging straight down, its rest rotation maps local X to -Z
+// (down), local Y to -X (back), local Z to +Y (the body's right in this test's
+// frame, X forward / Y right / Z up).
+void LiftedLegThroughHipLimit() {
+  namespace lim = better_pose::limits;
+  const lim::Ball hip_limit = lim::BallFor("Bip001-L-Thigh");
+  // Columns: local X -> (0,0,-1), local Y -> (-1,0,0), local Z -> (0,1,0).
+  const auto from_matrix = [](const Vec3d &cx, const Vec3d &cy, const Vec3d &cz) {
+    const double m00 = cx.x, m01 = cy.x, m02 = cz.x;
+    const double m10 = cx.y, m11 = cy.y, m12 = cz.y;
+    const double m20 = cx.z, m21 = cy.z, m22 = cz.z;
+    const double trace = m00 + m11 + m22;
+    Quatd q;
+    if (trace > 0.0) {
+      const double s = std::sqrt(trace + 1.0) * 2.0;
+      q = {(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s};
+    } else if (m00 > m11 && m00 > m22) {
+      const double s = std::sqrt(1.0 + m00 - m11 - m22) * 2.0;
+      q = {0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s};
+    } else if (m11 > m22) {
+      const double s = std::sqrt(1.0 + m11 - m00 - m22) * 2.0;
+      q = {(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s};
+    } else {
+      const double s = std::sqrt(1.0 + m22 - m00 - m11) * 2.0;
+      q = {(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s};
+    }
+    return QuatNormalize(q);
+  };
+  const Quatd thigh_rest = from_matrix({0, 0, -1}, {-1, 0, 0}, {0, 1, 0});
+  Check(V3Length(V3Sub(QuatRotateVector(thigh_rest, Vec3d{1, 0, 0}), Vec3d{0, 0, -1})) < 1e-9,
+        "the test's thigh rest hangs straight down");
+  // The pelvis (the thigh's parent) is upright, so the thigh's base local
+  // rotation is its rest world rotation and the offset is in world terms.
+  const lim::Quat base{thigh_rest.x, thigh_rest.y, thigh_rest.z, thigh_rest.w};
+
+  const Vec3d hip{0, -10, 90};
+  const Vec3d knee{0.6, -9.4, 47};
+  const Vec3d foot{0, -10, 5};
+  const Vec3d hinge{0, 1, 0};
+  for (const Vec3d &target : {Vec3d{30, -10, 25}, Vec3d{45, -10, 50}, Vec3d{40, -10, 60}}) {
+    const auto turn = SolveTwoBone(hip, knee, foot, target, &hinge);
+    // The offset the drag writes for the thigh: the world turn, in the
+    // parent's frame (upright pelvis: the same), applied to no prior offset.
+    const lim::Quat offset{turn.root.x, turn.root.y, turn.root.z, turn.root.w};
+    bool clamped = false;
+    const lim::Quat limited = lim::ClampBall(hip_limit, base, offset, &clamped);
+    const Quatd limited_q{limited[0], limited[1], limited[2], limited[3]};
+    const Vec3d thigh_dir = QuatRotateVector(limited_q, QuatRotateVector(thigh_rest, Vec3d{1, 0, 0}));
+    const Vec3d wanted_dir = QuatRotateVector(turn.root, QuatRotateVector(thigh_rest, Vec3d{1, 0, 0}));
+    const double lean = std::asin(std::clamp(thigh_dir.y, -1.0, 1.0)) * 180.0 / 3.14159265358979;
+    if (clamped || std::abs(lean) > 1.0) {
+      const lim::Quat local = lim::Normalize(lim::Multiply(lim::Multiply(lim::Conjugate(base), offset), base));
+      const auto st = lim::Decompose(local);
+      std::cerr << "target (" << target.x << ", " << target.y << ", " << target.z << "): clamped "
+                << clamped << ", twist " << st.twist * 180.0 / 3.14159265358979
+                << " deg, thigh sideways lean " << lean << " deg (wanted "
+                << std::asin(std::clamp(wanted_dir.y, -1.0, 1.0)) * 180.0 / 3.14159265358979
+                << ")\n";
+      Check(false, "a hip-legal side-view lift passes the hip limit untouched (no inward lean)");
+    }
+  }
+}
+
 void TwoBoneIk() {
   // A bent arm: shoulder at the origin, elbow 30 cm out and bent forward,
   // hand 25 cm further.
@@ -308,7 +486,15 @@ void TwoBoneIk() {
   Check(QuatDistance(still.root, Quatd{}) < 1e-6 && QuatDistance(still.mid, Quatd{}) < 1e-6,
         "no drag, no turn");
 
+  StraightLegSideView();
+  LiftedLegThroughHipLimit();
+  OffAngleSideViewLean();
+
   Check(IsIkEndBone("Bip001-L-Hand") && IsIkEndBone("Bip001-R-Foot"), "hands and feet use IK");
+  Check(IsIkFootBone("Bip001-L-Foot") && IsIkFootBone("Bip001-R-Foot") &&
+            !IsIkFootBone("Bip001-L-Hand") && !IsIkFootBone("Bip001-R-Hand") &&
+            !IsIkFootBone("Bip001-L-Toe0"),
+        "the leg plane lock applies to feet only, not hands or toes");
   Check(!IsIkEndBone("Bip001-L-Finger0") && !IsIkEndBone("Bip001-R-Toe0") &&
             !IsIkEndBone("hand_adjust") && !IsIkEndBone("Bip001-L-Forearm"),
         "fingers, toes, helpers and forearms stay one-bone");
@@ -451,6 +637,35 @@ void ParentSpaceConversion() {
   const Quatd identity = ApplyWorldRotationToOffset(parent, Quatd{}, offset);
   Check(QuatDistance(identity, offset) < 1e-12, "no rotation leaves the offset alone");
 }
+// The hover tooltip: when it shows (the cursor resting on one joint long
+// enough) and where (beside the joint, kept on screen).
+void BoneTooltip() {
+  std::uint32_t tracked = kOverlayNoBone;
+  std::uint64_t since = 0;
+  const std::uint64_t delay = 500;
+  Check(!BoneTooltipDue(tracked, since, 7, 1000, delay), "a fresh hover does not show at once");
+  Check(!BoneTooltipDue(tracked, since, 7, 1499, delay), "not before the delay");
+  Check(BoneTooltipDue(tracked, since, 7, 1500, delay), "shows after resting the delay");
+  Check(BoneTooltipDue(tracked, since, 7, 9000, delay), "and stays while the cursor rests");
+  Check(!BoneTooltipDue(tracked, since, 8, 9010, delay), "another joint restarts the clock");
+  Check(!BoneTooltipDue(tracked, since, 8, 9400, delay), "...and waits again");
+  Check(BoneTooltipDue(tracked, since, 8, 9510, delay), "...then shows the new name");
+  Check(!BoneTooltipDue(tracked, since, kOverlayNoBone, 9600, delay), "no joint: nothing");
+  Check(!BoneTooltipDue(tracked, since, 8, 9610, delay),
+        "leaving and coming back restarts the clock");
+
+  // Placement on a 1000 x 600 canvas, a 120 x 20 box, 12 px from the joint.
+  const auto mid = PlaceBoneTooltip(500, 300, 120, 20, 12, 1000, 600);
+  Check(mid.left == 512.0F && mid.top == 268.0F, "up and to the right of the joint");
+  const auto right_edge = PlaceBoneTooltip(950, 300, 120, 20, 12, 1000, 600);
+  Check(right_edge.left == 818.0F, "no room on the right: to the left of the joint");
+  const auto top_edge = PlaceBoneTooltip(500, 10, 120, 20, 12, 1000, 600);
+  Check(top_edge.top == 22.0F, "no room above: below the joint");
+  const auto corner = PlaceBoneTooltip(995, 595, 120, 20, 12, 1000, 600);
+  Check(corner.left >= 0.0F && corner.left + 120.0F <= 1000.0F && corner.top >= 0.0F &&
+            corner.top + 20.0F <= 600.0F,
+        "always fully on the canvas");
+}
 }  // namespace fixture
 
 int main() {
@@ -464,6 +679,7 @@ int main() {
   fixture::DiscStrips();
   fixture::CircleCost();
   fixture::TwoBoneIk();
+  fixture::BoneTooltip();
   fixture::TwistAndDepth(fixture::Camera{}, Vec3d{0, 0, 0}, "axis-aligned toward camera");
   {
     const fixture::TiltedCamera tilted;
@@ -471,6 +687,7 @@ int main() {
   }
   std::cout << "PASS rotator round trip, hold still, sweep both ways, full turn, pivot "
                "graze, tilted camera, behind camera, parent space, stacked bones, body-only "
-               "mask, two-bone IK, twist, depth, disc strips, circle cost\n";
+               "mask, two-bone IK, straight leg side view (no inward lean), hip limit, "
+               "limb plane lock, bone tooltip, twist, depth, disc strips, circle cost\n";
   return 0;
 }
