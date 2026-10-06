@@ -101,7 +101,7 @@ enum HookIndex : std::size_t {
     kSetCurrent, kItemRefresh, kVehiclePanel, kResolveCurrent, kSyncCurrent, kPageList, kMusicEnd,
     kPositionFraction, kPositionSeconds, kDuration, kChangeSound, kEntryClick, kDetailCover,
     kPageCover, kItemSelected, kRowClick, kListClick, kSetCurrentIdHook, kDuration2,
-    kPositionTick, kHookCount
+    kHookCount
 };
 
 using PostFn = std::int64_t(__fastcall*)(void*, void*, void*, float);
@@ -281,14 +281,11 @@ std::atomic<void*> g_album_cover{nullptr};  // rooted UTexture2D built by the bu
 // leases; detours compare their table argument against these.
 std::atomic<std::uintptr_t> g_music_table{0};
 std::atomic<std::uintptr_t> g_album_table{0};
-// UHTUI_MusicPlayer views owning a duration label. The game keeps more than
-// one music panel alive (the mount path's and the play path's views differ,
-// and only the panel that issued a query gets its label refreshed), so every
-// duration callback registers its view here and the pushes fan out to all.
+// UHTUI_MusicPlayer panels the duration callbacks have seen. The game keeps
+// more than one music panel alive, and the label each one shows lives on its
+// owner's progress strip, so every callback registers its panel here and the
+// pushes resolve the visible label of all of them.
 std::atomic<std::uintptr_t> g_music_views[4]{};
-// Resolved second duration callback: the takeover drives it directly so the
-// label follows library songs even though their Post never runs.
-std::atomic<std::uintptr_t> g_duration2{0};
 std::mutex g_capture_mutex;
 AlbumCapture g_capture;  // last observation of the game's table walks
 // Serializes snapshot builds between the builder thread and the game thread
@@ -652,9 +649,9 @@ std::string ResolveEventName(Context& context, const std::uint32_t name_id) {
 }
 
 // Returns true when the plugin plays the event itself and the original must be
-// skipped.
+// skipped. requested then names the album song the takeover switched to.
 bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
-    const float position) noexcept {
+    const float position, std::optional<std::size_t>& requested) noexcept {
     try {
         const auto subsystem = reinterpret_cast<std::uintptr_t>(self);
         std::uint8_t player_type{};
@@ -725,6 +722,7 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
             return false;
         }
         context.engine.Play(std::move(key), position, song);
+        requested = song;
         return true;
     } catch (...) {
         return false;
@@ -756,9 +754,10 @@ void WritePausedFlag(void* subsystem, const std::uint8_t paused) noexcept {
     }
 }
 
-// Defined with the duration callbacks: writes the player's duration label
-// through the game's own second duration callback.
-void PushDurationLabel(Context& context) noexcept;
+// Defined with the duration callbacks: writes the duration label the player
+// shows through the game's own second duration callback. slot names the song
+// the label should describe when the caller already knows it.
+void PushDurationLabel(Context& context, const std::optional<std::size_t> requested = {}) noexcept;
 
 std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const float position) {
     const AnomalyHookServiceV1* api{};
@@ -767,7 +766,8 @@ std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const
     if (!BeginCallback(kPost, api, lease, original)) return 0;
     std::int64_t result = 0;
     auto* const context = g_context.load(std::memory_order_acquire);
-    if (context != nullptr && TakeOverPost(*context, self, event, list_id, position)) {
+    std::optional<std::size_t> requested;
+    if (context != nullptr && TakeOverPost(*context, self, event, list_id, position, requested)) {
         // The skipped Post would have replaced the current Wwise music; stop it
         // through the original so the engine is not notified. The nested lease
         // keeps the Stop trampoline alive for the call; when it is unavailable
@@ -786,8 +786,10 @@ std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const
         CallUnderLease(kResume, [self](const std::uintptr_t resume) { CallVoid(resume, self); });
         // The replaced Post's chain never runs the duration query the player
         // label follows, so it would keep the previous song's length; write it
-        // from the engine through the game's own callback.
-        PushDurationLabel(*context);
+        // from the engine through the game's own callback. The engine's Play
+        // command is asynchronous -- its playing slot still names the previous
+        // song here -- so the requested song's length is pushed directly.
+        PushDurationLabel(*context, requested);
     } else {
         result = CallPost(original, self, event, list_id, position);
     }
@@ -1878,6 +1880,13 @@ void ANOMALY_CALL SyncCurrentSong(void* user, const AnomalyUe5AhudFrameV1*) {
         static std::optional<std::chrono::steady_clock::time_point> mismatch_since;
         const bool engine_moved = slot != last_slot;
         last_slot = slot;
+        // The engine moved to another song (switch or auto-advance): the game
+        // never queries the length on that path, so write the player UI's
+        // duration label from the engine. Pushed before the takeover gate
+        // below: the game rewrites its playing-id field exactly while it
+        // rebuilds panel state, and this push fires only on the transition
+        // frame -- gating it there can swallow it for good.
+        if (engine_moved && slot) PushDurationLabel(*context);
         if (subsystem == nullptr || !slot || !TakenOver(*context, subsystem)) {
             mismatch_since.reset();
             return;
@@ -1886,10 +1895,6 @@ void ANOMALY_CALL SyncCurrentSong(void* user, const AnomalyUe5AhudFrameV1*) {
         const auto album = g_album.load(std::memory_order_acquire);
         if (album == nullptr || !AlbumActive(*album) || *slot >= album->songs.size()) return;
         const std::uint64_t wanted = SongId(*album, *slot);
-        // The engine moved to another song (switch or auto-advance): the game
-        // never queries the length on that path, so write the player UI's
-        // duration label from the engine.
-        if (engine_moved) PushDurationLabel(*context);
         const bool current_is_library = SongIndex(*album, current).has_value();
         if (wanted == current) {
             mismatch_since.reset();
@@ -1935,6 +1940,16 @@ void WriteDuration(void* info, const float seconds) noexcept {
     __try {
         *reinterpret_cast<float*>(static_cast<std::byte*>(info) + profile::kDurationInfoSecondsOffset) =
             seconds;
+    } __except (1) {
+    }
+}
+
+// The strip's own length cache: its blueprint re-formats the duration label
+// from it, so it moves with the label on every push.
+void WriteStripDuration(void* strip, const float seconds) noexcept {
+    __try {
+        *reinterpret_cast<float*>(static_cast<std::byte*>(strip) +
+            profile::kUiStripDurationCacheOffset) = seconds;
     } __except (1) {
     }
 }
@@ -2063,60 +2078,69 @@ std::uintptr_t __fastcall Duration2Detour(void* user, void** info) {
     return result;
 }
 
-// The strip's per-frame position refresh. Its widget owns the visible time
-// labels (the cached length at +0x10DC drives both the position label's scale
-// and the length label next to it), and the game calls this tick every frame
-// for as long as the widget lives -- so this is the one place that both knows
-// the real label host and is guaranteed to run again. The switch path never
-// refreshes the length itself (the click issues no query and the replaced
-// Post skips the HUD notification that arms the game's refresh chain), and a
-// one-shot push from any single moment can miss (the game resets the cache
-// when it rebuilds panel state), so instead re-assert the engine's length
-// here whenever the widget's cache disagrees with it. The nested lease pins
-// the duration callback's trampoline for the call; the callback writes the
-// cache and the length label the way the game's own query would have.
-void __fastcall PositionTickDetour(void* self, const float fraction) {
-    const AnomalyHookServiceV1* api{};
-    AnomalyGenerationHandleV1 lease{};
-    std::uintptr_t original{};
-    if (!BeginCallback(kPositionTick, api, lease, original)) return;
-    auto* const context = g_context.load(std::memory_order_acquire);
-    if (context != nullptr && self != nullptr) {
-        const float seconds = CurrentLibraryDuration(*context);
-        float cached = 0.0F;
-        if (seconds > 0.0F &&
-            (!ReadValue(*context, reinterpret_cast<std::uintptr_t>(self) +
-                              profile::kUiDurationCacheOffset,
-                 cached) ||
-             cached != seconds)) {
-            CallUnderLease(kDuration2, [&](const std::uintptr_t duration) {
-                // The callback reads the seconds from *info + 0x58.
-                std::byte info[96] = {};
-                *reinterpret_cast<float*>(info + profile::kDurationInfoSecondsOffset) = seconds;
-                void* inner = info;
-                void* user[1] = {self};
-                static_cast<void>(CallDuration(duration, user, &inner));
-            });
-        }
+// The duration label a player panel shows. The game registers the panel
+// itself with its duration queries, but the panel's label slot is empty: the
+// visible time labels live on the progress strip of the music view that owns
+// the panel -- panel -> widget tree -> owning view -> strip (+0x1000) ->
+// duration label (+0xF98). The owner check (+0xFF8 == panel) rejects views
+// that do not own this panel (the vehicle panel's tree, for one). The chain
+// is walked fresh on every push: the panels are rebuilt as the player mounts
+// and unmounts, and a freed panel no longer passes the owner check. The strip
+// is returned with the label: its own length cache (+0xFA4) feeds the
+// blueprint that re-formats the label, and leaving it at the template's 30
+// seconds would write the stale text right back.
+std::uintptr_t ResolveDurationLabel(const Context& context, const std::uintptr_t panel,
+    std::uintptr_t& strip) noexcept {
+    std::uintptr_t tree{}, owner{}, owner_panel{}, label{}, label_vtable{};
+    strip = 0;
+    if (!ReadValue(context, panel + profile::kUiOuterOffset, tree) || tree == 0) return 0;
+    if (!ReadValue(context, tree + profile::kUiOuterOffset, owner) || owner == 0) return 0;
+    if (!ReadValue(context, owner + profile::kUiOwnerPanelOffset, owner_panel) ||
+        owner_panel != panel) {
+        return 0;
     }
-    reinterpret_cast<void(__fastcall*)(void*, float)>(original)(self, fraction);
-    EndCallback(api, lease);
+    if (!ReadValue(context, owner + profile::kUiOwnerStripOffset, strip) || strip == 0) return 0;
+    if (!ReadValue(context, strip + profile::kUiStripDurationLabelOffset, label) ||
+        label == 0 || !ReadValue(context, label, label_vtable) || label_vtable == 0) {
+        strip = 0;
+        return 0;
+    }
+    return label;
 }
 
-void PushDurationLabel(Context& context) noexcept {
-    const std::uintptr_t function = g_duration2.load(std::memory_order_acquire);
-    if (function == 0) return;
-    const float seconds = CurrentLibraryDuration(context);
+void PushDurationLabel(Context& context, const std::optional<std::size_t> requested) noexcept {
+    // PlayingSlot() lags a just-posted switch (the engine thread has not run
+    // the command yet); the durations table answers the requested song at once.
+    const float seconds = requested ? context.engine.Duration(*requested) : CurrentLibraryDuration(context);
     if (seconds <= 0.0F) return;
-    // The callback reads the seconds from *info + 0x58.
-    std::byte info[96] = {};
-    *reinterpret_cast<float*>(info + profile::kDurationInfoSecondsOffset) = seconds;
     for (const auto& slot : g_music_views) {
         const std::uintptr_t ui = slot.load(std::memory_order_acquire);
         if (ui == 0) continue;
-        void* inner = info;
-        void* user[1] = {reinterpret_cast<void*>(ui)};
-        static_cast<void>(CallDuration(function, user, &inner));
+        std::uintptr_t strip{};
+        const std::uintptr_t label = ResolveDurationLabel(context, ui, strip);
+        // The nested lease pins the callback's trampoline for the calls; the
+        // callback reads the seconds from *info + 0x58, caches them at
+        // view +0x10DC and SetTexts the label at view +0x1018.
+        CallUnderLease(kDuration2, [&](const std::uintptr_t duration) {
+            std::byte info[96] = {};
+            *reinterpret_cast<float*>(info + profile::kDurationInfoSecondsOffset) = seconds;
+            void* inner = info;
+            // The panel itself: refresh its length cache the way the game's
+            // own query for this panel would have.
+            void* panel_user[1] = {reinterpret_cast<void*>(ui)};
+            static_cast<void>(CallDuration(duration, panel_user, &inner));
+            // The strip's cache first: the label text the SetText below
+            // writes is re-formatted from it.
+            if (strip != 0) WriteStripDuration(reinterpret_cast<void*>(strip), seconds);
+            if (label == 0) return;
+            // A synthetic view whose label slot points at the strip's duration
+            // label: the game's own callback then writes, through its own
+            // formatter, the label the player actually sees.
+            alignas(8) std::byte view[profile::kUiDurationCacheOffset + sizeof(float)] = {};
+            *reinterpret_cast<std::uintptr_t*>(view + profile::kUiDurationLabelOffset) = label;
+            void* view_user[1] = {view};
+            static_cast<void>(CallDuration(duration, view_user, &inner));
+        });
     }
 }
 
@@ -2406,7 +2430,6 @@ void ReleaseHooks(Context& context) noexcept {
     g_last_subsystem.store(nullptr, std::memory_order_release);
     g_last_subsystem_vtable.store(0, std::memory_order_release);
     g_set_current_id.store(0, std::memory_order_release);
-    g_duration2.store(0, std::memory_order_release);
     g_album.store(nullptr, std::memory_order_release);
     g_album_cover.store(nullptr, std::memory_order_release);
     g_music_table.store(0, std::memory_order_release);
@@ -2491,8 +2514,6 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
             "hifi-vehicle-music-set-current-id", false},
         {profile::kDurationCallback2Pattern, reinterpret_cast<void*>(&Duration2Detour),
             "hifi-vehicle-music-duration-2", false},
-        {profile::kPositionTickPattern, reinterpret_cast<void*>(&PositionTickDetour),
-            "hifi-vehicle-music-position-tick", false},
     }};
 
     const auto resolve = [&context](const std::string_view pattern) {
@@ -2545,7 +2566,6 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
         g_ftext_from_string.store(from_string, std::memory_order_release);
         g_sound_subsystem.store(sound_subsystem, std::memory_order_release);
         g_set_current_id.store(resolve(profile::kSetCurrentIdPattern), std::memory_order_release);
-        g_duration2.store(resolve(profile::kDurationCallback2Pattern), std::memory_order_release);
         // Cover helpers: optional, all or none.
         const std::uintptr_t import_texture = resolve(profile::kImportTexturePattern);
         const std::uintptr_t set_item_flags = resolve(profile::kSetItemFlagsPattern);
