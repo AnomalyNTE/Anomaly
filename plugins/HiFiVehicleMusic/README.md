@@ -5,9 +5,11 @@
 
 ## 工作方式
 
-1. 通过 `anomaly.interop.signature` 在 `HTGame.exe` `.text` 中解析 6 个必需函数和 7 个专辑函数（外加
-   3 个辅助函数），用 `anomaly.interop.hook` 挂 detour。必需签名或任一 Hook 失败则释放全部 Hook，插件退化为不接管；
-   专辑部分全有或全无：任一缺失则不加专辑，游戏歌单保持原样。
+1. 通过 `anomaly.interop.signature` 在 `HTGame.exe` `.text` 中解析函数签名，用 `anomaly.interop.hook` 挂
+   detour（全部 30 个，见 `HookIndex`）。每个 detour 都有严格上界：读原子快照、有界内存读写、向音频引擎
+   投递命令、经缓存解析事件名、经 `CallUnderLease` 的嵌套租约调其他 Hook 的原函数；不做表遍历、行构建、
+   纹理导入或任何可能阻塞的调用——重活全部在后台 builder 线程（见第 5 条），保证宿主 1 秒停止预算内能
+   排空回调。必需签名或任一核心 Hook 失败则释放全部 Hook，插件退化为不接管。
 2. `PostPlayerMusicSound` detour：读取 `PlayerType`（载具 = 1）与 `UAkAudioEvent` 的 FName，
    经 `anomaly.ue5.names` 解析出事件名。若插件启用、为载具音乐且曲库非空，则跳过原函数（Wwise 不发声），先调用原始 `StopPlayerMusicSound` 停掉正在播的 Wwise
    音乐，再把播放命令投递给音频引擎；否则停止引擎并调用原函数。
@@ -25,11 +27,22 @@
    的文件（如 `Play_Music_Radio_Progressive_Metal_001.flac`），该事件固定播放它并单曲循环、
    跟随游戏 seek。目录扫描在引擎线程完成，Hook 与 Draw 只读取内存快照，不做文件 I/O。
 5. 游戏内专辑（名称为曲库文件夹名，如 `D:\Music\周杰伦` → 「周杰伦」；换文件夹后重建专辑行）：曲库有几首，专辑里就有几首（追加在游戏歌曲之后，不替换、不隐藏游戏歌曲）。
-   - 合成行：音乐表 `ForeachRow` 遍历时记下第一行作模板，按曲库标题复制出 `FPlayerMusicData` 行
-     （标题用游戏自己的 `FText::FromString`，`AlbumID` 指向新专辑，排序在所有游戏条目之后）；
-     专辑行复制模板歌曲所属专辑的 `FMusicAlbumData`。行名 FName = 真实行的 ComparisonIndex +
-     自定义 Number（第 k 首 `0x48460000+k+1`，专辑 `0x4846FFFF`）。行常驻不释放（UI 持有行指针）。
-   - 查找/遍历：`FindRow` / `GetAlbumData` 命中合成名时返回合成行；两个 `ForeachRow` 遍历完原表后追加合成行。
+   快照架构：detour 只读写有界的共享状态——表遍历 detour 把模板行/已列出的游戏歌曲 ID 记入捕获缓冲
+   （纯存储，无游戏调用），查表 detour 命中合成名时从已发布的不可变快照返回合成行；后台 builder 线程
+   （250ms 轮询）把捕获变成行（`FText::FromString`、行复制都在这里）并整体发布下一个快照。
+   快照从不释放（UI 持有行指针），builder 在 Stop/Unload 里先于 Hook 与引擎被 join。
+   首屏显示由游戏线程的就地构建保证（`BuildSnapshotInline`）：游戏构建专辑列表早于任何音乐表
+   遍历，只靠 detour 被动捕获会让专辑首屏不显示（播一首歌才出现）。列表构建 detour（游戏线程）
+   在快照未发布时先补缺失的音乐表模板（`PrimeMusicTemplate`：持 walk Hook 租录用原始
+   `ForeachRow` 空串遍历一次音乐表），再就地构建并发布快照，同一次列表构建即包含曲库条目；
+   UE 表结构不能从其他线程遍历（builder 线程遍历会在加载期与游戏线程竞争导致游戏静默退出），
+   builder 线程只做维护性重建，与就地构建用 `g_build_mutex` 互斥（builder 用 try_lock 让路）。
+   - 合成行：音乐表模板行按曲库标题复制出 `FPlayerMusicData` 行（标题用游戏自己的
+     `FText::FromString`，`AlbumID` 指向新专辑，排序在所有游戏条目之后）；专辑行复制模板专辑的
+     `FMusicAlbumData`。行名 FName = 真实行的 ComparisonIndex + 自定义 Number（第 k 首
+     `0x48460000+k+1`，专辑 `0x4846FFFF`）。行常驻不释放（UI 持有行指针）。
+   - 查找/遍历：`FindRow` / `GetAlbumData` 命中合成名时返回合成行；两个 `ForeachRow` 用记录包装跑完
+     原表（顺带捕获模板）后追加快照里的合成行。
    - 已拥有列表：`GetOwnedMusicListIDs` 的副本追加曲库 ID；`ReGenerateNewMusicListIDs` /
      `SetCurrentMusicListID` 直接读 `+0x3E0`，调用前临时加入、调用后原位移除，存档不会写入合成 ID。
    - 播放：只有专辑里的歌（list ID 解析出曲库序号 k）走 HiFi 引擎播放曲库第 k 首；游戏自带歌曲照常由 Wwise 播放。
@@ -37,9 +50,10 @@
    - 锁定状态：音乐面板 `RefreshItemStates`、载具音乐面板列表构建、`ResolveCurrentMusicListID`、
      `SyncCurrentMusicListID` 也直接读 `+0x3E0`（不经 `GetOwnedMusicListIDs`），不加入就会被判为未拥有
      （state 3 = 锁定）或把当前歌切回游戏歌曲；同样只在调用期间临时加入（嵌套调用只加一次）。
-   - 专辑封面：曲库根目录下的 `cover|folder|front|album` + `.png|.jpg|.jpeg|.bmp`，用游戏自带的
-     `ImportFileAsTexture2D` 导入为 Transient 纹理，`FUObjectItem::SetFlags(RootSet)` 防 GC，
-     专辑行的 `TSoftObjectPtr` 只写路径（弱指针置空，由引擎按名解析）。没有图片或任一步失败则保留模板封面。
+   - 专辑封面：曲库根目录下的 `cover|folder|front|album` + `.png|.jpg|.jpeg|.bmp`，由 builder 线程用
+     游戏自带的 `ImportFileAsTexture2D` 导入为 Transient 纹理，`FUObjectItem::SetFlags(RootSet)` 防 GC，
+     封面 detour 只把已导入的纹理 `SetBrushFromTexture` 到显示的 UImage 上。没有图片或任一步失败则
+     保留模板封面。
 
 ## 开源依赖
 
@@ -196,6 +210,34 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
   `SetCurrentPlayerMusicListID` 调用点、开机的 module base/trampoline，以及这次为定位专辑问题
   临时加的 `library album not built: <原因>`。代码按注释保留在原地，需要时整段解注释即可；
   保留的是状态日志（hooks installed、音乐事件 replaced/skipped、签名/hook 失败告警）
+- [x] 修复「停用/热重载触发 host stop deadline exceeded → quarantine」：detour 在回调租约内做无界工作
+  （`EnsureRows` 在 `TakeOverPost`/`AlbumForEach` 里建行、FText 创建、`CoverTexture` 导入、宿主 names
+  服务调用），MinHook 撤销 Hook 要冻结全进程线程并等回调排空，宿主只有 1 秒预算；加上跨 Hook 的
+  trampoline 调用（Post detour 里调 Stop 原函数、点歌补切里调 SetCurrent/ChangeSound 原函数）没有
+  嵌套租约，撤销期间可能踩已释放的跳板。重构为快照 + builder 线程（见上），30 个 Hook 的 detour
+  全部有界并全部安装（功能不缩水），跨 Hook 调用统一走 `CallUnderLease` 嵌套租约，事件名经
+  `ResolveEventName` 缓存。`anomaly-test-host --reload 30`（tick=10ms 极速重载）与
+  `--reload 5 --ticks 400` 全部通过，资源零泄漏；游戏内验证待做
+- [x] 修复游戏内「关闭/热重载仍 quarantine」的另一半根因（宿主侧）：插件 30 个 Hook 的撤销走
+  `RevokeScope` 逐个 `Disable`+`Remove`，MinHook 每次都全进程挂起/恢复线程（系统线程快照），
+  真实游戏 100+ 线程下 60 次挂起耗尽宿主 1 秒停止预算（test host 线程少测不出）。宿主改为批量：
+  `RemoveOwner` 一次 `MH_ApplyQueued` 挂起完成整批 disable，再逐个 remove（已禁用的 Hook 移除
+  不再挂起）；装/卸 30 Hook 从 60 次挂起降到 1 次
+- [x] 修复「专辑必须播一首歌才显示」：快照发布依赖 detour 被动捕获的表模板，而游戏构建专辑列表
+  早于任何音乐表遍历；改为列表构建 detour（游戏线程）在快照缺失时补音乐表模板（`PrimeMusicTemplate`）
+  并就地构建发布（`BuildSnapshotInline`）。首版把补模板放在 builder 线程，与加载期的游戏线程并发
+  遍历同一张表，导致游戏启动阶段静默退出——已改为仅游戏线程遍历（时长显示依赖同一快照，一并恢复）
+- [x] 修复「切歌后进度条总时长不更新」（本分支引入的回归）：切歌路径的时长查询载荷是面板
+  （`UHTUI_MusicPlayer`），而面板的标签槽 `+0x1018` 恒空，回调里的 SetText 被跳过——玩家实际看到的
+  TotalTime/CurrenTime 挂在进度条部件（`UHTUI_MusicPlayerProgressBar` 的 `+0xF90/+0xF98`）上，它由面板
+  的 outer 链宿主 `UHTUI_MusicDetailedView` 持有（`+0xFF8` 指回面板、`+0x1000` 指向进度条），
+  游戏自己的切歌查询与之前的推送都打不中它。推送改为从注册面板沿 outer 链定位宿主（校验
+  `+0xFF8` 回指）取 `+0xF98` 标签，再用「合成视图」（`+0x1018` 指向该标签）驱动游戏自己的第二个
+  时长回调，SetText 可见标签的仍是游戏自己的格式化器；推送值直接取点歌索引的时长表
+  （`engine.Play` 是异步命令，推送瞬间 `PlayingSlot()` 仍是上一首的槽位）；过渡帧的推送移到
+  `TakenOver` 闸门之前（`+0x420` 恰在该帧被游戏重写，原先唯一的新鲜推送被闸门永久吞掉）；
+  条带自身的时长缓存 `+0xFA4` 在 SetText 前先写（BP 从它重排标签文本，不写则模板 30 秒被改回）；
+  无效的每帧 tick 自愈一并移除（该 tick 由 BP Timeline 驱动，正常播放期间从不执行）；已实测修复
 - [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
 - [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
   专辑沿用模板封面；导入代码保留未调用

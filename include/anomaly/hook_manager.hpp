@@ -22,6 +22,13 @@ public:
     virtual bool Enable(void* target) noexcept = 0;
     virtual bool Disable(void* target) noexcept = 0;
     virtual bool Remove(void* target) noexcept = 0;
+    // Batch operations: Queue* defers the work and ApplyQueued performs all of
+    // it under a single thread suspension. The default performs each operation
+    // immediately, so a backend without batching keeps the same semantics with
+    // one suspension per call.
+    virtual bool QueueEnable(void* target) noexcept { return Enable(target); }
+    virtual bool QueueDisable(void* target) noexcept { return Disable(target); }
+    virtual bool ApplyQueued() noexcept { return true; }
 };
 
 [[nodiscard]] std::unique_ptr<HookBackend> CreateMinHookBackend();

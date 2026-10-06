@@ -29,6 +29,15 @@ public:
         return status == MH_OK || status == MH_ERROR_DISABLED;
     }
     bool Remove(void* target) noexcept override { return MH_RemoveHook(target) == MH_OK; }
+    bool QueueEnable(void* target) noexcept override {
+        const MH_STATUS status = MH_QueueEnableHook(target);
+        return status == MH_OK || status == MH_ERROR_ENABLED;
+    }
+    bool QueueDisable(void* target) noexcept override {
+        const MH_STATUS status = MH_QueueDisableHook(target);
+        return status == MH_OK || status == MH_ERROR_DISABLED;
+    }
+    bool ApplyQueued() noexcept override { return MH_ApplyQueued() == MH_OK; }
 
 private:
     bool initialized_{};
