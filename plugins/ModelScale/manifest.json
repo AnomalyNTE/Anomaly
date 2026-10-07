@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.builtin.model-scale",
+  "name": "Model Scale",
+  "description": "Rescales the local character mesh by a configurable factor without touching movement or collision.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.config", "minVersion": 1, "optional": true},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.ue5.ahud", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "memory-read",
+    "memory-write",
+    "ue5-ahud",
+    "ui",
+    "game-events",
+    "interop-signature",
+    "configuration"
+  ]
+}

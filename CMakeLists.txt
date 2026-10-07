@@ -1487,6 +1487,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/HiFiVehicleMusic/manifest.json
         PACKAGE_NAME HiFiVehicleMusic
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/HiFiVehicleMusic")
+    anomaly_add_plugin(anomaly_builtin_model_scale
+        SOURCES plugins/ModelScale/plugin.cpp
+        MANIFEST plugins/ModelScale/manifest.json
+        PACKAGE_NAME ModelScale
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModelScale")
     target_link_libraries(anomaly_builtin_hifi_vehicle_music PRIVATE
         nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio anomaly_monkeys_audio anomaly_dsd2pcm
         ole32 shell32 uuid avrt winmm)
@@ -1505,7 +1510,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
-        anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music)
+        anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
+        anomaly_builtin_model_scale)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
