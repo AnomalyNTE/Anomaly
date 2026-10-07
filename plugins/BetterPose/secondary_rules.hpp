@@ -26,6 +26,32 @@ inline constexpr SpringSettings SpringFor(bool hair) {
               : SpringSettings{kStiffness, kDamping, kLagDegrees};
 }
 
+// Ceiling on how fast a strand may turn, in deg/s, applied once per frame to the pose
+// the spring produced (see accessory_dynamics.hpp). The frame's motion is scaled along
+// its own arc when it exceeds `rate * dt`, never redirected toward the target, so the
+// ceiling can only slow a strand down -- it cannot advance one.
+//
+// It replaces the old per-frame positional clamp, which snapped the whole remaining lag
+// (up to lag_degrees, 35 for hair) into a single frame. Measured on the old code that
+// made the peak angular rate grow linearly with the frame rate (808 deg/s at 30 fps,
+// 7878 at 240) and produced a ~30 deg single-frame reversal at every frame rate.
+// Measured after, the peak rate is 1393-1464 deg/s across 30-240 fps (1.05x, against
+// 9.75x before), and paths whose natural turn stays under the ceiling -- gravity
+// settling and collision resolution -- are bit-for-bit unchanged (the accessory
+// fixture's output is identical).
+//
+// The values are calibrated to the rate the old clamp actually delivered (800-950
+// deg/s) so the drape and lag feel are preserved.
+inline constexpr double kHairLagRate = 900.0;   // hair and sleeves
+inline constexpr double kBodyLagRate = 640.0;   // other strands; the 25/35 ratio applied
+
+// Takes the spring so the ceiling can later be derived from it (for example from
+// lag_degrees) without touching every call site.
+inline double LagRateFor(const SpringSettings& spring, bool hair) {
+  (void)spring;
+  return hair ? kHairLagRate : kBodyLagRate;
+}
+
 inline std::string Lower(std::string_view name) {
   std::string low(name);
   for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

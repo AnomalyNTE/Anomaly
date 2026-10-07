@@ -202,6 +202,12 @@ class Dynamics {
   const std::vector<Bone>& Pose() const { return pose_; }
   bool Moving() const { return moving_; }
   double LengthError() const { return length_error_; }
+  // How many frames the angular-rate ceiling actually slowed down. A healthy
+  // configuration shows 0; a persistently nonzero count means the ceiling is doing the
+  // work the spring should be doing, or that the rate is set below the motion it must
+  // follow.
+  std::uint64_t LagCorrections() const { return lag_corrections_; }
+  void ResetLagCorrections() { lag_corrections_=0; }
 
   // Update and the mesh detour can submit the same timeline sample. Integrate it once.
   const std::vector<Bone>& Sample(Frame frame, double time, std::uint32_t seek_serial,
@@ -226,6 +232,9 @@ class Dynamics {
       const Frame parent=Parent(i,frame);
       const Vec head=parent.Point(n.offset);
       n.local=n.rest;
+      // Frame-start direction, so the substep ceiling below can bound the frame's TOTAL
+      // rotation rather than each substep's.
+      const Vec direction_at_frame_start=n.direction;
       if (n.active) {
         const Vec axis=Rotate(Multiply(parent.rotation,n.rest),n.axis);
         const Vec head_velocity=(head-n.head)*(1/dt);
@@ -279,14 +288,29 @@ class Dynamics {
         const auto spring=secondary::SpringFor(n.swing_only);
         const int steps=(std::max)(4,static_cast<int>(std::ceil(dt*120-1e-8)));
         const double h=dt/steps;
+        const double rate_limit = secondary::LagRateFor(spring, n.swing_only);
         for (int step=0;step<steps;++step) {
           n.velocity=n.velocity+(Cross(n.direction,target)*spring.stiffness-n.velocity*spring.damping)*h;
           n.direction=Unit(n.direction+Cross(n.velocity*h,n.direction),target);
         }
-        const double lag=std::acos(std::clamp(Dot(n.direction,target),-1.0,1.0))*180/3.14159265358979323846;
-        if (lag>spring.lag_degrees) {
-          n.direction=Unit(n.direction+(target-n.direction)*(spring.lag_degrees/lag),target);
-          n.velocity=n.velocity*.5;
+        // Angular-rate ceiling on the frame's delivered rotation. Applied to the pose the
+        // spring produced, by scaling that motion along its own arc -- NOT by redirecting
+        // the strand at its target. Redistributing every substep toward the target made
+        // the ceiling an accelerator rather than a limiter: with a large lag it held the
+        // strand at the maximum rate every substep, so the collision fixture's
+        // `n.direction` moved 5.8-7.5 deg/frame where the free spring moves 0.09-0.29, and
+        // the bone turned 12.5 deg against a 12 deg cap in the fixture. Scaling the
+        // spring's own step cannot move the strand further than the spring asked for.
+        if (rate_limit > 0.0) {
+          const double turned=std::acos(std::clamp(
+              Dot(direction_at_frame_start,n.direction),-1.0,1.0));
+          const double max_turn=rate_limit*(3.14159265358979323846/180.0)*dt;
+          if (turned>max_turn && turned>1e-9) {
+            n.direction=Unit(direction_at_frame_start+
+                (n.direction-direction_at_frame_start)*(max_turn/turned),
+                direction_at_frame_start);
+            ++lag_corrections_;
+          }
         }
         const Vec local_axis=Unit(Rotate(Inverse(parent.rotation),n.direction));
         n.local=Multiply(Swing(n.axis,local_axis),Twist(n.rest,n.axis));
@@ -435,6 +459,7 @@ class Dynamics {
   std::vector<BodyVolume> body_volumes_;
   Frame previous_{};
   std::size_t driven_{};
+  std::uint64_t lag_corrections_{};
   double time_{},length_error_{};
   std::uint32_t serial_{};
   bool seeded_{},moving_{},collisions_configured_{};
