@@ -26,8 +26,3 @@
   ],
   "capabilities": ["ui", "ui-window", "configuration", "scheduler", "memory-read", "memory-write", "ue5-names", "ue5-objects", "ue5-world", "game-events", "interop-signature"]
 }
-
-
-
-
-
