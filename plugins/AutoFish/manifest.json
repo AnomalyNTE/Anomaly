@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "id": "b1ank.autofish",
+  "name": "autofish",
+  "description": "自动抛竿、提竿与遛鱼，支持连续钓鱼、鱼饵补购和按阈值卖鱼。",
+  "author": "b1ank",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.15",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.plugin-state", "minVersion": 1},
+    {"id": "anomaly.scheduler", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.window", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ue5.names", "minVersion": 2},
+    {"id": "anomaly.ue5.objects", "minVersion": 1},
+    {"id": "anomaly.ue5.framework", "minVersion": 1},
+    {"id": "anomaly.ue5.world", "minVersion": 1},
+    {"id": "anomaly.ue5.process-event", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1}
+  ],
+  "capabilities": ["ui", "ui-window", "configuration", "scheduler", "memory-read", "memory-write", "ue5-names", "ue5-objects", "ue5-world", "game-events", "interop-signature"]
+}
+
+
+
+
+
