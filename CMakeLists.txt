@@ -1417,7 +1417,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     endif()
     anomaly_add_plugin(anomaly_builtin_skin_changer
         SOURCES plugins/SkinChanger/plugin.cpp plugins/SkinChanger/cosmetics.cpp
-            plugins/SkinChanger/awakening.cpp
+            plugins/SkinChanger/awakening.cpp plugins/SkinChanger/plates.cpp
         MANIFEST plugins/SkinChanger/manifest.json
         PACKAGE_NAME SkinChanger
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SkinChanger")
@@ -1430,6 +1430,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             plugins/SkinChanger/awakening_tests.cpp)
         target_compile_features(anomaly_skin_changer_awakening_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_skin_changer_awakening_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_skin_changer_plate_fixture plugins/SkinChanger/plate_tests.cpp)
+        target_compile_features(anomaly_skin_changer_plate_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_skin_changer_plate_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_skin_changer_plate_follow_fixture plugins/SkinChanger/plate_follow_tests.cpp)
+        target_link_libraries(anomaly_skin_changer_plate_follow_fixture PRIVATE Anomaly::sdk)
+        target_compile_options(anomaly_skin_changer_plate_follow_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
 
     add_library(anomaly_quick_ultimate_sequence STATIC
