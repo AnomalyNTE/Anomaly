@@ -19,6 +19,10 @@ Anomaly\plugins\MyPlugin\
 - 加载时整个包被复制到**不可变影子代际**，资源与 native 依赖与 DLL 使用同一快照。
 - 根级 DLL 与没有 Manifest 的目录**不会被加载**。
 - 插件通过导出 `AnomalyPluginEntryV1` 并填写 `AnomalyPluginDescriptorV1` 接入。ABI v1 入口只承担**生命周期**与 **`query_service`**。
+- Runtime 在进程内**手工映射**插件镜像，不经过 `LoadLibrary`：插件 DLL 不出现在进程模块列表中。镜像必须满足下列契约，否则在映射前被预检拒绝（`static-tls` / `static-crt` / `missing-cxx-throw-bridge` 等诊断码）：
+  - 禁用 loader 管理的静态 TLS——不要使用 `thread_local` / `__declspec(thread)`；需要每线程状态时用 `anomaly::ThreadLocalScalar<T>`（`anomaly/thread_local_value.hpp`）。
+  - C++ 插件必须动态链接 CRT（`/MD`，SDK 默认）并携带 SDK 异常桥（`anomaly_add_plugin` 自动编译 `plugin_cxx_throw_bridge.cpp`）；异常经由桥以正确的镜像基址穿越映射边界。
+  - 不要用 `GetModuleHandleExW` / `GetModuleFileNameW` / `DllMain` 的模块句柄自定位——映射镜像没有 loader 模块身份；包目录经 `anomaly.core` 的 `plugin_directory` 或 `anomaly.plugin-state` 的 `directory` 服务查询。
 
 ## 1. 安装 SDK
 
@@ -267,7 +271,7 @@ anomaly-test-host --plugin .\dist\anomaly.example.my-plugin --reload 10 --ticks 
 2. 停止旧 Scope；
 3. 只重载**变更包及其依赖闭包中的下游包**。
 
-管理界面的 **Reload all** 可显式触发全量重载。激活前会预检 static / 受支持的 delay-load import、private CRT / system DLL 与同名已加载模块；动态 `LoadLibrary` 的模块不在预检范围，插件必须自行避免进程级 DLL 名称冲突。
+管理界面的 **Reload all** 可显式触发全量重载。激活前会预检 static / 受支持的 delay-load import、private CRT / system DLL、同名已加载模块，以及手工映射镜像契约（静态 TLS、静态链接 CRT、缺失异常桥）；动态 `LoadLibrary` 的模块不在预检范围，插件必须自行避免进程级 DLL 名称冲突。
 
 ## 10. 分发
 

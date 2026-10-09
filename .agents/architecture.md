@@ -30,7 +30,7 @@ Repository Worker 都是由 Runtime 服务声明的并列所有者，彼此不�
 | `src/services`、`src/platform/windows`、`src/diagnostics` | 日志、存储、内存、Pattern、Pipe、Crash | Win32 和 Runtime 合同 | NTE 策略、插件行为 |
 | `src/game/ue5` | 通用引擎符号、validator、快照 | 已验证的平台/Runtime 服务 | NTE 专用偏移、包管理策略 |
 | `src/game/nte` | 活动 Profile 选择和 NTE 服务 Gate | UE5 Adapter、NTE Profile | 生命周期所有权决策、Build identity 匹配 |
-| `src/plugin` | Manifest、依赖、Scope、generation、热重载 | SDK 合同、Runtime 服务 | Renderer 后端内部、固定 NTE 地址 |
+| `src/plugin` | Manifest、依赖预检、镜像手工映射（`plugin_image_mapper`）、Scope、generation、热重载 | SDK 合同、Runtime 服务 | Renderer 后端内部、固定 NTE 地址 |
 | `src/render/dx12`、`src/ui` | SwapChain/输入/UI 与绘制服务 | Render Dispatcher、受控 Hook、插件只读快照 | 包 I/O、DLL 加载、同步 Game Update |
 | `src/repository` | 签名 Index、网络 worker、staging、回滚 | Worker/Network、validator | 游戏对象、渲染提交、插件回调 |
 | `include/anomaly/sdk` | 稳定公开 C ABI 与 C++ wrapper | 版本化公开合同 | 宿主内部类型 |
