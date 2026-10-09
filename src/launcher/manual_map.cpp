@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <span>
 #include <string>
@@ -37,10 +38,14 @@ constexpr DWORD kAttachProcessAccess =
     PROCESS_VM_WRITE | PROCESS_CREATE_THREAD;
 
 // The hook injected into the launcher signals this immediately before asking it to start the game.
-// The name is duplicated in src/launcher/hook/nte_game_hook.cpp rather than shared through a header,
-// because that DLL runs inside a process this repository does not own and is deliberately
-// free-standing.
-constexpr wchar_t kLauncherArmedEventName[] = L"Local\\Anomaly.NteGameHook.Armed";
+// The concrete name is generated per session (see GenerateArmedEventName): a fixed, product-named
+// event would be enumerable by any process in the session and would correlate runs across machines.
+// The fallback literal is duplicated in src/launcher/hook/nte_game_hook.cpp rather than shared
+// through a header, because that DLL runs inside a process this repository does not own and is
+// deliberately free-standing.
+constexpr wchar_t kLauncherArmedEventFallbackName[] = L"Local\\Anomaly.NteGameHook.Armed";
+// The environment variable carrying the session's armed-event name to the hook.
+constexpr wchar_t kLauncherArmedEventVariable[] = L"ANOMALY_ARMED_EVENT";
 
 // How long capture waits for that signal before falling back to the session's own timing. It only has
 // to cover the hook's startup delay plus injection, so it is far shorter than the discovery budget.
@@ -52,6 +57,56 @@ constexpr DWORD kHookArmedTimeoutMilliseconds = 90000;
 constexpr DWORD kLoaderReadyTimeoutMilliseconds = 15000;
 
 std::mutex g_debug_privilege_mutex;
+
+// One PRNG per process, seeded from the system CSPRNG, for per-session randomization:
+// mapping hints, host selection, and event names. Each use needs unpredictability
+// between runs, not cryptographic strength.
+std::mt19937_64& Engine() {
+    static std::mt19937_64 engine{[] {
+        std::random_device device;
+        return (static_cast<std::uint64_t>(device()) << 32) | device();
+    }()};
+    return engine;
+}
+
+// Per-session armed-event name: "Local\\<16 hex chars>". The name carries no product
+// marker and never repeats, so the event cannot be enumerated as a fingerprint of this
+// launcher, and hook side learns it through the environment variable below.
+std::wstring GenerateArmedEventName() {
+    constexpr wchar_t kHex[] = L"0123456789abcdef";
+    std::uniform_int_distribution<std::size_t> pick(0, 15);
+    std::wstring name = L"Local\\";
+    for (int index = 0; index < 16; ++index) {
+        name.push_back(kHex[pick(Engine())]);
+    }
+    return name;
+}
+
+// Builds a null-terminated, double-null-terminated environment block that is the
+// current process's environment plus one variable. Returns an empty vector on failure,
+// and an empty block makes CreateProcessW inherit the current environment, which keeps
+// the launch working (the hook then falls back to the fallback event name).
+std::vector<wchar_t> BuildEnvironmentWith(const wchar_t* name, const wchar_t* value) {
+    const LPWCH current = GetEnvironmentStringsW();
+    if (current == nullptr) return {};
+    std::vector<wchar_t> block;
+    const auto append = [&block](const wchar_t* text) {
+        for (const wchar_t* cursor = text; *cursor != L'\0'; ++cursor) {
+            block.push_back(*cursor);
+        }
+        block.push_back(L'\0');
+    };
+    for (const wchar_t* entry = current; *entry != L'\0';) {
+        if (std::wcsncmp(entry, name, std::wcslen(name)) != 0) {
+            append(entry);
+        }
+        entry += std::wcslen(entry) + 1;
+    }
+    append((std::wstring(name) + L"=" + value).c_str());
+    block.push_back(L'\0');
+    FreeEnvironmentStringsW(current);
+    return block;
+}
 
 class Handle final {
 public:
@@ -1382,49 +1437,33 @@ bool ReadRemote(HANDLE process, std::uintptr_t address, void* output, std::size_
         read == size;
 }
 
+// A mapped Anomaly image is recognized by the "AnomalyStart\0" export-name string that
+// its export directory keeps in .rdata. Header-based detection (MZ/PE signature, export
+// directory walk) stopped working when the mapper started overwriting mapped headers
+// with random bytes: the string survives that, the headers do not.
 bool RemoteImageExportsAnomalyStart(
     HANDLE process, std::uintptr_t base, std::size_t region_size) {
-    IMAGE_DOS_HEADER dos{};
-    if (region_size < sizeof(IMAGE_DOS_HEADER) ||
-        !ReadRemote(process, base, &dos, sizeof(dos)) ||
-        dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0 ||
-        region_size < sizeof(IMAGE_NT_HEADERS64) ||
-        static_cast<std::size_t>(dos.e_lfanew) > region_size - sizeof(IMAGE_NT_HEADERS64)) {
-        return false;
-    }
-    IMAGE_NT_HEADERS64 headers{};
-    if (!ReadRemote(process, base + dos.e_lfanew, &headers, sizeof(headers)) ||
-        headers.Signature != IMAGE_NT_SIGNATURE ||
-        headers.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        (headers.FileHeader.Characteristics & IMAGE_FILE_DLL) == 0 ||
-        headers.OptionalHeader.SizeOfImage < headers.OptionalHeader.SizeOfHeaders) {
-        return false;
-    }
-    const auto& data = headers.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (data.VirtualAddress == 0 || data.Size < sizeof(IMAGE_EXPORT_DIRECTORY) ||
-        data.VirtualAddress > headers.OptionalHeader.SizeOfImage - sizeof(IMAGE_EXPORT_DIRECTORY)) {
-        return false;
-    }
-    IMAGE_EXPORT_DIRECTORY exports{};
-    if (!ReadRemote(process, base + data.VirtualAddress, &exports, sizeof(exports)) ||
-        exports.NumberOfNames == 0 || exports.NumberOfNames > 65536) {
-        return false;
-    }
-    std::vector<DWORD> names(exports.NumberOfNames);
-    if (!ReadRemote(
-            process, base + exports.AddressOfNames, names.data(),
-            names.size() * sizeof(DWORD))) {
-        return false;
-    }
-    for (DWORD rva : names) {
-        std::array<char, 64> name{};
-        SIZE_T read{};
-        if (ReadProcessMemory(
-                process, reinterpret_cast<const void*>(base + rva), name.data(),
-                name.size() - 1, &read) != FALSE && read != 0 &&
-            std::string_view(name.data()) == ANOMALY_CORE_START_ENTRY) {
-            return true;
+    constexpr std::string_view needle{ANOMALY_CORE_START_ENTRY};
+    constexpr std::size_t kChunkSize = 0x10000;
+    std::vector<std::byte> chunk;
+    std::size_t overlap = 0;
+    for (std::size_t offset = 0; offset < region_size; offset += kChunkSize) {
+        const std::size_t bytes = (std::min)(kChunkSize + overlap, region_size - offset);
+        chunk.assign(bytes, std::byte{});
+        // Section gaps keep PAGE_NOACCESS from ProtectImage; a chunk that fails to
+        // read is skipped rather than treated as a verdict, because the readable
+        // .rdata holding the needle sits in a different chunk of the same region.
+        if (!ReadRemote(process, base + offset, chunk.data(), bytes)) {
+            overlap = 0;
+            continue;
         }
+        for (std::size_t index = 0; index + needle.size() < bytes; ++index) {
+            if (std::memcmp(
+                    chunk.data() + index, needle.data(), needle.size()) == 0) {
+                return true;
+            }
+        }
+        overlap = needle.size() - 1;
     }
     return false;
 }
@@ -1443,9 +1482,36 @@ bool HasPrivateMappedCore(HANDLE process) {
         }
         const auto base = reinterpret_cast<std::uintptr_t>(region.AllocationBase);
         if (region.State == MEM_COMMIT && region.Type == MEM_PRIVATE &&
-            base != 0 && base != inspected_allocation &&
-            RemoteImageExportsAnomalyStart(process, base, region.RegionSize)) {
-            return true;
+            base != 0 && base != inspected_allocation) {
+            // A manually mapped image is one allocation whose regions carry different
+            // protections (read-only headers, execute text, readable rdata, ...), and
+            // VirtualQueryEx reports each protection run separately -- the export
+            // string sits a few regions into the allocation, so the scan must cover the
+            // whole allocation, not the first region. Walk forward while the
+            // AllocationBase stays the same to get that extent.
+            std::uintptr_t extent_end =
+                reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
+            std::uintptr_t walk = extent_end;
+            while (walk < maximum) {
+                MEMORY_BASIC_INFORMATION next_region{};
+                if (VirtualQueryEx(
+                        process, reinterpret_cast<const void*>(walk), &next_region,
+                        sizeof(next_region)) == 0) {
+                    break;
+                }
+                if (reinterpret_cast<std::uintptr_t>(next_region.AllocationBase) != base) {
+                    break;
+                }
+                extent_end = reinterpret_cast<std::uintptr_t>(next_region.BaseAddress) +
+                    next_region.RegionSize;
+                walk = extent_end;
+            }
+            if (RemoteImageExportsAnomalyStart(process, base, extent_end - base)) {
+                return true;
+            }
+            inspected_allocation = base;
+            address = extent_end;
+            continue;
         }
         inspected_allocation = base;
         const auto next = reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
@@ -1594,8 +1660,17 @@ static ManualMapResult MapImageWithRemoteBootstrap(
                 "core image does not export the manual-map C++ exception bridge");
         }
 
+        // A preferred-base hit leaves the image at the same address in every run and in
+        // every process; a hint chosen per mapping keeps the relocations (already run
+        // below) moving the image somewhere unpredictable instead. The hint is aligned
+        // to the allocation granularity and bounded far below the usual module range so
+        // the allocation stays valid for any image size.
+        std::uniform_int_distribution<std::uint64_t> hint_distribution(
+            0x0001000000000000ULL, 0x0007000000000000ULL);
+        const std::uint64_t hint = hint_distribution(Engine()) &
+            ~static_cast<std::uint64_t>(0xFFFF);
         void* remote_base = VirtualAllocEx(
-            process, reinterpret_cast<void*>(headers->OptionalHeader.ImageBase),
+            process, reinterpret_cast<void*>(hint),
             parsed->mapped.size(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (remote_base == nullptr) {
             remote_base = VirtualAllocEx(
@@ -1646,6 +1721,27 @@ static ManualMapResult MapImageWithRemoteBootstrap(
             return Failure(
                 ManualMapError::WriteFailure, GetLastError(),
                 "remote core image could not be written");
+        }
+        // Overwrite the mapped headers (DOS+NT headers plus the section table) with
+        // random bytes while the whole region is still writable. Everything the
+        // bootstrap thread, the runtime and any export lookup needs has been read from
+        // the headers above, or lives past the header range, so the image keeps working;
+        // a memory scan of the region no longer finds an MZ/PE signature at its start,
+        // which is the most trivially searchable artifact of a manually mapped image.
+        const DWORD header_bytes = headers->OptionalHeader.SizeOfHeaders;
+        if (header_bytes != 0 && header_bytes <= parsed->mapped.size()) {
+            std::vector<std::byte> noise(header_bytes);
+            std::uniform_int_distribution<int> byte_distribution(0, 255);
+            for (std::byte& value : noise) {
+                value = static_cast<std::byte>(byte_distribution(Engine()));
+            }
+            if (WriteProcessMemory(
+                    process, remote_image.address, noise.data(),
+                    noise.size(), nullptr) == FALSE) {
+                return Failure(
+                    ManualMapError::WriteFailure, GetLastError(),
+                    "remote image headers could not be overwritten");
+            }
         }
         if (!ProtectImage(process, remote_image.address, parsed->mapped)) {
             return Failure(
@@ -2071,7 +2167,8 @@ std::string NarrowRelayMessage(const wchar_t* message) noexcept {
 
 ManualMapLaunchResult RunRelayAttachSession(
     const ManualMapLaunchOptions& options,
-    const std::set<DWORD>& pre_launch_targets) noexcept {
+    const std::set<DWORD>& pre_launch_targets,
+    const std::wstring& armed_event_name) noexcept {
     ManualMapLaunchResult result;
     try {
         const std::filesystem::path relay_image =
@@ -2194,7 +2291,7 @@ ManualMapLaunchResult RunRelayAttachSession(
         }
         const bool fields_copied =
             CopyRelayField(info.armed_event_name, std::size(info.armed_event_name),
-                options.hook_path.empty() ? std::wstring() : kLauncherArmedEventName) &&
+                armed_event_name) &&
             CopyRelayField(info.game_executable_name, std::size(info.game_executable_name),
                 Fold(options.target_executable_name)) &&
             CopyRelayField(info.core_path, std::size(info.core_path),
@@ -2338,15 +2435,17 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         const auto discovery_timeout = std::clamp<std::int64_t>(
             options.target_timeout.count(), 1, std::chrono::minutes(10).count() * 60'000LL);
 
-        // The hook signals this immediately before asking the launcher to start the game, so capture
+        // The hook signals this immediately before asking it to start the game, so capture
         // can be held until the seconds that matter. Polling is unavoidable -- the game process is
         // created by ACE-BASE.sys, which offers nothing to subscribe to -- but a loop that starts with
         // the launcher would spend most of its life watching a process that is still logging in.
         // Nothing injects a hook while the launcher's auto-start is off, so nothing has to be waited
         // for: capture polls from the start for the HTGame.exe the player starts from the launcher.
         Handle armed;
+        std::wstring armed_event_name;
         if (!options.hook_path.empty()) {
-            armed.Reset(CreateEventW(nullptr, TRUE, FALSE, kLauncherArmedEventName));
+            armed_event_name = GenerateArmedEventName();
+            armed.Reset(CreateEventW(nullptr, TRUE, FALSE, armed_event_name.c_str()));
             if (!armed) {
                 result.mapping = Failure(ManualMapError::ProcessControlFailure, GetLastError(),
                     "the launcher hook handshake could not be created");
@@ -2358,10 +2457,21 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         PROCESS_INFORMATION created{};
         constexpr DWORD incompatible_flags =
             DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_SUSPENDED;
+        // The armed-event name travels to the hook through the environment: the hook runs
+        // inside the launched process and reads the variable at startup. On a block-build
+        // failure the environment is inherited whole, and the hook falls back to the
+        // fallback event name -- the handshake then uses the old fixed name, which keeps
+        // the session alive at the cost of the randomized name.
+        const std::vector<wchar_t> environment = armed_event_name.empty()
+            ? std::vector<wchar_t>{} : BuildEnvironmentWith(
+                kLauncherArmedEventVariable, armed_event_name.c_str());
         if (CreateProcessW(
                 launcher.c_str(), command_line.data(), nullptr, nullptr, FALSE,
                 options.creation_flags & ~incompatible_flags,
-                nullptr, working_directory.c_str(), &startup, &created) == FALSE) {
+                environment.empty()
+                    ? nullptr
+                    : const_cast<wchar_t*>(environment.data()),
+                const_cast<LPWSTR>(working_directory.c_str()), &startup, &created) == FALSE) {
             const DWORD launch_error = GetLastError();
             result.mapping = Failure(
                 ManualMapError::ProcessLaunchFailure, launch_error,
@@ -2401,7 +2511,7 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         // The relay path replaces this process's capture-and-map tail: the relay image
         // mapped into its host performs both, and only the outcome comes back here.
         if (options.relay.Enabled()) {
-            return RunRelayAttachSession(options, existing_targets);
+            return RunRelayAttachSession(options, existing_targets, armed_event_name);
         }
 
         FastTargetCaptureResult captured;

@@ -65,6 +65,8 @@
 #include <cstring>
 #include <cwchar>
 
+#include <string>
+
 namespace {
 
 // Qt::QueuedConnection. The scheduler lives on the launcher's main thread, so the call has to be
@@ -74,7 +76,19 @@ constexpr int kQueuedConnection = 2;
 // The host creates this before the launcher is started, and waits on it to decide when to begin
 // capturing the game process. The game is created by ACE-BASE.sys, which offers nothing to subscribe
 // to, so capture has to poll; this event is what keeps the poll bounded.
-constexpr wchar_t kArmedEventName[] = L"Local\\Anomaly.NteGameHook.Armed";
+//
+// The host passes the real name of the session through the environment: it is random per run so the
+// event cannot be enumerated as a fingerprint of this launcher. The literal below is only the
+// fallback for a host too old to set the variable.
+constexpr wchar_t kArmedEventFallbackName[] = L"Local\\Anomaly.NteGameHook.Armed";
+constexpr wchar_t kArmedEventVariable[] = L"ANOMALY_ARMED_EVENT";
+
+std::wstring ArmedEventName() {
+    wchar_t value[96]{};
+    const DWORD length = GetEnvironmentVariableW(kArmedEventVariable, value, 96);
+    if (length > 0 && length < 96) return value;
+    return kArmedEventFallbackName;
+}
 
 constexpr wchar_t kGameExecutable[] = L"HTGame.exe";
 
@@ -498,7 +512,7 @@ DWORD WINAPI HookThread(void*) {
     // The host is waiting on this. It is signalled before the first attempt rather than after,
     // because the game appears within a few seconds of the launcher acting and a capture loop that
     // starts late has nothing left to catch.
-    SignalEvent(kArmedEventName, "begin capture");
+    SignalEvent(ArmedEventName().c_str(), "begin capture");
 
     const DWORD deadline = GetTickCount() + kAttemptWindowMilliseconds;
     int round = 0;

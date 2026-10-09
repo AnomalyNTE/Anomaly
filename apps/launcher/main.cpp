@@ -40,6 +40,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -54,6 +55,16 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 namespace {
 
 using Microsoft::WRL::ComPtr;
+
+// One PRNG per process, seeded from the system CSPRNG, for per-session randomization
+// (relay host selection). Unpredictability between runs, not strength, is the goal.
+std::mt19937_64& HostEngine() {
+    static std::mt19937_64 engine{[] {
+        std::random_device device;
+        return (static_cast<std::uint64_t>(device()) << 32) | device();
+    }()};
+    return engine;
+}
 
 constexpr int kLogoResourceId = 101;
 constexpr int kIconResourceId = 201;
@@ -247,11 +258,23 @@ std::filesystem::path RelayLibrary() {
 
 // The relay host: a signed, common, policy-free system binary. The host image stays
 // intact -- nothing is unmapped, the relay is added the way the core is added to the game
-// -- and the host is terminated once the relay has reported.
+// -- and the host is terminated once the relay has reported. One of a small pool is
+// picked at random per session: always using the same host would let an observer
+// correlate "short-lived <host> plus a private mapping in the game" into a signature
+// after a few runs.
 std::filesystem::path RelayHostExecutable() {
     wchar_t directory[MAX_PATH]{};
     if (GetSystemDirectoryW(directory, MAX_PATH) == 0) return {};
-    return std::filesystem::path(directory) / L"notepad.exe";
+    constexpr std::array<const wchar_t*, 4> candidates{
+        L"notepad.exe", L"charmap.exe", L"mspaint.exe", L"winver.exe"};
+    std::uniform_int_distribution<std::size_t> pick(0, candidates.size() - 1);
+    const std::filesystem::path selected =
+        std::filesystem::path(directory) / candidates[pick(HostEngine())];
+    std::error_code probe{};
+    if (!std::filesystem::exists(selected, probe)) {
+        return std::filesystem::path(directory) / L"notepad.exe";
+    }
+    return selected;
 }
 
 // B-form prototype switch: the attach runs through the relay host whenever the relay
