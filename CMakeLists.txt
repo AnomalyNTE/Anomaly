@@ -806,6 +806,15 @@ target_compile_definitions(
 target_compile_options(anomaly_plugin_native_dependency PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_plugin_native_dependency PUBLIC Psapi)
 
+# In-process PE mapper for plugin packages: the plugin image, its relocations,
+# imports and C++ exception data are mapped without the Windows loader, so the
+# image never enters the PEB module list.
+add_library(anomaly_plugin_image_mapper STATIC src/plugin/plugin_image_mapper.cpp)
+target_include_directories(anomaly_plugin_image_mapper PUBLIC include)
+target_compile_definitions(
+    anomaly_plugin_image_mapper PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_plugin_image_mapper PRIVATE /W4 /permissive- /EHsc)
+
 add_library(anomaly_plugin_shadow STATIC
     src/plugin/plugin_shadow_store.cpp
     src/plugin/plugin_file_watcher.cpp
@@ -963,6 +972,7 @@ target_link_libraries(
     anomaly_platform_ui_layout
     anomaly_scoped_platform
     anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
+    anomaly_plugin_image_mapper
     anomaly_nte_profile_runtime
     anomaly_websocket_server
     anomaly_repository_coordinator
@@ -1051,6 +1061,7 @@ target_compile_definitions(anomaly_test_host PRIVATE UNICODE _UNICODE WIN32_LEAN
 target_compile_options(anomaly_test_host PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_test_host PRIVATE
     ue5mem_core anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
+    anomaly_plugin_image_mapper
     anomaly_adapter_services anomaly_plugin_runtime
     anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
     anomaly_i18n nlohmann_json::nlohmann_json Psapi)
@@ -1071,6 +1082,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         ue5mem_core anomaly_imgui anomaly_plugin_shadow anomaly_plugin_dependency_resolver
         anomaly_platform_ui_model anomaly_plugin_enablement anomaly_adapter_services
         anomaly_platform_settings anomaly_platform_ui_layout
+        anomaly_plugin_image_mapper
         anomaly_plugin_runtime
         anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
         anomaly_i18n nlohmann_json::nlohmann_json ole32 shell32)
@@ -1151,6 +1163,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         anomaly_platform_ui_layout
         anomaly_scoped_platform
         anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
+        anomaly_plugin_image_mapper
         anomaly_nte_profile_runtime
         anomaly_websocket_server
         anomaly_repository_coordinator
