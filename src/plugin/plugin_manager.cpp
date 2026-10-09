@@ -5,6 +5,7 @@
 #include "anomaly/i18n.hpp"
 #include "anomaly/plugin_capability_policy.hpp"
 #include "anomaly/plugin_dependency_resolver.hpp"
+#include "anomaly/plugin_image_mapper.hpp"
 #include "anomaly/plugin_native_dependency.hpp"
 #include "anomaly/plugin_package.hpp"
 #include "anomaly/scoped_platform_services.hpp"
@@ -3489,7 +3490,9 @@ bool RecoverPluginUiStack(
 }  // namespace
 
 struct PluginManager::LoadedPlugin {
-    HMODULE module{};
+    // The mapped plugin image: holds the mapping, its sibling dependencies and
+    // the DLL_PROCESS_DETACH handshake alive. There is no loader module handle.
+    std::shared_ptr<anomaly::MappedPluginImage> image;
     AnomalyPluginDescriptorV1 descriptor_v1{};
     void* plugin_context{};
     bool waiting_for_service{};
@@ -4433,27 +4436,21 @@ bool PluginManager::LoadBinary(
         return false;
     }
 
-    HMODULE module{};
-    DWORD load_error{ERROR_SUCCESS};
-    RunPluginLoadStep([&] {
-        const DLL_DIRECTORY_COOKIE search_cookie = AddDllDirectory(binary.parent_path().c_str());
-        module = LoadLibraryExW(
-            binary.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-                LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (module == nullptr) load_error = GetLastError();
-        if (search_cookie != nullptr) RemoveDllDirectory(search_cookie);
-    });
-    if (module == nullptr) {
+    anomaly::PluginImageMapResult mapped;
+    RunPluginLoadStep([&] { mapped = anomaly::MapPluginImage(binary); });
+    if (!mapped.Ok()) {
         Log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
-            "load failed for " + source.string() + ": " + std::to_string(load_error));
+            "load failed for " + source.string() + ": " + mapped.message);
         discard_shadow();
         return false;
     }
     const auto unload_module = [&] {
-        RunPluginLoadStep([&] { FreeLibrary(module); });
+        // Destroys the mapping after DLL_PROCESS_DETACH, mirroring FreeLibrary
+        // for an image the loader never knew about.
+        RunPluginLoadStep([&] { mapped.image.reset(); });
     };
     const auto entry_v1 = reinterpret_cast<AnomalyPluginEntryV1Fn>(
-        GetProcAddress(module, ANOMALY_PLUGIN_V1_ENTRY_NAME));
+        anomaly::FindPluginImageExport(*mapped.image, ANOMALY_PLUGIN_V1_ENTRY_NAME));
     if (entry_v1 != nullptr) {
         AnomalyPluginDescriptorV1 descriptor{};
         descriptor.struct_size = sizeof(descriptor);
@@ -4489,7 +4486,7 @@ bool PluginManager::LoadBinary(
             return value.data == nullptr ? std::string{} : std::string(value.data, value.size);
         };
         auto plugin = std::make_unique<LoadedPlugin>();
-        plugin->module = module;
+        plugin->image = mapped.image;
         plugin->descriptor_v1 = descriptor;
         plugin->view.id = copy_view(descriptor.id);
         plugin->view.name = copy_view(descriptor.name);
@@ -4540,6 +4537,10 @@ bool PluginManager::LoadBinary(
             discard_shadow();
             return false;
         }
+        // The ABI entry is resolved and the entry point already ran; nothing
+        // needs the PE headers, export directory, relocations or debug
+        // records anymore, so drop the on-disk fingerprints from memory.
+        anomaly::EraseMappedImageHeaders(*mapped.image);
         Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
             "loaded ABI v1 " + plugin->view.name + " " + plugin->view.version);
         plugins_.push_back(std::move(plugin));
@@ -5083,7 +5084,9 @@ bool PluginManager::UnloadIndicesWithDeadline(
             stop_diagnostics_.push_back({
                 plugin.view.id, generation, drained, false, 0, resources_before, {}});
         }
-        FreeLibrary(plugin.module);
+        // Releases the mapping after on_unload, which runs DLL_PROCESS_DETACH
+        // and the atexit table before the memory goes away.
+        RunPluginLoadStep([&] { plugin.image.reset(); });
         if (retire_shadow_generations) shadow_store_.Retire(plugin.shadow_generation);
         plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(index));
     }
