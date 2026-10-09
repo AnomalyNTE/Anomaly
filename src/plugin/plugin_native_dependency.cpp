@@ -438,6 +438,159 @@ private:
             return;
         }
 
+        // The runtime maps plugin images without the Windows loader, so an
+        // image must not depend on loader services the mapper cannot provide:
+        // loader-managed static TLS (thread_local / __declspec(thread)) has no
+        // reserved slot in a mapped image.
+        const IMAGE_DATA_DIRECTORY& tls_directory =
+            image->directories[IMAGE_DIRECTORY_ENTRY_TLS];
+        if (tls_directory.VirtualAddress != 0) {
+            IMAGE_TLS_DIRECTORY64 tls{};
+            const auto tls_offset = image->OffsetFromRva(tls_directory.VirtualAddress);
+            if (!tls_offset || !image->Read(*tls_offset, tls)) {
+                Add(
+                    PluginNativeDependencyDiagnosticCode::InvalidPe,
+                    image_path,
+                    image_name,
+                    {},
+                    {},
+                    "PE TLS directory is truncated");
+                return;
+            }
+            if (tls.StartAddressOfRawData != tls.EndAddressOfRawData ||
+                tls.SizeOfZeroFill != 0 || tls.AddressOfCallBacks != 0) {
+                Add(
+                    PluginNativeDependencyDiagnosticCode::StaticTls,
+                    image_path,
+                    image_name,
+                    {},
+                    {},
+                    "the image uses loader-managed static TLS (thread_local or "
+                    "__declspec(thread)); rebuild with the Anomaly SDK");
+                return;
+            }
+        }
+        for (const IMAGE_SECTION_HEADER& section : image->sections) {
+            if ((section.Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 &&
+                (section.Characteristics & IMAGE_SCN_MEM_WRITE) != 0) {
+                Add(
+                    PluginNativeDependencyDiagnosticCode::WritableExecutableSection,
+                    image_path,
+                    image_name,
+                    {},
+                    {},
+                    "the image contains an executable and writable section");
+                return;
+            }
+        }
+        // A C++ plugin throws through the SDK exception bridge; without the
+        // bridge export the mapper cannot rebind its _CxxThrowException import.
+        // A direct RtlPcToFileHeader import marks statically linked vcruntime:
+        // its embedded _CxxThrowException resolves the image through the PEB
+        // module list, which has no entry for a mapped image, so its throws
+        // escape every handler and crash the process.
+        const IMAGE_DATA_DIRECTORY& import_directory =
+            image->directories[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        bool imports_cxx_throw = false;
+        bool imports_pc_to_file_header = false;
+        if (import_directory.VirtualAddress != 0) {
+            const std::size_t descriptor_count = (std::min)(
+                static_cast<std::size_t>(import_directory.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR)),
+                kMaximumImportDescriptors);
+            for (std::size_t index = 0; index < descriptor_count; ++index) {
+                const auto descriptor_offset = image->OffsetFromRva(
+                    import_directory.VirtualAddress +
+                    static_cast<DWORD>(index * sizeof(IMAGE_IMPORT_DESCRIPTOR)));
+                IMAGE_IMPORT_DESCRIPTOR descriptor{};
+                if (!descriptor_offset ||
+                    !image->Read(*descriptor_offset, descriptor) ||
+                    IsEmpty(descriptor)) {
+                    break;
+                }
+                const DWORD thunk_rva = descriptor.OriginalFirstThunk != 0
+                    ? descriptor.OriginalFirstThunk
+                    : descriptor.FirstThunk;
+                for (DWORD thunk = 0;; ++thunk) {
+                    const auto thunk_offset = image->OffsetFromRva(
+                        thunk_rva + thunk * static_cast<DWORD>(sizeof(std::uint64_t)));
+                    std::uint64_t lookup{};
+                    if (!thunk_offset || !image->Read(*thunk_offset, lookup) ||
+                        lookup == 0) {
+                        break;
+                    }
+                    if (IMAGE_SNAP_BY_ORDINAL64(lookup)) continue;
+                    // The import-by-name entry is Hint (WORD) followed by the
+                    // name; read it as a bounded string instead of the 4-byte
+                    // struct, whose fixed-size Name[1] would truncate the
+                    // comparison to stack garbage.
+                    const auto function_name = image->AsciiAtRva(
+                        static_cast<DWORD>(lookup) + sizeof(WORD));
+                    if (!function_name) continue;
+                    if (*function_name == "_CxxThrowException") {
+                        imports_cxx_throw = true;
+                    } else if (*function_name == "RtlPcToFileHeader") {
+                        imports_pc_to_file_header = true;
+                    }
+                    if (imports_cxx_throw && imports_pc_to_file_header) break;
+                }
+                if (imports_cxx_throw && imports_pc_to_file_header) break;
+            }
+        }
+        if (imports_pc_to_file_header) {
+            Add(
+                PluginNativeDependencyDiagnosticCode::StaticCrt,
+                image_path,
+                image_name,
+                {},
+                {},
+                "the image links the CRT statically (RtlPcToFileHeader import); "
+                "rebuild with the Anomaly SDK");
+            return;
+        }
+        if (imports_cxx_throw) {
+            const IMAGE_DATA_DIRECTORY& export_directory =
+                image->directories[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            bool exports_bridge = false;
+            if (export_directory.VirtualAddress != 0) {
+                const auto exports_offset =
+                    image->OffsetFromRva(export_directory.VirtualAddress);
+                IMAGE_EXPORT_DIRECTORY exports{};
+                if (exports_offset && image->Read(*exports_offset, exports) &&
+                    exports.NumberOfNames != 0) {
+                    const auto names_offset =
+                        image->OffsetFromRva(exports.AddressOfNames);
+                    if (names_offset) {
+                        const std::size_t name_count = (std::min)(
+                            static_cast<std::size_t>(exports.NumberOfNames),
+                            kMaximumImportDescriptors);
+                        for (std::size_t index = 0; index < name_count; ++index) {
+                            DWORD name_rva{};
+                            if (!image->Read(
+                                    *names_offset + index * sizeof(DWORD), name_rva)) {
+                                break;
+                            }
+                            const auto bridge_name = image->AsciiAtRva(name_rva);
+                            if (bridge_name && *bridge_name == "AnomalyPluginCxxThrowV1") {
+                                exports_bridge = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!exports_bridge) {
+                Add(
+                    PluginNativeDependencyDiagnosticCode::MissingCxxThrowBridge,
+                    image_path,
+                    image_name,
+                    {},
+                    {},
+                    "C++ plugin image does not export the exception bridge; "
+                    "rebuild with the Anomaly SDK");
+                return;
+            }
+        }
+
         std::vector<std::string> imports;
         PluginNativeDependencyDiagnosticCode import_code{};
         if (!ReadImports(*image, imports, import_code, failure)) {
@@ -562,6 +715,14 @@ std::string_view PluginNativeDependencyDiagnosticCodeName(
             return "missing-private-import";
         case PluginNativeDependencyDiagnosticCode::ModuleNameConflict:
             return "module-name-conflict";
+        case PluginNativeDependencyDiagnosticCode::StaticTls:
+            return "static-tls";
+        case PluginNativeDependencyDiagnosticCode::WritableExecutableSection:
+            return "writable-executable-section";
+        case PluginNativeDependencyDiagnosticCode::MissingCxxThrowBridge:
+            return "missing-cxx-throw-bridge";
+        case PluginNativeDependencyDiagnosticCode::StaticCrt:
+            return "static-crt";
         case PluginNativeDependencyDiagnosticCode::InternalFailure: return "internal-failure";
     }
     return "unknown";

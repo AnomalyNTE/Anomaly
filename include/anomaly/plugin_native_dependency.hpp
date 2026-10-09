@@ -16,6 +16,12 @@ enum class PluginNativeDependencyDiagnosticCode {
     CrtRuntimeUnavailable,
     MissingPrivateImport,
     ModuleNameConflict,
+    // The runtime maps plugin images without the Windows loader, so images
+    // must not depend on loader services the mapper cannot provide.
+    StaticTls,
+    WritableExecutableSection,
+    MissingCxxThrowBridge,
+    StaticCrt,
     InternalFailure,
 };
 
