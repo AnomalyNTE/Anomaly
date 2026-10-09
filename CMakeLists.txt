@@ -954,6 +954,7 @@ set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
     anomaly_adapter_services
     anomaly_imgui
     anomaly_nte_profile_runtime
+    anomaly_plugin_image_mapper
     anomaly_plugin_manifest
     anomaly_reliable_storage
     anomaly_repository_configuration
