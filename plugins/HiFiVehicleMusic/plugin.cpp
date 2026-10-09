@@ -1,5 +1,7 @@
 #include "anomaly/sdk/cpp.hpp"
 
+#include "anomaly/thread_local_value.hpp"
+
 #include <Windows.h>
 #include <intrin.h>
 #include <shobjidl.h>
@@ -267,7 +269,6 @@ std::atomic<std::uintptr_t> g_set_item_flags{0};
 std::atomic<std::uintptr_t> g_object_array{0};
 std::atomic<std::uintptr_t> g_serial_counter{0};
 std::atomic<std::uintptr_t> g_set_current_id{0};
-HMODULE g_plugin_module{};
 
 // ---- album snapshot -------------------------------------------------------
 //
@@ -1587,8 +1588,9 @@ void* __fastcall OwnedCopyDetour(void* self, void* out) {
 
 // These read the owned array directly, so the song ids are present only for the
 // duration of the outermost such call on this game thread; nested calls leave
-// them in place until it returns.
-thread_local std::uint32_t t_owned_depth = 0;
+// them in place until it returns. FLS instead of thread_local: the mapped
+// image has no loader-managed TLS slot.
+anomaly::ThreadLocalScalar<std::uint32_t> t_owned_depth;
 
 // The sound subsystem last seen as `this` of a subsystem detour; the UI detours
 // fall back to it when the world-context lookup fails.
@@ -1692,16 +1694,16 @@ template <typename Call>
 void WithSongIds(void* subsystem, Call&& call) {
     void* const owned = OwnedArray(subsystem);
     std::vector<std::uint64_t> added;
-    if (t_owned_depth == 0 && owned != nullptr) {
+    if (t_owned_depth.Get() == 0 && owned != nullptr) {
         added = AddSongIds(owned, OwnedScope::All);
     }
     const bool own = !added.empty();
-    if (own) ++t_owned_depth;
+    if (own) t_owned_depth.Set(t_owned_depth.Get() + 1);
     call();
     if (own) {
         std::sort(added.begin(), added.end());
         RemoveSongIds(owned, added);
-        --t_owned_depth;
+        t_owned_depth.Set(t_owned_depth.Get() - 1);
     }
 }
 
@@ -1719,9 +1721,9 @@ void WithQueueIds(void* subsystem, const std::uint64_t song, Call&& call) {
     }
     ClearIds(owned);
     static_cast<void>(AddSongIds(owned, OwnedScope::Library));
-    ++t_owned_depth;
+    t_owned_depth.Set(t_owned_depth.Get() + 1);
     call();
-    --t_owned_depth;
+    t_owned_depth.Set(t_owned_depth.Get() - 1);
     WriteIds(owned, saved);
 }
 
@@ -3142,14 +3144,6 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
 }
 
 }  // namespace
-
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) {
-        g_plugin_module = module;
-        DisableThreadLibraryCalls(module);
-    }
-    return TRUE;
-}
 
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     AnomalyPluginDescriptorV1* descriptor) {

@@ -2,6 +2,8 @@
 #include "fake_uid_profile.hpp"
 #include "plugins/common/localization.hpp"
 
+#include "anomaly/thread_local_value.hpp"
+
 #include <Windows.h>
 
 #include <nlohmann/json.hpp>
@@ -324,7 +326,10 @@ std::atomic<std::uintptr_t> g_set_text_original{0};
 std::atomic<const AnomalyHookServiceV1*> g_set_text_hook_api{nullptr};
 std::atomic<std::uint64_t> g_set_text_hook_id{0};
 std::atomic<std::uint64_t> g_set_text_hook_generation{0};
-thread_local bool g_plugin_text_write = false;
+// Reentrancy flags for the SetText hook. The plugin image is mapped without
+// the Windows loader, so loader-managed thread_local is unavailable; the FLS
+// slot is the mapping-safe equivalent with the same per-thread semantics.
+anomaly::ThreadLocalScalar<bool> g_plugin_text_write;
 
 std::uintptr_t ReadObjectOuter(const std::uintptr_t object) noexcept;
 std::uintptr_t ReadWidgetPanel(const std::uintptr_t widget) noexcept;
@@ -1993,6 +1998,10 @@ void EndSetTextCallback(
 
 void ANOMALY_CALL SetTextDetour(
     void* widget, const UnrealText* text) noexcept {
+    // SetTextDetour reentrancy marker: a nested SetText issued from inside the
+    // detour must forward untouched. FLS instead of thread_local because the
+    // mapped image has no loader-managed TLS slot.
+    static anomaly::ThreadLocalScalar<bool> forwarding;
     const auto* const hook_api =
         g_set_text_hook_api.load(std::memory_order_acquire);
     const AnomalyGenerationHandleV1 hook_handle{
@@ -2019,8 +2028,8 @@ void ANOMALY_CALL SetTextDetour(
     if (context != nullptr && original_address != 0) {
         using Function = SetTextFn;
         const auto original = reinterpret_cast<Function>(original_address);
-        thread_local bool forwarding = false;
-        if (g_plugin_text_write) {
+        const bool forwarding_now = forwarding.Get();
+        if (g_plugin_text_write.Get()) {
             CallSetTextOriginal(original, widget, text);
             EndSetTextCallback(hook_api, callback_lease);
             return;
@@ -2031,14 +2040,14 @@ void ANOMALY_CALL SetTextDetour(
             context->text_override.load(std::memory_order_acquire);
         const auto settings = context->settings.load(std::memory_order_acquire);
         const auto widget_address = reinterpret_cast<std::uintptr_t>(widget);
-        bool is_value_widget = !forwarding && settings != nullptr &&
+        bool is_value_widget = !forwarding_now && settings != nullptr &&
             settings->enabled && override != nullptr &&
             IsHookTargetWidget(*context, widget_address, *override);
         const bool replace_prefix = settings != nullptr &&
             (settings->hide_prefix || UsesSingleUidWidget(*context, *settings)
              || typing_frame != nullptr
             );
-        bool is_replaced_prefix = !forwarding && settings != nullptr &&
+        bool is_replaced_prefix = !forwarding_now && settings != nullptr &&
             settings->enabled && replace_prefix && override != nullptr &&
             IsHookPrefixWidget(*context, widget_address, *override);
         // The prefix needs its text probe whenever its FName is unknown, and
@@ -2050,7 +2059,7 @@ void ANOMALY_CALL SetTextDetour(
             (replace_prefix ||
              (override != nullptr && override->target_name_id == 0));
         if (!is_replaced_prefix && !is_value_widget &&
-            !forwarding && settings != nullptr && settings->enabled &&
+            !forwarding_now && settings != nullptr && settings->enabled &&
             override != nullptr && content_probe_needed) {
             // TextBlock_90 is not guaranteed to be exposed as a named
             // variable. During a HUD rebuild its FName and slot can therefore
@@ -2090,9 +2099,9 @@ void ANOMALY_CALL SetTextDetour(
                     : std::wstring_view(typing_frame->value);
             }
             if (BuildUnrealText(*context, replacement_value, replacement)) {
-                forwarding = true;
+                forwarding.Set(true);
                 CallSetTextOriginal(original, widget, &replacement);
-                forwarding = false;
+                forwarding.Set(false);
                 EndSetTextCallback(hook_api, callback_lease);
                 return;
             }
@@ -2106,9 +2115,9 @@ void ANOMALY_CALL SetTextDetour(
                 return;
             }
         }
-        forwarding = true;
+        forwarding.Set(true);
         CallSetTextOriginal(original, widget, text);
-        forwarding = false;
+        forwarding.Set(false);
     }
 
     EndSetTextCallback(hook_api, callback_lease);
@@ -2949,11 +2958,11 @@ bool SetCachedTypingText(Context& context, const std::uintptr_t widget,
         if (!BuildUnrealText(context, value, cached)) return false;
         ready = 1;
     }
-    const bool previous = g_plugin_text_write;
-    g_plugin_text_write = true;
+    const bool previous = g_plugin_text_write.Get();
+    g_plugin_text_write.Set(true);
     const bool applied = InvokeProcessEvent(context, widget,
         context.text_block_set_text_function, &cached);
-    g_plugin_text_write = previous;
+    g_plugin_text_write.Set(previous);
     return applied;
 }
 
