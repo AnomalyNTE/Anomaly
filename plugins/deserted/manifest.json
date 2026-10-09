@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "anomaly.builtin.nte.deserted",
   "name": "Deserted",
-  "description": "空无一人：勾选框后。人流和车流都不再生成，不影响站桩NPC",
+  "description": "空无一人：勾选后，人流和车流都不再生成，但不影响站桩NPC",
   "author": "WawMew",
   "license": "AGPL-3.0-only",
   "version": "0.6.3",
@@ -48,6 +48,16 @@
       "id": "anomaly.input",
       "minVersion": 1,
       "optional": true
+    },
+    {
+      "id": "anomaly.storage",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1,
+      "optional": true
     }
   ],
   "capabilities": [
@@ -57,6 +67,8 @@
     "interop-signature",
     "ue5-names",
     "ue5-objects",
-    "input"
+    "input",
+    "storage",
+    "scheduler"
   ]
 }

@@ -6,6 +6,7 @@
 // 窗口热键固定 F8；开关热键可改键，默认未绑定。
 
 #include "anomaly/sdk/cpp.hpp"
+#include "anomaly/sdk/services/platform.h"
 
 #include <windows.h>
 
@@ -56,8 +57,8 @@ constexpr int kDefaultVehMinActive = 50;
 constexpr char kIndexToAddressPattern[] =
     "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3";
 
-constexpr const char* kPluginIdForPath = "anomaly.builtin.nte.deserted";
 constexpr int kConfVersion = 5;
+constexpr const char* kConfFile = "deserted.conf";
 constexpr std::uint32_t kWindowKey = VK_F8;
 
 // State 头部标记，供外部工具在 .data 中定位本结构
@@ -133,6 +134,8 @@ const AnomalySignatureServiceV1* g_signature{};
 const AnomalyUe5NamesServiceV1* g_names{};
 const AnomalyUe5ObjectsServiceV1* g_objects{};
 const AnomalyInputServiceV1* g_input{};
+const AnomalyStorageServiceV1* g_storage{};
+const AnomalySchedulerServiceV1* g_scheduler{};
 AnomalyGenerationHandleV1 g_hotkey_window{};
 AnomalyGenerationHandleV1 g_hotkey_toggle{};
 
@@ -568,7 +571,7 @@ void ValidateTargets(double dt) {
 }
 
 // --------------------------- 开关逻辑 ----------------------------------------
-void SaveConfigImmediate();  // 前向声明（实现见「配置持久化」）
+AnomalyStatusV1 SaveConfigImmediate();  // 前向声明（实现见「配置持久化」）
 
 void HandleToggle() {
     State& s = g_state;
@@ -697,61 +700,9 @@ void KeyName(std::uint32_t vk, char* out, std::size_t capacity) {
 }
 
 // --------------------------- 配置持久化 --------------------------------------
-// anomaly.storage 只在 Lifecycle 域可用，所以自己写文件：
-//   <Anomaly 根>\state\plugins\<插件 id>\deserted.conf
-wchar_t g_conf_path[520]{};
-
-const wchar_t* ConfPath() {
-    if (g_conf_path[0] != L'\0') return g_conf_path;
-    wchar_t file[MAX_PATH]{};
-    HMODULE anchor = GetModuleHandleW(L"Anomaly.Core.dll");
-    if (anchor == nullptr) {
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                reinterpret_cast<LPCWSTR>(&ConfPath), &anchor) ||
-            anchor == nullptr) {
-            return nullptr;
-        }
-    }
-    if (GetModuleFileNameW(anchor, file, MAX_PATH) == 0) return nullptr;
-
-    wchar_t root[MAX_PATH]{};
-    int last_sep = -1;
-    for (int i = 0; file[i] != L'\0' && i < MAX_PATH - 1; ++i) {
-        root[i] = file[i];
-        if (file[i] == L'\\' || file[i] == L'/') last_sep = i;
-    }
-    if (last_sep <= 0) return nullptr;
-
-    if (anchor == GetModuleHandleW(L"Anomaly.Core.dll")) {
-        root[last_sep] = L'\0';
-    } else {
-        int cut = -1;
-        for (int i = 0; i < last_sep; ++i) {
-            if ((root[i] == L'\\' || root[i] == L'/') && i + 8 < MAX_PATH) {
-                const wchar_t* tail = root + i;
-                if (tail[1] == L'p' && tail[2] == L'l' && tail[3] == L'u' && tail[4] == L'g' &&
-                    tail[5] == L'i' && tail[6] == L'n' && tail[7] == L's' &&
-                    (tail[8] == L'\\' || tail[8] == L'/')) {
-                    cut = i;
-                }
-            }
-        }
-        if (cut <= 0) return nullptr;
-        root[cut] = L'\0';
-    }
-
-    wchar_t id[128]{};
-    std::size_t n = 0;
-    for (; kPluginIdForPath[n] != '\0' && n + 1 < 128; ++n) {
-        id[n] = static_cast<wchar_t>(kPluginIdForPath[n]);
-    }
-    id[n] = L'\0';
-    if (swprintf(g_conf_path, 520, L"%s\\state\\plugins\\%s\\deserted.conf", root, id) < 0) {
-        g_conf_path[0] = L'\0';
-        return nullptr;
-    }
-    return g_conf_path;
-}
+// 走宿主 storage 服务：anomaly.storage::write_atomic 在 Lifecycle 域（Stop /
+// Unload）直接调用；Game 域的「改了立刻落盘」通过 anomaly.scheduler 推迟到宿主允许的域执行。
+// 文件位置由 Host 管理，插件只提供相对路径，不自己打开文件。
 
 std::size_t FormatConfig(char* text, std::size_t capacity) {
     State& s = g_state;
@@ -772,47 +723,48 @@ std::size_t FormatConfig(char* text, std::size_t capacity) {
     return (off < capacity) ? off : capacity - 1;
 }
 
-void SaveConfigImmediate() {
-    const wchar_t* path = ConfPath();
-    if (path == nullptr) return;
-    wchar_t dir[520]{};
-    int last_sep = -1;
-    for (int i = 0; path[i] != L'\0' && i < 519; ++i) {
-        dir[i] = path[i];
-        if (path[i] == L'\\' || path[i] == L'/') last_sep = i;
-    }
-    for (int i = 0; i <= last_sep; ++i) {  // i <= last_sep：否则叶子目录不会创建
-        if (dir[i] == L'\\' || dir[i] == L'/') {
-            const wchar_t saved = dir[i];
-            dir[i] = L'\0';
-            if (dir[0] != L'\0' && dir[1] != L'\0') CreateDirectoryW(dir, nullptr);
-            dir[i] = saved;
-        }
+// 走宿主 storage 服务落盘。仅 Lifecycle 域（Stop / Unload）直接调用。
+AnomalyStatusV1 SaveConfig() {
+    if (g_storage == nullptr || g_storage->write_atomic == nullptr) {
+        return AnomalyStatusV1{static_cast<std::uint32_t>(ANOMALY_STATUS_V1_UNAVAILABLE), 0, {}};
     }
     char text[512]{};
     const std::size_t size = FormatConfig(text, sizeof(text));
-    if (size == 0) return;
-    HANDLE handle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) return;
-    DWORD written = 0;
-    WriteFile(handle, text, static_cast<DWORD>(size), &written, nullptr);
-    CloseHandle(handle);
+    AnomalyByteSpanV1 span{};
+    span.data = reinterpret_cast<const std::uint8_t*>(text);
+    span.size = size;
+    return g_storage->write_atomic(g_storage->user, StringView(kConfFile), span);
+}
+
+// 调度器任务：在宿主允许的线程域里真正写盘（配置文本现取现用，保证写的是最新值）。
+void ANOMALY_CALL PersistTask(void* user, AnomalyGenerationHandleV1 task) {
+    (void)user;
+    (void)task;
+    SaveConfig();
+}
+
+// 立即落盘：任何线程域都能调用。用 scheduler 把写盘推迟到宿主允许的域执行，避免在
+// Game/Render 域同步做文件 I/O。调度器不可用时跳过（Stop / Unload 仍会兜底落盘）。
+AnomalyStatusV1 SaveConfigImmediate() {
+    if (g_scheduler == nullptr || g_scheduler->schedule == nullptr) {
+        return AnomalyStatusV1{static_cast<std::uint32_t>(ANOMALY_STATUS_V1_UNAVAILABLE), 0, {}};
+    }
+    AnomalyGenerationHandleV1 task{};
+    return g_scheduler->schedule(g_scheduler->user, 0, PersistTask, nullptr, &task);
 }
 
 void LoadConfig() {
     State& s = g_state;
-    const wchar_t* path = ConfPath();
-    if (path == nullptr) return;
-    HANDLE handle = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) return;
+    if (g_storage == nullptr || g_storage->read == nullptr) return;
     char text[512]{};
-    DWORD read = 0;
-    const BOOL ok = ReadFile(handle, text, sizeof(text) - 1, &read, nullptr);
-    CloseHandle(handle);
-    if (ok == FALSE) return;
-    text[read] = '\0';
+    AnomalyMutableByteSpanV1 span{};
+    span.data = reinterpret_cast<std::uint8_t*>(text);
+    span.size = sizeof(text) - 1;
+    std::size_t size = span.size;
+    const AnomalyStatusV1 status =
+        g_storage->read(g_storage->user, StringView(kConfFile), span, &size);
+    if (status.code != ANOMALY_STATUS_V1_OK || size == 0) return;
+    text[size < sizeof(text) ? size : sizeof(text) - 1] = '\0';
 
     int conf_version = 0;
     int checked = 0;
@@ -942,6 +894,12 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     const auto input = view.Query<AnomalyInputServiceV1>(ANOMALY_INPUT_SERVICE_V1_ID,
                                                          ANOMALY_INPUT_SERVICE_V1_VERSION);
     g_input = input ? input.get() : nullptr;
+    const auto storage = view.Query<AnomalyStorageServiceV1>(ANOMALY_STORAGE_SERVICE_V1_ID,
+                                                             ANOMALY_STORAGE_SERVICE_V1_VERSION);
+    g_storage = storage ? storage.get() : nullptr;
+    const auto scheduler = view.Query<AnomalySchedulerServiceV1>(ANOMALY_SCHEDULER_SERVICE_V1_ID,
+                                                                 ANOMALY_SCHEDULER_SERVICE_V1_VERSION);
+    g_scheduler = scheduler ? scheduler.get() : nullptr;
 
     g_state = State{};
     g_state.layout[kLayoutChecked] = static_cast<std::uint32_t>(offsetof(State, checked));
@@ -977,7 +935,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t deadline_millisec
         if (g_state.baseline_valid != 0 && g_state.spawner_count > 0) SyncScales(g_state.baseline);
         SyncVehicles(0);
     }
-    SaveConfigImmediate();
+    SaveConfig();
     ReleaseHotkeys();
     return anomaly::sdk::Ok();
 }
@@ -990,6 +948,8 @@ void ANOMALY_CALL Unload(void* context) {
     g_objects = nullptr;
     g_input = nullptr;
     g_core = nullptr;
+    g_storage = nullptr;
+    g_scheduler = nullptr;
     g_ui = nullptr;
     g_state = State{};
 }

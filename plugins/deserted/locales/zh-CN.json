@@ -3,6 +3,6 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "空无一人",
-    "plugin.description": "空无一人：勾选框后。人流和车流都不再生成，但不影响站桩NPC"
+    "plugin.description": "空无一人：勾选后，人流和车流都不再生成，但不影响站桩NPC"
   }
 }

@@ -184,7 +184,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.traffic-density` |
+| **ID** | `anomaly.builtin.nte.deserted` |
 | **作用** | 一个勾选框：勾选后人群与车流都不再生成（街上空无一人），取消勾选恢复勾选前的数值。不影响站桩 NPC。 |
 | **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.input`（均为 V1，可选） |
 | **需要 Profile** | 否（自行按 AOB 特征码定位人群/车辆生成器，依赖 `memory-read`/`memory-write` capability） |
