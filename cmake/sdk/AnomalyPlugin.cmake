@@ -1,5 +1,11 @@
 include(CMakeParseArguments)
 
+# The SDK distribution installs the bridge source next to this file
+# (share/anomaly/cpp), so installed-package consumers find it through the same
+# relative path as the in-tree build.
+set(ANOMALY_CXX_THROW_BRIDGE "${CMAKE_CURRENT_LIST_DIR}/../../sdk/cpp/plugin_cxx_throw_bridge.cpp"
+    CACHE FILEPATH "Plugin C++ exception bridge source compiled into every plugin package")
+
 # anomaly_add_plugin(<target>
 #     SOURCES <source>...
 #     MANIFEST <manifest.json>
@@ -17,6 +23,11 @@ include(CMakeParseArguments)
 #     ANOMALY_BUILD_TEST_PLUGINS is ON, and it then installs into the TestPlugins component
 #     instead of GameRuntime;
 #   - NO_RELEASE builds the package without installing it at all.
+#
+# C++ packages additionally compile the SDK exception bridge
+# (`sdk/cpp/plugin_cxx_throw_bridge.cpp` unless ANOMALY_CXX_THROW_BRIDGE overrides the
+# path) because the runtime maps plugins without the Windows loader, whose services
+# vcruntime's _CxxThrowException depends on.
 function(anomaly_add_plugin target)
     set(options C_ONLY NO_RELEASE TEST_PLUGIN)
     set(oneValueArgs MANIFEST PACKAGE_NAME OUTPUT_DIRECTORY)
@@ -63,7 +74,14 @@ function(anomaly_add_plugin target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 $<$<COMPILE_LANGUAGE:CXX>:/permissive->)
         if(NOT ANOMALY_C_ONLY)
-            target_compile_options(${target} PRIVATE /EHsc)
+            # The runtime maps plugin images without the Windows loader, so a plugin
+            # image must not depend on loader services:
+            #   - /EHsc C++ plugins throw through the SDK exception bridge source below
+            #     instead of vcruntime's loader-assisted _CxxThrowException;
+            #   - /Zc:threadSafeInit- keeps function-local static guards out of the
+            #     loader-managed TLS slot the mapper cannot reserve.
+            target_compile_options(${target} PRIVATE /EHsc /Zc:threadSafeInit-)
+            target_sources(${target} PRIVATE "${ANOMALY_CXX_THROW_BRIDGE}")
         endif()
     endif()
     # The manifest sits in the plugin source directory, so that directory describes the

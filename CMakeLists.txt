@@ -1805,6 +1805,11 @@ install(FILES schemas/plugin-manifest.schema.json schemas/build-profile.schema.j
     DESTINATION ${CMAKE_INSTALL_DATADIR}/anomaly/schemas COMPONENT SDK)
 install(FILES abi/anomaly-sdk-v1-windows-x64.json
     DESTINATION ${CMAKE_INSTALL_DATADIR}/anomaly/abi COMPONENT SDK)
+# The plugin build function compiles the exception bridge into every C++ plugin
+# package; the SDK distribution ships it so installed-package consumers build
+# against the same source.
+install(FILES sdk/cpp/plugin_cxx_throw_bridge.cpp
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/anomaly/cpp COMPONENT SDK)
 set(ANOMALY_SDK_EXAMPLES_DESTINATION "${CMAKE_INSTALL_DATADIR}/anomaly/examples")
 install(FILES examples/CMakeLists.txt examples/README.md
     DESTINATION ${ANOMALY_SDK_EXAMPLES_DESTINATION} COMPONENT SDK)
