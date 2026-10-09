@@ -22,5 +22,5 @@
     {"id": "anomaly.interop.hook", "minVersion": 1},
     {"id": "anomaly.nte.combat", "minVersion": 1}
   ],
-  "capabilities": ["ui", "ui-window", "memory-read", "ue5-names", "ue5-objects", "interop-signature", "interop-hook", "memory-write", "nte-combat-read"]
+  "capabilities": ["ui", "ui-window", "memory-read", "ue5-names", "ue5-objects", "game-events", "interop-signature", "interop-hook", "memory-write", "nte-combat-read"]
 }
