@@ -5631,7 +5631,15 @@ void DumpClickParams(Context& context) noexcept {
 }
 
 
+// Directories are resolved once from the host services during Load(): the
+// plugin image is mapped without the Windows loader, so the module handle
+// behind the legacy self-location path does not exist.
+std::string g_plugin_dir;
+std::string g_config_dir;
+
 std::string GetPluginDir() noexcept {
+    if (!g_plugin_dir.empty()) return g_plugin_dir;
+    // Legacy fallback for a loader-based build (development diagnostics).
     HMODULE mod = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -5655,6 +5663,7 @@ std::string GetPluginDir() noexcept {
 
 
 std::string GetConfigDir() noexcept {
+    if (!g_config_dir.empty()) return g_config_dir;
     std::string dir = GetPluginDir();
     if (dir.size() >= 4 && dir[0] == '\\' && dir[1] == '\\' &&
         dir[2] == '?' && dir[3] == '\\') {
@@ -6528,16 +6537,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     auto* context = new (std::nothrow) Context{};
     if (!context) return {ANOMALY_STATUS_V1_FAILED, 0, {nullptr, 0}};
     context->host = host;
-    {
-        std::FILE* fp = std::fopen("D:\\rpc-diag.txt", "a");
-        if (fp != nullptr) {
-            std::fprintf(fp, "[config] configdir=%s\n", GetConfigDir().c_str());
-            std::fclose(fp);
-        }
-    }
-    LoadClickConfig(*context);
-    LoadExitConfig(*context);
-    LoadWeeklyConfig(*context);
     const auto view = anomaly::sdk::Host(host);
     context->ui = view.Query<AnomalyUiServiceV1>(
         ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION).get();
@@ -6572,20 +6571,48 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION).get();
     context->input = view.Query<AnomalyInputServiceV1>(
         ANOMALY_INPUT_SERVICE_V1_ID, ANOMALY_INPUT_SERVICE_V1_VERSION).get();
-    std::string legacy_cache_path;
-    if (context->core != nullptr && context->core->plugin_directory != nullptr) {
-        std::size_t sz = 0;
-        if (context->core->plugin_directory(context->core->user, nullptr, &sz).code ==
-                ANOMALY_STATUS_V1_OK && sz > 0) {
-            std::string dir(sz, char(0));
-            if (context->core->plugin_directory(context->core->user, dir.data(), &sz).code ==
-                    ANOMALY_STATUS_V1_OK) {
-                dir.resize(sz - 1);
-                legacy_cache_path = dir + "\\clone-enter-cache.bin";
+    // State and package directories come from the host services before any
+    // config file is touched: the mapped image has no module handle to ask for.
+    if (const auto* state = view.Query<AnomalyPluginStateServiceV1>(
+            ANOMALY_PLUGIN_STATE_SERVICE_V1_ID,
+            ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION).get();
+        state != nullptr && state->directory != nullptr) {
+        std::size_t size = 0;
+        if (state->directory(state->user, nullptr, &size).code == ANOMALY_STATUS_V1_OK &&
+            size > 0) {
+            std::string dir(size, char(0));
+            if (state->directory(state->user, dir.data(), &size).code ==
+                ANOMALY_STATUS_V1_OK) {
+                dir.resize(size - 1);
+                g_config_dir = dir;
             }
         }
     }
-    if (legacy_cache_path.empty()) legacy_cache_path = "D:\\clone-enter-cache.bin";
+    if (context->core != nullptr && context->core->plugin_directory != nullptr) {
+        std::size_t size = 0;
+        if (context->core->plugin_directory(context->core->user, nullptr, &size).code ==
+                ANOMALY_STATUS_V1_OK && size > 0) {
+            std::string dir(size, char(0));
+            if (context->core->plugin_directory(context->core->user, dir.data(), &size)
+                    .code == ANOMALY_STATUS_V1_OK) {
+                dir.resize(size - 1);
+                g_plugin_dir = dir;
+            }
+        }
+    }
+    {
+        std::FILE* fp = std::fopen("D:\\rpc-diag.txt", "a");
+        if (fp != nullptr) {
+            std::fprintf(fp, "[config] configdir=%s\n", GetConfigDir().c_str());
+            std::fclose(fp);
+        }
+    }
+    LoadClickConfig(*context);
+    LoadExitConfig(*context);
+    LoadWeeklyConfig(*context);
+    std::string legacy_cache_path =
+        g_plugin_dir.empty() ? "D:\\clone-enter-cache.bin"
+                             : g_plugin_dir + "\\clone-enter-cache.bin";
     context->cache_path = GetConfigDir() + "\\clone-enter-cache.bin";
     // 缓存从插件目录迁移到 state 目录：插件目录内的文件变化会触发框架热重载，
     // 重新缓存后不应把插件自己刷掉。旧的缓存文件存在且新位置还没有时复制过去一次。

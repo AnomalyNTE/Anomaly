@@ -33,11 +33,10 @@ constexpr std::string_view kSettingsSchema = R"json(
 }
 )json";
 
-HMODULE g_plugin_module{};
-
 struct Context final {
     const AnomalyConfigServiceV1* config{};
     const AnomalyUiServiceV1* ui{};
+    const AnomalyCoreServiceV1* core{};
     AnomalyGenerationHandleV1 settings_schema{};
     std::mutex mutex;
     std::array<char, kMaximumDllPathBytes + 1> editor{};
@@ -120,22 +119,37 @@ std::string WideToUtf8(const std::wstring_view value) {
     return result;
 }
 
-std::filesystem::path PluginPackageDirectory(std::string& error) {
-    if (g_plugin_module == nullptr) {
-        error = "The plugin module handle is unavailable";
+std::filesystem::path PluginPackageDirectory(
+    const AnomalyCoreServiceV1* core, std::string& error) {
+    // The plugin image is mapped without the Windows loader, so its package
+    // directory comes from the host core service instead of a module handle.
+    if (core == nullptr || core->plugin_directory == nullptr) {
+        error = "The plugin package directory service is unavailable";
         return {};
     }
-    std::array<wchar_t, 32768> buffer{};
-    const DWORD length = GetModuleFileNameW(
-        g_plugin_module, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (length == 0 || length >= buffer.size()) {
+    std::size_t size = 0;
+    if (core->plugin_directory(core->user, nullptr, &size).code !=
+            ANOMALY_STATUS_V1_OK ||
+        size == 0) {
         error = "The plugin package path is unavailable";
         return {};
     }
-    return std::filesystem::path(std::wstring_view(buffer.data(), length)).parent_path();
+    std::string directory(size, '\0');
+    if (core->plugin_directory(core->user, directory.data(), &size).code !=
+        ANOMALY_STATUS_V1_OK) {
+        error = "The plugin package path is unavailable";
+        return {};
+    }
+    directory.resize(size - 1);
+    if (directory.empty()) {
+        error = "The plugin package path is unavailable";
+        return {};
+    }
+    return std::filesystem::path(Utf8ToWide(directory));
 }
 
 bool ResolveLibraryPath(
+    const AnomalyCoreServiceV1* core,
     const std::string_view configured_path, std::filesystem::path& resolved,
     std::string& error) {
     if (configured_path.empty()) {
@@ -159,7 +173,8 @@ bool ResolveLibraryPath(
         return false;
     }
     if (candidate.is_relative()) {
-        const std::filesystem::path package_directory = PluginPackageDirectory(error);
+        const std::filesystem::path package_directory =
+            PluginPackageDirectory(core, error);
         if (package_directory.empty()) return false;
         candidate = package_directory / candidate;
     }
@@ -268,7 +283,7 @@ void LoadConfiguredLibrary(Context& context) noexcept {
     try {
         std::filesystem::path path;
         std::string error;
-        if (!ResolveLibraryPath(configured_path, path, error)) {
+        if (!ResolveLibraryPath(context.core, configured_path, path, error)) {
             std::scoped_lock lock(context.mutex);
             context.status = std::move(error);
             return;
@@ -323,6 +338,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(
             ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION).get();
         context->ui = host_view.Query<AnomalyUiServiceV1>(
             ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION).get();
+        context->core = host_view.Query<AnomalyCoreServiceV1>(
+            ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION).get();
         if (!ConfigReady(context->config) || context->ui == nullptr) {
             delete context;
             return Status(
@@ -442,14 +459,6 @@ void ANOMALY_CALL Draw(
 }
 
 }  // namespace
-
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) {
-        g_plugin_module = module;
-        DisableThreadLibraryCalls(module);
-    }
-    return TRUE;
-}
 
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     AnomalyPluginDescriptorV1* descriptor) {

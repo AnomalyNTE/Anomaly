@@ -7142,32 +7142,14 @@ struct PoseFileTaskData final {
   std::string output_path;
 };
 
-// Directory the plugin's own DLL lives in: the reference MMD bone table is shipped next
-// to it, and the plugin has no other way to find its own files.
-std::string ModuleDirectory() noexcept {
-  HMODULE module{};
-  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                          reinterpret_cast<LPCWSTR>(&ModuleDirectory), &module) ||
-      module == nullptr)
-    return std::string();
-  std::wstring buffer(MAX_PATH, L'\0');
-  for (;;) {
-    const DWORD length = GetModuleFileNameW(module, buffer.data(),
-                                            static_cast<DWORD>(buffer.size()));
-    if (length == 0)
-      return std::string();
-    if (length < buffer.size()) {
-      buffer.resize(length);
-      break;
-    }
-    buffer.resize(buffer.size() * 2);
-  }
-  const std::size_t slash = buffer.find_last_of(L"\\/");
-  if (slash == std::wstring::npos)
-    return std::string();
-  return WideToUtf8(buffer.substr(0, slash));
-}
+// Directory the plugin's own package lives in: the reference MMD bone table is
+// shipped next to the plugin entry, and the plugin has no other way to find
+// its own files. Resolved once from the host core service during Load(),
+// because the plugin image is mapped without the Windows loader and has no
+// module handle to ask for.
+std::string g_module_directory;
+
+std::string ModuleDirectory() noexcept { return g_module_directory; }
 
 std::string ReferenceBoneTablePath(bool unity_reference) noexcept {
   const std::string directory = ModuleDirectory();
@@ -12172,6 +12154,19 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
   context->localizer = anomaly::plugins::Localizer(host);
   context->core = Query<AnomalyCoreServiceV1>(host, ANOMALY_CORE_SERVICE_V1_ID,
                                               ANOMALY_CORE_SERVICE_V1_VERSION);
+  if (context->core != nullptr && context->core->plugin_directory != nullptr) {
+    std::size_t size = 0;
+    if (context->core->plugin_directory(context->core->user, nullptr, &size).code ==
+            ANOMALY_STATUS_V1_OK &&
+        size > 0) {
+      std::string directory(size, '\0');
+      if (context->core->plugin_directory(context->core->user, directory.data(), &size)
+              .code == ANOMALY_STATUS_V1_OK) {
+        directory.resize(size - 1);
+        g_module_directory = directory;
+      }
+    }
+  }
   context->signature =
       Query<AnomalySignatureServiceV1>(host, ANOMALY_SIGNATURE_SERVICE_V1_ID,
                                        ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
