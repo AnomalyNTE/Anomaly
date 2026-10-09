@@ -1,4 +1,5 @@
 #include "anomaly/launcher/manual_map.hpp"
+#include "anomaly/launcher/relay_map.hpp"
 
 #include "anomaly/core_api.h"
 
@@ -1527,18 +1528,31 @@ std::vector<AttachableProcess> EnumerateAttachableProcesses(
     return result;
 }
 
-static ManualMapResult ManualMapRuntimeCoreWithHandle(
-    const ManualMapOptions& options, const AttachableProcess& inspected,
-    const Handle& process) noexcept {
+// Maps a loader-independent PE image that exports AnomalyStart plus the manual-map C++
+// exception bridge into a remote process and runs it through the remote bootstrap. The
+// start-info block is marshaled verbatim: the core flow passes an AnomalyStartInfo, the
+// relay flow passes a RelayStartInfo, and each image reinterprets the pointer its own way.
+struct RemoteImageMapRequest final {
+    std::filesystem::path image_path;
+    std::span<const std::byte> start_info;
+    std::chrono::milliseconds timeout{std::chrono::seconds(30)};
+    // The dynamic-CRT core imports _CxxThrowException and must have it redirected to its
+    // own exception bridge; a static-CRT image (the relay) throws through the statically
+    // linked runtime against its own image base and carries no such import.
+    bool require_cxx_throw_import{true};
+};
+
+static ManualMapResult MapImageWithRemoteBootstrap(
+    HANDLE process, const RemoteImageMapRequest& request) noexcept {
     try {
-        if (HasPrivateMappedCore(process.Get())) {
+        if (HasPrivateMappedCore(process)) {
             return Failure(
                 ManualMapError::AlreadyAttached, ERROR_ALREADY_EXISTS,
                 "an externally mapped Anomaly core is already present");
         }
 
         std::string image_failure;
-        auto parsed = ParseImage(options.core_path, image_failure);
+        auto parsed = ParseImage(request.image_path, image_failure);
         if (!parsed) {
             return Failure(
                 ManualMapError::ImageInvalid, ERROR_BAD_EXE_FORMAT,
@@ -1581,14 +1595,14 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         }
 
         void* remote_base = VirtualAllocEx(
-            process.Get(), reinterpret_cast<void*>(headers->OptionalHeader.ImageBase),
+            process, reinterpret_cast<void*>(headers->OptionalHeader.ImageBase),
             parsed->mapped.size(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (remote_base == nullptr) {
             remote_base = VirtualAllocEx(
-                process.Get(), nullptr, parsed->mapped.size(),
+                process, nullptr, parsed->mapped.size(),
                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         }
-        RemoteAllocation remote_image(process.Get(), remote_base, parsed->mapped.size());
+        RemoteAllocation remote_image(process, remote_base, parsed->mapped.size());
         if (remote_image.address == nullptr) {
             return Failure(
                 ManualMapError::AllocationFailure, GetLastError(),
@@ -1603,7 +1617,7 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         }
 
         DWORD module_error{};
-        auto modules = SnapshotModules(process.Get(), module_error);
+        auto modules = SnapshotModules(process, module_error);
         if (module_error != ERROR_SUCCESS) {
             return Failure(
                 ManualMapError::DependencyFailure, module_error,
@@ -1614,26 +1628,26 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             .address = remote_image_address + *cxx_throw_rva,
         };
         if (!ResolveImports(
-                process.Get(), *parsed, modules, image_failure,
+                process, *parsed, modules, image_failure,
                 &cxx_throw_override)) {
             return Failure(
                 ManualMapError::DependencyFailure, ERROR_MOD_NOT_FOUND,
                 std::move(image_failure));
         }
-        if (!cxx_throw_override.applied) {
+        if (!cxx_throw_override.applied && request.require_cxx_throw_import) {
             return Failure(
                 ManualMapError::ImageInvalid, ERROR_PROC_NOT_FOUND,
                 "core image does not import _CxxThrowException");
         }
         headers = Headers(parsed->mapped);
         if (headers == nullptr || WriteProcessMemory(
-                process.Get(), remote_image.address, parsed->mapped.data(),
+                process, remote_image.address, parsed->mapped.data(),
                 parsed->mapped.size(), nullptr) == FALSE) {
             return Failure(
                 ManualMapError::WriteFailure, GetLastError(),
                 "remote core image could not be written");
         }
-        if (!ProtectImage(process.Get(), remote_image.address, parsed->mapped)) {
+        if (!ProtectImage(process, remote_image.address, parsed->mapped)) {
             return Failure(
                 ManualMapError::ProtectionFailure, GetLastError(),
                 "remote core section protections could not be applied");
@@ -1650,49 +1664,16 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
                 "remote unwind registration functions could not be resolved");
         }
 
-        const auto runtime_root = options.runtime_root.empty()
-            ? std::filesystem::absolute(options.core_path).parent_path()
-            : std::filesystem::absolute(options.runtime_root);
-        const auto log_directory = options.log_directory.empty()
-            ? runtime_root / L"logs" : std::filesystem::absolute(options.log_directory);
-        RemoteAllocation remote_root = WriteRemoteWideString(process.Get(), runtime_root);
-        RemoteAllocation remote_log = WriteRemoteWideString(process.Get(), log_directory);
-        if (remote_root.address == nullptr || remote_log.address == nullptr) {
-            return Failure(
-                ManualMapError::AllocationFailure, GetLastError(),
-                "remote runtime paths could not be allocated");
-        }
-        DWORD snapshot_error{};
-        modules = SnapshotModules(process.Get(), snapshot_error);
-        const auto main_module = modules.find(Fold(inspected.executable_name));
-        if (snapshot_error != ERROR_SUCCESS || main_module == modules.end()) {
-            return Failure(
-                ManualMapError::BootstrapFailure,
-                snapshot_error == ERROR_SUCCESS ? ERROR_MOD_NOT_FOUND : snapshot_error,
-                "target main module could not be resolved");
-        }
-
-        const AnomalyStartInfo start_info{
-            .struct_size = ANOMALY_START_INFO_V1_SIZE,
-            .bootstrap_abi_version = ANOMALY_BOOTSTRAP_ABI_VERSION,
-            .bootstrap_type = ANOMALY_BOOTSTRAP_TYPE_EXTERNAL,
-            .flags = 0,
-            .bootstrap_module = nullptr,
-            .game_module = reinterpret_cast<HMODULE>(main_module->second.base),
-            .runtime_root = reinterpret_cast<const WCHAR*>(remote_root.address),
-            .log_directory = reinterpret_cast<const WCHAR*>(remote_log.address),
-            .external_stop_event = nullptr,
-        };
         RemoteAllocation remote_start_info(
-            process.Get(), VirtualAllocEx(
-                process.Get(), nullptr, sizeof(start_info),
-                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), sizeof(start_info));
+            process, VirtualAllocEx(
+                process, nullptr, request.start_info.size(),
+                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), request.start_info.size());
         if (remote_start_info.address == nullptr || WriteProcessMemory(
-                process.Get(), remote_start_info.address, &start_info,
-                sizeof(start_info), nullptr) == FALSE) {
+                process, remote_start_info.address, request.start_info.data(),
+                request.start_info.size(), nullptr) == FALSE) {
             return Failure(
                 ManualMapError::WriteFailure, GetLastError(),
-                "remote AnomalyStartInfo could not be written");
+                "remote start information could not be written");
         }
 
         const auto& exception =
@@ -1768,11 +1749,11 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             .start_info = reinterpret_cast<std::uintptr_t>(remote_start_info.address),
         };
         RemoteAllocation remote_context(
-            process.Get(), VirtualAllocEx(
-                process.Get(), nullptr, sizeof(context),
+            process, VirtualAllocEx(
+                process, nullptr, sizeof(context),
                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), sizeof(context));
         if (remote_context.address == nullptr || WriteProcessMemory(
-                process.Get(), remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
+                process, remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
             return Failure(
                 ManualMapError::WriteFailure, GetLastError(),
                 "remote bootstrap context could not be written");
@@ -1791,11 +1772,11 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         const std::size_t bootstrap_size =
             static_cast<std::size_t>(bootstrap_end - bootstrap_begin);
         RemoteAllocation remote_bootstrap(
-            process.Get(), VirtualAllocEx(
-                process.Get(), nullptr, bootstrap_size,
+            process, VirtualAllocEx(
+                process, nullptr, bootstrap_size,
                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), bootstrap_size);
         if (remote_bootstrap.address == nullptr || WriteProcessMemory(
-                process.Get(), remote_bootstrap.address, bootstrap_begin,
+                process, remote_bootstrap.address, bootstrap_begin,
                 bootstrap_size, nullptr) == FALSE) {
             return Failure(
                 ManualMapError::WriteFailure, GetLastError(),
@@ -1803,17 +1784,17 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         }
         DWORD previous{};
         if (VirtualProtectEx(
-                process.Get(), remote_bootstrap.address, bootstrap_size,
+                process, remote_bootstrap.address, bootstrap_size,
                 PAGE_EXECUTE_READ, &previous) == FALSE ||
             FlushInstructionCache(
-                process.Get(), remote_bootstrap.address, bootstrap_size) == FALSE) {
+                process, remote_bootstrap.address, bootstrap_size) == FALSE) {
             return Failure(
                 ManualMapError::ProtectionFailure, GetLastError(),
                 "remote bootstrap code could not be made executable");
         }
 
         Handle thread(CreateRemoteThread(
-            process.Get(), nullptr, 0,
+            process, nullptr, 0,
             reinterpret_cast<LPTHREAD_START_ROUTINE>(remote_bootstrap.address),
             remote_context.address, 0, nullptr));
         if (!thread) {
@@ -1822,7 +1803,7 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
                 "remote bootstrap thread could not be created");
         }
         const auto bounded_timeout = std::clamp<std::int64_t>(
-            options.timeout.count(), 1, static_cast<std::int64_t>(INFINITE - 1));
+            request.timeout.count(), 1, static_cast<std::int64_t>(INFINITE - 1));
         const DWORD wait = WaitForSingleObject(
             thread.Get(), static_cast<DWORD>(bounded_timeout));
         if (wait != WAIT_OBJECT_0) {
@@ -1830,8 +1811,6 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             remote_context.retained = true;
             remote_bootstrap.retained = true;
             remote_start_info.retained = true;
-            remote_root.retained = true;
-            remote_log.retained = true;
             return Failure(
                 ManualMapError::Timeout,
                 wait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT,
@@ -1844,7 +1823,7 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         const DWORD thread_exit_error =
             thread_exit_available ? ERROR_SUCCESS : GetLastError();
         if (ReadProcessMemory(
-            process.Get(), remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
+            process, remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
             if (thread_exit_available && thread_exit_code != ERROR_SUCCESS) {
                 return Failure(
                     ManualMapError::BootstrapFailure, thread_exit_code,
@@ -1881,6 +1860,435 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         return Failure(
             ManualMapError::ImageInvalid, ERROR_UNHANDLED_EXCEPTION,
             "manual-map attach raised an unexpected exception");
+    }
+}
+
+static ManualMapResult ManualMapRuntimeCoreWithHandle(
+    const ManualMapOptions& options, const AttachableProcess& inspected,
+    const Handle& process) noexcept {
+    try {
+        const auto runtime_root = options.runtime_root.empty()
+            ? std::filesystem::absolute(options.core_path).parent_path()
+            : std::filesystem::absolute(options.runtime_root);
+        const auto log_directory = options.log_directory.empty()
+            ? runtime_root / L"logs" : std::filesystem::absolute(options.log_directory);
+        RemoteAllocation remote_root = WriteRemoteWideString(process.Get(), runtime_root);
+        RemoteAllocation remote_log = WriteRemoteWideString(process.Get(), log_directory);
+        if (remote_root.address == nullptr || remote_log.address == nullptr) {
+            return Failure(
+                ManualMapError::AllocationFailure, GetLastError(),
+                "remote runtime paths could not be allocated");
+        }
+        DWORD snapshot_error{};
+        const auto modules = SnapshotModules(process.Get(), snapshot_error);
+        const auto main_module = modules.find(Fold(inspected.executable_name));
+        if (snapshot_error != ERROR_SUCCESS || main_module == modules.end()) {
+            return Failure(
+                ManualMapError::BootstrapFailure,
+                snapshot_error == ERROR_SUCCESS ? ERROR_MOD_NOT_FOUND : snapshot_error,
+                "target main module could not be resolved");
+        }
+
+        const AnomalyStartInfo start_info{
+            .struct_size = ANOMALY_START_INFO_V1_SIZE,
+            .bootstrap_abi_version = ANOMALY_BOOTSTRAP_ABI_VERSION,
+            .bootstrap_type = ANOMALY_BOOTSTRAP_TYPE_EXTERNAL,
+            .flags = 0,
+            .bootstrap_module = nullptr,
+            .game_module = reinterpret_cast<HMODULE>(main_module->second.base),
+            .runtime_root = reinterpret_cast<const WCHAR*>(remote_root.address),
+            .log_directory = reinterpret_cast<const WCHAR*>(remote_log.address),
+            .external_stop_event = nullptr,
+        };
+        const auto* start_info_bytes = reinterpret_cast<const std::byte*>(&start_info);
+        RemoteImageMapRequest request{
+            .image_path = options.core_path,
+            .start_info = std::span(start_info_bytes, sizeof(start_info)),
+            .timeout = options.timeout,
+        };
+        ManualMapResult result = MapImageWithRemoteBootstrap(process.Get(), request);
+        // A timeout leaves the bootstrap thread running in the target; the strings it may
+        // still be reading must outlive this call, exactly like the image allocation the
+        // mapping core retains in the same situation.
+        if (result.error == ManualMapError::Timeout) {
+            remote_root.retained = true;
+            remote_log.retained = true;
+        }
+        return result;
+    } catch (...) {
+        return Failure(
+            ManualMapError::ImageInvalid, ERROR_UNHANDLED_EXCEPTION,
+            "manual-map attach raised an unexpected exception");
+    }
+}
+
+TargetCaptureOutcome WaitForNewTargetProcess(
+    const TargetCaptureRequest& request) noexcept {
+    TargetCaptureOutcome outcome;
+    try {
+        if (request.executable_name.empty()) {
+            outcome.error = ManualMapError::ProcessLaunchFailure;
+            outcome.win32_error = ERROR_INVALID_PARAMETER;
+            outcome.message = "target executable name is empty";
+            return outcome;
+        }
+        const std::wstring requested_target = Fold(request.executable_name);
+
+        // Either the caller pinned the exclusion set at the moment that matters (the
+        // relay's launcher did, before the game could exist), or this call is the
+        // earliest point and the set is taken here.
+        std::set<DWORD> existing_targets(
+            request.excluded_pids.begin(), request.excluded_pids.end());
+        if (request.excluded_pids.empty()) {
+            DWORD snapshot_error{};
+            existing_targets =
+                SnapshotProcessIds(request.executable_name, snapshot_error);
+            if (snapshot_error != ERROR_SUCCESS) {
+                outcome.error = ManualMapError::ProcessControlFailure;
+                outcome.win32_error = snapshot_error;
+                outcome.message = "existing target processes could not be inspected";
+                return outcome;
+            }
+        }
+
+        // The launcher hook signals this manual-reset event right before it asks the
+        // launcher to start the game, so polling does not spend the whole budget watching
+        // a login screen. A missing event simply means nobody gates the capture.
+        if (!request.armed_event_name.empty()) {
+            Handle armed(OpenEventW(
+                SYNCHRONIZE, FALSE, request.armed_event_name.c_str()));
+            if (armed) {
+                const auto bounded_armed = std::clamp<std::int64_t>(
+                    request.armed_timeout.count(), 0,
+                    static_cast<std::int64_t>(INFINITE - 1));
+                static_cast<void>(WaitForSingleObject(
+                    armed.Get(), static_cast<DWORD>(bounded_armed)));
+            }
+        }
+
+        const auto bounded_timeout = std::clamp<std::int64_t>(
+            request.timeout.count(), 1,
+            std::chrono::minutes(10).count() * 60'000LL);
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(bounded_timeout);
+        std::atomic_bool ready{};
+        std::stop_source stop;
+        const FastTargetCaptureResult captured = CaptureTargetByFastPolling(
+            requested_target, existing_targets, deadline, ready, stop.get_token());
+
+        outcome.process_id = captured.process_id;
+        outcome.win32_error = captured.error;
+        if (captured.error == ERROR_SUCCESS && captured.process) {
+            outcome.error = ManualMapError::None;
+            return outcome;
+        }
+        outcome.error = captured.error == ERROR_ACCESS_DENIED
+            ? ManualMapError::AccessDenied
+            : captured.error == ERROR_TIMEOUT
+                ? ManualMapError::ProcessLaunchFailure
+                : ManualMapError::ProcessUnavailable;
+        outcome.message = captured.error == ERROR_ACCESS_DENIED
+            ? "new target process was detected after mapping access was filtered"
+            : captured.error == ERROR_TIMEOUT
+                ? "no new target process appeared before the timeout"
+                : "low-latency target capture failed";
+        return outcome;
+    } catch (...) {
+        outcome.error = ManualMapError::ProcessControlFailure;
+        outcome.win32_error = ERROR_UNHANDLED_EXCEPTION;
+        outcome.message = "target capture raised an unexpected exception";
+        return outcome;
+    }
+}
+
+ManualMapResult ManualMapAttachCoreToProcessId(
+    DWORD process_id, const ManualMapOptions& options) noexcept {
+    try {
+        if (process_id == 0 || options.core_path.empty()) {
+            return Failure(
+                ManualMapError::ProcessLaunchFailure, ERROR_INVALID_PARAMETER,
+                "attach options are incomplete");
+        }
+        DWORD open_error{};
+        Handle process = OpenProcessForAttach(process_id, open_error);
+        if (!process) {
+            return Failure(
+                ManualMapError::ProcessUnavailable, open_error,
+                "target process could not be opened for mapping");
+        }
+        const AttachableProcess inspected = InspectAttachableProcess(process_id);
+        if (!inspected.Compatible()) {
+            return Failure(
+                !inspected.owned_by_current_user
+                    ? ManualMapError::DifferentUser
+                    : ManualMapError::IncompatibleArchitecture,
+                inspected.inspection_error != ERROR_SUCCESS ? inspected.inspection_error
+                    : !inspected.owned_by_current_user ? ERROR_ACCESS_DENIED
+                                                       : ERROR_BAD_EXE_FORMAT,
+                "target process is not a compatible x64 process owned by this user");
+        }
+        const auto bounded_loader = std::clamp<std::int64_t>(
+            options.loader_timeout.count(), 1,
+            std::chrono::minutes(10).count() * 60'000LL);
+        const auto loader_deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(bounded_loader);
+        DWORD module_error = ERROR_NOT_READY;
+        RemoteModuleMap loader_modules;
+        if (!WaitForLoaderReady(process.Get(), inspected.executable_name,
+                loader_deadline, loader_modules, module_error)) {
+            return Failure(
+                ManualMapError::DependencyFailure,
+                module_error == ERROR_SUCCESS ? ERROR_TIMEOUT : module_error,
+                "target process loader did not initialize before the timeout");
+        }
+        return ManualMapRuntimeCoreWithHandle(options, inspected, process);
+    } catch (...) {
+        return Failure(
+            ManualMapError::ImageInvalid, ERROR_UNHANDLED_EXCEPTION,
+            "manual-map attach raised an unexpected exception");
+    }
+}
+
+// ---- Relay flow: the launcher maps a relay image into an innocent host process, and the
+// relay captures the game process and maps the core into it, so the injection chain is
+// attributed to the host rather than to the launcher. ----
+
+bool CopyRelayField(
+    wchar_t* destination, std::size_t capacity, const std::wstring& value) noexcept {
+    if (value.size() + 1 > capacity) return false;
+    std::copy(value.begin(), value.end(), destination);
+    destination[value.size()] = L'\0';
+    return true;
+}
+
+std::string NarrowRelayMessage(const wchar_t* message) noexcept {
+    std::string result;
+    for (const wchar_t* cursor = message; *cursor != L'\0'; ++cursor) {
+        result.push_back(static_cast<char>(*cursor));
+    }
+    return result;
+}
+
+ManualMapLaunchResult RunRelayAttachSession(
+    const ManualMapLaunchOptions& options,
+    const std::set<DWORD>& pre_launch_targets) noexcept {
+    ManualMapLaunchResult result;
+    try {
+        const std::filesystem::path relay_image =
+            std::filesystem::absolute(options.relay.relay_image);
+        const std::filesystem::path host =
+            std::filesystem::absolute(options.relay.host_executable);
+        std::error_code relay_probe{};
+        if (!std::filesystem::exists(relay_image, relay_probe)) {
+            result.mapping = Failure(
+                ManualMapError::ImageUnavailable, ERROR_FILE_NOT_FOUND,
+                "relay image could not be found");
+            return result;
+        }
+        if (!std::filesystem::exists(host, relay_probe)) {
+            result.mapping = Failure(
+                ManualMapError::ImageUnavailable, ERROR_FILE_NOT_FOUND,
+                "relay host executable could not be found");
+            return result;
+        }
+
+        // The host is created normally and stays intact: nothing is unmapped, its image
+        // and VAD tree look exactly like an ordinary instance, and the relay is added as
+        // a private mapping the way the core is added to the game. The window is hidden
+        // because the host has no user-facing role.
+        STARTUPINFOW startup{
+            .cb = sizeof(startup),
+            .dwFlags = STARTF_USESHOWWINDOW,
+            .wShowWindow = SW_HIDE,
+        };
+        PROCESS_INFORMATION created{};
+        std::wstring command_line = L"\"" + host.wstring() + L"\"";
+        if (CreateProcessW(
+                host.c_str(), command_line.data(), nullptr, nullptr, FALSE, 0,
+                nullptr, host.parent_path().c_str(), &startup, &created) == FALSE) {
+            result.mapping = Failure(
+                ManualMapError::ProcessLaunchFailure, GetLastError(),
+                "relay host process could not be started");
+            return result;
+        }
+        Handle host_process(created.hProcess);
+        Handle host_thread(created.hThread);
+
+        const auto host_loader_deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(kLoaderReadyTimeoutMilliseconds);
+        DWORD host_loader_error{};
+        RemoteModuleMap host_modules;
+        if (!WaitForLoaderReady(host_process.Get(), host.filename().wstring(),
+                host_loader_deadline, host_modules, host_loader_error)) {
+            static_cast<void>(TerminateProcess(host_process.Get(), ERROR_PROCESS_ABORTED));
+            static_cast<void>(WaitForSingleObject(host_process.Get(), 5000));
+            result.mapping = Failure(
+                ManualMapError::ProcessControlFailure,
+                host_loader_error == ERROR_SUCCESS ? ERROR_TIMEOUT : host_loader_error,
+                "relay host loader did not initialize before the timeout");
+            return result;
+        }
+
+        const std::wstring unique = std::to_wstring(GetCurrentProcessId()) + L"." +
+            std::to_wstring(GetTickCount64());
+        const std::wstring mapping_name = L"Local\\Anomaly.Relay.Result." + unique;
+        const std::wstring event_name = L"Local\\Anomaly.Relay.Done." + unique;
+        Handle result_mapping(CreateFileMappingW(
+            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+            sizeof(RelayResult), mapping_name.c_str()));
+        if (!result_mapping) {
+            static_cast<void>(TerminateProcess(host_process.Get(), ERROR_PROCESS_ABORTED));
+            static_cast<void>(WaitForSingleObject(host_process.Get(), 5000));
+            result.mapping = Failure(
+                ManualMapError::AllocationFailure, GetLastError(),
+                "relay result mapping could not be created");
+            return result;
+        }
+        void* result_view = MapViewOfFile(
+            result_mapping.Get(), FILE_MAP_WRITE, 0, 0, sizeof(RelayResult));
+        Handle result_event(
+            CreateEventW(nullptr, TRUE, FALSE, event_name.c_str()));
+        if (result_view == nullptr || !result_event) {
+            if (result_view != nullptr) UnmapViewOfFile(result_view);
+            static_cast<void>(TerminateProcess(host_process.Get(), ERROR_PROCESS_ABORTED));
+            static_cast<void>(WaitForSingleObject(host_process.Get(), 5000));
+            result.mapping = Failure(
+                ManualMapError::AllocationFailure, GetLastError(),
+                "relay result channel could not be created");
+            return result;
+        }
+        std::memset(result_view, 0, sizeof(RelayResult));
+
+        const auto runtime_root = options.manual_map.runtime_root.empty()
+            ? std::filesystem::absolute(options.manual_map.core_path).parent_path()
+            : std::filesystem::absolute(options.manual_map.runtime_root);
+        const auto log_directory = options.manual_map.log_directory.empty()
+            ? runtime_root / L"logs"
+            : std::filesystem::absolute(options.manual_map.log_directory);
+
+        RelayStartInfo info{};
+        info.struct_size = ANOMALY_RELAY_START_INFO_V1_SIZE;
+        info.version = ANOMALY_RELAY_START_INFO_VERSION;
+        info.armed_timeout_ms = options.hook_path.empty()
+            ? 0u : static_cast<std::uint32_t>(kHookArmedTimeoutMilliseconds);
+        info.capture_timeout_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+            options.target_timeout.count(), 1,
+            std::chrono::minutes(10).count() * 60'000LL));
+        info.loader_timeout_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+            options.loader_timeout.count(), 1,
+            std::chrono::minutes(10).count() * 60'000LL));
+        info.attach_timeout_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+            options.manual_map.timeout.count(), 1,
+            static_cast<std::int64_t>(INFINITE - 1)));
+        // The pre-launch snapshot is the exclusion set the relay captures against. It was
+        // taken before the official launcher existed, so it cannot contain this session's
+        // game no matter how early the hook spawned it.
+        constexpr std::size_t kMaxExcludedPids =
+            std::size(RelayStartInfo{}.excluded_pids);
+        info.excluded_pid_count = static_cast<std::uint32_t>(
+            std::min(pre_launch_targets.size(), kMaxExcludedPids));
+        std::size_t copied{};
+        for (const DWORD pid : pre_launch_targets) {
+            if (copied == kMaxExcludedPids) break;
+            info.excluded_pids[copied++] = pid;
+        }
+        const bool fields_copied =
+            CopyRelayField(info.armed_event_name, std::size(info.armed_event_name),
+                options.hook_path.empty() ? std::wstring() : kLauncherArmedEventName) &&
+            CopyRelayField(info.game_executable_name, std::size(info.game_executable_name),
+                Fold(options.target_executable_name)) &&
+            CopyRelayField(info.core_path, std::size(info.core_path),
+                options.manual_map.core_path.wstring()) &&
+            CopyRelayField(info.runtime_root, std::size(info.runtime_root),
+                runtime_root.wstring()) &&
+            CopyRelayField(info.log_directory, std::size(info.log_directory),
+                log_directory.wstring()) &&
+            CopyRelayField(info.result_mapping_name, std::size(info.result_mapping_name),
+                mapping_name) &&
+            CopyRelayField(info.result_event_name, std::size(info.result_event_name),
+                event_name);
+        if (!fields_copied) {
+            UnmapViewOfFile(result_view);
+            static_cast<void>(TerminateProcess(host_process.Get(), ERROR_PROCESS_ABORTED));
+            static_cast<void>(WaitForSingleObject(host_process.Get(), 5000));
+            result.mapping = Failure(
+                ManualMapError::ProcessLaunchFailure, ERROR_INVALID_PARAMETER,
+                "relay parameters exceed the relay contract field widths");
+            return result;
+        }
+
+        // The relay runs the whole capture-then-attach sequence inside AnomalyStart, so
+        // hop one is budgeted for all of it: the armed wait, target discovery, the game
+        // loader, the core bootstrap, and slack for the IPC itself.
+        const std::int64_t hop1_budget = std::clamp<std::int64_t>(
+            static_cast<std::int64_t>(info.armed_timeout_ms) +
+                info.capture_timeout_ms + info.loader_timeout_ms +
+                info.attach_timeout_ms + 30'000LL,
+            1, static_cast<std::int64_t>(INFINITE - 1));
+        const auto* info_bytes = reinterpret_cast<const std::byte*>(&info);
+        RemoteImageMapRequest hop1{
+            .image_path = relay_image,
+            .start_info = std::span(info_bytes, sizeof(info)),
+            .timeout = std::chrono::milliseconds(hop1_budget),
+            .require_cxx_throw_import = false,
+        };
+        const ManualMapResult hop1_result =
+            MapImageWithRemoteBootstrap(host_process.Get(), hop1);
+
+        // The relay publishes its result and signals the event before AnomalyStart
+        // returns, so by the time hop one settles the event is either signalled or the
+        // relay never got far enough to report.
+        RelayResult relay_result{};
+        bool have_result = false;
+        if (WaitForSingleObject(result_event.Get(), 5000) == WAIT_OBJECT_0) {
+            std::memcpy(&relay_result, result_view, sizeof(RelayResult));
+            have_result = relay_result.struct_size == ANOMALY_RELAY_RESULT_V1_SIZE &&
+                relay_result.version == ANOMALY_RELAY_RESULT_VERSION;
+        }
+        UnmapViewOfFile(result_view);
+        // The host is a throwaway: whatever the relay reported, the process has no
+        // further role once its AnomalyStart has returned.
+        static_cast<void>(TerminateProcess(host_process.Get(), ERROR_PROCESS_ABORTED));
+        static_cast<void>(WaitForSingleObject(host_process.Get(), 5000));
+
+        if (hop1_result.Ok() && have_result &&
+            relay_result.error ==
+                static_cast<std::uint32_t>(ManualMapError::None)) {
+            result.mapping = ManualMapResult{
+                ManualMapError::None,
+                ERROR_SUCCESS,
+                relay_result.runtime_start_error,
+                static_cast<std::uintptr_t>(relay_result.remote_image),
+                "Anomaly core attached through the relay host"};
+            result.process_id = relay_result.game_process_id;
+            return result;
+        }
+        if (have_result) {
+            result.mapping = Failure(
+                static_cast<ManualMapError>(relay_result.error),
+                relay_result.win32_error,
+                NarrowRelayMessage(relay_result.message),
+                relay_result.runtime_start_error,
+                static_cast<std::uintptr_t>(relay_result.remote_image));
+            result.process_id = relay_result.game_process_id;
+            return result;
+        }
+        if (hop1_result.Ok()) {
+            result.mapping = Failure(
+                ManualMapError::BootstrapFailure, ERROR_UNHANDLED_EXCEPTION,
+                "relay image completed without reporting a result");
+            return result;
+        }
+        result.mapping = Failure(
+            hop1_result.error, hop1_result.win32_error,
+            "relay bootstrap: " + hop1_result.message,
+            hop1_result.runtime_start_error, hop1_result.remote_image);
+        return result;
+    } catch (...) {
+        result.mapping = Failure(
+            ManualMapError::ProcessLaunchFailure, ERROR_UNHANDLED_EXCEPTION,
+            "relay attach session raised an unexpected exception");
+        return result;
     }
 }
 
@@ -1988,6 +2396,12 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
                     ERROR_DLL_INIT_FAILED, "the game hook could not be injected");
                 return result;
             }
+        }
+
+        // The relay path replaces this process's capture-and-map tail: the relay image
+        // mapped into its host performs both, and only the outcome comes back here.
+        if (options.relay.Enabled()) {
+            return RunRelayAttachSession(options, existing_targets);
         }
 
         FastTargetCaptureResult captured;

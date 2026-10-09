@@ -33,6 +33,7 @@ Repository Worker 都是由 Runtime 服务声明的并列所有者，彼此不�
 | `src/plugin` | Manifest、依赖预检、镜像手工映射（`plugin_image_mapper`）、Scope、generation、热重载 | SDK 合同、Runtime 服务 | Renderer 后端内部、固定 NTE 地址 |
 | `src/render/dx12`、`src/ui` | SwapChain/输入/UI 与绘制服务 | Render Dispatcher、受控 Hook、插件只读快照 | 包 I/O、DLL 加载、同步 Game Update |
 | `src/repository` | 签名 Index、网络 worker、staging、回滚 | Worker/Network、validator | 游戏对象、渲染提交、插件回调 |
+| `src/launcher` | 官方启动器驱动：目标捕获、Core 远程映射；Relay 中继镜像（`src/launcher/relay`）在无辜宿主进程内完成捕获与映射，把注入链归属到宿主 | Win32、manual-map 合同（`AnomalyStart` + 异常桥 + 无 loader TLS） | NTE 内存布局、插件实现、Runtime 内部头 |
 | `include/anomaly/sdk` | 稳定公开 C ABI 与 C++ wrapper | 版本化公开合同 | 宿主内部类型 |
 
 ## 线程域契约

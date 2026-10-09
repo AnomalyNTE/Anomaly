@@ -644,6 +644,31 @@ target_compile_definitions(
 target_compile_options(anomaly_manual_map PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /EHsc>)
 target_link_libraries(anomaly_manual_map PUBLIC Advapi32 Psapi)
 
+# The relay image of the B-form injection flow: the launcher maps it into an innocent host
+# process, and the relay captures the game process and maps the core into it, so the
+# injection chain is attributed to the host rather than to the launcher. It follows the
+# same manual-map contract as the core (AnomalyStart plus the exception bridge, no
+# loader-managed static TLS) and is itself manually mapped, which is why it compiles the
+# manual-map sources directly instead of linking the launcher's copy: the host never
+# loads the VC runtime redistributables, so the relay needs them compiled in (the same
+# reasoning as the game hook) while the launcher's copy stays on the dynamic CRT.
+add_library(anomaly_relay SHARED
+    src/launcher/relay/relay_main.cpp
+    src/launcher/manual_map.cpp
+    src/launcher/manual_map_remote.asm
+    src/runtime/manual_map_exception.cpp)
+set_target_properties(anomaly_relay PROPERTIES
+    OUTPUT_NAME "Anomaly.Relay"
+    PREFIX ""
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Anomaly"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/Anomaly"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+target_include_directories(anomaly_relay PRIVATE include)
+target_compile_definitions(
+    anomaly_relay PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_relay PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /EHsc>)
+target_link_libraries(anomaly_relay PRIVATE Advapi32 Psapi)
+
 # Injected into the official launcher (NTEGame.exe) to hide its window and ask it to start the game on
 # its own. It is deliberately free-standing: it runs inside a process this repository does not own, has
 # no dependency on any other target here, and reaches Qt only through exports it resolves at runtime.
@@ -948,14 +973,18 @@ target_compile_options(anomaly_core PRIVATE /W4 /permissive- /EHsc)
 # The Core is manually mapped and cannot use MSVC's loader-managed TLS slot for
 # function-local static guards. These targets initialize their process-scoped
 # local statics on the lifecycle thread before publishing concurrent services.
+# The relay image is manually mapped too, and it links anomaly_manual_map, so both
+# are listed for the same reason the core is.
 set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
     anomaly_core
     anomaly_i18n
     anomaly_adapter_services
     anomaly_imgui
+    anomaly_manual_map
     anomaly_nte_profile_runtime
     anomaly_plugin_image_mapper
     anomaly_plugin_manifest
+    anomaly_relay
     anomaly_reliable_storage
     anomaly_repository_configuration
     anomaly_repository_index
@@ -963,7 +992,9 @@ set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
     anomaly_service_graph
     nlohmann_json_schema_validator)
 foreach(target IN LISTS ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS)
-    target_compile_options(${target} PRIVATE /Zc:threadSafeInit-)
+    # C++-only: the manual-map library mixes MASM sources, and MASM rejects MSVC options.
+    target_compile_options(${target} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:/Zc:threadSafeInit->)
 endforeach()
 target_link_libraries(
     anomaly_core PRIVATE
@@ -1108,7 +1139,7 @@ target_link_libraries(anomaly_launcher PRIVATE
     ole32 shell32 delayimp dcomp)
 # The hook is part of the runtime payload the launcher is installed with, so it is built before the
 # launcher that would inject it.
-add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
+add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook anomaly_relay)
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
     add_executable(anomaly_render_fixture apps/render_fixture/main.cpp)
@@ -1731,6 +1762,7 @@ if(ANOMALY_BUILD_DIAGNOSTIC_PROBES)
 endif()
 set(ANOMALY_RELEASE_PE_TARGETS
     dwmapi anomaly_core anomaly_launcher anomaly_crash_coordinator anomaly_nte_game_hook
+    anomaly_relay
     anomaly-plugin anomaly_abi_snapshot anomaly_test_host
     anomaly-profile anomaly_cli anomaly_inspect)
 get_property(ANOMALY_RELEASE_PLUGIN_TARGETS GLOBAL PROPERTY ANOMALY_RELEASE_PLUGIN_TARGETS)
@@ -1763,6 +1795,13 @@ install(TARGETS anomaly_crash_coordinator
 # payload: a package that turned auto-starting back on without it would launch and then fail to start
 # the game.
 install(TARGETS anomaly_nte_game_hook
+    RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
+    LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
+# The relay image ships with the runtime payload for the same reason the hook does: the
+# launcher resolves it by absolute path under its own directory, and a launch that falls
+# back to direct injection because the relay is missing would silently lose the relay
+# attribution the flow is configured for.
+install(TARGETS anomaly_relay
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
 # Plugin packages install themselves: `anomaly_add_plugin` emits the package rules for

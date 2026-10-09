@@ -238,6 +238,27 @@ std::filesystem::path GameHookLibrary() {
     return ExecutableDirectory() / L"Anomaly" / L"NTEGameHook.dll";
 }
 
+// The relay image of the B-form injection flow: manually mapped into an innocent host
+// process, from where it captures the game and maps the core, so the process that touches
+// the game is the host rather than this launcher. Resolved the same way as the hook.
+std::filesystem::path RelayLibrary() {
+    return ExecutableDirectory() / L"Anomaly" / L"Anomaly.Relay.dll";
+}
+
+// The relay host: a signed, common, policy-free system binary. The host image stays
+// intact -- nothing is unmapped, the relay is added the way the core is added to the game
+// -- and the host is terminated once the relay has reported.
+std::filesystem::path RelayHostExecutable() {
+    wchar_t directory[MAX_PATH]{};
+    if (GetSystemDirectoryW(directory, MAX_PATH) == 0) return {};
+    return std::filesystem::path(directory) / L"notepad.exe";
+}
+
+// B-form prototype switch: the attach runs through the relay host whenever the relay
+// image is deployed next to the runtime payload, and falls back to the direct injection
+// when it is not.
+constexpr bool kRelayInjection = true;
+
 // Auto-starting the official client is off. The launcher is started the way its own shortcut starts
 // it, and the player presses start game in the window that opens, so capture waits for the HTGame.exe
 // that press produces. Everything auto-starting needs -- resolving the client out of the bootstrap's
@@ -612,6 +633,16 @@ public:
             options.manual_map.core_path = selected.core_path;
             options.manual_map.runtime_root = selected.runtime_root;
             options.manual_map.log_directory = options.manual_map.runtime_root / L"logs";
+            if constexpr (kRelayInjection) {
+                std::error_code relay_probe{};
+                const auto relay_image = RelayLibrary();
+                const auto relay_host = RelayHostExecutable();
+                if (std::filesystem::exists(relay_image, relay_probe) &&
+                    std::filesystem::exists(relay_host, relay_probe)) {
+                    options.relay.relay_image = relay_image;
+                    options.relay.host_executable = relay_host;
+                }
+            }
             const auto result =
                 anomaly::launcher::LaunchAndManualMapRuntimeCore(options);
             if (result.Ok()) RefreshProcessesImpl();
