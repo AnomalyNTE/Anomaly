@@ -1281,6 +1281,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/FakeUID/manifest.json
         PACKAGE_NAME FakeUID
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/FakeUID")
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_fake_uid_latency_fixture plugins/FakeUID/latency_tests.cpp)
+        target_include_directories(anomaly_fake_uid_latency_fixture PRIVATE include "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_options(anomaly_fake_uid_latency_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_compile_definitions(anomaly_fake_uid_latency_fixture PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(anomaly_fake_uid_latency_fixture PRIVATE nlohmann_json::nlohmann_json)
+    endif()
     anomaly_add_plugin(anomaly_builtin_camera_tools
         SOURCES plugins/CameraTools/plugin.cpp
         MANIFEST plugins/CameraTools/manifest.json
@@ -1397,6 +1404,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteFreeFly")
     anomaly_add_plugin(anomaly_builtin_skin_changer
         SOURCES plugins/SkinChanger/plugin.cpp plugins/SkinChanger/cosmetics.cpp
+            plugins/SkinChanger/awakening.cpp plugins/SkinChanger/plates.cpp
         MANIFEST plugins/SkinChanger/manifest.json
         PACKAGE_NAME SkinChanger
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SkinChanger")
@@ -1405,6 +1413,16 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             plugins/SkinChanger/cosmetics_tests.cpp)
         target_compile_features(anomaly_skin_changer_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_skin_changer_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_skin_changer_awakening_fixture
+            plugins/SkinChanger/awakening_tests.cpp)
+        target_compile_features(anomaly_skin_changer_awakening_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_skin_changer_awakening_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_skin_changer_plate_fixture plugins/SkinChanger/plate_tests.cpp)
+        target_compile_features(anomaly_skin_changer_plate_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_skin_changer_plate_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_skin_changer_plate_follow_fixture plugins/SkinChanger/plate_follow_tests.cpp)
+        target_link_libraries(anomaly_skin_changer_plate_follow_fixture PRIVATE Anomaly::sdk)
+        target_compile_options(anomaly_skin_changer_plate_follow_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
 
     add_library(anomaly_quick_ultimate_sequence STATIC
@@ -1475,6 +1493,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/HiFiVehicleMusic/manifest.json
         PACKAGE_NAME HiFiVehicleMusic
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/HiFiVehicleMusic")
+    anomaly_add_plugin(anomaly_builtin_model_scale
+        SOURCES plugins/ModelScale/plugin.cpp
+        MANIFEST plugins/ModelScale/manifest.json
+        PACKAGE_NAME ModelScale
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModelScale")
     target_link_libraries(anomaly_builtin_hifi_vehicle_music PRIVATE
         nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio anomaly_monkeys_audio anomaly_dsd2pcm
         ole32 shell32 uuid avrt winmm)
@@ -1493,7 +1516,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
-        anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music)
+        anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
+        anomaly_builtin_model_scale)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold

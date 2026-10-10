@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "anomaly.local.nte.camera-tools",
   "name": "Camera Tools",
-  "description": "Combines view-distance adjustment, free-camera controls, optional scene loading around the free camera, and a developer-only teleport-to-camera action.",
+  "description": "Combines view-distance and field-of-view adjustment, free-camera controls, optional scene loading around the free camera, and a developer-only teleport-to-camera action.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "version": "1.0.0",
@@ -27,6 +27,6 @@
   "capabilities": [
     "configuration", "input", "ui", "nte-session-snapshot", "nte-player-snapshot",
     "nte-player-teleport", "interop-signature", "interop-hook", "memory-read",
-    "ue5-streaming-source"
+    "memory-write", "ue5-streaming-source"
   ]
 }

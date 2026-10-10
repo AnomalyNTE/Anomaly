@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "角色模型缩放",
+    "plugin.description": "按倍率缩放本地角色的模型，不改动移动与碰撞。",
+    "window.title": "角色模型缩放",
+    "setting.enabled": "启用",
+    "setting.factor": "模型倍率",
+    "action.reset": "重置为 1.0 倍",
+    "status.idle": "空闲",
+    "status.disabled": "已停用",
+    "status.applied": "已生效",
+    "status.pending": "等待游戏帧",
+    "status.base_scale": "模型基础缩放：%.4g",
+    "status.effective_scale": "模型当前缩放：%.4g",
+    "detail.resized": "已写入新的缩放并重建变换",
+    "detail.applied": "缩放已就位",
+    "detail.restored": "已恢复原始缩放",
+    "detail.restore_failed": "恢复失败",
+    "detail.no_pawn": "未找到本地角色",
+    "detail.no_component": "角色没有可缩放的组件",
+    "detail.unreadable": "读不到组件的相对缩放",
+    "detail.unwritable": "组件的相对缩放不可写",
+    "detail.not_markable": "无法标记组件变换为脏"
+  }
+}

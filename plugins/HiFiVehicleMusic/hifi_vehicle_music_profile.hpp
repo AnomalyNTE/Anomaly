@@ -140,8 +140,31 @@ inline constexpr std::string_view kPositionSecondsPattern =
 inline constexpr std::string_view kDurationCallbackPattern =
     "48 89 5C 24 10 57 48 83 EC 30 4C 8B 41 08 48 8B F9 8B 42 58 48 89 74 24 40 41 89 80 DC 10 00 00";
 inline constexpr std::uint32_t kDurationInfoSecondsOffset = 0x58;
+// UHTUI_MusicPlayer's cached song length: the [reg+0x10DC] store both duration
+// callbacks make. A driven callback needs a view at least this large.
+inline constexpr std::uint32_t kUiDurationCacheOffset = 0x10DC;
+// The duration label slot both callbacks SetText: [reg+0x1018]. The panels the
+// game registers with its queries carry no label there (the slot reads empty),
+// so the label the player shows is resolved through the panel's owner instead.
+inline constexpr std::uint32_t kUiDurationLabelOffset = 0x1018;
+// UObject::OuterPrivate: a panel's outer is its widget tree, and the tree's
+// outer is the music view that owns the panel.
+inline constexpr std::uint32_t kUiOuterOffset = 0x20;
+// UHTUI_MusicDetailedView: +0xFF8 its player panel, +0x1000 the progress strip
+// beside it. The strip (UHTUI_MusicPlayerProgressBar) owns the time labels the
+// player shows; +0xF98 is its duration label.
+inline constexpr std::uint32_t kUiOwnerPanelOffset = 0xFF8;
+inline constexpr std::uint32_t kUiOwnerStripOffset = 0x1000;
+inline constexpr std::uint32_t kUiStripDurationLabelOffset = 0xF98;
+// The strip's own length cache, float seconds at +0xFA4: the blueprint that
+// renders the strip's time labels re-formats them from it, so a takeover that
+// only SetTexts the label gets the template's 30 seconds written right back.
+inline constexpr std::uint32_t kUiStripDurationCacheOffset = 0xFA4;
 // The same length callback on the album view's play/resume path:
-// void ({UHTUI_MusicPlayer* ui}*, info** info).
+// void ({UHTUI_MusicPlayer* ui}*, info** info). Also resolved for the
+// takeover, which drives it directly: a replaced Post never runs the query
+// this callback answers, so the plugin writes the label itself -- with a
+// synthetic view whose label slot points at the visible duration label.
 inline constexpr std::string_view kDurationCallback2Pattern =
     "40 57 48 83 EC 30 48 8B 02 48 8B 11 8B 40 58 89 82 DC 10 00 00 48 8B 09 48 8B B9 18 10 00 00";
 // UHTSoundSubsystem::PlayingID (int32; the Pause/Resume/Stop paths test > 0).
