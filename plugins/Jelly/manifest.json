@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.plugin.jelly",
+  "name": "Jelly",
+  "description": "Development preview. Squashes and stretches characters, vehicles and other dynamic models in view with a volume-preserving three-axis scale and restores every component it touched. Vehicles are scaled as whole models, physics-driven bodies included by a switch, and their accessories follow them. Models can spin about their up axis, and a rest between bounces can be dialled in; count and strength are adjustable too. Hidden, static and multi-part models are skipped and reported.",
+  "author": "Shikari",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.12",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.ue5.objects", "minVersion": 1},
+    {"id": "anomaly.ue5.framework", "minVersion": 1},
+    {"id": "anomaly.nte.actors", "minVersion": 1},
+    {"id": "anomaly.nte.player", "minVersion": 1},
+    {"id": "anomaly.nte.session", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1, "optional": true},
+    {"id": "anomaly.config", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "memory-read",
+    "memory-write",
+    "interop-signature",
+    "ue5-names",
+    "ue5-objects",
+    "game-events",
+    "nte-actor-snapshot",
+    "nte-player-snapshot",
+    "nte-session-snapshot",
+    "ui",
+    "configuration"
+  ]
+}
