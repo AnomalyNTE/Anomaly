@@ -32,6 +32,16 @@ constexpr std::uint32_t kResetCooldownReasons =
     ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_INTERACTABLE |
     ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED;
 
+// 可见性类原因：这些正是「界面没打开」造成的，强制点击要绕过的就是它们。
+// 其余原因（禁用、不可交互、锁定、不接受命中测试、界面关闭中、被遮挡）与按钮自身状态有关。
+constexpr std::uint32_t kResetVisibilityReasons =
+    ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_SELF |
+    ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_ANCESTOR |
+    ANOMALY_NTE_UI_BUTTON_REASON_V1_TRANSPARENT |
+    ANOMALY_NTE_UI_BUTTON_REASON_V1_INACTIVE_PAGE |
+    ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_IN_VIEWPORT |
+    ANOMALY_NTE_UI_BUTTON_REASON_V1_DETACHED;
+
 std::string ResetReasons(const std::uint32_t reasons) {
     static constexpr std::array<ResetReasonEntry, 13> kEntries{{
         {ANOMALY_NTE_UI_BUTTON_REASON_V1_DISABLED, "禁用"},
@@ -368,12 +378,21 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
         "（窗口 " + (button.window[0] != '\0' ? button.window : "-") + "，" + how + "）";
 
     // 营地界面没打开时控件通常处于隐藏/未挂载状态，普通点击会被 CONFLICT 挡下；
-    // 强制点击让宿主跳过可点击性判定（含遮挡与禁用），直接调控件自己的点击处理。
+    // 强制点击让宿主跳过可点击性判定。但冷却（禁用/锁定/不可交互）必须照旧遵守，
+    // 否则会在 CD 里空点 —— 所以强制点击只用来绕过可见性与遮挡。
     const bool force = ResetForceClick();
-    if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE || force) {
+    const bool cooling = (button.reasons & kResetCooldownReasons) != 0;
+    const bool hidden = (button.reasons & kResetVisibilityReasons) != 0;
+    const bool can_click =
+        button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE ||
+        (force && !cooling);
+    if (can_click) {
         AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
         click.button = button.button;
-        click.flags = force ? ANOMALY_NTE_UI_BUTTON_CLICK_V1_FORCE : 0u;
+        // 只有确实需要绕过时才带 FORCE，可点击的正常路径保持原语义。
+        click.flags = (force && button.category != ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE)
+            ? ANOMALY_NTE_UI_BUTTON_CLICK_V1_FORCE
+            : 0u;
         AnomalyGenerationHandleV1 request{};
         if (service->request_click(service->user, &click, &request).code != ANOMALY_STATUS_V1_OK ||
             request.id == 0) {
@@ -383,27 +402,28 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
         }
         g_reset.click_request = request;
         g_reset.click_sent = now;
-        ResetPublish((force && button.category != ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE
+        ResetPublish((click.flags != 0
                           ? std::string("已提交强制点击（控件") + ResetCategoryName(button.category) +
                                 "）："
                           : std::string("已提交点击：")) + label);
         Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-            std::string("night999 reset: ") +
-                (force ? "force click " : "click ") + label + " reasons=" +
-                std::to_string(button.reasons));
+            std::string("night999 reset: ") + (click.flags != 0 ? "force click " : "click ") +
+                label + " reasons=" + std::to_string(button.reasons));
         return;
     }
 
-    // 不可点击：控件存在，只是当前不满足点击条件。
+    // 到不了点击：要么是冷却，要么是强制点击关了而控件不满足条件。
     g_reset.next_attempt = now + kResetAttemptInterval;
-    const bool cooling = (button.reasons & kResetCooldownReasons) != 0;
-    std::string message = std::string("控件") + ResetCategoryName(button.category) + "，等待…（" +
-        ResetReasons(button.reasons) + "）";
-    if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) {
+    std::string message = std::string("控件") + ResetCategoryName(button.category) +
+        (cooling ? "（冷却中）" : "") + "，等待…（" + ResetReasons(button.reasons) + "）";
+    if (cooling) {
+        message += "；冷却结束会自动继续";
+    } else if (!force && hidden) {
         message += "；控件对象已存在但未显示，打开「强制点击」可直接点它";
+    } else if (!force) {
+        message += "；可打开「强制点击」绕过可见性与遮挡判定";
     }
     ResetPublish(std::move(message));
-    static_cast<void>(cooling);
 }
 
 void ResetStop() noexcept {
