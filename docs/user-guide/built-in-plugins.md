@@ -180,6 +180,24 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 嵌套时最内层排第一。**3 秒后拾取** 用于不方便按快捷键的场景。勾选 **显示界面层** 可以看到各个
 界面层当前显示的界面，以及哪些界面被判定为遮挡下层。
 
+## Deserted
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.builtin.nte.deserted` |
+| **作用** | 一个勾选框：勾选后人群与车流都不再生成（街上空无一人），取消勾选恢复勾选前的数值。不影响站桩 NPC。 |
+| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.input`（均为 V1，可选） |
+| **需要 Profile** | 否（自行按 AOB 特征码定位人群/车辆生成器，依赖 `memory-read`/`memory-write` capability） |
+
+插件直接改两组已有的旋钮，不新增或替换游戏的生成逻辑：
+
+- 人群：`HTMassCrowdSpawner` 的默认密度档与其每个 Density Profile 上的**昼/夜/晴/雨/雪环境倍率**；
+- 车辆：`MassSpawner` 的生成数量倍率与生成上限，以及 `HTMassVehicleSpawner` 的保底在线车辆数。
+
+勾选时先读取这些字段的**当前值**作为初始值并落盘，再把它们压到最低；只有勾选、取消勾选各写一次，
+不做周期性检测与回写。停用或重载插件时同样恢复初始值，避免把世界留在空街上。窗口热键固定 F8，
+开关热键可改、默认未绑定；勾选状态与初始值持久化在插件存储目录。
+
 ## 开发者模式调试插件
 
 启用会话开发者模式后，插件列表还会显示 `Teleport Landmarks Probe`

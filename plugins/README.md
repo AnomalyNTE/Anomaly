@@ -15,6 +15,7 @@
 - `QuickUltimate`
 - `WalletCollector`
 - `FreeFly`
+- `Deserted`
 
 随运行包安装、仅在会话开发者模式启用时显示的调试插件：
 
