@@ -51,11 +51,14 @@ constexpr double kSinkRetryLiftStep = 200.0;
 constexpr double kMaximumCoordinate = 1.0e9;
 
 constexpr std::size_t kCoordinateTextCapacity = 32;
+constexpr std::size_t kResetButtonNameCapacity = 64;
+constexpr std::string_view kResetButtonDefault = "BtnResetMonsterSpawners";
 
 constexpr std::uint32_t kSettingsMagic =
     static_cast<std::uint32_t>('N') | (static_cast<std::uint32_t>('9') << 8u) |
     (static_cast<std::uint32_t>('9') << 16u) | (static_cast<std::uint32_t>('K') << 24u);
-constexpr std::uint32_t kSettingsVersion = 1u;
+constexpr std::uint32_t kSettingsVersion = 2u;
+constexpr std::uint32_t kSettingsVersionLegacy = 1u;
 
 constexpr std::string_view kSettingsFileName = "night999-settings-v1.bin";
 
@@ -131,9 +134,16 @@ struct Settings {
     double preload_delay{kPreloadDelayDefault};
     double landing_lift{kLandingLiftDefault};
     std::uint32_t sink_retries{kSinkRetriesDefault};
+    std::string reset_button{kResetButtonDefault};
 };
 
-struct SettingsFile {
+struct SettingsFileHeader {
+    std::uint32_t magic{};
+    std::uint32_t version{};
+};
+
+// v1 只有传送相关字段；v2 追加刷新按钮名。读取按版本分支，v1 文件继续可用。
+struct SettingsFileV1 {
     std::uint32_t magic{};
     std::uint32_t version{};
     double target[3]{};
@@ -141,6 +151,17 @@ struct SettingsFile {
     double landing_lift{};
     std::uint32_t sink_retries{};
     std::uint32_t reserved{};
+};
+
+struct SettingsFileV2 {
+    std::uint32_t magic{};
+    std::uint32_t version{};
+    double target[3]{};
+    double preload_delay{};
+    double landing_lift{};
+    std::uint32_t sink_retries{};
+    std::uint32_t reserved{};
+    char reset_button[kResetButtonNameCapacity]{};
 };
 
 // 传送请求：句柄必须是「当前」快照里的 world / player，过期句柄宿主会直接拒绝。
@@ -318,27 +339,50 @@ void ResolveSettingsPath() noexcept {
     }
 }
 
+void ApplySettingsFields(
+    Settings& settings, const double target[3], const double preload_delay,
+    const double landing_lift, const std::uint32_t sink_retries) noexcept {
+    if (IsUsableCoordinate(target[0]) && IsUsableCoordinate(target[1]) &&
+        IsUsableCoordinate(target[2])) {
+        std::copy(target, target + 3, settings.target);
+    }
+    if (std::isfinite(preload_delay) && preload_delay >= 0.0 &&
+        preload_delay <= kPreloadDelayMaximum) {
+        settings.preload_delay = preload_delay;
+    }
+    if (std::isfinite(landing_lift) && landing_lift >= 0.0 &&
+        landing_lift <= kLandingLiftMaximum) {
+        settings.landing_lift = landing_lift;
+    }
+    if (sink_retries <= kSinkRetriesMaximum) settings.sink_retries = sink_retries;
+}
+
 void LoadSettings() noexcept {
     Settings settings{};
     if (!g_context.settings_path.empty()) {
-        SettingsFile file{};
         std::ifstream input(g_context.settings_path, std::ios::binary);
-        if (input.read(reinterpret_cast<char*>(&file), sizeof(file)) &&
-            file.magic == kSettingsMagic && file.version == kSettingsVersion) {
-            if (IsUsableCoordinate(file.target[0]) && IsUsableCoordinate(file.target[1]) &&
-                IsUsableCoordinate(file.target[2])) {
-                std::copy(file.target, file.target + 3, settings.target);
-            }
-            if (std::isfinite(file.preload_delay) && file.preload_delay >= 0.0 &&
-                file.preload_delay <= kPreloadDelayMaximum) {
-                settings.preload_delay = file.preload_delay;
-            }
-            if (std::isfinite(file.landing_lift) && file.landing_lift >= 0.0 &&
-                file.landing_lift <= kLandingLiftMaximum) {
-                settings.landing_lift = file.landing_lift;
-            }
-            if (file.sink_retries <= kSinkRetriesMaximum) {
-                settings.sink_retries = file.sink_retries;
+        SettingsFileHeader header{};
+        if (input.read(reinterpret_cast<char*>(&header), sizeof(header)) &&
+            header.magic == kSettingsMagic) {
+            input.seekg(0);
+            if (header.version == kSettingsVersionLegacy) {
+                SettingsFileV1 file{};
+                if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
+                    ApplySettingsFields(settings, file.target, file.preload_delay,
+                                        file.landing_lift, file.sink_retries);
+                }
+            } else if (header.version == kSettingsVersion) {
+                SettingsFileV2 file{};
+                if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
+                    ApplySettingsFields(settings, file.target, file.preload_delay,
+                                        file.landing_lift, file.sink_retries);
+                    const auto terminator = std::find(
+                        file.reset_button, file.reset_button + sizeof(file.reset_button), '\0');
+                    if (terminator != file.reset_button) {
+                        const std::string name(file.reset_button, terminator);
+                        if (!name.empty()) settings.reset_button = name;
+                    }
+                }
             }
         }
     }
@@ -354,13 +398,15 @@ bool SaveSettings() noexcept {
         settings = g_context.settings;
     }
 
-    SettingsFile file{};
+    SettingsFileV2 file{};
     file.magic = kSettingsMagic;
     file.version = kSettingsVersion;
     std::copy(settings.target, settings.target + 3, file.target);
     file.preload_delay = settings.preload_delay;
     file.landing_lift = settings.landing_lift;
     file.sink_retries = settings.sink_retries;
+    std::snprintf(file.reset_button, sizeof(file.reset_button), "%s",
+                  settings.reset_button.c_str());
 
     std::ofstream output(g_context.settings_path, std::ios::binary | std::ios::trunc);
     if (!output) return false;
@@ -621,6 +667,11 @@ void DrawResult(const AnomalyUiServiceV1* ui) {
     DrawText(ui, line);
 }
 
+// ---------------------------------------------------------------------------
+// 刷新怪物按钮（anomaly.nte.ui-buttons）：扫描 → 查找 → 点击，禁用时等待重试
+// ---------------------------------------------------------------------------
+#include "reset_button.hpp"
+
 void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     SyncTextBuffers();
 
@@ -678,9 +729,14 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
 
     DrawCurrentPosition(host, ui);
     DrawResult(ui);
+
+    if (ui->separator != nullptr) ui->separator(ui->user);
+    ResetContent(host, ui);
+
+    if (ui->separator != nullptr) ui->separator(ui->user);
     DrawText(ui, g_context.localizer.Text(
         "note.flow",
-        "后续循环（刷新怪物 / 自动战斗 / 清怪判定）将在本分支继续实现。"));
+        "后续循环（自动战斗 / 清怪判定）将在本分支继续实现。"));
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +771,10 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     g_next_save = {};
     g_teleport_requested.store(false);
     g_text_stale.store(true);
+    ResetStop();
+    g_reset.presses = 0;
+    g_reset_text_stale.store(true);
+    ResetPublish("未开始");
     ResolveSettingsPath();
     LoadSettings();
     g_settings_dirty.store(false);
@@ -730,6 +790,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_teleport_requested.store(false);
+    ResetStop();
     g_pending = {};
     g_landing = {};
     try {
@@ -750,6 +811,11 @@ void ANOMALY_CALL Update(void*, double) {
 
         ProcessLandingMonitor(host);
         SaveIfDue();
+        try {
+            AdvanceReset(host);
+        } catch (...) {
+            ResetFinish("刷新流程异常，已停止", false);
+        }
 
         if (!g_teleport_requested.exchange(false)) return;
 
@@ -789,7 +855,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.1.0"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.2.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }
