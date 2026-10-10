@@ -135,6 +135,7 @@ struct Settings {
     double landing_lift{kLandingLiftDefault};
     std::uint32_t sink_retries{kSinkRetriesDefault};
     std::string reset_button{kResetButtonDefault};
+    bool force_click{};
 };
 
 struct SettingsFileHeader {
@@ -160,7 +161,7 @@ struct SettingsFileV2 {
     double preload_delay{};
     double landing_lift{};
     std::uint32_t sink_retries{};
-    std::uint32_t reserved{};
+    std::uint32_t force_click{};
     char reset_button[kResetButtonNameCapacity]{};
 };
 
@@ -382,6 +383,7 @@ void LoadSettings() noexcept {
                         const std::string name(file.reset_button, terminator);
                         if (!name.empty()) settings.reset_button = name;
                     }
+                    settings.force_click = file.force_click != 0;
                 }
             }
         }
@@ -405,6 +407,7 @@ bool SaveSettings() noexcept {
     file.preload_delay = settings.preload_delay;
     file.landing_lift = settings.landing_lift;
     file.sink_retries = settings.sink_retries;
+    file.force_click = settings.force_click ? 1u : 0u;
     std::snprintf(file.reset_button, sizeof(file.reset_button), "%s",
                   settings.reset_button.c_str());
 
@@ -855,7 +858,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.2.0"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.3.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

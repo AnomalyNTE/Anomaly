@@ -120,6 +120,29 @@ void ResetSetButtonName(const std::string& name) {
     g_settings_dirty.store(true);
 }
 
+// 强制点击：宿主只跳过「可点击性」这一道判定（含遮挡、禁用、隐藏），句柄失效仍然拒绝。
+// 营地界面没打开时控件通常处于隐藏或未挂载状态，这时只有强制点击能直接点它。
+bool ResetForceClick() {
+    std::scoped_lock lock(g_context.mutex);
+    return g_context.settings.force_click;
+}
+
+void ResetSetForceClick(const bool value) {
+    std::scoped_lock lock(g_context.mutex);
+    if (g_context.settings.force_click == value) return;
+    g_context.settings.force_click = value;
+    g_settings_dirty.store(true);
+}
+
+const char* ResetCategoryName(const std::uint32_t category) noexcept {
+    switch (category) {
+    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE: return "可点击";
+    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED: return "不可点击";
+    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN: return "隐藏";
+    default: return "未知";
+    }
+}
+
 void ResetFinish(std::string text, const bool succeeded) {
     g_reset.running = false;
     g_reset.scan_pending = false;
@@ -285,7 +308,10 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
         g_reset.click_request = {};
         if (polled.code == ANOMALY_STATUS_V1_OK && click.status == ANOMALY_STATUS_V1_OK) {
             ++g_reset.presses;
-            ResetFinish("刷新怪物已按下（第 " + std::to_string(g_reset.presses) + " 次）", true);
+            const bool forced =
+                (click.outcome & ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_FORCED) != 0;
+            ResetFinish(std::string(forced ? "强制点击成功" : "刷新怪物已按下") +
+                        "（第 " + std::to_string(g_reset.presses) + " 次）", true);
             return;
         }
         if (polled.code != ANOMALY_STATUS_V1_OK || click.status == ANOMALY_STATUS_V1_NOT_FOUND ||
@@ -332,7 +358,8 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
     if (!ResetFindButton(service, name, button, how)) {
         g_reset.next_attempt = now + kResetAttemptInterval;
         g_reset.next_scan = now;
-        ResetPublish("未找到按钮「" + name + "」——请先打开营火界面");
+        ResetPublish("未找到按钮「" + name + "」——控件对象还不存在（营地界面从未创建过）。"
+                     "请先打开一次营地，或改用直调游戏函数的方式");
         return;
     }
 
@@ -340,9 +367,13 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
         (button.text[0] != '\0' ? std::string("「") + button.text + "」" : std::string()) +
         "（窗口 " + (button.window[0] != '\0' ? button.window : "-") + "，" + how + "）";
 
-    if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE) {
+    // 营地界面没打开时控件通常处于隐藏/未挂载状态，普通点击会被 CONFLICT 挡下；
+    // 强制点击让宿主跳过可点击性判定（含遮挡与禁用），直接调控件自己的点击处理。
+    const bool force = ResetForceClick();
+    if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE || force) {
         AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
         click.button = button.button;
+        click.flags = force ? ANOMALY_NTE_UI_BUTTON_CLICK_V1_FORCE : 0u;
         AnomalyGenerationHandleV1 request{};
         if (service->request_click(service->user, &click, &request).code != ANOMALY_STATUS_V1_OK ||
             request.id == 0) {
@@ -352,16 +383,27 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
         }
         g_reset.click_request = request;
         g_reset.click_sent = now;
-        ResetPublish("已提交点击：" + label);
-        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "night999 reset: click " + label);
+        ResetPublish((force && button.category != ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE
+                          ? std::string("已提交强制点击（控件") + ResetCategoryName(button.category) +
+                                "）："
+                          : std::string("已提交点击：")) + label);
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            std::string("night999 reset: ") +
+                (force ? "force click " : "click ") + label + " reasons=" +
+                std::to_string(button.reasons));
         return;
     }
 
-    // 不可点击：禁用 / 不可交互 / 锁定就是冷却中，等下一个周期再看。
+    // 不可点击：控件存在，只是当前不满足点击条件。
     g_reset.next_attempt = now + kResetAttemptInterval;
     const bool cooling = (button.reasons & kResetCooldownReasons) != 0;
-    ResetPublish(std::string(cooling ? "按钮冷却中，等待…（" : "按钮不可点击，等待…（") +
-                 ResetReasons(button.reasons) + "）");
+    std::string message = std::string("控件") + ResetCategoryName(button.category) + "，等待…（" +
+        ResetReasons(button.reasons) + "）";
+    if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) {
+        message += "；控件对象已存在但未显示，打开「强制点击」可直接点它";
+    }
+    ResetPublish(std::move(message));
+    static_cast<void>(cooling);
 }
 
 void ResetStop() noexcept {
@@ -394,6 +436,16 @@ void ResetContent(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
         DrawText(ui, g_reset_name_text.data());
     }
     ResetSetButtonName(g_reset_name_text.data());
+
+    int force = ResetForceClick() ? 1 : 0;
+    if (ui->checkbox != nullptr &&
+        ui->checkbox(ui->user, StringView("强制点击（忽略可点击判定，被遮挡或隐藏的也点）"),
+                     &force) != 0) {
+        ResetSetForceClick(force != 0);
+    }
+    if (force != 0) {
+        DrawText(ui, "注意：强制点击会绕过遮挡与禁用判定，可能点到玩家看不见的界面");
+    }
 
     const bool busy = g_reset_busy.load();
     if (ui->button != nullptr) {
