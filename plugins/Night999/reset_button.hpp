@@ -161,6 +161,69 @@ std::string ResetDetail(const char* detail) {
                                                   : std::string();
 }
 
+std::string ResetLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(character >= 'A' && character <= 'Z'
+                ? character - 'A' + 'a'
+                : character);
+    });
+    return value;
+}
+
+// 目录里任一可见字段包含关键词就算命中：控件对象名可能带 `_1` 这类去重后缀，而 find 只做
+// 精确匹配；用户从面板复制的标识也常常比裸控件名长。
+bool ResetSnapshotContains(const std::string& needle, const AnomalyNteUiButtonSnapshotV1& button) {
+    const char* const fields[]{
+        button.name, button.text, button.window, button.owner,
+        button.root, button.class_name, button.path,
+    };
+    for (const char* field : fields) {
+        if (field == nullptr || field[0] == '\0') continue;
+        if (ResetLower(field).find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+// 先用 find 精确匹配（命中即返回，开销最小）；落空再枚举目录做包含匹配。
+// 目录顺序本身就是 可点击 → 不可点击 → 隐藏，所以第一个命中就是最优候选。
+bool ResetFindButton(
+    const AnomalyNteUiButtonsServiceV1* service, const std::string& name,
+    AnomalyNteUiButtonSnapshotV1& found, std::string& how) {
+    AnomalyNteUiButtonQueryV1 query{sizeof(query)};
+    query.catalog_sequence = 0;
+    query.name = StringView(name);
+    AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+    std::uint32_t matches{};
+    if (service->find(service->user, &query, &button, &matches).code == ANOMALY_STATUS_V1_OK &&
+        button.button.id != 0) {
+        found = button;
+        how = "名称精确匹配";
+        return true;
+    }
+    if (service->status == nullptr || service->button_at == nullptr) return false;
+
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK ||
+        (status.flags & ANOMALY_NTE_UI_BUTTONS_STATUS_V1_CATALOG) == 0 ||
+        status.catalog_sequence == 0 || status.button_count == 0) {
+        return false;
+    }
+    const std::string needle = ResetLower(name);
+    for (std::uint32_t index = 0; index < status.button_count; ++index) {
+        button = AnomalyNteUiButtonSnapshotV1{sizeof(button)};
+        // 枚举途中目录被替换：放弃这一份，下一轮重扫。
+        if (service->button_at(service->user, status.catalog_sequence, index, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            return false;
+        }
+        if (!ResetSnapshotContains(needle, button)) continue;
+        found = button;
+        how = "名称包含匹配";
+        return true;
+    }
+    return false;
+}
+
 void AdvanceReset(const AnomalyHostApiV1* host) {
     if (!g_reset.running) {
         static_cast<void>(g_reset.cancel_requested.exchange(false));
@@ -264,13 +327,9 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
         return;
     }
 
-    AnomalyNteUiButtonQueryV1 query{sizeof(query)};
-    query.catalog_sequence = 0;
-    query.name = StringView(name);
     AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
-    std::uint32_t matches{};
-    const AnomalyStatusV1 found = service->find(service->user, &query, &button, &matches);
-    if (found.code != ANOMALY_STATUS_V1_OK || button.button.id == 0) {
+    std::string how;
+    if (!ResetFindButton(service, name, button, how)) {
         g_reset.next_attempt = now + kResetAttemptInterval;
         g_reset.next_scan = now;
         ResetPublish("未找到按钮「" + name + "」——请先打开营火界面");
@@ -279,7 +338,7 @@ void AdvanceReset(const AnomalyHostApiV1* host) {
 
     const std::string label = std::string(button.name) +
         (button.text[0] != '\0' ? std::string("「") + button.text + "」" : std::string()) +
-        "（窗口 " + (button.window[0] != '\0' ? button.window : "-") + "）";
+        "（窗口 " + (button.window[0] != '\0' ? button.window : "-") + "，" + how + "）";
 
     if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE) {
         AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
