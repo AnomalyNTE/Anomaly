@@ -1513,6 +1513,51 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         INCLUDE_DIRECTORIES "${ANOMALY_MONKEYS_AUDIO_INCLUDE_DIRS}"
         COMPILE_DEFINITIONS "PLATFORM_WINDOWS;UNICODE;_UNICODE")
 
+    # 果冻形变插件：源码里直接写中文注释与诊断，需要 /utf-8。布局是插件自己的资源
+    # （data/jelly-layout.json），所以像 BetterPose 一样把 data 目录同步进包目录并随包
+    # 安装。Anomaly 2.3.0 起的宿主用 in-process mapper 映射插件镜像，其预检要求导入
+    # _CxxThrowException 的 C++ 镜像导出异常桥，且不允许 loader 管理的静态 TLS：桥源码
+    # 与 /Zc:threadSafeInit- 让同一个包在旧宿主上也能加载；新版 SDK 自带这两样
+    # （ANOMALY_CXX_THROW_BRIDGE）时桥源码不再重复编译。
+    anomaly_add_plugin(anomaly_builtin_jelly
+        SOURCES
+            plugins/Jelly/plugin.cpp
+            plugins/Jelly/src/jelly_layout.cpp
+            plugins/Jelly/src/jelly_selection.cpp
+            plugins/Jelly/src/jelly_model.cpp
+        MANIFEST plugins/Jelly/manifest.json
+        PACKAGE_NAME Jelly
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/Jelly")
+    target_include_directories(anomaly_builtin_jelly PRIVATE plugins/Jelly/src)
+    target_compile_definitions(anomaly_builtin_jelly PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_builtin_jelly PRIVATE /utf-8 /Zc:threadSafeInit-)
+    if(NOT ANOMALY_CXX_THROW_BRIDGE)
+        target_sources(anomaly_builtin_jelly PRIVATE plugins/Jelly/src/plugin_cxx_throw_bridge.cpp)
+    endif()
+    add_custom_command(TARGET anomaly_builtin_jelly POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/plugins/Jelly/data"
+                "$<TARGET_FILE_DIR:anomaly_builtin_jelly>/data"
+        VERBATIM)
+    install(DIRECTORY plugins/Jelly/data/
+        DESTINATION Anomaly/plugins/Jelly/data COMPONENT GameRuntime)
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        # 离线夹具：纯逻辑与合成 UE 镜像，不需要游戏、运行中的宿主或网络。
+        add_executable(anomaly_jelly_logic_fixture
+            plugins/Jelly/tests/main.cpp
+            plugins/Jelly/tests/test_logic.cpp
+            plugins/Jelly/tests/test_model.cpp
+            plugins/Jelly/src/jelly_layout.cpp
+            plugins/Jelly/src/jelly_selection.cpp
+            plugins/Jelly/src/jelly_model.cpp)
+        target_include_directories(anomaly_jelly_logic_fixture PRIVATE plugins/Jelly/src)
+        target_compile_definitions(anomaly_jelly_logic_fixture PRIVATE
+            JELLY_LAYOUT_RESOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/plugins/Jelly/data/jelly-layout.json"
+            WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_compile_options(anomaly_jelly_logic_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
+
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
     set(ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -1524,7 +1569,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
-        anomaly_builtin_model_scale anomaly_builtin_deserted)
+        anomaly_builtin_model_scale anomaly_builtin_deserted anomaly_builtin_jelly)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1604,6 +1649,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_deserted Deserted)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_hifi_vehicle_music HiFiVehicleMusic)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_jelly Jelly)
 
 if(TARGET anomaly-platform-preview)
     add_custom_command(TARGET anomaly-platform-preview POST_BUILD

@@ -160,6 +160,23 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 > [!WARNING]
 > 在离地较高的位置关闭飞行时角色会原地自由落体，可能受到坠落伤害；建议先降到贴近地面再关闭。
 
+## Jelly
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.plugin.jelly` |
+| **作用** | 让镜头内的人物、载具与其他动态模型持续挤压、拉伸（近似保持体积），停止时把所有改动过的组件恢复原位。 |
+| **依赖服务** | `anomaly.core`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.ue5.framework`、`anomaly.nte.actors`、`anomaly.nte.player`、`anomaly.nte.session`、`anomaly.ui`；`anomaly.localization`、`anomaly.config`（均为 V1，可选） |
+| **需要 Profile** | 是；调用入口与对象注册表在加载时校验，反射属性按名字与活动反射比对 |
+
+**强度** 与 **频率** 决定挤压幅度与快慢，**最大生效目标** 限制同时生效的模型数，
+**果冻停止时间** 在每次弹跳之间留一段回到原样的静止时间。开启 **模型自转** 后模型绕竖轴转动，
+速度由 **自转速度** 调整（停止时间只作用于形变，自转照常）。**包含物理模拟的整车（驾驶中的车）**
+决定是否连同物理刚体一起缩放，关闭后这类车辆完全不变形，随车配件也一起恢复原状。
+
+隐藏、静态、实例化与多部件模型会被跳过：窗口里的 **最近跳过** 与
+`Anomaly\logs\anomaly-runtime.log` 中 `jelly:` 开头的行会说明每个类被拒的原因。
+
 ## UI Buttons
 
 | | |
