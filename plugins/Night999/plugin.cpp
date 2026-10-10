@@ -1,3 +1,8 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/plugin_state.h"
@@ -188,6 +193,9 @@ struct Context {
     Localizer localizer;
     const AnomalyCoreServiceV1* core{};
     const AnomalyPluginStateServiceV1* plugin_state{};
+    const AnomalyUe5NamesServiceV1* names{};
+    const AnomalyUe5ProcessEventServiceV1* events{};
+    const AnomalyUe5FrameworkServiceV1* framework{};
     std::filesystem::path settings_path;
     std::mutex mutex;
     Settings settings{};
@@ -675,6 +683,12 @@ void DrawResult(const AnomalyUiServiceV1* ui) {
 // ---------------------------------------------------------------------------
 #include "reset_button.hpp"
 
+// ---------------------------------------------------------------------------
+// 直接调用（不经 UI）：反射定位 UFunction + ProcessEvent 调用
+// ---------------------------------------------------------------------------
+#include "ue_access.hpp"
+#include "ue_direct.hpp"
+
 void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     SyncTextBuffers();
 
@@ -737,6 +751,9 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     ResetContent(host, ui);
 
     if (ui->separator != nullptr) ui->separator(ui->user);
+    UeContent(ui);
+
+    if (ui->separator != nullptr) ui->separator(ui->user);
     DrawText(ui, g_context.localizer.Text(
         "note.flow",
         "后续循环（自动战斗 / 清怪判定）将在本分支继续实现。"));
@@ -755,6 +772,14 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION).service;
     g_context.plugin_state = QueryService<AnomalyPluginStateServiceV1>(
         host, ANOMALY_PLUGIN_STATE_SERVICE_V1_ID, ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION).service;
+    g_context.names = QueryService<AnomalyUe5NamesServiceV1>(
+        host, ANOMALY_UE5_NAMES_SERVICE_V1_ID, 2).service;
+    g_context.events = QueryService<AnomalyUe5ProcessEventServiceV1>(
+        host, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
+        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION).service;
+    g_context.framework = QueryService<AnomalyUe5FrameworkServiceV1>(
+        host, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
+        ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION).service;
     g_context.settings_path.clear();
     {
         std::scoped_lock lock(g_context.mutex);
@@ -775,9 +800,13 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     g_teleport_requested.store(false);
     g_text_stale.store(true);
     ResetStop();
+    UeStop();
     g_reset.presses = 0;
     g_reset_text_stale.store(true);
     ResetPublish("未开始");
+    g_ue_text_stale.store(true);
+    UePublish("未探测");
+    UeSetCallResult(std::string{});
     ResolveSettingsPath();
     LoadSettings();
     g_settings_dirty.store(false);
@@ -794,6 +823,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_teleport_requested.store(false);
     ResetStop();
+    UeStop();
     g_pending = {};
     g_landing = {};
     try {
@@ -818,6 +848,16 @@ void ANOMALY_CALL Update(void*, double) {
             AdvanceReset(host);
         } catch (...) {
             ResetFinish("刷新流程异常，已停止", false);
+        }
+        try {
+            if (g_context.names != nullptr && g_context.core != nullptr &&
+                g_context.framework != nullptr && g_context.framework->is_game_thread != nullptr &&
+                g_context.framework->is_game_thread(g_context.framework->user) != 0) {
+                const UeReader ue_reader{g_context.names};
+                UeAdvance(ue_reader);
+            }
+        } catch (...) {
+            Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 ue probe aborted");
         }
 
         if (!g_teleport_requested.exchange(false)) return;
@@ -858,7 +898,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.3.0"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.4.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }
