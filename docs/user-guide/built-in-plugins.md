@@ -76,12 +76,17 @@ FORCE，冷却期间照旧等待，冷却结束自动继续。代价是这个开
 也无能为力，只能先打开一次营地、或改为直接调用游戏函数。
 
 **直接调用（不经 UI）** 是本插件为「按钮必须打开界面才能点」准备的兜底通道：不点控件，直接按
-名字在对象注册表里定位那个 UFunction，再用 ProcessEvent 调用它。流程是先用
-`anomaly.ue5.names` 的 `find_utf8` 把函数名换成 FName id，然后分片遍历整个对象注册表比对
-对象的 FName（一次探测约 16K 槽/帧），命中后读 NumParms / ParmsSize、沿 Outer 取所属类，再
-扫一遍找该类的实例（优先普通实例，退而用 CDO）。点 **直接调用** 会用零初始化的参数缓冲调用
-一次，并回报是否抛异常与返回缓冲前 16 字节。默认函数名是转储里命中的
-`FinalTowerCampResetMonsterSpawners`，可以改成任意候选。
+名称关键词在对象注册表里定位目标并用 ProcessEvent 调用它。定位分两条路：先用
+`anomaly.ue5.names.find_utf8` 把关键词换成 FName id，命中就走「整数比较」快路径（每帧约
+16K 槽，只比 id 不解析字符串）；命中不了说明该名字在当前会话没注册（相关蓝图尚未加载），
+就退化为遍历注册表逐个解析名字做子串匹配（每帧约 1024 个存活对象）。面板会列出匹配到的
+对象（函数优先，带所属类与 `NumParms`/`ParmsSize`），按 **选用** 选定一个，插件再扫一遍找
+该类实例（优先普通实例，退而用 CDO），**直接调用** 用零初始化参数缓冲调用一次并回报是否抛
+异常与返回缓冲前 16 字节。
+
+关键词默认 `ResetMonster`（会同时命中 `FinalTowerCampResetMonsterSpawners`、
+`OnBtnResetMonsterSpawnersClicked`、`Cus_ResetMonster` 等），可以改成任意子串。若提示
+「没有任何对象名含该关键词」，说明相关蓝图当前没加载——先在游戏里打开一次营地再点探测。
 
 同区的 **记录 ProcessEvent** 用来确认按钮到底调了什么：勾上后订阅宿主的 ProcessEvent 钩子，
 回调里只记 FName id 与对象地址（不解名字、不进宿主，避免死锁），解析留到 on_update 做，面板

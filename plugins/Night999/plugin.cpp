@@ -194,6 +194,7 @@ struct Context {
     const AnomalyCoreServiceV1* core{};
     const AnomalyPluginStateServiceV1* plugin_state{};
     const AnomalyUe5NamesServiceV1* names{};
+    const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5ProcessEventServiceV1* events{};
     const AnomalyUe5FrameworkServiceV1* framework{};
     std::filesystem::path settings_path;
@@ -774,6 +775,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         host, ANOMALY_PLUGIN_STATE_SERVICE_V1_ID, ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION).service;
     g_context.names = QueryService<AnomalyUe5NamesServiceV1>(
         host, ANOMALY_UE5_NAMES_SERVICE_V1_ID, 2).service;
+    g_context.objects = QueryService<AnomalyUe5ObjectsServiceV1>(
+        host, ANOMALY_UE5_OBJECTS_SERVICE_V1_ID,
+        ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION).service;
     g_context.events = QueryService<AnomalyUe5ProcessEventServiceV1>(
         host, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
         ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION).service;
@@ -898,7 +902,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.4.0"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.5.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }
