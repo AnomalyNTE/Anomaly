@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte.night999",
+  "name": "999夜脚本",
+  "description": "999夜脚本：先传送到指定地点，再刷新怪物并自动战斗，清怪后回到传送点循环。当前版本实现第一步——传送到指定世界坐标。",
+  "author": "WawMew",
+  "license": "AGPL-3.0-only",
+  "audience": "user",
+  "version": "0.1.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1, "optional": true},
+    {"id": "anomaly.plugin-state", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": ["ui", "configuration", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport"]
+}
