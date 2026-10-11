@@ -6,7 +6,7 @@
   "author": "WawMew",
   "license": "AGPL-3.0-only",
   "audience": "user",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],

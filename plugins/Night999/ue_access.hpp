@@ -22,6 +22,9 @@ constexpr std::uint32_t kUeObjectOuterOffset = 0x20;
 // UStruct：SuperStruct@0x40，PropertyLink/Children 链头@0x70。
 constexpr std::uint32_t kUeStructSuperOffset = 0x40;
 constexpr std::uint32_t kUeStructPropertyLinkOffset = 0x70;
+constexpr std::uint32_t kUeStructChildPropertiesOffset = 0x50;
+// FField：ClassPrivate@0x08，NamePrivate@0x20，Size@0x34，Offset@0x44，Next@0x48。
+constexpr std::uint32_t kUeFieldClassOffset = 0x08;
 constexpr std::uint32_t kUeFieldNextOffset = 0x48;
 constexpr std::uint32_t kUeFieldNameOffset = 0x20;
 constexpr std::uint32_t kUeFieldSizeOffset = 0x34;
