@@ -27,8 +27,10 @@ constexpr std::size_t kUeClassMonitorCapacity = 16;
 // 剩下的基本就是这次操作真正新调用的函数链。
 constexpr std::size_t kUeSeenSlots = 16384;
 constexpr std::size_t kUeEventCapacity = 128;
-// 单次调用最多记多少字节实参。
-constexpr std::size_t kUeParmsCapture = 16;
+// 单次调用最多记多少字节实参。RPC 载荷可能到 32 字节以上，留足。
+constexpr std::size_t kUeParmsCapture = 64;
+// 参数输入框容量：够放 64 字节的十六进制串（每字节 3 字符）。
+constexpr std::size_t kUeParamTextCapacity = 256;
 
 enum class UeProbePhase : std::uint8_t { idle, scanning, finding_owner, ready, failed };
 
@@ -104,7 +106,7 @@ std::vector<UeMatch> g_ue_matches;
 std::string g_ue_target_name;
 // 调用参数：空 = 全零；0x…/十进制 = 64 位整数；其它按 FName 名字查 id。
 std::string g_ue_param;
-std::array<char, kUeTextCapacity> g_ue_param_text{};
+std::array<char, kUeParamTextCapacity> g_ue_param_text{};
 
 UeEventRecord g_ue_events[kUeEventCapacity];
 std::size_t g_ue_event_count{};
@@ -275,6 +277,61 @@ std::string UeKeyword() {
 bool UeMonitorsReady() {
     std::scoped_lock lock(g_ue_mutex);
     return g_ue_monitor_count != 0 || g_ue_monitor_class_count != 0;
+}
+
+int UeHexDigit(const char c) noexcept {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// 把字节序列拼成 "AA BB CC" 形式（用于原样重放捕获到的载荷）。
+std::string UeBytesText(const std::uint8_t* bytes, const std::size_t count) {
+    static const char kDigits[] = "0123456789ABCDEF";
+    std::string text;
+    text.reserve(count * 3);
+    for (std::size_t index = 0; index < count; ++index) {
+        if (index != 0) text += ' ';
+        text += kDigits[bytes[index] >> 4];
+        text += kDigits[bytes[index] & 0x0F];
+    }
+    return text;
+}
+
+// 解析 "E0 65 41 36 01 00 00 00" 这类以空格/逗号分隔的十六进制字节串。
+bool UeParseByteList(const std::string& text, std::vector<std::uint8_t>& parms,
+                     std::string& detail) {
+    std::vector<std::uint8_t> bytes;
+    std::size_t index = 0;
+    while (index < text.size()) {
+        while (index < text.size() &&
+               (text[index] == ' ' || text[index] == ',' || text[index] == '-' ||
+                text[index] == '\t')) {
+            ++index;
+        }
+        if (index >= text.size()) break;
+        std::uint32_t value{};
+        std::size_t digits = 0;
+        if (index + 1 < text.size() && text[index] == '0' &&
+            (text[index + 1] == 'x' || text[index + 1] == 'X')) {
+            index += 2;
+        }
+        while (index < text.size() && digits < 2) {
+            const int digit = UeHexDigit(text[index]);
+            if (digit < 0) break;
+            value = value * 16u + static_cast<std::uint32_t>(digit);
+            ++digits;
+            ++index;
+        }
+        if (digits == 0) return false;
+        bytes.push_back(static_cast<std::uint8_t>(value));
+    }
+    if (bytes.size() < 2) return false;
+    const std::size_t take = std::min(bytes.size(), parms.size());
+    std::copy(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(take), parms.begin());
+    detail = "载荷 " + std::to_string(take) + " 字节";
+    return true;
 }
 
 void UeSetParam(const std::string& param) {
@@ -593,16 +650,18 @@ void UeBeginOwnerScan(const UeReader& reader, const std::size_t index) {
     g_ue_cdo = 0;
     g_ue_instance_is_cdo = false;
     g_ue_cursor = 0;
+    const std::string dump = match.object != 0 && match.is_function
+        ? UeDumpParams(reader, match.object)
+        : std::string{};
     {
         std::scoped_lock lock(g_ue_mutex);
         g_ue_target_name = match.name;
-        g_ue_params_dump = match.object != 0 && match.is_function
-            ? UeDumpParams(reader, match.object)
-            : std::string{};
+        g_ue_params_dump = dump;
     }
     UeLog("select #" + std::to_string(index) + " " + match.name + " func=" +
           (match.is_function ? "1" : "0") + " owner=" + match.owner_name + " parms=" +
           UeParmsText());
+    if (!dump.empty()) UeLog("params: " + dump);
     if (match.object == 0) {
         UeFinish("无法解析「" + std::string(match.name) + "」的对象地址（注册表基址未就绪）",
                  true);
@@ -710,6 +769,7 @@ bool UeFillParms(std::vector<std::uint8_t>& parms, std::string& detail) {
         detail = std::string(hex ? "0x" : "") + number;
         return true;
     }
+    if (UeParseByteList(text, parms, detail)) return true;
     const auto* names = g_context.names;
     std::uint32_t id{};
     if (names == nullptr || names->find_utf8 == nullptr ||
@@ -816,7 +876,7 @@ void UeLogRecords() {
         for (std::size_t index = 0; index < g_ue_event_count && count < lines.size(); ++index) {
             auto& record = g_ue_events[index];
             if (record.logged || !record.resolved) continue;
-            char line[448]{};
+            char line[768]{};
             std::snprintf(line, sizeof(line), "rec %s <- %s x%u obj=%llX parms[%u] %s%s%s",
                           record.function_name, record.class_name, record.count,
                           static_cast<unsigned long long>(record.object), record.parms_size,
@@ -1069,10 +1129,10 @@ void UeContent(const AnomalyUiServiceV1* ui) {
                         if (record.parms_fname[0] != '\0') {
                             fill_param = record.parms_fname;
                         } else {
-                            char number[32]{};
-                            std::snprintf(number, sizeof(number), "0x%llX",
-                                          static_cast<unsigned long long>(record.parms_value));
-                            fill_param = number;
+                            // 原样重放：把整段实参按字节填进去（RPC 载荷常有 32 字节）。
+                            fill_param = UeBytesText(
+                                record.parms_raw,
+                                std::min<std::size_t>(record.parms_size, kUeParmsCapture));
                         }
                     }
                     if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
