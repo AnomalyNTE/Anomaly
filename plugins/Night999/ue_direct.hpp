@@ -367,61 +367,73 @@ bool UeParseByteList(const std::string& text, std::vector<std::uint8_t>& parms,
 
 // 把对象自身的反射字段逐个列出来：名字 / 偏移 / 大小 / 值。数组(16 字节对齐)额外读
 // 出 Num 并跟随 Data 指针 —— 用来找 PlayerState 上的 ActivatedCampfireIDs 这类字段。
-void UeBuildFields(const UeReader& reader, std::vector<std::string>& lines) {
+void UeBuildFields(const UeReader& reader, std::vector<std::string>& lines,
+                   const std::string& filter) {
     lines.clear();
     const std::uintptr_t object = g_ue_instance;
     if (object == 0) {
-        lines.emplace_back("没有可用实例（先「选用并调用」把目标定下来）");
+        lines.emplace_back("没有可用实例（先「选用」把目标定下来）");
         return;
     }
+    const std::string needle = UeLower(filter);
     std::uintptr_t cls = UeClassOf(reader, object);
-    for (int depth = 0; cls != 0 && depth < 6 && lines.size() < 240; ++depth) {
+    for (int depth = 0; cls != 0 && depth < 6 && lines.size() < 800; ++depth) {
         const std::string class_name = reader.NameAt(cls + kUeObjectNameOffset);
-        lines.push_back("== 类 " + (class_name.empty() ? std::string("?") : class_name));
+        const std::size_t before = lines.size();
         std::uintptr_t field{};
         if (reader.Read(cls + kUeStructPropertyLinkOffset, field)) {
-            for (int index = 0; field != 0 && index < 400 && lines.size() < 240; ++index) {
+            for (int index = 0; field != 0 && index < 2000 && lines.size() < 800; ++index) {
                 const std::string name = reader.NameAt(field + kUeFieldNameOffset);
                 if (name.empty() || name.size() > 64) break;
+                const bool keep = needle.empty() || UeLower(name).find(needle) != std::string::npos;
                 std::int32_t size{};
                 std::int32_t offset{};
                 reader.Read(field + kUeFieldSizeOffset, size);
                 reader.Read(field + kUeFieldOffsetOffset, offset);
-                char head[192]{};
-                std::snprintf(head, sizeof(head), "  %s @%X size=%u", name.c_str(), offset, size);
-                std::uint64_t value{};
-                if (reader.Read(object + static_cast<std::uintptr_t>(offset), value)) {
-                    char tail[64]{};
-                    std::snprintf(tail, sizeof(tail), " = %llX",
-                                  static_cast<unsigned long long>(value));
-                    lines.push_back(std::string(head) + tail);
-                    // size==16 视作 TArray{Data,Num,Max}：跟随 Data 读前 64 字节。
-                    if (size == 16) {
-                        std::uint32_t num{};
-                        reader.Read(object + static_cast<std::uintptr_t>(offset) + 8, num);
-                        if (value > 0x10000 && num > 0 && num < 4096) {
-                            std::uint8_t buffer[64]{};
-                            if (g_context.core != nullptr && g_context.core->read_memory != nullptr &&
-                                g_context.core->read_memory(
-                                    g_context.core->user, static_cast<std::uintptr_t>(value),
-                                    {buffer, sizeof(buffer)}).code == ANOMALY_STATUS_V1_OK) {
-                                lines.push_back("    Num=" + std::to_string(num) + " [0]=" +
-                                                UeBytesText(buffer, sizeof(buffer)));
+                if (keep) {
+                    char head[192]{};
+                    std::snprintf(head, sizeof(head), "  %s @%X size=%u", name.c_str(), offset,
+                                  size);
+                    std::uint64_t value{};
+                    if (reader.Read(object + static_cast<std::uintptr_t>(offset), value)) {
+                        char tail[64]{};
+                        std::snprintf(tail, sizeof(tail), " = %llX",
+                                      static_cast<unsigned long long>(value));
+                        lines.push_back(std::string(head) + tail);
+                        // size==16 视作 TArray{Data,Num,Max}：跟随 Data 读前 64 字节。
+                        if (size == 16) {
+                            std::uint32_t num{};
+                            reader.Read(object + static_cast<std::uintptr_t>(offset) + 8, num);
+                            if (value > 0x10000 && num > 0 && num < 4096) {
+                                std::uint8_t buffer[64]{};
+                                if (g_context.core != nullptr &&
+                                    g_context.core->read_memory != nullptr &&
+                                    g_context.core->read_memory(
+                                        g_context.core->user, static_cast<std::uintptr_t>(value),
+                                        {buffer, sizeof(buffer)}).code == ANOMALY_STATUS_V1_OK) {
+                                    lines.push_back("    Num=" + std::to_string(num) + " [0]=" +
+                                                    UeBytesText(buffer, sizeof(buffer)));
+                                }
                             }
                         }
+                    } else {
+                        lines.push_back(head);
                     }
-                } else {
-                    lines.push_back(head);
                 }
                 std::uintptr_t next{};
                 if (!reader.Read(field + kUeFieldNextOffset, next) || next == field) break;
                 field = next;
             }
         }
+        if (lines.size() != before) {
+            lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(before),
+                         "== 类 " + (class_name.empty() ? std::string("?") : class_name));
+        }
         std::uintptr_t parent{};
         if (!reader.Read(cls + kUeStructSuperOffset, parent) || parent == cls) break;
         cls = parent;
     }
+    if (lines.empty()) lines.emplace_back("没有名字含「" + filter + "」的字段");
 }
 
 void UeSetParam(const std::string& param) {
@@ -774,9 +786,13 @@ void UeBeginOwnerScan(const UeReader& reader, const std::size_t index) {
         return;
     }
     if (!match.is_function) {
-        UeFinish("「" + std::string(match.name) + "」不是 UFunction（类 " + match.class_name +
-                     "），不能这样调用",
-                 true);
+        // 非函数对象（控件 / Actor / 组件…）：设为转储目标，可以用「转储字段」看它的字段。
+        g_ue_function = 0;
+        g_ue_instance = match.object;
+        g_ue_instance_is_cdo = false;
+        UeFinish("已选中对象「" + std::string(match.name) + "」（类 " + match.class_name +
+                     "）：点「转储字段」查看其字段",
+                 false);
         return;
     }
     if (g_ue_owner_class == 0) {
@@ -1036,7 +1052,7 @@ void UeAdvance(const UeReader& reader) {
 
     if (g_ue_fields_requested.exchange(false)) {
         std::vector<std::string> lines;
-        UeBuildFields(reader, lines);
+        UeBuildFields(reader, lines, UeKeyword());
         std::scoped_lock lock(g_ue_mutex);
         g_ue_field_lines = std::move(lines);
         g_ue_field_cursor = 0;
