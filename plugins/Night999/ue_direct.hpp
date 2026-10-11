@@ -32,11 +32,8 @@ constexpr std::size_t kUeSeenSlots = 16384;
 constexpr std::size_t kUeEventCapacity = 128;
 // 单次调用最多记多少字节实参。RPC 载荷可能到 32 字节以上，留足。
 constexpr std::size_t kUeParmsCapture = 64;
-// 参数输入框容量：够放 64 字节的十六进制串（每字节 3 字符）。
-constexpr std::size_t kUeParamTextCapacity = 256;
 // 营火名（FName），用于单发快速刷新。
 constexpr std::string_view kUeCampfireDefault = "FT_Castle_Campfire04";
-constexpr std::size_t kUeCampfireNameCapacity = 64;
 
 // ---- 一键刷新 ----
 // 刷新本体挂在 AHTPlayerState 上（IDA 实测）：
@@ -100,8 +97,12 @@ std::atomic_bool g_ue_campfire_requested{};
 std::atomic_bool g_ue_campfire_single_requested{};
 // 一键刷新怪物：自动定位 PlayerState + 刷新函数 → 逐座营火发送。
 std::atomic_bool g_ue_refresh_requested{};
-// 0=空闲 1=定位 2=发送（渲染线程只读它来决定按钮可用性）。
+// 0=空闲 1=定位 2=发送。
 std::atomic_int g_ue_refresh_stage{0};
+// 一次刷新流程结束（任何出口）时置 1，供脚本循环等待；发起前清零。
+std::atomic_int g_ue_refresh_done{0};
+// 上一次刷新是否确实把请求发出去了（诊断用）。
+std::atomic_int g_ue_refresh_ok{0};
 
 // --- 扫描状态（on_update 独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
@@ -131,8 +132,10 @@ std::size_t g_ue_seen_used{};
 // --- 共享状态（on_draw 读，on_update 写）---
 std::mutex g_ue_mutex;
 std::string g_ue_keyword{kUeDefaultKeyword};
-std::array<char, kUeTextCapacity> g_ue_text{};
-std::atomic_bool g_ue_text_stale{true};
+// 「调用参数」与「营火名」的取值：面板已移除，保留字段供内部路径使用
+// （前者始终为空 ⇒ 调用按全零参数；后者仍可由 UeCallByName 兜底使用）。
+std::string g_ue_param;
+std::string g_ue_campfire_name{kUeCampfireDefault};
 std::string g_ue_status{"未探测"};
 std::string g_ue_call_result;
 std::string g_ue_params_dump;
@@ -147,11 +150,6 @@ std::size_t g_ue_campfire_index{};
 bool g_ue_campfire_running{};
 std::chrono::steady_clock::time_point g_ue_campfire_next{};
 // 调用参数：空 = 全零；0x…/十进制 = 64 位整数；其它按 FName 名字查 id。
-std::string g_ue_param;
-std::array<char, kUeParamTextCapacity> g_ue_param_text{};
-std::string g_ue_campfire_name{kUeCampfireDefault};
-std::array<char, kUeCampfireNameCapacity> g_ue_campfire_text{};
-std::atomic_bool g_ue_campfire_name_stale{true};
 
 // 一键刷新的流程状态（on_update 独占；stage 本身是 atomic 供 on_draw 读）。
 bool g_ue_refresh_scan_started{};
@@ -334,30 +332,9 @@ void UeSetCallResult(std::string text) {
     g_ue_call_result = std::move(text);
 }
 
-void UeCopyOut(std::string& status, std::string& call, std::string& params,
-               std::vector<UeMatch>& matches, std::uint32_t& match_total) {
-    std::scoped_lock lock(g_ue_mutex);
-    status = g_ue_status;
-    call = g_ue_call_result;
-    params = g_ue_params_dump;
-    matches = g_ue_matches;
-    match_total = g_ue_match_total;
-}
-
-void UeSetKeyword(const std::string& keyword) {
-    std::scoped_lock lock(g_ue_mutex);
-    if (g_ue_keyword == keyword) return;
-    g_ue_keyword = keyword;
-}
-
 std::string UeKeyword() {
     std::scoped_lock lock(g_ue_mutex);
     return g_ue_keyword;
-}
-
-bool UeMonitorsReady() {
-    std::scoped_lock lock(g_ue_mutex);
-    return g_ue_monitor_count != 0 || g_ue_monitor_class_count != 0;
 }
 
 int UeHexDigit(const char c) noexcept {
@@ -517,12 +494,6 @@ void UeBuildFields(const UeReader& reader, std::vector<std::string>& lines,
 // 前置声明：本段插入点早于它的定义。
 void UeSetCallResultBoth(std::string text);
 
-void UeSetCampfireName(const std::string& name) {
-    std::scoped_lock lock(g_ue_mutex);
-    if (g_ue_campfire_name == name) return;
-    g_ue_campfire_name = name;
-}
-
 std::string UeCampfireName() {
     std::scoped_lock lock(g_ue_mutex);
     return g_ue_campfire_name;
@@ -558,12 +529,6 @@ bool UeCallByName(const UeReader& reader, const std::string& name) {
     UeLog("campfire by-name " + name + " id=" + std::to_string(id) + (ok ? " ok" : " fail") +
           back);
     return ok;
-}
-
-void UeSetParam(const std::string& param) {
-    std::scoped_lock lock(g_ue_mutex);
-    if (g_ue_param == param) return;
-    g_ue_param = param;
 }
 
 std::string UeParam() {
@@ -1373,6 +1338,7 @@ void UeAdvanceRefresh(const UeReader& reader) {
             const bool ok = UeCallByName(reader, UeCampfireName());
             UeNotice(ok ? "一键刷新：未读到营火 ID 列表，已按营火名发送"
                         : "一键刷新：未读到 ActivatedCampfireIDs，名字池里也没有该营火名");
+            if (ok) g_ue_refresh_ok.store(1);
             g_ue_refresh_stage.store(0);
             return;
         }
@@ -1393,6 +1359,7 @@ void UeAdvanceRefresh(const UeReader& reader) {
         UeNotice("一键刷新：已发出刷新请求（营火 " + std::to_string(g_ue_campfire_count) +
                  " 座，只有你身边那座会生效）");
         UeLog("refresh: done");
+        g_ue_refresh_ok.store(1);
         g_ue_refresh_stage.store(0);
         return;
     }
@@ -1559,12 +1526,19 @@ void UeAdvance(const UeReader& reader) {
     // 一键刷新：按下按钮则进入流程（阶段推进在 UeAdvanceRefresh 内，仍在 Game 线程）。
     if (g_ue_refresh_requested.exchange(false) && g_ue_refresh_stage.load() == 0) {
         g_ue_refresh_stage.store(1);
+        g_ue_refresh_done.store(0);
+        g_ue_refresh_ok.store(0);
         g_ue_refresh_scan_started = false;
         g_ue_refresh_selected = false;
         g_ue_refresh_fire_started = false;
         g_ue_refresh_deadline = std::chrono::steady_clock::now() + kUeRefreshTimeout;
     }
-    UeAdvanceRefresh(reader);
+    {
+        // 刷新流程的完成由这里统一判定：进入时非空闲、离开时空闲 ⇒ 这一趟结束了。
+        const int stage_before = g_ue_refresh_stage.load();
+        UeAdvanceRefresh(reader);
+        if (stage_before != 0 && g_ue_refresh_stage.load() == 0) g_ue_refresh_done.store(1);
+    }
 
     if (g_ue_probe_requested.exchange(false)) {
         UeBeginScan(UeKeyword());
@@ -1613,12 +1587,6 @@ void UeAdvance(const UeReader& reader) {
     }
 }
 
-void UeSyncCampfireText() {
-    if (!g_ue_campfire_name_stale.exchange(false)) return;
-    const std::string name = UeCampfireName();
-    std::snprintf(g_ue_campfire_text.data(), g_ue_campfire_text.size(), "%s", name.c_str());
-}
-
 void UeStop() noexcept {
     g_ue_probe_requested.store(false);
     g_ue_call_requested.store(false);
@@ -1660,208 +1628,6 @@ void UeStop() noexcept {
         g_context.events->unsubscribe(g_context.events->user, g_ue_event_subscription);
     }
     g_ue_event_subscription = {};
-}
-
-void UeSyncText() {
-    if (!g_ue_text_stale.exchange(false)) return;
-    const std::string keyword = UeKeyword();
-    std::snprintf(g_ue_text.data(), g_ue_text.size(), "%s", keyword.c_str());
-}
-
-void UeContent(const AnomalyUiServiceV1* ui) {
-    UeSyncText();
-
-    DrawText(ui, g_context.localizer.Text("refresh.title", "刷新怪物（一键，不需打开营地）"));
-    if (ui->button != nullptr) {
-        const bool busy = g_ue_refresh_stage.load() != 0;
-        const int pressed = ui->button_enabled != nullptr
-            ? ui->button_enabled(ui->user, StringView("一键刷新怪物"), 0.0F, 0.0F, busy ? 0 : 1)
-            : ui->button(ui->user, StringView("一键刷新怪物"), 0.0F, 0.0F);
-        if (pressed != 0) g_ue_refresh_requested.store(true);
-    }
-    DrawText(ui, g_context.localizer.Text(
-        "refresh.hint",
-        "自动定位玩家状态 → 逐座营火发送刷新请求。首次定位后缓存，之后点击不再扫描。"));
-
-    if (ui->separator != nullptr) ui->separator(ui->user);
-
-    DrawText(ui, g_context.localizer.Text("ue.title", "直接调用（不经 UI）"));
-    ui->text(ui->user, StringView("名称关键词"));
-    if (ui->same_line != nullptr) ui->same_line(ui->user, 110.0F, 8.0F);
-    if (ui->input_text != nullptr) {
-        ui->input_text(ui->user, StringView("##night999-ue-keyword"), g_ue_text.data(),
-                       g_ue_text.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE);
-    } else {
-        DrawText(ui, g_ue_text.data());
-    }
-    UeSetKeyword(g_ue_text.data());
-
-    ui->text(ui->user, StringView("调用参数"));
-    if (ui->same_line != nullptr) ui->same_line(ui->user, 110.0F, 8.0F);
-    if (ui->input_text != nullptr) {
-        ui->input_text(ui->user, StringView("##night999-ue-param"), g_ue_param_text.data(),
-                       g_ue_param_text.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE);
-    } else {
-        DrawText(ui, g_ue_param_text.data());
-    }
-    UeSetParam(g_ue_param_text.data());
-
-    UeSyncCampfireText();
-    ui->text(ui->user, StringView("营火名"));
-    if (ui->same_line != nullptr) ui->same_line(ui->user, 110.0F, 8.0F);
-    if (ui->input_text != nullptr) {
-        ui->input_text(ui->user, StringView("##night999-ue-campfire"), g_ue_campfire_text.data(),
-                       g_ue_campfire_text.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE);
-    } else {
-        DrawText(ui, g_ue_campfire_text.data());
-    }
-    UeSetCampfireName(g_ue_campfire_text.data());
-
-    if (ui->button != nullptr) {
-        if (ui->button(ui->user, StringView("探测"), 0.0F, 0.0F) != 0) {
-            g_ue_probe_requested.store(true);
-        }
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        if (ui->button(ui->user, StringView("转储字段"), 0.0F, 0.0F) != 0) {
-            g_ue_fields_requested.store(true);
-        }
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        if (ui->button(ui->user, StringView("按名字刷新"), 0.0F, 0.0F) != 0) {
-            g_ue_campfire_single_requested.store(true);
-        }
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        if (ui->button(ui->user, StringView("依次尝试营火ID"), 0.0F, 0.0F) != 0) {
-            g_ue_campfire_requested.store(true);
-        }
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        const int enabled = g_ue_function != 0 && g_ue_instance != 0 ? 1 : 0;
-        const int pressed = ui->button_enabled != nullptr
-            ? ui->button_enabled(ui->user, StringView("再调用一次"), 0.0F, 0.0F, enabled)
-            : (enabled && ui->button(ui->user, StringView("再调用一次"), 0.0F, 0.0F) != 0);
-        if (pressed != 0) g_ue_call_requested.store(true);
-    }
-
-    std::string status, call, params;
-    std::vector<UeMatch> matches;
-    std::uint32_t match_total{};
-    UeCopyOut(status, call, params, matches, match_total);
-    if (!status.empty()) DrawText(ui, status);
-    if (!call.empty()) DrawText(ui, call);
-    if (!params.empty()) DrawText(ui, "参数表：" + params);
-
-    if (!matches.empty() && ui->button != nullptr) {
-        const std::size_t shown = matches.size() < 8 ? matches.size() : 8;
-        for (std::size_t index = 0; index < shown; ++index) {
-            const auto& match = matches[index];
-            const std::string label = "选用并调用##night999-ue-" + std::to_string(index);
-            if (ui->button(ui->user, StringView(label), 0.0F, 0.0F) != 0) {
-                g_ue_select_requested.store(static_cast<int>(index));
-            }
-            if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-            std::string line = std::string(match.name) + "  ←  ";
-            line += match.owner_name[0] != '\0' ? match.owner_name : match.class_name;
-            if (match.is_function) {
-                line += "  （函数，" + std::to_string(match.num_parms) + " 参 / " +
-                    std::to_string(match.parms_size) + " 字节）";
-            }
-            DrawText(ui, line);
-        }
-        if (matches.empty()) {
-            DrawText(ui, "（监视名单为空：热重载会清空，请先点「探测」）");
-        }
-        if (match_total > shown) {
-            DrawText(ui, "（共匹配 " + std::to_string(match_total) + " 个，只列出前 " +
-                             std::to_string(shown) + " 个）");
-        }
-    }
-
-    if (ui->checkbox != nullptr) {
-        int recording = g_ue_recording.load() ? 1 : 0;
-        if (ui->checkbox(ui->user, StringView("记录命中函数的调用（连实参一起记）"), &recording) !=
-            0) {
-            g_ue_recording.store(recording != 0);
-            if (recording != 0) {
-                g_ue_record_requested.store(true);
-                // 热重载会清空监视名单；名单为空时顺手补一次扫描，免得记不到东西。
-                if (!UeMonitorsReady()) g_ue_probe_requested.store(true);
-            }
-        }
-        if (g_ue_recording.load()) {
-            int record_all = g_ue_record_all.load() ? 1 : 0;
-            if (ui->checkbox(ui->user, StringView("同时记录其它调用（只记首次出现）"), &record_all) != 0) {
-                g_ue_record_all.store(record_all != 0);
-            }
-        }
-        {
-            int match_class = g_ue_match_class.load() ? 1 : 0;
-            if (ui->checkbox(ui->user, StringView("按所属类名匹配（找某类的活实例）"), &match_class) != 0) {
-                g_ue_match_class.store(match_class != 0);
-            }
-        }
-    }
-    std::string fill_param;
-    bool replay_after_fill = false;
-    if (g_ue_recording.load()) {
-        if (ui->button != nullptr &&
-            ui->button(ui->user, StringView("清空记录"), 0.0F, 0.0F) != 0) {
-            g_ue_clear_log_requested.store(true);
-        }
-        {
-            std::scoped_lock lock(g_ue_mutex);
-            DrawText(ui, "共命中 " + std::to_string(g_ue_event_total) + " 次，" +
-                             std::to_string(g_ue_event_count) + " 条记录（函数 × 对象）：");
-            const std::size_t shown = g_ue_event_count < 24 ? g_ue_event_count : 24;
-            for (std::size_t index = 0; index < shown; ++index) {
-                const auto& record = g_ue_events[index];
-                std::string args;
-                if (record.parms_hex[0] != '\0') {
-                    args = "  实参[" + std::to_string(record.parms_size) + "] " + record.parms_hex;
-                    if (record.parms_size >= 8) {
-                        args += "(u64=" + std::to_string(record.parms_value);
-                        if (record.parms_fname[0] != '\0') {
-                            args += "  FName「" + std::string(record.parms_fname) + "」";
-                        }
-                        args += ")";
-                    }
-                }
-                if (ui->button != nullptr && record.parms_size >= 8) {
-                    const std::string label = "填入##night999-ue-fill-" + std::to_string(index);
-                    if (ui->button(ui->user, StringView(label), 0.0F, 0.0F) != 0) {
-                        if (record.parms_fname[0] != '\0') {
-                            fill_param = record.parms_fname;
-                        } else {
-                            // 原样重放：把整段实参按字节填进去（RPC 载荷常有 32 字节）。
-                            fill_param = UeBytesText(
-                                record.parms_raw,
-                                std::min<std::size_t>(record.parms_size, kUeParmsCapture));
-                        }
-                    }
-                    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-                    // 一键重放：仅当本行就是这个函数时才给按钮 —— 否则等于把别的函数的
-                    // 实参硬塞进来，毫无意义（实测踩过）。
-                    const bool replay_ok = record.function_name[0] != '\0' &&
-                        g_ue_target_name == record.function_name;
-                    const std::string replay_label =
-                        "重放##night999-ue-rep-" + std::to_string(index);
-                    if (replay_ok && ui->button(ui->user, StringView(replay_label), 0.0F, 0.0F) != 0) {
-                        fill_param = UeBytesText(
-                            record.parms_raw,
-                            std::min<std::size_t>(record.parms_size, kUeParmsCapture));
-                        replay_after_fill = true;
-                    }
-                    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-                }
-                DrawText(ui, std::string(record.resolved ? record.function_name : "(解析中)") +
-                                 "  ←  " + (record.resolved ? record.class_name : "?") + "  ×" +
-                                 std::to_string(record.count) + args);
-            }
-        }
-    }
-    if (!fill_param.empty()) {
-        std::snprintf(g_ue_param_text.data(), g_ue_param_text.size(), "%s", fill_param.c_str());
-        UeSetParam(g_ue_param_text.data());
-        if (replay_after_fill) g_ue_call_requested.store(true);
-    }
 }
 
 }  // namespace

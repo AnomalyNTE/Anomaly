@@ -37,12 +37,16 @@ using anomaly::sdk::StringView;
 using anomaly::sdk::UiWindow;
 
 // ---------------------------------------------------------------------------
-// 目标点与传送调参
+// 脚本用的两个传送点与传送调参
 // ---------------------------------------------------------------------------
-// 用户给定的目标世界坐标（NTE 大世界 double 精度）。
-constexpr double kDefaultTargetX = -145438.826;
-constexpr double kDefaultTargetY = -140743.761;
-constexpr double kDefaultTargetZ = 10159.201;
+// 营地（刷新怪物处）。
+constexpr double kDefaultCampX = -145902.874;
+constexpr double kDefaultCampY = -144517.527;
+constexpr double kDefaultCampZ = 10144.029;
+// 战斗点。
+constexpr double kDefaultFightX = -145438.826;
+constexpr double kDefaultFightY = -140743.761;
+constexpr double kDefaultFightZ = 10159.201;
 
 // 传送桥默认走「预载模式」：宿主先把目标点所在的流送单元加载出来，再在同一次窗口内把角色
 // 交回地面，避免落进未加载地形。延迟为 0 时退化为立即传送，此时才需要 Z 抬升与沉底重试。
@@ -59,14 +63,16 @@ constexpr double kSinkRetryLiftStep = 200.0;
 constexpr double kMaximumCoordinate = 1.0e9;
 
 constexpr std::size_t kCoordinateTextCapacity = 32;
+constexpr std::size_t kNumberTextCapacity = 16;
+// 仅用于读旧版设置文件（v2 尾部有这个字段）。
 constexpr std::size_t kResetButtonNameCapacity = 64;
-constexpr std::string_view kResetButtonDefault = "BtnResetMonsterSpawners";
 
 constexpr std::uint32_t kSettingsMagic =
     static_cast<std::uint32_t>('N') | (static_cast<std::uint32_t>('9') << 8u) |
     (static_cast<std::uint32_t>('9') << 16u) | (static_cast<std::uint32_t>('K') << 24u);
-constexpr std::uint32_t kSettingsVersion = 2u;
-constexpr std::uint32_t kSettingsVersionLegacy = 1u;
+constexpr std::uint32_t kSettingsVersion = 3u;
+constexpr std::uint32_t kSettingsVersionV2 = 2u;
+constexpr std::uint32_t kSettingsVersionV1 = 1u;
 
 constexpr std::string_view kSettingsFileName = "night999-settings-v1.bin";
 
@@ -127,23 +133,13 @@ const char* StatusName(const std::uint32_t code) noexcept {
     }
 }
 
-const char* SnapshotState(const std::uint32_t flags) noexcept {
-    if ((flags & ANOMALY_NTE_SNAPSHOT_V1_VALID) == 0) return "UNAVAILABLE";
-    const bool stale = (flags & ANOMALY_NTE_SNAPSHOT_V1_STALE) != 0;
-    const bool partial = (flags & ANOMALY_NTE_SNAPSHOT_V1_PARTIAL) != 0;
-    if (stale && partial) return "STALE|PARTIAL";
-    if (stale) return "STALE";
-    if (partial) return "PARTIAL";
-    return "VALID";
-}
-
 struct Settings {
-    double target[3]{kDefaultTargetX, kDefaultTargetY, kDefaultTargetZ};
+    double camp_target[3]{kDefaultCampX, kDefaultCampY, kDefaultCampZ};
+    double fight_target[3]{kDefaultFightX, kDefaultFightY, kDefaultFightZ};
     double preload_delay{kPreloadDelayDefault};
     double landing_lift{kLandingLiftDefault};
     std::uint32_t sink_retries{kSinkRetriesDefault};
-    std::string reset_button{kResetButtonDefault};
-    bool force_click{};
+    std::uint32_t loop_count{};
 };
 
 struct SettingsFileHeader {
@@ -151,7 +147,7 @@ struct SettingsFileHeader {
     std::uint32_t version{};
 };
 
-// v1 只有传送相关字段；v2 追加刷新按钮名。读取按版本分支，v1 文件继续可用。
+// v1：只有一个目标点与传送调参；v2：追加刷新按钮名（现已不使用，读取时跳过）。
 struct SettingsFileV1 {
     std::uint32_t magic{};
     std::uint32_t version{};
@@ -171,6 +167,18 @@ struct SettingsFileV2 {
     std::uint32_t sink_retries{};
     std::uint32_t force_click{};
     char reset_button[kResetButtonNameCapacity]{};
+};
+
+// v3：营地 / 战斗点两个坐标 + 循环次数。
+struct SettingsFileV3 {
+    std::uint32_t magic{};
+    std::uint32_t version{};
+    double camp_target[3]{};
+    double fight_target[3]{};
+    double preload_delay{};
+    double landing_lift{};
+    std::uint32_t sink_retries{};
+    std::uint32_t loop_count{};
 };
 
 // 传送请求：句柄必须是「当前」快照里的 world / player，过期句柄宿主会直接拒绝。
@@ -223,17 +231,19 @@ struct Context {
 } g_context;
 
 // on_draw 线程独占的输入缓冲（ImGui 的文本存储必须跨帧保留）。
-std::array<char, kCoordinateTextCapacity> g_x_text{};
-std::array<char, kCoordinateTextCapacity> g_y_text{};
-std::array<char, kCoordinateTextCapacity> g_z_text{};
+std::array<char, kCoordinateTextCapacity> g_camp_x_text{};
+std::array<char, kCoordinateTextCapacity> g_camp_y_text{};
+std::array<char, kCoordinateTextCapacity> g_camp_z_text{};
+std::array<char, kCoordinateTextCapacity> g_fight_x_text{};
+std::array<char, kCoordinateTextCapacity> g_fight_y_text{};
+std::array<char, kCoordinateTextCapacity> g_fight_z_text{};
+std::array<char, kNumberTextCapacity> g_preload_text{};
 
 // 跨线程标志。
 std::atomic_bool g_text_stale{true};
-std::atomic_bool g_teleport_requested{false};
 std::atomic_bool g_settings_dirty{false};
 
 // on_update（Game 回调域）独占的状态。
-PendingTeleport g_pending{};
 LandingMonitor g_landing{};
 std::chrono::steady_clock::time_point g_next_save{};
 
@@ -253,6 +263,20 @@ bool IsFinitePosition(const double position[3]) noexcept {
 
 bool IsUsableCoordinate(const double value) noexcept {
     return std::isfinite(value) && std::abs(value) <= kMaximumCoordinate;
+}
+
+bool IsUsablePosition(const double position[3]) noexcept {
+    return position != nullptr && IsUsableCoordinate(position[0]) &&
+        IsUsableCoordinate(position[1]) && IsUsableCoordinate(position[2]);
+}
+
+bool SameValue(const double left, const double right) noexcept {
+    return std::abs(left - right) <= 1.0e-6;
+}
+
+bool SamePosition(const double left[3], const double right[3]) noexcept {
+    return SameValue(left[0], right[0]) && SameValue(left[1], right[1]) &&
+        SameValue(left[2], right[2]);
 }
 
 bool IsCurrentWorld(const AnomalyNteSessionSnapshotV1& snapshot) noexcept {
@@ -366,13 +390,9 @@ void ResolveSettingsPath() noexcept {
     }
 }
 
-void ApplySettingsFields(
-    Settings& settings, const double target[3], const double preload_delay,
-    const double landing_lift, const std::uint32_t sink_retries) noexcept {
-    if (IsUsableCoordinate(target[0]) && IsUsableCoordinate(target[1]) &&
-        IsUsableCoordinate(target[2])) {
-        std::copy(target, target + 3, settings.target);
-    }
+void ApplyTuningFields(
+    Settings& settings, const double preload_delay, const double landing_lift,
+    const std::uint32_t sink_retries) noexcept {
     if (std::isfinite(preload_delay) && preload_delay >= 0.0 &&
         preload_delay <= kPreloadDelayMaximum) {
         settings.preload_delay = preload_delay;
@@ -392,24 +412,36 @@ void LoadSettings() noexcept {
         if (input.read(reinterpret_cast<char*>(&header), sizeof(header)) &&
             header.magic == kSettingsMagic) {
             input.seekg(0);
-            if (header.version == kSettingsVersionLegacy) {
+            if (header.version == kSettingsVersionV1) {
                 SettingsFileV1 file{};
                 if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
-                    ApplySettingsFields(settings, file.target, file.preload_delay,
-                                        file.landing_lift, file.sink_retries);
+                    if (IsUsablePosition(file.target)) {
+                        std::copy(file.target, file.target + 3, settings.fight_target);
+                    }
+                    ApplyTuningFields(settings, file.preload_delay, file.landing_lift,
+                                      file.sink_retries);
                 }
-            } else if (header.version == kSettingsVersion) {
+            } else if (header.version == kSettingsVersionV2) {
                 SettingsFileV2 file{};
                 if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
-                    ApplySettingsFields(settings, file.target, file.preload_delay,
-                                        file.landing_lift, file.sink_retries);
-                    const auto terminator = std::find(
-                        file.reset_button, file.reset_button + sizeof(file.reset_button), '\0');
-                    if (terminator != file.reset_button) {
-                        const std::string name(file.reset_button, terminator);
-                        if (!name.empty()) settings.reset_button = name;
+                    if (IsUsablePosition(file.target)) {
+                        std::copy(file.target, file.target + 3, settings.fight_target);
                     }
-                    settings.force_click = file.force_click != 0;
+                    ApplyTuningFields(settings, file.preload_delay, file.landing_lift,
+                                      file.sink_retries);
+                }
+            } else if (header.version == kSettingsVersion) {
+                SettingsFileV3 file{};
+                if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
+                    if (IsUsablePosition(file.camp_target)) {
+                        std::copy(file.camp_target, file.camp_target + 3, settings.camp_target);
+                    }
+                    if (IsUsablePosition(file.fight_target)) {
+                        std::copy(file.fight_target, file.fight_target + 3, settings.fight_target);
+                    }
+                    ApplyTuningFields(settings, file.preload_delay, file.landing_lift,
+                                      file.sink_retries);
+                    settings.loop_count = file.loop_count;
                 }
             }
         }
@@ -426,16 +458,15 @@ bool SaveSettings() noexcept {
         settings = g_context.settings;
     }
 
-    SettingsFileV2 file{};
+    SettingsFileV3 file{};
     file.magic = kSettingsMagic;
     file.version = kSettingsVersion;
-    std::copy(settings.target, settings.target + 3, file.target);
+    std::copy(settings.camp_target, settings.camp_target + 3, file.camp_target);
+    std::copy(settings.fight_target, settings.fight_target + 3, file.fight_target);
     file.preload_delay = settings.preload_delay;
     file.landing_lift = settings.landing_lift;
     file.sink_retries = settings.sink_retries;
-    file.force_click = settings.force_click ? 1u : 0u;
-    std::snprintf(file.reset_button, sizeof(file.reset_button), "%s",
-                  settings.reset_button.c_str());
+    file.loop_count = settings.loop_count;
 
     std::ofstream output(g_context.settings_path, std::ios::binary | std::ios::trunc);
     if (!output) return false;
@@ -505,42 +536,14 @@ void ArmPreload(const PendingTeleport& request) noexcept {
     }
 }
 
-// 组装一条请求：world / player 必须来自当前快照，过期句柄宿主会拒绝。
-bool BuildRequest(const AnomalyHostApiV1* host, PendingTeleport& request) noexcept {
-    AnomalyNteSessionSnapshotV1 session{sizeof(session)};
-    if (!SessionSnapshot(host, session)) {
-        RecordResult(StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE));
-        Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 teleport refused: world not ready");
-        return false;
-    }
-
-    AnomalyNtePlayerSnapshotV1 player{sizeof(player)};
-    if (!PlayerSnapshot(host, player)) {
-        RecordResult(StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE));
-        Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 teleport refused: player unavailable");
-        return false;
-    }
-
-    request = {};
-    request.world = session.world;
-    request.player = player.handle;
-    {
-        std::scoped_lock lock(g_context.mutex);
-        std::copy(g_context.settings.target, g_context.settings.target + 3, request.position);
-    }
-    return IsFinitePosition(request.position);
-}
-
 void IssueRequest(const AnomalyHostApiV1* host, const PendingTeleport& request) noexcept {
     ArmPreload(request);
 
     const bool preloaded = PreloadModeEnabled();
     double landing_lift{};
-    std::uint32_t sink_retries{};
     {
         std::scoped_lock lock(g_context.mutex);
         landing_lift = g_context.settings.landing_lift;
-        sink_retries = g_context.settings.sink_retries;
     }
     // 预载路径天然落在已加载地形上，抬升与沉底观察只属于立即传送路径。
     const bool apply_landing_lift = !preloaded && std::isfinite(landing_lift) && landing_lift > 0.0;
@@ -569,8 +572,29 @@ void IssueRequest(const AnomalyHostApiV1* host, const PendingTeleport& request) 
         std::copy(request.position, request.position + 3, g_landing.base_position);
         g_landing.retries = 0;
         g_landing.settle_ticks = 0;
-        static_cast<void>(sink_retries);
     }
+}
+
+// 指定坐标传送：快照校验 → 预载 → 传送，与界面按钮同一条路径。
+// 返回 false 表示这一次没能发出去（世界未就绪或服务不可用），调用方可以重试。
+bool TeleportToPosition(const AnomalyHostApiV1* host, const double position[3]) noexcept {
+    if (host == nullptr || !IsFinitePosition(position)) return false;
+    const auto teleport = QueryService<AnomalyNtePlayerTeleportServiceV1>(
+        host, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
+        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
+    if (!teleport || !TeleportServiceMethodsAvailable(teleport.service)) return false;
+
+    AnomalyNteSessionSnapshotV1 session{sizeof(session)};
+    if (!SessionSnapshot(host, session)) return false;
+    AnomalyNtePlayerSnapshotV1 player{sizeof(player)};
+    if (!PlayerSnapshot(host, player)) return false;
+
+    PendingTeleport request{};
+    request.world = session.world;
+    request.player = player.handle;
+    std::copy(position, position + 3, request.position);
+    IssueRequest(host, request);
+    return true;
 }
 
 void ProcessLandingMonitor(const AnomalyHostApiV1* host) noexcept {
@@ -606,7 +630,8 @@ void ProcessLandingMonitor(const AnomalyHostApiV1* host) noexcept {
     std::copy(g_landing.base_position, g_landing.base_position + 3, retry.begin());
     retry[2] += (std::isfinite(landing_lift) ? landing_lift : kLandingLiftDefault) +
         static_cast<double>(g_landing.retries + 1U) * kSinkRetryLiftStep;
-    const AnomalyStatusV1 status = IssueTeleport(host, g_landing.world, g_landing.player, retry.data());
+    const AnomalyStatusV1 status =
+        IssueTeleport(host, g_landing.world, g_landing.player, retry.data());
     if (status.code != ANOMALY_STATUS_V1_OK) {
         g_landing = {};
         return;
@@ -622,7 +647,7 @@ void DrawText(const AnomalyUiServiceV1* ui, const std::string_view text) {
     ui->text(ui->user, StringView(text));
 }
 
-double ParseCoordinate(const char* text) noexcept {
+double ParseNumber(const char* text) noexcept {
     if (text == nullptr || text[0] == '\0') return std::numeric_limits<double>::quiet_NaN();
     char* end{};
     const double value = std::strtod(text, &end);
@@ -630,54 +655,59 @@ double ParseCoordinate(const char* text) noexcept {
     return value;
 }
 
-void CoordinateRow(
-    const AnomalyUiServiceV1* ui, const char* label, const char* id, char* buffer,
-    const std::size_t capacity, const char* hint) {
-    ui->text(ui->user, StringView(label));
-    if (ui->same_line != nullptr) ui->same_line(ui->user, 96.0F, 8.0F);
-    if (ui->input_text != nullptr) {
-        ui->input_text(ui->user, StringView(id), buffer, capacity,
-                       ANOMALY_UI_TEXT_INPUT_V1_NONE);
-    } else {
-        DrawText(ui, buffer);
+// ---------------------------------------------------------------------------
+// 子模块：UE 反射直调（含一键刷新）→ 自动战斗 → 脚本循环
+// ---------------------------------------------------------------------------
+#include "ue_access.hpp"
+#include "ue_direct.hpp"
+#include "combat.hpp"
+#include "script.hpp"
+
+// 把界面上的输入框同步回设置。只有确实变化才标脏，避免每帧写盘。
+void CommitInputs() noexcept {
+    const double camp[3]{ParseNumber(g_camp_x_text.data()), ParseNumber(g_camp_y_text.data()),
+                         ParseNumber(g_camp_z_text.data())};
+    const double fight[3]{ParseNumber(g_fight_x_text.data()), ParseNumber(g_fight_y_text.data()),
+                          ParseNumber(g_fight_z_text.data())};
+    const double preload = ParseNumber(g_preload_text.data());
+
+    bool dirty = false;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (IsUsablePosition(camp) && !SamePosition(camp, g_context.settings.camp_target)) {
+            std::copy(camp, camp + 3, g_context.settings.camp_target);
+            dirty = true;
+        }
+        if (IsUsablePosition(fight) && !SamePosition(fight, g_context.settings.fight_target)) {
+            std::copy(fight, fight + 3, g_context.settings.fight_target);
+            dirty = true;
+        }
+        if (std::isfinite(preload) && preload >= 0.0 && preload <= kPreloadDelayMaximum &&
+            !SameValue(preload, g_context.settings.preload_delay)) {
+            g_context.settings.preload_delay = preload;
+            dirty = true;
+        }
     }
-    if (hint != nullptr && ui->same_line != nullptr) {
-        ui->same_line(ui->user, 240.0F, 8.0F);
-        DrawText(ui, hint);
-    }
+    if (dirty) g_settings_dirty.store(true);
 }
 
 void SyncTextBuffers() {
     if (!g_text_stale.exchange(false)) return;
-    double target[3]{};
+    Settings settings{};
     {
         std::scoped_lock lock(g_context.mutex);
-        std::copy(g_context.settings.target, g_context.settings.target + 3, target);
+        settings = g_context.settings;
     }
-    std::snprintf(g_x_text.data(), g_x_text.size(), "%.3f", target[0]);
-    std::snprintf(g_y_text.data(), g_y_text.size(), "%.3f", target[1]);
-    std::snprintf(g_z_text.data(), g_z_text.size(), "%.3f", target[2]);
+    std::snprintf(g_camp_x_text.data(), g_camp_x_text.size(), "%.3f", settings.camp_target[0]);
+    std::snprintf(g_camp_y_text.data(), g_camp_y_text.size(), "%.3f", settings.camp_target[1]);
+    std::snprintf(g_camp_z_text.data(), g_camp_z_text.size(), "%.3f", settings.camp_target[2]);
+    std::snprintf(g_fight_x_text.data(), g_fight_x_text.size(), "%.3f", settings.fight_target[0]);
+    std::snprintf(g_fight_y_text.data(), g_fight_y_text.size(), "%.3f", settings.fight_target[1]);
+    std::snprintf(g_fight_z_text.data(), g_fight_z_text.size(), "%.3f", settings.fight_target[2]);
+    std::snprintf(g_preload_text.data(), g_preload_text.size(), "%.1f", settings.preload_delay);
 }
 
-void DrawCurrentPosition(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
-    AnomalyNteSessionSnapshotV1 session{sizeof(session)};
-    AnomalyNtePlayerSnapshotV1 player{sizeof(player)};
-    if (!SessionSnapshot(host, session) || !PlayerSnapshot(host, player) ||
-        !IsFinitePosition(player.position)) {
-        DrawText(ui, g_context.localizer.Text("current.unavailable", "当前位置：暂不可用"));
-        return;
-    }
-    char line[256]{};
-    std::snprintf(
-        line, sizeof(line), "当前位置：%s %.3f, %.3f, %.3f / 世界代次 %llu / 玩家代次 %llu / 序列 %llu",
-        SnapshotState(player.flags), player.position[0], player.position[1], player.position[2],
-        static_cast<unsigned long long>(session.world.generation),
-        static_cast<unsigned long long>(player.handle.generation),
-        static_cast<unsigned long long>(player.sequence));
-    DrawText(ui, line);
-}
-
-void DrawResult(const AnomalyUiServiceV1* ui) {
+void LastTeleportWarning(const AnomalyUiServiceV1* ui) {
     bool has_result{};
     std::uint32_t result_code{};
     char result_message[sizeof(g_context.result_message)]{};
@@ -687,98 +717,142 @@ void DrawResult(const AnomalyUiServiceV1* ui) {
         result_code = g_context.result_code;
         std::memcpy(result_message, g_context.result_message, sizeof(result_message));
     }
-    if (!has_result) {
-        DrawText(ui, g_context.localizer.Text("state.idle", "传送：空闲"));
-        return;
-    }
-    std::string line = std::string("传送：") + StatusName(result_code);
+    // 只报「失败」这一类关键信息；成功不必占地方。
+    if (!has_result || result_code == ANOMALY_STATUS_V1_OK) return;
+    std::string line = std::string("上次传送失败：") + StatusName(result_code);
     if (result_message[0] != '\0') line.append(" - ").append(result_message);
     DrawText(ui, line);
 }
 
-// ---------------------------------------------------------------------------
-// 刷新怪物按钮（anomaly.nte.ui-buttons）：扫描 → 查找 → 点击，禁用时等待重试
-// ---------------------------------------------------------------------------
-#include "reset_button.hpp"
+void PointInput(
+    const AnomalyUiServiceV1* ui, const char* id, char* buffer, const std::size_t capacity) {
+    if (ui->input_text != nullptr) {
+        ui->input_text(ui->user, StringView(id), buffer, capacity,
+                       ANOMALY_UI_TEXT_INPUT_V1_NONE);
+    } else {
+        DrawText(ui, buffer);
+    }
+}
 
-// ---------------------------------------------------------------------------
-// 直接调用（不经 UI）：反射定位 UFunction + ProcessEvent 调用
-// ---------------------------------------------------------------------------
-#include "ue_access.hpp"
-#include "ue_direct.hpp"
-#include "combat.hpp"
-
-void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
-    SyncTextBuffers();
-
-    DrawText(ui, g_context.localizer.Text("target.title", "目标坐标"));
-    CoordinateRow(ui, "X", "##night999-x", g_x_text.data(), g_x_text.size(), nullptr);
-    CoordinateRow(ui, "Y", "##night999-y", g_y_text.data(), g_y_text.size(), nullptr);
-    CoordinateRow(ui, "Z", "##night999-z", g_z_text.data(), g_z_text.size(), "（世界坐标）");
-
-    if (ui->separator != nullptr) ui->separator(ui->user);
-
-    if (ui->button != nullptr) {
-        if (ui->button(ui->user, StringView("填入当前坐标"), 0.0F, 0.0F) != 0) {
-            double position[3]{};
-            if (TryReadCurrentPosition(host, position)) {
-                {
-                    std::scoped_lock lock(g_context.mutex);
-                    std::copy(position, position + 3, g_context.settings.target);
-                }
-                g_text_stale.store(true);
-                g_settings_dirty.store(true);
-            } else {
-                RecordResult(StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE));
-            }
-        }
+// 两个传送点：营地 / 战斗点，各三个坐标。用四列表格排成紧凑的两行。
+void PointRows(const AnomalyUiServiceV1* ui) {
+    const auto fallback_row = [&](const char* label, const char* x_id, char* x_text,
+                                  const char* y_id, char* y_text, const char* z_id,
+                                  char* z_text, const std::size_t capacity) {
+        ui->text(ui->user, StringView(label));
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 72.0F, 8.0F);
+        PointInput(ui, x_id, x_text, capacity);
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        const auto teleport = QueryService<AnomalyNtePlayerTeleportServiceV1>(
-            host, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
-            ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
-        const bool ready = teleport && TeleportServiceMethodsAvailable(teleport.service);
-        const int pressed = ui->button_enabled != nullptr
-            ? ui->button_enabled(ui->user, StringView("传送到目标"), 0.0F, 0.0F, ready ? 1 : 0)
-            : ui->button(ui->user, StringView("传送到目标"), 0.0F, 0.0F);
-        if (pressed != 0) {
-            const double x = ParseCoordinate(g_x_text.data());
-            const double y = ParseCoordinate(g_y_text.data());
-            const double z = ParseCoordinate(g_z_text.data());
-            if (IsUsableCoordinate(x) && IsUsableCoordinate(y) && IsUsableCoordinate(z)) {
-                {
-                    std::scoped_lock lock(g_context.mutex);
-                    g_context.settings.target[0] = x;
-                    g_context.settings.target[1] = y;
-                    g_context.settings.target[2] = z;
-                    g_context.has_result = false;
-                    g_context.result_message[0] = '\0';
-                }
-                g_settings_dirty.store(true);
-                g_teleport_requested.store(true);
-            } else {
-                RecordResult(StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT));
-            }
-        }
+        PointInput(ui, y_id, y_text, capacity);
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        PointInput(ui, z_id, z_text, capacity);
+    };
+    const bool table_ready = ui->begin_table != nullptr && ui->table_next_row != nullptr &&
+        ui->table_next_column != nullptr && ui->end_table != nullptr &&
+        ui->begin_table(ui->user, StringView("##night999-points"), 4, 0, 0.0F, 0.0F) != 0;
+    if (!table_ready) {
+        // 表格不可用（旧宿主）或创建失败：退化成逐行布局，功能一致。
+        fallback_row("营地", "##night999-camp-x", g_camp_x_text.data(), "##night999-camp-y",
+                     g_camp_y_text.data(), "##night999-camp-z", g_camp_z_text.data(),
+                     g_camp_x_text.size());
+        fallback_row("战斗点", "##night999-fight-x", g_fight_x_text.data(), "##night999-fight-y",
+                     g_fight_y_text.data(), "##night999-fight-z", g_fight_z_text.data(),
+                     g_fight_x_text.size());
+        return;
     }
 
+    ui->table_next_row(ui->user);
+    DrawText(ui, "");
+    static_cast<void>(ui->table_next_column(ui->user));
+    DrawText(ui, "X");
+    static_cast<void>(ui->table_next_column(ui->user));
+    DrawText(ui, "Y");
+    static_cast<void>(ui->table_next_column(ui->user));
+    DrawText(ui, "Z");
+
+    ui->table_next_row(ui->user);
+    DrawText(ui, "营地");
+    static_cast<void>(ui->table_next_column(ui->user));
+    PointInput(ui, "##night999-camp-x", g_camp_x_text.data(), g_camp_x_text.size());
+    static_cast<void>(ui->table_next_column(ui->user));
+    PointInput(ui, "##night999-camp-y", g_camp_y_text.data(), g_camp_y_text.size());
+    static_cast<void>(ui->table_next_column(ui->user));
+    PointInput(ui, "##night999-camp-z", g_camp_z_text.data(), g_camp_z_text.size());
+
+    ui->table_next_row(ui->user);
+    DrawText(ui, "战斗点");
+    static_cast<void>(ui->table_next_column(ui->user));
+    PointInput(ui, "##night999-fight-x", g_fight_x_text.data(), g_fight_x_text.size());
+    static_cast<void>(ui->table_next_column(ui->user));
+    PointInput(ui, "##night999-fight-y", g_fight_y_text.data(), g_fight_y_text.size());
+    static_cast<void>(ui->table_next_column(ui->user));
+    PointInput(ui, "##night999-fight-z", g_fight_z_text.data(), g_fight_z_text.size());
+
+    ui->end_table(ui->user);
+}
+
+void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
+    (void)host;
+    SyncTextBuffers();
+
+    // ── 脚本循环 ──
+    DrawText(ui, g_context.localizer.Text("script.title", "脚本循环"));
+    if (ui->input_uint32 != nullptr) {
+        ui->text(ui->user, StringView("循环次数"));
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 72.0F, 8.0F);
+        std::uint32_t count = g_script_loop_count.load();
+        if (ui->input_uint32(ui->user, StringView("##night999-loop"), &count, 1, 10) != 0) {
+            g_script_loop_count.store(count);
+            {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.settings.loop_count = count;
+            }
+            g_settings_dirty.store(true);
+        }
+        if (ui->same_line != nullptr) {
+            ui->same_line(ui->user, 190.0F, 8.0F);
+            DrawText(ui, "（0 = 无限循环）");
+        }
+    }
+    if (ui->button != nullptr) {
+        const bool running = g_script_running.load();
+        const int start = ui->button_enabled != nullptr
+            ? ui->button_enabled(ui->user, StringView("开始脚本"), 0.0F, 0.0F, running ? 0 : 1)
+            : ui->button(ui->user, StringView("开始脚本"), 0.0F, 0.0F);
+        if (start != 0) g_script_start_requested.store(true);
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        const int stop = ui->button_enabled != nullptr
+            ? ui->button_enabled(ui->user, StringView("停止脚本"), 0.0F, 0.0F, running ? 1 : 0)
+            : ui->button(ui->user, StringView("停止脚本"), 0.0F, 0.0F);
+        if (stop != 0) g_script_stop_requested.store(true);
+    }
+    DrawText(ui, ScriptStatusText());
+
     if (ui->separator != nullptr) ui->separator(ui->user);
 
-    DrawCurrentPosition(host, ui);
-    DrawResult(ui);
+    // ── 传送点 ──
+    DrawText(ui, g_context.localizer.Text("points.title", "传送点"));
+    PointRows(ui);
+    ui->text(ui->user, StringView("预载延迟"));
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 72.0F, 8.0F);
+    if (ui->input_text != nullptr) {
+        ui->input_text(ui->user, StringView("##night999-preload"), g_preload_text.data(),
+                       g_preload_text.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE);
+    } else {
+        DrawText(ui, g_preload_text.data());
+    }
+    if (ui->same_line != nullptr) {
+        ui->same_line(ui->user, 190.0F, 8.0F);
+        DrawText(ui, "秒（0 = 立即传送）");
+    }
+    LastTeleportWarning(ui);
 
     if (ui->separator != nullptr) ui->separator(ui->user);
-    ResetContent(host, ui);
 
-    if (ui->separator != nullptr) ui->separator(ui->user);
+    // ── 自动战斗 ──
     CombatContent(ui);
 
-    if (ui->separator != nullptr) ui->separator(ui->user);
-    UeContent(ui);
-
-    if (ui->separator != nullptr) ui->separator(ui->user);
-    DrawText(ui, g_context.localizer.Text(
-        "note.flow",
-        "后续循环（传送营地→刷新→传送战斗点→自动战斗→清怪判定）将在本分支继续实现。"));
+    CommitInputs();
 }
 
 // ---------------------------------------------------------------------------
@@ -847,26 +921,19 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 
 AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     if (context == nullptr) return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
-    g_pending = {};
     g_landing = {};
     g_next_save = {};
-    g_teleport_requested.store(false);
     g_text_stale.store(true);
-    ResetStop();
     UeStop();
-    g_reset.presses = 0;
-    g_reset_text_stale.store(true);
-    ResetPublish("未开始");
-    g_ue_text_stale.store(true);
-    UePublish("未探测");
-    UeSetCallResult(std::string{});
     CombatShutdown();
+    ScriptShutdown();
     CombatPublish("自动战斗：未开始");
     ResolveSettingsPath();
     LoadSettings();
     g_settings_dirty.store(false);
     {
         std::scoped_lock lock(g_context.mutex);
+        g_script_loop_count.store(g_context.settings.loop_count);
         g_context.has_result = false;
         g_context.result_code = ANOMALY_STATUS_V1_UNAVAILABLE;
         g_context.result_message[0] = '\0';
@@ -876,11 +943,14 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
-    g_teleport_requested.store(false);
-    ResetStop();
+    if (g_script_running.load()) {
+        if (g_ue_refresh_stage.load() != 0) g_ue_refresh_stage.store(0);
+        if (g_combat_active.load()) g_combat_stop_requested.store(true);
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "night999 script: stopped by lifecycle");
+    }
+    ScriptShutdown();
     UeStop();
     CombatShutdown();
-    g_pending = {};
     g_landing = {};
     try {
         static_cast<void>(SaveSettings());
@@ -900,37 +970,31 @@ void ANOMALY_CALL Update(void*, double) {
 
         ProcessLandingMonitor(host);
         SaveIfDue();
+
+        // 刷新 / 战斗 / 脚本循环都要在 Game 回调域推进。
+        const bool game_thread = g_context.framework != nullptr &&
+            g_context.framework->is_game_thread != nullptr &&
+            g_context.framework->is_game_thread(g_context.framework->user) != 0;
+        if (!game_thread) return;
+
         try {
-            AdvanceReset(host);
-        } catch (...) {
-            ResetFinish("刷新流程异常，已停止", false);
-        }
-        try {
-            if (g_context.names != nullptr && g_context.core != nullptr &&
-                g_context.framework != nullptr && g_context.framework->is_game_thread != nullptr &&
-                g_context.framework->is_game_thread(g_context.framework->user) != 0) {
+            if (g_context.names != nullptr && g_context.core != nullptr) {
                 const UeReader ue_reader{g_context.names};
                 UeAdvance(ue_reader);
             }
         } catch (...) {
-            Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 ue probe aborted");
+            Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 ue aborted");
         }
         try {
-            if (g_context.core != nullptr && g_context.framework != nullptr &&
-                g_context.framework->is_game_thread != nullptr &&
-                g_context.framework->is_game_thread(g_context.framework->user) != 0) {
-                AdvanceCombat();
-            }
+            AdvanceCombat();
         } catch (...) {
             Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 combat aborted");
         }
-
-        if (!g_teleport_requested.exchange(false)) return;
-
-        // 目标坐标可能刚被编辑过，请求在这里读取最新值。
-        PendingTeleport request{};
-        if (!BuildRequest(host, request)) return;
-        IssueRequest(host, request);
+        try {
+            AdvanceScript(host);
+        } catch (...) {
+            Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 script aborted");
+        }
     } catch (...) {
         RecordResult(StatusCode(ANOMALY_STATUS_V1_FAILED));
     }
@@ -963,7 +1027,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.13.1"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.14.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

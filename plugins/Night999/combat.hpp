@@ -339,26 +339,9 @@ void CombatContent(const AnomalyUiServiceV1* ui) {
     // 解析进原子量：on_update 只读原子量，不跨线程读这些 char 缓冲。
     CombatSyncParameters();
 
-    if (ui->button != nullptr) {
-        const bool active = g_combat_active.load();
-        const int start = ui->button_enabled != nullptr
-            ? ui->button_enabled(ui->user, StringView("开始自动战斗"), 0.0F, 0.0F, active ? 0 : 1)
-            : ui->button(ui->user, StringView("开始自动战斗"), 0.0F, 0.0F);
-        if (start != 0) g_combat_start_requested.store(true);
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        const int stop = ui->button_enabled != nullptr
-            ? ui->button_enabled(ui->user, StringView("停止自动战斗"), 0.0F, 0.0F, active ? 1 : 0)
-            : ui->button(ui->user, StringView("停止自动战斗"), 0.0F, 0.0F);
-        if (stop != 0) g_combat_stop_requested.store(true);
-    }
-
+    // 自动战斗由脚本循环驱动，面板不再提供独立的开始/停止按钮。
     const std::string status = CombatStatusText();
     if (!status.empty()) DrawText(ui, status);
-
-    const auto last = static_cast<CombatResult>(g_combat_result.load());
-    if (last != CombatResult::none) {
-        DrawText(ui, std::string("上次结果：") + CombatResultName(last));
-    }
 }
 
 }  // namespace
