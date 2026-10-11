@@ -39,14 +39,14 @@ constexpr std::string_view kUeCampfireDefault = "FT_Castle_Campfire04";
 constexpr std::size_t kUeCampfireNameCapacity = 64;
 
 // ---- 一键刷新 ----
-// 刷新本体与其冷却 getter 都挂在 AHTPlayerState 上（IDA 实测）：
-//   FinalTowerCampResetMonsterSpawners(InCampfireID)              —— 组 ServerFinalTowerRPC(Type=21)
-//   GetFinalTowerMonsterSpawnerResetCooldownRemainingTime()        —— 无参，返回 float 剩余秒数
+// 刷新本体挂在 AHTPlayerState 上（IDA 实测）：
+//   FinalTowerCampResetMonsterSpawners(InCampfireID) —— 组 ServerFinalTowerRPC(Type=21)
 constexpr std::string_view kUeRefreshFunction = "FinalTowerCampResetMonsterSpawners";
-constexpr std::string_view kUeCooldownFunction =
-    "GetFinalTowerMonsterSpawnerResetCooldownRemainingTime";
-// 读不到冷却 getter 时的兜底自计时（用户实测 CD = 60 秒）。
-constexpr double kUeRefreshCooldownSeconds = 60.0;
+// ★ find_exact 用的完整对象路径。格式与 UeLocalPlayerState 里已验证可用的
+//   "/Script/HTGame.HTUtil.GetMainPlayerState" 完全一致（包.类.成员）。
+//   实测 find_utf8 对反射函数名返回 NOT_FOUND，所以定位优先走这条路径，不再依赖名字池。
+constexpr std::string_view kUeRefreshFunctionPath =
+    "/Script/HTGame.HTPlayerState.FinalTowerCampResetMonsterSpawners";
 constexpr std::chrono::milliseconds kUeRefreshFireInterval{120};
 constexpr std::chrono::seconds kUeRefreshTimeout{20};
 
@@ -98,9 +98,9 @@ std::atomic_bool g_ue_fields_requested{};
 std::atomic_bool g_ue_campfire_requested{};
 // 单发：按营火名刷新（快路径）。
 std::atomic_bool g_ue_campfire_single_requested{};
-// 一键刷新怪物：自动定位 PlayerState + 刷新函数 → 查冷却 → 逐座营火发送。
+// 一键刷新怪物：自动定位 PlayerState + 刷新函数 → 逐座营火发送。
 std::atomic_bool g_ue_refresh_requested{};
-// 0=空闲 1=定位 2=查冷却 3=发送（渲染线程只读它来决定按钮可用性）。
+// 0=空闲 1=定位 2=发送（渲染线程只读它来决定按钮可用性）。
 std::atomic_int g_ue_refresh_stage{0};
 
 // --- 扫描状态（on_update 独占）---
@@ -110,9 +110,6 @@ bool g_ue_auto_call{};
 bool g_ue_class_match{};
 std::uint32_t g_ue_name_id{};
 bool g_ue_fast_scan{};
-// 精确扫描时额外匹配的名字 id（一键刷新要同时找到刷新函数与冷却 getter）。
-std::uint32_t g_ue_extra_ids[4]{};
-std::size_t g_ue_extra_count{};
 std::uint32_t g_ue_cursor{};
 std::uint32_t g_ue_total{};
 std::uint32_t g_ue_match_total{};
@@ -160,21 +157,16 @@ std::atomic_bool g_ue_campfire_name_stale{true};
 bool g_ue_refresh_scan_started{};
 bool g_ue_refresh_selected{};
 bool g_ue_refresh_fire_started{};
-bool g_ue_refresh_fired_once{};
-std::uintptr_t g_ue_refresh_cd_function{};
-std::uint32_t g_ue_refresh_cd_parms_size{};
 std::chrono::steady_clock::time_point g_ue_refresh_deadline{};
-std::chrono::steady_clock::time_point g_ue_refresh_last_fire{};
 std::chrono::steady_clock::time_point g_ue_refresh_scan_start{};
-// ★ 定位缓存：首次扫描成功后把「函数地址 / 所属类 / 参数大小」记下来，之后每次点击只做
-// 几次廉价读校验 + 重新取一次 PlayerState 实例，完全不再扫描注册表。
-// 地址不会跨会话/跨关卡稳定，所以每次使用前都校验：函数的 NamePrivate.id 仍等于
-// find_utf8(名字) 的结果，且它的 ClassPrivate 仍叫 "Function"；类或实例不匹配就退回扫描。
+// ★ 定位缓存：首次定位成功后把「函数地址 / 它自己的 FName id / 所属类 / 参数大小」记下来，
+// 之后每次点击只做几次廉价读校验 + 重新取一次 PlayerState 实例，完全不再扫描注册表。
+// 校验方式是「对象 +0x18 的 id 必须等于记录值」且「该 id resolve 出的名字必须等于目标名」
+// —— 刻意不走 find_utf8（实测它对反射函数名返回 NOT_FOUND）。任一步不过就退回定位流程。
 std::uintptr_t g_ue_refresh_fn_cache{};
+std::uint32_t g_ue_refresh_fn_name_id{};
 std::uintptr_t g_ue_refresh_owner_cache{};
-std::uintptr_t g_ue_refresh_cd_fn_cache{};
 std::uint32_t g_ue_refresh_fn_parms_size{};
-std::uint32_t g_ue_refresh_cd_fn_parms_size{};
 
 UeEventRecord g_ue_events[kUeEventCapacity];
 std::size_t g_ue_event_count{};
@@ -713,11 +705,7 @@ bool UeScanStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* object
         if (snapshot.name_id == 0) continue;
 
         if (g_ue_ids_only) {
-            bool wanted = snapshot.name_id == g_ue_name_id;
-            for (std::size_t extra = 0; !wanted && extra < g_ue_extra_count; ++extra) {
-                if (snapshot.name_id == g_ue_extra_ids[extra]) wanted = true;
-            }
-            if (!wanted) continue;
+            if (snapshot.name_id != g_ue_name_id) continue;
             UeAddMatch(reader, objects, snapshot, reader.Name(UeFName{snapshot.name_id, 0}));
             if (g_ue_matches.size() >= kUeMatchCapacity) return true;
             continue;
@@ -851,7 +839,6 @@ void UeBeginScan(const std::string& keyword) {
     }
 
     g_ue_class_match = g_ue_match_class.load();
-    g_ue_extra_count = 0;
     g_ue_fast_scan = false;
     if (keyword.empty()) {
         UeFinish("关键词为空", true);
@@ -1171,44 +1158,89 @@ void UeLogRecords() {
     }
 }
 
-// 缓存里的函数对象是否还「就是」那个名字的 UFunction：比 NamePrivate.id（重新 find_utf8
-// 得到，因为 id 每会话会变）与 ClassPrivate 是否仍叫 "Function"。两次读，代价可忽略。
-bool UeFunctionStillNamed(const UeReader& reader, const std::uintptr_t function,
-                          const std::uint32_t id) {
-    if (function == 0 || id == 0) return false;
+// 缓存是否仍指向那个刷新函数：比对象自己的 NamePrivate.id（首次定位时记录），再把该 id
+// resolve 回名字做字符串比对 —— 刻意不用 find_utf8（实测它对反射函数名返回 NOT_FOUND，
+// 之前依赖它导致「缓存永远校验不过、每次都重新扫描」）。地址失效、对象被换、跨会话 id
+// 漂移都会被这一步挡下。
+bool UeCachedRefreshFunctionValid(const UeReader& reader) {
+    if (g_ue_refresh_fn_cache == 0 || g_ue_refresh_fn_name_id == 0) return false;
     std::uint32_t name_id{};
-    if (!reader.Read(function + kUeObjectNameOffset, name_id) || name_id != id) return false;
-    const std::uintptr_t cls = UeClassOf(reader, function);
+    if (!reader.Read(g_ue_refresh_fn_cache + kUeObjectNameOffset, name_id) ||
+        name_id != g_ue_refresh_fn_name_id) {
+        return false;
+    }
+    if (reader.Name(UeFName{g_ue_refresh_fn_name_id, 0}) != std::string(kUeRefreshFunction)) {
+        return false;
+    }
+    const std::uintptr_t cls = UeClassOf(reader, g_ue_refresh_fn_cache);
     return cls != 0 && reader.NameAt(cls + kUeObjectNameOffset) == "Function";
 }
 
-std::uint32_t UeNameIdOf(const std::string_view name) {
-    const auto* names = g_context.names;
-    std::uint32_t id{};
-    if (names == nullptr || names->find_utf8 == nullptr ||
-        names->find_utf8(names->user, StringView(name), &id).code != ANOMALY_STATUS_V1_OK) {
-        return 0;
+// 记录一条定位结果（供后续点击复用）。
+void UeRememberRefreshTarget(const UeReader& reader, const std::uintptr_t function,
+                             const std::uintptr_t owner, const std::uint32_t parms_size) {
+    g_ue_refresh_fn_cache = function;
+    g_ue_refresh_owner_cache = owner;
+    g_ue_refresh_fn_parms_size = parms_size;
+    std::uint32_t name_id{};
+    g_ue_refresh_fn_name_id =
+        reader.Read(function + kUeObjectNameOffset, name_id) ? name_id : 0;
+}
+
+// find_exact 用完整对象路径直接取 UFunction —— 毫秒级，不扫注册表。
+// 同一套写法在 UeLocalPlayerState 里已被实测验证过。
+bool UeLocateRefreshFunctionByPath(const UeReader& reader, std::uintptr_t& function) {
+    const auto* objects = g_context.objects;
+    if (objects == nullptr || objects->find_exact == nullptr || !UeEnsureRegistry()) return false;
+    AnomalyGenerationHandleV1 handle{};
+    if (objects->find_exact(objects->user, StringView(kUeRefreshFunctionPath), &handle).code !=
+            ANOMALY_STATUS_V1_OK ||
+        handle.id == 0) {
+        return false;
     }
-    return id;
+    function = UeResolve(reader, objects, handle);
+    return function != 0;
+}
+
+// 把一个已定位的 UFunction 变成可用目标：校验身份、读参数表、记缓存，然后找实例。
+bool UeAdoptRefreshFunction(const UeReader& reader, const std::uintptr_t function) {
+    if (function == 0) return false;
+    const std::uintptr_t cls = UeClassOf(reader, function);
+    if (cls == 0 || reader.NameAt(cls + kUeObjectNameOffset) != "Function") return false;
+    if (reader.NameAt(function + kUeObjectNameOffset) != std::string(kUeRefreshFunction)) {
+        return false;
+    }
+    std::uintptr_t owner{};
+    if (!reader.Read(function + kUeObjectOuterOffset, owner) || owner == 0) return false;
+    std::uint8_t num_parms{};
+    std::uint16_t parms_size{};
+    reader.Read(function + kUeFunctionNumParmsOffset, num_parms);
+    reader.Read(function + kUeFunctionParmsSizeOffset, parms_size);
+    g_ue_function = function;
+    g_ue_owner_class = owner;
+    g_ue_num_parms = num_parms;
+    g_ue_parms_size = parms_size;
+    g_ue_cdo = 0;
+    g_ue_instance = 0;
+    g_ue_instance_is_cdo = false;
+    g_ue_cursor = 0;
+    UeRememberRefreshTarget(reader, function, owner, parms_size);
+    {
+        std::scoped_lock lock(g_ue_mutex);
+        g_ue_target_name = std::string(kUeRefreshFunction);
+        g_ue_params_dump.clear();
+    }
+    UeResolveInstance(reader);
+    return true;
 }
 
 // 复用上次的定位结果：不扫描注册表，只做几次读校验 + 重新取一次 PlayerState 实例。
 bool UeTryReuseRefreshTarget(const UeReader& reader) {
-    if (g_ue_refresh_fn_cache == 0 || g_ue_refresh_owner_cache == 0) return false;
-    if (!UeFunctionStillNamed(reader, g_ue_refresh_fn_cache, UeNameIdOf(kUeRefreshFunction))) {
-        return false;
-    }
+    if (!UeCachedRefreshFunctionValid(reader)) return false;
     std::uintptr_t owner{};
     if (!reader.Read(g_ue_refresh_fn_cache + kUeObjectOuterOffset, owner) || owner == 0) {
         return false;
     }
-    // 冷却 getter 失效不致命 —— 那只是退化成自计时。
-    const std::uintptr_t cd_fn =
-        UeFunctionStillNamed(reader, g_ue_refresh_cd_fn_cache, UeNameIdOf(kUeCooldownFunction))
-        ? g_ue_refresh_cd_fn_cache
-        : 0;
-
-    // 实例每次都现取（廉价），取不到就退回上次那个地址，再不行才重新扫描。
     std::uintptr_t state = UeLocalPlayerState(reader);
     if (state == 0 || !UeClassDerivesFrom(reader, UeClassOf(reader, state), owner)) {
         state = g_ue_instance;
@@ -1222,9 +1254,6 @@ bool UeTryReuseRefreshTarget(const UeReader& reader) {
     g_ue_cdo = 0;
     g_ue_instance = state;
     g_ue_instance_is_cdo = false;
-    g_ue_refresh_cd_function = cd_fn;
-    g_ue_refresh_cd_parms_size = cd_fn != 0 ? g_ue_refresh_cd_fn_parms_size : 0;
-    g_ue_refresh_owner_cache = owner;
     {
         std::scoped_lock lock(g_ue_mutex);
         g_ue_target_name = std::string(kUeRefreshFunction);
@@ -1233,24 +1262,14 @@ bool UeTryReuseRefreshTarget(const UeReader& reader) {
     return true;
 }
 
-// 一键刷新的第一步：用「刷新函数」当关键词做一次精确名扫描，同时把冷却 getter 的
-// 名字 id 也放进同一趟扫描（两者都挂在 AHTPlayerState 上，一次扫完）。
+// 一键刷新的扫描兜底：用「刷新函数」的全名做一次精确名扫描。
 void UeStartQuickScan() {
     UeBeginScan(std::string(kUeRefreshFunction));
     g_ue_fast_scan = true;
-    if (!g_ue_ids_only) return;
-    const auto* names = g_context.names;
-    if (names == nullptr || names->find_utf8 == nullptr) return;
-    std::uint32_t id{};
-    if (names->find_utf8(names->user, StringView(kUeCooldownFunction), &id).code ==
-            ANOMALY_STATUS_V1_OK &&
-        id != 0 && id != g_ue_name_id && g_ue_extra_count < 4) {
-        g_ue_extra_ids[g_ue_extra_count++] = id;
-    }
 }
 
-
-// 一键刷新怪物的流程：定位 → 查冷却 → 逐座营火发送。全程只在 Game 回调域推进。
+// 一键刷新怪物的流程：定位 → 逐座营火发送。全程只在 Game 回调域推进。
+// 定位优先级：① 上次的缓存（几次读）→ ② find_exact 对象路径（毫秒级）→ ③ 全表扫描（兜底）。
 void UeAdvanceRefresh(const UeReader& reader) {
     const int stage = g_ue_refresh_stage.load();
     if (stage == 0) return;
@@ -1261,19 +1280,30 @@ void UeAdvanceRefresh(const UeReader& reader) {
         return;
     }
 
-    if (stage == 1) {  // 定位（命中缓存就完全不扫描）
-        if (!g_ue_refresh_selected && g_ue_phase != UeProbePhase::scanning &&
-            g_ue_phase != UeProbePhase::finding_owner && UeTryReuseRefreshTarget(reader)) {
-            g_ue_refresh_selected = true;
-            g_ue_refresh_scan_started = true;
-            g_ue_fast_scan = false;
-            UePublish("一键刷新：复用已定位的目标（未扫描）");
-            UeLog("refresh: reused cached target, no scan");
-            return;
-        }
-        if (!g_ue_refresh_scan_started) {
+    if (stage == 1) {  // 定位
+        const bool busy = g_ue_phase == UeProbePhase::scanning ||
+            g_ue_phase == UeProbePhase::finding_owner;
+        if (!g_ue_refresh_selected && !busy) {
+            if (UeTryReuseRefreshTarget(reader)) {
+                g_ue_refresh_selected = true;
+                g_ue_refresh_scan_started = true;
+                g_ue_fast_scan = false;
+                UePublish("一键刷新：复用上次定位（未扫描）");
+                UeLog("refresh: reused cached target, no scan");
+                return;
+            }
+            std::uintptr_t function{};
+            if (UeLocateRefreshFunctionByPath(reader, function) &&
+                UeAdoptRefreshFunction(reader, function)) {
+                g_ue_refresh_selected = true;
+                g_ue_refresh_scan_started = true;
+                g_ue_fast_scan = false;
+                UePublish("一键刷新：按对象路径直接定位（未扫描）");
+                UeLog("refresh: located by find_exact path, no scan");
+                return;
+            }
             g_ue_refresh_scan_start = now;
-            UeNotice("一键刷新：定位 " + std::string(kUeRefreshFunction) + "（首次要扫一遍，之后复用）…");
+            UeNotice("一键刷新：缓存与对象路径都不可用，改用扫描定位（较慢）…");
             UeStartQuickScan();
             g_ue_refresh_scan_started = true;
             if (g_ue_phase != UeProbePhase::scanning) {
@@ -1282,22 +1312,18 @@ void UeAdvanceRefresh(const UeReader& reader) {
             }
             return;
         }
-        if (g_ue_phase == UeProbePhase::scanning || g_ue_phase == UeProbePhase::finding_owner) {
-            UePublish("一键刷新：扫描中 " + std::to_string(g_ue_cursor) + "/" +
+        if (busy) {
+            UePublish("一键刷新：定位中 " + std::to_string(g_ue_cursor) + "/" +
                       std::to_string(g_ue_total) + " …");
             return;
         }
         if (!g_ue_refresh_selected) {
             int reset_index = -1;
-            int cd_index = -1;
             for (std::size_t index = 0; index < g_ue_matches.size(); ++index) {
-                const UeMatch& match = g_ue_matches[index];
-                if (!match.is_function) continue;
-                const std::string_view name{match.name};
-                if (name == kUeRefreshFunction) {
+                if (g_ue_matches[index].is_function &&
+                    std::string_view(g_ue_matches[index].name) == kUeRefreshFunction) {
                     reset_index = static_cast<int>(index);
-                } else if (name == kUeCooldownFunction) {
-                    cd_index = static_cast<int>(index);
+                    break;
                 }
             }
             if (reset_index < 0) {
@@ -1306,24 +1332,13 @@ void UeAdvanceRefresh(const UeReader& reader) {
                 g_ue_refresh_stage.store(0);
                 return;
             }
-            g_ue_refresh_cd_function = 0;
-            g_ue_refresh_cd_parms_size = 0;
-            if (cd_index >= 0) {
-                g_ue_refresh_cd_function = g_ue_matches[static_cast<std::size_t>(cd_index)].object;
-                g_ue_refresh_cd_parms_size =
-                    g_ue_matches[static_cast<std::size_t>(cd_index)].parms_size;
-            }
-            // 记下这次的结果，之后每次点击都直接复用，不再扫描注册表。
-            g_ue_refresh_fn_cache = g_ue_matches[static_cast<std::size_t>(reset_index)].object;
-            g_ue_refresh_fn_parms_size =
-                g_ue_matches[static_cast<std::size_t>(reset_index)].parms_size;
-            g_ue_refresh_owner_cache = g_ue_matches[static_cast<std::size_t>(reset_index)].owner;
-            g_ue_refresh_cd_fn_cache = g_ue_refresh_cd_function;
-            g_ue_refresh_cd_fn_parms_size = g_ue_refresh_cd_parms_size;
-            UeLog("refresh: located, scan took " +
-                  UeSecondsText(std::chrono::duration<double>(now - g_ue_refresh_scan_start).count()) +
+            const UeMatch& match = g_ue_matches[static_cast<std::size_t>(reset_index)];
+            UeRememberRefreshTarget(reader, match.object, match.owner, match.parms_size);
+            UeLog("refresh: located by scan, took " +
+                  UeSecondsText(
+                      std::chrono::duration<double>(now - g_ue_refresh_scan_start).count()) +
                   "s");
-            // 只找实例，不让它顺手调用（真正的调用在 fire 阶段，参数要逐个给营火 ID）。
+            // 只找实例，不让它顺手调用（真正的调用在下一阶段，参数要逐个给营火 ID）。
             g_ue_auto_call = false;
             UeBeginOwnerScan(reader, static_cast<std::size_t>(reset_index));
             g_ue_refresh_selected = true;
@@ -1338,47 +1353,7 @@ void UeAdvanceRefresh(const UeReader& reader) {
         return;
     }
 
-    if (stage == 2) {  // 查冷却
-        bool known = false;
-        double remaining = 0.0;
-        if (g_ue_refresh_cd_function != 0 && g_ue_refresh_cd_parms_size <= 8) {
-            std::uint8_t buffer[8]{};
-            if (UeInvoke(reader, g_ue_instance, g_ue_refresh_cd_function, buffer)) {
-                float value{};
-                std::memcpy(&value, buffer, sizeof(value));
-                remaining = static_cast<double>(value);
-                known = std::isfinite(remaining);
-            }
-        }
-        if (known) {
-            if (remaining > 0.5) {
-                UeNotice("一键刷新：冷却中，剩余 " + UeSecondsText(remaining) + " 秒，暂不刷新");
-                UeLog("refresh: blocked by cooldown " + UeSecondsText(remaining));
-                g_ue_refresh_stage.store(0);
-                return;
-            }
-        } else if (g_ue_refresh_fired_once) {
-            // 读不到冷却 getter ⇒ 自计时兜底（用户实测 CD = 60 秒）。
-            const double elapsed =
-                std::chrono::duration<double>(now - g_ue_refresh_last_fire).count();
-            const double left = kUeRefreshCooldownSeconds - elapsed;
-            if (left > 0.5) {
-                UeNotice("一键刷新：冷却中（自计时），剩余 " + UeSecondsText(left) + " 秒，暂不刷新");
-                UeLog("refresh: blocked by local timer " + UeSecondsText(left));
-                g_ue_refresh_stage.store(0);
-                return;
-            }
-        }
-        UeLog(std::string("refresh: cooldown ") +
-              (known ? UeSecondsText(remaining) : std::string("unknown(local timer)")));
-        g_ue_refresh_fire_started = false;
-        g_ue_campfire_count = 0;
-        g_ue_campfire_index = 0;
-        g_ue_refresh_stage.store(3);
-        return;
-    }
-
-    // stage == 3：逐座营火发送刷新请求（服务器会忽略不在身边的那几座）。
+    // stage == 2：逐座营火发送刷新请求（服务器会忽略不在身边的那几座）。
     if (!g_ue_refresh_fire_started) {
         std::uintptr_t address{};
         std::uintptr_t data{};
@@ -1391,8 +1366,6 @@ void UeAdvanceRefresh(const UeReader& reader) {
             const bool ok = UeCallByName(reader, UeCampfireName());
             UeNotice(ok ? "一键刷新：未读到营火 ID 列表，已按营火名发送"
                         : "一键刷新：未读到 ActivatedCampfireIDs，名字池里也没有该营火名");
-            g_ue_refresh_fired_once = true;
-            g_ue_refresh_last_fire = now;
             g_ue_refresh_stage.store(0);
             return;
         }
@@ -1413,8 +1386,6 @@ void UeAdvanceRefresh(const UeReader& reader) {
         UeNotice("一键刷新：已发出刷新请求（营火 " + std::to_string(g_ue_campfire_count) +
                  " 座，只有你身边那座会生效）");
         UeLog("refresh: done");
-        g_ue_refresh_fired_once = true;
-        g_ue_refresh_last_fire = now;
         g_ue_refresh_stage.store(0);
         return;
     }
@@ -1584,8 +1555,6 @@ void UeAdvance(const UeReader& reader) {
         g_ue_refresh_scan_started = false;
         g_ue_refresh_selected = false;
         g_ue_refresh_fire_started = false;
-        g_ue_refresh_cd_function = 0;
-        g_ue_refresh_cd_parms_size = 0;
         g_ue_refresh_deadline = std::chrono::steady_clock::now() + kUeRefreshTimeout;
     }
     UeAdvanceRefresh(reader);
@@ -1658,8 +1627,6 @@ void UeStop() noexcept {
     g_ue_refresh_scan_started = false;
     g_ue_refresh_selected = false;
     g_ue_refresh_fire_started = false;
-    g_ue_refresh_cd_function = 0;
-    g_ue_refresh_cd_parms_size = 0;
     g_ue_campfire_running = false;
     g_ue_campfire_count = 0;
     g_ue_campfire_index = 0;
@@ -1707,7 +1674,7 @@ void UeContent(const AnomalyUiServiceV1* ui) {
     }
     DrawText(ui, g_context.localizer.Text(
         "refresh.hint",
-        "自动定位玩家状态 → 检查刷新冷却 → 逐座营火发送刷新；冷却未好会提示剩余秒数。"));
+        "自动定位玩家状态 → 逐座营火发送刷新请求。首次定位后缓存，之后点击不再扫描。"));
 
     if (ui->separator != nullptr) ui->separator(ui->user);
 
