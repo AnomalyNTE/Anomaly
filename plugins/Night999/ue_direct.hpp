@@ -63,6 +63,7 @@ std::string g_ue_keyword_scan;   // 本趟关键词小写副本，Game 线程独
 std::uintptr_t g_ue_function{};
 std::uintptr_t g_ue_owner_class{};
 std::uintptr_t g_ue_instance{};
+std::uintptr_t g_ue_cdo{};      // 只作备用：找不到普通实例时才用
 bool g_ue_instance_is_cdo{};
 std::uint32_t g_ue_num_parms{};
 std::uint32_t g_ue_parms_size{};
@@ -257,6 +258,7 @@ void UeBeginScan() {
     g_ue_function = 0;
     g_ue_owner_class = 0;
     g_ue_instance = 0;
+    g_ue_cdo = 0;
     g_ue_instance_is_cdo = false;
     g_ue_auto_call = false;
     g_ue_num_parms = 0;
@@ -327,6 +329,8 @@ void UeFinishScan() {
         }
     }
     UeLog("scan done matches=" + std::to_string(g_ue_match_total) + " : " + list);
+    g_ue_phase = UeProbePhase::ready;
+    g_ue_cursor = 0;
 }
 
 // 找目标类的实例。先走 Outer 链快路，再退化为全注册表扫描。
@@ -356,6 +360,7 @@ void UeBeginOwnerScan(const UeReader& reader, const std::size_t index) {
     g_ue_num_parms = match.num_parms;
     g_ue_parms_size = match.parms_size;
     g_ue_instance = 0;
+    g_ue_cdo = 0;
     g_ue_instance_is_cdo = false;
     g_ue_cursor = 0;
     {
@@ -405,10 +410,7 @@ bool UeOwnerStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objec
         if (!reader.Read(object + kUeObjectClassOffset, cls) || cls != g_ue_owner_class) continue;
         const std::string name = reader.NameAt(object + kUeObjectNameOffset);
         if (name.rfind("Default__", 0) == 0) {
-            if (g_ue_instance == 0) {
-                g_ue_instance = object;
-                g_ue_instance_is_cdo = true;
-            }
+            if (g_ue_cdo == 0) g_ue_cdo = object;
             continue;
         }
         g_ue_instance = object;
@@ -429,9 +431,13 @@ void UeFinishOwnerScan(const UeReader& reader) {
                                   : std::string("(未知)");
     text += "，";
     text += UeParmsText();
-    text += g_ue_instance != 0 ? "，实例已找到"
-                               : "，未找到该类实例（该函数可能只在界面打开时才存在）";
+    text += g_ue_instance != 0
+        ? (g_ue_instance_is_cdo ? "，只有 CDO（没有活实例）" : "，活实例已找到")
+        : "，未找到该类实例（该函数可能只在界面打开时才存在）";
     UeFinish(text, false);
+    UeLog("owner done scanned=" + std::to_string(g_ue_cursor) + "/" +
+          std::to_string(g_ue_total) + " instance=" + std::to_string(g_ue_instance) +
+          " cdo=" + (g_ue_instance_is_cdo ? "1" : "0"));
 }
 
 void UeCallFunction() {
@@ -567,6 +573,11 @@ void UeAdvance(const UeReader& reader) {
         return;
     }
     if (g_ue_cursor >= g_ue_total || g_ue_instance != 0) {
+        if (g_ue_instance == 0 && g_ue_cdo != 0) {
+            g_ue_instance = g_ue_cdo;
+            g_ue_instance_is_cdo = true;
+            UeLog("no live instance found; falling back to CDO");
+        }
         UeFinishOwnerScan(reader);
         if (g_ue_auto_call) UeCallFunction();
     }
@@ -585,6 +596,7 @@ void UeStop() noexcept {
     g_ue_function = 0;
     g_ue_owner_class = 0;
     g_ue_instance = 0;
+    g_ue_cdo = 0;
     g_ue_recording.store(false);
     {
         std::scoped_lock lock(g_ue_mutex);
