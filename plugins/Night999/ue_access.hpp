@@ -114,6 +114,25 @@ std::uintptr_t UeResolve(
     return object;
 }
 
+// 对象的类指针。
+std::uintptr_t UeClassOf(const UeReader& reader, const std::uintptr_t object) {
+    std::uintptr_t cls{};
+    return reader.Read(object + kUeObjectClassOffset, cls) ? cls : 0;
+}
+
+// 类是否就是 base 或派生自 base。活的实例几乎都是蓝图子类（Xxx_C），
+// 所以判定「属于某个类」必须沿 SuperStruct 链走，不能用类指针相等。
+bool UeClassDerivesFrom(
+    const UeReader& reader, std::uintptr_t cls, const std::uintptr_t base) {
+    for (int depth = 0; cls != 0 && depth < 32; ++depth) {
+        if (cls == base) return true;
+        std::uintptr_t parent{};
+        if (!reader.Read(cls + kUeStructSuperOffset, parent) || parent == cls) break;
+        cls = parent;
+    }
+    return false;
+}
+
 bool UeIsExecutable(const std::uintptr_t entry) {
     MEMORY_BASIC_INFORMATION region{};
     if (entry == 0 || !VirtualQuery(reinterpret_cast<void*>(entry), &region, sizeof(region))) {

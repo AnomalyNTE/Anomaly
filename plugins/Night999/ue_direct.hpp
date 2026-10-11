@@ -243,8 +243,8 @@ std::uintptr_t UeOwnerViaOuter(
     const UeReader& reader, std::uintptr_t start, const std::uintptr_t owner_class) {
     std::uintptr_t object = start;
     for (int depth = 0; object != 0 && depth < 24; ++depth) {
-        std::uintptr_t cls{};
-        if (reader.Read(object + kUeObjectClassOffset, cls) && cls == owner_class) return object;
+        const std::uintptr_t cls = UeClassOf(reader, object);
+        if (cls != 0 && UeClassDerivesFrom(reader, cls, owner_class)) return object;
         std::uintptr_t outer{};
         if (!reader.Read(object + kUeObjectOuterOffset, outer) || outer == object) break;
         object = outer;
@@ -333,11 +333,54 @@ void UeFinishScan() {
     g_ue_cursor = 0;
 }
 
-// 找目标类的实例。先走 Outer 链快路，再退化为全注册表扫描。
+// 权威路径：HTUtil::GetMainPlayerState(World) 直接拿本地 PlayerState。
+// 与 plugins/NteTeleport 同款做法；活的 PlayerState 往往是蓝图子类，
+// 按精确类扫注册表匹配不上，这条路径不看类名。
+std::uintptr_t UeLocalPlayerState(const UeReader& reader) {
+    const auto* objects = g_context.objects;
+    const auto* world = g_context.world;
+    if (objects == nullptr || objects->find_exact == nullptr || world == nullptr ||
+        world->current == nullptr) {
+        return 0;
+    }
+    AnomalyGenerationHandleV1 world_handle{};
+    if (world->current(world->user, &world_handle).code != ANOMALY_STATUS_V1_OK ||
+        world_handle.id == 0) {
+        return 0;
+    }
+    const std::uintptr_t world_address = UeResolve(reader, objects, world_handle);
+    if (world_address == 0) return 0;
+
+    AnomalyGenerationHandleV1 util{};
+    AnomalyGenerationHandleV1 getter{};
+    if (objects->find_exact(objects->user, StringView("/Script/HTGame.Default__HTUtil"), &util).code !=
+            ANOMALY_STATUS_V1_OK ||
+        objects->find_exact(objects->user, StringView("/Script/HTGame.HTUtil.GetMainPlayerState"),
+                            &getter).code != ANOMALY_STATUS_V1_OK) {
+        return 0;
+    }
+    const std::uintptr_t util_address = UeResolve(reader, objects, util);
+    const std::uintptr_t getter_address = UeResolve(reader, objects, getter);
+    if (util_address == 0 || getter_address == 0) return 0;
+
+    std::array<std::uintptr_t, 2> parms{world_address, 0};
+    if (!UeInvoke(reader, util_address, getter_address, parms.data())) return 0;
+    return parms[1];
+}
+
+// 找目标类的实例。先走 HTUtil 直取本地 PlayerState，再走其它匹配对象的 Outer 链，
+// 最后退化为全注册表扫描。
 void UeFinishOwnerScan(const UeReader& reader);
 void UeCallFunction();
 
 void UeResolveInstance(const UeReader& reader) {
+    const std::uintptr_t state = UeLocalPlayerState(reader);
+    if (state != 0 && UeClassDerivesFrom(reader, UeClassOf(reader, state), g_ue_owner_class)) {
+        g_ue_instance = state;
+        g_ue_instance_is_cdo = false;
+        UeLog("instance via HTUtil::GetMainPlayerState");
+        return;
+    }
     for (const auto& anchor : g_ue_matches) {
         if (anchor.is_function || anchor.object == 0) continue;
         const std::uintptr_t found = UeOwnerViaOuter(reader, anchor.object, g_ue_owner_class);
@@ -406,8 +449,8 @@ bool UeOwnerStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objec
         if (snapshot.name_id == 0) continue;
         const std::uintptr_t object = UeResolve(reader, objects, snapshot.handle);
         if (object == 0) continue;
-        std::uintptr_t cls{};
-        if (!reader.Read(object + kUeObjectClassOffset, cls) || cls != g_ue_owner_class) continue;
+        const std::uintptr_t cls = UeClassOf(reader, object);
+        if (cls == 0 || !UeClassDerivesFrom(reader, cls, g_ue_owner_class)) continue;
         const std::string name = reader.NameAt(object + kUeObjectNameOffset);
         if (name.rfind("Default__", 0) == 0) {
             if (g_ue_cdo == 0) g_ue_cdo = object;
