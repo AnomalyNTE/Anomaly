@@ -272,6 +272,11 @@ std::string UeKeyword() {
     return g_ue_keyword;
 }
 
+bool UeMonitorsReady() {
+    std::scoped_lock lock(g_ue_mutex);
+    return g_ue_monitor_count != 0 || g_ue_monitor_class_count != 0;
+}
+
 void UeSetParam(const std::string& param) {
     std::scoped_lock lock(g_ue_mutex);
     if (g_ue_param == param) return;
@@ -1007,6 +1012,9 @@ void UeContent(const AnomalyUiServiceV1* ui) {
             }
             DrawText(ui, line);
         }
+        if (matches.empty()) {
+            DrawText(ui, "（监视名单为空：热重载会清空，请先点「探测」）");
+        }
         if (match_total > shown) {
             DrawText(ui, "（共匹配 " + std::to_string(match_total) + " 个，只列出前 " +
                              std::to_string(shown) + " 个）");
@@ -1018,7 +1026,11 @@ void UeContent(const AnomalyUiServiceV1* ui) {
         if (ui->checkbox(ui->user, StringView("记录命中函数的调用（连实参一起记）"), &recording) !=
             0) {
             g_ue_recording.store(recording != 0);
-            if (recording != 0) g_ue_record_requested.store(true);
+            if (recording != 0) {
+                g_ue_record_requested.store(true);
+                // 热重载会清空监视名单；名单为空时顺手补一次扫描，免得记不到东西。
+                if (!UeMonitorsReady()) g_ue_probe_requested.store(true);
+            }
         }
         if (g_ue_recording.load()) {
             int record_all = g_ue_record_all.load() ? 1 : 0;
