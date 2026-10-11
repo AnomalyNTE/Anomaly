@@ -7,6 +7,9 @@
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/plugin_state.h"
 #include "plugins/common/localization.hpp"
+// 共享自动战斗状态机（静态库 anomaly_plugin_combat）。必须放在匿名命名空间之外包含，
+// 否则它的 anomaly::plugins::combat 会被套进匿名命名空间、与静态库里的定义对不上。
+#include "plugins/common/combat/auto_combat.hpp"
 
 #include <algorithm>
 #include <array>
@@ -198,6 +201,19 @@ struct Context {
     const AnomalyUe5WorldServiceV1* world{};
     const AnomalyUe5ProcessEventServiceV1* events{};
     const AnomalyUe5FrameworkServiceV1* framework{};
+    // 自动战斗要用的服务（actors/entities/combat/skills/skill-invocation/pickup 随世界加载
+    // 才发布，空指针由 CombatRequireServices 惰性补查）。
+    const AnomalyNteSessionServiceV1* session{};
+    const AnomalyNtePlayerServiceV1* player{};
+    const AnomalyNtePlayerTeleportServiceV1* teleport{};
+    const AnomalyNteNavigationServiceV1* navigation{};
+    const AnomalyNteCombatServiceV1* combat{};
+    const AnomalyNteSkillsServiceV1* skills{};
+    const AnomalyNteSkillInvocationServiceV1* skill_invocation{};
+    const AnomalyNteActorsServiceV1* actors{};
+    const AnomalyNteEntitiesServiceV1* entities{};
+    const AnomalyNtePickupServiceV1* pickup{};
+    const AnomalySignatureServiceV1* signature{};
     std::filesystem::path settings_path;
     std::mutex mutex;
     Settings settings{};
@@ -690,6 +706,7 @@ void DrawResult(const AnomalyUiServiceV1* ui) {
 // ---------------------------------------------------------------------------
 #include "ue_access.hpp"
 #include "ue_direct.hpp"
+#include "combat.hpp"
 
 void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     SyncTextBuffers();
@@ -753,6 +770,9 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     ResetContent(host, ui);
 
     if (ui->separator != nullptr) ui->separator(ui->user);
+    CombatContent(ui);
+
+    if (ui->separator != nullptr) ui->separator(ui->user);
     UeContent(ui);
 
     if (ui->separator != nullptr) ui->separator(ui->user);
@@ -788,6 +808,31 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.framework = QueryService<AnomalyUe5FrameworkServiceV1>(
         host, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION).service;
+    g_context.session = QueryService<AnomalyNteSessionServiceV1>(
+        host, ANOMALY_NTE_SESSION_SERVICE_V1_ID, ANOMALY_NTE_SESSION_SERVICE_V1_VERSION).service;
+    g_context.player = QueryService<AnomalyNtePlayerServiceV1>(
+        host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION).service;
+    g_context.teleport = QueryService<AnomalyNtePlayerTeleportServiceV1>(
+        host, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
+        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION).service;
+    g_context.navigation = QueryService<AnomalyNteNavigationServiceV1>(
+        host, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
+        ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION).service;
+    g_context.combat = QueryService<AnomalyNteCombatServiceV1>(
+        host, ANOMALY_NTE_COMBAT_SERVICE_V1_ID, ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION).service;
+    g_context.skills = QueryService<AnomalyNteSkillsServiceV1>(
+        host, ANOMALY_NTE_SKILLS_SERVICE_V1_ID, ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION).service;
+    g_context.skill_invocation = QueryService<AnomalyNteSkillInvocationServiceV1>(
+        host, ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_ID,
+        ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_VERSION).service;
+    g_context.actors = QueryService<AnomalyNteActorsServiceV1>(
+        host, ANOMALY_NTE_ACTORS_SERVICE_V1_ID, ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION).service;
+    g_context.entities = QueryService<AnomalyNteEntitiesServiceV1>(
+        host, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID, ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION).service;
+    g_context.pickup = QueryService<AnomalyNtePickupServiceV1>(
+        host, ANOMALY_NTE_PICKUP_SERVICE_V1_ID, ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION).service;
+    g_context.signature = QueryService<AnomalySignatureServiceV1>(
+        host, ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).service;
     g_context.settings_path.clear();
     {
         std::scoped_lock lock(g_context.mutex);
@@ -815,6 +860,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     g_ue_text_stale.store(true);
     UePublish("未探测");
     UeSetCallResult(std::string{});
+    CombatShutdown();
+    CombatPublish("自动战斗：未开始");
     ResolveSettingsPath();
     LoadSettings();
     g_settings_dirty.store(false);
@@ -832,6 +879,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_teleport_requested.store(false);
     ResetStop();
     UeStop();
+    CombatShutdown();
     g_pending = {};
     g_landing = {};
     try {
@@ -866,6 +914,15 @@ void ANOMALY_CALL Update(void*, double) {
             }
         } catch (...) {
             Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 ue probe aborted");
+        }
+        try {
+            if (g_context.core != nullptr && g_context.framework != nullptr &&
+                g_context.framework->is_game_thread != nullptr &&
+                g_context.framework->is_game_thread(g_context.framework->user) != 0) {
+                AdvanceCombat();
+            }
+        } catch (...) {
+            Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 combat aborted");
         }
 
         if (!g_teleport_requested.exchange(false)) return;
@@ -906,7 +963,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.12.1"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.13.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

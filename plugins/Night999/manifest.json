@@ -2,11 +2,11 @@
   "schemaVersion": 2,
   "id": "anomaly.local.nte.night999",
   "name": "999夜脚本",
-  "description": "999夜脚本：先传送到指定地点，再刷新怪物并自动战斗，清怪后回到传送点循环。当前版本实现前两步——传送到指定世界坐标，以及一键刷新怪物（自动定位玩家状态并逐座营火发送刷新请求，无需打开营地界面；首次定位后缓存，后续点击不再扫描）。",
+  "description": "999夜脚本：先传送到指定地点，再刷新怪物并自动战斗，清怪后回到传送点循环。当前版本实现前三步——传送到指定世界坐标、一键刷新怪物（按对象路径定位、逐座营火发送，不需打开营地），以及自动战斗：技能优先（大招→小技能，按冷却判定）、没有可放技能时平A，平A/小技能/大招各可勾选，打完（连续无怪或长时间无伤害）自动结束。",
   "author": "WawMew",
   "license": "AGPL-3.0-only",
   "audience": "user",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -20,6 +20,13 @@
     {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.ui-buttons", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.navigation", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.combat", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skill-invocation", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.actors", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.entities", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.pickup", "minVersion": 1, "optional": true},
     {"id": "anomaly.ue5.names", "minVersion": 2, "optional": true},
     {"id": "anomaly.ue5.objects", "minVersion": 1, "optional": true},
     {"id": "anomaly.ue5.world", "minVersion": 1, "optional": true},
@@ -27,5 +34,5 @@
     {"id": "anomaly.ue5.process-event", "minVersion": 1, "optional": true},
     {"id": "anomaly.interop.signature", "minVersion": 1, "optional": true}
   ],
-  "capabilities": ["ui", "configuration", "memory-read", "game-events", "ue5-names", "ue5-objects", "ue5-world", "interop-signature", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "nte-ui-buttons"]
+  "capabilities": ["ui", "configuration", "memory-read", "game-events", "ue5-names", "ue5-objects", "ue5-world", "interop-signature", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "nte-ui-buttons", "nte-navigation", "nte-combat-read", "nte-skills-read", "nte-skill-invocation", "nte-actor-snapshot", "nte-entity-snapshot", "nte-pickup"]
 }

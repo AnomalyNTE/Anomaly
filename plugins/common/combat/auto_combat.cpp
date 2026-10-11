@@ -506,7 +506,13 @@ bool InvokeNormalAttack(Host& host, State& state) {
     return pressed && released;
 }
 
-bool ActivateSkillByInputId(Host& host, std::int32_t input_id) noexcept {
+// 技能冷却判定的容差：剩下不到这个秒数就当作可以放了。
+constexpr float kAutoCombatSkillReadyEpsilon = 0.05f;
+
+// `only_if_ready` 为真时，只施放「冷却已走完」的技能；其余（含冷却中与
+// 宿主未提供冷却信息的）静默跳过，由调用方决定改用别的手段。
+bool ActivateSkillByInputId(Host& host, std::int32_t input_id,
+                            bool only_if_ready = false) noexcept {
     // 原实现在这里用 `context.host` 现查 combat / skills / skill_invocation 三个服务；
     // 模块由 `Host` 注入，指针为空即视为服务不可用（`HasField` 对空指针返回 false）。
     if (!HasField<AnomalyNteCombatServiceV1, decltype(AnomalyNteCombatServiceV1::current_combatant)>(
@@ -537,6 +543,7 @@ bool ActivateSkillByInputId(Host& host, std::int32_t input_id) noexcept {
     for (auto& skill : skills) skill.struct_size = sizeof(skill);
     std::uint32_t offset{};
     bool matched{};
+    bool cooling{};
     while (offset < frame.skill_count) {
         AnomalyNteSkillPageRequestV1 page_request{sizeof(page_request)};
         page_request.generation = frame.generation;
@@ -553,6 +560,12 @@ bool ActivateSkillByInputId(Host& host, std::int32_t input_id) noexcept {
             // STALE describes sample age; activate revalidates live identities in the host.
             if (skill.input_id != input_id || (skill.flags & ANOMALY_NTE_SKILL_V1_VALID) == 0 ||
                 (skill.flags & ANOMALY_NTE_SKILL_V1_PENDING_REMOVE) != 0) continue;
+            if (only_if_ready &&
+                (skill.flags & ANOMALY_NTE_SKILL_V1_COOLDOWN_VALID) != 0 &&
+                skill.cooldown_remaining_seconds > kAutoCombatSkillReadyEpsilon) {
+                cooling = true;
+                continue;
+            }
             matched = true;
             AnomalyNteSkillInvocationRequestV1 request{sizeof(request)};
             request.world = combatant.world;
@@ -569,6 +582,8 @@ bool ActivateSkillByInputId(Host& host, std::int32_t input_id) noexcept {
         if (page.next_offset <= offset) break;
         offset = page.next_offset;
     }
+    // 冷却中不算失败，也不改写状态行 —— 调用方会接着试别的手段。
+    if (cooling) return false;
     SetStatus(host, matched ? std::string("框架技能未接受本次施放") :
         "框架未找到技能 ID " + std::to_string(input_id));
     return false;
@@ -1052,6 +1067,30 @@ Result Tick(Host& host, State& state) noexcept {
         }
     } else {
         StopAutoCombatMovement(host, state);
+        if (host.policy_custom) {
+            // 技能优先：大招 → 小技能（都要求冷却已走完），都没有可放的技能才平A。
+            // 三者各自受开关控制；单项被关掉时直接跳过，不再往下试。
+            bool acted = false;
+            if (host.use_skill_ultimate &&
+                ActivateSkillByInputId(host, host.skill_ultimate_input_id, true)) {
+                acted = true;
+                state.last_action_normal_attack = false;
+            }
+            if (!acted && host.use_skill_small &&
+                ActivateSkillByInputId(host, host.skill_small_input_id, true)) {
+                acted = true;
+                state.last_action_normal_attack = false;
+            }
+            if (!acted && host.use_normal_attack) {
+                if (!InvokeNormalAttack(host, state)) {
+                    state.attack_failed = true;
+                    ResetAutoCombatTarget(host, state);
+                    return Result::unavailable;
+                }
+                state.last_action_normal_attack = true;
+            }
+            return Result::working;
+        }
         if (host.melee_mode) {
             ++state.melee_attack_counter;
             bool do_normal_attack = true;

@@ -1463,6 +1463,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(anomaly_builtin_clone_enter PRIVATE anomaly_plugin_combat)
     target_link_libraries(anomaly_builtin_combat_box PRIVATE anomaly_plugin_combat)
+    target_link_libraries(anomaly_builtin_night999 PRIVATE anomaly_plugin_combat)
     if(ANOMALY_BUILD_TEST_FIXTURES)
         add_executable(anomaly_combat_auto_fixture
             plugins/common/combat/tests/auto_combat_test.cpp)
