@@ -19,6 +19,9 @@ constexpr std::uint32_t kUeSlotBudget = 8192;
 constexpr std::uint32_t kUeResolveBudget = 1024;
 // 监视名单上限：命中对象的 FName id，回调里用整数比较识别，命中就记下实参。
 constexpr std::size_t kUeMonitorCapacity = 32;
+// 类级监视：命中对象的所属类 id。该类上任一函数被调用都会记下来 ——
+// 于是不必猜「客户端到底发了哪个 RPC」，看列表即可。
+constexpr std::size_t kUeClassMonitorCapacity = 16;
 // 「其它调用」的过滤器：只用一张开放寻址表记「见过没」，只记首次出现的函数。
 // 这样先开几秒让常驻函数（tick/动画）把表填满，再清空记录去触发一次操作，
 // 剩下的基本就是这次操作真正新调用的函数链。
@@ -83,6 +86,8 @@ std::uint32_t g_ue_num_parms{};
 std::uint32_t g_ue_parms_size{};
 std::uint32_t g_ue_monitor_ids[kUeMonitorCapacity]{};
 std::size_t g_ue_monitor_count{};
+std::uint32_t g_ue_monitor_class_ids[kUeClassMonitorCapacity]{};
+std::size_t g_ue_monitor_class_count{};
 std::uint32_t g_ue_seen_ids[kUeSeenSlots]{};
 std::size_t g_ue_seen_used{};
 
@@ -166,6 +171,14 @@ void UeClearSeen() noexcept {
     g_ue_seen_used = 0;
 }
 
+bool UeIsMonitoredClass(const std::uint32_t owner_id) noexcept {
+    if (owner_id == 0) return false;
+    for (std::size_t index = 0; index < g_ue_monitor_class_count; ++index) {
+        if (g_ue_monitor_class_ids[index] == owner_id) return true;
+    }
+    return false;
+}
+
 bool UeIsMonitored(const std::uint32_t function_id) noexcept {
     for (std::size_t index = 0; index < g_ue_monitor_count; ++index) {
         if (g_ue_monitor_ids[index] == function_id) return true;
@@ -190,7 +203,21 @@ void ANOMALY_CALL UeObserve(void*, std::uintptr_t object, std::uintptr_t functio
         return;
     }
 
-    const bool monitored = UeIsMonitored(name.id);
+    bool monitored = UeIsMonitored(name.id);
+    if (!monitored && g_ue_monitor_class_count != 0) {
+        // 所属类命中：读 UFunction 的 Outer（类对象）再取其 FName id 比对。
+        std::uintptr_t outer{};
+        std::uint32_t owner_id{};
+        if (core->read_memory(core->user, function + kUeObjectOuterOffset,
+                              {reinterpret_cast<std::uint8_t*>(&outer), sizeof(outer)}).code ==
+                ANOMALY_STATUS_V1_OK &&
+            outer != 0 &&
+            core->read_memory(core->user, outer + kUeObjectNameOffset,
+                              {reinterpret_cast<std::uint8_t*>(&owner_id), sizeof(owner_id)})
+                    .code == ANOMALY_STATUS_V1_OK) {
+            monitored = UeIsMonitoredClass(owner_id);
+        }
+    }
     if (!monitored) {
         if (!g_ue_record_all.load() || !UeMarkSeen(name.id)) return;
     }
@@ -343,6 +370,17 @@ void UeAddMatch(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* object
         }
         if (!known) g_ue_monitor_ids[g_ue_monitor_count++] = snapshot.name_id;
     }
+    // 所属类同样进监视名单：该类上任何函数被调用都会记录（用于找真正的 RPC）。
+    if (match.owner != 0 && g_ue_monitor_class_count < kUeClassMonitorCapacity) {
+        std::uint32_t owner_id{};
+        if (reader.Read(match.owner + kUeObjectNameOffset, owner_id) && owner_id != 0) {
+            bool known = false;
+            for (std::size_t index = 0; index < g_ue_monitor_class_count; ++index) {
+                if (g_ue_monitor_class_ids[index] == owner_id) known = true;
+            }
+            if (!known) g_ue_monitor_class_ids[g_ue_monitor_class_count++] = owner_id;
+        }
+    }
     g_ue_matches.push_back(match);
 }
 
@@ -470,6 +508,7 @@ void UeBeginScan() {
     g_ue_name_id = 0;
     g_ue_ids_only = false;
     g_ue_monitor_count = 0;
+    g_ue_monitor_class_count = 0;
     {
         std::scoped_lock lock(g_ue_mutex);
         g_ue_target_name.clear();
@@ -857,6 +896,7 @@ void UeStop() noexcept {
     g_ue_instance = 0;
     g_ue_cdo = 0;
     g_ue_monitor_count = 0;
+    g_ue_monitor_class_count = 0;
     g_ue_recording.store(false);
     {
         std::scoped_lock lock(g_ue_mutex);
