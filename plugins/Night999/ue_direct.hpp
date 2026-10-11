@@ -811,6 +811,13 @@ void UeResolveInstance(const UeReader& reader) {
             }
         }
     }
+    // 兜底全表扫描：这条路径可能没经过 UeBeginScan，必须自己把注册表和总数准备好，
+    // 否则 UeOwnerStep 会拿 g_ue_total==0 空转（实测踩过：scanned=0/0）。
+    static_cast<void>(UeEnsureRegistry());
+    const auto* fallback = g_context.objects;
+    if (fallback != nullptr && fallback->count != nullptr) {
+        g_ue_total = fallback->count(fallback->user);
+    }
     g_ue_phase = UeProbePhase::finding_owner;
     g_ue_cursor = 0;
 }
