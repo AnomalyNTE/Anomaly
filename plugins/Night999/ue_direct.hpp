@@ -19,6 +19,10 @@ constexpr std::uint32_t kUeSlotBudget = 8192;
 constexpr std::uint32_t kUeResolveBudget = 1024;
 // 监视名单上限：命中对象的 FName id，回调里用整数比较识别，命中就记下实参。
 constexpr std::size_t kUeMonitorCapacity = 32;
+// 「其它调用」的过滤器：只用一张开放寻址表记「见过没」，只记首次出现的函数。
+// 这样先开几秒让常驻函数（tick/动画）把表填满，再清空记录去触发一次操作，
+// 剩下的基本就是这次操作真正新调用的函数链。
+constexpr std::size_t kUeSeenSlots = 16384;
 constexpr std::size_t kUeEventCapacity = 64;
 // 单次调用最多记多少字节实参。
 constexpr std::size_t kUeParmsCapture = 16;
@@ -79,6 +83,8 @@ std::uint32_t g_ue_num_parms{};
 std::uint32_t g_ue_parms_size{};
 std::uint32_t g_ue_monitor_ids[kUeMonitorCapacity]{};
 std::size_t g_ue_monitor_count{};
+std::uint32_t g_ue_seen_ids[kUeSeenSlots]{};
+std::size_t g_ue_seen_used{};
 
 // --- 共享状态（on_draw 读，on_update 写）---
 std::mutex g_ue_mutex;
@@ -137,6 +143,29 @@ void UeCaptureParms(UeEventRecord& record, void* parameters, const std::uint16_t
     record.parms_size = parms_size;
 }
 
+// 开放寻址：返回 true 表示这个 id 之前没见过（并把它记下）。
+bool UeMarkSeen(const std::uint32_t id) noexcept {
+    if (id == 0) return false;
+    std::uint32_t slot = (id * 2654435761u) & (kUeSeenSlots - 1);
+    for (std::size_t step = 0; step < 64; ++step) {
+        const std::uint32_t current = g_ue_seen_ids[slot];
+        if (current == id) return false;
+        if (current == 0) {
+            if (g_ue_seen_used + 64 >= kUeSeenSlots) return false;
+            g_ue_seen_ids[slot] = id;
+            ++g_ue_seen_used;
+            return true;
+        }
+        slot = (slot + 1) & (kUeSeenSlots - 1);
+    }
+    return false;
+}
+
+void UeClearSeen() noexcept {
+    std::memset(g_ue_seen_ids, 0, sizeof(g_ue_seen_ids));
+    g_ue_seen_used = 0;
+}
+
 bool UeIsMonitored(const std::uint32_t function_id) noexcept {
     for (std::size_t index = 0; index < g_ue_monitor_count; ++index) {
         if (g_ue_monitor_ids[index] == function_id) return true;
@@ -162,7 +191,9 @@ void ANOMALY_CALL UeObserve(void*, std::uintptr_t object, std::uintptr_t functio
     }
 
     const bool monitored = UeIsMonitored(name.id);
-    if (!monitored && !g_ue_record_all.load()) return;
+    if (!monitored) {
+        if (!g_ue_record_all.load() || !UeMarkSeen(name.id)) return;
+    }
 
     std::scoped_lock lock(g_ue_mutex);
     ++g_ue_event_total;
@@ -722,7 +753,9 @@ void UeResolveEvents(const UeReader& reader) {
         const std::uint32_t number = static_cast<std::uint32_t>(raw >> 32);
         if (id == 0 || number > 4) continue;
         const std::string text = reader.Name(UeFName{id, number});
-        if (text.empty()) continue;
+        // 真 FName 的索引很小、名字也短；解析出超长串或含 ? 的，都是索引落在了
+        // 字符串池中间造成的伪结果，宁可当作「不是 FName」。
+        if (text.empty() || text.size() > 48 || text.find('?') != std::string::npos) continue;
         std::snprintf(record.parms_fname, sizeof(record.parms_fname), "%s", text.c_str());
     }
 }
@@ -747,6 +780,7 @@ void UeAdvance(const UeReader& reader) {
             std::memset(g_ue_events, 0, sizeof(g_ue_events));
             g_ue_event_count = 0;
             g_ue_event_total = 0;
+            UeClearSeen();
         }
         AnomalyGenerationHandleV1 handle{};
         if (g_context.events->subscribe(g_context.events->user, UeObserve, nullptr, &handle).code ==
@@ -920,7 +954,7 @@ void UeContent(const AnomalyUiServiceV1* ui) {
         }
         if (g_ue_recording.load()) {
             int record_all = g_ue_record_all.load() ? 1 : 0;
-            if (ui->checkbox(ui->user, StringView("同时记录其它调用（噪声大）"), &record_all) != 0) {
+            if (ui->checkbox(ui->user, StringView("同时记录其它调用（只记首次出现）"), &record_all) != 0) {
                 g_ue_record_all.store(record_all != 0);
             }
         }
