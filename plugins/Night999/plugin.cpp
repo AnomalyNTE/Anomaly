@@ -906,7 +906,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.10.2"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.10.3"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

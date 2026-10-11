@@ -1215,10 +1215,12 @@ void UeAdvance(const UeReader& reader) {
             g_ue_campfire_running = false;
             UeSetCallResultBoth("已依次尝试 " + std::to_string(g_ue_campfire_count) + " 个营火 ID");
         } else if (now >= g_ue_campfire_next) {
-            std::uint64_t id = g_ue_campfire_ids[g_ue_campfire_index];
-            std::uint8_t parms[8]{};
-            std::memcpy(parms, &id, sizeof(id));
-            const bool ok = UeInvoke(reader, g_ue_instance, g_ue_function, parms);
+            const std::uint64_t id = g_ue_campfire_ids[g_ue_campfire_index];
+            // ⛔ 参数缓冲必须按目标的 ParmsSize 开足：只给 8 字节而目标写更多会踩栈。
+            std::uint8_t buffer[64]{};
+            std::memcpy(buffer, &id, sizeof(id));
+            const bool ok = g_ue_parms_size <= sizeof(buffer) &&
+                UeInvoke(reader, g_ue_instance, g_ue_function, buffer);
             const std::string name =
                 reader.Name(UeFName{static_cast<std::uint32_t>(id & 0xFFFFFFFFull), 0});
             std::string back;
@@ -1226,7 +1228,7 @@ void UeAdvance(const UeReader& reader) {
                 back = " 返回 ";
                 for (std::uint32_t index = 0; index < g_ue_parms_size && index < 16; ++index) {
                     char item[8]{};
-                    std::snprintf(item, sizeof(item), "%02X ", parms[index]);
+                    std::snprintf(item, sizeof(item), "%02X ", buffer[index]);
                     back += item;
                 }
             }
@@ -1236,7 +1238,7 @@ void UeAdvance(const UeReader& reader) {
             UeLog(text);
             UeSetCallResultBoth(text);
             ++g_ue_campfire_index;
-            g_ue_campfire_next = now + std::chrono::milliseconds(300);
+            g_ue_campfire_next = now + std::chrono::milliseconds(120);
         }
     }
 
