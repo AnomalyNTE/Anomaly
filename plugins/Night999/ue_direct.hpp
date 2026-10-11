@@ -31,6 +31,9 @@ constexpr std::size_t kUeEventCapacity = 128;
 constexpr std::size_t kUeParmsCapture = 64;
 // 参数输入框容量：够放 64 字节的十六进制串（每字节 3 字符）。
 constexpr std::size_t kUeParamTextCapacity = 256;
+// 营火名（FName），用于单发快速刷新。
+constexpr std::string_view kUeCampfireDefault = "FT_Castle_Campfire04";
+constexpr std::size_t kUeCampfireNameCapacity = 64;
 
 enum class UeProbePhase : std::uint8_t { idle, scanning, finding_owner, ready, failed };
 
@@ -78,6 +81,8 @@ std::atomic_bool g_ue_match_class{};
 std::atomic_bool g_ue_fields_requested{};
 // 「依次尝试营火 ID」：读实例上的 ActivatedCampfireIDs，逐个当参数调用当前目标。
 std::atomic_bool g_ue_campfire_requested{};
+// 单发：按营火名刷新（快路径）。
+std::atomic_bool g_ue_campfire_single_requested{};
 
 // --- 扫描状态（on_update 独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
@@ -124,6 +129,9 @@ std::chrono::steady_clock::time_point g_ue_campfire_next{};
 // 调用参数：空 = 全零；0x…/十进制 = 64 位整数；其它按 FName 名字查 id。
 std::string g_ue_param;
 std::array<char, kUeParamTextCapacity> g_ue_param_text{};
+std::string g_ue_campfire_name{kUeCampfireDefault};
+std::array<char, kUeCampfireNameCapacity> g_ue_campfire_text{};
+std::atomic_bool g_ue_campfire_name_stale{true};
 
 UeEventRecord g_ue_events[kUeEventCapacity];
 std::size_t g_ue_event_count{};
@@ -469,6 +477,40 @@ void UeBuildFields(const UeReader& reader, std::vector<std::string>& lines,
         cls = parent;
     }
     if (lines.empty()) lines.emplace_back("没有名字含「" + filter + "」的字段");
+}
+
+// 前置声明：本段插入点早于它的定义。
+void UeSetCallResultBoth(std::string text);
+
+void UeSetCampfireName(const std::string& name) {
+    std::scoped_lock lock(g_ue_mutex);
+    if (g_ue_campfire_name == name) return;
+    g_ue_campfire_name = name;
+}
+
+std::string UeCampfireName() {
+    std::scoped_lock lock(g_ue_mutex);
+    return g_ue_campfire_name;
+}
+
+// 按营火名（FName）单发调用当前目标：名字 -> find_utf8 -> 8 字节参数。
+// 比「依次尝试全部」快得多；名字不在名字池里时返回 false，由调用方退化为依次尝试。
+bool UeCallByName(const UeReader& reader, const std::string& name) {
+    const auto* names = g_context.names;
+    std::uint32_t id{};
+    if (names == nullptr || names->find_utf8 == nullptr ||
+        names->find_utf8(names->user, StringView(name), &id).code != ANOMALY_STATUS_V1_OK ||
+        id == 0) {
+        return false;
+    }
+    const std::uint64_t value = id;
+    std::uint8_t parms[8]{};
+    std::memcpy(parms, &value, sizeof(value));
+    const bool ok = UeInvoke(reader, g_ue_instance, g_ue_function, parms);
+    UeSetCallResultBoth("按名字刷新 " + name + " id=" + std::to_string(id) +
+                        (ok ? " 已调用" : " 调用失败"));
+    UeLog("campfire by-name " + name + " id=" + std::to_string(id) + (ok ? " ok" : " fail"));
+    return ok;
 }
 
 void UeSetParam(const std::string& param) {
@@ -1144,6 +1186,16 @@ void UeAdvance(const UeReader& reader) {
             g_ue_campfire_next = std::chrono::steady_clock::now();
         }
     }
+    if (g_ue_campfire_single_requested.exchange(false)) {
+        if (g_ue_function == 0 || g_ue_instance == 0) {
+            UeSetCallResultBoth("请先探测并「选用」FinalTowerCampResetMonsterSpawners（实例需为 PlayerState）");
+        } else if (UeCallByName(reader, UeCampfireName())) {
+            // 名字在池里且调用未抛异常：不再走「依次尝试」。
+        } else {
+            UeSetCallResultBoth("名字池里没有该营火名，改为依次尝试全部 ID");
+            g_ue_campfire_requested.store(true);
+        }
+    }
     if (g_ue_campfire_running && g_ue_phase != UeProbePhase::scanning &&
         g_ue_phase != UeProbePhase::finding_owner) {
         const auto now = std::chrono::steady_clock::now();
@@ -1163,7 +1215,7 @@ void UeAdvance(const UeReader& reader) {
             UeLog(text);
             UeSetCallResultBoth(text);
             ++g_ue_campfire_index;
-            g_ue_campfire_next = now + std::chrono::milliseconds(600);
+            g_ue_campfire_next = now + std::chrono::milliseconds(300);
         }
     }
 
@@ -1214,6 +1266,12 @@ void UeAdvance(const UeReader& reader) {
     }
 }
 
+void UeSyncCampfireText() {
+    if (!g_ue_campfire_name_stale.exchange(false)) return;
+    const std::string name = UeCampfireName();
+    std::snprintf(g_ue_campfire_text.data(), g_ue_campfire_text.size(), "%s", name.c_str());
+}
+
 void UeStop() noexcept {
     g_ue_probe_requested.store(false);
     g_ue_call_requested.store(false);
@@ -1223,6 +1281,7 @@ void UeStop() noexcept {
     g_ue_select_requested.store(-1);
     g_ue_fields_requested.store(false);
     g_ue_campfire_requested.store(false);
+    g_ue_campfire_single_requested.store(false);
     g_ue_campfire_running = false;
     g_ue_campfire_count = 0;
     g_ue_campfire_index = 0;
@@ -1281,6 +1340,17 @@ void UeContent(const AnomalyUiServiceV1* ui) {
     }
     UeSetParam(g_ue_param_text.data());
 
+    UeSyncCampfireText();
+    ui->text(ui->user, StringView("营火名"));
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 110.0F, 8.0F);
+    if (ui->input_text != nullptr) {
+        ui->input_text(ui->user, StringView("##night999-ue-campfire"), g_ue_campfire_text.data(),
+                       g_ue_campfire_text.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE);
+    } else {
+        DrawText(ui, g_ue_campfire_text.data());
+    }
+    UeSetCampfireName(g_ue_campfire_text.data());
+
     if (ui->button != nullptr) {
         if (ui->button(ui->user, StringView("探测"), 0.0F, 0.0F) != 0) {
             g_ue_probe_requested.store(true);
@@ -1288,6 +1358,10 @@ void UeContent(const AnomalyUiServiceV1* ui) {
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
         if (ui->button(ui->user, StringView("转储字段"), 0.0F, 0.0F) != 0) {
             g_ue_fields_requested.store(true);
+        }
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        if (ui->button(ui->user, StringView("按名字刷新"), 0.0F, 0.0F) != 0) {
+            g_ue_campfire_single_requested.store(true);
         }
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
         if (ui->button(ui->user, StringView("依次尝试营火ID"), 0.0F, 0.0F) != 0) {
