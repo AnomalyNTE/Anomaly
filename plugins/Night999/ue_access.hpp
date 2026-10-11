@@ -114,22 +114,6 @@ std::uintptr_t UeResolve(
     return object;
 }
 
-// 注册表总槽位数（含空槽）。用于分片遍历。
-bool UeRegistryCount(const UeReader& reader, std::uint32_t& count) {
-    return reader.Read(g_ue_registry + 36, count) && count <= 16u * 1024u * 1024u;
-}
-
-// 直接按索引取对象地址（空槽返回 0）。
-std::uintptr_t UeObjectAt(const UeReader& reader, const std::uint32_t index) {
-    std::uintptr_t chunks{}, chunk{}, object{};
-    if (!reader.Read(g_ue_registry + 16, chunks) ||
-        !reader.Read(chunks + 8 * (index / 65536), chunk)) {
-        return 0;
-    }
-    if (!reader.Read(chunk + 24 * (index % 65536), object)) return 0;
-    return object;
-}
-
 bool UeIsExecutable(const std::uintptr_t entry) {
     MEMORY_BASIC_INFORMATION region{};
     if (entry == 0 || !VirtualQuery(reinterpret_cast<void*>(entry), &region, sizeof(region))) {

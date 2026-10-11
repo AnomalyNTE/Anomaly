@@ -1,9 +1,12 @@
 #pragma once
 // 直接调用：按名称关键词在对象注册表里定位 UObject / UFunction，再用 ProcessEvent 调用。
 //
-// 定位不依赖完整对象路径：先用 ue5.names.find_utf8 把关键词换成 FName id，能命中就走
-// 「整数比较」快路径；命中不了（说明该名字在当前会话未注册，例如蓝图还没加载）就退化为
-// 遍历注册表逐个解析名字做子串匹配。
+// 遍历用宿主自己的 anomaly.ue5.objects 服务（count + snapshot_at），不自己走注册表内存布局；
+// 只有命中之后的少数对象才需要真实地址，那时才用 ue_access.hpp 的 UeResolve。
+//
+// 匹配两条路自动选择：先用 ue5.names.find_utf8 把关键词换成 FName id，命中就走「整数比较」
+// 快路径（只比 snapshot.name_id，不解析字符串）；命中不了（该名字在当前会话未注册，例如相关
+// 蓝图还没加载）就退化为逐个解析名字做子串匹配。
 //
 // 需要 ue_access.hpp 先包含。扫描与调用都只在 Game 回调域（on_update）执行；ProcessEvent
 // 回调里只记 FName id 与对象地址，任何反射解析都留到 on_update 做，避免在宿主持锁的回调里
@@ -15,12 +18,10 @@ constexpr std::string_view kUeDefaultKeyword = "ResetMonster";
 constexpr std::size_t kUeTextCapacity = 96;
 // 匹配列表上限；超过只报总数。
 constexpr std::size_t kUeMatchCapacity = 16;
-// 快路径（整数比较）每 tick 遍历的槽位数。
-constexpr std::uint32_t kUeSlotBudget = 16384;
-// 慢路径（逐个解析名字）每 tick 解析的存活对象数上限。
+// 每 tick 遍历的槽位数（快慢两条路都用它；慢路另有解析上限）。
+constexpr std::uint32_t kUeSlotBudget = 8192;
+// 慢路径每 tick 最多解析多少个存活对象的名字。
 constexpr std::uint32_t kUeResolveBudget = 1024;
-// 一次批量读取的槽位数（4096 * 24 = 96 KB）。
-constexpr std::uint32_t kUeRunSlots = 4096;
 // 事件记录容量。
 constexpr std::size_t kUeEventCapacity = 96;
 
@@ -55,16 +56,11 @@ std::atomic_int g_ue_select_requested{-1};
 // --- 扫描状态（on_update 独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
 bool g_ue_ids_only{};
-// 本趟扫描用的关键词小写副本（Game 线程独占，避免与 on_draw 的输入框写入竞争）。
-std::string g_ue_keyword_scan;
 std::uint32_t g_ue_name_id{};
-std::uint32_t g_ue_slots_this_tick{};
 std::uint32_t g_ue_cursor{};
 std::uint32_t g_ue_total{};
 std::uint32_t g_ue_match_total{};
-std::uintptr_t g_ue_chunk{};
-std::uint32_t g_ue_chunk_index{0xFFFFFFFFu};
-std::vector<std::uint8_t> g_ue_run_buffer;
+std::string g_ue_keyword_scan;   // 本趟关键词小写副本，Game 线程独占
 std::uintptr_t g_ue_function{};
 std::uintptr_t g_ue_owner_class{};
 std::uintptr_t g_ue_instance{};
@@ -134,12 +130,11 @@ void UeSetCallResult(std::string text) {
     g_ue_call_result = std::move(text);
 }
 
-void UeCopyOut(std::string& status, std::string& call, std::string& target,
-               std::vector<UeMatch>& matches, std::uint32_t& match_total) {
+void UeCopyOut(std::string& status, std::string& call, std::vector<UeMatch>& matches,
+               std::uint32_t& match_total) {
     std::scoped_lock lock(g_ue_mutex);
     status = g_ue_status;
     call = g_ue_call_result;
-    target = g_ue_target_name;
     matches = g_ue_matches;
     match_total = g_ue_match_total;
 }
@@ -166,84 +161,65 @@ const char* UeParmsText() {
 void UeFinish(std::string text, const bool failed) {
     g_ue_phase = failed ? UeProbePhase::failed : UeProbePhase::ready;
     g_ue_cursor = 0;
-    g_ue_slots_this_tick = 0;
-    g_ue_chunk = 0;
-    g_ue_chunk_index = 0xFFFFFFFFu;
-    g_ue_run_buffer.clear();
     UePublish(std::move(text));
 }
 
-// 命中一个对象：补齐名字、类名与（若为 UFunction）参数信息。
-void UeAddMatch(const UeReader& reader, const std::uintptr_t object, const std::string& name) {
+// 命中一个对象：用它的句柄换真实地址，再补齐类名与（若为 UFunction）参数信息。
+void UeAddMatch(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objects,
+                const AnomalyUe5ObjectSnapshotV1& snapshot, const std::string& name) {
     ++g_ue_match_total;
     if (g_ue_matches.size() >= kUeMatchCapacity) return;
     UeMatch match{};
-    match.object = object;
     std::snprintf(match.name, sizeof(match.name), "%s", name.c_str());
-    std::uintptr_t owner{};
-    reader.Read(object + kUeObjectOuterOffset, owner);
-    match.owner = owner;
-
-    std::uintptr_t cls{};
-    if (reader.Read(object + kUeObjectClassOffset, cls) && cls != 0) {
-        const std::string class_name = reader.NameAt(cls + kUeObjectNameOffset);
-        std::snprintf(match.class_name, sizeof(match.class_name), "%s", class_name.c_str());
-        match.is_function = class_name == "Function";
-    }
-    if (match.is_function) {
-        std::uint8_t num_parms{};
-        std::uint16_t parms_size{};
-        reader.Read(object + kUeFunctionNumParmsOffset, num_parms);
-        reader.Read(object + kUeFunctionParmsSizeOffset, parms_size);
-        match.num_parms = num_parms;
-        match.parms_size = parms_size;
+    const std::uintptr_t object = UeResolve(reader, objects, snapshot.handle);
+    match.object = object;
+    if (object != 0) {
+        std::uintptr_t owner{};
+        reader.Read(object + kUeObjectOuterOffset, owner);
+        match.owner = owner;
+        std::uintptr_t cls{};
+        if (reader.Read(object + kUeObjectClassOffset, cls) && cls != 0) {
+            const std::string class_name = reader.NameAt(cls + kUeObjectNameOffset);
+            std::snprintf(match.class_name, sizeof(match.class_name), "%s", class_name.c_str());
+            match.is_function = class_name == "Function";
+        }
+        if (match.is_function) {
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            reader.Read(object + kUeFunctionNumParmsOffset, num_parms);
+            reader.Read(object + kUeFunctionParmsSizeOffset, parms_size);
+            match.num_parms = num_parms;
+            match.parms_size = parms_size;
+        }
     }
     g_ue_matches.push_back(match);
 }
 
-// 读取一段连续槽位并匹配。返回是否成功读取。
-bool UeScanRun(const UeReader& reader, const std::uint32_t run, std::uint32_t& resolved) {
-    if (g_ue_run_buffer.size() < static_cast<std::size_t>(run) * 24) {
-        g_ue_run_buffer.resize(static_cast<std::size_t>(run) * 24);
-    }
-    const auto* core = g_context.core;
-    if (core == nullptr || core->read_memory == nullptr) return false;
-
-    const auto within = g_ue_cursor % 65536;
-    if (g_ue_chunk == 0 || g_ue_cursor / 65536 != g_ue_chunk_index) {
-        if (!reader.Read(g_ue_registry + 16 + 8 * (g_ue_cursor / 65536), g_ue_chunk) ||
-            g_ue_chunk == 0) {
-            return false;
+// 遍历一段槽位。返回是否继续（false 表示服务读取失败，应当中止）。
+bool UeScanStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objects,
+                std::uint32_t& resolved) {
+    AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+    const std::uint32_t end = std::min(g_ue_cursor + kUeSlotBudget, g_ue_total);
+    for (; g_ue_cursor < end; ++g_ue_cursor) {
+        snapshot.struct_size = sizeof(snapshot);
+        if (objects->snapshot_at(objects->user, g_ue_cursor, &snapshot).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
         }
-        g_ue_chunk_index = g_ue_cursor / 65536;
-    }
-    if (core->read_memory(core->user, g_ue_chunk + 24u * within,
-                          {g_ue_run_buffer.data(), static_cast<std::size_t>(run) * 24}).code !=
-        ANOMALY_STATUS_V1_OK) {
-        return false;
-    }
-    for (std::uint32_t index = 0; index < run; ++index) {
-        std::uintptr_t object{};
-        std::memcpy(&object, g_ue_run_buffer.data() + static_cast<std::size_t>(index) * 24,
-                    sizeof(object));
-        if (object == 0) continue;
-        UeFName name{};
-        if (!reader.Read(object + kUeObjectNameOffset, name)) continue;
+        if (snapshot.name_id == 0) continue;
 
         if (g_ue_ids_only) {
-            // 快路径：名字已在池里，直接比 id，不解析字符串。
-            if (name.id != g_ue_name_id) continue;
-            UeAddMatch(reader, object, reader.Name(name));
+            if (snapshot.name_id != g_ue_name_id) continue;
+            UeAddMatch(reader, objects, snapshot, reader.Name(UeFName{snapshot.name_id, 0}));
             if (g_ue_matches.size() >= kUeMatchCapacity) return true;
             continue;
         }
-        // 慢路径：名字没注册，只能逐个解析出来做子串匹配。
         if (resolved >= kUeResolveBudget) return true;
         ++resolved;
-        const std::string text = reader.Name(name);
+        const std::string text = reader.Name(UeFName{snapshot.name_id, 0});
         if (text.empty()) continue;
         if (UeLower(text).find(g_ue_keyword_scan) == std::string::npos) continue;
-        UeAddMatch(reader, object, text);
+        UeAddMatch(reader, objects, snapshot, text);
         if (g_ue_matches.size() >= kUeMatchCapacity) return true;
     }
     return true;
@@ -259,10 +235,7 @@ void UeBeginScan() {
     g_ue_num_parms = 0;
     g_ue_parms_size = 0;
     g_ue_cursor = 0;
-    g_ue_slots_this_tick = 0;
     g_ue_total = 0;
-    g_ue_chunk = 0;
-    g_ue_chunk_index = 0xFFFFFFFFu;
     g_ue_name_id = 0;
     g_ue_ids_only = false;
     {
@@ -277,37 +250,39 @@ void UeBeginScan() {
     }
     const auto* names = g_context.names;
     const auto* objects = g_context.objects;
-    if (names == nullptr || names->find_utf8 == nullptr || objects == nullptr ||
-        objects->snapshot_by_handle == nullptr) {
-        UeFinish("需要 ue5-names / ue5-objects 服务", true);
+    if (names == nullptr || names->find_utf8 == nullptr || names->resolve_utf8 == nullptr ||
+        objects == nullptr || objects->count == nullptr || objects->snapshot_at == nullptr) {
+        UeFinish("需要 ue5-names（含 find_utf8/resolve_utf8）与 ue5-objects 服务", true);
         return;
     }
-    const UeReader reader{names};
-    if (!UeEnsureRegistry() || !UeRegistryCount(reader, g_ue_total) || g_ue_total == 0) {
-        UeFinish("对象注册表不可用", true);
+    g_ue_total = objects->count(objects->user);
+    if (g_ue_total == 0 || g_ue_total > 16u * 1024u * 1024u) {
+        UeFinish("对象注册表计数异常（" + std::to_string(g_ue_total) + "）", true);
         return;
     }
+    // 命中后要用地址，先把注册表基址准备好；失败只是拿不到类名，不阻断名字匹配。
+    static_cast<void>(UeEnsureRegistry());
 
-    // 名字还在池里就走快路径；否则说明相关蓝图未加载，退化为子串扫描。
+    const UeReader reader{names};
     if (names->find_utf8(names->user, StringView(keyword), &g_ue_name_id).code ==
             ANOMALY_STATUS_V1_OK &&
         g_ue_name_id != 0) {
         g_ue_ids_only = true;
         g_ue_phase = UeProbePhase::scanning;
-        UePublish("名字已注册，按精确名称扫描 " + std::to_string(g_ue_total) + " 槽…");
+        UePublish("名字已注册，按精确名称扫描 " + std::to_string(g_ue_total) + " 个对象…");
         return;
     }
     g_ue_keyword_scan = UeLower(keyword);
     g_ue_ids_only = false;
     g_ue_phase = UeProbePhase::scanning;
-    UePublish("名字未注册（相关蓝图可能还没加载），改为遍历注册表做子串匹配 " +
-              std::to_string(g_ue_total) + " 槽…");
+    UePublish("名字未注册（相关蓝图可能还没加载），改为逐对象解析名字做子串匹配，共 " +
+              std::to_string(g_ue_total) + " 个对象…");
 }
 
 void UeFinishScan() {
     if (g_ue_matches.empty()) {
         UeFinish("注册表里没有任何对象名含「" + UeKeyword() + "」（共 " +
-                     std::to_string(g_ue_total) + " 槽）——相关蓝图尚未加载。"
+                     std::to_string(g_ue_total) + " 个对象）——相关蓝图尚未加载。"
                      "请先在游戏里打开一次营地（或进入对应玩法）再点探测",
                  true);
         return;
@@ -331,11 +306,16 @@ void UeBeginOwnerScan(const std::size_t index) {
     g_ue_instance = 0;
     g_ue_instance_is_cdo = false;
     g_ue_cursor = 0;
-    g_ue_slots_this_tick = 0;
-    g_ue_chunk = 0;
-    g_ue_chunk_index = 0xFFFFFFFFu;
-    UePublish("已选中 " + std::string(match.name) + "（类 " + match.class_name + "，" +
-              UeParmsText() + "），正在找该类的实例…");
+    {
+        std::scoped_lock lock(g_ue_mutex);
+        g_ue_target_name = match.name;
+    }
+    if (match.object == 0) {
+        g_ue_phase = UeProbePhase::failed;
+        g_ue_function = 0;
+        UePublish("无法解析「" + std::string(match.name) + "」的对象地址（注册表基址未就绪）");
+        return;
+    }
     if (!match.is_function) {
         g_ue_phase = UeProbePhase::ready;
         g_ue_function = 0;
@@ -343,11 +323,45 @@ void UeBeginOwnerScan(const std::size_t index) {
                   match.class_name + "），不能这样调用");
         return;
     }
-    {
-        std::scoped_lock lock(g_ue_mutex);
-        g_ue_target_name = match.name;
+    if (g_ue_owner_class == 0) {
+        g_ue_phase = UeProbePhase::failed;
+        g_ue_function = 0;
+        UePublish("「" + std::string(match.name) + "」没有 Outer，无法定位所属类实例");
+        return;
     }
+    UePublish("已选中 " + std::string(match.name) + "（类 " + match.class_name + "，" +
+              UeParmsText() + "），正在找该类的实例…");
     g_ue_phase = UeProbePhase::finding_owner;
+}
+
+// 第二趟：找目标类的实例（优先普通实例，退而用 CDO）。
+bool UeOwnerStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objects) {
+    AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+    const std::uint32_t end = std::min(g_ue_cursor + kUeSlotBudget, g_ue_total);
+    for (; g_ue_cursor < end; ++g_ue_cursor) {
+        snapshot.struct_size = sizeof(snapshot);
+        if (objects->snapshot_at(objects->user, g_ue_cursor, &snapshot).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (snapshot.name_id == 0) continue;
+        const std::uintptr_t object = UeResolve(reader, objects, snapshot.handle);
+        if (object == 0) continue;
+        std::uintptr_t cls{};
+        if (!reader.Read(object + kUeObjectClassOffset, cls) || cls != g_ue_owner_class) continue;
+        const std::string name = reader.NameAt(object + kUeObjectNameOffset);
+        if (name.rfind("Default__", 0) == 0) {
+            if (g_ue_instance == 0) {
+                g_ue_instance = object;
+                g_ue_instance_is_cdo = true;
+            }
+            continue;
+        }
+        g_ue_instance = object;
+        g_ue_instance_is_cdo = false;
+        return true;   // 普通实例优先，找到即停
+    }
+    return true;
 }
 
 void UeFinishOwnerScan(const UeReader& reader) {
@@ -431,6 +445,8 @@ void UeResolveEvents(const UeReader& reader) {
 }
 
 void UeAdvance(const UeReader& reader) {
+    const auto* objects = g_context.objects;
+
     if (g_ue_clear_log_requested.exchange(false)) {
         std::scoped_lock lock(g_ue_mutex);
         std::memset(g_ue_events, 0, sizeof(g_ue_events));
@@ -461,55 +477,39 @@ void UeAdvance(const UeReader& reader) {
     }
     UeResolveEvents(reader);
 
-    const bool busy = g_ue_phase == UeProbePhase::scanning ||
-        g_ue_phase == UeProbePhase::finding_owner;
     if (g_ue_probe_requested.exchange(false)) {
         UeBeginScan();
         return;
     }
+    const bool busy = g_ue_phase == UeProbePhase::scanning ||
+        g_ue_phase == UeProbePhase::finding_owner;
     if (!busy) {
         if (g_ue_call_requested.exchange(false)) UeCallFunction();
         const int select = g_ue_select_requested.exchange(-1);
         if (select >= 0) UeBeginOwnerScan(static_cast<std::size_t>(select));
         return;
     }
-    if (!UeEnsureRegistry()) {
-        UeFinish("对象注册表不可用", true);
+    if (objects == nullptr || objects->snapshot_at == nullptr) {
+        UeFinish("ue5-objects 服务已不可用", true);
         return;
     }
 
-    // 分片遍历：快路径按槽位计预算，慢路径按解析过的存活对象计预算。
     std::uint32_t resolved{};
-    while (g_ue_cursor < g_ue_total) {
-        if (!g_ue_ids_only && resolved >= kUeResolveBudget) break;
-        const std::uint32_t run = std::min(
-            {kUeRunSlots, 65536u - (g_ue_cursor % 65536)});
-        if (run == 0) break;
-        if (!UeScanRun(reader, run, resolved)) {
-            UeFinish("扫描中断（注册表读取失败）", true);
+    if (g_ue_phase == UeProbePhase::scanning) {
+        if (!UeScanStep(reader, objects, resolved)) {
+            UeFinish("扫描中断（对象服务读取失败）", true);
             return;
         }
-        g_ue_cursor += run;
-        if (g_ue_matches.size() >= kUeMatchCapacity) {
-            g_ue_cursor = g_ue_total;
-            break;
+        if (g_ue_cursor >= g_ue_total || g_ue_matches.size() >= kUeMatchCapacity) {
+            UeFinishScan();
         }
-        if (g_ue_ids_only) {
-            g_ue_slots_this_tick += run;
-            if (g_ue_slots_this_tick >= kUeSlotBudget) break;
-        } else {
-            break;  // 慢路径：本 tick 的解析预算已交给 UeScanRun
-        }
-    }
-    if (g_ue_cursor < g_ue_total) {
-        if (g_ue_ids_only) g_ue_slots_this_tick = 0;
         return;
     }
-    g_ue_slots_this_tick = 0;
-
-    if (g_ue_phase == UeProbePhase::scanning) {
-        UeFinishScan();
-    } else {
+    if (!UeOwnerStep(reader, objects)) {
+        UeFinish("扫描中断（对象服务读取失败）", true);
+        return;
+    }
+    if (g_ue_cursor >= g_ue_total || g_ue_instance != 0) {
         UeFinishOwnerScan(reader);
     }
 }
@@ -523,10 +523,6 @@ void UeStop() noexcept {
     g_ue_phase = UeProbePhase::idle;
     g_ue_cursor = 0;
     g_ue_total = 0;
-    g_ue_slots_this_tick = 0;
-    g_ue_chunk = 0;
-    g_ue_chunk_index = 0xFFFFFFFFu;
-    g_ue_run_buffer.clear();
     g_ue_function = 0;
     g_ue_owner_class = 0;
     g_ue_instance = 0;
@@ -576,10 +572,10 @@ void UeContent(const AnomalyUiServiceV1* ui) {
         if (pressed != 0) g_ue_call_requested.store(true);
     }
 
-    std::string status, call, target;
+    std::string status, call;
     std::vector<UeMatch> matches;
     std::uint32_t match_total{};
-    UeCopyOut(status, call, target, matches, match_total);
+    UeCopyOut(status, call, matches, match_total);
     DrawText(ui, status);
     if (!call.empty()) DrawText(ui, call);
 
@@ -592,7 +588,8 @@ void UeContent(const AnomalyUiServiceV1* ui) {
                 g_ue_select_requested.store(static_cast<int>(index));
             }
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-            std::string line = std::string(match.name) + "  ←  " + match.class_name;
+            std::string line = std::string(match.name);
+            if (match.class_name[0] != '\0') line += std::string("  ←  ") + match.class_name;
             if (match.is_function) {
                 line += "  （" + std::to_string(match.num_parms) + " 参 / " +
                     std::to_string(match.parms_size) + " 字节）";
