@@ -1592,7 +1592,7 @@ void UeSyncText() {
 void UeContent(const AnomalyUiServiceV1* ui) {
     UeSyncText();
 
-    DrawText(ui, g_context.localizer.Text("refresh.title", "一键刷新怪物"));
+    DrawText(ui, g_context.localizer.Text("refresh.title", "刷新怪物（一键，不需打开营地）"));
     if (ui->button != nullptr) {
         const bool busy = g_ue_refresh_stage.load() != 0;
         const int pressed = ui->button_enabled != nullptr
