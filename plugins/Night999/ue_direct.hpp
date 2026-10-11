@@ -506,10 +506,22 @@ bool UeCallByName(const UeReader& reader, const std::string& name) {
     const std::uint64_t value = id;
     std::uint8_t parms[8]{};
     std::memcpy(parms, &value, sizeof(value));
-    const bool ok = UeInvoke(reader, g_ue_instance, g_ue_function, parms);
+    std::uint8_t buffer[32]{};
+    std::memcpy(buffer, parms, sizeof(parms));
+    const bool ok = UeInvoke(reader, g_ue_instance, g_ue_function, buffer);
+    std::string back;
+    if (ok && g_ue_parms_size > 8) {
+        back = " 返回 ";
+        for (std::uint32_t index = 8; index < g_ue_parms_size && index < 24; ++index) {
+            char item[8]{};
+            std::snprintf(item, sizeof(item), "%02X ", buffer[index]);
+            back += item;
+        }
+    }
     UeSetCallResultBoth("按名字刷新 " + name + " id=" + std::to_string(id) +
-                        (ok ? " 已调用" : " 调用失败"));
-    UeLog("campfire by-name " + name + " id=" + std::to_string(id) + (ok ? " ok" : " fail"));
+                        (ok ? " 已调用" : " 调用失败") + back);
+    UeLog("campfire by-name " + name + " id=" + std::to_string(id) + (ok ? " ok" : " fail") +
+          back);
     return ok;
 }
 
@@ -1209,9 +1221,18 @@ void UeAdvance(const UeReader& reader) {
             const bool ok = UeInvoke(reader, g_ue_instance, g_ue_function, parms);
             const std::string name =
                 reader.Name(UeFName{static_cast<std::uint32_t>(id & 0xFFFFFFFFull), 0});
+            std::string back;
+            if (ok && g_ue_parms_size != 0) {
+                back = " 返回 ";
+                for (std::uint32_t index = 0; index < g_ue_parms_size && index < 16; ++index) {
+                    char item[8]{};
+                    std::snprintf(item, sizeof(item), "%02X ", parms[index]);
+                    back += item;
+                }
+            }
             const std::string text = "campfire [" + std::to_string(g_ue_campfire_index) + "] " +
                 (name.empty() ? std::string("?") : name) + " id=" + std::to_string(id) +
-                (ok ? " 已调用" : " 调用失败");
+                (ok ? " 已调用" : " 调用失败") + back;
             UeLog(text);
             UeSetCallResultBoth(text);
             ++g_ue_campfire_index;
