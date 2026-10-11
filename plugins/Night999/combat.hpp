@@ -22,7 +22,7 @@ using anomaly::plugins::combat::State;
 constexpr std::int32_t kCombatSmallInputId = 2;
 constexpr std::int32_t kCombatUltimateInputId = 3;
 // 搜索半径（米）：模块只认这个范围内的怪，与打怪资源点的 search_radius_m 同一路数。
-constexpr double kCombatRadiusDefaultMeters = 50.0;
+constexpr double kCombatRadiusDefaultMeters = 15.0;
 constexpr double kCombatRadiusMinimumMeters = 5.0;
 constexpr double kCombatRadiusMaximumMeters = 300.0;
 // 首次接敌超时（秒）：开打后一次怪都没遇到过超过它 ⇒ 判定这个点没怪，直接进下一步。
@@ -30,7 +30,7 @@ constexpr double kCombatRadiusMaximumMeters = 300.0;
 constexpr double kCombatFirstContactDefaultSeconds = 15.0;
 constexpr double kCombatFirstContactMinimumSeconds = 1.0;
 constexpr double kCombatFirstContactMaximumSeconds = 120.0;
-constexpr double kCombatNoDamageDefaultSeconds = 20.0;
+constexpr double kCombatNoDamageDefaultSeconds = 10.0;
 constexpr double kCombatNoDamageMinimumSeconds = 1.0;
 constexpr double kCombatNoDamageMaximumSeconds = 300.0;
 constexpr std::size_t kCombatSecondsTextCapacity = 16;
@@ -71,9 +71,9 @@ std::chrono::steady_clock::time_point g_combat_target_at{};
 bool g_combat_had_target{};
 
 // 三个参数的输入缓冲（on_draw 线程独占，ImGui 文本存储必须跨帧保留）。
-std::array<char, kCombatSecondsTextCapacity> g_combat_no_damage_text{"20"};
+std::array<char, kCombatSecondsTextCapacity> g_combat_no_damage_text{"10"};
 std::array<char, kCombatSecondsTextCapacity> g_combat_first_contact_text{"15"};
-std::array<char, kCombatRadiusTextCapacity> g_combat_radius_text{"50"};
+std::array<char, kCombatRadiusTextCapacity> g_combat_radius_text{"15"};
 
 void CombatPublish(std::string text) {
     std::scoped_lock lock(g_combat_mutex);
@@ -317,15 +317,10 @@ void CombatContent(const AnomalyUiServiceV1* ui) {
     const auto number_row = [&](const char* label, const char* id, char* buffer,
                                 const std::size_t capacity, const char* hint) {
         ui->text(ui->user, StringView(label));
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 150.0F, 8.0F);
-        if (ui->input_text != nullptr) {
-            ui->input_text(ui->user, StringView(id), buffer, capacity,
-                           ANOMALY_UI_TEXT_INPUT_V1_NONE);
-        } else {
-            DrawText(ui, buffer);
-        }
-        if (hint != nullptr && ui->same_line != nullptr) {
-            ui->same_line(ui->user, 230.0F, 8.0F);
+        AlignAt(ui, 130.0F);
+        NarrowInputText(ui, id, buffer, capacity);
+        if (hint != nullptr) {
+            AlignAt(ui, 130.0F + kNarrowInputStride);
             DrawText(ui, hint);
         }
     };

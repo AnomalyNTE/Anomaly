@@ -5,7 +5,6 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
-#include "anomaly/sdk/services/plugin_state.h"
 #include "plugins/common/localization.hpp"
 // 共享自动战斗状态机（静态库 anomaly_plugin_combat）。必须放在匿名命名空间之外包含，
 // 否则它的 anomaly::plugins::combat 会被套进匿名命名空间、与静态库里的定义对不上。
@@ -21,8 +20,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -37,7 +34,7 @@ using anomaly::sdk::StringView;
 using anomaly::sdk::UiWindow;
 
 // ---------------------------------------------------------------------------
-// 脚本用的两个传送点与传送调参
+// 脚本用的两个传送点与传送调参（全部只存在内存里，重载即恢复默认）
 // ---------------------------------------------------------------------------
 // 营地（刷新怪物处）。
 constexpr double kDefaultCampX = -145902.874;
@@ -53,9 +50,7 @@ constexpr double kDefaultFightZ = 10159.201;
 constexpr double kPreloadDelayDefault = 2.0;
 constexpr double kPreloadDelayMaximum = 15.0;
 constexpr double kLandingLiftDefault = 250.0;
-constexpr double kLandingLiftMaximum = 2000.0;
 constexpr std::uint32_t kSinkRetriesDefault = 2;
-constexpr std::uint32_t kSinkRetriesMaximum = 8;
 constexpr std::uint32_t kLandingSettleTicks = 40;
 constexpr std::uint32_t kLandingWatchTicks = 180;
 constexpr double kSinkThreshold = 300.0;
@@ -64,17 +59,6 @@ constexpr double kMaximumCoordinate = 1.0e9;
 
 constexpr std::size_t kCoordinateTextCapacity = 32;
 constexpr std::size_t kNumberTextCapacity = 16;
-// 仅用于读旧版设置文件（v2 尾部有这个字段）。
-constexpr std::size_t kResetButtonNameCapacity = 64;
-
-constexpr std::uint32_t kSettingsMagic =
-    static_cast<std::uint32_t>('N') | (static_cast<std::uint32_t>('9') << 8u) |
-    (static_cast<std::uint32_t>('9') << 16u) | (static_cast<std::uint32_t>('K') << 24u);
-constexpr std::uint32_t kSettingsVersion = 3u;
-constexpr std::uint32_t kSettingsVersionV2 = 2u;
-constexpr std::uint32_t kSettingsVersionV1 = 1u;
-
-constexpr std::string_view kSettingsFileName = "night999-settings-v1.bin";
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -133,52 +117,13 @@ const char* StatusName(const std::uint32_t code) noexcept {
     }
 }
 
+// 全部运行期状态。刻意**不落盘**：任何编辑框在插件重载后都回到默认值。
 struct Settings {
     double camp_target[3]{kDefaultCampX, kDefaultCampY, kDefaultCampZ};
     double fight_target[3]{kDefaultFightX, kDefaultFightY, kDefaultFightZ};
     double preload_delay{kPreloadDelayDefault};
     double landing_lift{kLandingLiftDefault};
     std::uint32_t sink_retries{kSinkRetriesDefault};
-    std::uint32_t loop_count{};
-};
-
-struct SettingsFileHeader {
-    std::uint32_t magic{};
-    std::uint32_t version{};
-};
-
-// v1：只有一个目标点与传送调参；v2：追加刷新按钮名（现已不使用，读取时跳过）。
-struct SettingsFileV1 {
-    std::uint32_t magic{};
-    std::uint32_t version{};
-    double target[3]{};
-    double preload_delay{};
-    double landing_lift{};
-    std::uint32_t sink_retries{};
-    std::uint32_t reserved{};
-};
-
-struct SettingsFileV2 {
-    std::uint32_t magic{};
-    std::uint32_t version{};
-    double target[3]{};
-    double preload_delay{};
-    double landing_lift{};
-    std::uint32_t sink_retries{};
-    std::uint32_t force_click{};
-    char reset_button[kResetButtonNameCapacity]{};
-};
-
-// v3：营地 / 战斗点两个坐标 + 循环次数。
-struct SettingsFileV3 {
-    std::uint32_t magic{};
-    std::uint32_t version{};
-    double camp_target[3]{};
-    double fight_target[3]{};
-    double preload_delay{};
-    double landing_lift{};
-    std::uint32_t sink_retries{};
-    std::uint32_t loop_count{};
 };
 
 // 传送请求：句柄必须是「当前」快照里的 world / player，过期句柄宿主会直接拒绝。
@@ -203,7 +148,6 @@ struct Context {
     const AnomalyHostApiV1* host{};
     Localizer localizer;
     const AnomalyCoreServiceV1* core{};
-    const AnomalyPluginStateServiceV1* plugin_state{};
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5WorldServiceV1* world{};
@@ -222,7 +166,6 @@ struct Context {
     const AnomalyNteEntitiesServiceV1* entities{};
     const AnomalyNtePickupServiceV1* pickup{};
     const AnomalySignatureServiceV1* signature{};
-    std::filesystem::path settings_path;
     std::mutex mutex;
     Settings settings{};
     bool has_result{};
@@ -239,13 +182,11 @@ std::array<char, kCoordinateTextCapacity> g_fight_y_text{};
 std::array<char, kCoordinateTextCapacity> g_fight_z_text{};
 std::array<char, kNumberTextCapacity> g_preload_text{};
 
-// 跨线程标志。
+// 置位后由渲染线程把设置里的值刷进上面的输入缓冲。
 std::atomic_bool g_text_stale{true};
-std::atomic_bool g_settings_dirty{false};
 
 // on_update（Game 回调域）独占的状态。
 LandingMonitor g_landing{};
-std::chrono::steady_clock::time_point g_next_save{};
 
 void Log(const std::uint32_t level, const std::string& message) noexcept {
     const auto* core = g_context.core;
@@ -358,128 +299,6 @@ void RecordResult(const AnomalyStatusV1 status) noexcept {
         std::memcpy(g_context.result_message, status.message.data, size);
     }
     g_context.result_message[size] = '\0';
-}
-
-// ---------------------------------------------------------------------------
-// 设置持久化：状态目录由 anomaly.plugin-state 提供，文件写在插件自己的 state 目录下。
-// ---------------------------------------------------------------------------
-void ResolveSettingsPath() noexcept {
-    g_context.settings_path.clear();
-    const auto* state = g_context.plugin_state;
-    if (state == nullptr || state->directory == nullptr) return;
-
-    std::size_t bytes{};
-    if (state->directory(state->user, nullptr, &bytes).code != ANOMALY_STATUS_V1_OK ||
-        bytes < 2 || bytes > 4096) {
-        return;
-    }
-    std::vector<char> directory(bytes, '\0');
-    if (state->directory(state->user, directory.data(), &bytes).code != ANOMALY_STATUS_V1_OK) {
-        return;
-    }
-    const auto terminator = std::find(directory.begin(), directory.end(), '\0');
-    if (terminator == directory.begin()) return;
-    const std::string text(directory.begin(), terminator);
-    try {
-        g_context.settings_path =
-            std::filesystem::path(std::u8string(
-                reinterpret_cast<const char8_t*>(text.data()), text.size())) /
-            std::filesystem::path(kSettingsFileName);
-    } catch (...) {
-        g_context.settings_path.clear();
-    }
-}
-
-void ApplyTuningFields(
-    Settings& settings, const double preload_delay, const double landing_lift,
-    const std::uint32_t sink_retries) noexcept {
-    if (std::isfinite(preload_delay) && preload_delay >= 0.0 &&
-        preload_delay <= kPreloadDelayMaximum) {
-        settings.preload_delay = preload_delay;
-    }
-    if (std::isfinite(landing_lift) && landing_lift >= 0.0 &&
-        landing_lift <= kLandingLiftMaximum) {
-        settings.landing_lift = landing_lift;
-    }
-    if (sink_retries <= kSinkRetriesMaximum) settings.sink_retries = sink_retries;
-}
-
-void LoadSettings() noexcept {
-    Settings settings{};
-    if (!g_context.settings_path.empty()) {
-        std::ifstream input(g_context.settings_path, std::ios::binary);
-        SettingsFileHeader header{};
-        if (input.read(reinterpret_cast<char*>(&header), sizeof(header)) &&
-            header.magic == kSettingsMagic) {
-            input.seekg(0);
-            if (header.version == kSettingsVersionV1) {
-                SettingsFileV1 file{};
-                if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
-                    if (IsUsablePosition(file.target)) {
-                        std::copy(file.target, file.target + 3, settings.fight_target);
-                    }
-                    ApplyTuningFields(settings, file.preload_delay, file.landing_lift,
-                                      file.sink_retries);
-                }
-            } else if (header.version == kSettingsVersionV2) {
-                SettingsFileV2 file{};
-                if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
-                    if (IsUsablePosition(file.target)) {
-                        std::copy(file.target, file.target + 3, settings.fight_target);
-                    }
-                    ApplyTuningFields(settings, file.preload_delay, file.landing_lift,
-                                      file.sink_retries);
-                }
-            } else if (header.version == kSettingsVersion) {
-                SettingsFileV3 file{};
-                if (input.read(reinterpret_cast<char*>(&file), sizeof(file))) {
-                    if (IsUsablePosition(file.camp_target)) {
-                        std::copy(file.camp_target, file.camp_target + 3, settings.camp_target);
-                    }
-                    if (IsUsablePosition(file.fight_target)) {
-                        std::copy(file.fight_target, file.fight_target + 3, settings.fight_target);
-                    }
-                    ApplyTuningFields(settings, file.preload_delay, file.landing_lift,
-                                      file.sink_retries);
-                    settings.loop_count = file.loop_count;
-                }
-            }
-        }
-    }
-    std::scoped_lock lock(g_context.mutex);
-    g_context.settings = settings;
-}
-
-bool SaveSettings() noexcept {
-    if (g_context.settings_path.empty()) return false;
-    Settings settings{};
-    {
-        std::scoped_lock lock(g_context.mutex);
-        settings = g_context.settings;
-    }
-
-    SettingsFileV3 file{};
-    file.magic = kSettingsMagic;
-    file.version = kSettingsVersion;
-    std::copy(settings.camp_target, settings.camp_target + 3, file.camp_target);
-    std::copy(settings.fight_target, settings.fight_target + 3, file.fight_target);
-    file.preload_delay = settings.preload_delay;
-    file.landing_lift = settings.landing_lift;
-    file.sink_retries = settings.sink_retries;
-    file.loop_count = settings.loop_count;
-
-    std::ofstream output(g_context.settings_path, std::ios::binary | std::ios::trunc);
-    if (!output) return false;
-    output.write(reinterpret_cast<const char*>(&file), sizeof(file));
-    return output.good();
-}
-
-void SaveIfDue() noexcept {
-    if (!g_settings_dirty.load()) return;
-    const auto now = std::chrono::steady_clock::now();
-    if (now < g_next_save) return;
-    g_next_save = now + std::chrono::seconds(2);
-    if (SaveSettings()) g_settings_dirty.store(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -641,7 +460,7 @@ void ProcessLandingMonitor(const AnomalyHostApiV1* host) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// UI
+// UI 基础：文本、数字解析、定宽输入框
 // ---------------------------------------------------------------------------
 void DrawText(const AnomalyUiServiceV1* ui, const std::string_view text) {
     ui->text(ui->user, StringView(text));
@@ -655,6 +474,49 @@ double ParseNumber(const char* text) noexcept {
     return value;
 }
 
+// 输入框宽度 = 所在容器宽度的 65%（宿主没有「设置下一项宽度」的接口，它自己的输入框都是
+// 显式 SetNextItemWidth 才窄的）。所以这里把控件塞进一个**定宽单列表格**：表格自带行高计算，
+// 比自己开 child 更省心（child 还得猜高度，猜小了会出滚动条）。
+constexpr float kNarrowInputWidth = 150.0F;
+
+template <typename Draw>
+void NarrowItem(const AnomalyUiServiceV1* ui, const char* id, Draw&& draw) {
+    if (ui->begin_table != nullptr && ui->table_next_row != nullptr &&
+        ui->table_next_column != nullptr && ui->end_table != nullptr) {
+        char table_id[80]{};
+        std::snprintf(table_id, sizeof(table_id), "narrow-%s", id);
+        if (ui->begin_table(ui->user, StringView(table_id), 1,
+                            ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT, kNarrowInputWidth,
+                            0.0F) != 0) {
+            ui->table_next_row(ui->user);
+            static_cast<void>(ui->table_next_column(ui->user));
+            draw();
+            ui->end_table(ui->user);
+            return;
+        }
+    }
+    draw();
+}
+
+void NarrowInputText(
+    const AnomalyUiServiceV1* ui, const char* id, char* buffer, const std::size_t capacity) {
+    NarrowItem(ui, id, [&] {
+        if (ui->input_text != nullptr) {
+            ui->input_text(ui->user, StringView(id), buffer, capacity,
+                           ANOMALY_UI_TEXT_INPUT_V1_NONE);
+        } else {
+            DrawText(ui, buffer);
+        }
+    });
+}
+
+void AlignAt(const AnomalyUiServiceV1* ui, const float offset) {
+    if (ui->same_line != nullptr) ui->same_line(ui->user, offset, 8.0F);
+}
+
+// 一行里放三个输入框时的横向步长（定宽容器 150 + 间隙）。
+constexpr float kNarrowInputStride = 164.0F;
+
 // ---------------------------------------------------------------------------
 // 子模块：UE 反射直调（含一键刷新）→ 自动战斗 → 脚本循环
 // ---------------------------------------------------------------------------
@@ -663,32 +525,15 @@ double ParseNumber(const char* text) noexcept {
 #include "combat.hpp"
 #include "script.hpp"
 
-// 把界面上的输入框同步回设置。只有确实变化才标脏，避免每帧写盘。
-void CommitInputs() noexcept {
-    const double camp[3]{ParseNumber(g_camp_x_text.data()), ParseNumber(g_camp_y_text.data()),
-                         ParseNumber(g_camp_z_text.data())};
-    const double fight[3]{ParseNumber(g_fight_x_text.data()), ParseNumber(g_fight_y_text.data()),
-                          ParseNumber(g_fight_z_text.data())};
-    const double preload = ParseNumber(g_preload_text.data());
-
-    bool dirty = false;
-    {
-        std::scoped_lock lock(g_context.mutex);
-        if (IsUsablePosition(camp) && !SamePosition(camp, g_context.settings.camp_target)) {
-            std::copy(camp, camp + 3, g_context.settings.camp_target);
-            dirty = true;
-        }
-        if (IsUsablePosition(fight) && !SamePosition(fight, g_context.settings.fight_target)) {
-            std::copy(fight, fight + 3, g_context.settings.fight_target);
-            dirty = true;
-        }
-        if (std::isfinite(preload) && preload >= 0.0 && preload <= kPreloadDelayMaximum &&
-            !SameValue(preload, g_context.settings.preload_delay)) {
-            g_context.settings.preload_delay = preload;
-            dirty = true;
-        }
-    }
-    if (dirty) g_settings_dirty.store(true);
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+void FormatPosition(
+    const double position[3], char* x, const std::size_t capacity_x, char* y,
+    const std::size_t capacity_y, char* z, const std::size_t capacity_z) {
+    std::snprintf(x, capacity_x, "%.3f", position[0]);
+    std::snprintf(y, capacity_y, "%.3f", position[1]);
+    std::snprintf(z, capacity_z, "%.3f", position[2]);
 }
 
 void SyncTextBuffers() {
@@ -698,13 +543,56 @@ void SyncTextBuffers() {
         std::scoped_lock lock(g_context.mutex);
         settings = g_context.settings;
     }
-    std::snprintf(g_camp_x_text.data(), g_camp_x_text.size(), "%.3f", settings.camp_target[0]);
-    std::snprintf(g_camp_y_text.data(), g_camp_y_text.size(), "%.3f", settings.camp_target[1]);
-    std::snprintf(g_camp_z_text.data(), g_camp_z_text.size(), "%.3f", settings.camp_target[2]);
-    std::snprintf(g_fight_x_text.data(), g_fight_x_text.size(), "%.3f", settings.fight_target[0]);
-    std::snprintf(g_fight_y_text.data(), g_fight_y_text.size(), "%.3f", settings.fight_target[1]);
-    std::snprintf(g_fight_z_text.data(), g_fight_z_text.size(), "%.3f", settings.fight_target[2]);
+    FormatPosition(settings.camp_target, g_camp_x_text.data(), g_camp_x_text.size(),
+                   g_camp_y_text.data(), g_camp_y_text.size(), g_camp_z_text.data(),
+                   g_camp_z_text.size());
+    FormatPosition(settings.fight_target, g_fight_x_text.data(), g_fight_x_text.size(),
+                   g_fight_y_text.data(), g_fight_y_text.size(), g_fight_z_text.data(),
+                   g_fight_z_text.size());
     std::snprintf(g_preload_text.data(), g_preload_text.size(), "%.1f", settings.preload_delay);
+}
+
+// 把界面上的输入框搬回设置。只有确实变化才写，避免每帧来回覆盖。
+void CommitInputs() noexcept {
+    const double camp[3]{ParseNumber(g_camp_x_text.data()), ParseNumber(g_camp_y_text.data()),
+                         ParseNumber(g_camp_z_text.data())};
+    const double fight[3]{ParseNumber(g_fight_x_text.data()), ParseNumber(g_fight_y_text.data()),
+                          ParseNumber(g_fight_z_text.data())};
+    const double preload = ParseNumber(g_preload_text.data());
+
+    std::scoped_lock lock(g_context.mutex);
+    if (IsUsablePosition(camp) && !SamePosition(camp, g_context.settings.camp_target)) {
+        std::copy(camp, camp + 3, g_context.settings.camp_target);
+    }
+    if (IsUsablePosition(fight) && !SamePosition(fight, g_context.settings.fight_target)) {
+        std::copy(fight, fight + 3, g_context.settings.fight_target);
+    }
+    if (std::isfinite(preload) && preload >= 0.0 && preload <= kPreloadDelayMaximum &&
+        !SameValue(preload, g_context.settings.preload_delay)) {
+        g_context.settings.preload_delay = preload;
+    }
+}
+
+// 「读取当前坐标为营地 / 战斗点」：取一次玩家快照，同时写进设置与输入框（当帧就能看到）。
+void CaptureCurrentPosition(const AnomalyHostApiV1* host, const bool camp) {
+    double position[3]{};
+    if (!TryReadCurrentPosition(host, position)) {
+        RecordResult(StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE));
+        return;
+    }
+    {
+        std::scoped_lock lock(g_context.mutex);
+        std::copy(position, position + 3,
+                  camp ? g_context.settings.camp_target : g_context.settings.fight_target);
+    }
+    FormatPosition(position, camp ? g_camp_x_text.data() : g_fight_x_text.data(),
+                   g_camp_x_text.size(), camp ? g_camp_y_text.data() : g_fight_y_text.data(),
+                   g_camp_y_text.size(), camp ? g_camp_z_text.data() : g_fight_z_text.data(),
+                   g_camp_z_text.size());
+    char detail[128]{};
+    std::snprintf(detail, sizeof(detail), "night999 captured %s position (%.3f, %.3f, %.3f)",
+                  camp ? "camp" : "fight", position[0], position[1], position[2]);
+    Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, detail);
 }
 
 void LastTeleportWarning(const AnomalyUiServiceV1* ui) {
@@ -724,95 +612,44 @@ void LastTeleportWarning(const AnomalyUiServiceV1* ui) {
     DrawText(ui, line);
 }
 
-void PointInput(
-    const AnomalyUiServiceV1* ui, const char* id, char* buffer, const std::size_t capacity) {
-    if (ui->input_text != nullptr) {
-        ui->input_text(ui->user, StringView(id), buffer, capacity,
-                       ANOMALY_UI_TEXT_INPUT_V1_NONE);
-    } else {
-        DrawText(ui, buffer);
-    }
-}
-
-// 两个传送点：营地 / 战斗点，各三个坐标。用四列表格排成紧凑的两行。
-void PointRows(const AnomalyUiServiceV1* ui) {
-    const auto fallback_row = [&](const char* label, const char* x_id, char* x_text,
-                                  const char* y_id, char* y_text, const char* z_id,
-                                  char* z_text, const std::size_t capacity) {
-        ui->text(ui->user, StringView(label));
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 72.0F, 8.0F);
-        PointInput(ui, x_id, x_text, capacity);
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        PointInput(ui, y_id, y_text, capacity);
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        PointInput(ui, z_id, z_text, capacity);
-    };
-    const bool table_ready = ui->begin_table != nullptr && ui->table_next_row != nullptr &&
-        ui->table_next_column != nullptr && ui->end_table != nullptr &&
-        ui->begin_table(ui->user, StringView("##night999-points"), 4, 0, 0.0F, 0.0F) != 0;
-    if (!table_ready) {
-        // 表格不可用（旧宿主）或创建失败：退化成逐行布局，功能一致。
-        fallback_row("营地", "##night999-camp-x", g_camp_x_text.data(), "##night999-camp-y",
-                     g_camp_y_text.data(), "##night999-camp-z", g_camp_z_text.data(),
-                     g_camp_x_text.size());
-        fallback_row("战斗点", "##night999-fight-x", g_fight_x_text.data(), "##night999-fight-y",
-                     g_fight_y_text.data(), "##night999-fight-z", g_fight_z_text.data(),
-                     g_fight_x_text.size());
-        return;
-    }
-
-    ui->table_next_row(ui->user);
-    DrawText(ui, "");
-    static_cast<void>(ui->table_next_column(ui->user));
+// 一行：`营地  X [..]  Y [..]  Z [..]`
+void PointRow(
+    const AnomalyUiServiceV1* ui, const char* label, const char* x_id, char* x_text,
+    const char* y_id, char* y_text, const char* z_id, char* z_text) {
+    ui->text(ui->user, StringView(label));
+    AlignAt(ui, 56.0F);
     DrawText(ui, "X");
-    static_cast<void>(ui->table_next_column(ui->user));
+    AlignAt(ui, 68.0F);
+    NarrowInputText(ui, x_id, x_text, kCoordinateTextCapacity);
+    AlignAt(ui, 68.0F + kNarrowInputStride);
     DrawText(ui, "Y");
-    static_cast<void>(ui->table_next_column(ui->user));
+    AlignAt(ui, 80.0F + kNarrowInputStride);
+    NarrowInputText(ui, y_id, y_text, kCoordinateTextCapacity);
+    AlignAt(ui, 80.0F + kNarrowInputStride * 2.0F);
     DrawText(ui, "Z");
-
-    ui->table_next_row(ui->user);
-    DrawText(ui, "营地");
-    static_cast<void>(ui->table_next_column(ui->user));
-    PointInput(ui, "##night999-camp-x", g_camp_x_text.data(), g_camp_x_text.size());
-    static_cast<void>(ui->table_next_column(ui->user));
-    PointInput(ui, "##night999-camp-y", g_camp_y_text.data(), g_camp_y_text.size());
-    static_cast<void>(ui->table_next_column(ui->user));
-    PointInput(ui, "##night999-camp-z", g_camp_z_text.data(), g_camp_z_text.size());
-
-    ui->table_next_row(ui->user);
-    DrawText(ui, "战斗点");
-    static_cast<void>(ui->table_next_column(ui->user));
-    PointInput(ui, "##night999-fight-x", g_fight_x_text.data(), g_fight_x_text.size());
-    static_cast<void>(ui->table_next_column(ui->user));
-    PointInput(ui, "##night999-fight-y", g_fight_y_text.data(), g_fight_y_text.size());
-    static_cast<void>(ui->table_next_column(ui->user));
-    PointInput(ui, "##night999-fight-z", g_fight_z_text.data(), g_fight_z_text.size());
-
-    ui->end_table(ui->user);
+    AlignAt(ui, 92.0F + kNarrowInputStride * 2.0F);
+    NarrowInputText(ui, z_id, z_text, kCoordinateTextCapacity);
 }
 
 void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
-    (void)host;
     SyncTextBuffers();
+
+    DrawText(ui, g_context.localizer.Text("note.map", "此脚本适用于999夜赤龙古堡地图"));
+    if (ui->separator != nullptr) ui->separator(ui->user);
 
     // ── 脚本循环 ──
     DrawText(ui, g_context.localizer.Text("script.title", "脚本循环"));
     if (ui->input_uint32 != nullptr) {
         ui->text(ui->user, StringView("循环次数"));
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 72.0F, 8.0F);
+        AlignAt(ui, 56.0F);
         std::uint32_t count = g_script_loop_count.load();
-        if (ui->input_uint32(ui->user, StringView("##night999-loop"), &count, 1, 10) != 0) {
-            g_script_loop_count.store(count);
-            {
-                std::scoped_lock lock(g_context.mutex);
-                g_context.settings.loop_count = count;
+        NarrowItem(ui, "##night999-loop", [&] {
+            if (ui->input_uint32(ui->user, StringView("##night999-loop"), &count, 1, 10) != 0) {
+                g_script_loop_count.store(count);
             }
-            g_settings_dirty.store(true);
-        }
-        if (ui->same_line != nullptr) {
-            ui->same_line(ui->user, 190.0F, 8.0F);
-            DrawText(ui, "（0 = 无限循环）");
-        }
+        });
+        AlignAt(ui, 68.0F + kNarrowInputStride);
+        DrawText(ui, "（0 = 无限循环）");
     }
     if (ui->button != nullptr) {
         const bool running = g_script_running.load();
@@ -832,19 +669,24 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
 
     // ── 传送点 ──
     DrawText(ui, g_context.localizer.Text("points.title", "传送点"));
-    PointRows(ui);
+    PointRow(ui, "营地", "##night999-camp-x", g_camp_x_text.data(), "##night999-camp-y",
+             g_camp_y_text.data(), "##night999-camp-z", g_camp_z_text.data());
+    PointRow(ui, "战斗点", "##night999-fight-x", g_fight_x_text.data(), "##night999-fight-y",
+             g_fight_y_text.data(), "##night999-fight-z", g_fight_z_text.data());
+    if (ui->button != nullptr) {
+        if (ui->button(ui->user, StringView("读取营地为当前位置"), 0.0F, 0.0F) != 0) {
+            CaptureCurrentPosition(host, true);
+        }
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        if (ui->button(ui->user, StringView("读取战斗点为当前位置"), 0.0F, 0.0F) != 0) {
+            CaptureCurrentPosition(host, false);
+        }
+    }
     ui->text(ui->user, StringView("预载延迟"));
-    if (ui->same_line != nullptr) ui->same_line(ui->user, 72.0F, 8.0F);
-    if (ui->input_text != nullptr) {
-        ui->input_text(ui->user, StringView("##night999-preload"), g_preload_text.data(),
-                       g_preload_text.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE);
-    } else {
-        DrawText(ui, g_preload_text.data());
-    }
-    if (ui->same_line != nullptr) {
-        ui->same_line(ui->user, 190.0F, 8.0F);
-        DrawText(ui, "秒（0 = 立即传送）");
-    }
+    AlignAt(ui, 56.0F);
+    NarrowInputText(ui, "##night999-preload", g_preload_text.data(), g_preload_text.size());
+    AlignAt(ui, 68.0F + kNarrowInputStride);
+    DrawText(ui, "秒（0 = 立即传送）");
     LastTeleportWarning(ui);
 
     if (ui->separator != nullptr) ui->separator(ui->user);
@@ -866,8 +708,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.localizer = Localizer(host);
     g_context.core = QueryService<AnomalyCoreServiceV1>(
         host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION).service;
-    g_context.plugin_state = QueryService<AnomalyPluginStateServiceV1>(
-        host, ANOMALY_PLUGIN_STATE_SERVICE_V1_ID, ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION).service;
     g_context.names = QueryService<AnomalyUe5NamesServiceV1>(
         host, ANOMALY_UE5_NAMES_SERVICE_V1_ID, 2).service;
     g_context.objects = QueryService<AnomalyUe5ObjectsServiceV1>(
@@ -907,7 +747,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         host, ANOMALY_NTE_PICKUP_SERVICE_V1_ID, ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION).service;
     g_context.signature = QueryService<AnomalySignatureServiceV1>(
         host, ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).service;
-    g_context.settings_path.clear();
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.settings = Settings{};
@@ -922,22 +761,20 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     if (context == nullptr) return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_landing = {};
-    g_next_save = {};
     g_text_stale.store(true);
     UeStop();
     CombatShutdown();
     ScriptShutdown();
     CombatPublish("自动战斗：未开始");
-    ResolveSettingsPath();
-    LoadSettings();
-    g_settings_dirty.store(false);
     {
         std::scoped_lock lock(g_context.mutex);
-        g_script_loop_count.store(g_context.settings.loop_count);
+        // 刻意不落盘：每次启用都回到默认值，调参调坏了重载即可复位。
+        g_context.settings = Settings{};
         g_context.has_result = false;
         g_context.result_code = ANOMALY_STATUS_V1_UNAVAILABLE;
         g_context.result_message[0] = '\0';
     }
+    g_script_loop_count.store(0);
     Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "night999 script started");
     return Ok();
 }
@@ -952,12 +789,6 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     UeStop();
     CombatShutdown();
     g_landing = {};
-    try {
-        static_cast<void>(SaveSettings());
-        g_settings_dirty.store(false);
-    } catch (...) {
-        Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 settings could not be saved");
-    }
     return Ok();
 }
 
@@ -969,7 +800,6 @@ void ANOMALY_CALL Update(void*, double) {
         if (host == nullptr) return;
 
         ProcessLandingMonitor(host);
-        SaveIfDue();
 
         // 刷新 / 战斗 / 脚本循环都要在 Game 回调域推进。
         const bool game_thread = g_context.framework != nullptr &&
@@ -1027,7 +857,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.14.0"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.15.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }
