@@ -44,7 +44,11 @@ struct UeEventRecord {
     std::uint32_t parms_size{};
     bool monitored{};
     bool resolved{};
+    bool decoded{};
+    std::uint64_t parms_value{};
+    std::uint8_t parms_raw[kUeParmsCapture]{};
     char parms_hex[kUeParmsCapture * 3 + 8]{};
+    char parms_fname[kUeTextCapacity]{};
     char function_name[kUeTextCapacity]{};
     char class_name[kUeTextCapacity]{};
 };
@@ -86,6 +90,9 @@ std::string g_ue_call_result;
 std::string g_ue_params_dump;
 std::vector<UeMatch> g_ue_matches;
 std::string g_ue_target_name;
+// 调用参数：空 = 全零；0x…/十进制 = 64 位整数；其它按 FName 名字查 id。
+std::string g_ue_param;
+std::array<char, kUeTextCapacity> g_ue_param_text{};
 
 UeEventRecord g_ue_events[kUeEventCapacity];
 std::size_t g_ue_event_count{};
@@ -121,6 +128,15 @@ void UeAppendHex(char* destination, const std::size_t capacity, const void* sour
     destination[used] = '\0';
 }
 
+// 记录一次调用的实参：十六进制（给人看）与原字节（给解析用）。
+void UeCaptureParms(UeEventRecord& record, void* parameters, const std::uint16_t parms_size) {
+    if (parameters == nullptr) return;
+    const std::size_t take = std::min<std::size_t>(parms_size, kUeParmsCapture);
+    UeAppendHex(record.parms_hex, sizeof(record.parms_hex), parameters, take);
+    std::memcpy(record.parms_raw, parameters, take);
+    record.parms_size = parms_size;
+}
+
 bool UeIsMonitored(const std::uint32_t function_id) noexcept {
     for (std::size_t index = 0; index < g_ue_monitor_count; ++index) {
         if (g_ue_monitor_ids[index] == function_id) return true;
@@ -154,11 +170,7 @@ void ANOMALY_CALL UeObserve(void*, std::uintptr_t object, std::uintptr_t functio
         auto& record = g_ue_events[index];
         if (record.function_id != name.id || record.object != object) continue;
         ++record.count;
-        if (record.parms_hex[0] == '\0' && parameters != nullptr) {
-            UeAppendHex(record.parms_hex, sizeof(record.parms_hex), parameters,
-                        std::min<std::size_t>(parms_size, kUeParmsCapture));
-            record.parms_size = parms_size;
-        }
+        if (record.parms_hex[0] == '\0') UeCaptureParms(record, parameters, parms_size);
         return;
     }
     if (g_ue_event_count >= kUeEventCapacity) return;
@@ -167,11 +179,7 @@ void ANOMALY_CALL UeObserve(void*, std::uintptr_t object, std::uintptr_t functio
     record.object = object;
     record.count = 1;
     record.monitored = monitored;
-    if (parameters != nullptr) {
-        UeAppendHex(record.parms_hex, sizeof(record.parms_hex), parameters,
-                    std::min<std::size_t>(parms_size, kUeParmsCapture));
-        record.parms_size = parms_size;
-    }
+    UeCaptureParms(record, parameters, parms_size);
 }
 
 void UePublish(std::string text) {
@@ -203,6 +211,17 @@ void UeSetKeyword(const std::string& keyword) {
 std::string UeKeyword() {
     std::scoped_lock lock(g_ue_mutex);
     return g_ue_keyword;
+}
+
+void UeSetParam(const std::string& param) {
+    std::scoped_lock lock(g_ue_mutex);
+    if (g_ue_param == param) return;
+    g_ue_param = param;
+}
+
+std::string UeParam() {
+    std::scoped_lock lock(g_ue_mutex);
+    return g_ue_param;
 }
 
 const char* UeParmsText() {
@@ -578,6 +597,57 @@ void UeFinishOwnerScan(const UeReader& reader) {
           " cdo=" + (g_ue_instance_is_cdo ? "1" : "0"));
 }
 
+// 把「调用参数」写进参数缓冲：空 = 全零；数字 = 64 位整数；其它 = FName 名字。
+bool UeFillParms(std::vector<std::uint8_t>& parms, std::string& detail) {
+    const std::string text = UeParam();
+    if (text.empty()) {
+        detail = "全零";
+        return true;
+    }
+    if (parms.size() < 8) {
+        detail = "ParmsSize=" + std::to_string(parms.size()) + "，放不下参数，按全零调用";
+        return true;
+    }
+    const bool hex = text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+    const std::size_t start = hex ? 2 : 0;
+    std::uint64_t value{};
+    bool numeric = start < text.size();
+    for (std::size_t index = start; index < text.size() && numeric; ++index) {
+        const char c = text[index];
+        std::uint32_t digit{};
+        if (c >= '0' && c <= '9') {
+            digit = static_cast<std::uint32_t>(c - '0');
+        } else if (hex && c >= 'a' && c <= 'f') {
+            digit = static_cast<std::uint32_t>(c - 'a' + 10);
+        } else if (hex && c >= 'A' && c <= 'F') {
+            digit = static_cast<std::uint32_t>(c - 'A' + 10);
+        } else {
+            numeric = false;
+            break;
+        }
+        value = value * (hex ? 16u : 10u) + digit;
+    }
+    if (numeric) {
+        std::memcpy(parms.data(), &value, 8);
+        char number[32]{};
+        std::snprintf(number, sizeof(number), "%llu", static_cast<unsigned long long>(value));
+        detail = std::string(hex ? "0x" : "") + number;
+        return true;
+    }
+    const auto* names = g_context.names;
+    std::uint32_t id{};
+    if (names == nullptr || names->find_utf8 == nullptr ||
+        names->find_utf8(names->user, StringView(text), &id).code != ANOMALY_STATUS_V1_OK ||
+        id == 0) {
+        detail = "「" + text + "」既不是数字，名字池里也没有它（本次按全零调用）";
+        return false;
+    }
+    value = id;
+    std::memcpy(parms.data(), &value, 8);
+    detail = "FName「" + text + "」id=" + std::to_string(id);
+    return true;
+}
+
 void UeCallFunction() {
     if (g_ue_function == 0 || g_ue_instance == 0) {
         UeSetCallResultBoth("没有可调用的目标（请先探测并选用）");
@@ -594,6 +664,8 @@ void UeCallFunction() {
         UeSetCallResultBoth("对象注册表不可用");
         return;
     }
+    std::string param_detail;
+    UeFillParms(parms, param_detail);
     std::string target;
     {
         std::scoped_lock lock(g_ue_mutex);
@@ -606,7 +678,7 @@ void UeCallFunction() {
         return;
     }
     std::string detail = "已调用「" + target + "」（" + UeParmsText() +
-        (g_ue_instance_is_cdo ? "，对象 CDO" : "，对象实例") + "）";
+        (g_ue_instance_is_cdo ? "，对象 CDO" : "，对象实例") + "，参数 " + param_detail + "）";
     if (g_ue_parms_size != 0) {
         detail += "，调用后缓冲 ";
         for (std::uint32_t index = 0; index < g_ue_parms_size && index < 16; ++index) {
@@ -637,6 +709,21 @@ void UeResolveEvents(const UeReader& reader) {
         }
         record.resolved = true;
         --budget;
+    }
+    for (std::size_t index = 0; index < g_ue_event_count; ++index) {
+        auto& record = g_ue_events[index];
+        if (record.decoded || record.parms_size < 8) continue;
+        record.decoded = true;
+        std::uint64_t raw{};
+        std::memcpy(&raw, record.parms_raw, 8);
+        record.parms_value = raw;
+        // 低 4 字节当 FName id、高 4 字节当 number；number 过大说明这是指针而不是 FName。
+        const std::uint32_t id = static_cast<std::uint32_t>(raw & 0xFFFFFFFFull);
+        const std::uint32_t number = static_cast<std::uint32_t>(raw >> 32);
+        if (id == 0 || number > 4) continue;
+        const std::string text = reader.Name(UeFName{id, number});
+        if (text.empty()) continue;
+        std::snprintf(record.parms_fname, sizeof(record.parms_fname), "%s", text.c_str());
     }
 }
 
@@ -771,6 +858,16 @@ void UeContent(const AnomalyUiServiceV1* ui) {
     }
     UeSetKeyword(g_ue_text.data());
 
+    ui->text(ui->user, StringView("调用参数"));
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 110.0F, 8.0F);
+    if (ui->input_text != nullptr) {
+        ui->input_text(ui->user, StringView("##night999-ue-param"), g_ue_param_text.data(),
+                       g_ue_param_text.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE);
+    } else {
+        DrawText(ui, g_ue_param_text.data());
+    }
+    UeSetParam(g_ue_param_text.data());
+
     if (ui->button != nullptr) {
         if (ui->button(ui->user, StringView("探测"), 0.0F, 0.0F) != 0) {
             g_ue_probe_requested.store(true);
@@ -828,25 +925,53 @@ void UeContent(const AnomalyUiServiceV1* ui) {
             }
         }
     }
+    std::string fill_param;
     if (g_ue_recording.load()) {
         if (ui->button != nullptr &&
             ui->button(ui->user, StringView("清空记录"), 0.0F, 0.0F) != 0) {
             g_ue_clear_log_requested.store(true);
         }
-        std::scoped_lock lock(g_ue_mutex);
-        DrawText(ui, "共命中 " + std::to_string(g_ue_event_total) + " 次，" +
-                         std::to_string(g_ue_event_count) + " 条记录（函数 × 对象）：");
-        const std::size_t shown = g_ue_event_count < 10 ? g_ue_event_count : 10;
-        for (std::size_t index = 0; index < shown; ++index) {
-            const auto& record = g_ue_events[index];
-            DrawText(ui, std::string(record.resolved ? record.function_name : "(解析中)") +
-                             "  ←  " + (record.resolved ? record.class_name : "?") + "  ×" +
-                             std::to_string(record.count) +
-                             (record.parms_hex[0] != '\0'
-                                  ? std::string("  实参[") + std::to_string(record.parms_size) +
-                                        "] " + record.parms_hex
-                                  : std::string()));
+        {
+            std::scoped_lock lock(g_ue_mutex);
+            DrawText(ui, "共命中 " + std::to_string(g_ue_event_total) + " 次，" +
+                             std::to_string(g_ue_event_count) + " 条记录（函数 × 对象）：");
+            const std::size_t shown = g_ue_event_count < 10 ? g_ue_event_count : 10;
+            for (std::size_t index = 0; index < shown; ++index) {
+                const auto& record = g_ue_events[index];
+                std::string args;
+                if (record.parms_hex[0] != '\0') {
+                    args = "  实参[" + std::to_string(record.parms_size) + "] " + record.parms_hex;
+                    if (record.parms_size >= 8) {
+                        args += "(u64=" + std::to_string(record.parms_value);
+                        if (record.parms_fname[0] != '\0') {
+                            args += "  FName「" + std::string(record.parms_fname) + "」";
+                        }
+                        args += ")";
+                    }
+                }
+                if (ui->button != nullptr && record.parms_size >= 8) {
+                    const std::string label = "填入##night999-ue-fill-" + std::to_string(index);
+                    if (ui->button(ui->user, StringView(label), 0.0F, 0.0F) != 0) {
+                        if (record.parms_fname[0] != '\0') {
+                            fill_param = record.parms_fname;
+                        } else {
+                            char number[32]{};
+                            std::snprintf(number, sizeof(number), "0x%llX",
+                                          static_cast<unsigned long long>(record.parms_value));
+                            fill_param = number;
+                        }
+                    }
+                    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+                }
+                DrawText(ui, std::string(record.resolved ? record.function_name : "(解析中)") +
+                                 "  ←  " + (record.resolved ? record.class_name : "?") + "  ×" +
+                                 std::to_string(record.count) + args);
+            }
         }
+    }
+    if (!fill_param.empty()) {
+        std::snprintf(g_ue_param_text.data(), g_ue_param_text.size(), "%s", fill_param.c_str());
+        UeSetParam(g_ue_param_text.data());
     }
 }
 
