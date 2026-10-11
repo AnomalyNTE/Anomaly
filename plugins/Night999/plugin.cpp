@@ -474,48 +474,34 @@ double ParseNumber(const char* text) noexcept {
     return value;
 }
 
-// 输入框宽度 = 所在容器宽度的 65%（宿主没有「设置下一项宽度」的接口，它自己的输入框都是
-// 显式 SetNextItemWidth 才窄的）。所以这里把控件塞进一个**定宽单列表格**：表格自带行高计算，
-// 比自己开 child 更省心（child 还得猜高度，猜小了会出滚动条）。
-constexpr float kNarrowInputWidth = 150.0F;
-
-template <typename Draw>
-void NarrowItem(const AnomalyUiServiceV1* ui, const char* id, Draw&& draw) {
-    if (ui->begin_table != nullptr && ui->table_next_row != nullptr &&
-        ui->table_next_column != nullptr && ui->end_table != nullptr) {
-        char table_id[80]{};
-        std::snprintf(table_id, sizeof(table_id), "narrow-%s", id);
-        if (ui->begin_table(ui->user, StringView(table_id), 1,
-                            ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT, kNarrowInputWidth,
-                            0.0F) != 0) {
-            ui->table_next_row(ui->user);
-            static_cast<void>(ui->table_next_column(ui->user));
-            draw();
-            ui->end_table(ui->user);
-            return;
-        }
-    }
-    draw();
-}
-
-void NarrowInputText(
-    const AnomalyUiServiceV1* ui, const char* id, char* buffer, const std::size_t capacity) {
-    NarrowItem(ui, id, [&] {
-        if (ui->input_text != nullptr) {
-            ui->input_text(ui->user, StringView(id), buffer, capacity,
-                           ANOMALY_UI_TEXT_INPUT_V1_NONE);
-        } else {
-            DrawText(ui, buffer);
-        }
-    });
-}
+// 输入框宽度由宿主固定为「窗口宽度的 65%」（ABI 没有 set_next_item_width，宿主自己的输入框
+// 都是显式 SetNextItemWidth 才窄的）。各内建插件也都是直接用这个默认宽度，所以这里不再塞进
+// 任何容器 —— 之前试过「单列定宽表格」，实测会塌成只有几像素宽的缝。
+// 行内统一为「标签(定宽列) → 输入框」，标签列 140 是几个数值标签里最长的那个。
+constexpr float kLabelColumn = 140.0F;
 
 void AlignAt(const AnomalyUiServiceV1* ui, const float offset) {
     if (ui->same_line != nullptr) ui->same_line(ui->user, offset, 8.0F);
 }
 
-// 一行里放三个输入框时的横向步长（定宽容器 150 + 间隙）。
-constexpr float kNarrowInputStride = 164.0F;
+void FieldInputText(
+    const AnomalyUiServiceV1* ui, const char* id, char* buffer, const std::size_t capacity) {
+    if (ui->input_text != nullptr) {
+        ui->input_text(ui->user, StringView(id), buffer, capacity,
+                       ANOMALY_UI_TEXT_INPUT_V1_NONE);
+    } else {
+        DrawText(ui, buffer);
+    }
+}
+
+// 一行：「标签 + 输入框」
+void LabeledField(
+    const AnomalyUiServiceV1* ui, const char* label, const char* id, char* buffer,
+    const std::size_t capacity) {
+    ui->text(ui->user, StringView(label));
+    AlignAt(ui, kLabelColumn);
+    FieldInputText(ui, id, buffer, capacity);
+}
 
 // ---------------------------------------------------------------------------
 // 子模块：UE 反射直调（含一键刷新）→ 自动战斗 → 脚本循环
@@ -612,23 +598,17 @@ void LastTeleportWarning(const AnomalyUiServiceV1* ui) {
     DrawText(ui, line);
 }
 
-// 一行：`营地  X [..]  Y [..]  Z [..]`
-void PointRow(
-    const AnomalyUiServiceV1* ui, const char* label, const char* x_id, char* x_text,
+// 一个传送点占三行：`营地 X` / `营地 Y` / `营地 Z`，各自一个输入框。
+void PointFields(
+    const AnomalyUiServiceV1* ui, const char* name, const char* x_id, char* x_text,
     const char* y_id, char* y_text, const char* z_id, char* z_text) {
-    ui->text(ui->user, StringView(label));
-    AlignAt(ui, 56.0F);
-    DrawText(ui, "X");
-    AlignAt(ui, 68.0F);
-    NarrowInputText(ui, x_id, x_text, kCoordinateTextCapacity);
-    AlignAt(ui, 68.0F + kNarrowInputStride);
-    DrawText(ui, "Y");
-    AlignAt(ui, 80.0F + kNarrowInputStride);
-    NarrowInputText(ui, y_id, y_text, kCoordinateTextCapacity);
-    AlignAt(ui, 80.0F + kNarrowInputStride * 2.0F);
-    DrawText(ui, "Z");
-    AlignAt(ui, 92.0F + kNarrowInputStride * 2.0F);
-    NarrowInputText(ui, z_id, z_text, kCoordinateTextCapacity);
+    char label[48]{};
+    std::snprintf(label, sizeof(label), "%s X", name);
+    LabeledField(ui, label, x_id, x_text, kCoordinateTextCapacity);
+    std::snprintf(label, sizeof(label), "%s Y", name);
+    LabeledField(ui, label, y_id, y_text, kCoordinateTextCapacity);
+    std::snprintf(label, sizeof(label), "%s Z", name);
+    LabeledField(ui, label, z_id, z_text, kCoordinateTextCapacity);
 }
 
 void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
@@ -641,14 +621,11 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     DrawText(ui, g_context.localizer.Text("script.title", "脚本循环"));
     if (ui->input_uint32 != nullptr) {
         ui->text(ui->user, StringView("循环次数"));
-        AlignAt(ui, 56.0F);
+        AlignAt(ui, kLabelColumn);
         std::uint32_t count = g_script_loop_count.load();
-        NarrowItem(ui, "##night999-loop", [&] {
-            if (ui->input_uint32(ui->user, StringView("##night999-loop"), &count, 1, 10) != 0) {
-                g_script_loop_count.store(count);
-            }
-        });
-        AlignAt(ui, 68.0F + kNarrowInputStride);
+        if (ui->input_uint32(ui->user, StringView("##night999-loop"), &count, 1, 10) != 0) {
+            g_script_loop_count.store(count);
+        }
         DrawText(ui, "（0 = 无限循环）");
     }
     if (ui->button != nullptr) {
@@ -669,10 +646,10 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
 
     // ── 传送点 ──
     DrawText(ui, g_context.localizer.Text("points.title", "传送点"));
-    PointRow(ui, "营地", "##night999-camp-x", g_camp_x_text.data(), "##night999-camp-y",
-             g_camp_y_text.data(), "##night999-camp-z", g_camp_z_text.data());
-    PointRow(ui, "战斗点", "##night999-fight-x", g_fight_x_text.data(), "##night999-fight-y",
-             g_fight_y_text.data(), "##night999-fight-z", g_fight_z_text.data());
+    PointFields(ui, "营地", "##night999-camp-x", g_camp_x_text.data(), "##night999-camp-y",
+                g_camp_y_text.data(), "##night999-camp-z", g_camp_z_text.data());
+    PointFields(ui, "战斗点", "##night999-fight-x", g_fight_x_text.data(), "##night999-fight-y",
+                g_fight_y_text.data(), "##night999-fight-z", g_fight_z_text.data());
     if (ui->button != nullptr) {
         if (ui->button(ui->user, StringView("读取营地为当前位置"), 0.0F, 0.0F) != 0) {
             CaptureCurrentPosition(host, true);
@@ -682,11 +659,9 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
             CaptureCurrentPosition(host, false);
         }
     }
-    ui->text(ui->user, StringView("预载延迟"));
-    AlignAt(ui, 56.0F);
-    NarrowInputText(ui, "##night999-preload", g_preload_text.data(), g_preload_text.size());
-    AlignAt(ui, 68.0F + kNarrowInputStride);
-    DrawText(ui, "秒（0 = 立即传送）");
+    LabeledField(ui, "预载延迟(秒)", "##night999-preload", g_preload_text.data(),
+                 g_preload_text.size());
+    DrawText(ui, "（0 = 立即传送）");
     LastTeleportWarning(ui);
 
     if (ui->separator != nullptr) ui->separator(ui->user);
@@ -857,7 +832,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.15.0"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.15.1"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

@@ -313,24 +313,14 @@ void CombatContent(const AnomalyUiServiceV1* ui) {
         }
     }
 
-    // 三个数值参数：首次接敌超时 / 多久没伤害算打完 / 搜索半径。
-    const auto number_row = [&](const char* label, const char* id, char* buffer,
-                                const std::size_t capacity, const char* hint) {
-        ui->text(ui->user, StringView(label));
-        AlignAt(ui, 130.0F);
-        NarrowInputText(ui, id, buffer, capacity);
-        if (hint != nullptr) {
-            AlignAt(ui, 130.0F + kNarrowInputStride);
-            DrawText(ui, hint);
-        }
-    };
-    number_row("首次接敌超时", "##night999-combat-first-contact",
-               g_combat_first_contact_text.data(), g_combat_first_contact_text.size(),
-               "秒（超时进下一步）");
-    number_row("多久没伤害算打完", "##night999-combat-nodmg",
-               g_combat_no_damage_text.data(), g_combat_no_damage_text.size(), "秒");
-    number_row("搜索半径", "##night999-combat-radius", g_combat_radius_text.data(),
-               g_combat_radius_text.size(), "米");
+    // 三个数值参数：首次接敌超时 / 多久没伤害算打完 / 搜索半径。单位直接写进标签，
+    // 因为输入框本身占掉窗口宽度的 65%，后面再挂说明文字会被挤出窗口。
+    LabeledField(ui, "首次接敌超时(秒)", "##night999-combat-first-contact",
+                 g_combat_first_contact_text.data(), g_combat_first_contact_text.size());
+    LabeledField(ui, "多久没伤害算打完(秒)", "##night999-combat-nodmg",
+                 g_combat_no_damage_text.data(), g_combat_no_damage_text.size());
+    LabeledField(ui, "搜索半径(米)", "##night999-combat-radius", g_combat_radius_text.data(),
+                 g_combat_radius_text.size());
     // 解析进原子量：on_update 只读原子量，不跨线程读这些 char 缓冲。
     CombatSyncParameters();
 
