@@ -76,6 +76,8 @@ std::atomic_int g_ue_select_requested{-1};
 std::atomic_bool g_ue_match_class{};
 // 字段转储请求（把当前实例的反射字段全列出来，写进日志）
 std::atomic_bool g_ue_fields_requested{};
+// 「依次尝试营火 ID」：读实例上的 ActivatedCampfireIDs，逐个当参数调用当前目标。
+std::atomic_bool g_ue_campfire_requested{};
 
 // --- 扫描状态（on_update 独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
@@ -114,6 +116,11 @@ std::string g_ue_target_name;
 std::vector<std::string> g_ue_field_lines;
 std::size_t g_ue_field_cursor{};
 std::size_t g_ue_field_logged{};
+std::uint64_t g_ue_campfire_ids[16]{};
+std::size_t g_ue_campfire_count{};
+std::size_t g_ue_campfire_index{};
+bool g_ue_campfire_running{};
+std::chrono::steady_clock::time_point g_ue_campfire_next{};
 // 调用参数：空 = 全零；0x…/十进制 = 64 位整数；其它按 FName 名字查 id。
 std::string g_ue_param;
 std::array<char, kUeParamTextCapacity> g_ue_param_text{};
@@ -363,6 +370,34 @@ bool UeParseByteList(const std::string& text, std::vector<std::uint8_t>& parms,
     std::copy(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(take), parms.begin());
     detail = "载荷 " + std::to_string(take) + " 字节";
     return true;
+}
+
+// 按字段名在对象（含父类）的 PropertyLink 链里找它的地址。
+bool UeFindField(const UeReader& reader, const std::uintptr_t object,
+                 const std::string& field_name, std::uintptr_t& address) {
+    std::uintptr_t cls = UeClassOf(reader, object);
+    for (int depth = 0; cls != 0 && depth < 8; ++depth) {
+        std::uintptr_t field{};
+        if (reader.Read(cls + kUeStructPropertyLinkOffset, field)) {
+            for (int index = 0; field != 0 && index < 2000; ++index) {
+                const std::string name = reader.NameAt(field + kUeFieldNameOffset);
+                if (name.empty() || name.size() > 64) break;
+                if (name == field_name) {
+                    std::int32_t offset{};
+                    if (!reader.Read(field + kUeFieldOffsetOffset, offset)) return false;
+                    address = object + static_cast<std::uintptr_t>(offset);
+                    return true;
+                }
+                std::uintptr_t next{};
+                if (!reader.Read(field + kUeFieldNextOffset, next) || next == field) break;
+                field = next;
+            }
+        }
+        std::uintptr_t parent{};
+        if (!reader.Read(cls + kUeStructSuperOffset, parent) || parent == cls) break;
+        cls = parent;
+    }
+    return false;
 }
 
 // 把对象自身的反射字段逐个列出来：名字 / 偏移 / 大小 / 值。数组(16 字节对齐)额外读
@@ -1076,6 +1111,62 @@ void UeAdvance(const UeReader& reader) {
         if (!batch.empty()) Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, batch);
     }
 
+    // 「依次尝试营火 ID」：读实例上的 ActivatedCampfireIDs（TArray<FName>），
+    // 逐个作为参数调用当前目标（典型是 FinalTowerCampResetMonsterSpawners），
+    // 每个间隔 600ms，日志里带上解析出的名字，便于判断哪个是当前营火。
+    if (g_ue_campfire_requested.exchange(false)) {
+        g_ue_campfire_running = false;
+        g_ue_campfire_count = 0;
+        g_ue_campfire_index = 0;
+        std::uintptr_t address{};
+        std::uintptr_t data{};
+        std::uint32_t num{};
+        if (g_ue_function == 0 || g_ue_instance == 0) {
+            UeSetCallResultBoth("请先探测并「选用」FinalTowerCampResetMonsterSpawners（实例需为 PlayerState）");
+        } else if (!UeFindField(reader, g_ue_instance, "ActivatedCampfireIDs", address)) {
+            UeSetCallResultBoth("该实例上没有 ActivatedCampfireIDs 字段（实例可能不是 PlayerState）");
+        } else if (!reader.Read(address, data) || !reader.Read(address + 8, num) ||
+                   data <= 0x10000 || num == 0 || num > 16) {
+            UeSetCallResultBoth("ActivatedCampfireIDs 为空或不可读");
+        } else {
+            std::string text = "营火 ID 共 " + std::to_string(num) + " 个：";
+            for (std::uint32_t index = 0; index < num; ++index) {
+                std::uint64_t id{};
+                if (!reader.Read(data + 8 * index, id)) break;
+                g_ue_campfire_ids[g_ue_campfire_count++] = id;
+                const std::string name = reader.Name(
+                    UeFName{static_cast<std::uint32_t>(id & 0xFFFFFFFFull), 0});
+                text += " [" + std::to_string(index) + "]" + (name.empty() ? "?" : name);
+            }
+            UePublish(text + " —— 开始逐个调用");
+            UeLog(text);
+            g_ue_campfire_running = true;
+            g_ue_campfire_next = std::chrono::steady_clock::now();
+        }
+    }
+    if (g_ue_campfire_running && g_ue_phase != UeProbePhase::scanning &&
+        g_ue_phase != UeProbePhase::finding_owner) {
+        const auto now = std::chrono::steady_clock::now();
+        if (g_ue_campfire_index >= g_ue_campfire_count) {
+            g_ue_campfire_running = false;
+            UeSetCallResultBoth("已依次尝试 " + std::to_string(g_ue_campfire_count) + " 个营火 ID");
+        } else if (now >= g_ue_campfire_next) {
+            std::uint64_t id = g_ue_campfire_ids[g_ue_campfire_index];
+            std::uint8_t parms[8]{};
+            std::memcpy(parms, &id, sizeof(id));
+            const bool ok = UeInvoke(reader, g_ue_instance, g_ue_function, parms);
+            const std::string name =
+                reader.Name(UeFName{static_cast<std::uint32_t>(id & 0xFFFFFFFFull), 0});
+            const std::string text = "campfire [" + std::to_string(g_ue_campfire_index) + "] " +
+                (name.empty() ? std::string("?") : name) + " id=" + std::to_string(id) +
+                (ok ? " 已调用" : " 调用失败");
+            UeLog(text);
+            UeSetCallResultBoth(text);
+            ++g_ue_campfire_index;
+            g_ue_campfire_next = now + std::chrono::milliseconds(600);
+        }
+    }
+
     if (g_ue_probe_requested.exchange(false)) {
         UeBeginScan();
         return;
@@ -1130,6 +1221,11 @@ void UeStop() noexcept {
     g_ue_record_all.store(false);
     g_ue_clear_log_requested.store(false);
     g_ue_select_requested.store(-1);
+    g_ue_fields_requested.store(false);
+    g_ue_campfire_requested.store(false);
+    g_ue_campfire_running = false;
+    g_ue_campfire_count = 0;
+    g_ue_campfire_index = 0;
     g_ue_phase = UeProbePhase::idle;
     g_ue_auto_call = false;
     g_ue_cursor = 0;
@@ -1192,6 +1288,10 @@ void UeContent(const AnomalyUiServiceV1* ui) {
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
         if (ui->button(ui->user, StringView("转储字段"), 0.0F, 0.0F) != 0) {
             g_ue_fields_requested.store(true);
+        }
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        if (ui->button(ui->user, StringView("依次尝试营火ID"), 0.0F, 0.0F) != 0) {
+            g_ue_campfire_requested.store(true);
         }
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
         const int enabled = g_ue_function != 0 && g_ue_instance != 0 ? 1 : 0;
