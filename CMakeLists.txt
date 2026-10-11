@@ -1582,8 +1582,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
-        anomaly_builtin_model_scale anomaly_builtin_deserted anomaly_builtin_jelly)
-        anomaly_builtin_model_scale anomaly_builtin_autofish anomaly_builtin_deserted)
+        anomaly_builtin_model_scale anomaly_builtin_autofish
+        anomaly_builtin_deserted anomaly_builtin_jelly)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
