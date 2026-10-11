@@ -35,6 +35,18 @@ constexpr std::size_t kUeParamTextCapacity = 256;
 constexpr std::string_view kUeCampfireDefault = "FT_Castle_Campfire04";
 constexpr std::size_t kUeCampfireNameCapacity = 64;
 
+// ---- 一键刷新 ----
+// 刷新本体与其冷却 getter 都挂在 AHTPlayerState 上（IDA 实测）：
+//   FinalTowerCampResetMonsterSpawners(InCampfireID)              —— 组 ServerFinalTowerRPC(Type=21)
+//   GetFinalTowerMonsterSpawnerResetCooldownRemainingTime()        —— 无参，返回 float 剩余秒数
+constexpr std::string_view kUeRefreshFunction = "FinalTowerCampResetMonsterSpawners";
+constexpr std::string_view kUeCooldownFunction =
+    "GetFinalTowerMonsterSpawnerResetCooldownRemainingTime";
+// 读不到冷却 getter 时的兜底自计时（用户实测 CD = 60 秒）。
+constexpr double kUeRefreshCooldownSeconds = 60.0;
+constexpr std::chrono::milliseconds kUeRefreshFireInterval{120};
+constexpr std::chrono::seconds kUeRefreshTimeout{20};
+
 enum class UeProbePhase : std::uint8_t { idle, scanning, finding_owner, ready, failed };
 
 struct UeMatch {
@@ -83,6 +95,10 @@ std::atomic_bool g_ue_fields_requested{};
 std::atomic_bool g_ue_campfire_requested{};
 // 单发：按营火名刷新（快路径）。
 std::atomic_bool g_ue_campfire_single_requested{};
+// 一键刷新怪物：自动定位 PlayerState + 刷新函数 → 查冷却 → 逐座营火发送。
+std::atomic_bool g_ue_refresh_requested{};
+// 0=空闲 1=定位 2=查冷却 3=发送（渲染线程只读它来决定按钮可用性）。
+std::atomic_int g_ue_refresh_stage{0};
 
 // --- 扫描状态（on_update 独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
@@ -90,6 +106,9 @@ bool g_ue_ids_only{};
 bool g_ue_auto_call{};
 bool g_ue_class_match{};
 std::uint32_t g_ue_name_id{};
+// 精确扫描时额外匹配的名字 id（一键刷新要同时找到刷新函数与冷却 getter）。
+std::uint32_t g_ue_extra_ids[4]{};
+std::size_t g_ue_extra_count{};
 std::uint32_t g_ue_cursor{};
 std::uint32_t g_ue_total{};
 std::uint32_t g_ue_match_total{};
@@ -132,6 +151,16 @@ std::array<char, kUeParamTextCapacity> g_ue_param_text{};
 std::string g_ue_campfire_name{kUeCampfireDefault};
 std::array<char, kUeCampfireNameCapacity> g_ue_campfire_text{};
 std::atomic_bool g_ue_campfire_name_stale{true};
+
+// 一键刷新的流程状态（on_update 独占；stage 本身是 atomic 供 on_draw 读）。
+bool g_ue_refresh_scan_started{};
+bool g_ue_refresh_selected{};
+bool g_ue_refresh_fire_started{};
+bool g_ue_refresh_fired_once{};
+std::uintptr_t g_ue_refresh_cd_function{};
+std::uint32_t g_ue_refresh_cd_parms_size{};
+std::chrono::steady_clock::time_point g_ue_refresh_deadline{};
+std::chrono::steady_clock::time_point g_ue_refresh_last_fire{};
 
 UeEventRecord g_ue_events[kUeEventCapacity];
 std::size_t g_ue_event_count{};
@@ -555,6 +584,18 @@ void UeSetCallResultBoth(std::string text) {
     UeSetCallResult(std::move(text));
 }
 
+// 一键刷新的提示：状态行 + 结果行 + 日志一起写，保证足够醒目。
+void UeNotice(std::string text) {
+    UePublish(text);
+    UeSetCallResultBoth(std::move(text));
+}
+
+std::string UeSecondsText(const double seconds) {
+    char text[32]{};
+    std::snprintf(text, sizeof(text), "%.1f", seconds);
+    return text;
+}
+
 // 沿 FField 链导出 UFunction 的参数表：名字 / 大小 / 偏移。用来判断那 8 字节是什么。
 std::string UeDumpParams(const UeReader& reader, const std::uintptr_t function) {
     std::string text;
@@ -651,7 +692,11 @@ bool UeScanStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* object
         if (snapshot.name_id == 0) continue;
 
         if (g_ue_ids_only) {
-            if (snapshot.name_id != g_ue_name_id) continue;
+            bool wanted = snapshot.name_id == g_ue_name_id;
+            for (std::size_t extra = 0; !wanted && extra < g_ue_extra_count; ++extra) {
+                if (snapshot.name_id == g_ue_extra_ids[extra]) wanted = true;
+            }
+            if (!wanted) continue;
             UeAddMatch(reader, objects, snapshot, reader.Name(UeFName{snapshot.name_id, 0}));
             if (g_ue_matches.size() >= kUeMatchCapacity) return true;
             continue;
@@ -761,7 +806,7 @@ void UeResolveInstance(const UeReader& reader) {
     g_ue_cursor = 0;
 }
 
-void UeBeginScan() {
+void UeBeginScan(const std::string& keyword) {
     g_ue_matches.clear();
     g_ue_match_total = 0;
     g_ue_function = 0;
@@ -785,7 +830,7 @@ void UeBeginScan() {
     }
 
     g_ue_class_match = g_ue_match_class.load();
-    const std::string keyword = UeKeyword();
+    g_ue_extra_count = 0;
     if (keyword.empty()) {
         UeFinish("关键词为空", true);
         return;
@@ -1104,6 +1149,187 @@ void UeLogRecords() {
     }
 }
 
+// 一键刷新的第一步：用「刷新函数」当关键词做一次精确名扫描，同时把冷却 getter 的
+// 名字 id 也放进同一趟扫描（两者都挂在 AHTPlayerState 上，一次扫完）。
+void UeStartQuickScan() {
+    UeBeginScan(std::string(kUeRefreshFunction));
+    if (!g_ue_ids_only) return;
+    const auto* names = g_context.names;
+    if (names == nullptr || names->find_utf8 == nullptr) return;
+    std::uint32_t id{};
+    if (names->find_utf8(names->user, StringView(kUeCooldownFunction), &id).code ==
+            ANOMALY_STATUS_V1_OK &&
+        id != 0 && id != g_ue_name_id && g_ue_extra_count < 4) {
+        g_ue_extra_ids[g_ue_extra_count++] = id;
+    }
+}
+
+
+// 一键刷新怪物的流程：定位 → 查冷却 → 逐座营火发送。全程只在 Game 回调域推进。
+void UeAdvanceRefresh(const UeReader& reader) {
+    const int stage = g_ue_refresh_stage.load();
+    if (stage == 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now > g_ue_refresh_deadline) {
+        UeNotice("一键刷新：超时（没能定位到刷新函数或 PlayerState 实例）");
+        g_ue_refresh_stage.store(0);
+        return;
+    }
+
+    if (stage == 1) {  // 定位
+        if (!g_ue_refresh_scan_started) {
+            UeNotice("一键刷新：定位 " + std::string(kUeRefreshFunction) + " …");
+            UeStartQuickScan();
+            g_ue_refresh_scan_started = true;
+            if (g_ue_phase != UeProbePhase::scanning) {
+                UeNotice("一键刷新：扫描无法开始（缺 ue5 服务，或名字池未就绪）");
+                g_ue_refresh_stage.store(0);
+            }
+            return;
+        }
+        if (g_ue_phase == UeProbePhase::scanning || g_ue_phase == UeProbePhase::finding_owner) {
+            UePublish("一键刷新：扫描中 " + std::to_string(g_ue_cursor) + "/" +
+                      std::to_string(g_ue_total) + " …");
+            return;
+        }
+        if (!g_ue_refresh_selected) {
+            int reset_index = -1;
+            int cd_index = -1;
+            for (std::size_t index = 0; index < g_ue_matches.size(); ++index) {
+                const UeMatch& match = g_ue_matches[index];
+                if (!match.is_function) continue;
+                const std::string_view name{match.name};
+                if (name == kUeRefreshFunction) {
+                    reset_index = static_cast<int>(index);
+                } else if (name == kUeCooldownFunction) {
+                    cd_index = static_cast<int>(index);
+                }
+            }
+            if (reset_index < 0) {
+                UeNotice("一键刷新：注册表里没有 " + std::string(kUeRefreshFunction) +
+                         " —— 先在游戏里打开一次营地让蓝图加载");
+                g_ue_refresh_stage.store(0);
+                return;
+            }
+            g_ue_refresh_cd_function = 0;
+            g_ue_refresh_cd_parms_size = 0;
+            if (cd_index >= 0) {
+                g_ue_refresh_cd_function = g_ue_matches[static_cast<std::size_t>(cd_index)].object;
+                g_ue_refresh_cd_parms_size =
+                    g_ue_matches[static_cast<std::size_t>(cd_index)].parms_size;
+            }
+            // 只找实例，不让它顺手调用（真正的调用在 fire 阶段，参数要逐个给营火 ID）。
+            g_ue_auto_call = false;
+            UeBeginOwnerScan(reader, static_cast<std::size_t>(reset_index));
+            g_ue_refresh_selected = true;
+            return;
+        }
+        if (g_ue_instance == 0) {
+            UeNotice("一键刷新：没找到活着的 PlayerState 实例（先进入游戏世界）");
+            g_ue_refresh_stage.store(0);
+            return;
+        }
+        g_ue_refresh_stage.store(2);
+        return;
+    }
+
+    if (stage == 2) {  // 查冷却
+        bool known = false;
+        double remaining = 0.0;
+        if (g_ue_refresh_cd_function != 0 && g_ue_refresh_cd_parms_size <= 8) {
+            std::uint8_t buffer[8]{};
+            if (UeInvoke(reader, g_ue_instance, g_ue_refresh_cd_function, buffer)) {
+                float value{};
+                std::memcpy(&value, buffer, sizeof(value));
+                remaining = static_cast<double>(value);
+                known = std::isfinite(remaining);
+            }
+        }
+        if (known) {
+            if (remaining > 0.5) {
+                UeNotice("一键刷新：冷却中，剩余 " + UeSecondsText(remaining) + " 秒，暂不刷新");
+                UeLog("refresh: blocked by cooldown " + UeSecondsText(remaining));
+                g_ue_refresh_stage.store(0);
+                return;
+            }
+        } else if (g_ue_refresh_fired_once) {
+            // 读不到冷却 getter ⇒ 自计时兜底（用户实测 CD = 60 秒）。
+            const double elapsed =
+                std::chrono::duration<double>(now - g_ue_refresh_last_fire).count();
+            const double left = kUeRefreshCooldownSeconds - elapsed;
+            if (left > 0.5) {
+                UeNotice("一键刷新：冷却中（自计时），剩余 " + UeSecondsText(left) + " 秒，暂不刷新");
+                UeLog("refresh: blocked by local timer " + UeSecondsText(left));
+                g_ue_refresh_stage.store(0);
+                return;
+            }
+        }
+        UeLog(std::string("refresh: cooldown ") +
+              (known ? UeSecondsText(remaining) : std::string("unknown(local timer)")));
+        g_ue_refresh_fire_started = false;
+        g_ue_campfire_count = 0;
+        g_ue_campfire_index = 0;
+        g_ue_refresh_stage.store(3);
+        return;
+    }
+
+    // stage == 3：逐座营火发送刷新请求（服务器会忽略不在身边的那几座）。
+    if (!g_ue_refresh_fire_started) {
+        std::uintptr_t address{};
+        std::uintptr_t data{};
+        std::uint32_t num{};
+        const bool have_list =
+            UeFindField(reader, g_ue_instance, "ActivatedCampfireIDs", address) &&
+            reader.Read(address, data) && reader.Read(address + 8, num) && data > 0x10000 &&
+            num > 0 && num <= 16;
+        if (!have_list) {
+            const bool ok = UeCallByName(reader, UeCampfireName());
+            UeNotice(ok ? "一键刷新：未读到营火 ID 列表，已按营火名发送"
+                        : "一键刷新：未读到 ActivatedCampfireIDs，名字池里也没有该营火名");
+            g_ue_refresh_fired_once = true;
+            g_ue_refresh_last_fire = now;
+            g_ue_refresh_stage.store(0);
+            return;
+        }
+        g_ue_campfire_count = 0;
+        for (std::uint32_t index = 0; index < num; ++index) {
+            std::uint64_t id{};
+            if (!reader.Read(data + 8 * index, id)) break;
+            g_ue_campfire_ids[g_ue_campfire_count++] = id;
+        }
+        g_ue_campfire_index = 0;
+        g_ue_campfire_next = now;
+        g_ue_refresh_fire_started = true;
+        UePublish("一键刷新：向 " + std::to_string(g_ue_campfire_count) + " 座营火发送刷新请求…");
+        UeLog("refresh: firing " + std::to_string(g_ue_campfire_count) + " campfire ids");
+        return;
+    }
+    if (g_ue_campfire_index >= g_ue_campfire_count) {
+        UeNotice("一键刷新：已发出刷新请求（营火 " + std::to_string(g_ue_campfire_count) +
+                 " 座，只有你身边那座会生效）");
+        UeLog("refresh: done");
+        g_ue_refresh_fired_once = true;
+        g_ue_refresh_last_fire = now;
+        g_ue_refresh_stage.store(0);
+        return;
+    }
+    if (now >= g_ue_campfire_next) {
+        const std::uint64_t id = g_ue_campfire_ids[g_ue_campfire_index];
+        std::uint8_t buffer[64]{};
+        std::memcpy(buffer, &id, sizeof(id));
+        const bool ok = g_ue_parms_size <= sizeof(buffer) &&
+            UeInvoke(reader, g_ue_instance, g_ue_function, buffer);
+        const std::string name =
+            reader.Name(UeFName{static_cast<std::uint32_t>(id & 0xFFFFFFFFull), 0});
+        UeLog("refresh: campfire [" + std::to_string(g_ue_campfire_index) + "] " +
+              (name.empty() ? std::string("?") : name) + (ok ? " ok" : " fail"));
+        UePublish("一键刷新：营火 [" + std::to_string(g_ue_campfire_index) + "] " +
+                  (name.empty() ? std::string("?") : name) + (ok ? " 已发送" : " 发送失败"));
+        ++g_ue_campfire_index;
+        g_ue_campfire_next = now + kUeRefreshFireInterval;
+    }
+}
+
 void UeAdvance(const UeReader& reader) {
     const auto* objects = g_context.objects;
 
@@ -1168,6 +1394,11 @@ void UeAdvance(const UeReader& reader) {
     // 「依次尝试营火 ID」：读实例上的 ActivatedCampfireIDs（TArray<FName>），
     // 逐个作为参数调用当前目标（典型是 FinalTowerCampResetMonsterSpawners），
     // 每个间隔 600ms，日志里带上解析出的名字，便于判断哪个是当前营火。
+    if (g_ue_refresh_stage.load() != 0) {
+        // 一键刷新正在跑：清掉手动营火按钮的请求，避免两边共用同一组索引互相踩踏。
+        g_ue_campfire_requested.store(false);
+        g_ue_campfire_single_requested.store(false);
+    }
     if (g_ue_campfire_requested.exchange(false)) {
         g_ue_campfire_running = false;
         g_ue_campfire_count = 0;
@@ -1242,8 +1473,20 @@ void UeAdvance(const UeReader& reader) {
         }
     }
 
+    // 一键刷新：按下按钮则进入流程（阶段推进在 UeAdvanceRefresh 内，仍在 Game 线程）。
+    if (g_ue_refresh_requested.exchange(false) && g_ue_refresh_stage.load() == 0) {
+        g_ue_refresh_stage.store(1);
+        g_ue_refresh_scan_started = false;
+        g_ue_refresh_selected = false;
+        g_ue_refresh_fire_started = false;
+        g_ue_refresh_cd_function = 0;
+        g_ue_refresh_cd_parms_size = 0;
+        g_ue_refresh_deadline = std::chrono::steady_clock::now() + kUeRefreshTimeout;
+    }
+    UeAdvanceRefresh(reader);
+
     if (g_ue_probe_requested.exchange(false)) {
-        UeBeginScan();
+        UeBeginScan(UeKeyword());
         return;
     }
     const int select = g_ue_select_requested.exchange(-1);
@@ -1305,6 +1548,13 @@ void UeStop() noexcept {
     g_ue_fields_requested.store(false);
     g_ue_campfire_requested.store(false);
     g_ue_campfire_single_requested.store(false);
+    g_ue_refresh_requested.store(false);
+    g_ue_refresh_stage.store(0);
+    g_ue_refresh_scan_started = false;
+    g_ue_refresh_selected = false;
+    g_ue_refresh_fire_started = false;
+    g_ue_refresh_cd_function = 0;
+    g_ue_refresh_cd_parms_size = 0;
     g_ue_campfire_running = false;
     g_ue_campfire_count = 0;
     g_ue_campfire_index = 0;
@@ -1341,6 +1591,20 @@ void UeSyncText() {
 
 void UeContent(const AnomalyUiServiceV1* ui) {
     UeSyncText();
+
+    DrawText(ui, g_context.localizer.Text("refresh.title", "一键刷新怪物"));
+    if (ui->button != nullptr) {
+        const bool busy = g_ue_refresh_stage.load() != 0;
+        const int pressed = ui->button_enabled != nullptr
+            ? ui->button_enabled(ui->user, StringView("一键刷新怪物"), 0.0F, 0.0F, busy ? 0 : 1)
+            : ui->button(ui->user, StringView("一键刷新怪物"), 0.0F, 0.0F);
+        if (pressed != 0) g_ue_refresh_requested.store(true);
+    }
+    DrawText(ui, g_context.localizer.Text(
+        "refresh.hint",
+        "自动定位玩家状态 → 检查刷新冷却 → 逐座营火发送刷新；冷却未好会提示剩余秒数。"));
+
+    if (ui->separator != nullptr) ui->separator(ui->user);
 
     DrawText(ui, g_context.localizer.Text("ue.title", "直接调用（不经 UI）"));
     ui->text(ui->user, StringView("名称关键词"));

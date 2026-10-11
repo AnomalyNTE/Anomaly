@@ -758,7 +758,7 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     if (ui->separator != nullptr) ui->separator(ui->user);
     DrawText(ui, g_context.localizer.Text(
         "note.flow",
-        "后续循环（自动战斗 / 清怪判定）将在本分支继续实现。"));
+        "后续循环（传送营地→刷新→传送战斗点→自动战斗→清怪判定）将在本分支继续实现。"));
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +906,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.10.3"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.11.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }
