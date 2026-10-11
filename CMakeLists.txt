@@ -1520,7 +1520,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModelScale")
     target_link_libraries(anomaly_builtin_hifi_vehicle_music PRIVATE
         nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio anomaly_monkeys_audio anomaly_dsd2pcm
-        ole32 shell32 uuid avrt winmm)
+        ole32 shell32 uuid avrt winmm winhttp)
     # Only the APE wrapper sees the Monkey's Audio headers and their defines.
     set_source_files_properties(plugins/HiFiVehicleMusic/ape_decoder.cpp PROPERTIES
         INCLUDE_DIRECTORIES "${ANOMALY_MONKEYS_AUDIO_INCLUDE_DIRS}"
