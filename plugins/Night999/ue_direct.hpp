@@ -17,6 +17,9 @@ constexpr std::size_t kUeTextCapacity = 96;
 constexpr std::size_t kUeMatchCapacity = 16;
 constexpr std::uint32_t kUeSlotBudget = 8192;
 constexpr std::uint32_t kUeResolveBudget = 1024;
+// 一键刷新是用户主动触发的，允许更大的时间片（但仍有 wall-clock 上限，避免卡帧）。
+constexpr std::uint32_t kUeSlotBudgetFast = 32768;
+constexpr std::chrono::microseconds kUeScanSlice{4000};
 // 监视名单上限：命中对象的 FName id，回调里用整数比较识别，命中就记下实参。
 constexpr std::size_t kUeMonitorCapacity = 32;
 // 类级监视：命中对象的所属类 id。该类上任一函数被调用都会记下来 ——
@@ -106,6 +109,7 @@ bool g_ue_ids_only{};
 bool g_ue_auto_call{};
 bool g_ue_class_match{};
 std::uint32_t g_ue_name_id{};
+bool g_ue_fast_scan{};
 // 精确扫描时额外匹配的名字 id（一键刷新要同时找到刷新函数与冷却 getter）。
 std::uint32_t g_ue_extra_ids[4]{};
 std::size_t g_ue_extra_count{};
@@ -161,6 +165,16 @@ std::uintptr_t g_ue_refresh_cd_function{};
 std::uint32_t g_ue_refresh_cd_parms_size{};
 std::chrono::steady_clock::time_point g_ue_refresh_deadline{};
 std::chrono::steady_clock::time_point g_ue_refresh_last_fire{};
+std::chrono::steady_clock::time_point g_ue_refresh_scan_start{};
+// ★ 定位缓存：首次扫描成功后把「函数地址 / 所属类 / 参数大小」记下来，之后每次点击只做
+// 几次廉价读校验 + 重新取一次 PlayerState 实例，完全不再扫描注册表。
+// 地址不会跨会话/跨关卡稳定，所以每次使用前都校验：函数的 NamePrivate.id 仍等于
+// find_utf8(名字) 的结果，且它的 ClassPrivate 仍叫 "Function"；类或实例不匹配就退回扫描。
+std::uintptr_t g_ue_refresh_fn_cache{};
+std::uintptr_t g_ue_refresh_owner_cache{};
+std::uintptr_t g_ue_refresh_cd_fn_cache{};
+std::uint32_t g_ue_refresh_fn_parms_size{};
+std::uint32_t g_ue_refresh_cd_fn_parms_size{};
 
 UeEventRecord g_ue_events[kUeEventCapacity];
 std::size_t g_ue_event_count{};
@@ -682,8 +696,15 @@ void UeAddMatch(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* object
 bool UeScanStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objects,
                 std::uint32_t& resolved) {
     AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
-    const std::uint32_t end = std::min(g_ue_cursor + kUeSlotBudget, g_ue_total);
+    const std::uint32_t budget = g_ue_fast_scan ? kUeSlotBudgetFast : kUeSlotBudget;
+    const std::uint32_t end = std::min(g_ue_cursor + budget, g_ue_total);
+    const auto slice_start = std::chrono::steady_clock::now();
     for (; g_ue_cursor < end; ++g_ue_cursor) {
+        // 每 1024 槽看一次钟：快机器多扫几万槽，慢机器也不会占满一帧。
+        if ((g_ue_cursor & 0x3FFu) == 0 &&
+            std::chrono::steady_clock::now() - slice_start >= kUeScanSlice) {
+            break;
+        }
         snapshot.struct_size = sizeof(snapshot);
         if (objects->snapshot_at(objects->user, g_ue_cursor, &snapshot).code !=
             ANOMALY_STATUS_V1_OK) {
@@ -831,6 +852,7 @@ void UeBeginScan(const std::string& keyword) {
 
     g_ue_class_match = g_ue_match_class.load();
     g_ue_extra_count = 0;
+    g_ue_fast_scan = false;
     if (keyword.empty()) {
         UeFinish("关键词为空", true);
         return;
@@ -1149,10 +1171,73 @@ void UeLogRecords() {
     }
 }
 
+// 缓存里的函数对象是否还「就是」那个名字的 UFunction：比 NamePrivate.id（重新 find_utf8
+// 得到，因为 id 每会话会变）与 ClassPrivate 是否仍叫 "Function"。两次读，代价可忽略。
+bool UeFunctionStillNamed(const UeReader& reader, const std::uintptr_t function,
+                          const std::uint32_t id) {
+    if (function == 0 || id == 0) return false;
+    std::uint32_t name_id{};
+    if (!reader.Read(function + kUeObjectNameOffset, name_id) || name_id != id) return false;
+    const std::uintptr_t cls = UeClassOf(reader, function);
+    return cls != 0 && reader.NameAt(cls + kUeObjectNameOffset) == "Function";
+}
+
+std::uint32_t UeNameIdOf(const std::string_view name) {
+    const auto* names = g_context.names;
+    std::uint32_t id{};
+    if (names == nullptr || names->find_utf8 == nullptr ||
+        names->find_utf8(names->user, StringView(name), &id).code != ANOMALY_STATUS_V1_OK) {
+        return 0;
+    }
+    return id;
+}
+
+// 复用上次的定位结果：不扫描注册表，只做几次读校验 + 重新取一次 PlayerState 实例。
+bool UeTryReuseRefreshTarget(const UeReader& reader) {
+    if (g_ue_refresh_fn_cache == 0 || g_ue_refresh_owner_cache == 0) return false;
+    if (!UeFunctionStillNamed(reader, g_ue_refresh_fn_cache, UeNameIdOf(kUeRefreshFunction))) {
+        return false;
+    }
+    std::uintptr_t owner{};
+    if (!reader.Read(g_ue_refresh_fn_cache + kUeObjectOuterOffset, owner) || owner == 0) {
+        return false;
+    }
+    // 冷却 getter 失效不致命 —— 那只是退化成自计时。
+    const std::uintptr_t cd_fn =
+        UeFunctionStillNamed(reader, g_ue_refresh_cd_fn_cache, UeNameIdOf(kUeCooldownFunction))
+        ? g_ue_refresh_cd_fn_cache
+        : 0;
+
+    // 实例每次都现取（廉价），取不到就退回上次那个地址，再不行才重新扫描。
+    std::uintptr_t state = UeLocalPlayerState(reader);
+    if (state == 0 || !UeClassDerivesFrom(reader, UeClassOf(reader, state), owner)) {
+        state = g_ue_instance;
+    }
+    if (state == 0 || !UeClassDerivesFrom(reader, UeClassOf(reader, state), owner)) return false;
+
+    g_ue_function = g_ue_refresh_fn_cache;
+    g_ue_owner_class = owner;
+    g_ue_parms_size = g_ue_refresh_fn_parms_size;
+    g_ue_num_parms = 0;
+    g_ue_cdo = 0;
+    g_ue_instance = state;
+    g_ue_instance_is_cdo = false;
+    g_ue_refresh_cd_function = cd_fn;
+    g_ue_refresh_cd_parms_size = cd_fn != 0 ? g_ue_refresh_cd_fn_parms_size : 0;
+    g_ue_refresh_owner_cache = owner;
+    {
+        std::scoped_lock lock(g_ue_mutex);
+        g_ue_target_name = std::string(kUeRefreshFunction);
+        g_ue_params_dump.clear();
+    }
+    return true;
+}
+
 // 一键刷新的第一步：用「刷新函数」当关键词做一次精确名扫描，同时把冷却 getter 的
 // 名字 id 也放进同一趟扫描（两者都挂在 AHTPlayerState 上，一次扫完）。
 void UeStartQuickScan() {
     UeBeginScan(std::string(kUeRefreshFunction));
+    g_ue_fast_scan = true;
     if (!g_ue_ids_only) return;
     const auto* names = g_context.names;
     if (names == nullptr || names->find_utf8 == nullptr) return;
@@ -1176,9 +1261,19 @@ void UeAdvanceRefresh(const UeReader& reader) {
         return;
     }
 
-    if (stage == 1) {  // 定位
+    if (stage == 1) {  // 定位（命中缓存就完全不扫描）
+        if (!g_ue_refresh_selected && g_ue_phase != UeProbePhase::scanning &&
+            g_ue_phase != UeProbePhase::finding_owner && UeTryReuseRefreshTarget(reader)) {
+            g_ue_refresh_selected = true;
+            g_ue_refresh_scan_started = true;
+            g_ue_fast_scan = false;
+            UePublish("一键刷新：复用已定位的目标（未扫描）");
+            UeLog("refresh: reused cached target, no scan");
+            return;
+        }
         if (!g_ue_refresh_scan_started) {
-            UeNotice("一键刷新：定位 " + std::string(kUeRefreshFunction) + " …");
+            g_ue_refresh_scan_start = now;
+            UeNotice("一键刷新：定位 " + std::string(kUeRefreshFunction) + "（首次要扫一遍，之后复用）…");
             UeStartQuickScan();
             g_ue_refresh_scan_started = true;
             if (g_ue_phase != UeProbePhase::scanning) {
@@ -1218,6 +1313,16 @@ void UeAdvanceRefresh(const UeReader& reader) {
                 g_ue_refresh_cd_parms_size =
                     g_ue_matches[static_cast<std::size_t>(cd_index)].parms_size;
             }
+            // 记下这次的结果，之后每次点击都直接复用，不再扫描注册表。
+            g_ue_refresh_fn_cache = g_ue_matches[static_cast<std::size_t>(reset_index)].object;
+            g_ue_refresh_fn_parms_size =
+                g_ue_matches[static_cast<std::size_t>(reset_index)].parms_size;
+            g_ue_refresh_owner_cache = g_ue_matches[static_cast<std::size_t>(reset_index)].owner;
+            g_ue_refresh_cd_fn_cache = g_ue_refresh_cd_function;
+            g_ue_refresh_cd_fn_parms_size = g_ue_refresh_cd_parms_size;
+            UeLog("refresh: located, scan took " +
+                  UeSecondsText(std::chrono::duration<double>(now - g_ue_refresh_scan_start).count()) +
+                  "s");
             // 只找实例，不让它顺手调用（真正的调用在 fire 阶段，参数要逐个给营火 ID）。
             g_ue_auto_call = false;
             UeBeginOwnerScan(reader, static_cast<std::size_t>(reset_index));
