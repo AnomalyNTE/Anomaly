@@ -40,10 +40,14 @@ using anomaly::sdk::UiWindow;
 constexpr double kDefaultCampX = -145902.874;
 constexpr double kDefaultCampY = -144517.527;
 constexpr double kDefaultCampZ = 10144.029;
-// 战斗点。
+// 1 号战斗点。
 constexpr double kDefaultFightX = -145438.826;
 constexpr double kDefaultFightY = -140743.761;
 constexpr double kDefaultFightZ = 10159.201;
+// 2 号战斗点。
+constexpr double kDefaultFight2X = -113694.644;
+constexpr double kDefaultFight2Y = -139085.057;
+constexpr double kDefaultFight2Z = 37174.609;
 
 // 传送桥默认走「预载模式」：宿主先把目标点所在的流送单元加载出来，再在同一次窗口内把角色
 // 交回地面，避免落进未加载地形。延迟为 0 时退化为立即传送，此时才需要 Z 抬升与沉底重试。
@@ -117,10 +121,16 @@ const char* StatusName(const std::uint32_t code) noexcept {
     }
 }
 
+// 传送点槽位：0 = 营地、1 = 1 号战斗点、2 = 2 号战斗点。
+constexpr int kPointCount = 3;
+
 // 全部运行期状态。刻意**不落盘**：任何编辑框在插件重载后都回到默认值。
 struct Settings {
-    double camp_target[3]{kDefaultCampX, kDefaultCampY, kDefaultCampZ};
-    double fight_target[3]{kDefaultFightX, kDefaultFightY, kDefaultFightZ};
+    double targets[kPointCount][3]{
+        {kDefaultCampX, kDefaultCampY, kDefaultCampZ},
+        {kDefaultFightX, kDefaultFightY, kDefaultFightZ},
+        {kDefaultFight2X, kDefaultFight2Y, kDefaultFight2Z},
+    };
     double preload_delay{kPreloadDelayDefault};
     double landing_lift{kLandingLiftDefault};
     std::uint32_t sink_retries{kSinkRetriesDefault};
@@ -173,14 +183,20 @@ struct Context {
     char result_message[192]{};
 } g_context;
 
-// on_draw 线程独占的输入缓冲（ImGui 的文本存储必须跨帧保留）。
-std::array<char, kCoordinateTextCapacity> g_camp_x_text{};
-std::array<char, kCoordinateTextCapacity> g_camp_y_text{};
-std::array<char, kCoordinateTextCapacity> g_camp_z_text{};
-std::array<char, kCoordinateTextCapacity> g_fight_x_text{};
-std::array<char, kCoordinateTextCapacity> g_fight_y_text{};
-std::array<char, kCoordinateTextCapacity> g_fight_z_text{};
+// 界面线程置位、Game 线程消费。三组坐标输入缓冲：营地 / 1 号战斗点 / 2 号战斗点。
+std::array<std::array<std::array<char, kCoordinateTextCapacity>, 3>, kPointCount> g_point_text{};
 std::array<char, kNumberTextCapacity> g_preload_text{};
+
+// 每个槽位每根轴的输入框 id（ImGui id 必须全局唯一）。
+constexpr const char* kPointIds[kPointCount][3] = {
+    {"##night999-camp-x", "##night999-camp-y", "##night999-camp-z"},
+    {"##night999-fight1-x", "##night999-fight1-y", "##night999-fight1-z"},
+    {"##night999-fight2-x", "##night999-fight2-y", "##night999-fight2-z"},
+};
+// 界面上显示的名字。
+constexpr const char* kPointNames[kPointCount] = {"营地", "战斗点1", "战斗点2"};
+constexpr const char* kPointCaptureLabels[kPointCount] = {
+    "读取当前坐标为营地", "读取当前坐标为1号战斗点", "读取当前坐标为2号战斗点"};
 
 // 置位后由渲染线程把设置里的值刷进上面的输入缓冲。
 std::atomic_bool g_text_stale{true};
@@ -529,29 +545,31 @@ void SyncTextBuffers() {
         std::scoped_lock lock(g_context.mutex);
         settings = g_context.settings;
     }
-    FormatPosition(settings.camp_target, g_camp_x_text.data(), g_camp_x_text.size(),
-                   g_camp_y_text.data(), g_camp_y_text.size(), g_camp_z_text.data(),
-                   g_camp_z_text.size());
-    FormatPosition(settings.fight_target, g_fight_x_text.data(), g_fight_x_text.size(),
-                   g_fight_y_text.data(), g_fight_y_text.size(), g_fight_z_text.data(),
-                   g_fight_z_text.size());
+    for (int slot = 0; slot != kPointCount; ++slot) {
+        FormatPosition(settings.targets[slot], g_point_text[slot][0].data(),
+                       kCoordinateTextCapacity, g_point_text[slot][1].data(),
+                       kCoordinateTextCapacity, g_point_text[slot][2].data(),
+                       kCoordinateTextCapacity);
+    }
     std::snprintf(g_preload_text.data(), g_preload_text.size(), "%.1f", settings.preload_delay);
 }
 
 // 把界面上的输入框搬回设置。只有确实变化才写，避免每帧来回覆盖。
 void CommitInputs() noexcept {
-    const double camp[3]{ParseNumber(g_camp_x_text.data()), ParseNumber(g_camp_y_text.data()),
-                         ParseNumber(g_camp_z_text.data())};
-    const double fight[3]{ParseNumber(g_fight_x_text.data()), ParseNumber(g_fight_y_text.data()),
-                          ParseNumber(g_fight_z_text.data())};
+    double parsed[kPointCount][3]{};
+    for (int slot = 0; slot != kPointCount; ++slot) {
+        for (int axis = 0; axis != 3; ++axis) {
+            parsed[slot][axis] = ParseNumber(g_point_text[slot][axis].data());
+        }
+    }
     const double preload = ParseNumber(g_preload_text.data());
 
     std::scoped_lock lock(g_context.mutex);
-    if (IsUsablePosition(camp) && !SamePosition(camp, g_context.settings.camp_target)) {
-        std::copy(camp, camp + 3, g_context.settings.camp_target);
-    }
-    if (IsUsablePosition(fight) && !SamePosition(fight, g_context.settings.fight_target)) {
-        std::copy(fight, fight + 3, g_context.settings.fight_target);
+    for (int slot = 0; slot != kPointCount; ++slot) {
+        if (IsUsablePosition(parsed[slot]) &&
+            !SamePosition(parsed[slot], g_context.settings.targets[slot])) {
+            std::copy(parsed[slot], parsed[slot] + 3, g_context.settings.targets[slot]);
+        }
     }
     if (std::isfinite(preload) && preload >= 0.0 && preload <= kPreloadDelayMaximum &&
         !SameValue(preload, g_context.settings.preload_delay)) {
@@ -559,8 +577,10 @@ void CommitInputs() noexcept {
     }
 }
 
-// 「读取当前坐标为营地 / 战斗点」：取一次玩家快照，同时写进设置与输入框（当帧就能看到）。
-void CaptureCurrentPosition(const AnomalyHostApiV1* host, const bool camp) {
+// 「读取当前坐标为营地 / 1 号战斗点 / 2 号战斗点」：取一次玩家快照，同时写进设置与输入框
+// （当帧就能看到）。
+void CaptureCurrentPosition(const AnomalyHostApiV1* host, const int slot) {
+    if (slot < 0 || slot >= kPointCount) return;
     double position[3]{};
     if (!TryReadCurrentPosition(host, position)) {
         RecordResult(StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE));
@@ -568,16 +588,14 @@ void CaptureCurrentPosition(const AnomalyHostApiV1* host, const bool camp) {
     }
     {
         std::scoped_lock lock(g_context.mutex);
-        std::copy(position, position + 3,
-                  camp ? g_context.settings.camp_target : g_context.settings.fight_target);
+        std::copy(position, position + 3, g_context.settings.targets[slot]);
     }
-    FormatPosition(position, camp ? g_camp_x_text.data() : g_fight_x_text.data(),
-                   g_camp_x_text.size(), camp ? g_camp_y_text.data() : g_fight_y_text.data(),
-                   g_camp_y_text.size(), camp ? g_camp_z_text.data() : g_fight_z_text.data(),
-                   g_camp_z_text.size());
+    FormatPosition(position, g_point_text[slot][0].data(), kCoordinateTextCapacity,
+                   g_point_text[slot][1].data(), kCoordinateTextCapacity,
+                   g_point_text[slot][2].data(), kCoordinateTextCapacity);
     char detail[128]{};
-    std::snprintf(detail, sizeof(detail), "night999 captured %s position (%.3f, %.3f, %.3f)",
-                  camp ? "camp" : "fight", position[0], position[1], position[2]);
+    std::snprintf(detail, sizeof(detail), "night999 captured point %d position (%.3f, %.3f, %.3f)",
+                  slot, position[0], position[1], position[2]);
     Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, detail);
 }
 
@@ -599,16 +617,15 @@ void LastTeleportWarning(const AnomalyUiServiceV1* ui) {
 }
 
 // 一个传送点占三行：`营地 X` / `营地 Y` / `营地 Z`，各自一个输入框。
-void PointFields(
-    const AnomalyUiServiceV1* ui, const char* name, const char* x_id, char* x_text,
-    const char* y_id, char* y_text, const char* z_id, char* z_text) {
-    char label[48]{};
-    std::snprintf(label, sizeof(label), "%s X", name);
-    LabeledField(ui, label, x_id, x_text, kCoordinateTextCapacity);
-    std::snprintf(label, sizeof(label), "%s Y", name);
-    LabeledField(ui, label, y_id, y_text, kCoordinateTextCapacity);
-    std::snprintf(label, sizeof(label), "%s Z", name);
-    LabeledField(ui, label, z_id, z_text, kCoordinateTextCapacity);
+void PointFields(const AnomalyUiServiceV1* ui, const int slot) {
+    const char* name = kPointNames[slot];
+    static constexpr const char* kAxis[3] = {"X", "Y", "Z"};
+    for (int axis = 0; axis != 3; ++axis) {
+        char label[48]{};
+        std::snprintf(label, sizeof(label), "%s %s", name, kAxis[axis]);
+        LabeledField(ui, label, kPointIds[slot][axis], g_point_text[slot][axis].data(),
+                     kCoordinateTextCapacity);
+    }
 }
 
 void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
@@ -646,17 +663,11 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
 
     // ── 传送点 ──
     DrawText(ui, g_context.localizer.Text("points.title", "传送点"));
-    PointFields(ui, "营地", "##night999-camp-x", g_camp_x_text.data(), "##night999-camp-y",
-                g_camp_y_text.data(), "##night999-camp-z", g_camp_z_text.data());
-    PointFields(ui, "战斗点", "##night999-fight-x", g_fight_x_text.data(), "##night999-fight-y",
-                g_fight_y_text.data(), "##night999-fight-z", g_fight_z_text.data());
-    if (ui->button != nullptr) {
-        if (ui->button(ui->user, StringView("读取营地为当前位置"), 0.0F, 0.0F) != 0) {
-            CaptureCurrentPosition(host, true);
-        }
-        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-        if (ui->button(ui->user, StringView("读取战斗点为当前位置"), 0.0F, 0.0F) != 0) {
-            CaptureCurrentPosition(host, false);
+    for (int slot = 0; slot != kPointCount; ++slot) {
+        PointFields(ui, slot);
+        if (ui->button != nullptr &&
+            ui->button(ui->user, StringView(kPointCaptureLabels[slot]), 0.0F, 0.0F) != 0) {
+            CaptureCurrentPosition(host, slot);
         }
     }
     LabeledField(ui, "预载延迟(秒)", "##night999-preload", g_preload_text.data(),
@@ -832,7 +843,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.15.1"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.16.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

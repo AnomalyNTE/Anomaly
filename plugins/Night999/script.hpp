@@ -1,5 +1,6 @@
 #pragma once
-// 脚本主循环：传送至营地 → 刷新怪物 → 传送至战斗点 → 自动战斗 → 下一轮。
+// 脚本主循环：传送至营地 → 刷新怪物 → 传送至 1 号战斗点 → 自动战斗
+//              → 传送至 2 号战斗点 → 自动战斗 → 回到第一步。
 //
 // 每一步都复用已有的成熟模块，本身只做「排序 + 等待」：
 //   · 传送：TeleportToPosition（与界面按钮同一条已验证路径）；
@@ -21,13 +22,19 @@ constexpr std::chrono::seconds kScriptSettleDuration{2};
 constexpr std::chrono::seconds kScriptRefreshTimeout{30};
 constexpr std::chrono::minutes kScriptCombatTimeout{15};
 
+// 传送点槽位：0 = 营地、1 = 1 号战斗点、2 = 2 号战斗点。
+constexpr int kScriptSlotCamp = 0;
+constexpr int kScriptSlotFight1 = 1;
+constexpr int kScriptSlotFight2 = 2;
+
 enum class ScriptStep : std::int32_t {
     idle = 0,
     teleport_camp = 1,
     teleport_fight = 2,
-    settle = 3,
-    refresh = 4,
-    combat = 5,
+    teleport_fight2 = 3,
+    settle = 4,
+    refresh = 5,
+    combat = 6,
 };
 
 // 界面线程置位、Game 线程消费。
@@ -45,6 +52,8 @@ std::string g_script_status{"脚本：未开始"};
 // Game 线程独占。
 ScriptStep g_script_phase{ScriptStep::idle};
 ScriptStep g_script_settle_next{ScriptStep::refresh};
+// 当前这一段自动战斗属于哪个战斗点（1 或 2），决定打完后的去向。
+int g_script_fight_slot{kScriptSlotFight1};
 std::chrono::steady_clock::time_point g_script_step_at{};
 std::chrono::steady_clock::time_point g_script_deadline{};
 double g_script_target[3]{};
@@ -63,7 +72,8 @@ std::string ScriptStatusText() {
 const char* ScriptStepName(const ScriptStep step) {
     switch (step) {
     case ScriptStep::teleport_camp: return "传送至营地";
-    case ScriptStep::teleport_fight: return "传送至战斗点";
+    case ScriptStep::teleport_fight: return "传送至1号战斗点";
+    case ScriptStep::teleport_fight2: return "传送至2号战斗点";
     case ScriptStep::settle: return "落地稳定";
     case ScriptStep::refresh: return "刷新怪物";
     case ScriptStep::combat: return "自动战斗";
@@ -86,10 +96,11 @@ void ScriptEnterStep(const ScriptStep step, const std::chrono::steady_clock::tim
     g_script_deadline = now + kScriptTeleportTimeout;
 }
 
-void ScriptReadTarget(const bool camp, double target[3]) {
+// 读取某个槽位的传送点坐标（0 营地 / 1 一号战斗点 / 2 二号战斗点）。
+void ScriptReadTarget(const int slot, double target[3]) {
+    const int clamped = slot < 0 ? 0 : (slot > kScriptSlotFight2 ? kScriptSlotFight2 : slot);
     std::scoped_lock lock(g_context.mutex);
-    const double* source =
-        camp ? g_context.settings.camp_target : g_context.settings.fight_target;
+    const double* source = g_context.settings.targets[clamped];
     std::copy(source, source + 3, target);
 }
 
@@ -159,19 +170,30 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
 
     switch (g_script_phase) {
     case ScriptStep::teleport_camp:
-    case ScriptStep::teleport_fight: {
-        const bool camp = g_script_phase == ScriptStep::teleport_camp;
-        ScriptReadTarget(camp, g_script_target);
+    case ScriptStep::teleport_fight:
+    case ScriptStep::teleport_fight2: {
+        int slot = kScriptSlotCamp;
+        if (g_script_phase == ScriptStep::teleport_fight) slot = kScriptSlotFight1;
+        else if (g_script_phase == ScriptStep::teleport_fight2) slot = kScriptSlotFight2;
+        ScriptReadTarget(slot, g_script_target);
         const auto go_settle = [&]() {
-            g_script_settle_next = camp ? ScriptStep::refresh : ScriptStep::combat;
+            if (slot == kScriptSlotCamp) {
+                g_script_settle_next = ScriptStep::refresh;
+            } else {
+                g_script_settle_next = ScriptStep::combat;
+                g_script_fight_slot = slot;
+            }
             ScriptEnterStep(ScriptStep::settle, now);
         };
+        const char* arrived_text = slot == kScriptSlotCamp
+            ? "已到营地"
+            : (slot == kScriptSlotFight1 ? "已到1号战斗点" : "已到2号战斗点");
         if (!g_script_step_started) {
             // 第一拍：已经在目标点就直接进下一步，否则发一次传送；发不出去（世界还没就绪）
             // 就继续等，直到超时 —— 只发一次，避免每帧重发把流送打断。
             if (ScriptArrived(host)) {
                 go_settle();
-                ScriptPublish(ScriptRoundPrefix() + " · " + (camp ? "已到营地" : "已到战斗点"));
+                ScriptPublish(ScriptRoundPrefix() + " · " + arrived_text);
                 return;
             }
             if (TeleportToPosition(host, g_script_target)) {
@@ -189,7 +211,7 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
         }
         if (ScriptArrived(host)) {
             go_settle();
-            ScriptPublish(ScriptRoundPrefix() + " · " + (camp ? "已到营地" : "已到战斗点"));
+            ScriptPublish(ScriptRoundPrefix() + " · " + arrived_text);
             return;
         }
         if (now >= g_script_deadline) {
@@ -218,7 +240,7 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
             const bool ok = g_ue_refresh_ok.load() != 0;
             if (!ok) Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 script: refresh failed");
             ScriptEnterStep(ScriptStep::teleport_fight, now);
-            ScriptPublish(ScriptRoundPrefix() + " · 传送至战斗点");
+            ScriptPublish(ScriptRoundPrefix() + " · 传送至1号战斗点");
             return;
         }
         if (now >= g_script_deadline) {
@@ -239,6 +261,13 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
         }
         const CombatResult result = CombatTakeResult();
         if (result != CombatResult::none) {
+            if (g_script_fight_slot == kScriptSlotFight1) {
+                // 1 号战斗点打完 → 去 2 号战斗点，再来一轮自动战斗。
+                ScriptEnterStep(ScriptStep::teleport_fight2, now);
+                ScriptPublish(ScriptRoundPrefix() + " · 传送至2号战斗点（1号 " +
+                              CombatResultName(result) + "）");
+                return;
+            }
             ScriptFinishRound(CombatResultName(result), now);
             return;
         }
@@ -246,6 +275,11 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
             if (g_combat_active.load()) g_combat_stop_requested.store(true);
             static_cast<void>(CombatTakeResult());
             Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 script: combat timeout");
+            if (g_script_fight_slot == kScriptSlotFight1) {
+                ScriptEnterStep(ScriptStep::teleport_fight2, now);
+                ScriptPublish(ScriptRoundPrefix() + " · 传送至2号战斗点（1号战斗超时）");
+                return;
+            }
             ScriptFinishRound("战斗超时", now);
         }
         return;
