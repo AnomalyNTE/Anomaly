@@ -55,14 +55,11 @@ jobs:
           # local-only artifact (built and signed outside this repository).
           # The runtime package still carries the driver\ directory with its
           # placement note so the user has somewhere to drop the signed file.
-          $driverDirectory = '.build/ci-artifacts/runtime/driver'
-          New-Item -ItemType Directory -Force -Path $driverDirectory | Out-Null
-          @'
-AnomalyDriver.sys belongs in this directory (next to AnomalyLauncher.exe).
-It is built and signed locally and is intentionally absent from this
-package: place the signed file here by hand.
-Without it the launcher's driver-inject tab opens, but injection fails.
-'@ | Set-Content -LiteralPath (Join-Path $driverDirectory 'README.txt') -Encoding utf8
+          # The note is byte-copied from the repository: a here-string would
+          # need its terminator at column zero, which terminates this YAML
+          # block scalar first.
+          New-Item -ItemType Directory -Force -Path '.build/ci-artifacts/runtime/driver' | Out-Null
+          Copy-Item 'src/kernel-mapper/driver-readme.txt' '.build/ci-artifacts/runtime/driver/README.txt'
       - name: Stage CI test plugins
         if: github.ref_type != 'tag' && inputs.fixtures == true
         shell: pwsh
