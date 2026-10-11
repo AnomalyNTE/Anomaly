@@ -74,6 +74,8 @@ std::atomic_bool g_ue_record_all{};
 std::atomic_int g_ue_select_requested{-1};
 // 按「所属类名」匹配关键词（用于找某类的活实例，例如场景里的篝火 Actor）。
 std::atomic_bool g_ue_match_class{};
+// 字段转储请求（把当前实例的反射字段全列出来，写进日志）
+std::atomic_bool g_ue_fields_requested{};
 
 // --- 扫描状态（on_update 独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
@@ -109,6 +111,9 @@ std::string g_ue_call_result;
 std::string g_ue_params_dump;
 std::vector<UeMatch> g_ue_matches;
 std::string g_ue_target_name;
+std::vector<std::string> g_ue_field_lines;
+std::size_t g_ue_field_cursor{};
+std::size_t g_ue_field_logged{};
 // 调用参数：空 = 全零；0x…/十进制 = 64 位整数；其它按 FName 名字查 id。
 std::string g_ue_param;
 std::array<char, kUeParamTextCapacity> g_ue_param_text{};
@@ -358,6 +363,65 @@ bool UeParseByteList(const std::string& text, std::vector<std::uint8_t>& parms,
     std::copy(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(take), parms.begin());
     detail = "载荷 " + std::to_string(take) + " 字节";
     return true;
+}
+
+// 把对象自身的反射字段逐个列出来：名字 / 偏移 / 大小 / 值。数组(16 字节对齐)额外读
+// 出 Num 并跟随 Data 指针 —— 用来找 PlayerState 上的 ActivatedCampfireIDs 这类字段。
+void UeBuildFields(const UeReader& reader, std::vector<std::string>& lines) {
+    lines.clear();
+    const std::uintptr_t object = g_ue_instance;
+    if (object == 0) {
+        lines.emplace_back("没有可用实例（先「选用并调用」把目标定下来）");
+        return;
+    }
+    std::uintptr_t cls = UeClassOf(reader, object);
+    for (int depth = 0; cls != 0 && depth < 6 && lines.size() < 240; ++depth) {
+        const std::string class_name = reader.NameAt(cls + kUeObjectNameOffset);
+        lines.push_back("== 类 " + (class_name.empty() ? std::string("?") : class_name));
+        std::uintptr_t field{};
+        if (reader.Read(cls + kUeStructPropertyLinkOffset, field)) {
+            for (int index = 0; field != 0 && index < 400 && lines.size() < 240; ++index) {
+                const std::string name = reader.NameAt(field + kUeFieldNameOffset);
+                if (name.empty() || name.size() > 64) break;
+                std::int32_t size{};
+                std::int32_t offset{};
+                reader.Read(field + kUeFieldSizeOffset, size);
+                reader.Read(field + kUeFieldOffsetOffset, offset);
+                char head[192]{};
+                std::snprintf(head, sizeof(head), "  %s @%X size=%u", name.c_str(), offset, size);
+                std::uint64_t value{};
+                if (reader.Read(object + static_cast<std::uintptr_t>(offset), value)) {
+                    char tail[64]{};
+                    std::snprintf(tail, sizeof(tail), " = %llX",
+                                  static_cast<unsigned long long>(value));
+                    lines.push_back(std::string(head) + tail);
+                    // size==16 视作 TArray{Data,Num,Max}：跟随 Data 读前 64 字节。
+                    if (size == 16) {
+                        std::uint32_t num{};
+                        reader.Read(object + static_cast<std::uintptr_t>(offset) + 8, num);
+                        if (value > 0x10000 && num > 0 && num < 4096) {
+                            std::uint8_t buffer[64]{};
+                            if (g_context.core != nullptr && g_context.core->read_memory != nullptr &&
+                                g_context.core->read_memory(
+                                    g_context.core->user, static_cast<std::uintptr_t>(value),
+                                    {buffer, sizeof(buffer)}).code == ANOMALY_STATUS_V1_OK) {
+                                lines.push_back("    Num=" + std::to_string(num) + " [0]=" +
+                                                UeBytesText(buffer, sizeof(buffer)));
+                            }
+                        }
+                    }
+                } else {
+                    lines.push_back(head);
+                }
+                std::uintptr_t next{};
+                if (!reader.Read(field + kUeFieldNextOffset, next) || next == field) break;
+                field = next;
+            }
+        }
+        std::uintptr_t parent{};
+        if (!reader.Read(cls + kUeStructSuperOffset, parent) || parent == cls) break;
+        cls = parent;
+    }
 }
 
 void UeSetParam(const std::string& param) {
@@ -970,6 +1034,32 @@ void UeAdvance(const UeReader& reader) {
     UeResolveEvents(reader);
     UeLogRecords();
 
+    if (g_ue_fields_requested.exchange(false)) {
+        std::vector<std::string> lines;
+        UeBuildFields(reader, lines);
+        std::scoped_lock lock(g_ue_mutex);
+        g_ue_field_lines = std::move(lines);
+        g_ue_field_cursor = 0;
+        g_ue_field_logged = 0;
+    }
+    {
+        std::string batch;
+        {
+            std::scoped_lock lock(g_ue_mutex);
+            if (g_ue_field_cursor < g_ue_field_lines.size()) {
+                batch = "fields: ";
+                std::size_t taken = 0;
+                while (g_ue_field_cursor < g_ue_field_lines.size() && taken < 12) {
+                    batch += g_ue_field_lines[g_ue_field_cursor++] + " | ";
+                    ++taken;
+                }
+                if (g_ue_field_cursor >= g_ue_field_lines.size()) batch += "（转储结束）";
+                g_ue_field_logged = g_ue_field_cursor;
+            }
+        }
+        if (!batch.empty()) Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, batch);
+    }
+
     if (g_ue_probe_requested.exchange(false)) {
         UeBeginScan();
         return;
@@ -1082,6 +1172,10 @@ void UeContent(const AnomalyUiServiceV1* ui) {
     if (ui->button != nullptr) {
         if (ui->button(ui->user, StringView("探测"), 0.0F, 0.0F) != 0) {
             g_ue_probe_requested.store(true);
+        }
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        if (ui->button(ui->user, StringView("转储字段"), 0.0F, 0.0F) != 0) {
+            g_ue_fields_requested.store(true);
         }
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
         const int enabled = g_ue_function != 0 && g_ue_instance != 0 ? 1 : 0;
