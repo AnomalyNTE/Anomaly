@@ -83,6 +83,10 @@ public:
     // that playlist song; re-posting the same song keeps it playing.
     // Without an index it starts or keeps the playlist.
     [[nodiscard]] bool CanPlay(std::string_view key) const;
+    // Play a downloaded audio document from memory. The bytes are moved into
+    // the engine worker and released when the song changes or stops.
+    void PlayMemory(std::string key, std::vector<std::uint8_t> bytes,
+                    float position, std::optional<std::size_t> index = {});
     void Play(std::string key, float position, std::optional<std::size_t> index = {});
     // Playlist songs stop only if no Play arrives within a short grace period.
     void Stop();
@@ -107,6 +111,14 @@ public:
     // Playlist index of the song now playing, also after the engine moved on
     // by itself; empty when nothing from the playlist plays.
     [[nodiscard]] std::optional<std::size_t> PlayingSlot() const;
+    // Meting song index now playing from memory; empty otherwise. Never set
+    // together with PlayingSlot.
+    [[nodiscard]] std::optional<std::size_t> MemorySlot() const;
+    // Length in seconds of the memory song now playing; 0 = none or unknown.
+    [[nodiscard]] float MemoryDuration() const;
+    // The Meting index of a memory song that reached its end since the last
+    // call, once; empty otherwise. The engine does not advance memory songs.
+    [[nodiscard]] std::optional<std::size_t> TakeMemoryEnded();
     // Length in seconds of a playlist song, measured at scan time; 0 = unknown.
     [[nodiscard]] float Duration(std::size_t index) const;
     // Playlist song titles (file stems) in playlist order, and a counter that

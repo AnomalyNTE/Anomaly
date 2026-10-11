@@ -150,6 +150,29 @@ inline constexpr std::uint32_t kUiDurationLabelOffset = 0x1018;
 // UObject::OuterPrivate: a panel's outer is its widget tree, and the tree's
 // outer is the music view that owns the panel.
 inline constexpr std::uint32_t kUiOuterOffset = 0x20;
+// The spinning disc on the album thumbnail (BPUI_MusicThumbnail_C, the object
+// SetAlbumCover runs on): its ThumbnailAlbumCover image (kDetailCoverImageOffset)
+// draws through a MaterialInstanceDynamic whose texture parameter "Tex1" holds
+// the album cover. A brush swap on the image is overwritten by the blueprint, so
+// the cover goes into that parameter instead. Verified in game by a field dump.
+// UImage::Brush.ResourceObject: the MID.
+inline constexpr std::uint32_t kImageBrushResourceOffset = 0x1A8;
+// UMaterialInstance::TextureParameterValues, TArray<FTextureParameterValue>
+// (0x28 each: FMaterialParameterInfo{FName name} at 0, UTexture* at 0x10).
+inline constexpr std::uint32_t kMaterialTextureParametersOffset = 0x1E8;
+inline constexpr std::uint32_t kTextureParameterSize = 0x28;
+inline constexpr std::uint32_t kTextureParameterValueOffset = 0x10;
+inline constexpr std::string_view kDiscTextureParameter = "Tex1";
+// The player's spinning disc: the AlbumCoverImg image of BPUI_MusicDetailedView_C,
+// drawn through its own MaterialInstanceDynamic (MID_BPUI_CharacterChange) with
+// the same Tex1 parameter. Verified in game by an object-array dump.
+inline constexpr std::string_view kPlayerDiscImageName = "AlbumCoverImg";
+inline constexpr std::string_view kPlayerViewClassName = "BPUI_MusicDetailedView_C";
+// UFunction MaterialInstanceDynamic::SetTextureParameterValue(FName, UTexture*):
+// parameters {FName 8, UTexture* 8}.
+inline constexpr std::string_view kSetTextureParameterFunction = "SetTextureParameterValue";
+// UObject::ProcessEvent vtable slot (index, not byte offset).
+inline constexpr std::uint32_t kProcessEventVtableIndex = 0x4C;
 // UHTUI_MusicDetailedView: +0xFF8 its player panel, +0x1000 the progress strip
 // beside it. The strip (UHTUI_MusicPlayerProgressBar) owns the time labels the
 // player shows; +0xF98 is its duration label.
@@ -239,6 +262,16 @@ inline constexpr std::uint32_t kObjectArrayCountOffset = 0x14;
 inline constexpr std::uint32_t kObjectsPerChunk = 65536;
 inline constexpr std::uint32_t kObjectItemSize = 24;
 inline constexpr std::uint32_t kObjectItemSerialOffset = 0x10;  // int32, 0 = none yet
+// FUObjectItem::Flags (int32, EInternalObjectFlags): {Object 8, Flags 4,
+// ClusterRootIndex 4, SerialNumber 4}, consistent with the serial at 0x10.
+inline constexpr std::uint32_t kObjectItemFlagsOffset = 0x08;
+// Per-song cover: UTexture2D* UKismetRenderingLibrary::ImportBufferAsTexture2D(
+// UObject* WorldContextObject, const TArray<uint8>& Buffer), a static UFunction
+// called through ProcessEvent on the library's default object. Parameters:
+// {UObject* 8, TArray<uint8> 16, UTexture2D* return 8}. The engine only reads
+// the buffer; the plugin owns it.
+inline constexpr std::string_view kRenderingLibraryClass = "KismetRenderingLibrary";
+inline constexpr std::string_view kImportBufferFunction = "ImportBufferAsTexture2D";
 // GUObjectArray.MasterSerialNumber, from AllocateSerialNumber's `lock xadd`;
 // rip-relative at +16 of the match, instruction ends at +20.
 inline constexpr std::string_view kSerialCounterPattern =
@@ -247,6 +280,7 @@ inline constexpr std::uint32_t kSerialCounterRelOffset = 16;
 inline constexpr std::uint32_t kSerialCounterInstructionEnd = 20;
 // UObjectBase::InternalIndex / NamePrivate / OuterPrivate.
 inline constexpr std::uint32_t kObjectIndexOffset = 0x0C;
+inline constexpr std::uint32_t kObjectClassOffset = 0x10;  // UObjectBase::ClassPrivate
 inline constexpr std::uint32_t kObjectOuterOffset = 0x20;
 // TSoftObjectPtr: FWeakObjectPtr (8), FTopLevelAssetPath {package, asset} (16),
 // SubPathString (FString, 16). The cover gets a live weak pointer {index,
@@ -291,6 +325,9 @@ inline constexpr std::uint32_t kAlbumDescriptionOffset = 0x48;  // FText
 inline constexpr std::uint32_t kSongNumberBase = 0x48460000;    // song k: base + k + 1
 inline constexpr std::uint32_t kMaxSongs = 0xFFFE;
 inline constexpr std::uint32_t kAlbumNumber = 0x4846FFFF;
+// Separate namespace for the Meting virtual album and songs.
+inline constexpr std::uint32_t kMetingSongNumberBase = 0x48470000;
+inline constexpr std::uint32_t kMetingAlbumNumber = 0x4847FFFF;
 inline constexpr std::int32_t kSortIndexBase = 0x7FFF0000;      // after every game entry
 
 } // namespace hifi_vehicle_music_profile
