@@ -70,11 +70,14 @@ std::atomic_bool g_ue_clear_log_requested{};
 std::atomic_bool g_ue_record_requested{};
 std::atomic_bool g_ue_record_all{};
 std::atomic_int g_ue_select_requested{-1};
+// 按「所属类名」匹配关键词（用于找某类的活实例，例如场景里的篝火 Actor）。
+std::atomic_bool g_ue_match_class{};
 
 // --- 扫描状态（on_update 独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
 bool g_ue_ids_only{};
 bool g_ue_auto_call{};
+bool g_ue_class_match{};
 std::uint32_t g_ue_name_id{};
 std::uint32_t g_ue_cursor{};
 std::uint32_t g_ue_total{};
@@ -469,7 +472,22 @@ bool UeScanStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* object
         ++resolved;
         const std::string text = reader.Name(UeFName{snapshot.name_id, 0});
         if (text.empty()) continue;
-        if (UeLower(text).find(g_ue_keyword_scan) == std::string::npos) continue;
+        bool hit = UeLower(text).find(g_ue_keyword_scan) != std::string::npos;
+        if (!hit && g_ue_class_match) {
+            // 对象名不含关键词时再看它的所属类名 —— 用来把某类的活实例列出来。
+            const std::uintptr_t object = UeResolve(reader, objects, snapshot.handle);
+            if (object != 0) {
+                const std::uintptr_t cls = UeClassOf(reader, object);
+                if (cls != 0) {
+                    const std::string class_name = reader.NameAt(cls + kUeObjectNameOffset);
+                    if (!class_name.empty() &&
+                        UeLower(class_name).find(g_ue_keyword_scan) != std::string::npos) {
+                        hit = true;
+                    }
+                }
+            }
+        }
+        if (!hit) continue;
         UeAddMatch(reader, objects, snapshot, text);
         if (g_ue_matches.size() >= kUeMatchCapacity) return true;
     }
@@ -578,6 +596,7 @@ void UeBeginScan() {
         g_ue_params_dump.clear();
     }
 
+    g_ue_class_match = g_ue_match_class.load();
     const std::string keyword = UeKeyword();
     if (keyword.empty()) {
         UeFinish("关键词为空", true);
@@ -1098,8 +1117,15 @@ void UeContent(const AnomalyUiServiceV1* ui) {
                 g_ue_record_all.store(record_all != 0);
             }
         }
+        {
+            int match_class = g_ue_match_class.load() ? 1 : 0;
+            if (ui->checkbox(ui->user, StringView("按所属类名匹配（找某类的活实例）"), &match_class) != 0) {
+                g_ue_match_class.store(match_class != 0);
+            }
+        }
     }
     std::string fill_param;
+    bool replay_after_fill = false;
     if (g_ue_recording.load()) {
         if (ui->button != nullptr &&
             ui->button(ui->user, StringView("清空记录"), 0.0F, 0.0F) != 0) {
@@ -1136,6 +1162,16 @@ void UeContent(const AnomalyUiServiceV1* ui) {
                         }
                     }
                     if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+                    // 一键重放：填好整段载荷后立刻用当前选中的目标调用一次。
+                    const std::string replay_label =
+                        "重放##night999-ue-rep-" + std::to_string(index);
+                    if (ui->button(ui->user, StringView(replay_label), 0.0F, 0.0F) != 0) {
+                        fill_param = UeBytesText(
+                            record.parms_raw,
+                            std::min<std::size_t>(record.parms_size, kUeParmsCapture));
+                        replay_after_fill = true;
+                    }
+                    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
                 }
                 DrawText(ui, std::string(record.resolved ? record.function_name : "(解析中)") +
                                  "  ←  " + (record.resolved ? record.class_name : "?") + "  ×" +
@@ -1146,6 +1182,7 @@ void UeContent(const AnomalyUiServiceV1* ui) {
     if (!fill_param.empty()) {
         std::snprintf(g_ue_param_text.data(), g_ue_param_text.size(), "%s", fill_param.c_str());
         UeSetParam(g_ue_param_text.data());
+        if (replay_after_fill) g_ue_call_requested.store(true);
     }
 }
 
