@@ -139,6 +139,25 @@ foreach ($package in $packages) {
         --component $package.InstallComponent
     if ($LASTEXITCODE -ne 0) { throw "install failed for $($package.InstallComponent)" }
 
+    if ($package.InstallComponent -eq 'GameRuntime') {
+        # Driver-inject layout: the kernel-mapper client is built in-repo and
+        # ships with the GameRuntime component, but the signed AnomalyDriver.sys
+        # never enters the release archive -- the launcher resolves
+        # driver\AnomalyDriver.sys next to its own executable, and the user
+        # places the signed file there by hand. The package carries the
+        # directory with a placement note so that handoff is explicit.
+        $driverDirectory = Join-Path $stage 'driver'
+        New-Item -ItemType Directory -Force -Path $driverDirectory | Out-Null
+        $note = @'
+AnomalyDriver.sys belongs in this directory (next to AnomalyLauncher.exe).
+It is built and signed locally and is intentionally absent from this
+package: place the signed file here by hand.
+Without it the launcher's driver-inject tab opens, but injection fails.
+'@
+        Set-Content -LiteralPath (Join-Path $driverDirectory 'README.txt') `
+            -Value $note -Encoding utf8
+    }
+
     $stages[$package.Component] = $stage
 }
 

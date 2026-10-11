@@ -692,6 +692,28 @@ target_compile_definitions(
 target_compile_options(anomaly_nte_game_hook PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_nte_game_hook PRIVATE User32)
 
+# The kernel-mapper client: the user-mode brain of the driver-inject chain. Plain C++
+# plus one MASM stub, no WDK, so it is a normal build artifact that CI produces and
+# ships with the runtime payload -- the launcher's driver-inject tab is gated on it.
+# AnomalyDriver.sys is deliberately NOT built here: the driver is built and signed
+# locally and the user drops the signed file into driver\ next to the launcher.
+add_executable(anomaly_kmap_client
+    src/kernel-mapper/client/kmap_client.cpp
+    src/kernel-mapper/client/apc_boot.asm)
+set_target_properties(anomaly_kmap_client PROPERTIES
+    OUTPUT_NAME "Anomaly.KmapClient"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Anomaly")
+target_include_directories(anomaly_kmap_client PRIVATE include)
+target_compile_definitions(
+    anomaly_kmap_client PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_kmap_client PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /EHsc /utf-8>)
+# /INCREMENTAL:NO, as the pre-CMake manual build always passed: incremental
+# linking routes address-taken FUNCTION symbols through ILT jump thunks, which
+# breaks the &AkrApcBootstrapEnd - &AkrApcBootstrapBegin code-range contract.
+target_link_options(anomaly_kmap_client PRIVATE /INCREMENTAL:NO)
+target_link_libraries(anomaly_kmap_client PRIVATE Dbghelp Advapi32)
+
 add_library(anomaly_semver STATIC src/plugin/semver.cpp)
 target_include_directories(anomaly_semver PUBLIC include)
 target_compile_definitions(
@@ -1804,6 +1826,12 @@ install(TARGETS anomaly_nte_game_hook
 install(TARGETS anomaly_relay
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
+# The kernel-mapper client ships with the runtime payload because the launcher's
+# driver-inject tab is gated on its presence. The driver itself is intentionally
+# absent from every package: the user places the signed AnomalyDriver.sys into
+# driver\ by hand (the package carries that directory with a placement note).
+install(TARGETS anomaly_kmap_client
+    RUNTIME DESTINATION Anomaly COMPONENT GameRuntime)
 # Plugin packages install themselves: `anomaly_add_plugin` emits the package rules for
 # `Anomaly/plugins/<PackageName>` in the GameRuntime component, or in the opt-in
 # TestPlugins component for TEST_PLUGIN packages, so a registered plugin cannot be

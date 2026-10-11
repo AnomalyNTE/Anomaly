@@ -85,6 +85,18 @@ rem Keep the existing package tree and replace only files owned by the install s
 "%CMAKE%" --install "%BUILD_DIR%" --config RelWithDebInfo --prefix "%PACKAGE_DIR%" --component GameRuntime
 if errorlevel 1 exit /b %errorlevel%
 
+rem Driver-inject layout. The kernel-mapper client is a normal CMake target in
+rem the GameRuntime component, so the install above already stages
+rem Anomaly\Anomaly.KmapClient.exe. The signed AnomalyDriver.sys is never
+rem built, signed or staged here: the user drops it into driver\ next to the
+rem launcher by hand. The directory always ships with a placement note so that
+rem handoff is explicit.
+if not exist "%PACKAGE_DIR%\driver" mkdir "%PACKAGE_DIR%\driver"
+rem The placement note is byte-copied, never echoed: cmd parses this file in
+rem the ANSI codepage, which mangles the UTF-8 Chinese text (and the trailing
+rem byte of a full-width period can even swallow the echo redirection).
+copy /y "%~dp0src\kernel-mapper\driver-readme.txt" "%PACKAGE_DIR%\driver\README.txt" >nul
+
 rem Test plugin packages are built and installed only on request; they live in their own
 rem component and never enter a release package.
 if "%TESTPLUGINS%"=="OFF" goto :after_test_plugins

@@ -110,7 +110,7 @@ ImVec4 ThemeColorWithAlpha(
     return {color.red, color.green, color.blue, alpha};
 }
 
-enum class LauncherMode : std::uint8_t { Proxy, Attach };
+enum class LauncherMode : std::uint8_t { Proxy, Attach, HotAttach };
 enum class MessageKind : std::uint8_t { Neutral, Success, Error };
 
 // One decoded theme image. The worker decodes and the render thread only
@@ -281,6 +281,14 @@ std::filesystem::path RelayHostExecutable() {
 // image is deployed next to the runtime payload, and falls back to the direct injection
 // when it is not.
 constexpr bool kRelayInjection = true;
+
+// The ring-0 mapper client: a helper this launcher supervises instead of injecting by
+// itself. The client owns the driver conversation, so no user-mode process -- including
+// this launcher -- ever holds a game handle. Its presence in the payload directory is
+// what makes the kernel mode selectable at all.
+std::filesystem::path KernelMapperClient() {
+    return ExecutableDirectory() / L"Anomaly" / L"Anomaly.KmapClient.exe";
+}
 
 // Auto-starting the official client is off. The launcher is started the way its own shortcut starts
 // it, and the player presses start game in the window that opens, so capture waits for the HTGame.exe
@@ -619,6 +627,52 @@ public:
         });
     }
 
+    // Hot attach: the game is already running. The kernel mapper client
+    // adopts the pid through the driver -- no launcher start, no hook, no
+    // capture race. Only the kernel chain can do this.
+    void HotAttach(const DWORD process_id) {
+        Queue(anomaly::MessageId::LauncherHotAttachAttaching, MessageScope::Attach,
+            [this, process_id] {
+                // The generic activity line has no arguments; republish it with
+                // the pid so the status names what is being injected.
+                {
+                    std::scoped_lock lock(state_mutex_);
+                    state_.message = MakeLauncherMessage(
+                        anomaly::MessageId::LauncherHotAttachAttaching,
+                        {std::to_string(process_id)});
+                }
+                const auto selected = ResolveAttachRuntime();
+                if (!selected.Ok()) {
+                    PublishRuntimeFailure(selected);
+                    return;
+                }
+                anomaly::launcher::ManualMapLaunchOptions options;
+                options.manual_map.core_path = selected.core_path;
+                options.manual_map.runtime_root = selected.runtime_root;
+                options.manual_map.log_directory = options.manual_map.runtime_root / L"logs";
+                options.kernel.client_executable = KernelMapperClient();
+                options.kernel.hot_pid = process_id;
+                const auto result =
+                    anomaly::launcher::LaunchAndManualMapRuntimeCore(options);
+                if (result.Ok()) RefreshProcessesImpl();
+
+                std::scoped_lock lock(state_mutex_);
+                if (result.Ok()) {
+                    state_.attached_process = result.process_id;
+                    state_.message = MakeLauncherMessage(
+                        anomaly::MessageId::LauncherHotAttachAttached,
+                        {std::to_string(result.process_id)});
+                    state_.message_kind = MessageKind::Success;
+                } else {
+                    const std::string error = std::to_string(result.mapping.win32_error);
+                    state_.message = MakeLauncherMessage(
+                        anomaly::MessageId::LauncherHotAttachFailed, {error},
+                        result.mapping.message);
+                    state_.message_kind = MessageKind::Error;
+                }
+            });
+    }
+
     void LaunchAndAttach() {
         Queue(anomaly::MessageId::LauncherStatusLaunchingAttach, MessageScope::Attach, [this] {
             const auto launcher = LauncherExecutable();
@@ -656,7 +710,11 @@ public:
             options.manual_map.core_path = selected.core_path;
             options.manual_map.runtime_root = selected.runtime_root;
             options.manual_map.log_directory = options.manual_map.runtime_root / L"logs";
-            if constexpr (kRelayInjection) {
+            // The launch flow is user-mode only: relay (innocent host process)
+            // when its payload is deployed, direct otherwise. The kernel chain
+            // lives exclusively in the driver-inject tab -- it adopts a running
+            // game, which this flow's just-created process is not.
+            if (kRelayInjection) {
                 std::error_code relay_probe{};
                 const auto relay_image = RelayLibrary();
                 const auto relay_host = RelayHostExecutable();
@@ -1695,12 +1753,10 @@ void DrawModes(
         ImGui::TableSetupColumn("Client", ImGuiTableColumnFlags_WidthFixed, Scale(190.0f));
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        if (ModeButton("proxy-install", Text(translator,
-                anomaly::MessageId::LauncherModeProxyInstall),
-                mode == LauncherMode::Proxy, 126.0f)) {
-            mode = LauncherMode::Proxy;
-        }
-        ImGui::SameLine();
+        // The proxy-install entry is hidden: the launcher presents live attach
+        // and driver inject only. Everything behind the proxy mode stays
+        // compiled -- a proxy installation that is already enabled on disk
+        // still lands on its page (below), which carries the disable action.
         ImGui::BeginDisabled(snapshot.busy || proxy_enabled);
         if (ModeButton("live-attach", Text(translator,
                 anomaly::MessageId::LauncherModeLiveAttach),
@@ -1708,6 +1764,21 @@ void DrawModes(
             mode = LauncherMode::Attach;
         }
         ImGui::EndDisabled();
+        // Hot attach is only reachable with the ring-0 mapper client deployed:
+        // the user-mode chains cannot adopt a running game, the kernel one can.
+        {
+            std::error_code probe{};
+            const bool hot_available = std::filesystem::is_regular_file(
+                KernelMapperClient(), probe) && !probe;
+            ImGui::SameLine();
+            ImGui::BeginDisabled(snapshot.busy || !hot_available);
+            if (ModeButton("hot-attach", Text(translator,
+                    anomaly::MessageId::LauncherModeHotAttach),
+                    mode == LauncherMode::HotAttach, 126.0f)) {
+                mode = LauncherMode::HotAttach;
+            }
+            ImGui::EndDisabled();
+        }
         // The client is always the mainland one. The switch that used to live in
         // the second column only ever had one useful setting, and NteClient's
         // default already is MainlandChina, so the column is simply gone.
@@ -2038,6 +2109,76 @@ void DrawAttachMode(
     }
 }
 
+// Driver-inject mode: the third tab. Everything the attach mode needs -- launcher
+// path, hook, capture timing -- exists because the game is not running yet.
+// Here it already is, so the surface is minimal: what the mode does, the
+// running games, one action, and the same status line the attach mode has --
+// without it a click's outcome is invisible, which reads as a dead button.
+void DrawHotAttachMode(
+    LauncherController& controller, const LauncherSnapshot& snapshot,
+    const anomaly::Translator& translator) {
+    const auto& theme = ue5mem::PlatformUiTheme();
+    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherHotAttachHint));
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionProcesses));
+
+    // The controller's own last message: "attaching..." while the client runs,
+    // then the attached PID or the failure, coloured by its kind.
+    const ImVec4 status_ink = snapshot.message_kind == MessageKind::Error
+        ? ThemeColor(theme.danger)
+        : snapshot.message_kind == MessageKind::Success
+            ? ThemeColor(theme.success)
+            : kLauncherMutedInk;
+    const std::string status = RenderMessage(translator, snapshot.message);
+    ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - StatusRefreshReserve());
+    ImGui::TextColored(status_ink, "%s", status.c_str());
+    ImGui::PopTextWrapPos();
+    const float process_status_top =
+        ImGui::GetItemRectMin().y - ImGui::GetWindowPos().y;
+    if (StatusRefreshButton(
+            "refresh-hot-processes",
+            Text(translator, anomaly::MessageId::LauncherProcessRefresh),
+            !snapshot.busy, process_status_top)) {
+        controller.RefreshProcesses();
+    }
+
+    // Exactly one game can run, so the list is a summary line, not a picker:
+    // the first (only) pid, or the none-running hint when the game is down.
+    // The primary Inject button in the bottom-right corner shares its band and
+    // size with the other modes' primary action, so switching tabs never moves
+    // the button under the cursor.
+    DWORD selected_pid = 0;
+    if (snapshot.processes.empty()) {
+        ImGui::PushTextWrapPos();
+        ImGui::TextDisabled("%s",
+            Text(translator, anomaly::MessageId::LauncherHotAttachNoneRunning));
+        ImGui::PopTextWrapPos();
+    } else {
+        selected_pid = snapshot.processes.front().process_id;
+        const std::string label =
+            std::to_string(selected_pid) + "  " +
+            PathUtf8(snapshot.processes.front().executable_path);
+        ImGui::PushTextWrapPos();
+        ImGui::TextUnformatted(label.c_str());
+        ImGui::PopTextWrapPos();
+    }
+
+    // The same bottom-right placement and size as the other modes' primary
+    // action: pinned to a fixed band so the button never moves between tabs.
+    const bool can_inject = !snapshot.busy && selected_pid != 0;
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - Scale(74.0f));
+    ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(),
+        ImGui::GetWindowWidth() - Scale(240.0f) - Scale(16.0f)));
+    if (CommandButton(
+            "hot-attach-core", 0xe768,
+            Text(translator, anomaly::MessageId::CommonInject), true, can_inject,
+            ImVec2(240.0f, 62.0f))) {
+        controller.HotAttach(selected_pid);
+    }
+}
+
 // The native caption is gone, so the launcher draws its own: a drag band holding
 // the window title, then the minimise and close controls the frame used to own.
 // Nothing here paints a background, so the wallpaper and the stickers show
@@ -2222,6 +2363,8 @@ void DrawLauncher(
         ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
     if (mode == LauncherMode::Proxy) {
         DrawProxyMode(window, controller, snapshot, translator);
+    } else if (mode == LauncherMode::HotAttach) {
+        DrawHotAttachMode(controller, snapshot, translator);
     } else {
         DrawAttachMode(window, controller, snapshot, translator);
     }
@@ -2328,7 +2471,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     }
     LoadLogo(graphics);
     LauncherController controller(ExecutableDirectory());
-    LauncherMode mode = LauncherMode::Proxy;
+    // Live attach is the default now that the proxy-install entry is hidden;
+    // an enabled proxy installation still redirects to its own page.
+    LauncherMode mode = LauncherMode::Attach;
 
     bool running = true;
     bool window_shown = false;

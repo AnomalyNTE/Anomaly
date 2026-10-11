@@ -71,6 +71,24 @@ struct ManualMapRelayOptions final {
     }
 };
 
+// Ring-0 injection: every target-side operation (capture, allocation, write, protect,
+// thread redirect) is performed by the kernel mapper driver with handles that live only
+// inside one IOCTL, so no user-mode process -- including this launcher -- ever holds a
+// handle to the game. The launcher's role shrinks to starting the official launcher and
+// supervising the mapper client executable, which owns the driver conversation.
+struct ManualMapKernelOptions final {
+    // Anomaly.KmapClient.exe, resolved by the caller next to the runtime payload.
+    std::filesystem::path client_executable;
+    // Hot attach: non-zero runs the client against a game that is already
+    // running, through the driver's direct pid adoption instead of the
+    // create-process callback. Zero captures the game the launcher starts.
+    DWORD hot_pid{};
+
+    [[nodiscard]] bool Enabled() const noexcept {
+        return !client_executable.empty();
+    }
+};
+
 struct ManualMapResult final {
     ManualMapError error{ManualMapError::None};
     DWORD win32_error{ERROR_SUCCESS};
@@ -97,6 +115,7 @@ struct ManualMapLaunchOptions final {
     std::chrono::milliseconds loader_timeout{std::chrono::minutes(2)};
     ManualMapOptions manual_map;
     ManualMapRelayOptions relay;
+    ManualMapKernelOptions kernel;
 };
 
 struct ManualMapLaunchResult final {

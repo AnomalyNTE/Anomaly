@@ -2389,10 +2389,206 @@ ManualMapLaunchResult RunRelayAttachSession(
     }
 }
 
+// The kernel session hands the capture-and-map tail to the mapper client. The client
+// owns the driver conversation: it arms the create-process callback, waits for the game
+// the official launcher produces, and maps the core through the driver's one-shot
+// operations. The result contract is an INI file:
+//   [result] error=<ManualMapError> win32=<code> pid=<id> image=<base>
+//   runtime_start=<code> message=<text>
+// written before the client exits, so the launcher never talks to the driver itself.
+ManualMapLaunchResult RunKernelAttachSession(
+    const ManualMapLaunchOptions& options) noexcept {
+    ManualMapLaunchResult result;
+    try {
+        const std::filesystem::path client =
+            std::filesystem::absolute(options.kernel.client_executable);
+        std::error_code client_probe{};
+        if (!std::filesystem::is_regular_file(client, client_probe) || client_probe) {
+            result.mapping = Failure(
+                ManualMapError::ImageUnavailable, ERROR_FILE_NOT_FOUND,
+                "kernel mapper client could not be found");
+            return result;
+        }
+        const auto core_path = std::filesystem::absolute(options.manual_map.core_path);
+        const auto runtime_root = options.manual_map.runtime_root.empty()
+            ? core_path.parent_path()
+            : std::filesystem::absolute(options.manual_map.runtime_root);
+        const auto log_directory = options.manual_map.log_directory.empty()
+            ? runtime_root / L"logs"
+            : std::filesystem::absolute(options.manual_map.log_directory);
+
+        wchar_t temp_directory[MAX_PATH]{};
+        const UINT temp_length = GetTempPathW(
+            MAX_PATH, temp_directory);
+        if (temp_length == 0 || temp_length >= MAX_PATH) {
+            result.mapping = Failure(
+                ManualMapError::ProcessLaunchFailure, GetLastError(),
+                "kernel mapper result path could not be resolved");
+            return result;
+        }
+        const std::filesystem::path result_file =
+            std::filesystem::path(temp_directory) /
+            (L"Anomaly.Kmap.Result." +
+             std::to_wstring(GetCurrentProcessId()) + L"." +
+             std::to_wstring(GetTickCount64()) + L".ini");
+        std::error_code remove_probe{};
+        static_cast<void>(std::filesystem::remove(result_file, remove_probe));
+
+        const auto capture_ms = std::clamp<std::int64_t>(
+            options.kernel.hot_pid != 0
+                ? 1  // hot attach: no creation to wait for
+                : options.target_timeout.count(),
+            1, std::chrono::minutes(10).count() * 60'000LL);
+        // The kernel session's stages are serial and each can stall for its
+        // full 15s window under a hooked loader (loader probe, per-module
+        // DllMain, TLS registration, bootstrap poll), so the shared 30s
+        // default dies mid-replay with no result INI. Floor the kernel path
+        // at two minutes; an explicit larger timeout still wins.
+        const auto attach_ms = std::clamp<std::int64_t>(
+            std::max<std::int64_t>(
+                options.manual_map.timeout.count(),
+                std::chrono::seconds(120).count()),
+            1, INFINITE - 1);
+        // The armed wait runs inside the client, so its budget belongs here too, exactly
+        // the way the relay session folds it into hop one.
+        const std::int64_t armed_ms = options.hook_path.empty() || options.kernel.hot_pid != 0
+            ? 0 : static_cast<std::int64_t>(kHookArmedTimeoutMilliseconds);
+        const std::int64_t budget = std::clamp<std::int64_t>(
+            armed_ms + capture_ms + attach_ms + 30'000LL, 1,
+            static_cast<std::int64_t>(INFINITE - 1));
+
+        std::wstring arguments = L"--core \"" + core_path.wstring() + L"\"";
+        arguments += L" --target " + options.target_executable_name;
+        if (options.kernel.hot_pid != 0) {
+            // Hot attach: the game is already running, so the client adopts the
+            // pid directly instead of waiting for a creation callback.
+            arguments += L" --pid " + std::to_wstring(options.kernel.hot_pid);
+        }
+        arguments += L" --runtime-root \"" + runtime_root.wstring() + L"\"";
+        arguments += L" --log-directory \"" + log_directory.wstring() + L"\"";
+        arguments += L" --capture-timeout " + std::to_wstring(capture_ms);
+        arguments += L" --timeout " + std::to_wstring(attach_ms);
+        if (!options.hook_path.empty()) {
+            arguments += L" --armed-timeout " + std::to_wstring(armed_ms);
+        }
+        arguments += L" --result \"" + result_file.wstring() + L"\"";
+        const std::wstring command_line =
+            L"\"" + client.wstring() + L"\" " + arguments;
+
+        STARTUPINFOW startup{
+            .cb = sizeof(startup),
+            .dwFlags = STARTF_USESHOWWINDOW,
+            .wShowWindow = SW_HIDE,
+        };
+        PROCESS_INFORMATION created{};
+        if (CreateProcessW(
+                client.c_str(), const_cast<LPWSTR>(command_line.c_str()), nullptr,
+                nullptr, FALSE, 0, nullptr, client.parent_path().c_str(), &startup,
+                &created) == FALSE) {
+            result.mapping = Failure(
+                ManualMapError::ProcessLaunchFailure, GetLastError(),
+                "kernel mapper client could not be started");
+            return result;
+        }
+        Handle client_process(created.hProcess);
+        Handle client_thread(created.hThread);
+
+        const DWORD wait = WaitForSingleObject(
+            client_process.Get(), static_cast<DWORD>(budget));
+        if (wait != WAIT_OBJECT_0) {
+            static_cast<void>(
+                TerminateProcess(client_process.Get(), ERROR_PROCESS_ABORTED));
+            static_cast<void>(WaitForSingleObject(client_process.Get(), 5000));
+            result.mapping = Failure(
+                ManualMapError::Timeout, WAIT_TIMEOUT,
+                "kernel mapper client did not finish before the session budget");
+            return result;
+        }
+
+        std::error_code result_probe{};
+        if (!std::filesystem::is_regular_file(result_file, result_probe) ||
+            result_probe) {
+            result.mapping = Failure(
+                ManualMapError::BootstrapFailure, ERROR_UNHANDLED_EXCEPTION,
+                "kernel mapper client exited without reporting a result");
+            return result;
+        }
+        const std::wstring ini = result_file.wstring();
+        const auto read_int = [&ini](const wchar_t* key) noexcept -> std::uint32_t {
+            const UINT value = GetPrivateProfileIntW(L"result", key, 0, ini.c_str());
+            return value;
+        };
+        // Every key is read before the file is removed: once the file is gone
+        // the profile APIs answer every key with its default, and those
+        // defaults -- error 0, pid 0 -- are exactly the shape of "succeeded
+        // with no pid", which the caller reports as a failure with error
+        // code 0. Deleting after reading keeps the two from blurring.
+        const auto reported_error = static_cast<ManualMapError>(read_int(L"error"));
+        const auto reported_pid = read_int(L"pid");
+        const auto reported_win32 = read_int(L"win32");
+        const auto reported_runtime_start = read_int(L"runtime_start");
+        // The mapped base is a 64-bit pointer; GetPrivateProfileIntW would
+        // truncate it to 32 bits, so it travels as a string.
+        wchar_t image_text[32]{};
+        GetPrivateProfileStringW(
+            L"result", L"image", L"0", image_text,
+            static_cast<DWORD>(std::size(image_text)), ini.c_str());
+        const std::uintptr_t reported_image =
+            static_cast<std::uintptr_t>(std::wcstoull(image_text, nullptr, 10));
+        wchar_t message[512]{};
+        GetPrivateProfileStringW(
+            L"result", L"message", L"", message, static_cast<DWORD>(std::size(message)),
+            ini.c_str());
+        std::string narrow;
+        for (const wchar_t* cursor = message; *cursor != L'\0'; ++cursor) {
+            narrow.push_back(static_cast<char>(*cursor));
+        }
+        static_cast<void>(std::filesystem::remove(result_file, remove_probe));
+
+        if (reported_error == ManualMapError::None) {
+            result.mapping = ManualMapResult{
+                ManualMapError::None,
+                ERROR_SUCCESS,
+                reported_runtime_start,
+                reported_image,
+                "Anomaly core attached through the kernel mapper",
+            };
+            result.process_id = reported_pid;
+            return result;
+        }
+        result.mapping = Failure(
+            reported_error, reported_win32,
+            narrow.empty() ? "kernel mapper client reported a failure" : narrow,
+            reported_runtime_start, reported_image);
+        result.process_id = reported_pid;
+        return result;
+    } catch (...) {
+        result.mapping = Failure(
+            ManualMapError::ProcessLaunchFailure, ERROR_UNHANDLED_EXCEPTION,
+            "kernel attach session raised an unexpected exception");
+        return result;
+    }
+}
+
 ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
     const ManualMapLaunchOptions& options) noexcept {
     ManualMapLaunchResult result;
     try {
+        // Hot attach: the game is already running and the kernel client adopts
+        // its pid directly. Starting the official launcher, hooking it, and
+        // snapshotting for capture are all the cold path -- none of them apply,
+        // so none of them run. It also needs none of the cold path's inputs:
+        // the launcher path is meaningless when no launcher is started.
+        if (options.kernel.Enabled() && options.kernel.hot_pid != 0) {
+            if (options.manual_map.core_path.empty()) {
+                result.mapping = Failure(
+                    ManualMapError::ProcessLaunchFailure, ERROR_INVALID_PARAMETER,
+                    "hot attach options are incomplete");
+                return result;
+            }
+            return RunKernelAttachSession(options);
+        }
+
         if (options.launcher_path.empty() || options.target_executable_name.empty() ||
             options.manual_map.core_path.empty()) {
             result.mapping = Failure(
@@ -2508,8 +2704,13 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             }
         }
 
-        // The relay path replaces this process's capture-and-map tail: the relay image
-        // mapped into its host performs both, and only the outcome comes back here.
+        // The kernel path replaces this process's capture-and-map tail the way the relay
+        // path does, but with a stronger property: the mapper client performing the tail
+        // holds no game handles either, because every target operation happens inside
+        // the driver. Kernel takes precedence when both are configured.
+        if (options.kernel.Enabled()) {
+            return RunKernelAttachSession(options);
+        }
         if (options.relay.Enabled()) {
             return RunRelayAttachSession(options, existing_targets, armed_event_name);
         }
