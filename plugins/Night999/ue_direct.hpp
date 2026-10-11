@@ -26,7 +26,7 @@ constexpr std::size_t kUeClassMonitorCapacity = 16;
 // 这样先开几秒让常驻函数（tick/动画）把表填满，再清空记录去触发一次操作，
 // 剩下的基本就是这次操作真正新调用的函数链。
 constexpr std::size_t kUeSeenSlots = 16384;
-constexpr std::size_t kUeEventCapacity = 64;
+constexpr std::size_t kUeEventCapacity = 128;
 // 单次调用最多记多少字节实参。
 constexpr std::size_t kUeParmsCapture = 16;
 
@@ -52,6 +52,7 @@ struct UeEventRecord {
     bool monitored{};
     bool resolved{};
     bool decoded{};
+    bool logged{};
     std::uint64_t parms_value{};
     std::uint8_t parms_raw[kUeParmsCapture]{};
     char parms_hex[kUeParmsCapture * 3 + 8]{};
@@ -799,6 +800,32 @@ void UeResolveEvents(const UeReader& reader) {
     }
 }
 
+// 把已解析的记录写进插件日志（面板放不下那么多行）。加锁期间只组装字符串，
+// 真正的 Log 调用放在解锁之后。
+void UeLogRecords() {
+    if (!g_ue_recording.load()) return;
+    std::array<std::string, 8> lines;
+    std::size_t count = 0;
+    {
+        std::scoped_lock lock(g_ue_mutex);
+        for (std::size_t index = 0; index < g_ue_event_count && count < lines.size(); ++index) {
+            auto& record = g_ue_events[index];
+            if (record.logged || !record.resolved) continue;
+            char line[448]{};
+            std::snprintf(line, sizeof(line), "rec %s <- %s x%u obj=%llX parms[%u] %s%s%s",
+                          record.function_name, record.class_name, record.count,
+                          static_cast<unsigned long long>(record.object), record.parms_size,
+                          record.parms_hex,
+                          record.parms_fname[0] != '\0' ? "FName=" : "", record.parms_fname);
+            lines[count++] = std::string("night999 ue rec: ") + line;
+            record.logged = true;
+        }
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, lines[index]);
+    }
+}
+
 void UeAdvance(const UeReader& reader) {
     const auto* objects = g_context.objects;
 
@@ -832,6 +859,7 @@ void UeAdvance(const UeReader& reader) {
         }
     }
     UeResolveEvents(reader);
+    UeLogRecords();
 
     if (g_ue_probe_requested.exchange(false)) {
         UeBeginScan();
@@ -1009,7 +1037,7 @@ void UeContent(const AnomalyUiServiceV1* ui) {
             std::scoped_lock lock(g_ue_mutex);
             DrawText(ui, "共命中 " + std::to_string(g_ue_event_total) + " 次，" +
                              std::to_string(g_ue_event_count) + " 条记录（函数 × 对象）：");
-            const std::size_t shown = g_ue_event_count < 10 ? g_ue_event_count : 10;
+            const std::size_t shown = g_ue_event_count < 24 ? g_ue_event_count : 24;
             for (std::size_t index = 0; index < shown; ++index) {
                 const auto& record = g_ue_events[index];
                 std::string args;
