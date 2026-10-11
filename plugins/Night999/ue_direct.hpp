@@ -58,6 +58,8 @@ struct UeEventRecord {
     std::uint64_t parms_value{};
     std::uint8_t parms_raw[kUeParmsCapture]{};
     char parms_hex[kUeParmsCapture * 3 + 8]{};
+    // 首 8 字节若是指针（TArray 的 data 指针等），把它指向的前 64 字节也记下来。
+    char pointee_hex[kUeParmsCapture * 3 + 8]{};
     char parms_fname[kUeTextCapacity]{};
     char function_name[kUeTextCapacity]{};
     char class_name[kUeTextCapacity]{};
@@ -145,6 +147,26 @@ void UeAppendHex(char* destination, const std::size_t capacity, const void* sour
     destination[used] = '\0';
 }
 
+// 首 8 字节若落在合法地址上（很像 TArray 的 data 指针），把它指向的前 64 字节读出来。
+// 回调是**执行前**钩子，此刻那块内存还有效 —— 这正是「照抄载荷」失败、但能在这里
+// 读到真实内容的原因。
+void UeFollowPointer(UeEventRecord& record, const std::uint8_t* bytes,
+                     const std::uint32_t size) {
+    record.pointee_hex[0] = '\0';
+    if (size < 8) return;
+    std::uint64_t value{};
+    std::memcpy(&value, bytes, 8);
+    if (value <= 0x10000) return;
+    const auto* core = g_context.core;
+    if (core == nullptr || core->read_memory == nullptr) return;
+    std::uint8_t buffer[64]{};
+    if (core->read_memory(core->user, static_cast<std::uintptr_t>(value),
+                          {buffer, sizeof(buffer)}).code != ANOMALY_STATUS_V1_OK) {
+        return;
+    }
+    UeAppendHex(record.pointee_hex, sizeof(record.pointee_hex), buffer, sizeof(buffer));
+}
+
 // 记录一次调用的实参：十六进制（给人看）与原字节（给解析用）。
 void UeCaptureParms(UeEventRecord& record, void* parameters, const std::uint16_t parms_size) {
     if (parameters == nullptr) return;
@@ -152,6 +174,7 @@ void UeCaptureParms(UeEventRecord& record, void* parameters, const std::uint16_t
     UeAppendHex(record.parms_hex, sizeof(record.parms_hex), parameters, take);
     std::memcpy(record.parms_raw, parameters, take);
     record.parms_size = parms_size;
+    UeFollowPointer(record, static_cast<const std::uint8_t*>(parameters), parms_size);
 }
 
 // 开放寻址：返回 true 表示这个 id 之前没见过（并把它记下）。
@@ -896,11 +919,13 @@ void UeLogRecords() {
             auto& record = g_ue_events[index];
             if (record.logged || !record.resolved) continue;
             char line[768]{};
-            std::snprintf(line, sizeof(line), "rec %s <- %s x%u obj=%llX parms[%u] %s%s%s",
+            std::snprintf(line, sizeof(line),
+                          "rec %s <- %s x%u obj=%llX parms[%u] %s%s%s%s%s",
                           record.function_name, record.class_name, record.count,
                           static_cast<unsigned long long>(record.object), record.parms_size,
                           record.parms_hex,
-                          record.parms_fname[0] != '\0' ? "FName=" : "", record.parms_fname);
+                          record.parms_fname[0] != '\0' ? "FName=" : "", record.parms_fname,
+                          record.pointee_hex[0] != '\0' ? " || *ptr=" : "", record.pointee_hex);
             lines[count++] = std::string("night999 ue rec: ") + line;
             record.logged = true;
         }
@@ -1162,10 +1187,13 @@ void UeContent(const AnomalyUiServiceV1* ui) {
                         }
                     }
                     if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-                    // 一键重放：填好整段载荷后立刻用当前选中的目标调用一次。
+                    // 一键重放：仅当本行就是这个函数时才给按钮 —— 否则等于把别的函数的
+                    // 实参硬塞进来，毫无意义（实测踩过）。
+                    const bool replay_ok = record.function_name[0] != '\0' &&
+                        g_ue_target_name == record.function_name;
                     const std::string replay_label =
                         "重放##night999-ue-rep-" + std::to_string(index);
-                    if (ui->button(ui->user, StringView(replay_label), 0.0F, 0.0F) != 0) {
+                    if (replay_ok && ui->button(ui->user, StringView(replay_label), 0.0F, 0.0F) != 0) {
                         fill_param = UeBytesText(
                             record.parms_raw,
                             std::min<std::size_t>(record.parms_size, kUeParmsCapture));
