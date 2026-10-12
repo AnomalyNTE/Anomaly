@@ -714,7 +714,7 @@ struct Context final {
   // plugin's own reference (Kinsama式初音ミクV4C). A motion authored against one rig reads
   // differently on the other -- resting arms differ by ~35 deg and the hips' travel around the
   // waist by up to 21 cm -- so this is a per-motion choice, not a global "better" one.
-  std::atomic_bool motion_reference_unity{};
+  std::atomic_bool motion_reference_unity{true};
   // Camera VMD (a separate file from the motion): loaded on the worker, sampled on the render
   // thread, so the track itself is guarded and only the flags are atomic.
   std::mutex camera_mutex;
