@@ -32,6 +32,8 @@
 #define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_PICKUP_SERVICE_V1_ID "anomaly.nte.pickup"
 #define ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_VEHICLE_SERVICE_V1_ID "anomaly.nte.vehicle"
+#define ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID "anomaly.nte.ui-buttons"
 #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES 128u
@@ -290,6 +292,38 @@ typedef struct AnomalyNteNavigationServiceV1 {
         void* user, const double destination[3]);
     AnomalyStatusV1 (ANOMALY_CALL *stop_movement)(void* user);
 } AnomalyNteNavigationServiceV1;
+
+// Host-owned UE5 vehicle bridge. The Host resolves the current driving vehicle
+// and validates reflected function/property metadata before any mutation. No UE
+// object pointer crosses the plugin ABI. Mutations are Game-thread operations.
+typedef uint32_t AnomalyNteVehicleFlagsV1;
+#define ANOMALY_NTE_VEHICLE_V1_VALID (1u << 0u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_SPEED (1u << 1u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_TOP_SPEED_RATIO (1u << 2u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_WHEEL_FRICTION (1u << 3u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_SUMMON (1u << 4u)
+
+typedef struct AnomalyNteVehicleSnapshotV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    AnomalyGenerationHandleV1 vehicle;
+    double speed_kmh;
+    float top_speed_ratio;
+    uint32_t wheel_friction_enabled;
+} AnomalyNteVehicleSnapshotV1;
+
+typedef struct AnomalyNteVehicleServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot)(
+        void* user, AnomalyNteVehicleSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *set_top_speed_ratio)(
+        void* user, float ratio);
+    AnomalyStatusV1 (ANOMALY_CALL *set_wheel_friction_enabled)(
+        void* user, uint32_t enabled);
+    AnomalyStatusV1 (ANOMALY_CALL *reset)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *summon_vehicle)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *summon_vehicle_id)(void* user, uint32_t vehicle_id);
+} AnomalyNteVehicleServiceV1;
 
 // Nearby pickup is a Host-owned interaction bridge. The request is accepted only from the
 // active Game callback domain; it never exposes UE object pointers, reflected functions, or

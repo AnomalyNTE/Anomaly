@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.tools.runtime-profiler",
+  "name": "运行异常监测",
+  "description": "常态低开销静默监测画面延时、帧数下降、进程内存和线程增长，仅在确认异常后弹出提示并分析疑似相关插件。",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "0.12.1",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.storage",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.diagnostics",
+      "minVersion": 1,
+      "optional": true
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "storage",
+    "diagnostics"
+  ]
+}
