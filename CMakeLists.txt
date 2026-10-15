@@ -1407,6 +1407,19 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteFreeFly/manifest.json
         PACKAGE_NAME NteFreeFly
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteFreeFly")
+    anomaly_add_plugin(anomaly_builtin_autofish
+        SOURCES plugins/AutoFish/plugin.cpp
+        MANIFEST plugins/AutoFish/manifest.json
+        PACKAGE_NAME AutoFish
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/AutoFish")
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_autofish_fixture plugins/AutoFish/tests.cpp)
+        target_compile_features(anomaly_autofish_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_autofish_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_autofish_persistence_fixture plugins/AutoFish/persistence_tests.cpp)
+        target_link_libraries(anomaly_autofish_persistence_fixture PRIVATE Anomaly::sdk)
+        target_compile_options(anomaly_autofish_persistence_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
     anomaly_add_plugin(anomaly_builtin_skin_changer
         SOURCES plugins/SkinChanger/plugin.cpp plugins/SkinChanger/cosmetics.cpp
             plugins/SkinChanger/awakening.cpp plugins/SkinChanger/plates.cpp
@@ -1470,6 +1483,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_combat_auto_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
         target_link_libraries(anomaly_combat_auto_fixture PRIVATE anomaly_plugin_combat)
     endif()
+    # 空无一人／Deserted：把人群密度的环境倍率与车辆生成器的数量旋钮压下去，
+    # 一键让街上既没有行人也没有车；勾选时记下当前值当初始值，取消时还原。
+    anomaly_add_plugin(anomaly_builtin_deserted
+        SOURCES plugins/deserted/plugin.cpp
+        MANIFEST plugins/deserted/manifest.json
+        PACKAGE_NAME Deserted
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/Deserted")
     # UI 按钮调试面板：anomaly.nte.ui-buttons 服务的消费者，功能全部在 Host。
     anomaly_add_plugin(anomaly_builtin_ui_buttons
         SOURCES plugins/UiButtons/plugin.cpp
@@ -1506,11 +1526,56 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModelScale")
     target_link_libraries(anomaly_builtin_hifi_vehicle_music PRIVATE
         nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio anomaly_monkeys_audio anomaly_dsd2pcm
-        ole32 shell32 uuid avrt winmm)
+        ole32 shell32 uuid avrt winmm winhttp)
     # Only the APE wrapper sees the Monkey's Audio headers and their defines.
     set_source_files_properties(plugins/HiFiVehicleMusic/ape_decoder.cpp PROPERTIES
         INCLUDE_DIRECTORIES "${ANOMALY_MONKEYS_AUDIO_INCLUDE_DIRS}"
         COMPILE_DEFINITIONS "PLATFORM_WINDOWS;UNICODE;_UNICODE")
+
+    # 果冻形变插件：源码里直接写中文注释与诊断，需要 /utf-8。布局是插件自己的资源
+    # （data/jelly-layout.json），所以像 BetterPose 一样把 data 目录同步进包目录并随包
+    # 安装。Anomaly 2.3.0 起的宿主用 in-process mapper 映射插件镜像，其预检要求导入
+    # _CxxThrowException 的 C++ 镜像导出异常桥，且不允许 loader 管理的静态 TLS：桥源码
+    # 与 /Zc:threadSafeInit- 让同一个包在旧宿主上也能加载；新版 SDK 自带这两样
+    # （ANOMALY_CXX_THROW_BRIDGE）时桥源码不再重复编译。
+    anomaly_add_plugin(anomaly_builtin_jelly
+        SOURCES
+            plugins/Jelly/plugin.cpp
+            plugins/Jelly/src/jelly_layout.cpp
+            plugins/Jelly/src/jelly_selection.cpp
+            plugins/Jelly/src/jelly_model.cpp
+        MANIFEST plugins/Jelly/manifest.json
+        PACKAGE_NAME Jelly
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/Jelly")
+    target_include_directories(anomaly_builtin_jelly PRIVATE plugins/Jelly/src)
+    target_compile_definitions(anomaly_builtin_jelly PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_builtin_jelly PRIVATE /utf-8 /Zc:threadSafeInit-)
+    if(NOT ANOMALY_CXX_THROW_BRIDGE)
+        target_sources(anomaly_builtin_jelly PRIVATE plugins/Jelly/src/plugin_cxx_throw_bridge.cpp)
+    endif()
+    add_custom_command(TARGET anomaly_builtin_jelly POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/plugins/Jelly/data"
+                "$<TARGET_FILE_DIR:anomaly_builtin_jelly>/data"
+        VERBATIM)
+    install(DIRECTORY plugins/Jelly/data/
+        DESTINATION Anomaly/plugins/Jelly/data COMPONENT GameRuntime)
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        # 离线夹具：纯逻辑与合成 UE 镜像，不需要游戏、运行中的宿主或网络。
+        add_executable(anomaly_jelly_logic_fixture
+            plugins/Jelly/tests/main.cpp
+            plugins/Jelly/tests/test_logic.cpp
+            plugins/Jelly/tests/test_model.cpp
+            plugins/Jelly/src/jelly_layout.cpp
+            plugins/Jelly/src/jelly_selection.cpp
+            plugins/Jelly/src/jelly_model.cpp)
+        target_include_directories(anomaly_jelly_logic_fixture PRIVATE plugins/Jelly/src)
+        target_compile_definitions(anomaly_jelly_logic_fixture PRIVATE
+            JELLY_LAYOUT_RESOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/plugins/Jelly/data/jelly-layout.json"
+            WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_compile_options(anomaly_jelly_logic_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
 
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
@@ -1523,7 +1588,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_clone_enter anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
-        anomaly_builtin_model_scale anomaly_builtin_night999)
+        anomaly_builtin_model_scale anomaly_builtin_autofish
+        anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1543,7 +1609,9 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_autofish PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_deserted PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_night999 PRIVATE /utf-8)
     endif()
@@ -1599,10 +1667,13 @@ anomaly_stage_platform_preview_plugin(
     anomaly_builtin_nte_quick_ultimate QuickUltimate)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_skin_changer SkinChanger)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_autofish AutoFish)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_ui_buttons UiButtons)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_deserted Deserted)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_hifi_vehicle_music HiFiVehicleMusic)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_jelly Jelly)
 
 if(TARGET anomaly-platform-preview)
     add_custom_command(TARGET anomaly-platform-preview POST_BUILD

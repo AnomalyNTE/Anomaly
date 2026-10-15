@@ -1,0 +1,4 @@
+# Local build trees. The repository root already ignores plugins/*/build/; the
+# scratch trees this plugin was brought up in carry other names, so they are
+# ignored here by pattern instead of one entry per tree.
+build*/

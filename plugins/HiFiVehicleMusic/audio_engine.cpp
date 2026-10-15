@@ -88,9 +88,10 @@ const char* FormatName(const ma_format format) noexcept {
 }
 
 struct Command final {
-    enum class Kind { Configure, Rescan, Play, Stop, StopNow, Previous, Next, Pause, Resume, Seek, Quit } kind{};
+    enum class Kind { Configure, Rescan, Play, PlayMemory, Stop, StopNow, Previous, Next, Pause, Resume, Seek, Quit } kind{};
     EngineSettings settings;
     std::string key;
+    std::vector<std::uint8_t> bytes;
     float position{};
     std::optional<std::size_t> index;
 };
@@ -116,6 +117,10 @@ struct AudioEngine::Impl final {
     std::atomic<std::uint64_t> library_generation{0};
     std::optional<std::size_t> playing_slot;    // album song now playing
     std::optional<std::size_t> requested_slot;  // worker-owned: album song the game last picked
+    // Meting song now playing from memory; never set together with playing_slot.
+    std::optional<std::size_t> memory_slot;
+    float memory_duration{};                    // its length in seconds, 0 = unknown
+    std::atomic<bool> memory_ended{};           // set when a memory song reached its end
 
     // Playlist (worker-owned): every library file in path order. Events
     // without a same-named file play from here and advance on track end.
@@ -131,6 +136,7 @@ struct AudioEngine::Impl final {
     // when it cannot get the decoder immediately.
     std::mutex audio_mutex;
     ma_decoder* decoder{};
+    std::vector<std::uint8_t> decoder_memory;
     // A DSF/DFF song instead of `decoder`: its bitstream goes to the ASIO
     // driver in DSD mode; frames are bytes per channel (8 DSD samples).
     std::unique_ptr<DsdReader> dsd;
@@ -199,8 +205,15 @@ struct AudioEngine::Impl final {
                     try {
                         if (stop_deadline && std::chrono::steady_clock::now() >= *stop_deadline) {
                             StopOutput();
-                        } else if (track_ended.exchange(false, std::memory_order_relaxed) && playlist_mode) {
-                            PlayNext();
+                        } else if (track_ended.exchange(false, std::memory_order_relaxed)) {
+                            if (playlist_mode) {
+                                PlayNext();
+                            } else {
+                                // A memory song ended: the engine does not know
+                                // the Meting list, so the plugin picks the next.
+                                std::scoped_lock state_lock(state_mutex);
+                                if (memory_slot) memory_ended.store(true, std::memory_order_release);
+                            }
                         }
                     } catch (...) {
                         SetStatus(EngineStatus::EngineError);
@@ -257,6 +270,9 @@ struct AudioEngine::Impl final {
             break;
         case Command::Kind::Play:
             PlayTrack(command.key, command.position, command.index);
+            break;
+        case Command::Kind::PlayMemory:
+            PlayMemoryTrack(command.key, command.bytes, command.position, command.index);
             break;
         case Command::Kind::Stop:
             // The game may stop its music right before posting the next
@@ -466,6 +482,7 @@ struct AudioEngine::Impl final {
             ma_decoder_uninit(old);
             delete old;
         }
+        decoder_memory.clear();
     }
 
     void FailOutput(const EngineStatus status) {
@@ -576,6 +593,14 @@ struct AudioEngine::Impl final {
     }
 
     // ---- playback ---------------------------------------------------------
+
+    std::unique_ptr<ma_decoder> OpenMemoryDecoder(
+        const std::vector<std::uint8_t>& bytes, const ma_uint32 channels, const ma_uint32 rate) {
+        auto result = std::make_unique<ma_decoder>();
+        ma_decoder_config config = ma_decoder_config_init(ma_format_f32, channels, rate);
+        if (ma_decoder_init_memory(bytes.data(), bytes.size(), &config, result.get()) != MA_SUCCESS) return {};
+        return result;
+    }
 
     std::unique_ptr<ma_decoder> OpenDecoder(
         const std::wstring& path, const ma_uint32 channels, const ma_uint32 rate) {
@@ -747,6 +772,102 @@ struct AudioEngine::Impl final {
         playing_slot.reset();
     }
 
+    bool PlayMemoryTrack(const std::string& key, std::vector<std::uint8_t> bytes,
+                         const float position, const std::optional<std::size_t> index) {
+        if (bytes.empty() || output_failed) return false;
+        auto next = OpenMemoryDecoder(bytes, 0, 0);
+        if (!next) {
+            SetStatus(EngineStatus::DecodeFailed, key);
+            return false;
+        }
+        ma_format format{};
+        ma_uint32 channels{};
+        ma_uint32 rate{};
+        ma_decoder_get_data_format(next.get(), &format, &channels, &rate, nullptr, 0);
+        std::string output;
+        bool resampled{};
+        if (settings.backend == Backend::Asio) {
+            if (!EnsureAsioStream(channels, rate)) {
+                FailOutput(EngineStatus::OpenFailed);
+                return false;
+            }
+            if (asio_channels != channels || asio_rate != rate) {
+                ma_decoder_uninit(next.get());
+                next = OpenMemoryDecoder(bytes, asio_channels, asio_rate);
+                if (!next) {
+                    SetStatus(EngineStatus::DecodeFailed, key);
+                    return false;
+                }
+            }
+            output = "ASIO " + std::to_string(asio_rate) + " Hz, " + std::to_string(asio_channels) + " ch";
+            resampled = asio_rate != rate;
+        } else {
+            if (!EnsureMiniaudioDevice(channels, rate)) {
+                FailOutput(EngineStatus::OpenFailed);
+                return false;
+            }
+            const auto& playback = device->playback;
+            output = std::string(BackendName(settings.backend)) + " " +
+                std::to_string(playback.internalSampleRate) + " Hz, " + FormatName(playback.internalFormat) +
+                ", " + std::to_string(playback.internalChannels) + " ch";
+            resampled = playback.internalSampleRate != rate;
+        }
+        ma_data_source_set_looping(next.get(), MA_FALSE);
+        ma_uint64 length{};
+        if (ma_decoder_get_length_in_pcm_frames(next.get(), &length) != MA_SUCCESS) length = 0;
+        ma_uint64 start{};
+        if (position > 0.0F && position < 1.0F && length > 0) {
+            start = static_cast<ma_uint64>(static_cast<double>(length) * position);
+            ma_decoder_seek_to_pcm_frame(next.get(), start);
+        }
+        ma_uint32 decoded_rate{};
+        ma_decoder_get_data_format(next.get(), nullptr, nullptr, &decoded_rate, nullptr, 0);
+        ma_decoder* old{};
+        {
+            std::scoped_lock lock(audio_mutex);
+            old = std::exchange(decoder, next.release());
+            decoder_memory = std::move(bytes);
+            dsd.reset();
+            position_frames.store(start, std::memory_order_relaxed);
+            length_frames.store(length, std::memory_order_relaxed);
+            decoder_rate.store(decoded_rate, std::memory_order_relaxed);
+            track_ended.store(false, std::memory_order_relaxed);
+        }
+        if (old != nullptr) {
+            ma_decoder_uninit(old);
+            delete old;
+        }
+        paused.store(false, std::memory_order_relaxed);
+        const bool started = settings.backend == Backend::Asio
+            ? asio->isStreamRunning() || asio->startStream() == RTAUDIO_NO_ERROR
+            : ma_device_get_state(&*device) == ma_device_state_started || ma_device_start(&*device) == MA_SUCCESS;
+        if (!started) {
+            FailOutput(EngineStatus::StartFailed);
+            return false;
+        }
+        // A memory song is not a playlist song: its end must not advance the
+        // local playlist, and its index names a Meting song, not a playlist slot.
+        playlist_mode = false;
+        requested_slot.reset();
+        stop_deadline.reset();
+        {
+            std::scoped_lock lock(state_mutex);
+            playing_slot.reset();
+            memory_slot = index;
+            memory_ended.store(false, std::memory_order_release);
+            memory_duration = decoded_rate > 0 && length > 0
+                ? static_cast<float>(static_cast<double>(length) / decoded_rate)
+                : 0.0F;
+            snapshot.playing = true;
+            snapshot.track = key;
+            snapshot.output = std::move(output);
+            snapshot.resampled = resampled;
+            snapshot.status = EngineStatus::Playing;
+            snapshot.detail = "内存流";
+        }
+        return true;
+    }
+
     void StopOutput() {
         // Closing the output releases an exclusive device back to the
         // system while the vehicle music is not playing.
@@ -761,6 +882,8 @@ struct AudioEngine::Impl final {
         snapshot.track.clear();
         snapshot.output.clear();
         playing_slot.reset();
+        memory_slot.reset();
+        memory_duration = 0.0F;
     }
 
     void PlayNext() {
@@ -857,6 +980,8 @@ struct AudioEngine::Impl final {
             return true;
         }
         std::scoped_lock lock(state_mutex);
+        memory_slot.reset();
+        memory_duration = 0.0F;
         snapshot.playing = true;
         snapshot.track = Utf8(std::filesystem::path(path).filename().wstring());
         snapshot.output = via_dop
@@ -966,6 +1091,8 @@ struct AudioEngine::Impl final {
         snapshot.resampled = resampled;
         snapshot.status = EngineStatus::Playing;
         snapshot.detail.clear();
+        memory_slot.reset();
+        memory_duration = 0.0F;
         return true;
     }
 };
@@ -1006,6 +1133,16 @@ bool AudioEngine::CanPlay(const std::string_view key) const {
     // Any non-empty library can serve an event through the playlist.
     static_cast<void>(key);
     return !impl_->output_failed && !impl_->tracks.empty();
+}
+
+void AudioEngine::PlayMemory(std::string key, std::vector<std::uint8_t> bytes,
+                             const float position, const std::optional<std::size_t> index) {
+    Command command{Command::Kind::PlayMemory};
+    command.key = std::move(key);
+    command.bytes = std::move(bytes);
+    command.position = position;
+    command.index = index;
+    impl_->Post(std::move(command));
 }
 
 void AudioEngine::Play(std::string key, const float position, const std::optional<std::size_t> index) {
@@ -1051,6 +1188,22 @@ EngineSnapshot AudioEngine::Snapshot() const {
 std::optional<std::size_t> AudioEngine::PlayingSlot() const {
     std::scoped_lock lock(impl_->state_mutex);
     return impl_->snapshot.playing ? impl_->playing_slot : std::nullopt;
+}
+
+std::optional<std::size_t> AudioEngine::MemorySlot() const {
+    std::scoped_lock lock(impl_->state_mutex);
+    return impl_->snapshot.playing ? impl_->memory_slot : std::nullopt;
+}
+
+std::optional<std::size_t> AudioEngine::TakeMemoryEnded() {
+    if (!impl_->memory_ended.exchange(false, std::memory_order_acq_rel)) return std::nullopt;
+    std::scoped_lock lock(impl_->state_mutex);
+    return impl_->memory_slot;
+}
+
+float AudioEngine::MemoryDuration() const {
+    std::scoped_lock lock(impl_->state_mutex);
+    return impl_->snapshot.playing && impl_->memory_slot ? impl_->memory_duration : 0.0F;
 }
 
 float AudioEngine::Duration(const std::size_t index) const {

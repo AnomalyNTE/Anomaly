@@ -1,7 +1,8 @@
 # HiFi Vehicle Music
 
 拦截游戏载具背景音乐（`UHTSoundSubsystem` 的 player music），用本地无损文件和独立输出后端
-播放，支持 WASAPI 独占 / WASAPI 共享 / DirectSound / ASIO。
+播放，支持 WASAPI 独占 / WASAPI 共享 / DirectSound / ASIO。另有 Meting 网络曲库：搜索歌曲或导入网易云
+歌单，作为独立的「Meting」专辑在游戏里播放，音频只在内存里，不写磁盘。
 
 ## 工作方式
 
@@ -50,10 +51,33 @@
    - 锁定状态：音乐面板 `RefreshItemStates`、载具音乐面板列表构建、`ResolveCurrentMusicListID`、
      `SyncCurrentMusicListID` 也直接读 `+0x3E0`（不经 `GetOwnedMusicListIDs`），不加入就会被判为未拥有
      （state 3 = 锁定）或把当前歌切回游戏歌曲；同样只在调用期间临时加入（嵌套调用只加一次）。
-   - 专辑封面：曲库根目录下的 `cover|folder|front|album` + `.png|.jpg|.jpeg|.bmp`，由 builder 线程用
-     游戏自带的 `ImportFileAsTexture2D` 导入为 Transient 纹理，`FUObjectItem::SetFlags(RootSet)` 防 GC，
-     封面 detour 只把已导入的纹理 `SetBrushFromTexture` 到显示的 UImage 上。没有图片或任一步失败则
-     保留模板封面。
+   - 专辑封面：曲库根目录下的 `cover|folder|front|album` + `.png|.jpg|.jpeg|.bmp`；没有时用插件包内的
+     `assets/library-cover.png`。由 builder 线程用游戏自带的 `ImportFileAsTexture2D` 导入为 Transient 纹理，
+     `FUObjectItem::SetFlags(RootSet)` 防 GC，封面 detour 只把已导入的纹理 `SetBrushFromTexture` 到专辑卡片的
+     UImage 上。任一步失败则保留模板封面。
+6. 转动的唱片：专辑卡片（`BPUI_MusicThumbnail_C`）与车载播放器（`BPUI_MusicDetailedView_C` 的 `AlbumCoverImg`）
+   上的唱片都是 MaterialInstanceDynamic，封面是贴图参数 `Tex1`；直接换控件画刷会被蓝图盖回，所以改写材质参数。
+   builder 线程按名字找到 `MaterialInstanceDynamic::SetTextureParameterValue`（对象表里 outer 为 MID 类的同名
+   UFunction）和 `Tex1` 的 FName；播放器唱片只在游戏显示专辑或接管播放后才在对象表里查找，找不到时按
+   1、2、4…32 个 builder 周期退避，最多 6 次。每帧 tick（游戏线程）只做有界读：参数已是目标纹理就跳过，
+   被蓝图写回时才经 `ProcessEvent` 调一次。专辑卡片显示插件专辑的封面；播放器唱片显示正在放的插件歌曲
+   的封面（Meting 单曲封面就绪前用 Meting 专辑封面），放游戏歌曲时不改。
+7. Meting 网络曲库（独立专辑「Meting」，与本地曲库并列，行名 Number 用 `0x48470000+k+1`、专辑 `0x4847FFFF`）：
+   - 接口 `https://api.qijieya.cn/meting/`，`server=netease`；搜索 `type=search&limit=30`，歌单
+     `type=playlist`。歌单输入框接受 ID 或分享链接（取 `?id=`/`&id=` 后的数字，其次 `playlist/` 后的数字）。
+   - 所有网络请求在插件自己的 Meting 线程上执行（WinHTTP，跟随重定向）；Hook 只往队列里放请求，不等网络。
+     Stop/Unload 先关闭在途请求句柄再 join 线程，停止时间有上界。
+   - 播放：音频整首下载到内存后交给引擎（`ma_decoder_init_memory`），不写磁盘；换歌即释放。同一首歌
+     下载中不重复排队。下载失败自动跳到下一首，连续失败 3 次后停止跳过（成功或手动点歌后重新计数）。
+   - 播放队列按当前歌所属专辑隔离：放 Meting 歌时队列只含 Meting 歌，放本地歌时只含本地歌，游戏的
+     上一首/下一首与播完自动下一首都不会跨专辑。Meting 歌播完由插件下载下一首（末尾回到第一首）。
+   - 接管后原始 Stop 会清空子系统当前歌 ID，暂停后再播放会提示「专辑未解锁」；接管时立即写回刚投递的
+     插件歌，每帧同步遇到空 ID 也立即纠正。
+   - 封面：Meting 专辑用 `assets/meting-cover.png`；每首歌的封面按 `pic` 下载到内存，游戏线程 tick 用
+     `ImportBufferAsTexture2D`（`KismetRenderingLibrary` 默认对象上经 `ProcessEvent` 调用，调用前核对
+     UFunction 的 NumParms=3、ParmsSize=0x20、ReturnValueOffset=0x18）导入并 RootSet，换歌时解除上一首的
+     RootSet，同时最多保留一张单曲封面。
+   - 上次成功的搜索词或歌单 ID 写入设置，加载时自动重新拉取；只存这条请求，不存歌曲列表和音频。
 
 ## 开源依赖
 
@@ -111,6 +135,8 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
 | `bufferMs` | 输出缓冲时长 |
 | `volume` | 0–1 线性音量（独占/ASIO 下为数字域音量，1.0 为 bit-perfect） |
 | `musicFolder` | 曲库绝对路径，通过窗口里的「浏览...」（Windows 选择文件夹对话框）选择；相对路径会被忽略，因为插件包每次加载都在不同的 `.cache/<pid>/` 目录 |
+| `metingKind` | 上次成功的 Meting 请求类型：`search` / `playlist`，空为没有 |
+| `metingQuery` | 对应的搜索词或歌单 ID（最长 512 字符），加载时自动重新拉取 |
 
 设置经 config 服务持久化：任何修改后由 scheduler 延迟 500 ms 合并写入，Stop 时再补写一次。
 
@@ -238,7 +264,15 @@ PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
   `TakenOver` 闸门之前（`+0x420` 恰在该帧被游戏重写，原先唯一的新鲜推送被闸门永久吞掉）；
   条带自身的时长缓存 `+0xFA4` 在 SetText 前先写（BP 从它重排标签文本，不写则模板 30 秒被改回）；
   无效的每帧 tick 自愈一并移除（该 tick 由 BP Timeline 驱动，正常播放期间从不执行）；已实测修复
-- [ ] 游戏播放器界面（歌名、进度条、拖动、上一首/下一首）接到插件引擎：函数已定位，未实现
-- [ ] 专辑封面：两种写法（只写路径 / 弱指针 + 路径）实测都会让专辑从列表消失，已停用，
-  专辑沿用模板封面；导入代码保留未调用
+- [x] Meting 网络曲库：搜索、网易云歌单（ID 或分享链接）、独立「Meting」专辑、内存播放；暂停/继续、
+  拖动、上一首/下一首、播完自动下一首；歌单重启后自动恢复。已实测
+- [x] 播放队列按专辑隔离：旧版队列「本地 194 首 + Meting 2 首」连在一起，Meting 上按下一首会跳进本地；
+  改为按当前歌所属专辑建队列。已实测
+- [x] 专辑封面改为专辑卡片换画刷（替代早先改行数据、会让专辑消失的两种写法）；Meting 与本地专辑都有
+  默认封面。已实测
+- [x] 转动的唱片：专辑卡片和车载播放器的唱片改写材质参数 `Tex1`，Meting 每首歌显示自己的封面
+  （`ImportBufferAsTexture2D` 内存导入，不写磁盘）。已实测；会话第一首歌的封面修复（下载不再等导入
+  函数解析）待实测
+- [ ] 下载失败自动跳过：需要遇到无法下载的歌才能触发，未实测
+- [ ] 本地专辑封面只在专辑行首次创建时导入，若当时导入函数未就绪不会重试（尚未遇到）
 - [ ] 游戏内实测（需用户执行）：确认事件名、seek 语义、各后端独占/ASIO 打开情况
