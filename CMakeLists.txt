@@ -1248,6 +1248,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteTeleport/manifest.json
         PACKAGE_NAME NteTeleport
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
+    anomaly_add_plugin(anomaly_builtin_night999
+        SOURCES plugins/Night999/plugin.cpp
+        MANIFEST plugins/Night999/manifest.json
+        PACKAGE_NAME Night999
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/Night999")
     anomaly_add_plugin(anomaly_builtin_nte_movement_hold TEST_PLUGIN
         SOURCES plugins/NteMovementHold/plugin.cpp
         MANIFEST plugins/NteMovementHold/manifest.json
@@ -1471,6 +1476,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(anomaly_builtin_clone_enter PRIVATE anomaly_plugin_combat)
     target_link_libraries(anomaly_builtin_combat_box PRIVATE anomaly_plugin_combat)
+    target_link_libraries(anomaly_builtin_night999 PRIVATE anomaly_plugin_combat)
     if(ANOMALY_BUILD_TEST_FIXTURES)
         add_executable(anomaly_combat_auto_fixture
             plugins/common/combat/tests/auto_combat_test.cpp)
@@ -1583,7 +1589,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
         anomaly_builtin_model_scale anomaly_builtin_autofish
-        anomaly_builtin_deserted anomaly_builtin_jelly)
+        anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1607,6 +1613,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_deserted PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_night999 PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     if(TARGET anomaly-platform-preview)
@@ -1639,6 +1646,7 @@ anomaly_stage_platform_preview_plugin(anomaly_example_nte_inspector NteInspector
 anomaly_stage_platform_preview_plugin(anomaly_example_nte_combat_demo NteCombatDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_position NtePosition)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_teleport NteTeleport)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_night999 Night999)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_navigation NteNavmeshDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_pickup_demo NtePickupDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_entity_esp EntityESP)

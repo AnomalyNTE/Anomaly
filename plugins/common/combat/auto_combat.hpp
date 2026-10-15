@@ -87,6 +87,8 @@ struct State final {
     // 本点是否已经报过 `cleared`。进入 `cleared` 的那一帧置真，`Reset` 清零；
     // `cleared` 与随之发出的那一次掉落拾取都由它保证「只发生一次」。
     bool cleared_reported{false};
+    // 自定义策略下最近一次出手是不是平A（仅用于状态回显）。
+    bool last_action_normal_attack{};
     // 本帧是否因为「打不动」而 `unavailable`（普攻/技能调用失败），每帧重算。
     // 调用方靠它区分「打不动」与「等服务/等位置/等目标数据」：原实现只在打不动时关掉总开关
     // 并结束副本流程，其余几种只是等待。
@@ -122,6 +124,15 @@ struct Host final {
     // 攻击策略（原 `melee_mode` / `test_input_id`）：近战模式走普攻，否则轮流放技能。
     bool melee_mode{false};
     std::uint32_t test_input_id{15};
+    // ---- Night999 自定义策略：技能优先、平A 兜底，三项各由一个开关控制 ----
+    // 为真时上面两个字段不再生效，改用下面这套：先试大招、再试小技能（都要求冷却已走完），
+    // 都没有可放的技能时才平A。默认全关，不影响既有调用方。
+    bool policy_custom{false};
+    bool use_normal_attack{true};
+    bool use_skill_small{true};
+    bool use_skill_ultimate{true};
+    std::int32_t skill_small_input_id{2};
+    std::int32_t skill_ultimate_input_id{3};
     // 模块不直接写面板：状态字符串经这里回到调用方。
     void (*set_status)(void* user, const std::string& text) noexcept{};
     void* status_user{};
