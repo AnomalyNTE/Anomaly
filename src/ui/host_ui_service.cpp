@@ -701,7 +701,8 @@ int DigitInputFilter(ImGuiInputTextCallbackData* data) {
 int ANOMALY_CALL InputText(
     void*, AnomalyStringViewV1 label, char* buffer,
     std::size_t buffer_capacity, std::uint32_t flags) {
-    constexpr std::uint32_t kKnownFlags = ANOMALY_UI_TEXT_INPUT_V1_DIGITS;
+    constexpr std::uint32_t kKnownFlags =
+        ANOMALY_UI_TEXT_INPUT_V1_DIGITS | ANOMALY_UI_TEXT_INPUT_V1_PASSWORD;
     if (buffer == nullptr || buffer_capacity == 0 ||
         (flags & ~kKnownFlags) != 0 ||
         std::find(buffer, buffer + buffer_capacity, '\0') == buffer + buffer_capacity) {
@@ -713,6 +714,9 @@ int ANOMALY_CALL InputText(
     if ((flags & ANOMALY_UI_TEXT_INPUT_V1_DIGITS) != 0) {
         imgui_flags |= ImGuiInputTextFlags_CallbackCharFilter;
         callback = DigitInputFilter;
+    }
+    if ((flags & ANOMALY_UI_TEXT_INPUT_V1_PASSWORD) != 0) {
+        imgui_flags |= ImGuiInputTextFlags_Password;
     }
     return ImGui::InputText(
         text.c_str(), buffer, buffer_capacity, imgui_flags, callback) ? 1 : 0;
