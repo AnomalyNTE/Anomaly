@@ -6,8 +6,15 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
-      "resolve": {"kind": "rip-rel32", "offset": 3, "instructionSize": 7},
-      "validators": ["readable", "world-shape-v1"],
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 3,
+        "instructionSize": 7
+      },
+      "validators": [
+        "readable",
+        "world-shape-v1"
+      ],
       "requiredBy": [
         "anomaly.ue5.world",
         "anomaly.ue5.actors",
@@ -28,8 +35,15 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 8D 05 ?? ?? ?? ?? EB 13 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 01 0F 10 07 4C 8D 44 24 20 48 8B C8 48 8D 54 24 40",
-      "resolve": {"kind": "rip-rel32", "offset": 3, "instructionSize": 7},
-      "validators": ["readable", "name-pool-v1"],
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 3,
+        "instructionSize": 7
+      },
+      "validators": [
+        "readable",
+        "name-pool-v1"
+      ],
       "requiredBy": [
         "anomaly.ue5.names",
         "anomaly.ue5.actors",
@@ -50,32 +64,63 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 8B 51 30 48 83 C1 20 48 85 D2 48 8D 42 08 48 0F 44 C1 C3",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.names"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.names"
+      ]
     },
     "ue5.FTextDataStringTableEntry.GetSharedDisplayString": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 18 57 48 83 EC 20 48 8B 49 18 33 DB 48 8B FA 48 85 C9 74 5F 45 33 C0 48 8D 54 24 30 E8 ?? ?? ?? ??",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.names"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.names"
+      ]
     },
     "ue5.StringTableRegistry": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 83 EC 28 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA 08 17 00 00 48 8B 04 C8 8B 04 02 39 05 ?? ?? ?? ?? 7F 0C 48 8D 05 ?? ?? ?? ?? 48 83 C4 28 C3 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? FF 75 DF 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? BA A0 0F 00 00 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 66 0F 6F 05 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 33 C0 66 0F 7F 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 89 05 ?? ?? ?? ?? FF 15 ?? ?? ?? ?? BA A0 0F 00 00 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ??",
-      "resolve": {"kind": "rip-rel32", "offset": 42, "instructionSize": 46},
-      "validators": ["address-in-module", "readable"],
-      "requiredBy": ["anomaly.ue5.names"]
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 42,
+        "instructionSize": 46
+      },
+      "validators": [
+        "address-in-module",
+        "readable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.names"
+      ]
     },
     "ue5.GObjects": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
-      "resolve": {"kind": "rip-rel32", "offset": 3, "instructionSize": 7, "addend": -16},
-      "validators": ["readable", "object-registry-v1"],
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 3,
+        "instructionSize": 7,
+        "addend": -16
+      },
+      "validators": [
+        "readable",
+        "object-registry-v1"
+      ],
       "requiredBy": [
         "anomaly.ue5.objects",
         "anomaly.ue5.functions",
@@ -94,16 +139,31 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B E9 41 0F B6 D9 33 C9 49 8B F8 48 8B F2",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.objects", "anomaly.nte.map-landmarks", "anomaly.nte.ui-buttons"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.objects",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.ui-buttons"
+      ]
     },
     "ue5.GameTick": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "4C 8B DC 55 53 41 54 41 55 41 57 49 8D 6B 98 48 81 EC 40 01 00 00 41 0F 29 7B A8",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable", "tick-anchor-v1"],
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "tick-anchor-v1"
+      ],
       "requiredBy": [
         "anomaly.ue5.framework",
         "anomaly.ue5.world",
@@ -129,70 +189,129 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
       "requiredBy": [
-        "anomaly.ue5.framework", "anomaly.ue5.ahud",
-        "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup",
+        "anomaly.ue5.framework",
+        "anomaly.ue5.ahud",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.navigation",
+        "anomaly.nte.pickup",
         "anomaly.nte.ui-buttons",
-        "anomaly.nte.combat", "anomaly.nte.skills", "anomaly.nte.skill-invocation"
+        "anomaly.nte.combat",
+        "anomaly.nte.skills",
+        "anomaly.nte.skill-invocation"
       ]
     },
     "nte.ClientIgnoreGameAndUiInput": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 98 14 00 00",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.nte.navigation"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.navigation"
+      ]
     },
     "ue5.AActorProcessEvent": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.ahud"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.ahud"
+      ]
     },
     "nte.HTAbilityCharacter.BroadcastCharacterOnDamaged": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 81 EC B0 01 00 00 48 8B E9 49 8B F1 48 8D 4C 24 20 49 8B F8 48 8B DA E8 ?? ?? ?? ??",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.nte.combat"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.combat"
+      ]
     },
     "nte.HTUI_MenuExtension.AddMenuPage": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "40 55 57 48 83 EC 38 83 B9 90 0F 00 00 00 8B EA 48 8B F9 0F 84 ?? ?? ?? ?? 48 8B 89 A0 0F 00 00 48 85 C9 0F 84 ?? ?? ?? ?? 39 91 B0 06 00 00 0F 8E ?? ?? ?? ?? 4C 89 6C 24 60",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.nte.esc-menu-button"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
     },
     "nte.HTUI_MenuExtension.execAddMenuPage": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? ?? ?? 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? D5 01",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.nte.esc-menu-button"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
     },
     "nte.CommonButtonBase.HandleButtonClicked": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B CB 0F B6 F8 E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 0F B6 93 79 04 00 00",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.nte.esc-menu-button"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
     },
     "nte.CommonButtonBase.BP_OnClicked": {
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "40 53 48 83 EC 60 F6 81 68 04 00 00 02 48 8B D9 0F 85 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? 4C 8B 0B 45 33 C0 48 8B D0 48 8B CB 41 FF 91 60 02 00 00",
-      "resolve": {"kind": "direct"},
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.nte.esc-menu-button"]
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
     }
   },
   "features": {
@@ -201,19 +320,54 @@
       "ue5.FTextDataStringTableEntry.GetSharedDisplayString",
       "ue5.StringTableRegistry"
     ],
-    "ue5.framework": ["ue5.GameTick"],
-    "ue5.world": ["ue5.GWorld", "ue5.GameTick"],
-    "ue5.names": ["ue5.FNamePool"],
-    "ue5.objects": ["ue5.GObjects", "ue5.GameTick"],
-    "ue5.object-find": ["ue5.StaticFindObject"],
-    "ue5.process-event": ["ue5.ProcessEvent"],
-    "ue5.actor-process-event": ["ue5.AActorProcessEvent"],
-    "ue5.ahud": ["ue5.ProcessEvent"],
-    "ue5.streaming-source": ["ue5.GWorld", "ue5.GameTick"],
-    "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
-    "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
-    "nte.session": ["ue5.GWorld", "ue5.GameTick"],
-    "nte.player": ["ue5.GWorld", "ue5.GameTick"],
+    "ue5.framework": [
+      "ue5.GameTick"
+    ],
+    "ue5.world": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "ue5.names": [
+      "ue5.FNamePool"
+    ],
+    "ue5.objects": [
+      "ue5.GObjects",
+      "ue5.GameTick"
+    ],
+    "ue5.object-find": [
+      "ue5.StaticFindObject"
+    ],
+    "ue5.process-event": [
+      "ue5.ProcessEvent"
+    ],
+    "ue5.actor-process-event": [
+      "ue5.AActorProcessEvent"
+    ],
+    "ue5.ahud": [
+      "ue5.ProcessEvent"
+    ],
+    "ue5.streaming-source": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "ue5.actors": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool"
+    ],
+    "ue5.functions": [
+      "ue5.GObjects",
+      "ue5.GameTick",
+      "ue5.FNamePool"
+    ],
+    "nte.session": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "nte.player": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
     "nte.navigation": [
       "ue5.GWorld",
       "ue5.GameTick",
@@ -222,7 +376,10 @@
       "ue5.ProcessEvent",
       "nte.ClientIgnoreGameAndUiInput"
     ],
-    "nte.player-esp": ["ue5.GWorld", "ue5.GameTick"],
+    "nte.player-esp": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
     "nte.player-teleport": [
       "ue5.GWorld",
       "ue5.GameTick",
@@ -245,18 +402,50 @@
       "nte.CommonButtonBase.HandleButtonClicked",
       "nte.CommonButtonBase.BP_OnClicked"
     ],
-    "nte.entities": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
-    "nte.pickup": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent"],
-    "nte.ui-buttons": ["ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.StaticFindObject", "ue5.ProcessEvent"],
+    "nte.entities": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool"
+    ],
+    "nte.pickup": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.ProcessEvent"
+    ],
+    "nte.ui-buttons": [
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.StaticFindObject",
+      "ue5.ProcessEvent"
+    ],
     "nte.combat": [
-      "ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects",
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
       "nte.HTAbilityCharacter.BroadcastCharacterOnDamaged"
     ],
     "nte.skills": [
-      "ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects"
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects"
     ],
     "nte.skill-invocation": [
-      "ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects"
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects"
+    ],
+    "nte.vehicle": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.ProcessEvent"
     ]
   },
   "optionalFeatures": [
@@ -277,38 +466,100 @@
     "nte.combat",
     "nte.skills",
     "nte.skill-invocation",
-    "ue5.streaming-source"
+    "ue5.streaming-source",
+    "nte.vehicle"
   ],
   "featureLayoutValidators": {
-    "ue5.ftext": ["ue5-ftext-layout-v1"],
-    "ue5.actors": ["ue5-actors-reflection-v1"],
-    "ue5.functions": ["ue5-functions-reflection-v1"],
-    "ue5.object-find": ["ue5-static-find-object-abi-v1"],
-    "ue5.process-event": ["ue5-process-event-abi-v1"],
-    "ue5.actor-process-event": ["ue5-actor-process-event-abi-v1"],
-    "ue5.ahud": ["ue5-ahud-reflection-v1"],
-    "nte.player": ["nte-player-layout-v1"],
-    "nte.player-esp": ["nte-player-esp-layout-v1"],
-    "nte.player-teleport": ["nte-player-teleport-layout-v1"],
-    "nte.map-landmarks": ["nte-map-landmarks-layout-v1"],
-    "nte.navigation": ["nte-navigation-layout-v1", "nte-navigation-input-abi-v1"],
-    "nte.esc-menu-button": ["nte-esc-menu-hooks-v1"],
-    "nte.entities": ["nte-entities-layout-v2"],
-    "nte.pickup": ["nte-pickup-layout-v1"],
-    "nte.ui-buttons": ["nte-ui-buttons-layout-v1"],
-    "nte.combat": ["nte-combat-reflection-v1"],
-    "nte.skills": ["nte-skills-layout-v1"],
-    "nte.skill-invocation": ["nte-skill-invocation-v1"],
-    "ue5.streaming-source": ["ue5-streaming-source-layout-v1"]
+    "ue5.ftext": [
+      "ue5-ftext-layout-v1"
+    ],
+    "ue5.actors": [
+      "ue5-actors-reflection-v1"
+    ],
+    "ue5.functions": [
+      "ue5-functions-reflection-v1"
+    ],
+    "ue5.object-find": [
+      "ue5-static-find-object-abi-v1"
+    ],
+    "ue5.process-event": [
+      "ue5-process-event-abi-v1"
+    ],
+    "ue5.actor-process-event": [
+      "ue5-actor-process-event-abi-v1"
+    ],
+    "ue5.ahud": [
+      "ue5-ahud-reflection-v1"
+    ],
+    "nte.player": [
+      "nte-player-layout-v1"
+    ],
+    "nte.player-esp": [
+      "nte-player-esp-layout-v1"
+    ],
+    "nte.player-teleport": [
+      "nte-player-teleport-layout-v1"
+    ],
+    "nte.map-landmarks": [
+      "nte-map-landmarks-layout-v1"
+    ],
+    "nte.navigation": [
+      "nte-navigation-layout-v1",
+      "nte-navigation-input-abi-v1"
+    ],
+    "nte.esc-menu-button": [
+      "nte-esc-menu-hooks-v1"
+    ],
+    "nte.entities": [
+      "nte-entities-layout-v2"
+    ],
+    "nte.pickup": [
+      "nte-pickup-layout-v1"
+    ],
+    "nte.ui-buttons": [
+      "nte-ui-buttons-layout-v1"
+    ],
+    "nte.combat": [
+      "nte-combat-reflection-v1"
+    ],
+    "nte.skills": [
+      "nte-skills-layout-v1"
+    ],
+    "nte.skill-invocation": [
+      "nte-skill-invocation-v1"
+    ],
+    "ue5.streaming-source": [
+      "ue5-streaming-source-layout-v1"
+    ],
+    "nte.vehicle": [
+      "nte-vehicle-layout-v1"
+    ]
   },
   "featureDependencies": {
-    "ue5.ftext": ["ue5.names"],
-    "ue5.actors": ["ue5.world", "ue5.names"],
-    "ue5.functions": ["ue5.objects", "ue5.names"],
-    "ue5.object-find": ["ue5.objects"],
-    "ue5.actor-process-event": ["ue5.process-event"],
-    "ue5.ahud": ["ue5.functions", "ue5.process-event"],
-    "nte.player-esp": ["nte.player"],
+    "ue5.ftext": [
+      "ue5.names"
+    ],
+    "ue5.actors": [
+      "ue5.world",
+      "ue5.names"
+    ],
+    "ue5.functions": [
+      "ue5.objects",
+      "ue5.names"
+    ],
+    "ue5.object-find": [
+      "ue5.objects"
+    ],
+    "ue5.actor-process-event": [
+      "ue5.process-event"
+    ],
+    "ue5.ahud": [
+      "ue5.functions",
+      "ue5.process-event"
+    ],
+    "nte.player-esp": [
+      "nte.player"
+    ],
     "nte.player-teleport": [
       "nte.player",
       "ue5.names",
@@ -328,18 +579,52 @@
       "ue5.objects",
       "ue5.process-event"
     ],
-    "nte.esc-menu-button": ["ue5.names", "ue5.objects", "ue5.process-event"],
-    "nte.entities": ["ue5.names"],
-    "nte.pickup": ["nte.player", "nte.entities", "ue5.names", "ue5.objects", "ue5.process-event"],
-    "nte.ui-buttons": ["ue5.names", "ue5.objects", "ue5.object-find", "ue5.process-event"],
+    "nte.esc-menu-button": [
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.entities": [
+      "ue5.names"
+    ],
+    "nte.pickup": [
+      "nte.player",
+      "nte.entities",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.ui-buttons": [
+      "ue5.names",
+      "ue5.objects",
+      "ue5.object-find",
+      "ue5.process-event"
+    ],
     "nte.combat": [
-      "nte.player", "ue5.names", "ue5.objects", "ue5.process-event"
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
     ],
     "nte.skills": [
-      "nte.player", "ue5.names", "ue5.objects", "ue5.process-event"
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
     ],
-    "nte.skill-invocation": ["nte.skills", "ue5.process-event"],
-    "ue5.streaming-source": ["nte.player"]
+    "nte.skill-invocation": [
+      "nte.skills",
+      "ue5.process-event"
+    ],
+    "ue5.streaming-source": [
+      "nte.player"
+    ],
+    "nte.vehicle": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ]
   },
   "layout": {
     "world.gameInstance": 560,
@@ -597,6 +882,17 @@
     "htuiRadioBox.radioBox": 4960,
     "htuiRadioBox.radioText": 4968,
     "htuiRadioBox.blockButton": 4976,
-    "htuiListItem.clickButton": 1616
+    "htuiListItem.clickButton": 1616,
+    "vehicle.movementComponent": 888,
+    "vehicle.maxEngineTorque": 2616,
+    "vehicle.maxEngineRPM": 2620,
+    "vehicle.maxLinearVelocity": 4580,
+    "vehicle.topSpeedInKmH": 4588,
+    "vehicle.reverseTopSpeedInKmH": 4596,
+    "vehicle.enableTopSpeedLimit": 4600,
+    "vehicle.topSpeedRatio": 4640,
+    "vehicle.comfortMaxEngineTorque": 5728,
+    "vehicle.comfortMaxEngineRPM": 5732,
+    "vehicle.comfortTopSpeedInKmH": 5936
   }
 }

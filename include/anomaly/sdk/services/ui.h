@@ -53,7 +53,8 @@ typedef enum AnomalyUiFrameStateV1 {
 
 typedef enum AnomalyUiTextInputFlagsV1 {
     ANOMALY_UI_TEXT_INPUT_V1_NONE = 0,
-    ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1u << 0u
+    ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1u << 0u,
+    ANOMALY_UI_TEXT_INPUT_V1_PASSWORD = 1u << 1u
 } AnomalyUiTextInputFlagsV1;
 
 typedef enum AnomalyUiTableFlagsV1 {
