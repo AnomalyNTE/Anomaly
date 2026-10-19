@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.damage-dashboard",
+  "name": "NTE 伤害仪表盘",
+  "description": "战斗统计面板：指标、条形图（角色/技能/增益/承受）、生命护盾暴击进度条、高度恒贴合内容（不出现滚动条）、宽度可拖拽。同名技能合并、只统计我操控的角色。",
+  "author": "Haaland-a",
+  "license": "AGPL-3.0-only",
+  "version": "2.7.0",
+  "audience": "user",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.core", "minVersion": 1, "optional": true},
+    {"id": "anomaly.diagnostics", "minVersion": 1, "optional": true},
+    {"id": "anomaly.notifications", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.combat", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
+    {"id": "anomaly.json", "minVersion": 1, "optional": true},
+    {"id": "anomaly.config", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "ui",
+    "configuration",
+    "nte-combat-read",
+    "nte-session-snapshot"
+  ]
+}
