@@ -7408,6 +7408,7 @@ struct Ue5NteAdapter::State {
         std::int32_t array_dim{};
         std::int32_t element_size{};
         std::int32_t offset{};
+        std::uintptr_t structure{};
     };
 
     [[nodiscard]] bool ReadReflectedPropertyLocked(
@@ -7435,6 +7436,12 @@ struct Ue5NteAdapter::State {
             !ReadValue(*memory, next_address, candidate.next) ||
             !(candidate.name = ResolveNameSnapshotLocked(name_id)).size() ||
             !ReadReflectedFieldClassNameLocked(property, candidate.type)) {
+            return false;
+        }
+        if (candidate.type == "StructProperty" &&
+            !ReadPointerAt(
+                *memory, property, Layout(profile, "fstructProperty.struct"),
+                candidate.structure)) {
             return false;
         }
         info = std::move(candidate);
