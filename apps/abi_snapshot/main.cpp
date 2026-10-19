@@ -623,6 +623,17 @@ std::string BuildSnapshot() {
         false);
     AppendEnum(
         output,
+        "AnomalyUiTableFlagsV1",
+        sizeof(AnomalyUiTableFlagsV1),
+        alignof(AnomalyUiTableFlagsV1),
+        {{"ANOMALY_UI_TABLE_V1_NONE", ANOMALY_UI_TABLE_V1_NONE},
+         {"ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT",
+          ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT},
+         {"ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP",
+          ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP}},
+        false);
+    AppendEnum(
+        output,
         "AnomalyUiTabBarFlagsV1",
         sizeof(AnomalyUiTabBarFlagsV1),
         alignof(AnomalyUiTabBarFlagsV1),
@@ -1252,7 +1263,10 @@ std::string BuildSnapshot() {
          {"begin_tab_bar", offsetof(AnomalyUiServiceV1, begin_tab_bar)},
          {"begin_tab_item", offsetof(AnomalyUiServiceV1, begin_tab_item)},
          {"end_tab_item", offsetof(AnomalyUiServiceV1, end_tab_item)},
-         {"end_tab_bar", offsetof(AnomalyUiServiceV1, end_tab_bar)}},
+         {"end_tab_bar", offsetof(AnomalyUiServiceV1, end_tab_bar)},
+         {"text_wrapped", offsetof(AnomalyUiServiceV1, text_wrapped)},
+         {"begin_child_auto_fit_y", offsetof(AnomalyUiServiceV1, begin_child_auto_fit_y)},
+         {"slider_float_enabled", offsetof(AnomalyUiServiceV1, slider_float_enabled)}},
         false);
     AppendStruct(
         output,
