@@ -352,6 +352,15 @@
         "ANOMALY_UI_TEXT_INPUT_V1_PASSWORD": 2
       }
     },
+    "AnomalyUiTableFlagsV1": {
+      "size": 4,
+      "alignment": 4,
+      "values": {
+        "ANOMALY_UI_TABLE_V1_NONE": 0,
+        "ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT": 1,
+        "ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP": 2
+      }
+    },
     "AnomalyUiTabBarFlagsV1": {
       "size": 4,
       "alignment": 4,
@@ -922,7 +931,7 @@
       }
     },
     "AnomalyUiServiceV1": {
-      "size": 336,
+      "size": 360,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -967,7 +976,10 @@
         "begin_tab_bar": 304,
         "begin_tab_item": 312,
         "end_tab_item": 320,
-        "end_tab_bar": 328
+        "end_tab_bar": 328,
+        "text_wrapped": 336,
+        "begin_child_auto_fit_y": 344,
+        "slider_float_enabled": 352
       }
     },
     "AnomalyWindowSpecV1": {
