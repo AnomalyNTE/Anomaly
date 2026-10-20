@@ -1,4 +1,6 @@
 #include "rob_bank_runtime.hpp"
+#include "bank_loop_profile.hpp"
+#include "bank_intro_skip.hpp"
 
 #include "anomaly/sdk/cpp.hpp"
 
@@ -7,11 +9,14 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <Windows.h>
 
 namespace pink_paw_heist_esp {
 namespace {
@@ -86,8 +91,6 @@ constexpr std::ptrdiff_t kRobBankPointUidOffset = 2976;
 constexpr std::ptrdiff_t kRobBankPointKeyDoorIdOffset = 196;
 constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3080;
 constexpr std::ptrdiff_t kRobBankCloneDataAssetItemOffset = 104;
-// AHTPlayerState::ClientRobBankKeyDoorDataArray in UE5-HT 5.6.1.
-constexpr std::ptrdiff_t kPlayerStateKeyDoorsOffset = 0x9A90;
 constexpr std::int32_t kMaximumKeyDoors = 4096;
 
 constexpr std::ptrdiff_t kDataTableRowMapOffset = 48;
@@ -95,7 +98,9 @@ constexpr std::size_t kDataTableRowStride = 24;
 constexpr std::size_t kDataTableRowPointerOffset = 8;
 constexpr std::int32_t kMaximumDataTableRows = 4096;
 constexpr std::ptrdiff_t kStaticItemNameOffset = 160;
-constexpr std::ptrdiff_t kStaticItemElementDataOffset = 440;
+// FStaticItemData::ElementData, verified against the live StructProperty
+// metadata on 2026-10-19 (previously 0x1B8).
+constexpr std::ptrdiff_t kStaticItemElementDataOffset = 0x1C0;
 constexpr std::ptrdiff_t kInstancedStructDataOffset = 8;
 constexpr std::ptrdiff_t kRobBankItemValueOffset = 0;
 constexpr std::ptrdiff_t kRobBankItemCoinOffset = 4;
@@ -173,6 +178,17 @@ struct UnrealString final {
 
 using TextToStringFunction = UnrealString*(ANOMALY_CALL*)(UnrealString*, const void*);
 using FreeStringFunction = void(ANOMALY_CALL*)(void*);
+
+bool InvokeBankFunction(void* object, const std::uintptr_t method,
+    const std::uintptr_t function, void* parameters) noexcept {
+    using ProcessEvent = void(__fastcall*)(void*, void*, void*);
+    __try {
+        reinterpret_cast<ProcessEvent>(method)(object, reinterpret_cast<void*>(function), parameters);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 
 std::uint64_t EncodeFName(const FNameValue value) noexcept {
     return static_cast<std::uint64_t>(value.comparison_index) |
@@ -424,6 +440,7 @@ struct RobBankRuntime::Impl final {
     std::uintptr_t world{};
     std::uintptr_t player_controller{};
     ObjectRegistry registry;
+    BankIntroSkip intro_skip;
     std::uint64_t registry_generation{};
     PointTable point_table;
     RobBankItemTables item_tables;
@@ -468,6 +485,104 @@ struct RobBankRuntime::Impl final {
     [[nodiscard]] bool IsGameThread() const noexcept {
         return framework != nullptr && framework->is_game_thread != nullptr &&
             framework->is_game_thread(framework->user) != 0;
+    }
+
+    [[nodiscard]] bool FindProperty(
+        const std::uintptr_t structure, const std::string_view name,
+        const std::string_view type, const std::int32_t size,
+        std::uintptr_t& property, std::int32_t& offset) const {
+        using namespace bank_profile;
+        if (!Read(structure + kPropertyLink, property)) return false;
+        for (std::size_t count{}; property != 0 && count < 2048; ++count) {
+            std::uint32_t name_id{};
+            std::uintptr_t field_class{};
+            if (!Read(property + kFieldName, name_id)) return false;
+            if (ResolveName(name_id) == name) {
+                std::int32_t array_dim{}, element_size{};
+                std::uint32_t type_id{};
+                return ReadPointerAt(property, kFieldClass, field_class) &&
+                    Read(field_class, type_id) && ResolveName(type_id) == type &&
+                    Read(property + kPropertyArrayDim, array_dim) && array_dim == 1 &&
+                    Read(property + kPropertySize, element_size) && element_size == size &&
+                    Read(property + kPropertyOffset, offset) && offset >= 0;
+            }
+            std::uintptr_t next{};
+            if (!Read(property + kPropertyNext, next) || next == property) return false;
+            property = next;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool BindFunction(
+        const std::string_view path, const std::uint16_t parameter_size,
+        const std::span<const bank_profile::Parameter> parameters,
+        std::uintptr_t& function, const std::string_view expected_owner = "HTPlayerState") {
+        using namespace bank_profile;
+        if (!FindExactObject(path, function)) return false;
+        std::uintptr_t function_class{}, owner{};
+        std::uint8_t count{};
+        std::uint16_t size{};
+        if (!ReadPointerAt(function, kObjectClassOffset, function_class) ||
+            ResolveObjectName(function_class) != "Function" ||
+            !ReadPointerAt(function, kObjectOuterOffset, owner) ||
+            ResolveObjectName(owner) != expected_owner ||
+            !Read(function + kFunctionNumParms, count) || count != parameters.size() ||
+            !Read(function + kFunctionParmsSize, size) || size != parameter_size) return false;
+        for (const auto& p : parameters) {
+            std::uintptr_t property{};
+            std::int32_t offset{};
+            if (!FindProperty(function, p.name, p.type, p.size, property, offset) ||
+                offset != p.offset) return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool InvokeOnObject(
+        const std::uintptr_t object, const std::uintptr_t function,
+        void* parameters) const noexcept {
+        std::uintptr_t vtable{}, method{};
+        return Read(object, vtable) && vtable != 0 &&
+            Read(vtable + bank_profile::kProcessEventSlot * sizeof(std::uintptr_t), method) &&
+            method != 0 && InvokeBankFunction(
+                reinterpret_cast<void*>(object), method, function, parameters);
+    }
+
+    [[nodiscard]] bool ReadBankEntry(
+        FNameValue& clone_id, std::int32_t& level, std::uint8_t& type,
+        FNameValue& custom) {
+        using namespace bank_profile;
+        std::uintptr_t table{};
+        DataTableRows rows;
+        if (!FindExactObject(kCloneTablePath, table) || !BuildDataTableRows(table, rows)) return false;
+        const auto found = rows.rows_by_name.find("RobBank");
+        if (found == rows.rows_by_name.end()) return false;
+        std::uintptr_t table_class{}, row_struct{}, property{};
+        std::int32_t offset{};
+        if (!ReadPointerAt(table, kObjectClassOffset, table_class) ||
+            !FindProperty(table_class, "RowStruct", "ObjectProperty", 8, property, offset) ||
+            !ReadPointerAt(table, offset, row_struct) || ResolveObjectName(row_struct) != "CloneSystemData") {
+            return false;
+        }
+        const auto row = found->second;
+        if (!FindProperty(row_struct, "CloneID", "NameProperty", 8, property, offset) ||
+            !Read(row + offset, clone_id) || RenderFName(clone_id) != "RobBank" ||
+            !FindProperty(row_struct, "CloneType", "EnumProperty", 1, property, offset) ||
+            !Read(row + offset, type) ||
+            !FindProperty(row_struct, "CloneSystemSubNodes", "ArrayProperty", 16, property, offset)) {
+            return false;
+        }
+        ArrayHeader nodes;
+        std::uintptr_t inner{}, node_struct{};
+        if (!Read(row + offset, nodes) || nodes.count < 1 || nodes.capacity < nodes.count ||
+            nodes.capacity > 64 || nodes.data == 0 ||
+            !ReadPointerAt(property, kArrayPropertyInner, inner) ||
+            !ReadPointerAt(inner, kStructPropertyStruct, node_struct) ||
+            ResolveObjectName(node_struct) != "CloneSystemSubNodeData" ||
+            !FindProperty(node_struct, "DifficultyLevel", "IntProperty", 4, property, offset) ||
+            !Read(nodes.data + offset, level) || level < 1 ||
+            !FindProperty(node_struct, "MatchCfgMapKey", "NameProperty", 8, property, offset) ||
+            !Read(nodes.data + offset, custom)) return false;
+        return true;
     }
 
     [[nodiscard]] bool FindExactObject(
@@ -812,6 +927,7 @@ struct RobBankRuntime::Impl final {
     }
 
     void ResetWorldState() noexcept {
+        intro_skip.Reset();
         point_table = {};
         item_tables = {};
         unlocked_key_doors.clear();
@@ -1113,9 +1229,22 @@ struct RobBankRuntime::Impl final {
                 player_controller, kControllerPlayerStateOffset, player_state)) {
             return false;
         }
+        // The upstream layout and the observed bank client place this array
+        // at different offsets. Use its reflected ArrayProperty<NameProperty>.
+        using namespace bank_profile;
+        std::uintptr_t player_class{}, property{}, inner{}, inner_class{};
+        std::int32_t offset{}, inner_size{};
+        std::uint32_t inner_type{};
+        if (!ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+            !FindProperty(player_class, "ClientRobBankKeyDoorDataArray", "ArrayProperty", 16, property, offset) ||
+            !ReadPointerAt(property, kArrayPropertyInner, inner) ||
+            !ReadPointerAt(inner, kFieldClass, inner_class) ||
+            !Read(inner_class, inner_type) || ResolveName(inner_type) != "NameProperty" ||
+            !Read(inner + kPropertySize, inner_size) ||
+            inner_size != static_cast<std::int32_t>(sizeof(FNameValue))) return false;
         std::uintptr_t address{};
         ArrayHeader header;
-        if (!AddSignedAddress(player_state, kPlayerStateKeyDoorsOffset, address) ||
+        if (!AddSignedAddress(player_state, offset, address) ||
             !Read(address, header) || header.count < 0 ||
             header.capacity < header.count || header.capacity > kMaximumKeyDoors ||
             (header.count != 0 && header.data == 0)) {
@@ -1378,6 +1507,7 @@ void RobBankRuntime::Stop() noexcept {
     impl_->world = 0;
     impl_->player_controller = 0;
     impl_->registry = {};
+    impl_->intro_skip.Reset();
     impl_->registry_generation = 0;
     impl_->point_table = {};
     impl_->item_tables = {};
@@ -1537,6 +1667,179 @@ AnomalyStatusV1 RobBankRuntime::Pickup(const RobBankEntity entity) noexcept {
         return Status(
             ANOMALY_STATUS_V1_FAILED,
             "RobBank pickup invocation failed");
+    }
+}
+
+AnomalyStatusV1 RobBankRuntime::EnterBank() noexcept {
+    if (!Refresh()) return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank entry context is unavailable");
+    try {
+        using namespace bank_profile;
+        std::uintptr_t player_state{}, player_class{}, can_enter{}, enter{};
+        if (!impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
+            !impl_->ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+            !impl_->ClassIsOrDerivesFrom(player_class, "HTPlayerState") ||
+            !impl_->BindFunction(kCanEnterFunction, 1, kCanEnterParameters, can_enter) ||
+            !impl_->BindFunction(kEnterFunction, 24, kEnterParameters, enter)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank entry reflection contract is unavailable");
+        }
+        std::uint8_t allowed{};
+        if (!impl_->InvokeOnObject(player_state, can_enter, &allowed)) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "Bank entry condition query failed");
+        }
+        if (allowed == 0) return Status(ANOMALY_STATUS_V1_CONFLICT, "The game does not currently allow bank entry");
+        FNameValue clone_id, custom;
+        std::int32_t level{};
+        std::uint8_t type{};
+        if (!impl_->ReadBankEntry(clone_id, level, type, custom)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "RobBank entry row or field contract is unavailable");
+        }
+        std::array<std::uint8_t, 24> parameters{};
+        std::memcpy(parameters.data(), &clone_id, sizeof(clone_id));
+        std::memcpy(parameters.data() + 8, &level, sizeof(level));
+        parameters[12] = type;
+        std::memcpy(parameters.data() + 16, &custom, sizeof(custom));
+        return impl_->InvokeOnObject(player_state, enter, parameters.data())
+            ? Status(ANOMALY_STATUS_V1_OK)
+            : Status(ANOMALY_STATUS_V1_FAILED, "Bank entry request failed");
+    } catch (...) {
+        return Status(ANOMALY_STATUS_V1_FAILED, "Bank entry resolution failed");
+    }
+}
+
+AnomalyStatusV1 RobBankRuntime::Evacuate(const std::uint64_t extraction_entity_id) noexcept {
+    if (!Refresh()) return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank evacuation context is unavailable");
+    try {
+        if (extraction_entity_id == 0 || extraction_entity_id - 1U >= impl_->registry.count) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "Extraction identity changed");
+        }
+        std::uintptr_t actor{}, actor_class{}, property{}, player_state{}, function{};
+        std::uint32_t serial{};
+        std::int32_t offset{};
+        FNameValue id;
+        if (!impl_->ReadObjectSlot(impl_->registry,
+                static_cast<std::uint32_t>(extraction_entity_id - 1U), actor, serial) || serial == 0 ||
+            !impl_->ReadPointerAt(actor, kObjectClassOffset, actor_class) ||
+            impl_->ResolveObjectName(actor_class) != kWorldMarkerClassName ||
+            !impl_->FindProperty(actor_class, "Extract_ID", "NameProperty", 8, property, offset) ||
+            !impl_->Read(actor + offset, id) || id.comparison_index == 0 ||
+            !impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
+            !impl_->BindFunction(bank_profile::kEvacuateFunction, 8,
+                bank_profile::kEvacuateParameters, function)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank evacuation reflection contract is unavailable");
+        }
+        return impl_->InvokeOnObject(player_state, function, &id)
+            ? Status(ANOMALY_STATUS_V1_OK)
+            : Status(ANOMALY_STATUS_V1_FAILED, "Bank evacuation request failed");
+    } catch (...) {
+        return Status(ANOMALY_STATUS_V1_FAILED, "Bank evacuation resolution failed");
+    }
+}
+
+void RobBankRuntime::ResetCutsceneSkipping() noexcept {
+    impl_->intro_skip.Reset();
+}
+
+AnomalyStatusV1 RobBankRuntime::SkipCutscenes(std::uint32_t& requests_sent) noexcept {
+    requests_sent = 0;
+    if (!impl_->IsGameThread()) return Status(ANOMALY_STATUS_V1_CONFLICT, "Cutscene skipping requires the Game thread");
+    // No live controller during loading is normal; try on the next loop tick.
+    if (!Refresh()) return Status(ANOMALY_STATUS_V1_OK);
+    try {
+        using namespace bank_profile;
+        const auto now = BankIntroSkip::Clock::now();
+        std::uintptr_t playing_function{}, controller_class{}, property{};
+        std::int32_t offset{};
+        std::uint8_t playing{};
+        if (!impl_->BindFunction("/Script/HTGame.HTPlayerController.IsPlayingSequence", 1,
+                kBoolResultParameters, playing_function, "HTPlayerController") ||
+            !impl_->InvokeOnObject(impl_->player_controller, playing_function, &playing)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank intro playback query is unavailable");
+        }
+        std::uintptr_t bank_sequence{};
+        if (playing != 0) {
+            std::uintptr_t actor{}, actor_class{}, asset{}, expected_asset{};
+            if (!impl_->ReadPointerAt(impl_->player_controller, kObjectClassOffset, controller_class) ||
+                !impl_->FindProperty(controller_class, "LevelSequenceActor", "ObjectProperty", 8, property, offset) ||
+                !impl_->Read(impl_->player_controller + offset, actor)) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank intro actor contract is unavailable");
+            }
+            if (actor != 0 && impl_->ReadPointerAt(actor, kObjectClassOffset, actor_class) &&
+                impl_->FindProperty(actor_class, "LevelSequenceAsset", "ObjectProperty", 8, property, offset) &&
+                impl_->Read(actor + offset, asset) && asset != 0 &&
+                impl_->FindExactObject(kBankIntroSequence, expected_asset) && asset == expected_asset) {
+                bank_sequence = actor;
+            }
+        }
+        impl_->intro_skip.Observe(bank_sequence, now);
+        if (!impl_->intro_skip.Ready(now)) return Status(ANOMALY_STATUS_V1_OK);
+        std::uintptr_t dialogue_class{}, skip{}, active{}, visible{}, enabled{}, interaction{}, parent{};
+        std::int32_t button_offset{};
+        if (!impl_->FindExactObject("/Script/HTGame.UI_Dialogue", dialogue_class) ||
+            !impl_->BindFunction("/Script/HTGame.UI_Dialogue.DoSkipDialog", 0, {}, skip, "UI_Dialogue") ||
+            !impl_->FindProperty(dialogue_class, "BtnSkip", "ObjectProperty", 8, property, button_offset) ||
+            !impl_->BindFunction("/Script/CommonUI.CommonActivatableWidget.IsActivated", 1,
+                kBoolResultParameters, active, "CommonActivatableWidget") ||
+            !impl_->BindFunction("/Script/UMG.Widget.IsVisible", 1, kBoolResultParameters, visible, "Widget") ||
+            !impl_->BindFunction("/Script/UMG.Widget.GetIsEnabled", 1, kBoolResultParameters, enabled, "Widget") ||
+            !impl_->BindFunction("/Script/CommonUI.CommonButtonBase.IsInteractionEnabled", 1,
+                kBoolResultParameters, interaction, "CommonButtonBase") ||
+            !impl_->BindFunction("/Script/UMG.Widget.GetParent", 8,
+                kParentResultParameters, parent, "Widget")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Cutscene widget reflection contract is unavailable");
+        }
+        const auto query_bool = [&](const std::uintptr_t object, const std::uintptr_t function) {
+            std::uint8_t result{};
+            return impl_->InvokeOnObject(object, function, &result) && result != 0;
+        };
+        const auto shown = [&](std::uintptr_t widget) {
+            for (unsigned depth{}; widget != 0 && depth < 64; ++depth) {
+                if (!query_bool(widget, visible)) return false;
+                std::uintptr_t next{};
+                if (!impl_->InvokeOnObject(widget, parent, &next) || next == widget) return false;
+                if (next == 0) return true;
+                widget = next;
+            }
+            return false;
+        };
+        // Bank entry uses the persistent BPUI_SideDialogue, not HTUI_Cinema.
+        // DoSkipDialog completes the game's dialogue/sequence flow itself;
+        // closing the widget directly would leave that flow unfinished.
+        std::unordered_map<std::uintptr_t, bool> classes;
+        std::uintptr_t candidate{};
+        for (std::uint32_t index{}; index < impl_->registry.count; ++index) {
+            std::uintptr_t widget{}, widget_class{};
+            if (!impl_->ReadObjectPointer(impl_->registry, index, widget) || widget == 0 ||
+                !impl_->ReadPointerAt(widget, kObjectClassOffset, widget_class)) continue;
+            auto [entry, inserted] = classes.try_emplace(widget_class, false);
+            if (inserted) {
+                auto current = widget_class;
+                for (unsigned depth{}; current != 0 && depth < 64; ++depth) {
+                    if (current == dialogue_class) { entry->second = true; break; }
+                    if (!impl_->Read(current + kStructSuperOffset, current)) break;
+                }
+            }
+            if (!entry->second || impl_->ResolveObjectName(widget).starts_with("Default__") ||
+                !query_bool(widget, active) || !shown(widget)) continue;
+            std::uintptr_t button{}, button_class{};
+            if (!impl_->ReadPointerAt(widget, button_offset, button) || !shown(button) ||
+                !query_bool(button, enabled) ||
+                !impl_->ReadPointerAt(button, kObjectClassOffset, button_class) ||
+                !impl_->ClassIsOrDerivesFrom(button_class, "CommonButtonBase") ||
+                !query_bool(button, interaction)) continue;
+            // An ambiguous window set cannot authorize a dialogue skip.
+            if (candidate != 0) return Status(ANOMALY_STATUS_V1_OK);
+            candidate = widget;
+        }
+        if (candidate != 0) {
+            impl_->intro_skip.Dispatched();
+            if (!impl_->InvokeOnObject(candidate, skip, nullptr)) {
+                return Status(ANOMALY_STATUS_V1_FAILED, "Bank intro dialogue skip failed");
+            }
+            requests_sent = 1;
+        }
+        return Status(ANOMALY_STATUS_V1_OK);
+    } catch (...) {
+        return Status(ANOMALY_STATUS_V1_FAILED, "Cutscene skip resolution failed");
     }
 }
 

@@ -94,6 +94,14 @@ public:
         std::string_view expected_class_name) noexcept;
 
     [[nodiscard]] AnomalyStatusV1 Pickup(RobBankEntity entity) noexcept;
+    // Normal game requests, only on the Game thread. Entry data is loaded by
+    // the RobBank row name, never by the table's display index or a saved FName.
+    [[nodiscard]] AnomalyStatusV1 EnterBank() noexcept;
+    [[nodiscard]] AnomalyStatusV1 Evacuate(std::uint64_t extraction_entity_id) noexcept;
+    // Skips the observed bank intro through its active dialogue window's game
+    // handler; reports dispatched requests, not confirmed playback completion.
+    [[nodiscard]] AnomalyStatusV1 SkipCutscenes(std::uint32_t& requests_sent) noexcept;
+    void ResetCutsceneSkipping() noexcept;
     [[nodiscard]] bool Available() const noexcept;
     [[nodiscard]] bool CanInspect() const noexcept;
     [[nodiscard]] bool DiscoveryPending() const noexcept;
