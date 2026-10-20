@@ -16,7 +16,7 @@
 
 namespace {
 
-// 非 DEBUG 状态下的倍率策略：固定 10x；所有精细倍率路径均在调用 Host 前再次校验。
+// 载具插件的默认倍率策略：未解锁 DEBUG 时固定 10x。
 constexpr float kLockedSpeedRatio = 10.0F;
 constexpr float kFineSpeedRatioMin = 0.50F;
 constexpr float kFineSpeedRatioMax = 10.0F;
@@ -56,6 +56,7 @@ struct Context {
     std::atomic_bool summon{};
     std::atomic_bool friction_toggle{};
     std::atomic_bool started{};
+    std::atomic_bool stop_restore_requested{};
     float speed_ratio{1.0F};
     float engine_torque_ratio{1.0F};
     float other_speed_ratio{1.0F};
@@ -87,7 +88,6 @@ const Service* QueryService(const AnomalyHostApiV1* host,
     return static_cast<const Service*>(table);
 }
 
-// 使用可移植 SHA-256 校验 DEBUG 解锁密钥；插件二进制只保存摘要，不保存密钥明文。
 void ClearSensitiveBuffer(char* data, std::size_t size) noexcept {
     if (data == nullptr) return;
     volatile char* writable = data;
@@ -109,6 +109,118 @@ struct SensitiveBufferWiper final {
     std::size_t size;
     ~SensitiveBufferWiper() { ClearSensitiveBuffer(data, size); }
 };
+
+std::array<std::uint8_t, 32> Sha256(std::string_view input) {
+    constexpr std::array<std::uint32_t, 64> k{
+        0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U,
+        0x923f82a4U, 0xab1c5ed5U, 0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
+        0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U, 0xe49b69c1U, 0xefbe4786U,
+        0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+        0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U,
+        0x06ca6351U, 0x14292967U, 0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
+        0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U, 0xa2bfe8a1U, 0xa81a664bU,
+        0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+        0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU,
+        0x5b9cca4fU, 0x682e6ff3U, 0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
+        0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U};
+    const auto rotr = [](std::uint32_t value, unsigned count) noexcept {
+        return (value >> count) | (value << (32U - count));
+    };
+    std::vector<std::uint8_t> data;
+    struct SensitiveWiper final {
+        std::vector<std::uint8_t>& value;
+        ~SensitiveWiper() {
+            if (!value.empty())
+                ClearSensitiveBuffer(reinterpret_cast<char*>(value.data()), value.size());
+        }
+    } data_wiper{data};
+    data.reserve(input.size() + 72U);
+    for (const unsigned char value : input) data.push_back(value);
+    const std::uint64_t bit_length = static_cast<std::uint64_t>(data.size()) * 8U;
+    data.push_back(0x80U);
+    while ((data.size() % 64U) != 56U) data.push_back(0U);
+    for (int shift = 56; shift >= 0; shift -= 8)
+        data.push_back(static_cast<std::uint8_t>((bit_length >> shift) & 0xffU));
+
+    std::array<std::uint32_t, 8> state{
+        0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
+        0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
+    for (std::size_t block = 0; block < data.size(); block += 64U) {
+        std::array<std::uint32_t, 64> words{};
+        for (std::size_t i = 0; i < 16U; ++i) {
+            const std::size_t offset = block + i * 4U;
+            words[i] = (static_cast<std::uint32_t>(data[offset]) << 24U) |
+                (static_cast<std::uint32_t>(data[offset + 1U]) << 16U) |
+                (static_cast<std::uint32_t>(data[offset + 2U]) << 8U) |
+                static_cast<std::uint32_t>(data[offset + 3U]);
+        }
+        for (std::size_t i = 16U; i < words.size(); ++i) {
+            const std::uint32_t s0 = rotr(words[i - 15U], 7U) ^
+                rotr(words[i - 15U], 18U) ^ (words[i - 15U] >> 3U);
+            const std::uint32_t s1 = rotr(words[i - 2U], 17U) ^
+                rotr(words[i - 2U], 19U) ^ (words[i - 2U] >> 10U);
+            words[i] = words[i - 16U] + s0 + words[i - 7U] + s1;
+        }
+        auto a = state[0];
+        auto b = state[1];
+        auto c = state[2];
+        auto d = state[3];
+        auto e = state[4];
+        auto f = state[5];
+        auto g = state[6];
+        auto h = state[7];
+        for (std::size_t i = 0; i < words.size(); ++i) {
+            const std::uint32_t s1 = rotr(e, 6U) ^ rotr(e, 11U) ^ rotr(e, 25U);
+            const std::uint32_t choice = (e & f) ^ (~e & g);
+            const std::uint32_t temp1 = h + s1 + choice + k[i] + words[i];
+            const std::uint32_t s0 = rotr(a, 2U) ^ rotr(a, 13U) ^ rotr(a, 22U);
+            const std::uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+            const std::uint32_t temp2 = s0 + majority;
+            h = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
+        }
+        state[0] += a;
+        state[1] += b;
+        state[2] += c;
+        state[3] += d;
+        state[4] += e;
+        state[5] += f;
+        state[6] += g;
+        state[7] += h;
+    }
+    std::array<std::uint8_t, 32> digest{};
+    for (std::size_t i = 0; i < digest.size(); ++i)
+        digest[i] = static_cast<std::uint8_t>(
+            (state[i / 4U] >> (24U - (i % 4U) * 8U)) & 0xffU);
+    ClearSensitiveBuffer(reinterpret_cast<char*>(state.data()), sizeof(state));
+    return digest;
+}
+
+bool IsDebugKeyValid(std::string_view candidate) noexcept {
+    if (candidate.size() != 64U) return false;
+    constexpr std::array<std::uint8_t, 32> expected{
+        0xe7U, 0x1aU, 0xdeU, 0x1aU, 0xcfU, 0xf9U, 0xc7U, 0x39U,
+        0xccU, 0x17U, 0x59U, 0x72U, 0xfaU, 0xf6U, 0x0eU, 0x2bU,
+        0xbaU, 0x75U, 0xa7U, 0xdaU, 0x04U, 0xfaU, 0xbaU, 0xfdU,
+        0x2bU, 0xafU, 0x8cU, 0x94U, 0x23U, 0xb7U, 0x6fU, 0x85U};
+    try {
+        auto actual = Sha256(candidate);
+        std::uint8_t difference{};
+        for (std::size_t i = 0; i < actual.size(); ++i)
+            difference = static_cast<std::uint8_t>(difference | (actual[i] ^ expected[i]));
+        const bool accepted = difference == 0U;
+        ClearSensitiveBuffer(reinterpret_cast<char*>(actual.data()), actual.size());
+        return accepted;
+    } catch (...) {
+        return false;
+    }
+}
 
 void SetStatus(std::string text) {
     std::scoped_lock lock(g_context.mutex);
@@ -335,20 +447,10 @@ void Update() {
     }
 
     if (g_context.reset.exchange(false, std::memory_order_acq_rel)) {
-        const bool has_core_switch =
-            HasField<AnomalyNteVehicleServiceV1,
-                decltype(AnomalyNteVehicleServiceV1::set_fine_speed_tuning_enabled)>(
-                    g_context.vehicle,
-                    offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)) &&
-            g_context.vehicle->set_fine_speed_tuning_enabled != nullptr;
-        if (has_core_switch) {
-            static_cast<void>(g_context.vehicle->set_fine_speed_tuning_enabled(
-                g_context.vehicle->user, 0U));
-        }
         const auto status = g_context.vehicle->reset(g_context.vehicle->user);
         {
             std::scoped_lock lock(g_context.mutex);
-            // Reset 不能成为绕过锁定倍率的后门；重置后关闭精细模式并恢复固定 10x。
+            // 手动恢复按钮保持插件的启动策略：恢复原生参数后再应用默认 10x。
             g_context.fine_speed_tuning_enabled = false;
             g_context.speed_ratio = kLockedSpeedRatio;
         }
@@ -942,20 +1044,7 @@ void DrawDebugPanel(
     if (has_checkbox) {
         if (ui->checkbox(ui->user,
                 anomaly::sdk::StringView("启用车速精细倍率调整"), &fine_enabled) != 0) {
-            const bool enable_requested = fine_enabled != 0;
-            const bool has_core_switch =
-                HasField<AnomalyNteVehicleServiceV1,
-                    decltype(AnomalyNteVehicleServiceV1::set_fine_speed_tuning_enabled)>(
-                        g_context.vehicle,
-                        offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)) &&
-                g_context.vehicle->set_fine_speed_tuning_enabled != nullptr;
-            AnomalyStatusV1 core_status = Status(ANOMALY_STATUS_V1_UNAVAILABLE);
-            if (has_core_switch) {
-                core_status = g_context.vehicle->set_fine_speed_tuning_enabled(
-                    g_context.vehicle->user, enable_requested ? 1U : 0U);
-            }
-            const bool enable = enable_requested &&
-                has_core_switch && core_status.code == ANOMALY_STATUS_V1_OK;
+            const bool enable = fine_enabled != 0;
             {
                 std::scoped_lock lock(g_context.mutex);
                 g_context.fine_speed_tuning_enabled = enable;
@@ -965,17 +1054,15 @@ void DrawDebugPanel(
             }
             fine_speed_tuning_enabled = enable;
             if (enable) {
-                SetStatus("Core 已启用 DEBUG 车速精细调整；倍率可在 0.50x–10.0x 内调整");
+                SetStatus("已启用 DEBUG 车速精细调整；倍率可在 0.50x–10.0x 内调整");
             } else {
-                // 关闭开关后 Core 和插件均恢复锁定策略，随后实际应用固定 10x。
+                // 关闭开关后插件恢复自己的锁定策略，并重新应用固定 10x。
                 g_context.apply_speed.store(true, std::memory_order_release);
-                SetStatus(enable_requested
-                    ? "Core 未授权精细调整；倍率保持固定 10.0x"
-                    : "DEBUG 车速精细调整已关闭；正在恢复固定 10.0x");
+                SetStatus("DEBUG 车速精细调整已关闭；正在恢复固定 10.0x");
                 fine_enabled = 0;
             }
         }
-        // 精简界面：移除重复的启用/锁定说明；锁定策略仍由控件及 Core 授权逻辑执行。
+        // 锁定的默认倍率仍由插件的应用路径执行。
     } else {
         DrawText(ui, "当前 UI Host 不支持开关控件；精细调整保持关闭，倍率固定为 10.0x。");
     }
@@ -1067,60 +1154,29 @@ void Draw(const AnomalyUiServiceV1* ui) {
                 debug_key_buffer.data(), debug_key_buffer.size(), ANOMALY_UI_TEXT_INPUT_V1_PASSWORD);
             DrawInlineGap(ui);
             if (ui->button(ui->user, anomaly::sdk::StringView("解锁 Debug"), 0.0F, 0.0F)) {
-                // Own the entered text for the complete local/Core validation call. The UI
-                // buffer is cleared only after the Core callback returns, and the same
-                // byte range is passed to both checks.
                 std::string candidate_owned(debug_key_buffer.data());
                 SensitiveStringWiper candidate_wiper{candidate_owned};
                 SensitiveBufferWiper input_wiper{
                     debug_key_buffer.data(), debug_key_buffer.size()};
                 const bool candidate_empty = candidate_owned.empty();
-                bool core_key_accepted = false;
-                std::uint32_t core_status_code = ANOMALY_STATUS_V1_FAILED;
-                std::string core_rejection_message;
-                const bool has_core_authorizer =
-                    HasField<AnomalyNteVehicleServiceV1,
-                        decltype(AnomalyNteVehicleServiceV1::authorize_fine_speed_tuning)>(
-                            g_context.vehicle,
-                            offsetof(AnomalyNteVehicleServiceV1, authorize_fine_speed_tuning)) &&
-                    g_context.vehicle->authorize_fine_speed_tuning != nullptr;
-                if (!candidate_empty && has_core_authorizer) {
-                    const auto core_status = g_context.vehicle->authorize_fine_speed_tuning(
-                        g_context.vehicle->user,
-                        anomaly::sdk::StringView(std::string_view(
-                            candidate_owned.data(), candidate_owned.size())));
-                    core_status_code = core_status.code;
-                    core_key_accepted = core_status.code == ANOMALY_STATUS_V1_OK;
-                    if (!core_key_accepted && core_status.message.data != nullptr &&
-                        core_status.message.size != 0) {
-                        core_rejection_message.assign(
-                            core_status.message.data, core_status.message.size);
-                    }
-                }
+                const bool key_accepted = !candidate_empty && IsDebugKeyValid(candidate_owned);
                 ClearSensitiveString(candidate_owned);
                 ClearSensitiveBuffer(debug_key_buffer.data(), debug_key_buffer.size());
-                if (core_key_accepted) {
+                if (key_accepted) {
                     {
                         std::scoped_lock lock(g_context.mutex);
                         g_context.debug_unlocked = true;
-                        // Core owns validation. Fine tuning remains off until separately enabled.
                         g_context.fine_speed_tuning_enabled = false;
                         g_context.speed_ratio = kLockedSpeedRatio;
                     }
                     debug_unlocked = true;
                     fine_speed_tuning_enabled = false;
                     ratio = kLockedSpeedRatio;
-                    debug_unlock_feedback = "Core 密钥验证通过；精细车速调整仍默认关闭，可在 Debug 中单独启用";
+                    debug_unlock_feedback = "密钥验证通过；精细车速调整仍默认关闭，可在 Debug 中单独启用";
                 } else if (candidate_empty) {
                     debug_unlock_feedback = "请输入私有 Debug 密钥；精细倍率保持锁定";
-                } else if (!has_core_authorizer) {
-                    debug_unlock_feedback = "当前 Core 缺少 V5 授权接口；精细倍率保持锁定，请更新 Runtime";
                 } else {
-                    debug_unlock_feedback = core_rejection_message.empty()
-                        ? ("Core 拒绝密钥（状态码 " + std::to_string(core_status_code) +
-                            "）；精细倍率保持锁定")
-                        : ("Core 拒绝密钥：" + core_rejection_message +
-                            "；精细倍率保持锁定");
+                    debug_unlock_feedback = "Debug 密钥无效；精细倍率保持锁定";
                 }
             }
         } else {
@@ -1164,18 +1220,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
                 vehicle, offsetof(AnomalyNteVehicleServiceV1, catalog_label_at)) ||
         !vehicle->catalog_label_at ||
         !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::authorize_fine_speed_tuning)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, authorize_fine_speed_tuning)) ||
-        !vehicle->authorize_fine_speed_tuning ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::set_fine_speed_tuning_enabled)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)) ||
-        !vehicle->set_fine_speed_tuning_enabled ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::revoke_fine_speed_authorization)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, revoke_fine_speed_authorization)) ||
-        !vehicle->revoke_fine_speed_authorization ||
-        !HasField<AnomalyNteVehicleServiceV1,
             decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_top_speed_ratio)>(
                 vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) ||
         !vehicle->set_other_vehicles_top_speed_ratio ||
@@ -1200,6 +1244,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.reset.store(false, std::memory_order_release);
     g_context.summon.store(false, std::memory_order_release);
     g_context.friction_toggle.store(false, std::memory_order_release);
+    g_context.stop_restore_requested.store(false, std::memory_order_release);
     g_context.refresh_catalog_requested.store(false, std::memory_order_release);
     g_context.speed_ratio = kLockedSpeedRatio;
     g_context.engine_torque_ratio = 1.0F;
@@ -1227,43 +1272,49 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
 AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.refresh_catalog_requested.store(true, std::memory_order_release);
-    // Each plugin start re-applies the locked 10x policy until DEBUG + fine-tune switch are both enabled.
+    g_context.stop_restore_requested.store(false, std::memory_order_release);
+    // Every start re-applies the plugin-owned 10x policy.
     g_context.apply_speed.store(true, std::memory_order_release);
     g_context.started.store(true, std::memory_order_release);
     return anomaly::sdk::Ok();
 }
 
+void RequestStopRestore() noexcept {
+    if (g_context.stop_restore_requested.exchange(true, std::memory_order_acq_rel)) return;
+    if (g_context.vehicle && g_context.vehicle->reset)
+        static_cast<void>(g_context.vehicle->reset(g_context.vehicle->user));
+}
+
+void ClearPendingOperations() noexcept {
+    g_context.apply_speed.store(false, std::memory_order_release);
+    g_context.apply_torque.store(false, std::memory_order_release);
+    g_context.apply_other_speed.store(false, std::memory_order_release);
+    g_context.apply_other_torque.store(false, std::memory_order_release);
+    g_context.reset.store(false, std::memory_order_release);
+    g_context.summon.store(false, std::memory_order_release);
+    g_context.friction_toggle.store(false, std::memory_order_release);
+    g_context.refresh_catalog_requested.store(false, std::memory_order_release);
+}
+
 AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.started.store(false, std::memory_order_release);
-    if (g_context.vehicle) {
-        if (g_context.vehicle->set_fine_speed_tuning_enabled)
-            static_cast<void>(g_context.vehicle->set_fine_speed_tuning_enabled(
-                g_context.vehicle->user, 0U));
-        if (g_context.vehicle->revoke_fine_speed_authorization)
-            static_cast<void>(g_context.vehicle->revoke_fine_speed_authorization(
-                g_context.vehicle->user));
-    }
+    ClearPendingOperations();
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.debug_unlocked = false;
         g_context.fine_speed_tuning_enabled = false;
         g_context.speed_ratio = kLockedSpeedRatio;
     }
+    RequestStopRestore();
     return anomaly::sdk::Ok();
 }
 
 void ANOMALY_CALL Unload(void* plugin_context) {
     if (plugin_context != &g_context) return;
     g_context.started.store(false, std::memory_order_release);
-    if (g_context.vehicle) {
-        if (g_context.vehicle->set_fine_speed_tuning_enabled)
-            static_cast<void>(g_context.vehicle->set_fine_speed_tuning_enabled(
-                g_context.vehicle->user, 0U));
-        if (g_context.vehicle->revoke_fine_speed_authorization)
-            static_cast<void>(g_context.vehicle->revoke_fine_speed_authorization(
-                g_context.vehicle->user));
-    }
+    ClearPendingOperations();
+    RequestStopRestore();
     g_context.vehicle = nullptr;
     g_context.player = nullptr;
 }

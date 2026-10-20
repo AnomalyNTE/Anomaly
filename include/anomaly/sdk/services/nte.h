@@ -380,7 +380,8 @@ typedef struct AnomalyNteVehicleServiceV1 {
     // V4 tail extension: configure the minimum user-facing speed factor for non-player instances only.
     // Kept after the original V4 fields so existing service-table offsets remain stable.
     AnomalyStatusV1 (ANOMALY_CALL *set_other_vehicles_min_speed_ratio)(void* user, float ratio);
-    // V5: Core-validated fixed-key authorization and independent enforcement for fine current-vehicle speed tuning.
+    // V5 compatibility slots. These remain at the original offsets, but fine-speed policy is owned
+    // by the vehicle plugin; current Core implementations expose no authorization or tuning state.
     AnomalyStatusV1 (ANOMALY_CALL *authorize_fine_speed_tuning)(
         void* user, AnomalyStringViewV1 key);
     AnomalyStatusV1 (ANOMALY_CALL *set_fine_speed_tuning_enabled)(
