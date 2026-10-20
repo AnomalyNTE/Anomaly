@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "999夜脚本",
+    "plugin.description": "999夜脚本：全自动刷怪循环——传送到营地 → 刷新怪物 → 传送到1号战斗点 → 自动战斗 → 传送到2号战斗点 → 自动战斗 → 回到营地，按设定次数循环（0 为无限）。适用于999夜赤龙古堡地图；刷新与战斗都不需要打开任何界面。",
+    "script.title": "脚本循环",
+    "points.title": "传送点",
+    "combat.title": "自动战斗（技能优先，平A 兜底）",
+    "note.map": "此脚本适用于999夜赤龙古堡地图"
+  }
+}
