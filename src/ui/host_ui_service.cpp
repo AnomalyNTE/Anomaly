@@ -542,6 +542,11 @@ void ANOMALY_CALL Text(void*, AnomalyStringViewV1 value) {
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
+void ANOMALY_CALL TextWrapped(void*, AnomalyStringViewV1 value) {
+    const std::string text = Copy(value);
+    ImGui::TextWrapped("%s", text.c_str());
+}
+
 int ANOMALY_CALL Button(
     void*, AnomalyStringViewV1 label, float width, float height) {
     const std::string text = Copy(label);
@@ -667,6 +672,18 @@ int ANOMALY_CALL SliderFloat(
     return ImGui::SliderFloat(text.c_str(), value, minimum, maximum) ? 1 : 0;
 }
 
+int ANOMALY_CALL SliderFloatEnabled(
+    void*, AnomalyStringViewV1 label, float* value,
+    float minimum, float maximum, int enabled) {
+    if (value == nullptr || !std::isfinite(minimum) || !std::isfinite(maximum) ||
+        minimum >= maximum) return 0;
+    const std::string text = Copy(label);
+    ImGui::BeginDisabled(enabled == 0);
+    const bool changed = ImGui::SliderFloat(text.c_str(), value, minimum, maximum);
+    ImGui::EndDisabled();
+    return enabled != 0 && changed ? 1 : 0;
+}
+
 int ANOMALY_CALL InputUInt32(
     void*, AnomalyStringViewV1 label, std::uint32_t* value,
     std::uint32_t step, std::uint32_t step_fast) {
@@ -701,7 +718,8 @@ int DigitInputFilter(ImGuiInputTextCallbackData* data) {
 int ANOMALY_CALL InputText(
     void*, AnomalyStringViewV1 label, char* buffer,
     std::size_t buffer_capacity, std::uint32_t flags) {
-    constexpr std::uint32_t kKnownFlags = ANOMALY_UI_TEXT_INPUT_V1_DIGITS;
+    constexpr std::uint32_t kKnownFlags =
+        ANOMALY_UI_TEXT_INPUT_V1_DIGITS | ANOMALY_UI_TEXT_INPUT_V1_PASSWORD;
     if (buffer == nullptr || buffer_capacity == 0 ||
         (flags & ~kKnownFlags) != 0 ||
         std::find(buffer, buffer + buffer_capacity, '\0') == buffer + buffer_capacity) {
@@ -713,6 +731,9 @@ int ANOMALY_CALL InputText(
     if ((flags & ANOMALY_UI_TEXT_INPUT_V1_DIGITS) != 0) {
         imgui_flags |= ImGuiInputTextFlags_CallbackCharFilter;
         callback = DigitInputFilter;
+    }
+    if ((flags & ANOMALY_UI_TEXT_INPUT_V1_PASSWORD) != 0) {
+        imgui_flags |= ImGuiInputTextFlags_Password;
     }
     return ImGui::InputText(
         text.c_str(), buffer, buffer_capacity, imgui_flags, callback) ? 1 : 0;
@@ -737,17 +758,40 @@ int ANOMALY_CALL BeginChild(
         text.c_str(), ImVec2(width, height), static_cast<ImGuiChildFlags>(flags)) ? 1 : 0;
 }
 
+int ANOMALY_CALL BeginChildAutoFitY(
+    void*, AnomalyStringViewV1 id, float width, float max_height) {
+    const std::string text = Copy(id);
+    const float available_height = ImGui::GetContentRegionAvail().y;
+    float height_limit = std::isfinite(available_height)
+        ? (std::max)(1.0F, available_height) : 1.0F;
+    if (std::isfinite(max_height) && max_height > 0.0F) {
+        height_limit = (std::min)(height_limit, max_height);
+    }
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(1.0F, 1.0F),
+        ImVec2((std::numeric_limits<float>::max)(), height_limit));
+    return ImGui::BeginChild(
+        text.c_str(), ImVec2(width, 0.0F),
+        ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY) ? 1 : 0;
+}
+
 void ANOMALY_CALL EndChild(void*) { ImGui::EndChild(); }
 
 int ANOMALY_CALL BeginTable(
     void*, AnomalyStringViewV1 id, std::int32_t columns, std::uint32_t flags,
     float outer_width, float outer_height) {
-    constexpr std::uint32_t kKnownFlags = ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT;
-    if (columns <= 0 || (flags & ~kKnownFlags) != 0) return 0;
+    constexpr std::uint32_t kKnownFlags =
+        ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT |
+        ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP;
+    if (columns <= 0 || (flags & ~kKnownFlags) != 0 ||
+        (flags & kKnownFlags) == kKnownFlags) return 0;
     const std::string text = Copy(id);
     ImGuiTableFlags imgui_flags = ImGuiTableFlags_None;
     if ((flags & ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT) != 0) {
         imgui_flags |= ImGuiTableFlags_SizingFixedFit;
+    }
+    if ((flags & ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP) != 0) {
+        imgui_flags |= ImGuiTableFlags_SizingStretchProp;
     }
     return ImGui::BeginTable(
         text.c_str(), columns, imgui_flags,
@@ -1109,7 +1153,8 @@ const AnomalyUiServiceV1 kUiService{
     CloseCurrentPopup, FilterMatch, FrameState,
     SetNextWindowSizeConstraints, GetWindowSize, InputUInt32, InputDouble,
     DeveloperModeEnabled, InputText, ButtonEnabled, SameLine, SetCursorPosX, TextLink,
-    BeginTabBar, BeginTabItem, EndTabItem, EndTabBar};
+    BeginTabBar, BeginTabItem, EndTabItem, EndTabBar,
+    TextWrapped, BeginChildAutoFitY, SliderFloatEnabled};
 
 }  // namespace
 

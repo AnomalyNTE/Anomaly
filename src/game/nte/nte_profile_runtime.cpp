@@ -2,6 +2,7 @@
 
 #include "anomaly/nte_navigation_input_policy.hpp"
 #include "anomaly/nte_ui_buttons.hpp"
+#include "anomaly/nte_vehicle.hpp"
 #include "anomaly/ue5_actor_process_event_hook.hpp"
 #include "anomaly/ue5_damage_function_hook.hpp"
 #include "anomaly/ue5_object_lookup.hpp"
@@ -414,6 +415,45 @@ FeatureValidationResult ValidateUiButtonsLayout(
     return {true, {}};
 }
 
+FeatureValidationResult ValidateNteVehicleLayout(
+    const BuildProfile& profile,
+    const std::string_view feature,
+    const ProfileResolutionSnapshot&,
+    const SymbolMemory&) {
+    if (feature != kNteVehicleFeature) {
+        return {false, "vehicle layout validator used by another feature"};
+    }
+    static constexpr std::array<std::string_view, 40> kRequiredLayout{
+        "world.gameInstance", "gameInstance.localPlayers", "localPlayer.controller",
+        "controller.pawn", "actor.rootComponent", "sceneComponent.location",
+        "object.internalIndex", "object.class", "object.nameOffset", "object.outer",
+        "uclass.classDefaultObject", "ustruct.superStruct", "ustruct.propertyLink",
+        "ufunction.numParms", "ufunction.parmsSize", "ufunction.returnValueOffset",
+        "ffield.name", "ffield.class", "ffieldClass.name", "fproperty.arrayDim",
+        "fproperty.elementSize", "fproperty.offsetInternal", "fproperty.propertyLinkNext",
+        "fobjectProperty.propertyClass", "fstructProperty.struct", "dataTable.rowStruct",
+        "dataTable.rowMap", "dataTable.rowMapData", "dataTable.rowMapNum",
+        "dataTable.rowMapNumFree", "dataTable.rowMapMax", "dataTable.rowMapElementStride",
+        "dataTable.rowMapRowOffset", "dataTable.rowMapFlagsData", "dataTable.rowMapFlagsNum",
+        "dataTable.rowMapFlagsMax", "dataTable.rowMapInlineFlags", "dataTable.maxRows",
+        "vehicle.movementComponent", "vehicle.maxEngineTorque"};
+    for (const std::string_view key : kRequiredLayout) {
+        std::uint64_t value{};
+        if (!ProfileLayoutValue(profile, key, &value) || value > 64U * 1024U * 1024U) {
+            return {false, "vehicle layout is incomplete or exceeds the supported bound"};
+        }
+    }
+    std::uint64_t movement_offset{}, torque_offset{};
+    if (!ProfileLayoutValue(profile, "vehicle.movementComponent", &movement_offset) ||
+        movement_offset != 888U ||
+        !ProfileLayoutValue(profile, "vehicle.maxEngineTorque", &torque_offset) ||
+        torque_offset != 2616U) {
+        return {false, "vehicle offsets do not match the supplied 5.6.1-0+UE5-HT dump"};
+    }
+    return {true, {}};
+}
+
+
 FeatureValidationResult ValidatePickupLayout(
     const BuildProfile& profile,
     const std::string_view feature,
@@ -811,6 +851,7 @@ FeatureLayoutValidatorRegistry NteFeatureLayoutValidators(
     validators.Register(
         std::string(kNavigationInputAbiValidator), ValidateNavigationInputAbi);
     validators.Register(std::string(kPickupLayoutValidator), ValidatePickupLayout);
+    validators.Register(std::string(kNteVehicleLayoutValidator), ValidateNteVehicleLayout);
     validators.Register(
         std::string(kNteUiButtonsLayoutValidator), ValidateUiButtonsLayout);
     validators.Register(

@@ -511,7 +511,7 @@ add_library(anomaly_adapter_services STATIC
 target_include_directories(anomaly_adapter_services PUBLIC include)
 target_compile_definitions(
     anomaly_adapter_services PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_adapter_services PRIVATE /W4 /permissive- /EHsc)
+target_compile_options(anomaly_adapter_services PRIVATE /W4 /permissive- /EHsc /utf-8)
 target_link_libraries(
     anomaly_adapter_services
     PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend anomaly_ue5_ftext)
@@ -1248,6 +1248,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteTeleport/manifest.json
         PACKAGE_NAME NteTeleport
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
+    anomaly_add_plugin(anomaly_builtin_nte_vehicle
+        SOURCES plugins/NteVehicle/plugin.cpp
+        MANIFEST plugins/NteVehicle/manifest.json
+        PACKAGE_NAME NteVehicle
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteVehicle")
     anomaly_add_plugin(anomaly_builtin_night999
         SOURCES plugins/Night999/plugin.cpp
         MANIFEST plugins/Night999/manifest.json
@@ -1589,7 +1594,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
     set(ANOMALY_BUILTIN_PLUGIN_TARGETS
-        anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+        anomaly_builtin_nte_position anomaly_builtin_nte_teleport anomaly_builtin_nte_vehicle
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
         anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
@@ -1612,6 +1617,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     endforeach()
     if(MSVC)
+        target_compile_options(anomaly_builtin_nte_vehicle PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_pink_paw_heist_esp PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_box_auto PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
@@ -1655,6 +1661,7 @@ anomaly_stage_platform_preview_plugin(anomaly_example_nte_inspector NteInspector
 anomaly_stage_platform_preview_plugin(anomaly_example_nte_combat_demo NteCombatDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_position NtePosition)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_teleport NteTeleport)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_vehicle NteVehicle)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_night999 Night999)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_navigation NteNavmeshDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_pickup_demo NtePickupDemo)

@@ -306,6 +306,18 @@ Actor/Entity 快照。点击 **Export JSON** 会通过 Host storage 原子写出
 
 默认目标为 `dumper-7.dll`。把目标 DLL 放进 `Anomaly\plugins\DllLoader\` 后启用该插件即可加载；也可以在插件窗口输入包内相对路径或绝对路径。路径修改在渲染回调中只保存在内存，随后从 **Plugins** 页重载该插件，生命周期会先保存设置、释放旧 DLL，再加载新路径。将路径清空并重载可禁用 DLL 加载。
 
+
+### NTE Vehicle
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.local.nte-vehicle` |
+| **作用** | 提供当前驾驶载具快照、载具目录和召唤、车速倍率、发动机扭矩、车轮摩擦调校，以及已加载非玩家载具的目标速度控制。默认 10 倍车速、0.5～10 倍精细范围、70 km/h 基准和批量目标范围均由插件管理；Core 只校验数值、识别目标对象并执行实际读写。停用插件后会请求恢复当前载具的原始参数。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.nte.vehicle` v6、`anomaly.nte.player` |
+| **需要 Profile** | 是；只有活动 Profile 的原生符号、布局校验、Game 线程和反射绑定通过时，Core 才发布载具服务。 |
+
+Debug 密钥和固定 SHA-256 摘要校验由插件持有，Core 不维护密钥或解锁状态。插件不会记录输入内容，输入框使用密码掩码，验证失败时精细车速调校保持锁定。请勿将密钥写入日志、Issue、PR 或公开截图中。
+
 ### Time Accel
 
 | | |

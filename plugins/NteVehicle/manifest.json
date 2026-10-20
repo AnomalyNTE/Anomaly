@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte-vehicle",
+  "name": "载具控制",
+  "description": "载具控制插件：提供载具召唤、性能调校、车轮摩擦控制及 Debug 诊断。",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "developer",
+  "version": "0.9.9",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.vehicle",
+      "minVersion": 6
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "nte-vehicle",
+    "nte-player-snapshot"
+  ]
+}

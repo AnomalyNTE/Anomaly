@@ -53,12 +53,15 @@ typedef enum AnomalyUiFrameStateV1 {
 
 typedef enum AnomalyUiTextInputFlagsV1 {
     ANOMALY_UI_TEXT_INPUT_V1_NONE = 0,
-    ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1u << 0u
+    ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1u << 0u,
+    // 密钥等敏感字段使用密码掩码显示，不影响输入缓冲区的实际内容。
+    ANOMALY_UI_TEXT_INPUT_V1_PASSWORD = 1u << 1u
 } AnomalyUiTextInputFlagsV1;
 
 typedef enum AnomalyUiTableFlagsV1 {
     ANOMALY_UI_TABLE_V1_NONE = 0,
-    ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT = 1u << 0u
+    ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT = 1u << 0u,
+    ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP = 1u << 1u
 } AnomalyUiTableFlagsV1;
 
 typedef enum AnomalyUiTabBarFlagsV1 {
@@ -168,6 +171,16 @@ typedef struct AnomalyUiServiceV1 {
         uint32_t flags, int enabled);
     void (ANOMALY_CALL *end_tab_item)(void* user);
     void (ANOMALY_CALL *end_tab_bar)(void* user);
+    // Uses the current Anomaly UI font and wraps text against the available content width.
+    void (ANOMALY_CALL *text_wrapped)(void* user, AnomalyStringViewV1 text);
+    // Fits the child height to its content, capped by the remaining parent area (or max_height).
+    // A max_height of zero uses the parent's available content height.
+    int (ANOMALY_CALL *begin_child_auto_fit_y)(
+        void* user, AnomalyStringViewV1 id, float width, float max_height);
+    // Optional append-only API: renders the same slider but disables interaction when enabled == 0.
+    int (ANOMALY_CALL *slider_float_enabled)(
+        void* user, AnomalyStringViewV1 label, float* value,
+        float minimum, float maximum, int enabled);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus

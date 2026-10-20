@@ -14,6 +14,8 @@
 #define ANOMALY_NTE_MAP_LANDMARK_V1_WORLD_MAX_UTF8_BYTES 2048u
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID "anomaly.nte.navigation"
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_VEHICLE_SERVICE_V1_ID "anomaly.nte.vehicle"
+#define ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION 6u
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_ID "anomaly.nte.entities"
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ACTORS_SERVICE_V1_ID "anomaly.nte.actors"
@@ -301,6 +303,110 @@ typedef struct AnomalyNtePickupRequestV1 {
     uint32_t maximum_items;
     uint32_t reserved;
 } AnomalyNtePickupRequestV1;
+
+// Host 管理的 UE5 载具桥接接口：V2 增加实时目录和位置/归属召唤，V3 增加目录刷新和显示标签，
+// V4 增加对非玩家载具实例的批量速率与扭矩控制。插件 ABI 不暴露 UE 对象指针；反射读取与修改
+// 均受边界约束，并且只允许在 Game 线程执行。
+typedef uint32_t AnomalyNteVehicleFlagsV1;
+#define ANOMALY_NTE_VEHICLE_V1_VALID (1u << 0u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_SPEED (1u << 1u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_TOP_SPEED_RATIO (1u << 2u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_WHEEL_FRICTION (1u << 3u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_SUMMON (1u << 4u)
+#define ANOMALY_NTE_VEHICLE_V1_HAS_ENGINE_TORQUE_RATIO (1u << 5u)
+#define ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID (1u << 0u)
+#define ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES 128u
+#define ANOMALY_NTE_VEHICLE_CLASS_NAME_MAX_UTF8_BYTES 128u
+#define ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION (1u << 0u)
+#define ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER (1u << 1u)
+typedef struct AnomalyNteVehicleSnapshotV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    AnomalyGenerationHandleV1 vehicle;
+    double speed_kmh;
+    float top_speed_ratio;
+    uint32_t wheel_friction_enabled;
+    // Optional V2 tail field. Guard reads by snapshot.struct_size.
+    float engine_torque_ratio;
+    // Optional append-only identity tail; entity ID is Host internal object index + 1.
+    uint64_t vehicle_entity_id;
+    char vehicle_class_name[ANOMALY_NTE_VEHICLE_CLASS_NAME_MAX_UTF8_BYTES + 1u];
+} AnomalyNteVehicleSnapshotV1;
+
+typedef struct AnomalyNteVehicleCatalogSnapshotV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint64_t sequence;
+    uint32_t entry_count;
+    uint32_t reserved;
+} AnomalyNteVehicleCatalogSnapshotV1;
+
+typedef struct AnomalyNteVehicleSummonRequestV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    double world_position[3];
+} AnomalyNteVehicleSummonRequestV1;
+
+#define ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT (1u << 0u)
+#define ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED (1u << 1u)
+
+typedef struct AnomalyNteVehicleSpeedTargetV1 {
+    uint32_t struct_size;
+    uint32_t scope;
+    float top_speed_kmh;
+    float minimum_speed_kmh;
+} AnomalyNteVehicleSpeedTargetV1;
+
+typedef struct AnomalyNteVehicleServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *snapshot)(
+        void* user, AnomalyNteVehicleSnapshotV1* snapshot);
+    // Compatibility slot. The ratio is interpreted relative to each vehicle's captured stock
+    // speed and carries no product-specific calibration. New callers should use set_speed_target.
+    AnomalyStatusV1 (ANOMALY_CALL *set_top_speed_ratio)(
+        void* user, float ratio);
+    AnomalyStatusV1 (ANOMALY_CALL *set_wheel_friction_enabled)(
+        void* user, uint32_t enabled);
+    AnomalyStatusV1 (ANOMALY_CALL *reset)(void* user);
+    AnomalyStatusV1 (ANOMALY_CALL *catalog_snapshot)(
+        void* user, AnomalyNteVehicleCatalogSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *vehicle_id_at)(
+        void* user, uint32_t index, char* destination, size_t* inout_size);
+    AnomalyStatusV1 (ANOMALY_CALL *set_summon_vehicle_id)(
+        void* user, AnomalyStringViewV1 vehicle_id);
+    AnomalyStatusV1 (ANOMALY_CALL *summon_vehicle)(
+        void* user, const AnomalyNteVehicleSummonRequestV1* request);
+    // Optional V2 tail field: sets the game-declared external torque ratio on
+    // HTVehicleMovementComponent. Check struct_size before calling this pointer.
+    AnomalyStatusV1 (ANOMALY_CALL *set_engine_torque_ratio)(void* user, float ratio);
+    // V3: explicitly invalidates/rebuilds DT_VehicleData on user request. Game-thread operation.
+    AnomalyStatusV1 (ANOMALY_CALL *refresh_catalog)(void* user);
+    // V3: display label corresponding to vehicle_id_at(index). Labels use FVehicleData.Name (FText)
+    // followed by VehicleID, while RowName remains the canonical internal selection key.
+    AnomalyStatusV1 (ANOMALY_CALL *catalog_label_at)(
+        void* user, uint32_t index, char* destination, size_t* inout_size);
+    // V4：批量控制已加载关卡中的 HTWheeledVehicleBase 实例，排除本地玩家当前驾驶的载具。
+    // 两个回调只能在 Game 线程运行，且会在修改前校验实时 Actor 与运动组件实例。
+    AnomalyStatusV1 (ANOMALY_CALL *set_other_vehicles_top_speed_ratio)(void* user, float ratio);
+    AnomalyStatusV1 (ANOMALY_CALL *set_other_vehicles_engine_torque_ratio)(void* user, float ratio);
+    // V4 tail extension: configure the minimum user-facing speed factor for non-player instances only.
+    // Kept after the original V4 fields so existing service-table offsets remain stable.
+    AnomalyStatusV1 (ANOMALY_CALL *set_other_vehicles_min_speed_ratio)(void* user, float ratio);
+    // V5 compatibility slots. These remain at the original offsets, but fine-speed policy is owned
+    // by the vehicle plugin; current Core implementations expose no authorization or tuning state.
+    AnomalyStatusV1 (ANOMALY_CALL *authorize_fine_speed_tuning)(
+        void* user, AnomalyStringViewV1 key);
+    AnomalyStatusV1 (ANOMALY_CALL *set_fine_speed_tuning_enabled)(
+        void* user, uint32_t enabled);
+    AnomalyStatusV1 (ANOMALY_CALL *revoke_fine_speed_authorization)(void* user);
+    // V6: apply an absolute speed target selected by the plugin. scope is one of
+    // ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT or ..._OTHER_LOADED. Core identifies and
+    // validates matching live vehicles but does not define the user-facing calibration.
+    AnomalyStatusV1 (ANOMALY_CALL *set_speed_target)(
+        void* user, const AnomalyNteVehicleSpeedTargetV1* request);
+} AnomalyNteVehicleServiceV1;
+
+
 
 typedef enum AnomalyNtePickupStateV1 {
     ANOMALY_NTE_PICKUP_V1_IDLE = 0,

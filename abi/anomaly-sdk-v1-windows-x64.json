@@ -119,7 +119,21 @@
     "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_FORCED": 1,
     "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_PRESS_ARMED": 2,
     "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED": 4,
-    "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_TRUNCATED": 8
+    "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_TRUNCATED": 8,
+    "ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION": 6,
+    "ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES": 128,
+    "ANOMALY_NTE_VEHICLE_V1_VALID": 1,
+    "ANOMALY_NTE_VEHICLE_V1_HAS_SPEED": 2,
+    "ANOMALY_NTE_VEHICLE_V1_HAS_TOP_SPEED_RATIO": 4,
+    "ANOMALY_NTE_VEHICLE_V1_HAS_WHEEL_FRICTION": 8,
+    "ANOMALY_NTE_VEHICLE_V1_HAS_SUMMON": 16,
+    "ANOMALY_NTE_VEHICLE_V1_HAS_ENGINE_TORQUE_RATIO": 32,
+    "ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID": 1,
+    "ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION": 1,
+    "ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER": 2,
+    "ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT": 1,
+    "ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED": 2,
+    "ANOMALY_NTE_VEHICLE_CLASS_NAME_MAX_UTF8_BYTES": 128
   },
   "enums": {
     "AnomalyStatusCodeV1": {
@@ -336,7 +350,17 @@
       "alignment": 4,
       "values": {
         "ANOMALY_UI_TEXT_INPUT_V1_NONE": 0,
-        "ANOMALY_UI_TEXT_INPUT_V1_DIGITS": 1
+        "ANOMALY_UI_TEXT_INPUT_V1_DIGITS": 1,
+        "ANOMALY_UI_TEXT_INPUT_V1_PASSWORD": 2
+      }
+    },
+    "AnomalyUiTableFlagsV1": {
+      "size": 4,
+      "alignment": 4,
+      "values": {
+        "ANOMALY_UI_TABLE_V1_NONE": 0,
+        "ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT": 1,
+        "ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP": 2
       }
     },
     "AnomalyUiTabBarFlagsV1": {
@@ -909,7 +933,7 @@
       }
     },
     "AnomalyUiServiceV1": {
-      "size": 336,
+      "size": 360,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -954,7 +978,10 @@
         "begin_tab_bar": 304,
         "begin_tab_item": 312,
         "end_tab_item": 320,
-        "end_tab_bar": 328
+        "end_tab_bar": 328,
+        "text_wrapped": 336,
+        "begin_child_auto_fit_y": 344,
+        "slider_float_enabled": 352
       }
     },
     "AnomalyWindowSpecV1": {
@@ -1999,52 +2026,305 @@
         "register_button": 16,
         "unregister_button": 24
       }
+    },
+    "AnomalyNteVehicleSnapshotV1": {
+      "size": 192,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "flags": 4,
+        "vehicle": 8,
+        "speed_kmh": 24,
+        "top_speed_ratio": 32,
+        "wheel_friction_enabled": 36,
+        "engine_torque_ratio": 40,
+        "vehicle_entity_id": 48,
+        "vehicle_class_name": 56
+      }
+    },
+    "AnomalyNteVehicleCatalogSnapshotV1": {
+      "size": 24,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "flags": 4,
+        "sequence": 8,
+        "entry_count": 16,
+        "reserved": 20
+      }
+    },
+    "AnomalyNteVehicleSummonRequestV1": {
+      "size": 32,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "flags": 4,
+        "world_position": 8
+      }
+    },
+    "AnomalyNteVehicleSpeedTargetV1": {
+      "size": 16,
+      "alignment": 4,
+      "offsets": {
+        "struct_size": 0,
+        "scope": 4,
+        "top_speed_kmh": 8,
+        "minimum_speed_kmh": 12
+      }
+    },
+    "AnomalyNteVehicleServiceV1": {
+      "size": 160,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "snapshot": 16,
+        "set_top_speed_ratio": 24,
+        "set_wheel_friction_enabled": 32,
+        "reset": 40,
+        "catalog_snapshot": 48,
+        "vehicle_id_at": 56,
+        "set_summon_vehicle_id": 64,
+        "summon_vehicle": 72,
+        "set_engine_torque_ratio": 80,
+        "refresh_catalog": 88,
+        "catalog_label_at": 96,
+        "set_other_vehicles_top_speed_ratio": 104,
+        "set_other_vehicles_engine_torque_ratio": 112,
+        "set_other_vehicles_min_speed_ratio": 120,
+        "authorize_fine_speed_tuning": 128,
+        "set_fine_speed_tuning_enabled": 136,
+        "revoke_fine_speed_authorization": 144,
+        "set_speed_target": 152
+      }
     }
   },
   "services": [
-    { "id": "anomaly.core", "version": 1, "table": "AnomalyCoreServiceV1" },
-    { "id": "anomaly.plugin-state", "version": 1, "table": "AnomalyPluginStateServiceV1" },
-    { "id": "anomaly.config", "version": 1, "table": "AnomalyConfigServiceV1" },
-    { "id": "anomaly.storage", "version": 1, "table": "AnomalyStorageServiceV1" },
-    { "id": "anomaly.json", "version": 1, "table": "AnomalyJsonServiceV1" },
-    { "id": "anomaly.runtime-info", "version": 1, "table": "AnomalyRuntimeInfoServiceV1" },
-    { "id": "anomaly.diagnostics", "version": 1, "table": "AnomalyDiagnosticsServiceV1" },
-    { "id": "anomaly.scheduler", "version": 1, "table": "AnomalySchedulerServiceV1" },
-    { "id": "anomaly.ipc", "version": 1, "table": "AnomalyIpcServiceV1" },
-    { "id": "anomaly.websocket", "version": 1, "table": "AnomalyWebSocketServiceV1" },
-    { "id": "anomaly.commands", "version": 1, "table": "AnomalyCommandsServiceV1" },
-    { "id": "anomaly.notifications", "version": 1, "table": "AnomalyNotificationsServiceV1" },
-    { "id": "anomaly.interop.signature", "version": 1, "table": "AnomalySignatureServiceV1" },
-    { "id": "anomaly.interop.hook", "version": 1, "table": "AnomalyHookServiceV1" },
-    { "id": "anomaly.interop.patch", "version": 1, "table": "AnomalyPatchServiceV1" },
-    { "id": "anomaly.ui", "version": 1, "table": "AnomalyUiServiceV1" },
-    { "id": "anomaly.window", "version": 1, "table": "AnomalyWindowServiceV1" },
-    { "id": "anomaly.font", "version": 1, "table": "AnomalyFontServiceV1" },
-    { "id": "anomaly.texture", "version": 1, "table": "AnomalyTextureServiceV1" },
-    { "id": "anomaly.input", "version": 1, "table": "AnomalyInputServiceV1" },
-    { "id": "anomaly.localization", "version": 1, "table": "AnomalyLocalizationServiceV1" },
-    { "id": "anomaly.ue5.build", "version": 1, "table": "AnomalyUe5BuildServiceV1" },
-    { "id": "anomaly.ue5.ahud", "version": 1, "table": "AnomalyUe5AhudServiceV1" },
-    { "id": "anomaly.ue5.framework", "version": 1, "table": "AnomalyUe5FrameworkServiceV1" },
-    { "id": "anomaly.ue5.names", "version": 2, "table": "AnomalyUe5NamesServiceV1" },
-    { "id": "anomaly.ue5.objects", "version": 1, "table": "AnomalyUe5ObjectsServiceV1" },
-    { "id": "anomaly.ue5.world", "version": 1, "table": "AnomalyUe5WorldServiceV1" },
-    { "id": "anomaly.ue5.streaming-source", "version": 1, "table": "AnomalyUe5StreamingSourceServiceV1" },
-    { "id": "anomaly.nte.build", "version": 1, "table": "AnomalyNteBuildServiceV1" },
-    { "id": "anomaly.nte.session", "version": 1, "table": "AnomalyNteSessionServiceV1" },
-    { "id": "anomaly.nte.player", "version": 1, "table": "AnomalyNtePlayerServiceV1" },
-    { "id": "anomaly.nte.player-teleport", "version": 1, "table": "AnomalyNtePlayerTeleportServiceV1" },
-    { "id": "anomaly.nte.player-hold", "version": 1, "table": "AnomalyNtePlayerHoldServiceV1" },
-    { "id": "anomaly.nte.map-landmarks", "version": 1, "table": "AnomalyNteMapLandmarksServiceV1" },
-    { "id": "anomaly.nte.navigation", "version": 1, "table": "AnomalyNteNavigationServiceV1" },
-    { "id": "anomaly.nte.pickup", "version": 1, "table": "AnomalyNtePickupServiceV1" },
-    { "id": "anomaly.nte.ui-buttons", "version": 1, "table": "AnomalyNteUiButtonsServiceV1" },
-    { "id": "anomaly.nte.entities", "version": 1, "table": "AnomalyNteEntitiesServiceV1" },
-    { "id": "anomaly.nte.actors", "version": 1, "table": "AnomalyNteActorsServiceV1" },
-    { "id": "anomaly.nte.combat", "version": 1, "table": "AnomalyNteCombatServiceV1" },
-    { "id": "anomaly.nte.skills", "version": 1, "table": "AnomalyNteSkillsServiceV1" },
-    { "id": "anomaly.nte.skill-invocation", "version": 1, "table": "AnomalyNteSkillInvocationServiceV1" },
-    { "id": "anomaly.nte.metrics", "version": 1, "table": "AnomalyNteMetricsServiceV1" },
-    { "id": "anomaly.nte.esc-menu-button", "version": 1, "table": "AnomalyNteEscMenuButtonServiceV1" }
+    {
+      "id": "anomaly.core",
+      "version": 1,
+      "table": "AnomalyCoreServiceV1"
+    },
+    {
+      "id": "anomaly.plugin-state",
+      "version": 1,
+      "table": "AnomalyPluginStateServiceV1"
+    },
+    {
+      "id": "anomaly.config",
+      "version": 1,
+      "table": "AnomalyConfigServiceV1"
+    },
+    {
+      "id": "anomaly.storage",
+      "version": 1,
+      "table": "AnomalyStorageServiceV1"
+    },
+    {
+      "id": "anomaly.json",
+      "version": 1,
+      "table": "AnomalyJsonServiceV1"
+    },
+    {
+      "id": "anomaly.runtime-info",
+      "version": 1,
+      "table": "AnomalyRuntimeInfoServiceV1"
+    },
+    {
+      "id": "anomaly.diagnostics",
+      "version": 1,
+      "table": "AnomalyDiagnosticsServiceV1"
+    },
+    {
+      "id": "anomaly.scheduler",
+      "version": 1,
+      "table": "AnomalySchedulerServiceV1"
+    },
+    {
+      "id": "anomaly.ipc",
+      "version": 1,
+      "table": "AnomalyIpcServiceV1"
+    },
+    {
+      "id": "anomaly.websocket",
+      "version": 1,
+      "table": "AnomalyWebSocketServiceV1"
+    },
+    {
+      "id": "anomaly.commands",
+      "version": 1,
+      "table": "AnomalyCommandsServiceV1"
+    },
+    {
+      "id": "anomaly.notifications",
+      "version": 1,
+      "table": "AnomalyNotificationsServiceV1"
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "version": 1,
+      "table": "AnomalySignatureServiceV1"
+    },
+    {
+      "id": "anomaly.interop.hook",
+      "version": 1,
+      "table": "AnomalyHookServiceV1"
+    },
+    {
+      "id": "anomaly.interop.patch",
+      "version": 1,
+      "table": "AnomalyPatchServiceV1"
+    },
+    {
+      "id": "anomaly.ui",
+      "version": 1,
+      "table": "AnomalyUiServiceV1"
+    },
+    {
+      "id": "anomaly.window",
+      "version": 1,
+      "table": "AnomalyWindowServiceV1"
+    },
+    {
+      "id": "anomaly.font",
+      "version": 1,
+      "table": "AnomalyFontServiceV1"
+    },
+    {
+      "id": "anomaly.texture",
+      "version": 1,
+      "table": "AnomalyTextureServiceV1"
+    },
+    {
+      "id": "anomaly.input",
+      "version": 1,
+      "table": "AnomalyInputServiceV1"
+    },
+    {
+      "id": "anomaly.localization",
+      "version": 1,
+      "table": "AnomalyLocalizationServiceV1"
+    },
+    {
+      "id": "anomaly.ue5.build",
+      "version": 1,
+      "table": "AnomalyUe5BuildServiceV1"
+    },
+    {
+      "id": "anomaly.ue5.ahud",
+      "version": 1,
+      "table": "AnomalyUe5AhudServiceV1"
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "version": 1,
+      "table": "AnomalyUe5FrameworkServiceV1"
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "version": 2,
+      "table": "AnomalyUe5NamesServiceV1"
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "version": 1,
+      "table": "AnomalyUe5ObjectsServiceV1"
+    },
+    {
+      "id": "anomaly.ue5.world",
+      "version": 1,
+      "table": "AnomalyUe5WorldServiceV1"
+    },
+    {
+      "id": "anomaly.ue5.streaming-source",
+      "version": 1,
+      "table": "AnomalyUe5StreamingSourceServiceV1"
+    },
+    {
+      "id": "anomaly.nte.build",
+      "version": 1,
+      "table": "AnomalyNteBuildServiceV1"
+    },
+    {
+      "id": "anomaly.nte.session",
+      "version": 1,
+      "table": "AnomalyNteSessionServiceV1"
+    },
+    {
+      "id": "anomaly.nte.player",
+      "version": 1,
+      "table": "AnomalyNtePlayerServiceV1"
+    },
+    {
+      "id": "anomaly.nte.player-teleport",
+      "version": 1,
+      "table": "AnomalyNtePlayerTeleportServiceV1"
+    },
+    {
+      "id": "anomaly.nte.player-hold",
+      "version": 1,
+      "table": "AnomalyNtePlayerHoldServiceV1"
+    },
+    {
+      "id": "anomaly.nte.map-landmarks",
+      "version": 1,
+      "table": "AnomalyNteMapLandmarksServiceV1"
+    },
+    {
+      "id": "anomaly.nte.navigation",
+      "version": 1,
+      "table": "AnomalyNteNavigationServiceV1"
+    },
+    {
+      "id": "anomaly.nte.vehicle",
+      "version": 6,
+      "table": "AnomalyNteVehicleServiceV1"
+    },
+    {
+      "id": "anomaly.nte.pickup",
+      "version": 1,
+      "table": "AnomalyNtePickupServiceV1"
+    },
+    {
+      "id": "anomaly.nte.ui-buttons",
+      "version": 1,
+      "table": "AnomalyNteUiButtonsServiceV1"
+    },
+    {
+      "id": "anomaly.nte.entities",
+      "version": 1,
+      "table": "AnomalyNteEntitiesServiceV1"
+    },
+    {
+      "id": "anomaly.nte.actors",
+      "version": 1,
+      "table": "AnomalyNteActorsServiceV1"
+    },
+    {
+      "id": "anomaly.nte.combat",
+      "version": 1,
+      "table": "AnomalyNteCombatServiceV1"
+    },
+    {
+      "id": "anomaly.nte.skills",
+      "version": 1,
+      "table": "AnomalyNteSkillsServiceV1"
+    },
+    {
+      "id": "anomaly.nte.skill-invocation",
+      "version": 1,
+      "table": "AnomalyNteSkillInvocationServiceV1"
+    },
+    {
+      "id": "anomaly.nte.metrics",
+      "version": 1,
+      "table": "AnomalyNteMetricsServiceV1"
+    },
+    {
+      "id": "anomaly.nte.esc-menu-button",
+      "version": 1,
+      "table": "AnomalyNteEscMenuButtonServiceV1"
+    }
   ]
 }
