@@ -537,6 +537,33 @@ void ANOMALY_CALL EndWindow(void*) {
     ImGui::End();
 }
 
+void ANOMALY_CALL TextColored(void*, AnomalyStringViewV1 value, std::uint32_t color_rgba) {
+    const std::string text = Copy(value);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color_rgba));
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    ImGui::PopStyleColor();
+}
+
+void ANOMALY_CALL TextLargeColored(
+    void*, AnomalyStringViewV1 value, float size_pixels, std::uint32_t color_rgba) {
+    if (!std::isfinite(size_pixels) || size_pixels <= 0.0F) return;
+    const std::string text = Copy(value);
+    if (text.empty()) return;
+
+    ImFont* const font = ImGui::GetFont();
+    if (font == nullptr) return;
+
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const float base_size = font->FontSize;
+    const float scale = size_pixels / base_size;
+    const ImVec2 measured = ImGui::CalcTextSize(text.c_str(), nullptr, false, 0.0F);
+    ImDrawList* const draw_list = ImGui::GetWindowDrawList();
+    draw_list->AddText(
+        font, size_pixels, cursor, color_rgba,
+        text.c_str(), text.c_str() + text.size());
+    ImGui::Dummy(ImVec2(measured.x * scale, size_pixels));
+}
+
 void ANOMALY_CALL Text(void*, AnomalyStringViewV1 value) {
     const std::string text = Copy(value);
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
@@ -1109,7 +1136,7 @@ const AnomalyUiServiceV1 kUiService{
     CloseCurrentPopup, FilterMatch, FrameState,
     SetNextWindowSizeConstraints, GetWindowSize, InputUInt32, InputDouble,
     DeveloperModeEnabled, InputText, ButtonEnabled, SameLine, SetCursorPosX, TextLink,
-    BeginTabBar, BeginTabItem, EndTabItem, EndTabBar};
+    BeginTabBar, BeginTabItem, EndTabItem, EndTabBar, TextColored, TextLargeColored};
 
 }  // namespace
 
