@@ -1275,6 +1275,15 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/PinkPawHeistESP/manifest.json
         PACKAGE_NAME PinkPawHeistESP
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/PinkPawHeistESP")
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_pink_paw_bank_loop_fixture
+            plugins/PinkPawHeistESP/tests/bank_loop_test.cpp
+            plugins/PinkPawHeistESP/tests/bank_intro_runtime_test.cpp
+            plugins/PinkPawHeistESP/rob_bank_runtime.cpp)
+        target_link_libraries(anomaly_pink_paw_bank_loop_fixture PRIVATE anomaly_sdk)
+        target_include_directories(anomaly_pink_paw_bank_loop_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_options(anomaly_pink_paw_bank_loop_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
 
     anomaly_add_plugin(anomaly_builtin_fake_uid
         SOURCES plugins/FakeUID/plugin.cpp
