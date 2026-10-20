@@ -1416,6 +1416,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         PACKAGE_NAME CloneEnter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CloneEnter")
 
+    anomaly_add_plugin(anomaly_builtin_damage_dashboard
+        SOURCES plugins/DamageDashboard/plugin.cpp
+        MANIFEST plugins/DamageDashboard/manifest.json
+        PACKAGE_NAME DamageDashboard
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/DamageDashboard")
+
     anomaly_add_plugin(anomaly_builtin_nte_free_fly
         SOURCES plugins/NteFreeFly/plugin.cpp
         MANIFEST plugins/NteFreeFly/manifest.json
