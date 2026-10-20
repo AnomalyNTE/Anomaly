@@ -70,6 +70,22 @@
   （默认 10 秒，可改；伤害流读不到时这条是主判据）；
 - 普攻或技能调用失败（打不动）。
 
+## NTE 伤害仪表盘
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.local.damage-dashboard` |
+| **作用** | 实时显示玩家角色造成的战斗伤害、命中与技能分布。 |
+| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.diagnostics`、`anomaly.notifications`、`anomaly.nte.combat`、`anomaly.nte.session`、`anomaly.json`、`anomaly.config`（均为 V1，可选） |
+| **需要 Profile** | 是（战斗快照与伤害事件依赖已验证的 NTE Combat 服务） |
+
+仪表盘显示本场总伤害、命中数、最高单次伤害和暴击率，并提供生命 / 护盾、队伍伤害分布、
+按角色分组的技能伤害、承受伤害来源、限时与固定增益以及最近命中记录。同名技能会合并，
+四名角色切换时累计数据不会中断。
+
+插件只统计当前玩家操控角色造成的伤害。窗口宽度可拖拽，高度自动贴合内容；战斗统计数据
+来自只读 `anomaly.nte.combat` 服务，不修改角色属性或游戏状态。
+
 ## Quick Ultimate
 
 | | |
