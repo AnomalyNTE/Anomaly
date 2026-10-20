@@ -11,8 +11,8 @@ include(CMakeParseArguments)
 # directory, and the same package directory is what gets installed.
 #
 #   - the package installs into `Anomaly/plugins/<PACKAGE_NAME>` of the GameRuntime
-#     component, and the `locales` directory next to the manifest is mirrored into the
-#     package directory and installed with it;
+#     component, and the `locales` and `assets` directories next to the manifest are
+#     mirrored into the package directory and installed with it;
 #   - TEST_PLUGIN marks a developer test package: it is built and installed only when
 #     ANOMALY_BUILD_TEST_PLUGINS is ON, and it then installs into the TestPlugins component
 #     instead of GameRuntime;
@@ -81,6 +81,15 @@ function(anomaly_add_plugin target)
                     "$<TARGET_FILE_DIR:${target}>/locales"
             VERBATIM)
     endif()
+    # `assets` next to the manifest holds files the plugin loads at runtime
+    # (images and the like); mirrored and installed exactly like `locales`.
+    if(EXISTS "${anomaly_package_source_directory}/assets")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${anomaly_package_source_directory}/assets"
+                    "$<TARGET_FILE_DIR:${target}>/assets"
+            VERBATIM)
+    endif()
     set_property(TARGET ${target} PROPERTY ANOMALY_PACKAGE_DIRECTORY "${ANOMALY_OUTPUT_DIRECTORY}")
     if(ANOMALY_NO_RELEASE)
         return()
@@ -100,6 +109,11 @@ function(anomaly_add_plugin target)
     if(EXISTS "${anomaly_package_source_directory}/locales")
         install(DIRECTORY "${anomaly_package_source_directory}/locales/"
             DESTINATION "${anomaly_package_directory}/locales"
+            COMPONENT ${anomaly_package_component})
+    endif()
+    if(EXISTS "${anomaly_package_source_directory}/assets")
+        install(DIRECTORY "${anomaly_package_source_directory}/assets/"
+            DESTINATION "${anomaly_package_directory}/assets"
             COMPONENT ${anomaly_package_component})
     endif()
 endfunction()

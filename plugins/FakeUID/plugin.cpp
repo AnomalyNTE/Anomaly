@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -30,6 +32,9 @@ constexpr std::string_view kDefaultDisplayUid = "000000000000";
 // widget accepting a null/empty text payload.
 constexpr std::wstring_view kHiddenPrefixText = L"\u200B";
 constexpr std::size_t kMaximumUidCharacters = 256;
+// Both inputs allow 256 Unicode characters; the composed line can contain
+// twice that many surrogate pairs.
+constexpr std::size_t kMaximumRenderedUidUnits = kMaximumUidCharacters * 4;
 constexpr std::size_t kMaximumUidUtf8Bytes = kMaximumUidCharacters * 4;
 constexpr std::string_view kSettingsSchemaId = "fake-uid-settings-v2";
 constexpr std::uint32_t kSettingsSchemaVersion = 1;
@@ -56,6 +61,7 @@ constexpr std::string_view kTargetWidgetTemplatePath =
 constexpr std::string_view kTargetPrefixWidgetTemplatePath =
     "/Game/UI/Blueprints/Common/BPUI_RoleID.BPUI_RoleID_C:WidgetTree.TextBlock_90";
 constexpr std::string_view kTextBlockSetTextPath = "/Script/UMG.TextBlock:SetText";
+constexpr std::string_view kTextBlockSetColorPath = "/Script/UMG.TextBlock:SetColorAndOpacity";
 constexpr std::string_view kStringToTextPath =
     "/Script/Engine.KismetTextLibrary:Conv_StringToText";
 constexpr std::string_view kKismetTextLibraryCdoPath =
@@ -71,6 +77,8 @@ constexpr std::string_view kSettingsSchema = R"json(
     "enabled":{"type":"boolean"},
     "hidePrefix":{"type":"boolean"},
     "displayUid":{"type":"string","minLength":1,"maxLength":1024},
+    "prefixText":{"type":"string","maxLength":1024},
+    "hideLatency":{"type":"boolean"},
     "detectedUid":{"type":"string","pattern":"^[0-9]{1,20}$"},
     "prefixNameId":{"type":"integer","minimum":1,"maximum":4294967295}
   }
@@ -110,8 +118,44 @@ using ProcessEventFn = void(ANOMALY_CALL*)(void* object, void* function, void* p
 struct SettingsSnapshot final {
     bool enabled{true};
     bool hide_prefix{true};
+    bool hide_latency{};
     std::string display_uid;
     std::wstring display_wide;
+    std::string prefix_text;
+    std::wstring prefix_wide;
+};
+
+struct SlateColor final {
+    float rgba[4]{};
+    std::uint8_t rule{};
+    std::uint8_t padding[3]{};
+};
+static_assert(sizeof(SlateColor) == 20);
+
+struct ColorSettings final {
+    std::uint64_t revision{};
+    bool enabled{};
+    bool rainbow{};
+    SlateColor value{};
+};
+
+struct TypingFrame final {
+    std::wstring prefix;
+    std::wstring value;
+};
+
+struct TypingAnimation final {
+    bool active{};
+    std::uint64_t settings_revision{};
+    std::uint64_t frame_revision{};
+    std::size_t step{};
+    std::chrono::steady_clock::time_point next_frame{};
+    std::vector<std::wstring> prefix_frames;
+    std::vector<std::wstring> value_frames;
+    std::vector<UnrealText> prefix_cache;
+    std::vector<UnrealText> value_cache;
+    std::vector<std::uint8_t> prefix_ready;
+    std::vector<std::uint8_t> value_ready;
 };
 
 struct TrackedWidget final {
@@ -119,6 +163,15 @@ struct TrackedWidget final {
     bool prefix{};
     std::uint64_t applied_revision{};
     std::uint64_t retry_tick{};
+    std::uint64_t applied_color_revision{};
+    bool has_original_color{};
+    std::uint64_t typing_frame_revision{};
+};
+
+struct LatencyWidgetPair final {
+    std::uintptr_t outer{};
+    AnomalyGenerationHandleV1 text{};
+    AnomalyGenerationHandleV1 image{};
 };
 
 enum class ApplyResult : std::uint8_t {
@@ -142,6 +195,15 @@ struct Context final {
     AnomalyGenerationHandleV1 window_handle{};
     std::atomic<std::shared_ptr<const SettingsSnapshot>> settings;
     std::array<char, kMaximumUidUtf8Bytes + 1> editor{};
+    std::array<char, kMaximumUidUtf8Bytes + 1> prefix_editor{};
+    float color_editor[4]{1.0F, 1.0F, 1.0F, 1.0F};
+    std::atomic<std::shared_ptr<const ColorSettings>> color_settings;
+    std::atomic<float> rainbow_period{3.0F};
+    std::atomic_bool typing_enabled{false};
+    std::atomic<float> typing_interval{0.12F};
+    std::atomic<std::shared_ptr<const TypingFrame>> typing_frame;
+    TypingAnimation typing;
+    std::uint64_t typing_frame_counter{};
     std::string ui_status;
     std::atomic<std::uint64_t> detected_uid{};
     std::atomic<std::uint32_t> save_state{};
@@ -151,13 +213,27 @@ struct Context final {
     // cannot mutate UMG behind the user's back.
     std::atomic_bool apply_requested{false};
     std::atomic_bool rescan_requested{false};
-    std::wstring original_prefix{L"UID\uFF1A"};
+    std::wstring original_prefix{L"UID:"};
     std::uint64_t update_tick{};
     std::uint64_t next_runtime_binding_tick{};
     std::uint64_t object_generation{};
     std::uint32_t object_cursor{};
     std::uint32_t scan_start{};
     std::uint32_t scan_count{};
+    std::uint32_t latency_probe_cursor{};
+    std::uint64_t latency_probe_generation{};
+    std::uint64_t next_latency_probe_tick{};
+    std::array<LatencyWidgetPair, kMaximumTrackedWidgets> latency_candidates{};
+    std::size_t latency_candidate_count{};
+    std::uint32_t latency_text_name_id{};
+    std::uint32_t latency_image_name_id{};
+    bool latency_probe_found{};
+    AnomalyGenerationHandleV1 latency_text_handle{};
+    AnomalyGenerationHandleV1 latency_image_handle{};
+    std::uint8_t latency_text_original_visibility{};
+    std::uint8_t latency_image_original_visibility{};
+    bool latency_original_captured{};
+    bool latency_action_confirmed{};
     std::uint32_t scan_batch_size{kObjectBatchSize};
     std::uint32_t target_name_id{};
     std::uint32_t target_prefix_name_id{};
@@ -183,7 +259,7 @@ struct Context final {
         std::uintptr_t free_string{};
         std::uintptr_t text_to_string{};
         std::uintptr_t gobjects_accessor{};
-    std::uintptr_t process_event{};
+        std::uintptr_t process_event{};
     } runtime_bindings;
     std::string runtime_missing_bindings;
     FreeStringFn free_string{};
@@ -192,6 +268,9 @@ struct Context final {
     SetTextFn set_text{};
     ProcessEventFn process_event{};
     std::uintptr_t text_block_set_text_function{};
+    std::uintptr_t text_block_set_color_function{};
+    std::uint64_t color_function_generation{};
+    std::uint64_t next_color_binding_tick{};
     std::uintptr_t string_to_text_function{};
     std::uintptr_t kismet_text_library_cdo{};
     std::uint64_t text_write_generation{};
@@ -245,9 +324,13 @@ std::atomic<std::uintptr_t> g_set_text_original{0};
 std::atomic<const AnomalyHookServiceV1*> g_set_text_hook_api{nullptr};
 std::atomic<std::uint64_t> g_set_text_hook_id{0};
 std::atomic<std::uint64_t> g_set_text_hook_generation{0};
+thread_local bool g_plugin_text_write = false;
 
 std::uintptr_t ReadObjectOuter(const std::uintptr_t object) noexcept;
 std::uintptr_t ReadWidgetPanel(const std::uintptr_t widget) noexcept;
+bool ResolveObjectAddress(const Context& context,
+                          AnomalyGenerationHandleV1 handle,
+                          std::uintptr_t& object) noexcept;
 bool IsRoleIdPrefixInstance(
     const Context& context, const std::uintptr_t widget) noexcept;
 bool ResolveName(
@@ -391,14 +474,24 @@ std::uint64_t ParseUid(std::string_view value) noexcept;
 
 std::shared_ptr<const SettingsSnapshot> MakeSettings(
     const bool enabled, const bool hide_prefix,
-    const std::string_view display_uid) {
+    const std::string_view display_uid,
+    const std::string_view prefix_text = {},
+    const bool hide_latency = false) {
     std::wstring display_wide;
     if (!DecodeDisplayUid(display_uid, display_wide)) return {};
+    std::wstring prefix_wide;
+    if (!prefix_text.empty() &&
+        (prefix_text.size() > kMaximumUidUtf8Bytes ||
+         !DecodeDisplayUid(prefix_text, prefix_wide)))
+        return {};
     auto settings = std::make_shared<SettingsSnapshot>();
     settings->enabled = enabled;
     settings->hide_prefix = hide_prefix;
+    settings->hide_latency = hide_latency;
     settings->display_uid.assign(display_uid);
     settings->display_wide = std::move(display_wide);
+    settings->prefix_text.assign(prefix_text);
+    settings->prefix_wide = std::move(prefix_wide);
     return settings;
 }
 
@@ -418,6 +511,11 @@ void ResetEditor(Context& context) noexcept {
     const std::size_t count =
         (std::min)(settings->display_uid.size(), context.editor.size() - 1);
     std::copy_n(settings->display_uid.data(), count, context.editor.data());
+    context.prefix_editor.fill('\0');
+    const std::size_t prefix_count =
+        (std::min)(settings->prefix_text.size(), context.prefix_editor.size() - 1);
+    std::copy_n(settings->prefix_text.data(), prefix_count,
+                context.prefix_editor.data());
 }
 
 bool PersistSettings(
@@ -427,7 +525,9 @@ bool PersistSettings(
         nlohmann::json json{
             {"enabled", settings.enabled},
             {"hidePrefix", settings.hide_prefix},
+            {"hideLatency", settings.hide_latency},
             {"displayUid", settings.display_uid}};
+        if (!settings.prefix_text.empty()) json["prefixText"] = settings.prefix_text;
         const std::uint64_t detected =
             context.detected_uid.load(std::memory_order_acquire);
         if (detected != 0) json["detectedUid"] = std::to_string(detected);
@@ -484,9 +584,12 @@ void RecordDetectedUid(Context& context, const std::uint64_t detected) noexcept 
 bool ApplySettings(
     Context& context, const bool enabled, const bool hide_prefix,
     const std::string_view display_uid,
-    std::string& error) noexcept {
+    std::string& error,
+    const std::string_view prefix_text = {},
+    const bool hide_latency = false) noexcept {
     try {
-        const auto settings = MakeSettings(enabled, hide_prefix, display_uid);
+        const auto settings = MakeSettings(
+            enabled, hide_prefix, display_uid, prefix_text, hide_latency);
         if (!settings) {
             error = "UID must contain 1-256 single-line Unicode characters";
             return false;
@@ -547,10 +650,12 @@ bool LoadSettings(Context& context) noexcept {
             return false;
         }
         const auto json = nlohmann::json::parse(document.begin(), document.begin() + copied);
-        if (!json.is_object() || json.size() < 2 || json.size() > 5 ||
+        if (!json.is_object() || json.size() < 2 || json.size() > 7 ||
             !json.contains("enabled") || !json.at("enabled").is_boolean() ||
             (json.contains("hidePrefix") && !json.at("hidePrefix").is_boolean()) ||
             !json.contains("displayUid") || !json.at("displayUid").is_string() ||
+            (json.contains("prefixText") && !json.at("prefixText").is_string()) ||
+            (json.contains("hideLatency") && !json.at("hideLatency").is_boolean()) ||
             (json.contains("detectedUid") && !json.at("detectedUid").is_string()) ||
             (json.contains("prefixNameId") && !json.at("prefixNameId").is_number_unsigned())) {
             return false;
@@ -558,7 +663,9 @@ bool LoadSettings(Context& context) noexcept {
         const auto settings = MakeSettings(
             json.at("enabled").get<bool>(),
             json.value("hidePrefix", true),
-            json.at("displayUid").get_ref<const std::string&>());
+            json.at("displayUid").get_ref<const std::string&>(),
+            json.value("prefixText", std::string{}),
+            json.value("hideLatency", false));
         if (!settings) return false;
         if (json.contains("detectedUid")) {
             const std::uint64_t detected = ParseUid(
@@ -1240,7 +1347,7 @@ void ScanForWidgets(Context& context) {
             // structural fallback is what restores a prefix that an earlier
             // generation already cleared to an empty string.
             if (IsRoleIdPrefixInstance(context, candidate) &&
-                text.empty() && snapshot.name_id != context.target_name_id) {
+                snapshot.name_id != context.target_name_id) {
                 if (Track(snapshot, true)) {
                     context.object_cursor = context.scan_start;
                     break;
@@ -1429,6 +1536,105 @@ bool ReadWidgetText(
     return ReadUnrealText(context, value, text);
 }
 
+std::uint32_t ReadObjectNameIdRaw(const std::uintptr_t object) noexcept {
+    if (object == 0) return 0;
+    __try {
+        return *reinterpret_cast<const std::uint32_t*>(
+            object + fake_uid_profile::kObjectNameOffset);
+    } __except (1) { return 0; }
+}
+
+void ProbeLatencyWidget(Context& context) noexcept {
+    if (!ObjectsReady(context.objects) || !NamesReady(context.names) ||
+        context.text_to_string == nullptr)
+        return;
+    const std::uint64_t generation = context.objects->generation(context.objects->user);
+    const std::uint32_t count = context.objects->count(context.objects->user);
+    if (generation == 0 || count == 0) return;
+    if (context.latency_probe_generation != generation) {
+        context.latency_probe_generation = generation;
+        context.latency_probe_cursor = count;
+        context.latency_probe_found = false;
+        context.latency_text_handle = {};
+        context.latency_image_handle = {};
+        context.latency_original_captured = false;
+        context.latency_text_name_id = 0;
+        context.latency_image_name_id = 0;
+        context.latency_candidate_count = 0;
+        context.next_latency_probe_tick = 0;
+    }
+    if (context.latency_probe_found) return;
+    if (context.latency_probe_cursor == 0) {
+        if (context.update_tick < context.next_latency_probe_tick) return;
+        context.latency_probe_cursor = count;
+        context.latency_candidate_count = 0;
+    }
+    // Resolve existing snapshot name IDs instead of reverse-searching the
+    // FName pool. TextPing can be in an older block than find_utf8 searches;
+    // retrying that lookup every tick stalls the Game thread indefinitely.
+    context.latency_probe_cursor = (std::min)(context.latency_probe_cursor, count);
+    const std::uint32_t end = context.latency_probe_cursor -
+        (std::min)(context.latency_probe_cursor, kObjectBatchSize);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+    while (context.latency_probe_cursor > end) {
+        if (std::chrono::steady_clock::now() >= deadline) break;
+        const std::uint32_t index = --context.latency_probe_cursor;
+        AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+        if (context.objects->snapshot_at(context.objects->user, index, &snapshot).code !=
+            ANOMALY_STATUS_V1_OK)
+            continue;
+        if (snapshot.name_id == 0) continue;
+        if ((context.latency_text_name_id == 0 || context.latency_image_name_id == 0) &&
+            snapshot.name_id != context.latency_text_name_id &&
+            snapshot.name_id != context.latency_image_name_id) {
+            std::string name;
+            if (!ResolveName(*context.names, snapshot.name_id, name)) continue;
+            if (name == "TextPing") context.latency_text_name_id = snapshot.name_id;
+            else if (name == "ImagePing") context.latency_image_name_id = snapshot.name_id;
+        }
+        const bool text = snapshot.name_id == context.latency_text_name_id;
+        if (!text && snapshot.name_id != context.latency_image_name_id) continue;
+        std::uintptr_t widget{};
+        if (text) {
+            if (!ResolveTextBlockAddress(context, snapshot.handle, widget)) continue;
+        } else {
+            if (!ResolveObjectAddress(context, snapshot.handle, widget)) continue;
+        }
+        const auto outer = ReadObjectOuter(widget);
+        if (outer == 0) continue;
+        std::size_t candidate_index{};
+        while (candidate_index < context.latency_candidate_count &&
+               context.latency_candidates[candidate_index].outer != outer)
+            ++candidate_index;
+        if (candidate_index == context.latency_candidate_count) {
+            if (candidate_index == context.latency_candidates.size()) continue;
+            context.latency_candidates[candidate_index] = {outer};
+            ++context.latency_candidate_count;
+        }
+        auto& candidate = context.latency_candidates[candidate_index];
+        if (text) candidate.text = snapshot.handle;
+        else candidate.image = snapshot.handle;
+        if (candidate.text.id == 0 || candidate.image.id == 0) continue;
+        std::uintptr_t text_widget{}, image_widget{};
+        std::wstring value;
+        if (ResolveTextBlockAddress(context, candidate.text,
+                                    text_widget) &&
+            ResolveObjectAddress(context, candidate.image,
+                                 image_widget) &&
+            ReadObjectOuter(text_widget) == outer &&
+            ReadObjectOuter(image_widget) == outer &&
+            ReadWidgetText(context, text_widget, value) && value.size() <= 16 &&
+            value.find(L"ms") != std::wstring::npos) {
+            context.latency_text_handle = candidate.text;
+            context.latency_image_handle = candidate.image;
+            context.latency_probe_found = true;
+            break;
+        }
+    }
+    if (context.latency_probe_cursor == 0)
+        context.next_latency_probe_tick = context.update_tick + kObjectRescanInterval;
+}
+
 bool IsReadableUnrealString(
     const wchar_t* const data, const std::int32_t count) noexcept {
     if (data == nullptr || count <= 0) return false;
@@ -1467,7 +1673,7 @@ void ReleaseReadbackString(
     value = {};
     if (allocation == nullptr ||
         count <= 0 ||
-        count > static_cast<std::int32_t>(kMaximumUidCharacters + 1U) ||
+        count > static_cast<std::int32_t>(kMaximumRenderedUidUnits + 1U) ||
         !IsReadableUnrealString(allocation, count) ||
         context.free_string == nullptr) {
         return;
@@ -1489,7 +1695,7 @@ bool ReadUnrealText(
     __try {
         if (context.text_to_string(&current, value) == nullptr ||
             current.count < 0 || current.capacity < current.count ||
-            current.count > static_cast<std::int32_t>(kMaximumUidCharacters + 1U) ||
+            current.count > static_cast<std::int32_t>(kMaximumRenderedUidUnits + 1U) ||
             (current.count > 0 && current.data == nullptr)) {
             ReleaseReadbackString(context, current);
             return false;
@@ -1519,7 +1725,7 @@ bool BuildUnrealText(
     // Use a valid zero-width FText for the hidden prefix. Some cooked
     // UTextBlock paths keep the old label when passed UE's canonical empty
     // text, which is why the hidden state must not depend on a null payload.
-    if (value.size() > kMaximumUidCharacters ||
+    if (value.size() > kMaximumRenderedUidUnits ||
         context.process_event == nullptr ||
         context.kismet_text_library_cdo == 0 ||
         context.string_to_text_function == 0 ||
@@ -1741,6 +1947,19 @@ void CallSetTextOriginal(
     }
 }
 
+bool UsesSingleUidWidget(const Context& context, const SettingsSnapshot& settings) noexcept {
+    return settings.enabled && (!settings.prefix_wide.empty() ||
+        context.typing_enabled.load(std::memory_order_acquire));
+}
+
+std::wstring RenderedUidValue(const Context& context, const SettingsSnapshot& settings) {
+    std::wstring value;
+    if (UsesSingleUidWidget(context, settings) && !settings.hide_prefix)
+        value = settings.prefix_wide.empty() ? context.original_prefix : settings.prefix_wide;
+    value += settings.display_wide;
+    return value;
+}
+
 bool BeginSetTextCallback(
     const AnomalyHookServiceV1* const hook_api,
     const AnomalyGenerationHandleV1 hook,
@@ -1801,6 +2020,13 @@ void ANOMALY_CALL SetTextDetour(
         using Function = SetTextFn;
         const auto original = reinterpret_cast<Function>(original_address);
         thread_local bool forwarding = false;
+        if (g_plugin_text_write) {
+            CallSetTextOriginal(original, widget, text);
+            EndSetTextCallback(hook_api, callback_lease);
+            return;
+        }
+        const auto typing_frame =
+            context->typing_frame.load(std::memory_order_acquire);
         const auto override =
             context->text_override.load(std::memory_order_acquire);
         const auto settings = context->settings.load(std::memory_order_acquire);
@@ -1808,8 +2034,12 @@ void ANOMALY_CALL SetTextDetour(
         bool is_value_widget = !forwarding && settings != nullptr &&
             settings->enabled && override != nullptr &&
             IsHookTargetWidget(*context, widget_address, *override);
-        bool is_hidden_prefix = !forwarding && settings != nullptr &&
-            settings->enabled && settings->hide_prefix && override != nullptr &&
+        const bool replace_prefix = settings != nullptr &&
+            (settings->hide_prefix || UsesSingleUidWidget(*context, *settings)
+             || typing_frame != nullptr
+            );
+        bool is_replaced_prefix = !forwarding && settings != nullptr &&
+            settings->enabled && replace_prefix && override != nullptr &&
             IsHookPrefixWidget(*context, widget_address, *override);
         // The prefix needs its text probe whenever its FName is unknown, and
         // the value widget needs one while the template name is unarmed -- a
@@ -1817,9 +2047,9 @@ void ANOMALY_CALL SetTextDetour(
         // performs. Once the template name is back the probe leaves the hot
         // path and the value widget is matched by name instead.
         const bool content_probe_needed = settings != nullptr &&
-            (settings->hide_prefix ||
+            (replace_prefix ||
              (override != nullptr && override->target_name_id == 0));
-        if (!is_hidden_prefix && !is_value_widget &&
+        if (!is_replaced_prefix && !is_value_widget &&
             !forwarding && settings != nullptr && settings->enabled &&
             override != nullptr && content_probe_needed) {
             // TextBlock_90 is not guaranteed to be exposed as a named
@@ -1832,9 +2062,9 @@ void ANOMALY_CALL SetTextDetour(
             std::wstring incoming_text;
             if (text != nullptr &&
                 ReadUnrealText(*context, text, incoming_text)) {
-                is_hidden_prefix = settings->hide_prefix &&
+                is_replaced_prefix = replace_prefix &&
                     LooksLikeUidPrefix(incoming_text);
-                if (!is_hidden_prefix) {
+                if (!is_replaced_prefix) {
                     // The value write only reaches this probe while the
                     // template name is unarmed, and the widget's own name is
                     // then the only identity that a rebuilt HUD layer has.
@@ -1843,16 +2073,22 @@ void ANOMALY_CALL SetTextDetour(
                 }
             }
         }
-        if (is_value_widget || is_hidden_prefix) {
-            // FText owns shared engine data. Never retain a raw FText copy in
-            // the plugin: a copy made from Conv_StringToText can outlive the
-            // ProcessEvent parameter storage and later leave a stale
-            // TextData pointer in UTextBlock. Construct it on this callback
-            // stack and hand it to the original only during this invocation.
+        if (is_value_widget || is_replaced_prefix) {
+            // This hook replacement belongs to the current callback only.
+            // Keep its FText on the callback stack while forwarding to the
+            // original, rather than retaining the incoming FText pointer.
             UnrealText replacement{};
-            const std::wstring_view replacement_value = is_hidden_prefix
-                ? kHiddenPrefixText
-                : std::wstring_view(settings->display_wide);
+            const std::wstring rendered_value = RenderedUidValue(*context, *settings);
+            std::wstring_view replacement_value = is_replaced_prefix
+                ? ((settings->hide_prefix || UsesSingleUidWidget(*context, *settings))
+                    ? kHiddenPrefixText
+                    : std::wstring_view(context->original_prefix))
+                : std::wstring_view(rendered_value);
+            if (typing_frame != nullptr) {
+                replacement_value = is_replaced_prefix
+                    ? std::wstring_view(typing_frame->prefix)
+                    : std::wstring_view(typing_frame->value);
+            }
             if (BuildUnrealText(*context, replacement_value, replacement)) {
                 forwarding = true;
                 CallSetTextOriginal(original, widget, &replacement);
@@ -1952,7 +2188,7 @@ bool SetWidgetText(
         return false;
     }
     const std::wstring_view wide(value);
-    if (wide.size() > kMaximumUidCharacters) return false;
+    if (wide.size() > kMaximumRenderedUidUnits) return false;
 
     // Reuse the same reflected conversion/write route as the in-tree NTE ESC
     // menu bridge. The previous direct virtual SetText call constructed and
@@ -2273,11 +2509,11 @@ bool InvokeProcessEvent(
 bool ResolveSlotBindings(Context& context) noexcept {
     if (context.process_event == nullptr || !ObjectFindReady(context.objects)) return false;
     const std::uint64_t generation = context.objects->generation(context.objects->user);
-    if (generation == 0 || context.update_tick < context.next_slot_binding_tick) return false;
     if (context.slot_set_position_function != 0 &&
-        context.slot_set_position_generation == generation) {
+        generation != 0 && context.slot_set_position_generation == generation) {
         return true;
     }
+    if (generation == 0 || context.update_tick < context.next_slot_binding_tick) return false;
     context.next_slot_binding_tick = context.update_tick + kObjectRescanInterval;
     context.slot_set_position_function = 0;
     context.slot_get_position_function = 0;
@@ -2365,13 +2601,12 @@ void AlignRoleIdSlot(
 bool ResolveVisibilityBinding(Context& context) noexcept {
     if (context.process_event == nullptr || !ObjectFindReady(context.objects)) return false;
     const std::uint64_t generation = context.objects->generation(context.objects->user);
-    if (generation == 0 || context.update_tick < context.next_visibility_binding_tick) {
-        return false;
-    }
     if (context.set_visibility_function != 0 &&
-        context.set_visibility_generation == generation) {
+        generation != 0 && context.set_visibility_generation == generation) {
         return true;
     }
+    if (generation == 0 || context.update_tick < context.next_visibility_binding_tick)
+        return false;
 
     context.next_visibility_binding_tick = context.update_tick + kObjectRescanInterval;
     context.set_visibility_function = 0;
@@ -2509,11 +2744,16 @@ ApplyResult ApplyToWidget(
         if (!ReadWidgetText(context, widget, current_prefix)) {
             return ApplyResult::Deferred;
         }
-        if (settings.enabled && !current_prefix.empty() &&
-            LooksLikeUidPrefix(current_prefix)) {
+        // Animation frames (notably bare "UID") and a custom prefix are not
+        // the original game label. Only retain a complete label with its colon.
+        const auto label_end = current_prefix.find_last_not_of(L" \t\r\n");
+        if (settings.enabled && label_end != std::wstring::npos &&
+            (current_prefix[label_end] == L':' || current_prefix[label_end] == L'\uFF1A') &&
+            current_prefix != settings.prefix_wide && LooksLikeUidPrefix(current_prefix)) {
             context.original_prefix = current_prefix;
         }
-        const bool hide_prefix = settings.enabled && settings.hide_prefix;
+        const bool hide_prefix = settings.enabled &&
+            (settings.hide_prefix || UsesSingleUidWidget(context, settings));
         const std::wstring_view target_prefix = hide_prefix
             ? kHiddenPrefixText
             : std::wstring_view(context.original_prefix);
@@ -2558,7 +2798,8 @@ ApplyResult ApplyToWidget(
     std::uint64_t detected{};
     bool changed{};
     std::wstring restored_uid;
-    std::wstring_view target_uid = settings.display_wide;
+    const std::wstring rendered_value = RenderedUidValue(context, settings);
+    std::wstring_view target_uid = rendered_value;
     if (!settings.enabled) {
         const std::uint64_t known_uid =
             context.detected_uid.load(std::memory_order_acquire);
@@ -2579,7 +2820,8 @@ ApplyResult ApplyToWidget(
     }
     if (!changed) {
         AlignRoleIdSlot(
-            context, widget, settings.enabled && settings.hide_prefix);
+            context, widget, settings.enabled &&
+                (settings.hide_prefix || UsesSingleUidWidget(context, settings)));
         LogValueApplySuccess(context, revision);
         return ApplyResult::Applied;
     }
@@ -2594,9 +2836,290 @@ ApplyResult ApplyToWidget(
         return ApplyResult::Deferred;
     }
     AlignRoleIdSlot(
-        context, widget, settings.enabled && settings.hide_prefix);
+        context, widget, settings.enabled &&
+            (settings.hide_prefix || UsesSingleUidWidget(context, settings)));
     LogValueApplySuccess(context, revision);
     return ApplyResult::Applied;
+}
+
+SlateColor DefaultTextColor() noexcept {
+    SlateColor color{};
+    color.rgba[0] = color.rgba[1] = color.rgba[2] = color.rgba[3] = 1.0F;
+    return color;
+}
+
+bool SetWidgetColor(Context& context, const std::uintptr_t widget,
+                    const SlateColor& color) noexcept {
+    if (context.process_event == nullptr || !ObjectFindReady(context.objects))
+        return false;
+    const auto generation = context.objects->generation(context.objects->user);
+    if (context.color_function_generation != generation) {
+        context.text_block_set_color_function = 0;
+        context.color_function_generation = generation;
+        context.next_color_binding_tick = 0;
+    }
+    if (context.text_block_set_color_function == 0) {
+        if (context.update_tick < context.next_color_binding_tick) return false;
+        context.next_color_binding_tick = context.update_tick + kObjectRescanInterval;
+        if (!FindUFunctionObject(context, kTextBlockSetColorPath, 1, 20, 0xFFFF,
+                                 context.text_block_set_color_function)) return false;
+    }
+    SlateColor parameters = color;
+    return InvokeProcessEvent(context, widget,
+        context.text_block_set_color_function, &parameters);
+}
+
+void ApplyColorSettings(Context& context, const ColorSettings& setting) noexcept {
+    SlateColor target = setting.value;
+    if (setting.rainbow) {
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const float period = (std::clamp)(
+            context.rainbow_period.load(std::memory_order_acquire), 0.5F, 10.0F);
+        const float hue = static_cast<float>(std::fmod(seconds / period, 1.0));
+        const float sector = hue * 6.0F;
+        const float second = 1.0F - std::fabs(std::fmod(sector, 2.0F) - 1.0F);
+        const int region = static_cast<int>(sector);
+        switch (region) {
+        case 0: target.rgba[0] = 1; target.rgba[1] = second; target.rgba[2] = 0; break;
+        case 1: target.rgba[0] = second; target.rgba[1] = 1; target.rgba[2] = 0; break;
+        case 2: target.rgba[0] = 0; target.rgba[1] = 1; target.rgba[2] = second; break;
+        case 3: target.rgba[0] = 0; target.rgba[1] = second; target.rgba[2] = 1; break;
+        case 4: target.rgba[0] = second; target.rgba[1] = 0; target.rgba[2] = 1; break;
+        default: target.rgba[0] = 1; target.rgba[1] = 0; target.rgba[2] = second; break;
+        }
+        target.rgba[3] = 1.0F;
+        target.rule = 0;
+    }
+    for (std::size_t index = 0; index < context.widget_count; ++index) {
+        auto& tracked = context.widgets[index];
+        if (!setting.rainbow &&
+            tracked.applied_color_revision == setting.revision)
+            continue;
+        std::uintptr_t widget{};
+        std::uint32_t name_id{};
+        const bool resolved = tracked.prefix
+            ? ResolveTextBlockAddress(context, tracked.handle, widget)
+            : ResolveWidgetAddress(context, tracked.handle, widget);
+        if (!resolved || !IsRoleIdPrefixInstance(context, widget) ||
+            (!tracked.prefix && !IsRoleIdValueObject(context, widget, name_id)))
+            continue;
+        if (setting.enabled || setting.rainbow) {
+            if (!SetWidgetColor(context, widget, target)) continue;
+            tracked.has_original_color = true;
+        } else if (tracked.has_original_color) {
+            if (!SetWidgetColor(context, widget, DefaultTextColor())) continue;
+            tracked.has_original_color = false;
+        }
+        tracked.applied_color_revision = setting.revision;
+    }
+}
+
+std::vector<std::wstring> MakeTypingFrames(const std::wstring_view source) {
+    std::vector<std::wstring> frames;
+    frames.emplace_back(kHiddenPrefixText.data());
+    for (std::size_t offset = 0; offset < source.size();) {
+        std::size_t next = offset + 1;
+        if (source[offset] >= 0xD800 && source[offset] <= 0xDBFF &&
+            next < source.size() && source[next] >= 0xDC00 &&
+            source[next] <= 0xDFFF) ++next;
+        frames.emplace_back(source.substr(0, next));
+        offset = next;
+    }
+    return frames;
+}
+
+std::size_t VisibleTypingCharacters(const std::size_t step,
+                                    const std::size_t character_count) noexcept {
+    constexpr std::size_t kFullPauseFrames = 5;
+    if (step <= character_count) return step;
+    if (step <= character_count + kFullPauseFrames) return character_count;
+    const std::size_t deleting = step - character_count - kFullPauseFrames;
+    return deleting < character_count ? character_count - deleting : 0;
+}
+
+bool SetCachedTypingText(Context& context, const std::uintptr_t widget,
+                         const std::wstring& value, UnrealText& cached,
+                         std::uint8_t& ready) noexcept {
+    if (widget == 0 || context.text_block_set_text_function == 0) return false;
+    if (!ready) {
+        // Convert each frame once and retain its FText backing allocation for
+        // this session. Converting on every tick would accumulate unbounded
+        // engine-side allocations because the plugin cannot destruct FText.
+        if (!BuildUnrealText(context, value, cached)) return false;
+        ready = 1;
+    }
+    const bool previous = g_plugin_text_write;
+    g_plugin_text_write = true;
+    const bool applied = InvokeProcessEvent(context, widget,
+        context.text_block_set_text_function, &cached);
+    g_plugin_text_write = previous;
+    return applied;
+}
+
+void UpdateTypingAnimation(Context& context, const SettingsSnapshot& settings,
+                           const std::uint64_t settings_revision) {
+    const bool enabled = context.typing_enabled.load(std::memory_order_acquire) &&
+        settings.enabled;
+    auto& animation = context.typing;
+    if (!enabled) {
+        if (animation.active) {
+            animation.active = false;
+            context.typing_frame.store({}, std::memory_order_release);
+            context.settings_revision.fetch_add(1, std::memory_order_acq_rel);
+            for (std::size_t i = 0; i < context.widget_count; ++i)
+                context.widgets[i].retry_tick = context.update_tick;
+        }
+        return;
+    }
+    if (!ResolveTextWriteBindings(context)) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (!animation.active || animation.settings_revision != settings_revision) {
+        animation = {};
+        animation.active = true;
+        animation.settings_revision = settings_revision;
+        // Render the entire animated line in one TextBlock. Separate slots
+        // cannot accommodate arbitrary prefix lengths without overlap.
+        animation.prefix_frames = MakeTypingFrames({});
+        animation.value_frames = MakeTypingFrames(RenderedUidValue(context, settings));
+        animation.prefix_cache.resize(animation.prefix_frames.size());
+        animation.value_cache.resize(animation.value_frames.size());
+        animation.prefix_ready.resize(animation.prefix_frames.size());
+        animation.value_ready.resize(animation.value_frames.size());
+        animation.next_frame = now;
+    }
+    if (now >= animation.next_frame || animation.frame_revision == 0) {
+        const std::size_t prefix_count = animation.prefix_frames.size() - 1;
+        const std::size_t value_count = animation.value_frames.size() - 1;
+        constexpr std::size_t kFullPauseFrames = 5;
+        constexpr std::size_t kEmptyPauseFrames = 2;
+        const std::size_t character_count = prefix_count + value_count;
+        const std::size_t last_step =
+            2 * character_count + kFullPauseFrames + kEmptyPauseFrames;
+        if (animation.frame_revision != 0)
+            animation.step = animation.step >= last_step
+                ? 0 : animation.step + 1;
+        animation.frame_revision = ++context.typing_frame_counter;
+        const std::size_t visible_count = VisibleTypingCharacters(
+            animation.step, character_count);
+        const std::size_t prefix_index =
+            (std::min)(visible_count, prefix_count);
+        const std::size_t value_index = visible_count > prefix_count
+            ? (std::min)(visible_count - prefix_count, value_count) : 0;
+        auto frame = std::make_shared<TypingFrame>();
+        frame->prefix = animation.prefix_frames[prefix_index];
+        frame->value = animation.value_frames[value_index];
+        context.typing_frame.store(frame, std::memory_order_release);
+        const float interval = (std::clamp)(
+            context.typing_interval.load(std::memory_order_acquire), 0.05F, 0.5F);
+        animation.next_frame = now + std::chrono::duration_cast<
+            std::chrono::steady_clock::duration>(std::chrono::duration<float>(interval));
+    }
+    const std::size_t prefix_count = animation.prefix_frames.size() - 1;
+    const std::size_t value_count = animation.value_frames.size() - 1;
+    const std::size_t visible_count = VisibleTypingCharacters(
+        animation.step, prefix_count + value_count);
+    const std::size_t prefix_index = (std::min)(visible_count, prefix_count);
+    const std::size_t value_index = visible_count > prefix_count
+        ? (std::min)(visible_count - prefix_count, value_count) : 0;
+    for (std::size_t i = 0; i < context.widget_count; ++i) {
+        auto& tracked = context.widgets[i];
+        if (tracked.typing_frame_revision == animation.frame_revision) continue;
+        std::uintptr_t widget{};
+        if (!ResolveTextBlockAddress(context, tracked.handle, widget) ||
+            !IsRoleIdPrefixInstance(context, widget)) continue;
+        if (!tracked.prefix) {
+            std::uint32_t name_id{};
+            if (!IsRoleIdValueObject(context, widget, name_id)) continue;
+        }
+        const bool applied = tracked.prefix
+            ? SetCachedTypingText(context, widget,
+                animation.prefix_frames[prefix_index],
+                animation.prefix_cache[prefix_index],
+                animation.prefix_ready[prefix_index])
+            : SetCachedTypingText(context, widget,
+                animation.value_frames[value_index],
+                animation.value_cache[value_index],
+                animation.value_ready[value_index]);
+        if (applied) tracked.typing_frame_revision = animation.frame_revision;
+    }
+}
+
+bool SetWidgetVisibility(Context& context, const std::uintptr_t widget,
+                         const std::uint8_t visibility) noexcept {
+    if (widget == 0 || !ResolveVisibilityBinding(context)) return false;
+    std::uint8_t parameter = visibility;
+    return InvokeProcessEvent(context, widget,
+        context.set_visibility_function, &parameter) &&
+        ReadVisibilityField(widget) == visibility;
+}
+
+void ApplyLatencyVisibility(Context& context, const bool hide) noexcept {
+    if (!context.latency_probe_found) return;
+    std::uintptr_t text_widget{};
+    if (!ResolveTextBlockAddress(context, context.latency_text_handle,
+                                 text_widget)) {
+        context.latency_probe_found = false;
+        context.latency_text_handle = {};
+        context.latency_image_handle = {};
+        context.latency_original_captured = false;
+        context.latency_probe_cursor = context.objects->count(context.objects->user);
+        context.latency_candidate_count = 0;
+        return;
+    }
+    std::uintptr_t image_widget{};
+    if (!ResolveObjectAddress(context, context.latency_image_handle,
+                              image_widget) ||
+        ReadObjectOuter(text_widget) == 0 ||
+        ReadObjectOuter(text_widget) != ReadObjectOuter(image_widget) ||
+        ReadObjectNameIdRaw(image_widget) != context.latency_image_name_id) {
+        context.latency_probe_found = false;
+        context.latency_text_handle = {};
+        context.latency_image_handle = {};
+        context.latency_original_captured = false;
+        context.latency_probe_cursor = context.objects->count(context.objects->user);
+        context.latency_candidate_count = 0;
+        return;
+    }
+    if (hide) {
+        if (!context.latency_original_captured) {
+            const auto text_visibility = ReadVisibilityField(text_widget);
+            const auto image_visibility = ReadVisibilityField(image_widget);
+            // A hot reload can inherit the Collapsed state left by the prior
+            // plugin generation. Treat that state as our own and restore the
+            // game's normal Visible state when the option is switched off.
+            context.latency_text_original_visibility =
+                text_visibility == 1 ? 0 : text_visibility;
+            context.latency_image_original_visibility =
+                image_visibility == 1 ? 0 : image_visibility;
+            context.latency_original_captured = true;
+            context.latency_action_confirmed = false;
+        }
+        const bool text_ok = ReadVisibilityField(text_widget) == 1 ||
+            SetWidgetVisibility(context, text_widget, 1);
+        const bool image_ok = ReadVisibilityField(image_widget) == 1 ||
+            SetWidgetVisibility(context, image_widget, 1);
+        if (text_ok && image_ok && !context.latency_action_confirmed) {
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "FakeUID: TextPing and ImagePing hidden");
+            context.latency_action_confirmed = true;
+        }
+    } else if (context.latency_original_captured) {
+        const bool text_ok = ReadVisibilityField(text_widget) ==
+                context.latency_text_original_visibility ||
+            SetWidgetVisibility(context, text_widget,
+                context.latency_text_original_visibility);
+        const bool image_ok = ReadVisibilityField(image_widget) ==
+                context.latency_image_original_visibility ||
+            SetWidgetVisibility(context, image_widget,
+                context.latency_image_original_visibility);
+        if (text_ok && image_ok) {
+            context.latency_original_captured = false;
+            context.latency_action_confirmed = false;
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "FakeUID: TextPing and ImagePing restored");
+        }
+    }
 }
 
 AnomalyStatusV1 ANOMALY_CALL Start(void* user);
@@ -2625,6 +3148,10 @@ void ANOMALY_CALL Update(void* user, double) {
             ValidateRoleIDAnchor(*context);
         }
         ScanForWidgets(*context);
+        if (current_settings->hide_latency || context->latency_original_captured) {
+            ProbeLatencyWidget(*context);
+            ApplyLatencyVisibility(*context, current_settings->hide_latency);
+        }
         static_cast<void>(EnsureTextHookSnapshot(
             *context, *current_settings, current_revision));
         for (std::size_t index = 0; index < context->widget_count;) {
@@ -2670,6 +3197,9 @@ void ANOMALY_CALL Update(void* user, double) {
                 }
             }
         }
+        if (const auto color = context->color_settings.load(std::memory_order_acquire))
+            ApplyColorSettings(*context, *color);
+        UpdateTypingAnimation(*context, *current_settings, current_revision);
     } catch (...) {
     }
 }
@@ -2698,18 +3228,16 @@ bool EnsureWindow(Context& context) {
     AnomalyWindowSpecV1 window{};
     window.struct_size = sizeof(window);
     window.flags = 0;
-    // v2 resets the old persisted 240px height/constraints. Window persistence
-    // stores the original constraint set, so keeping the old ID would ignore
-    // the enlarged limits even after a plugin hot reload.
-    window.id = anomaly::sdk::StringView("fake-uid-settings-v2");
+    // The expanded controls need new persisted window dimensions.
+    window.id = anomaly::sdk::StringView("fake-uid-settings-v3");
     const std::string title = context.localizer.Text("window.title", "Custom UID");
     window.title = anomaly::sdk::StringView(title);
-    window.initial_width = 300.0F;
-    window.initial_height = 340.0F;
-    window.minimum_width = 260.0F;
-    window.minimum_height = 320.0F;
+    window.initial_width = 370.0F;
+    window.initial_height = 620.0F;
+    window.minimum_width = 300.0F;
+    window.minimum_height = 400.0F;
     window.maximum_width = 520.0F;
-    window.maximum_height = 650.0F;
+    window.maximum_height = 850.0F;
     window.default_open = 1;
     const AnomalyStatusV1 status = context.window->register_window(
         context.window->user, &window, &context.window_handle);
@@ -2936,7 +3464,9 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
             std::string error;
             const bool applied = ApplySettings(
                 context, active_settings->enabled, hide_prefix != 0,
-                active_settings->display_uid, error);
+                active_settings->display_uid, error,
+                active_settings->prefix_text,
+                active_settings->hide_latency);
             context.ui_status = applied
                 ? (error.empty()
                         ? context.localizer.Text(
@@ -2951,16 +3481,23 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
     static_cast<void>(ui.input_text(
         ui.user, anomaly::sdk::StringView(display_uid),
         context.editor.data(), context.editor.size(), ANOMALY_UI_TEXT_INPUT_V1_NONE));
+    static_cast<void>(ui.input_text(
+        ui.user, anomaly::sdk::StringView(context.localizer.Label(
+            "field.prefix_text", "Prefix text (empty: original UID:)", "prefix-text")),
+        context.prefix_editor.data(), context.prefix_editor.size(),
+        ANOMALY_UI_TEXT_INPUT_V1_NONE));
 
     const auto value = std::string_view(context.editor.data());
     const std::string apply = context.localizer.Label("action.apply", "Apply", "apply");
     if (Button(ui, apply)) {
         std::string error;
         active_settings = ReadSettings(context);
+        const std::string_view prefix_value(context.prefix_editor.data());
         const bool applied = ApplySettings(
             context, true,
             active_settings == nullptr || active_settings->hide_prefix,
-            value, error);
+            value, error, prefix_value,
+            active_settings != nullptr && active_settings->hide_latency);
         context.ui_status = applied
             ? (error.empty()
                     ? context.localizer.Text("status.applied_saving", "Applied; saving")
@@ -2978,7 +3515,7 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
             std::string error;
             const bool reverted = settings && ApplySettings(
                 context, false, settings->hide_prefix,
-                settings->display_uid, error);
+                settings->display_uid, error, {}, settings->hide_latency);
             ResetEditor(context);
             context.ui_status = reverted
                 ? (error.empty()
@@ -2990,6 +3527,121 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
                               "status.original_restore_failed", "Original UID restore failed")
                         : LocalizeUiStatus(context, error));
         }
+    }
+    if (ui.separator) ui.separator(ui.user);
+    active_settings = ReadSettings(context);
+    if (active_settings && ui.checkbox) {
+        int hide_latency = active_settings->hide_latency ? 1 : 0;
+        const std::string label = context.localizer.Label(
+            "field.hide_latency", "Hide latency and signal", "hide-latency");
+        if (ui.checkbox(ui.user,
+                anomaly::sdk::StringView(label),
+                &hide_latency) != 0) {
+            std::string error;
+            const bool applied = ApplySettings(context,
+                active_settings->enabled, active_settings->hide_prefix,
+                active_settings->display_uid, error,
+                active_settings->prefix_text, hide_latency != 0);
+            context.ui_status = applied
+                ? context.localizer.Text("status.latency_saved", "Latency setting saved")
+                : LocalizeUiStatus(context, error);
+        }
+    }
+    if (ui.separator) ui.separator(ui.user);
+    DrawText(ui, context.localizer.Text("hint.color_session", "Text color (current game session)"));
+    if (ui.color_edit4) {
+        const std::string label = context.localizer.Label(
+            "field.text_color", "Text color", "text-color");
+        ui.color_edit4(ui.user, anomaly::sdk::StringView(label), context.color_editor);
+    }
+    if (Button(ui, context.localizer.Label("action.apply_color", "Apply color", "apply-color"))) {
+        try {
+            const auto previous = context.color_settings.load(std::memory_order_acquire);
+            auto next = std::make_shared<ColorSettings>();
+            next->revision = previous ? previous->revision + 1 : 1;
+            next->enabled = true;
+            next->rainbow = false;
+            for (int i = 0; i < 4; ++i)
+                next->value.rgba[i] = (std::clamp)(context.color_editor[i], 0.0F, 1.0F);
+            next->value.rule = 0;  // SlateCore.UseColor_Specified
+            context.color_settings.store(next, std::memory_order_release);
+            context.ui_status = context.localizer.Text(
+                "status.color_applied", "Color applied; waiting for the HUD to refresh");
+        } catch (...) { context.ui_status = context.localizer.Text(
+            "status.color_failed", "Color update failed"); }
+    }
+    if (Button(ui, context.localizer.Label(
+            "action.restore_color", "Restore default color", "restore-color"))) {
+        try {
+            const auto previous = context.color_settings.load(std::memory_order_acquire);
+            auto next = std::make_shared<ColorSettings>();
+            next->revision = previous ? previous->revision + 1 : 1;
+            context.color_settings.store(next, std::memory_order_release);
+            context.ui_status = context.localizer.Text(
+                "status.color_restored", "Default color restored");
+        } catch (...) { context.ui_status = context.localizer.Text(
+            "status.color_failed", "Color update failed"); }
+    }
+    if (ui.checkbox) {
+        const auto current = context.color_settings.load(std::memory_order_acquire);
+        int rainbow = current && current->rainbow ? 1 : 0;
+        const std::string label = context.localizer.Label(
+            "field.rgb", "RGB color cycle", "rgb-cycle");
+        if (ui.checkbox(ui.user,
+                anomaly::sdk::StringView(label),
+                &rainbow) != 0) {
+            try {
+                auto next = std::make_shared<ColorSettings>();
+                if (current) *next = *current;
+                next->revision = current ? current->revision + 1 : 1;
+                next->rainbow = rainbow != 0;
+                context.color_settings.store(next, std::memory_order_release);
+                context.ui_status = next->rainbow
+                    ? context.localizer.Text("status.rgb_on", "RGB cycle enabled")
+                    : context.localizer.Text("status.rgb_off", "RGB cycle disabled");
+            } catch (...) { context.ui_status = context.localizer.Text(
+                "status.color_failed", "Color update failed"); }
+        }
+    }
+    if (ui.slider_float) {
+        float period = context.rainbow_period.load(std::memory_order_acquire);
+        const std::string label = context.localizer.Label(
+            "field.rgb_period", "RGB cycle period (seconds)", "rgb-period");
+        if (ui.slider_float(ui.user,
+                anomaly::sdk::StringView(label),
+                &period, 0.5F, 10.0F) != 0)
+            context.rainbow_period.store((std::clamp)(period, 0.5F, 10.0F),
+                                         std::memory_order_release);
+    }
+    if (ui.separator) ui.separator(ui.user);
+    DrawText(ui, context.localizer.Text("hint.dynamic_uid",
+        "Dynamic UID: type, pause, erase, and repeat"));
+    if (ui.checkbox) {
+        int typing = context.typing_enabled.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string label = context.localizer.Label(
+            "field.dynamic_uid", "Dynamic UID", "dynamic-uid");
+        if (ui.checkbox(ui.user,
+                anomaly::sdk::StringView(label),
+                &typing) != 0) {
+            context.typing_enabled.store(typing != 0, std::memory_order_release);
+            context.settings_revision.fetch_add(1, std::memory_order_acq_rel);
+            const auto text_settings = ReadSettings(context);
+            context.ui_status = typing != 0
+                ? (text_settings && text_settings->enabled
+                    ? context.localizer.Text("status.dynamic_on", "Dynamic UID enabled")
+                    : context.localizer.Text("status.dynamic_apply_first", "Apply a display UID first"))
+                : context.localizer.Text("status.dynamic_off", "Dynamic UID disabled");
+        }
+    }
+    if (ui.slider_float) {
+        float interval = context.typing_interval.load(std::memory_order_acquire);
+        const std::string label = context.localizer.Label(
+            "field.typing_interval", "Seconds per character", "typing-interval");
+        if (ui.slider_float(ui.user,
+                anomaly::sdk::StringView(label),
+                &interval, 0.05F, 0.5F) != 0)
+            context.typing_interval.store((std::clamp)(interval, 0.05F, 0.5F),
+                                          std::memory_order_release);
     }
     if (!context.ui_status.empty()) {
         DrawText(ui, context.ui_status);
@@ -3057,7 +3709,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.local.nte.fake-uid"),
         anomaly::sdk::StringView("Custom UID"),
-        anomaly::sdk::StringView("Anomaly"), anomaly::sdk::StringView("1.1.9"),
+        anomaly::sdk::StringView("Anomaly"), anomaly::sdk::StringView("1.2.2"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

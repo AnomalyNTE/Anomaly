@@ -153,19 +153,18 @@ bool HookManager::EnableOwner(std::string_view owner, std::uint64_t generation) 
     std::scoped_lock lock(mutex_);
     const auto found = groups_.find(GroupKey(owner, generation));
     if (found == groups_.end()) return false;
-    std::vector<HookRecord*> enabled_now;
+    std::vector<HookRecord*> pending;
     for (HookRecord& hook : found->second.hooks) {
-        if (hook.enabled || hook.stopping) continue;
-        if (backend_ == nullptr || !backend_->Enable(hook.target)) {
-            for (HookRecord* rollback : enabled_now) {
-                static_cast<void>(backend_->Disable(rollback->target));
-                rollback->enabled = false;
-            }
-            return false;
-        }
-        hook.enabled = true;
-        enabled_now.push_back(&hook);
+        if (!hook.enabled && !hook.stopping) pending.push_back(&hook);
     }
+    if (pending.empty()) return true;
+    if (backend_ == nullptr) return false;
+    bool queued_all = true;
+    for (HookRecord* hook : pending) {
+        if (!backend_->QueueEnable(hook->target)) queued_all = false;
+    }
+    if (!backend_->ApplyQueued() || !queued_all) return false;
+    for (HookRecord* hook : pending) hook->enabled = true;
     return true;
 }
 
@@ -173,16 +172,19 @@ bool HookManager::DisableOwner(std::string_view owner, std::uint64_t generation)
     std::scoped_lock lock(mutex_);
     const auto found = groups_.find(GroupKey(owner, generation));
     if (found == groups_.end()) return false;
-    bool success = true;
+    std::vector<HookRecord*> pending;
     for (auto iterator = found->second.hooks.rbegin(); iterator != found->second.hooks.rend(); ++iterator) {
-        if (!iterator->enabled) continue;
-        if (backend_ == nullptr || !backend_->Disable(iterator->target)) {
-            success = false;
-            continue;
-        }
-        iterator->enabled = false;
+        if (iterator->enabled) pending.push_back(&*iterator);
     }
-    return success;
+    if (pending.empty()) return true;
+    if (backend_ == nullptr) return false;
+    bool queued_all = true;
+    for (HookRecord* hook : pending) {
+        if (!backend_->QueueDisable(hook->target)) queued_all = false;
+    }
+    if (!backend_->ApplyQueued() || !queued_all) return false;
+    for (HookRecord* hook : pending) hook->enabled = false;
+    return true;
 }
 
 bool HookManager::Remove(
@@ -235,18 +237,25 @@ bool HookManager::RemoveOwner(
         const auto found = groups_.find(key);
         if (found == groups_.end()) return false;
         callback_scopes.reserve(found->second.hooks.size());
+        std::vector<HookRecord*> pending_disable;
         for (auto iterator = found->second.hooks.rbegin(); iterator != found->second.hooks.rend(); ++iterator) {
             iterator->stopping = true;
-            if (iterator->enabled) {
-                if (backend_ == nullptr || !backend_->Disable(iterator->target)) {
-                    disabled = false;
-                } else {
-                    iterator->enabled = false;
-                }
-            }
+            if (iterator->enabled) pending_disable.push_back(&*iterator);
             callback_scopes.push_back(iterator->callback_scope);
         }
         owner_scope = found->second.scope;
+        if (!pending_disable.empty()) {
+            if (backend_ == nullptr) return false;
+            bool queued_all = true;
+            for (HookRecord* hook : pending_disable) {
+                if (!backend_->QueueDisable(hook->target)) queued_all = false;
+            }
+            if (!backend_->ApplyQueued() || !queued_all) {
+                disabled = false;
+            } else {
+                for (HookRecord* hook : pending_disable) hook->enabled = false;
+            }
+        }
     }
     if (!disabled) return false;
     const auto deadline = callback_timeout == std::chrono::milliseconds::max()
@@ -268,15 +277,17 @@ bool HookManager::RemoveOwner(
     std::scoped_lock lock(mutex_);
     const auto found = groups_.find(key);
     if (found == groups_.end()) return false;
+    // Every hook is already disabled, so each backend removal runs without
+    // another thread suspension.
     bool success = true;
     std::vector<void*> removed_targets;
     removed_targets.reserve(found->second.hooks.size());
-    for (auto iterator = found->second.hooks.rbegin(); iterator != found->second.hooks.rend(); ++iterator) {
-        if (backend_ == nullptr || !backend_->Remove(iterator->target)) {
+    for (HookRecord& hook : found->second.hooks) {
+        if (backend_ == nullptr || !backend_->Remove(hook.target)) {
             success = false;
             continue;
         }
-        removed_targets.push_back(iterator->target);
+        removed_targets.push_back(hook.target);
     }
     for (void* target : removed_targets) {
         const auto hook = std::find_if(

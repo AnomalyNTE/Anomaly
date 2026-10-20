@@ -5,7 +5,7 @@
   "description": "Customizes the UID displayed by the NTE client without changing account data.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "1.1.9",
+  "version": "1.2.2",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],

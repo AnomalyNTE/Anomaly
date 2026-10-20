@@ -1,0 +1,219 @@
+{
+  "schema": "anomaly.plugin.jelly.layout",
+  "version": 1,
+  "game": "nte",
+  "source": {
+    "note": "Every entry records the field type it describes and where the number came from. The process-global entry points and the object-registry/reflection offsets mirror the active NTE Profile; the property and function entries are not offsets at all, they are the names and signatures the plugin validates against the live reflection data before it writes anything. Nothing here is inherited from the Model Scale plugin, and none of it is treated as a compatibility proof on its own. Class families carry their provenance here because the schema has no place for a per-family source: instanced_mesh is the Profile's instanced-mesh family, and non_visual_mesh names WidgetComponent because the live crowd NPCs carry a name-plate next to their body mesh (measured in build 5.6.1-0+UE5-HT-1.4a: BPBubbleComponent_C > HTBubbleComponent > WidgetComponent, a UMeshComponent-derived component that renders UI rather than a model). vehicle is matched as a case-insensitive *substring* of the target actor's class chain, unlike the two families above, which are matched as whole class names: measured read-only in the live build, all 130-odd BP_Vehicle_* actors (ModuleTraffic, ModuleLow, Low, Hight, ParkedLow) carry AActor::bHidden while their own mesh components report bVisible and the game plainly renders the cars - the light actors parented to them are not hidden - so for that family the flag is not 'not rendered'. The family is therefore scaled as one model from the actor's root component, which is also what makes a mesh of that family that carries collision (VehicleMesh, CollisionEnabled=3) a scalable part instead of a scope refusal: the vehicle's collision is part of the model that is being scaled. Physics simulation (bSimulatePhysics) stays refused for every other family; for the vehicle family the window carries a switch that allows it, because the car the player drives has the chassis rigid body on its body mesh (measured on the live player: BP_Vehicle_026_Module_C, VehicleMesh, bSimulatePhysics = true) and refusing it left that body still while the vehicle's own accessory actors moved. An instanced mesh is never a part. attach_parent is what tells a part of a vehicle from an actor standing on its own: an actor whose root component hangs under another vehicle's component is a part of that vehicle, follows it, and must not take a model slot of its own.",
+    "build": "5.6.1-0+UE5-HT-1.4a",
+    "profile": "profiles/nte/nte-current.json (symbols ue5.GObjects / ue5.ProcessEvent, layout objects.*, object.*, ustruct.*, ufield.*, ffield.*, fproperty.*, ufunction.*)",
+    "runtime": "class names, FProperty offsets and element sizes, and the SetRelativeScale3D parameter layout are read back from live reflection in the Game domain and compared with the expectations below; a mismatch skips the target instead of writing. Names are compared as text after resolving the id the reflection data carries (anomaly.ue5.names.resolve_utf8), not by asking the pool to turn a name into an id: that lookup searches only the newest blocks of the FName pool, so it never finds an engine name registered long before the content was."
+  },
+  "symbols": {
+    "gobjects": {
+      "type": "rip-rel32 load of the FUObjectArray view",
+      "source": "profile symbol ue5.GObjects",
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+      "resolve": "rip-rel32",
+      "resolveOffset": 3,
+      "instructionSize": 7,
+      "addend": -16
+    },
+    "process_event": {
+      "type": "direct UObject::ProcessEvent entry",
+      "source": "profile symbol ue5.ProcessEvent. Anomaly's anomaly.ue5.process-event observer installs a five byte E9 detour on this function before a plugin hot-loads, so the entry is read either as the recorded prologue or as that detour followed by the same prologue past it; detourBytes is the size of the detour, and the anchored pattern is derived by dropping that many leading bytes from the pattern below. Source: plugins/FakeUID/fake_uid_profile.hpp (kProcessEventMatchOffset = 5) in Anomaly v2.3.0-alpha.1, which resolves the entry five bytes into the function for the same reason.",
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+      "resolve": "direct",
+      "detourBytes": 5
+    },
+    "process_event_prologue": {
+      "type": "prologue bytes that identify the validated call entry",
+      "source": "profile validator ue5-process-event-abi-v1",
+      "bytes": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00"
+    }
+  },
+  "classNames": {
+    "actor": "Actor",
+    "scene_component": "SceneComponent",
+    "primitive_component": "PrimitiveComponent",
+    "mesh_component": "MeshComponent",
+    "character": "Character",
+    "function": "Function",
+    "vector_struct": "Vector",
+    "body_instance_struct": "BodyInstance"
+  },
+  "classFamilies": {
+    "instanced_mesh": [
+      "InstancedStaticMeshComponent",
+      "HierarchicalInstancedStaticMeshComponent"
+    ],
+    "non_visual_mesh": [
+      "WidgetComponent"
+    ],
+    "vehicle": [
+      "BP_Vehicle"
+    ]
+  },
+  "offsets": {
+    "object.internal_index": {"value": 12, "type": "int32", "source": "profile layout object.internalIndex"},
+    "object.class": {"value": 16, "type": "UClass*", "source": "profile layout object.class"},
+    "object.name_offset": {"value": 24, "type": "FName id (uint32)", "source": "profile layout object.nameOffset"},
+    "object.outer": {"value": 32, "type": "UObject*", "source": "profile layout object.outer"},
+    "ustruct.super_struct": {"value": 64, "type": "UStruct*", "source": "profile layout ustruct.superStruct"},
+    "ustruct.children": {"value": 72, "type": "UField* head of the UField chain", "source": "profile layout ustruct.children"},
+    "ustruct.property_link": {"value": 112, "type": "FField* head of the child-property chain", "source": "profile layout ustruct.propertyLink"},
+    "ufield.next": {"value": 40, "type": "UField*", "source": "profile layout ufield.next"},
+    "ffield.next": {"value": 24, "type": "FField*", "source": "profile layout ffield.next"},
+    "ffield.name": {"value": 32, "type": "FName id (uint32)", "source": "profile layout ffield.name"},
+    "ffield.class": {"value": 8, "type": "FFieldClass*", "source": "profile layout ffield.class"},
+    "ffield_class.name": {"value": 0, "type": "FName id (uint32)", "source": "profile layout ffieldClass.name"},
+    "fproperty.array_dim": {"value": 48, "type": "int32", "source": "profile layout fproperty.arrayDim"},
+    "fproperty.element_size": {"value": 52, "type": "int32", "source": "profile layout fproperty.elementSize"},
+    "fproperty.offset_internal": {"value": 68, "type": "int32", "source": "profile layout fproperty.offsetInternal"},
+    "fstruct_property.struct": {"value": 112, "type": "UStruct*", "source": "profile layout fstructProperty.struct"},
+    "fobject_property.property_class": {"value": 112, "type": "UClass*", "source": "profile layout fobjectProperty.propertyClass"},
+    "farray_property.inner": {"value": 120, "type": "FProperty*", "source": "profile layout farrayProperty.inner"},
+    "fbool_property.field_size": {"value": 112, "type": "uint8", "source": "profile layout fboolProperty.fieldSize"},
+    "fbool_property.byte_offset": {"value": 113, "type": "uint8", "source": "profile layout fboolProperty.byteOffset"},
+    "fbool_property.byte_mask": {"value": 114, "type": "uint8", "source": "profile layout fboolProperty.byteMask"},
+    "ufunction.num_parms": {"value": 180, "type": "uint8", "source": "profile layout ufunction.numParms"},
+    "ufunction.parms_size": {"value": 182, "type": "uint16", "source": "profile layout ufunction.parmsSize"},
+    "ufunction.return_value_offset": {"value": 184, "type": "uint16", "source": "profile layout ufunction.returnValueOffset"},
+    "objects.items": {"value": 16, "type": "FUObjectItem** chunk table", "source": "profile layout objects.itemsOffset"},
+    "objects.count": {"value": 36, "type": "int32", "source": "profile layout objects.countOffset"},
+    "objects.max_count": {"value": 32, "type": "int32", "source": "profile layout objects.maxCountOffset"},
+    "objects.num_chunks": {"value": 44, "type": "uint32", "source": "profile layout objects.numChunksOffset"},
+    "objects.max_chunks": {"value": 40, "type": "uint32", "source": "profile layout objects.maxChunksOffset"},
+    "objects.chunk_count_size": {"value": 4, "type": "field width of the chunk counters", "source": "profile layout objects.chunkCountSize"},
+    "objects.chunk_size": {"value": 65536, "type": "objects per chunk", "source": "profile layout objects.chunkSize"},
+    "objects.item_stride": {"value": 24, "type": "FUObjectItem stride", "source": "profile layout objects.itemStride"},
+    "objects.object_offset": {"value": 0, "type": "UObject* offset inside FUObjectItem", "source": "profile layout objects.objectOffset"},
+    "objects.serial_offset": {"value": 16, "type": "int32 serial offset inside FUObjectItem", "source": "profile layout objects.serialOffset"},
+    "tarray.data": {"value": 0, "type": "pointer to the element array", "source": "profile layout tarray.data"},
+    "tarray.num": {"value": 8, "type": "int32 element count", "source": "profile layout tarray.num"},
+    "tarray.max": {"value": 12, "type": "int32 allocation capacity", "source": "profile layout tarray.max"}
+  },
+  "properties": {
+    "root_component": {
+      "owner": "Actor",
+      "name": "RootComponent",
+      "type": "ObjectProperty",
+      "class_name": "SceneComponent",
+      "source": "AActor::RootComponent"
+    },
+    "attach_children": {
+      "owner": "SceneComponent",
+      "name": "AttachChildren",
+      "type": "ArrayProperty",
+      "inner_type": "ObjectProperty",
+      "inner_class_name": "SceneComponent",
+      "source": "USceneComponent::AttachChildren"
+    },
+    "attach_parent": {
+      "owner": "SceneComponent",
+      "name": "AttachParent",
+      "type": "ObjectProperty",
+      "class_name": "SceneComponent",
+      "source": "USceneComponent::AttachParent, read back at component +0xD8 by a read-only probe of the live build. The parent component's object.outer names the actor it belongs to, which is what tells an actor that is a part of a vehicle (the spoiler and lamp actors of the cars here) from an actor that stands on its own."
+    },
+    "relative_scale": {
+      "owner": "SceneComponent",
+      "name": "RelativeScale3D",
+      "type": "StructProperty",
+      "struct_name": "Vector",
+      "element_size": 24,
+      "source": "USceneComponent::RelativeScale3D, FVector of three doubles"
+    },
+    "relative_rotation": {
+      "owner": "SceneComponent",
+      "name": "RelativeRotation",
+      "type": "StructProperty",
+      "struct_name": "Rotator",
+      "element_size": 24,
+      "source": "USceneComponent::RelativeRotation, FRotator of three doubles (pitch, yaw, roll), read back at component +0x168 by a read-only probe of the live build. The spin the window offers is added to this rotation's yaw and written back; the value the model carried when it was taken over is what restores it."
+    },
+    "mobility": {
+      "owner": "SceneComponent",
+      "name": "Mobility",
+      "element_size": 1,
+      "source": "USceneComponent::Mobility, EComponentMobility::Static == 0. One byte; the type is deliberately not pinned because TEnumAsByte can be reflected as ByteProperty or EnumProperty. Only 'the level's static scenery' is skipped; a build that does not reflect it is reported once per class and otherwise treated as movable."
+    },
+    "visible": {
+      "owner": "SceneComponent",
+      "name": "bVisible",
+      "type": "BoolProperty",
+      "source": "USceneComponent::bVisible"
+    },
+    "hidden": {
+      "owner": "Actor",
+      "name": "bHidden",
+      "type": "BoolProperty",
+      "element_size": 1,
+      "source": "AActor::bHidden. Verified against the live process in build 5.6.1-0+UE5-HT-1.4a: offset 0x60 with the reflected bit at byte +0, mask 0x80. The three party members that stand within a metre of the local player, their weapons and their gliders all carry it while the local player and the visible crowd NPCs do not, so a hidden actor is one the game is not rendering. The plugin still resolves the property and its bit from live reflection; a build that does not carry it reports the class once and treats the actor as visible."
+    },
+    "body_instance": {
+      "owner": "PrimitiveComponent",
+      "name": "BodyInstance",
+      "type": "StructProperty",
+      "struct_name": "BodyInstance",
+      "source": "UPrimitiveComponent::BodyInstance"
+    },
+    "collision_enabled": {
+      "owner": "BodyInstance",
+      "name": "CollisionEnabled",
+      "element_size": 1,
+      "source": "FBodyInstance::CollisionEnabled, ECollisionEnabled::NoCollision is 0"
+    },
+    "simulate_physics": {
+      "owner": "BodyInstance",
+      "name": "bSimulatePhysics",
+      "type": "BoolProperty",
+      "source": "FBodyInstance::bSimulatePhysics"
+    }
+  },
+  "functions": {
+    "set_relative_scale": [
+      {
+        "owner": "SceneComponent",
+        "name": "SetRelativeScale3D",
+        "numParms": 1,
+        "parmsSize": 24,
+        "returnValueOffset": 65535,
+        "params": [
+          {"name": "NewScale3D", "type": "StructProperty", "struct_name": "Vector", "element_size": 24, "offset": 0}
+        ],
+        "source": "USceneComponent::SetRelativeScale3D(FVector)"
+      },
+      {
+        "owner": "SceneComponent",
+        "name": "K2_SetRelativeScale3D",
+        "numParms": 0,
+        "parmsSize": 0,
+        "returnValueOffset": 65535,
+        "params": [
+          {"name": "NewScale3D", "type": "StructProperty", "struct_name": "Vector", "element_size": 24, "offset": 0}
+        ],
+        "source": "USceneComponent::K2_SetRelativeScale3D(FVector, bool, FHitResult&, bool); the parameter buffer is sized from the live signature and zero-filled, so bSweep and bTeleport stay false"
+      }
+    ],
+    "set_relative_rotation": [
+      {
+        "owner": "SceneComponent",
+        "name": "K2_SetRelativeRotation",
+        "numParms": 4,
+        "parmsSize": 297,
+        "returnValueOffset": 65535,
+        "params": [
+          {"name": "NewRotation", "type": "StructProperty", "struct_name": "Rotator", "element_size": 24, "offset": 0},
+          {"name": "bSweep", "type": "BoolProperty", "element_size": 1, "offset": 24},
+          {"name": "SweepHitResult", "type": "StructProperty", "struct_name": "HitResult", "element_size": 264, "offset": 32},
+          {"name": "bTeleport", "type": "BoolProperty", "element_size": 1, "offset": 296}
+        ],
+        "source": "USceneComponent::K2_SetRelativeRotation(FRotator, bool, FHitResult&, bool). This build reflects no single-parameter SetRelativeRotation on SceneComponent (measured: the class chain carries K2_SetRelativeRotation only, plus the accumulating K2_AddRelativeRotation which is never used because it would drift), so the blueprint wrapper is what the spin goes through. Its live signature was read back with a read-only probe: numParms 4, parmsSize 0x129 = 297, returnValueOffset 0xFFFF, parameters at offsets 0 / 24 / 32 / 296 with the FHitResult held inline in the frame (32 + 264 = 296), so a zero-filled buffer keeps bSweep and bTeleport false and leaves the hit result a valid empty struct."
+      }
+    ]
+  }
+}

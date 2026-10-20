@@ -3,10 +3,11 @@
   "locale": "zh-CN",
   "messages": {
     "plugin.name": "相机工具",
-    "plugin.description": "在一个插件中提供视距修改、自由相机、可选的场景跟随相机加载，以及仅开发者可见的传送到相机位置功能。",
+    "plugin.description": "在一个插件中提供视距与视角 FOV 调整、自由相机、可选的场景跟随相机加载，以及仅开发者可见的传送到相机位置功能。",
     "window.title": "相机工具",
     "section.view_distance": "修改视距",
     "setting.distance": "额外视距",
+    "setting.fov": "视角 FOV",
     "action.restore_game_default": "恢复游戏默认",
     "section.free_camera": "自由相机",
     "setting.enabled": "启用",

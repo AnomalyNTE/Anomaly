@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.builtin.nte.deserted",
+  "name": "Deserted",
+  "description": "空无一人：勾选后，人流和车流都不再生成，但不影响站桩NPC",
+  "author": "WawMew",
+  "license": "AGPL-3.0-only",
+  "version": "0.6.3",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.core",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.input",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.storage",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1,
+      "optional": true
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "memory-read",
+    "memory-write",
+    "interop-signature",
+    "ue5-names",
+    "ue5-objects",
+    "input",
+    "storage",
+    "scheduler"
+  ]
+}

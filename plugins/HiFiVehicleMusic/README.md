@@ -1,0 +1,278 @@
+# HiFi Vehicle Music
+
+拦截游戏载具背景音乐（`UHTSoundSubsystem` 的 player music），用本地无损文件和独立输出后端
+播放，支持 WASAPI 独占 / WASAPI 共享 / DirectSound / ASIO。另有 Meting 网络曲库：搜索歌曲或导入网易云
+歌单，作为独立的「Meting」专辑在游戏里播放，音频只在内存里，不写磁盘。
+
+## 工作方式
+
+1. 通过 `anomaly.interop.signature` 在 `HTGame.exe` `.text` 中解析函数签名，用 `anomaly.interop.hook` 挂
+   detour（全部 30 个，见 `HookIndex`）。每个 detour 都有严格上界：读原子快照、有界内存读写、向音频引擎
+   投递命令、经缓存解析事件名、经 `CallUnderLease` 的嵌套租约调其他 Hook 的原函数；不做表遍历、行构建、
+   纹理导入或任何可能阻塞的调用——重活全部在后台 builder 线程（见第 5 条），保证宿主 1 秒停止预算内能
+   排空回调。必需签名或任一核心 Hook 失败则释放全部 Hook，插件退化为不接管。
+2. `PostPlayerMusicSound` detour：读取 `PlayerType`（载具 = 1）与 `UAkAudioEvent` 的 FName，
+   经 `anomaly.ue5.names` 解析出事件名。若插件启用、为载具音乐且曲库非空，则跳过原函数（Wwise 不发声），先调用原始 `StopPlayerMusicSound` 停掉正在播的 Wwise
+   音乐，再把播放命令投递给音频引擎；否则停止引擎并调用原函数。
+   `pos` 按 0–1 的比例处理（0 或 ≥1 从头播放）。这一语义来自反汇编推断，尚未实测确认。
+3. `StopPlayerMusicSound` / `Pause` / `Resume` detour：同步通知引擎，再调用原函数。
+   `AHTPlayerCharacter::EndGetOffVehicle` detour：下车动作结束时，若该角色是本地玩家
+   （`Pawn.Controller → PlayerController.Player → Player.PlayerController` 回指同一控制器，
+   排除 NPC/AIController）则立即停止引擎。原因：接管时跳过了原始 Post，PlayingID 为 0，
+   游戏自己的下车停止路径都按 PlayingID 判断而被跳过，所以必须用下车动作本身作信号。
+   `SetMusicPlayerType` 切到非载具、非载具事件的 Post 同样立即停止，不走宽限期。
+4. 曲库：`musicFolder` 目录（含子目录）下所有 `.flac|.wav|.mp3|.ape|.dsf|.dff`，文件名无需修改，按路径排序
+   组成歌单，替代游戏电台：首个载具音乐事件开始播放，之后游戏切歌/切台不打断当前歌曲，
+   只有歌曲播完（自动接下一首，末尾循环）或点「下一首」才切换。游戏 Stop 后 1.5 s 内没有新的
+   载具 Post 才真正停止并释放设备；本地玩家下车（`EndGetOffVehicle`）立即停止。可选：若存在与事件名同名
+   的文件（如 `Play_Music_Radio_Progressive_Metal_001.flac`），该事件固定播放它并单曲循环、
+   跟随游戏 seek。目录扫描在引擎线程完成，Hook 与 Draw 只读取内存快照，不做文件 I/O。
+5. 游戏内专辑（名称为曲库文件夹名，如 `D:\Music\周杰伦` → 「周杰伦」；换文件夹后重建专辑行）：曲库有几首，专辑里就有几首（追加在游戏歌曲之后，不替换、不隐藏游戏歌曲）。
+   快照架构：detour 只读写有界的共享状态——表遍历 detour 把模板行/已列出的游戏歌曲 ID 记入捕获缓冲
+   （纯存储，无游戏调用），查表 detour 命中合成名时从已发布的不可变快照返回合成行；后台 builder 线程
+   （250ms 轮询）把捕获变成行（`FText::FromString`、行复制都在这里）并整体发布下一个快照。
+   快照从不释放（UI 持有行指针），builder 在 Stop/Unload 里先于 Hook 与引擎被 join。
+   首屏显示由游戏线程的就地构建保证（`BuildSnapshotInline`）：游戏构建专辑列表早于任何音乐表
+   遍历，只靠 detour 被动捕获会让专辑首屏不显示（播一首歌才出现）。列表构建 detour（游戏线程）
+   在快照未发布时先补缺失的音乐表模板（`PrimeMusicTemplate`：持 walk Hook 租录用原始
+   `ForeachRow` 空串遍历一次音乐表），再就地构建并发布快照，同一次列表构建即包含曲库条目；
+   UE 表结构不能从其他线程遍历（builder 线程遍历会在加载期与游戏线程竞争导致游戏静默退出），
+   builder 线程只做维护性重建，与就地构建用 `g_build_mutex` 互斥（builder 用 try_lock 让路）。
+   - 合成行：音乐表模板行按曲库标题复制出 `FPlayerMusicData` 行（标题用游戏自己的
+     `FText::FromString`，`AlbumID` 指向新专辑，排序在所有游戏条目之后）；专辑行复制模板专辑的
+     `FMusicAlbumData`。行名 FName = 真实行的 ComparisonIndex + 自定义 Number（第 k 首
+     `0x48460000+k+1`，专辑 `0x4846FFFF`）。行常驻不释放（UI 持有行指针）。
+   - 查找/遍历：`FindRow` / `GetAlbumData` 命中合成名时返回合成行；两个 `ForeachRow` 用记录包装跑完
+     原表（顺带捕获模板）后追加快照里的合成行。
+   - 已拥有列表：`GetOwnedMusicListIDs` 的副本追加曲库 ID；`ReGenerateNewMusicListIDs` /
+     `SetCurrentMusicListID` 直接读 `+0x3E0`，调用前临时加入、调用后原位移除，存档不会写入合成 ID。
+   - 播放：只有专辑里的歌（list ID 解析出曲库序号 k）走 HiFi 引擎播放曲库第 k 首；游戏自带歌曲照常由 Wwise 播放。
+   - 重新扫描曲库后按新标题重建合成行（旧行泄漏，避免 UI 悬垂指针）。
+   - 锁定状态：音乐面板 `RefreshItemStates`、载具音乐面板列表构建、`ResolveCurrentMusicListID`、
+     `SyncCurrentMusicListID` 也直接读 `+0x3E0`（不经 `GetOwnedMusicListIDs`），不加入就会被判为未拥有
+     （state 3 = 锁定）或把当前歌切回游戏歌曲；同样只在调用期间临时加入（嵌套调用只加一次）。
+   - 专辑封面：曲库根目录下的 `cover|folder|front|album` + `.png|.jpg|.jpeg|.bmp`；没有时用插件包内的
+     `assets/library-cover.png`。由 builder 线程用游戏自带的 `ImportFileAsTexture2D` 导入为 Transient 纹理，
+     `FUObjectItem::SetFlags(RootSet)` 防 GC，封面 detour 只把已导入的纹理 `SetBrushFromTexture` 到专辑卡片的
+     UImage 上。任一步失败则保留模板封面。
+6. 转动的唱片：专辑卡片（`BPUI_MusicThumbnail_C`）与车载播放器（`BPUI_MusicDetailedView_C` 的 `AlbumCoverImg`）
+   上的唱片都是 MaterialInstanceDynamic，封面是贴图参数 `Tex1`；直接换控件画刷会被蓝图盖回，所以改写材质参数。
+   builder 线程按名字找到 `MaterialInstanceDynamic::SetTextureParameterValue`（对象表里 outer 为 MID 类的同名
+   UFunction）和 `Tex1` 的 FName；播放器唱片只在游戏显示专辑或接管播放后才在对象表里查找，找不到时按
+   1、2、4…32 个 builder 周期退避，最多 6 次。每帧 tick（游戏线程）只做有界读：参数已是目标纹理就跳过，
+   被蓝图写回时才经 `ProcessEvent` 调一次。专辑卡片显示插件专辑的封面；播放器唱片显示正在放的插件歌曲
+   的封面（Meting 单曲封面就绪前用 Meting 专辑封面），放游戏歌曲时不改。
+7. Meting 网络曲库（独立专辑「Meting」，与本地曲库并列，行名 Number 用 `0x48470000+k+1`、专辑 `0x4847FFFF`）：
+   - 接口 `https://api.qijieya.cn/meting/`，`server=netease`；搜索 `type=search&limit=30`，歌单
+     `type=playlist`。歌单输入框接受 ID 或分享链接（取 `?id=`/`&id=` 后的数字，其次 `playlist/` 后的数字）。
+   - 所有网络请求在插件自己的 Meting 线程上执行（WinHTTP，跟随重定向）；Hook 只往队列里放请求，不等网络。
+     Stop/Unload 先关闭在途请求句柄再 join 线程，停止时间有上界。
+   - 播放：音频整首下载到内存后交给引擎（`ma_decoder_init_memory`），不写磁盘；换歌即释放。同一首歌
+     下载中不重复排队。下载失败自动跳到下一首，连续失败 3 次后停止跳过（成功或手动点歌后重新计数）。
+   - 播放队列按当前歌所属专辑隔离：放 Meting 歌时队列只含 Meting 歌，放本地歌时只含本地歌，游戏的
+     上一首/下一首与播完自动下一首都不会跨专辑。Meting 歌播完由插件下载下一首（末尾回到第一首）。
+   - 接管后原始 Stop 会清空子系统当前歌 ID，暂停后再播放会提示「专辑未解锁」；接管时立即写回刚投递的
+     插件歌，每帧同步遇到空 ID 也立即纠正。
+   - 封面：Meting 专辑用 `assets/meting-cover.png`；每首歌的封面按 `pic` 下载到内存，游戏线程 tick 用
+     `ImportBufferAsTexture2D`（`KismetRenderingLibrary` 默认对象上经 `ProcessEvent` 调用，调用前核对
+     UFunction 的 NumParms=3、ParmsSize=0x20、ReturnValueOffset=0x18）导入并 RootSet，换歌时解除上一首的
+     RootSet，同时最多保留一张单曲封面。
+   - 上次成功的搜索词或歌单 ID 写入设置，加载时自动重新拉取；只存这条请求，不存歌曲列表和音频。
+
+## 开源依赖
+
+| 库 | 用途 | 许可证 |
+| --- | --- | --- |
+| [miniaudio](https://github.com/mackron/miniaudio) 0.11.25 | 解码（FLAC/WAV/MP3）、WASAPI 独占/共享、DirectSound | MIT-0 / Public Domain |
+| [RtAudio](https://github.com/thestk/rtaudio) 6.0.1 | ASIO 输出（只启用 ASIO API）；其 Steinberg ASIO 宿主代码也用于原生 DSD 输出 | MIT（内含 Steinberg ASIO 宿主代码） |
+| [Monkey's Audio SDK](https://monkeysaudio.com/developers.html) 13.27 | APE 解码（作为 miniaudio 自定义解码后端） | BSD-3-Clause |
+| [dsd2pcm](https://github.com/GiangLH/dsd2pcm)（Sebastian Gesemann） | DSD 无法直通时转 PCM（8:1 抽取，DSD64 → 352.8 kHz） | BSD-2-Clause |
+
+DSD 输出方式（设置 `dsdMode`，界面「DSD 输出」）：`pcm` 仅 PCM / `native-dop-pcm` Native > DoP > PCM（默认）/
+`dop-native-pcm` DoP > Native > PCM。Native 与 DoP 只在 `asio` 后端尝试，失败的原因会附在输出说明里；
+驱动拒绝 ASIO DSD 模式后，在换后端/设备/模式前不再重复尝试。其余后端直接走 PCM。
+
+DSF / DFF 为原生 DSD 直通，不转 PCM：插件自己解析文件（DSF 按声道块存放、LSB 在前；DFF 按字节交错、
+MSB 在前；不支持 DST 压缩的 DFF），用 `ASIOFuture(kAsioSetIoFormat, kASIODSDFormat)` 把驱动切到 DSD 模式，
+采样率设为 DSD 速率（DSD64 = 2822400 Hz），按驱动报告的 `ASIOSTDSDInt8LSB1/MSB1` 位序原样写入比特流。
+只在 `asio` 后端可用。驱动拒绝 ASIO 原生 DSD 模式时（如 xDuoo 驱动，返回码会显示在状态里），回退到 DoP
+（DSD over PCM v1.1）：同一个 ASIO 设备以 DSD 速率的 1/16 开 32 位整数流（DSD64 → 176400 Hz），每帧每声道
+高 24 位放 `0x05/0xFA` 交替标记 + 两个 DSD 字节，DAC 识别标记后按 DSD 解码，比特流同样不经任何转换。
+两种都不行时跳过这首并显示原因。DSD 流不能做数字音量，音量设置对其无效；
+暂停和曲尾填 DSD 静音码 `0x69`。
+
+WASAPI 独占模式按文件原生采样率打开设备，设备不支持时由 miniaudio 回退到设备原生格式并重采样。
+
+## 逆向记录（HTGame 1.4a，UE 5.6.1）
+
+| 函数 | 地址 | 签名 |
+| --- | --- | --- |
+| PostPlayerMusicSound(this, UAkAudioEvent*, FName* listId, float pos) | 0x148A45C40 | `48 8B C4 4C 89 40 18 55 53 56 57 41 54 41 56 41 57 48 8D 68 88 48 81 EC 40 01 00 00 0F 29 70 B8` |
+| StopPlayerMusicSound(this, uint8 bNoTransition) | 0x148A4EB30 | `48 83 EC 28 0F B6 C2 48 89 5C 24 38` |
+| Pause(this) | 0x148A442A0 | `40 53 48 83 EC 20 8B 91 20 04 00 00 48 8B D9 85 D2 7E ?? 33 C9 41 B1 04 44 8D 41 64 E8 ?? ?? ?? ?? 48 8D 8B 80 03 00 00 C6 83 24 04 00 00 01` |
+| Resume(this) | 0x148A4B7B0 | 同 Pause，末尾为 `C6 83 24 04 00 00 00` |
+| SetMusicPlayerType(this, type) | 0x148A4CFC0 | `48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8D 99 90 04 00 00 4C 89 74 24 30 48 8D B1 28 04 00 00 8B EA 48 8B F9 39 91 28 04 00 00` |
+| AHTPlayerCharacter::EndGetOffVehicle(this, bool)（vtable +0x15A0） | 0x147E01600 | `40 55 53 56 57 41 54 41 55 41 57 48 8D AC 24 10 FF FF FF 48 81 EC F0 01 00 00 44 0F B6 EA 48 8B F9 E8` |
+| FText::FromString(FText* out, const TCHAR*) | 0x141554E60 | 序言不唯一，取 `UHTUI_MusicListItem::SetListItem`（`40 55 41 56 48 83 EC 58 4C 8B F2 48 8B E9 E8`）`+0xB8` 处 `E8 rel32` |
+
+专辑相关函数（FindRow、两个 ForeachRow 取调用点 `E8 rel32`；GetGameInstance、GetAlbumData、
+`TArray<FName>::AddUnique`、GetOwnedMusicListIDs、ReGenerateNewMusicListIDs、SetCurrentMusicListID）
+的签名及行结构偏移见 `hifi_vehicle_music_profile.hpp`。GameInstance 音乐表 `+0x1840`、专辑表 `+0x1848`。
+
+`UHTSoundSubsystem` 偏移：AkComponent `0x3D8`、ListID `0x400`、EventName `0x418`、
+PlayingID `0x420`、Paused `0x424`、PendingSeek `0x425`、PlayerType `0x428`；
+`UAkAudioEvent` 名称 FName 在 `0x18`。本地玩家判定：`APawn::Controller` `0x2F8`、
+`APlayerController::Player` `0x368`、`UPlayer::PlayerController` `0x30`。已拥有歌单 ID
+`TArray<FName>` 在 `0x3E0`。签名与偏移统一定义在 `hifi_vehicle_music_profile.hpp`。
+
+## 设置
+
+| 键 | 说明 |
+| --- | --- |
+| `enabled` | 是否接管载具音乐 |
+| `backend` | `wasapi-exclusive` / `wasapi-shared` / `directsound` / `asio` |
+| `device` | 设备名，空为默认设备 |
+| `bufferMs` | 输出缓冲时长 |
+| `volume` | 0–1 线性音量（独占/ASIO 下为数字域音量，1.0 为 bit-perfect） |
+| `musicFolder` | 曲库绝对路径，通过窗口里的「浏览...」（Windows 选择文件夹对话框）选择；相对路径会被忽略，因为插件包每次加载都在不同的 `.cache/<pid>/` 目录 |
+| `metingKind` | 上次成功的 Meting 请求类型：`search` / `playlist`，空为没有 |
+| `metingQuery` | 对应的搜索词或歌单 ID（最长 512 字符），加载时自动重新拉取 |
+
+设置经 config 服务持久化：任何修改后由 scheduler 延迟 500 ms 合并写入，Stop 时再补写一次。
+
+## 行为说明
+
+- 未选文件夹、曲库为空或输出设备打开失败时不接管，游戏 Wwise 照常播放（窗口与日志会显示原因）。
+- 插件选择的输出设备只承载替换后的音乐，不影响游戏自身音频设备；切换插件设备不会让游戏静音。
+- 日志写入 `Anomaly/logs/anomaly-runtime.jsonl`：Hook 安装结果、每个新音乐事件的名称与是否替换。
+- 界面文本走 localization 服务，`locales/zh-CN.json` 提供中文。
+
+## 进度
+
+- [x] IDA 定位函数、签名唯一性验证、偏移确认
+- [x] SDK 接口核对（hook / signature / config / ui / ue5.names / core.plugin_directory）
+- [x] Profile、manifest、音频引擎、插件主体、CMake
+- [x] 构建通过（build.cmd，windows-vs2022 RelWithDebInfo）
+- [x] 文件夹选择对话框、设置持久化（scheduler）、zh-CN 本地化、事件/Hook 日志
+- [x] 歌单模式：直接使用曲库原文件名，按顺序播放并自动切歌
+- [x] 歌单替代游戏电台：游戏切歌不打断；音量下方「上一首 / 暂停·播放 / 下一首」播放控制
+- [x] 下车停止：Hook `EndGetOffVehicle`（本地玩家判定），待实测
+- [x] ~~歌单改名 + 取模对齐~~（已废弃：曲库少时会被藏起来/重复）
+- [x] 新增游戏内专辑「HiFi 曲库」：曲库几首就追加几首，游戏歌曲不动；实测专辑和歌曲出现，但全部锁定
+- [x] 修锁定：专辑页列表构建（`RefreshPageList`）也直接读已拥有列表，Hook 后实测曲库歌曲已解锁
+- [x] 解锁全部游戏歌曲：遍历音乐表时记下所有可列出（IsList 且非 IsHidden）的歌，和曲库歌曲一起
+  临时加入已拥有列表，只加原本没有的、调用后原样移除，存档不变；构建通过，待实测
+- [x] 切歌回到游戏歌曲：播放队列构建（ReGenerate / SetCurrent / Resolve / Sync）在当前歌是曲库歌时
+  只看到曲库歌曲（快照已拥有列表、调用后原样写回），界面路径仍看到全部解锁；构建通过，待实测
+- [x] 实测切歌只在曲库内
+- [x] 专辑要上下车才出现：专辑列表可能先于任何音乐表遍历构建，此时还没有模板行；现在构建专辑时
+  主动用原始 ForeachRow 遍历一次音乐表取模板；构建通过，待实测
+- [x] 实测：专辑一上车就出现
+- [x] 引擎自己接下一首后游戏仍认为是上一首（标题不变、游戏切歌从旧位置算）：每帧（AHUD 回调，Game 线程）
+  把游戏的当前歌 ID 用 `SetCurrentPlayerMusicListID` 同步到引擎实际在放的曲库歌；只在当前是曲库歌时改。
+  另吞掉当前为曲库歌时的 Wwise 结束回调；构建通过，待实测
+- [x] 实测：歌名随引擎接歌同步；「放一半被切」是 30 秒的歌正常结束
+- [x] 游戏播放器进度条：接管时把 PlayingID 设为固定的 `0x7FFFFF00`（Wwise 忽略），Hook 两个 Wwise 位置查询
+  （比例 / 秒）对该 ID 返回引擎位置；Hook 时长回调，用扫描时测得的文件时长替换模板歌曲时长；
+  拖动进度条（同一首歌带位置重新投递）在引擎内 seek；构建通过，待实测
+- [x] 实测：进度条与真实进度同步、时长正确；拖动会被拉回
+- [x] 拖动跳转：进度条松手走 `ChangePlayerMusicSound(position)`（重新异步加载模板事件再投递），
+  当前是曲库歌时改为直接让引擎 seek；构建通过，待实测
+- [x] 实测：拖动跳转正常
+- [x] 专辑页点歌（曲库少于 7 首时无反应）：Hook `OnMusicDetailedViewEntryClicked`，原函数没切过去时，
+  对曲库歌按歌曲结束的路径补切（入队、设为当前、投递，投递照常被接管）；构建通过，待实测。
+  门槛本身（游戏只在面板自己的列表条目里找这首歌）没有改
+- [x] 实测：补切有效，但要点两下。原因推测是每帧同步在新歌异步投递到引擎前把当前歌改回了旧歌；
+  现在只在引擎自己换歌时同步；构建通过，待实测
+- [x] 实测：封面正常显示目录里的图
+- [ ] 7 首门槛本身：未治本。实测少于 7 首时必须双击，高亮和切歌同时发生；单击、双击都没触发
+  `OnMusicDetailedViewEntryClicked` / `OnMusicItemSelected`，所以真正的点歌路径另有其处。
+  诊断结果：双击走 `UHTUI_MusicPlayer::OnPauseResumeStateChanged`（`0x148FF3160`）→ `ChangePlayerMusicSound`；
+  专辑详情页歌曲列表的选歌处理是 `0x148FF12B0`，挂在列表控件的多播委托（列表对象 `+0xC90`）上。
+  这个委托在少于 7 首时只在双击时触发。列表外层是游戏自己的对齐滚动框 `SHTAlignScrollBox`
+  （`HTAlignScrollBox.cpp`，构建在 `0x148B97750`），它在列表对象 `+0xC90` 上包了一层；
+  ProcessEvent 追踪：单击只触发条目的 `BP_UpdateSelected`（选中视觉），双击才有
+  `BP_OnItemSelectionChanged` + 播放。点击广播在 `0x1481F29B0`（列表对象 `+0xC90` / `+0xCF0`）。
+  列表是 `UHTListView`，有逐条入场动画（OneByOne，状态在 `+0xD50`）；动画进行中会清掉内层控件
+  `+0x958` 的标志。实测：动画状态 0（空闲），推测被否定（其余字段读数无效，偏移有误，已删）。
+  已加诊断：Hook 行点击处理 `0x148219F80` 和列表点击广播 `0x1481F29B0`。实测单击、双击都没有触发
+  这两处，专辑列表的点击不走通用列表的点击路径，仍未定位
+- [x] 进度条总时长一直是 3:06：专辑页双击/继续播放走另一个时长回调 `0x148FD1EE0`（info 多一层指针），
+  之前没 Hook，显示的是模板游戏歌的时长；已 Hook，构建通过，待实测
+- [x] 歌名与实际播放不一致、拖动又被拉回：游戏有时不经投递就把当前歌改回存档里的游戏歌
+  （Wandering In The Night），曲库歌照常在放。判断「插件是否在放」改为看 PlayingID 是否为接管值；
+  不一致超过 2 秒就把当前歌改回引擎在放的曲库歌；拖动和时长也按这个判断；构建通过，待实测
+- [x] 暂停偶尔没反应：专辑页「继续」走重新投递，接管时跳过了原 Post，子系统的暂停标志 `+0x424`
+  留在 1，下一次点暂停被当成继续。接管时把它清 0；构建通过，待实测
+- [x] 专辑封面：不再改专辑行；Hook 专辑详情页（`+0xF98`）和专辑列表条目（`+0x658`）的封面设置，
+  原函数设完后，若是 HiFi 专辑就对 UImage 调 `SetBrushFromTexture`（vtable `+0x320`）换成导入的纹理
+  （首次显示时导入并 RootSet）。没有图片或导入失败保留模板封面；构建通过，待实测
+- [x] 实测：暂停、歌名与进度一致、拖动正常；7 首门槛按用户要求暂缓
+- [x] 新格式：APE（Monkey's Audio SDK，走原有 PCM 路径，所有后端可用）；DSF/DFF 原生 DSD 直通
+  （仅 ASIO，驱动切 DSD 模式，不转 PCM），时长、进度、拖动同样生效；构建通过，待实测
+- [x] 实测：xDuoo ASIO 驱动拒绝 `kAsioSetIoFormat`。加 DoP 回退（同样是原生 DSD 比特流，DAC 显示 DSD），
+  状态里显示驱动返回码；构建通过，待实测
+- [x] 实测：xDuoo 只能 DoP。加 DSD 输出选项（仿 QQ 音乐）：仅 PCM / Native > DoP > PCM / DoP > Native > PCM，
+  逐级回退，最后一级用 dsd2pcm 转 PCM；实测正常
+- [x] 专辑名改为曲库文件夹名；窗口去掉设备说明和「最近事件」两行；构建通过，待实测
+- [x] 修复「带插件开机必卡死、切图也挂起」：诊断用的 ProcessEvent 追踪在 Game 线程上调
+  `anomaly.ue5.names` 的 `resolve_utf8`，而宿主在这条调用里会等待自己的语义状态发布完成；
+  Game 线程一旦等在那里，整个游戏就不再推进（dump 显示 GameThread 停在
+  `msvcp140!Cnd_wait → SleepConditionVariableSRW`，调用链正是本插件的追踪回调）。追踪已移除，
+  它此前的结论保留在上面第 7 条；宿主不再阻塞 Game 线程调用者后可以再加回来。
+- [x] 修复「开机启用后专辑和音乐都没了」：`EnsureRows` 只在游戏遍历专辑/音乐表（开音乐播放器、
+  上下车建列表）时被驱动，开机直接开车时它没跑过，`AlbumActive` 为假，于是专辑不进列表、
+  车载音乐全部 `skipped: game song`；另外首次扫描还没出结果时它会发布一张空专辑并记下当时的
+  曲库代次，之后要等下一次扫描才会重建。现在空曲库视为「还没扫完」不发布、不记代次，
+  且在投递事件判断前先建一次行（已建好时这里只比一次代次）。日志证据：正常那次是
+  `library yes` + `... (playerType 1): replaced`，开机那次是 `library no` + `... skipped: game song`。
+- [x] 开机启用时 `current song sync unavailable`：`ue5.ahud` 是可选服务，宿主只在游戏的反射门
+  就绪后才发布它，而开机加载发生在门打开之前；插件当时拿到空指针就永久放弃，这一局的歌名/进度
+  每帧同步一直是关的（游戏内启用或热载入时门已开，所以以前看不到这个问题）。
+  现在 `EnsureSyncSubscription` 是幂等的：每次音乐事件都会用 `Context` 里保存的 host 指针重新
+  查询该服务，拿到后订阅一次。查询本身就代表服务已发布，因此能避开「在 Game 线程上调用尚未就绪
+  的宿主状态」那种卡死；日志改为成功时的 `current song sync subscribed`
+- [x] 诊断探针全部停用：`LogCaller`（调用点 + 24 字节 code before）、专辑条目/行/列表点击、
+  `SetCurrentPlayerMusicListID` 调用点、开机的 module base/trampoline，以及这次为定位专辑问题
+  临时加的 `library album not built: <原因>`。代码按注释保留在原地，需要时整段解注释即可；
+  保留的是状态日志（hooks installed、音乐事件 replaced/skipped、签名/hook 失败告警）
+- [x] 修复「停用/热重载触发 host stop deadline exceeded → quarantine」：detour 在回调租约内做无界工作
+  （`EnsureRows` 在 `TakeOverPost`/`AlbumForEach` 里建行、FText 创建、`CoverTexture` 导入、宿主 names
+  服务调用），MinHook 撤销 Hook 要冻结全进程线程并等回调排空，宿主只有 1 秒预算；加上跨 Hook 的
+  trampoline 调用（Post detour 里调 Stop 原函数、点歌补切里调 SetCurrent/ChangeSound 原函数）没有
+  嵌套租约，撤销期间可能踩已释放的跳板。重构为快照 + builder 线程（见上），30 个 Hook 的 detour
+  全部有界并全部安装（功能不缩水），跨 Hook 调用统一走 `CallUnderLease` 嵌套租约，事件名经
+  `ResolveEventName` 缓存。`anomaly-test-host --reload 30`（tick=10ms 极速重载）与
+  `--reload 5 --ticks 400` 全部通过，资源零泄漏；游戏内验证待做
+- [x] 修复游戏内「关闭/热重载仍 quarantine」的另一半根因（宿主侧）：插件 30 个 Hook 的撤销走
+  `RevokeScope` 逐个 `Disable`+`Remove`，MinHook 每次都全进程挂起/恢复线程（系统线程快照），
+  真实游戏 100+ 线程下 60 次挂起耗尽宿主 1 秒停止预算（test host 线程少测不出）。宿主改为批量：
+  `RemoveOwner` 一次 `MH_ApplyQueued` 挂起完成整批 disable，再逐个 remove（已禁用的 Hook 移除
+  不再挂起）；装/卸 30 Hook 从 60 次挂起降到 1 次
+- [x] 修复「专辑必须播一首歌才显示」：快照发布依赖 detour 被动捕获的表模板，而游戏构建专辑列表
+  早于任何音乐表遍历；改为列表构建 detour（游戏线程）在快照缺失时补音乐表模板（`PrimeMusicTemplate`）
+  并就地构建发布（`BuildSnapshotInline`）。首版把补模板放在 builder 线程，与加载期的游戏线程并发
+  遍历同一张表，导致游戏启动阶段静默退出——已改为仅游戏线程遍历（时长显示依赖同一快照，一并恢复）
+- [x] 修复「切歌后进度条总时长不更新」（本分支引入的回归）：切歌路径的时长查询载荷是面板
+  （`UHTUI_MusicPlayer`），而面板的标签槽 `+0x1018` 恒空，回调里的 SetText 被跳过——玩家实际看到的
+  TotalTime/CurrenTime 挂在进度条部件（`UHTUI_MusicPlayerProgressBar` 的 `+0xF90/+0xF98`）上，它由面板
+  的 outer 链宿主 `UHTUI_MusicDetailedView` 持有（`+0xFF8` 指回面板、`+0x1000` 指向进度条），
+  游戏自己的切歌查询与之前的推送都打不中它。推送改为从注册面板沿 outer 链定位宿主（校验
+  `+0xFF8` 回指）取 `+0xF98` 标签，再用「合成视图」（`+0x1018` 指向该标签）驱动游戏自己的第二个
+  时长回调，SetText 可见标签的仍是游戏自己的格式化器；推送值直接取点歌索引的时长表
+  （`engine.Play` 是异步命令，推送瞬间 `PlayingSlot()` 仍是上一首的槽位）；过渡帧的推送移到
+  `TakenOver` 闸门之前（`+0x420` 恰在该帧被游戏重写，原先唯一的新鲜推送被闸门永久吞掉）；
+  条带自身的时长缓存 `+0xFA4` 在 SetText 前先写（BP 从它重排标签文本，不写则模板 30 秒被改回）；
+  无效的每帧 tick 自愈一并移除（该 tick 由 BP Timeline 驱动，正常播放期间从不执行）；已实测修复
+- [x] Meting 网络曲库：搜索、网易云歌单（ID 或分享链接）、独立「Meting」专辑、内存播放；暂停/继续、
+  拖动、上一首/下一首、播完自动下一首；歌单重启后自动恢复。已实测
+- [x] 播放队列按专辑隔离：旧版队列「本地 194 首 + Meting 2 首」连在一起，Meting 上按下一首会跳进本地；
+  改为按当前歌所属专辑建队列。已实测
+- [x] 专辑封面改为专辑卡片换画刷（替代早先改行数据、会让专辑消失的两种写法）；Meting 与本地专辑都有
+  默认封面。已实测
+- [x] 转动的唱片：专辑卡片和车载播放器的唱片改写材质参数 `Tex1`，Meting 每首歌显示自己的封面
+  （`ImportBufferAsTexture2D` 内存导入，不写磁盘）。已实测；会话第一首歌的封面修复（下载不再等导入
+  函数解析）待实测
+- [ ] 下载失败自动跳过：需要遇到无法下载的歌才能触发，未实测
+- [ ] 本地专辑封面只在专辑行首次创建时导入，若当时导入函数未就绪不会重试（尚未遇到）
+- [ ] 游戏内实测（需用户执行）：确认事件名、seek 语义、各后端独占/ASIO 打开情况
