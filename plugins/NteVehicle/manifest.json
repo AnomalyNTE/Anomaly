@@ -27,7 +27,7 @@
     },
     {
       "id": "anomaly.nte.vehicle",
-      "minVersion": 5
+      "minVersion": 6
     },
     {
       "id": "anomaly.nte.player",

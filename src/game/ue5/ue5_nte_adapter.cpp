@@ -839,8 +839,8 @@ struct Ue5NteAdapter::State {
     std::unordered_map<std::uintptr_t, float> other_vehicle_requested_torque_ratios;
     std::unordered_map<std::uintptr_t, VehicleSpeedFieldBaseline> other_vehicle_speed_field_baselines;
     std::unordered_map<std::uintptr_t, float> other_vehicle_speed_field_ratios;
-    // Independent lower bound for non-player vehicle speed factors; player vehicle tuning remains unchanged.
-    float vehicle_other_speed_multiplier_floor{0.6024F};
+    // Compatibility ratio floor for the legacy non-player ratio API. Zero means no floor.
+    float vehicle_other_speed_multiplier_floor{};
     std::string vehicle_other_speed_status;
     std::string vehicle_other_torque_status;
     float vehicle_speed_kmh{};
@@ -2578,6 +2578,7 @@ struct Ue5NteAdapter::State {
         vehicle_display_name_cache.clear();
         vehicle_display_name_cache_generation = 0;
         selected_summon_vehicle_id.clear();
+        vehicle_other_speed_multiplier_floor = 0.0F;
         vehicle_parameter_reset_requested.store(false, std::memory_order_release);
         session_event_start = 0;
         session_event_count = 0;
@@ -8618,33 +8619,24 @@ struct Ue5NteAdapter::State {
 
     [[nodiscard]] bool MakeVehicleSpeedFieldTargets(
         const VehicleSpeedFieldBaseline& baseline,
-        const float configured_multiplier,
-        VehicleSpeedFieldBaseline& targets,
-        const float minimum_multiplier = 0.50F) const noexcept {
-        // Original Anomaly code used a 0.6024x lower floor. The authorized current-vehicle
-        // fine-tuning policy explicitly supports 0.50x; other-vehicle callers pass their own floor.
-        // Effective TopSpeedRatio still derives from the captured baseline TopSpeedInKmH (or 70 if unset).
-        // Torque scale remains max(speedRatio * 2, 2), and RPM scale remains speedRatio.
-        constexpr float kAnomalyMultiplierCeiling = 20.0F;
-        const float multiplier_floor = std::clamp(minimum_multiplier, 0.05F, kAnomalyMultiplierCeiling);
-        constexpr float kAnomalyBaseSpeedKmh = 70.0F;
-        constexpr float kAnomalyMinValidField = 0.6024F;
+        const float requested_top_speed_kmh,
+        const float minimum_top_speed_kmh,
+        VehicleSpeedFieldBaseline& targets) const noexcept {
+        // The caller supplies an absolute target speed. Core only derives the native ratio from
+        // the stock speed captured from this vehicle and validates the resulting operation.
+        constexpr float kAnomalyMinValidField = 0.0F;
         constexpr float kAnomalyDefaultTorque = 1000.0F;
         constexpr float kAnomalyDefaultRpm = 6000.0F;
-        // The service accepts a generic 0.05..20.0 factor while callers own their UI policy.
-        // The derived
-        // effective TopSpeedRatio is targetKmH / originalTopSpeed and is not clamped
-        // by Anomaly; allow its full finite positive result.
         constexpr float kMinimumEffectiveRatio = 0.0000001F;
         constexpr float kMaximumEffectiveRatio = 2000.0F;
-        if (!baseline.valid || !std::isfinite(configured_multiplier) ||
-            configured_multiplier < 0.05F || configured_multiplier > 20.0F) return false;
+        if (!baseline.valid || !std::isfinite(requested_top_speed_kmh) ||
+            requested_top_speed_kmh <= 0.0F || !std::isfinite(minimum_top_speed_kmh) ||
+            minimum_top_speed_kmh < 0.0F || minimum_top_speed_kmh > requested_top_speed_kmh ||
+            !std::isfinite(baseline.top_speed_kmh) ||
+            baseline.top_speed_kmh <= kAnomalyMinValidField) return false;
 
-        const float multiplier = (std::min)(kAnomalyMultiplierCeiling,
-            (std::max)(multiplier_floor, configured_multiplier));
-        const float target_speed_kmh = multiplier * kAnomalyBaseSpeedKmh;
-        const float baseline_speed_kmh = baseline.top_speed_kmh > kAnomalyMinValidField
-            ? baseline.top_speed_kmh : kAnomalyBaseSpeedKmh;
+        const float target_speed_kmh = (std::max)(requested_top_speed_kmh, minimum_top_speed_kmh);
+        const float baseline_speed_kmh = baseline.top_speed_kmh;
         const float speed_ratio = target_speed_kmh / baseline_speed_kmh;
         if (!std::isfinite(target_speed_kmh) || !std::isfinite(speed_ratio) ||
             speed_ratio < kMinimumEffectiveRatio || speed_ratio > kMaximumEffectiveRatio) return false;
@@ -8696,15 +8688,30 @@ struct Ue5NteAdapter::State {
         return Status(ANOMALY_STATUS_V1_OK, "Core has no debug-key authorization state");
     }
 
-    AnomalyStatusV1 VehicleSetTopSpeedRatio(float ratio) noexcept {
-        if (!std::isfinite(ratio) || ratio < 0.05F || ratio > 20.0F)
-            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "top speed ratio must be 0.05..20.0");
+    AnomalyStatusV1 VehicleSetTopSpeedTargetValue(
+        const float value,
+        const bool value_is_ratio,
+        const float minimum_top_speed_kmh) noexcept {
+        if (value_is_ratio) {
+            if (!std::isfinite(value) || value < 0.05F || value > 20.0F)
+                return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                    "compatibility top speed ratio must be 0.05..20.0");
+        } else if (!std::isfinite(value) || value <= 0.0F ||
+            !std::isfinite(minimum_top_speed_kmh) || minimum_top_speed_kmh < 0.0F ||
+            minimum_top_speed_kmh > value) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                "absolute top speed target and minimum must be finite, positive, and ordered");
+        }
         if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
             return Status(ANOMALY_STATUS_V1_FAILED, "vehicle mutation must run on Game thread");
         std::scoped_lock lock(mutex);
         if (!RefreshVehicleLocked())
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "current driving vehicle is unavailable");
         if (vehicle_is_water) {
+            if (value_is_ratio) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    "water vehicles require an absolute speed target");
+            }
             const auto& water_limit = vehicle_bindings.set_water_top_speed_limit;
             if (water_limit.function == 0 || water_limit.parms_size == 0 ||
                 water_limit.parms_size > 8U ||
@@ -8712,25 +8719,18 @@ struct Ue5NteAdapter::State {
                 return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                     "HTGame.HTWaterVehicleBasePawn.SetDynamicTopSpeedLimit(float) failed dump ABI validation");
             }
-            // The water API accepts an absolute km/h cap; keep the same Anomaly factor
-            // policy by converting the configured multiplier to the 70 km/h reference.
-            const float target_speed_kmh = 70.0F * ratio;
-            if (!std::isfinite(target_speed_kmh) || target_speed_kmh <= 0.0F) {
-                return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
-                    "water-vehicle absolute speed limit is invalid");
-            }
             alignas(8) std::array<std::uint8_t, 8> parameters{};
             std::memcpy(parameters.data() + water_limit.parameter_offset,
-                &target_speed_kmh, sizeof(target_speed_kmh));
+                &value, sizeof(value));
             if (!InvokeProcessEventGuarded(process_event_invoker, current_vehicle_object,
                     water_limit.function, parameters.data(), water_limit.parms_size)) {
                 return Status(ANOMALY_STATUS_V1_FAILED,
                     "HTWaterVehicleBasePawn.SetDynamicTopSpeedLimit ProcessEvent failed");
             }
-            vehicle_current_velocity_ratio = ratio;
-            vehicle_top_speed_ratio = ratio;
+            vehicle_current_velocity_ratio = 1.0F;
+            vehicle_top_speed_ratio = 1.0F;
             return Status(ANOMALY_STATUS_V1_OK,
-                "HTWaterVehicleBasePawn.SetDynamicTopSpeedLimit applied absolute limit in km/h");
+                "HTWaterVehicleBasePawn.SetDynamicTopSpeedLimit applied the requested km/h target");
         }
         if (vehicle_bindings.set_top_speed_ratio.function == 0)
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
@@ -8778,13 +8778,18 @@ struct Ue5NteAdapter::State {
         // Always apply the known-native limit first. Failure to read movement velocity
         // must not disable the separate SetTopSpeedRatio cap that can work on its own.
         std::array<std::uint8_t, 8> top_speed_parameters{};
-        // Compute Anomaly's absolute target speed and effective native TopSpeedRatio from the
-        // captured stock limits. SetTopSpeedRatio receives the effective ratio, not the UI factor.
+        // Derive the effective native TopSpeedRatio from the captured stock limits. The new
+        // service path supplies an absolute km/h target; the legacy slot uses the stock speed
+        // as its calibration and therefore carries no product-specific base speed.
+        const float requested_top_speed_kmh = value_is_ratio
+            ? vehicle_speed_field_baseline.top_speed_kmh * value : value;
+        const float requested_minimum_kmh = value_is_ratio ? 0.0F : minimum_top_speed_kmh;
         VehicleSpeedFieldBaseline field_targets{};
         std::string field_failure;
-        if (!MakeVehicleSpeedFieldTargets(vehicle_speed_field_baseline, ratio, field_targets)) {
+        if (!MakeVehicleSpeedFieldTargets(vehicle_speed_field_baseline,
+                requested_top_speed_kmh, requested_minimum_kmh, field_targets)) {
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
-                "Anomaly speed factor produces an invalid effective TopSpeedRatio for this vehicle");
+                "speed target produces an invalid effective TopSpeedRatio for this vehicle");
         }
         std::memcpy(top_speed_parameters.data() +
                 vehicle_bindings.set_top_speed_ratio.parameter_offset,
@@ -8976,7 +8981,17 @@ struct Ue5NteAdapter::State {
             return Status(ANOMALY_STATUS_V1_FAILED, vehicle_speed_restore_status.c_str());
         }
         return Status(ANOMALY_STATUS_V1_OK,
-            "Anomaly 速度上限、发动机参数、SetMaxEngineTorque 与当前速度均已应用");
+            "目标车速、发动机参数、SetMaxEngineTorque 与当前速度均已应用");
+    }
+
+    AnomalyStatusV1 VehicleSetTopSpeedRatio(float ratio) noexcept {
+        return VehicleSetTopSpeedTargetValue(ratio, true, 0.0F);
+    }
+
+    AnomalyStatusV1 VehicleSetTopSpeedTarget(
+        float top_speed_kmh,
+        float minimum_speed_kmh) noexcept {
+        return VehicleSetTopSpeedTargetValue(top_speed_kmh, false, minimum_speed_kmh);
     }
 
     AnomalyStatusV1 VehicleSetEngineTorqueRatio(float ratio) noexcept {
@@ -9234,23 +9249,33 @@ struct Ue5NteAdapter::State {
     }
 
     AnomalyStatusV1 VehicleSetOtherVehiclesMinSpeedRatio(float ratio) noexcept {
-        if (!std::isfinite(ratio) || ratio < 0.05F || ratio > 10.0F)
+        if (!std::isfinite(ratio) || ratio < 0.0F || ratio > 20.0F)
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
-                "non-player vehicle minimum speed factor must be 0.05..10.0");
+                "non-player vehicle compatibility minimum ratio must be 0.0..20.0");
         if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
             return Status(ANOMALY_STATUS_V1_CONFLICT,
                 "non-player vehicle speed floor mutation requires Game thread");
         std::scoped_lock lock(mutex);
         vehicle_other_speed_multiplier_floor = ratio;
-        vehicle_other_speed_status = "非玩家车辆最低车速倍率已设为 " +
-            std::to_string(ratio) + "x；请应用其他车辆速度倍率以更新已加载实例";
+        vehicle_other_speed_status = "非玩家车辆兼容最低比例已设为 " +
+            std::to_string(ratio) + "x；请应用其他车辆目标速度以更新已加载实例";
         return Status(ANOMALY_STATUS_V1_OK, vehicle_other_speed_status.c_str());
     }
 
-    AnomalyStatusV1 VehicleSetOtherVehiclesTopSpeedRatio(float ratio) noexcept {
-        if (!std::isfinite(ratio) || ratio < 0.05F || ratio > 20.0F)
+    AnomalyStatusV1 VehicleSetOtherVehiclesTargetValue(
+        const float value,
+        const bool value_is_ratio,
+        const float minimum_speed_kmh) noexcept {
+        if (value_is_ratio) {
+            if (!std::isfinite(value) || value < 0.05F || value > 20.0F)
+                return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                    "non-player compatibility speed ratio must be 0.05..20.0");
+        } else if (!std::isfinite(value) || value <= 0.0F ||
+            !std::isfinite(minimum_speed_kmh) || minimum_speed_kmh < 0.0F ||
+            minimum_speed_kmh > value) {
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
-                "non-player vehicle speed ratio must be 0.05..20.0");
+                "non-player absolute targets must be finite, positive, and ordered");
+        }
         if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
             return Status(ANOMALY_STATUS_V1_CONFLICT,
                 "non-player vehicle speed mutation requires Game thread");
@@ -9311,10 +9336,15 @@ struct Ue5NteAdapter::State {
             }
             VehicleSpeedFieldBaseline field_targets{};
             std::string field_failure;
-            if (!MakeVehicleSpeedFieldTargets(baseline_it->second, ratio, field_targets,
-                    vehicle_other_speed_multiplier_floor)) {
+            const float requested_top_speed_kmh = value_is_ratio
+                ? baseline_it->second.top_speed_kmh * value : value;
+            const float requested_minimum_kmh = value_is_ratio
+                ? baseline_it->second.top_speed_kmh * vehicle_other_speed_multiplier_floor
+                : minimum_speed_kmh;
+            if (!MakeVehicleSpeedFieldTargets(baseline_it->second,
+                    requested_top_speed_kmh, requested_minimum_kmh, field_targets)) {
                 ++failed;
-                record_failure("Anomaly speed factor produces an invalid effective TopSpeedRatio for this vehicle");
+                record_failure("speed target produces an invalid effective TopSpeedRatio for this vehicle");
                 continue;
             }
             const auto torque_fallback_it = other_vehicle_torque_fallback_ratios.find(movement);
@@ -9525,8 +9555,9 @@ struct Ue5NteAdapter::State {
             ++velocity_applied;
         }
 
-        vehicle_other_speed_status = "非玩家车辆速率倍率 " + std::to_string(ratio) +
-            "x：扫描到 " + std::to_string(actors.size()) + " 辆；最高车速上限已应用 " +
+        vehicle_other_speed_status = "非玩家车辆目标 " + std::to_string(value) +
+            (value_is_ratio ? "x（兼容比例）" : " km/h") +
+            "：扫描到 " + std::to_string(actors.size()) + " 辆；最高车速上限已应用 " +
             std::to_string(cap_applied) + " 辆，Anomaly 风格速度/发动机字段应用成功 " +
             std::to_string(speed_fields_applied) + " 辆，当前速度恢复成功 " +
             std::to_string(velocity_applied) + " 辆，部分成功 " +
@@ -9537,6 +9568,35 @@ struct Ue5NteAdapter::State {
         if (cap_applied == 0 || partial != 0 || failed != 0 || unreadable_slots != 0)
             return Status(ANOMALY_STATUS_V1_FAILED, vehicle_other_speed_status.c_str());
         return Status(ANOMALY_STATUS_V1_OK, vehicle_other_speed_status.c_str());
+    }
+
+    AnomalyStatusV1 VehicleSetOtherVehiclesTopSpeedRatio(float ratio) noexcept {
+        return VehicleSetOtherVehiclesTargetValue(ratio, true, 0.0F);
+    }
+
+    AnomalyStatusV1 VehicleSetOtherVehiclesTopSpeedTarget(
+        float top_speed_kmh,
+        float minimum_speed_kmh) noexcept {
+        return VehicleSetOtherVehiclesTargetValue(
+            top_speed_kmh, false, minimum_speed_kmh);
+    }
+
+    AnomalyStatusV1 VehicleSetSpeedTarget(
+        const AnomalyNteVehicleSpeedTargetV1* request) noexcept {
+        if (request == nullptr || request->struct_size < sizeof(*request))
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                "vehicle speed target request is missing its required fields");
+        switch (request->scope) {
+        case ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT:
+            return VehicleSetTopSpeedTarget(
+                request->top_speed_kmh, request->minimum_speed_kmh);
+        case ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED:
+            return VehicleSetOtherVehiclesTopSpeedTarget(
+                request->top_speed_kmh, request->minimum_speed_kmh);
+        default:
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                "vehicle speed target scope must select exactly one supported group");
+        }
     }
 
     AnomalyStatusV1 VehicleSetOtherVehiclesEngineTorqueRatio(float ratio) noexcept {
@@ -15595,7 +15655,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             VehicleSetOtherVehiclesEngineTorqueRatioThunk,
             VehicleSetOtherVehiclesMinSpeedRatioThunk,
             VehicleAuthorizeFineSpeedThunk, VehicleSetFineSpeedTuningEnabledThunk,
-            VehicleRevokeFineSpeedAuthorizationThunk};
+            VehicleRevokeFineSpeedAuthorizationThunk, VehicleSetSpeedTargetThunk};
         pickup_service = {
             sizeof(AnomalyNtePickupServiceV1),
             ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
@@ -15957,6 +16017,14 @@ private:
     static AnomalyStatusV1 ANOMALY_CALL VehicleRevokeFineSpeedAuthorizationThunk(void* user) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? static_cast<State*>(lease.User())->VehicleRevokeFineSpeedAuthorization() : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleSetSpeedTargetThunk(
+        void* user,
+        const AnomalyNteVehicleSpeedTargetV1* request) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? static_cast<State*>(lease.User())->VehicleSetSpeedTarget(request)
+                     : StoppedStatus();
     }
 
     static AnomalyStatusV1 ANOMALY_CALL VehicleSetEngineTorqueRatioThunk(

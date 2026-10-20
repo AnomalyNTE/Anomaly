@@ -20,6 +20,7 @@ namespace {
 constexpr float kLockedSpeedRatio = 10.0F;
 constexpr float kFineSpeedRatioMin = 0.50F;
 constexpr float kFineSpeedRatioMax = 10.0F;
+constexpr float kSpeedReferenceKmh = 70.0F;
 
 struct Snapshot {
     std::uint32_t flags{};
@@ -473,8 +474,13 @@ void Update() {
                 g_context.speed_ratio = kLockedSpeedRatio;
             }
         }
-        const auto status = g_context.vehicle->set_top_speed_ratio(
-            g_context.vehicle->user, ratio);
+        AnomalyNteVehicleSpeedTargetV1 request{};
+        request.struct_size = sizeof(request);
+        request.scope = ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT;
+        request.top_speed_kmh = ratio * kSpeedReferenceKmh;
+        request.minimum_speed_kmh = request.top_speed_kmh;
+        const auto status = g_context.vehicle->set_speed_target(
+            g_context.vehicle->user, &request);
         if (status.code == ANOMALY_STATUS_V1_OK) {
             SetStatus("当前车速与最高车速上限均已应用：" + std::to_string(ratio) + "x");
         } else if (status.message.data != nullptr && status.message.size != 0) {
@@ -521,37 +527,17 @@ void Update() {
             ratio = g_context.other_speed_ratio;
             floor_ratio = g_context.other_speed_floor_ratio;
         }
-        const bool floor_available =
-            HasField<AnomalyNteVehicleServiceV1,
-                decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_min_speed_ratio)>(
-                    g_context.vehicle,
-                    offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_min_speed_ratio)) &&
-            g_context.vehicle->set_other_vehicles_min_speed_ratio != nullptr;
-        if (!floor_available) {
-            SetStatus("非玩家车辆最低车速倍率不可用：Host Runtime 未发布扩展接口");
-        } else {
-            const auto floor_status = g_context.vehicle->set_other_vehicles_min_speed_ratio(
-                g_context.vehicle->user, floor_ratio);
-            if (floor_status.code != ANOMALY_STATUS_V1_OK) {
-                SetStatus(StatusDescription("非玩家车辆最低车速倍率设置失败", floor_status));
-            } else {
-                const bool available =
-                    HasField<AnomalyNteVehicleServiceV1,
-                        decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_top_speed_ratio)>(
-                            g_context.vehicle,
-                            offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) &&
-                    g_context.vehicle->set_other_vehicles_top_speed_ratio != nullptr;
-                if (!available) {
-                    SetStatus("非玩家车辆速率倍率不可用：Host Runtime 未发布 Vehicle V4 接口");
-                } else {
-                    const auto status = g_context.vehicle->set_other_vehicles_top_speed_ratio(
-                        g_context.vehicle->user, ratio);
-                    SetStatus(status.code == ANOMALY_STATUS_V1_OK
-                        ? StatusDescription("非玩家车辆速率与下限修改完成", status)
-                        : StatusDescription("非玩家车辆速率修改未完全成功", status));
-                }
-            }
-        }
+        floor_ratio = (std::min)(floor_ratio, ratio);
+        AnomalyNteVehicleSpeedTargetV1 request{};
+        request.struct_size = sizeof(request);
+        request.scope = ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED;
+        request.top_speed_kmh = ratio * kSpeedReferenceKmh;
+        request.minimum_speed_kmh = floor_ratio * kSpeedReferenceKmh;
+        const auto status = g_context.vehicle->set_speed_target(
+            g_context.vehicle->user, &request);
+        SetStatus(status.code == ANOMALY_STATUS_V1_OK
+            ? StatusDescription("非玩家车辆目标速度与下限修改完成", status)
+            : StatusDescription("非玩家车辆目标速度修改未完全成功", status));
     }
 
     if (g_context.apply_other_torque.exchange(false, std::memory_order_acq_rel)) {
@@ -958,7 +944,7 @@ void DrawPerformanceTab(
     DrawDivider(ui);
     DrawDivider(ui);
     DrawText(ui, "其他载具实例");
-    DrawText(ui, "目标最高速 = 70 km/h × 速度因子");
+    DrawText(ui, "插件按 70 km/h × 速度因子换算目标最高速");
     if (ui->slider_float(ui->user, anomaly::sdk::StringView("其他车辆速度倍率"),
                          &other_speed_ratio, 0.05F, 10.0F)) {
         std::scoped_lock lock(g_context.mutex);
@@ -969,7 +955,7 @@ void DrawPerformanceTab(
         std::scoped_lock lock(g_context.mutex);
         g_context.other_speed_floor_ratio = other_speed_floor_ratio;
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("应用其他车辆倍率与下限"), 0.0F, 0.0F)) {
+    if (ui->button(ui->user, anomaly::sdk::StringView("应用其他车辆目标速度与下限"), 0.0F, 0.0F)) {
         g_context.apply_other_speed.store(true, std::memory_order_release);
     }
 
@@ -1004,10 +990,10 @@ void DrawDebugPanel(
     std::size_t catalog_size, bool player_position_valid,
     bool fine_speed_tuning_enabled) {
     DrawText(ui, "构建标记：NTE Vehicle 0.9.9 / 2026-10-14-debug-speed-gate-slider-restored");
-    DrawText(ui, "构建标记：manifest schema v2 / Plugin API v1 / Vehicle service v5");
+    DrawText(ui, "构建标记：manifest schema v2 / Plugin API v1 / Vehicle service v6");
     DrawText(ui, "Plugin ID：anomaly.local." + std::string("nte-vehicle"));
     DrawText(ui, "Manifest：schemaVersion=2 / entry=plugin.dll / loadPhase=game-ready / games=nte / builds=nte-*");
-    DrawText(ui, "Required services：anomaly.ui v1 / anomaly.nte.vehicle v5 / anomaly.nte.player v1");
+    DrawText(ui, "Required services：anomaly.ui v1 / anomaly.nte.vehicle v6 / anomaly.nte.player v1");
     DrawText(ui, "Capabilities：ui / nte-vehicle / nte-player-snapshot");
     DrawText(ui, "创建日期：2026-10-14");
     DrawText(ui, "修改状态：已包含界面精简、五项分页及 DEBUG 密钥门控；游戏内结果待实测");
@@ -1207,7 +1193,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
     if (!vehicle || !player) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
 
-    if (!vehicle->snapshot || !vehicle->set_top_speed_ratio ||
+    if (!vehicle->snapshot ||
         !vehicle->summon_vehicle || !vehicle->set_wheel_friction_enabled ||
         !vehicle->reset || !vehicle->catalog_snapshot || !vehicle->vehicle_id_at ||
         !vehicle->set_summon_vehicle_id ||
@@ -1220,13 +1206,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
                 vehicle, offsetof(AnomalyNteVehicleServiceV1, catalog_label_at)) ||
         !vehicle->catalog_label_at ||
         !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_top_speed_ratio)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) ||
-        !vehicle->set_other_vehicles_top_speed_ratio ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_min_speed_ratio)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_min_speed_ratio)) ||
-        !vehicle->set_other_vehicles_min_speed_ratio ||
+            decltype(AnomalyNteVehicleServiceV1::set_speed_target)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_speed_target)) ||
+        !vehicle->set_speed_target ||
         !HasField<AnomalyNteVehicleServiceV1,
             decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_engine_torque_ratio)>(
                 vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_engine_torque_ratio)) ||

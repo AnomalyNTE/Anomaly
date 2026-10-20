@@ -15,7 +15,7 @@
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID "anomaly.nte.navigation"
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_VEHICLE_SERVICE_V1_ID "anomaly.nte.vehicle"
-#define ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION 5u
+#define ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION 6u
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_ID "anomaly.nte.entities"
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ACTORS_SERVICE_V1_ID "anomaly.nte.actors"
@@ -347,10 +347,22 @@ typedef struct AnomalyNteVehicleSummonRequestV1 {
     double world_position[3];
 } AnomalyNteVehicleSummonRequestV1;
 
+#define ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT (1u << 0u)
+#define ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED (1u << 1u)
+
+typedef struct AnomalyNteVehicleSpeedTargetV1 {
+    uint32_t struct_size;
+    uint32_t scope;
+    float top_speed_kmh;
+    float minimum_speed_kmh;
+} AnomalyNteVehicleSpeedTargetV1;
+
 typedef struct AnomalyNteVehicleServiceV1 {
     uint32_t struct_size; uint32_t service_version; void* user;
     AnomalyStatusV1 (ANOMALY_CALL *snapshot)(
         void* user, AnomalyNteVehicleSnapshotV1* snapshot);
+    // Compatibility slot. The ratio is interpreted relative to each vehicle's captured stock
+    // speed and carries no product-specific calibration. New callers should use set_speed_target.
     AnomalyStatusV1 (ANOMALY_CALL *set_top_speed_ratio)(
         void* user, float ratio);
     AnomalyStatusV1 (ANOMALY_CALL *set_wheel_friction_enabled)(
@@ -387,6 +399,11 @@ typedef struct AnomalyNteVehicleServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *set_fine_speed_tuning_enabled)(
         void* user, uint32_t enabled);
     AnomalyStatusV1 (ANOMALY_CALL *revoke_fine_speed_authorization)(void* user);
+    // V6: apply an absolute speed target selected by the plugin. scope is one of
+    // ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT or ..._OTHER_LOADED. Core identifies and
+    // validates matching live vehicles but does not define the user-facing calibration.
+    AnomalyStatusV1 (ANOMALY_CALL *set_speed_target)(
+        void* user, const AnomalyNteVehicleSpeedTargetV1* request);
 } AnomalyNteVehicleServiceV1;
 
 

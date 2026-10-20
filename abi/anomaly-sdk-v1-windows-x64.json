@@ -120,7 +120,7 @@
     "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_PRESS_ARMED": 2,
     "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_CLICK_ACCEPTED": 4,
     "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_TRUNCATED": 8,
-    "ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION": 5,
+    "ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION": 6,
     "ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES": 128,
     "ANOMALY_NTE_VEHICLE_V1_VALID": 1,
     "ANOMALY_NTE_VEHICLE_V1_HAS_SPEED": 2,
@@ -131,6 +131,8 @@
     "ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID": 1,
     "ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION": 1,
     "ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER": 2,
+    "ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT": 1,
+    "ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED": 2,
     "ANOMALY_NTE_VEHICLE_CLASS_NAME_MAX_UTF8_BYTES": 128
   },
   "enums": {
@@ -2060,8 +2062,18 @@
         "world_position": 8
       }
     },
+    "AnomalyNteVehicleSpeedTargetV1": {
+      "size": 16,
+      "alignment": 4,
+      "offsets": {
+        "struct_size": 0,
+        "scope": 4,
+        "top_speed_kmh": 8,
+        "minimum_speed_kmh": 12
+      }
+    },
     "AnomalyNteVehicleServiceV1": {
-      "size": 152,
+      "size": 160,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -2083,7 +2095,8 @@
         "set_other_vehicles_min_speed_ratio": 120,
         "authorize_fine_speed_tuning": 128,
         "set_fine_speed_tuning_enabled": 136,
-        "revoke_fine_speed_authorization": 144
+        "revoke_fine_speed_authorization": 144,
+        "set_speed_target": 152
       }
     }
   },
@@ -2265,7 +2278,7 @@
     },
     {
       "id": "anomaly.nte.vehicle",
-      "version": 5,
+      "version": 6,
       "table": "AnomalyNteVehicleServiceV1"
     },
     {

@@ -250,6 +250,10 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION);
     output.append(",\n    \"ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER\": ");
     AppendUnsigned(output, ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER);
+    output.append(",\n    \"ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT\": ");
+    AppendUnsigned(output, ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT);
+    output.append(",\n    \"ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED\": ");
+    AppendUnsigned(output, ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED);
     output.append(",\n    \"ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION\": ");
@@ -1820,6 +1824,16 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyNteVehicleSpeedTargetV1",
+        sizeof(AnomalyNteVehicleSpeedTargetV1),
+        alignof(AnomalyNteVehicleSpeedTargetV1),
+        {{"struct_size", offsetof(AnomalyNteVehicleSpeedTargetV1, struct_size)},
+         {"scope", offsetof(AnomalyNteVehicleSpeedTargetV1, scope)},
+         {"top_speed_kmh", offsetof(AnomalyNteVehicleSpeedTargetV1, top_speed_kmh)},
+         {"minimum_speed_kmh", offsetof(AnomalyNteVehicleSpeedTargetV1, minimum_speed_kmh)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyNteVehicleServiceV1",
         sizeof(AnomalyNteVehicleServiceV1),
         alignof(AnomalyNteVehicleServiceV1),
@@ -1848,7 +1862,8 @@ std::string BuildSnapshot() {
          {"set_fine_speed_tuning_enabled",
           offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)},
          {"revoke_fine_speed_authorization",
-          offsetof(AnomalyNteVehicleServiceV1, revoke_fine_speed_authorization)}},
+          offsetof(AnomalyNteVehicleServiceV1, revoke_fine_speed_authorization)},
+         {"set_speed_target", offsetof(AnomalyNteVehicleServiceV1, set_speed_target)}},
         false);
     AppendStruct(
         output,
