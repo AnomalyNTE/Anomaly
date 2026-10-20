@@ -511,7 +511,7 @@ add_library(anomaly_adapter_services STATIC
 target_include_directories(anomaly_adapter_services PUBLIC include)
 target_compile_definitions(
     anomaly_adapter_services PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_adapter_services PRIVATE /W4 /permissive- /EHsc)
+target_compile_options(anomaly_adapter_services PRIVATE /W4 /permissive- /EHsc /utf-8)
 target_link_libraries(
     anomaly_adapter_services
     PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend anomaly_ue5_ftext)
