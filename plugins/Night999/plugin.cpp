@@ -34,7 +34,7 @@ using anomaly::sdk::StringView;
 using anomaly::sdk::UiWindow;
 
 // ---------------------------------------------------------------------------
-// 脚本用的两个传送点与传送调参（全部只存在内存里，重载即恢复默认）
+// 三个传送点与传送调参（全部只存在内存里，重载即恢复默认）
 // ---------------------------------------------------------------------------
 // 营地（刷新怪物处）。
 constexpr double kDefaultCampX = -145902.874;
@@ -161,7 +161,6 @@ struct Context {
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5WorldServiceV1* world{};
-    const AnomalyUe5ProcessEventServiceV1* events{};
     const AnomalyUe5FrameworkServiceV1* framework{};
     // 自动战斗要用的服务（actors/entities/combat/skills/skill-invocation/pickup 随世界加载
     // 才发布，空指针由 CombatRequireServices 惰性补查）。
@@ -490,10 +489,9 @@ double ParseNumber(const char* text) noexcept {
     return value;
 }
 
-// 输入框宽度由宿主固定为「窗口宽度的 65%」（ABI 没有 set_next_item_width，宿主自己的输入框
-// 都是显式 SetNextItemWidth 才窄的）。各内建插件也都是直接用这个默认宽度，所以这里不再塞进
-// 任何容器 —— 之前试过「单列定宽表格」，实测会塌成只有几像素宽的缝。
-// 行内统一为「标签(定宽列) → 输入框」，标签列 140 是几个数值标签里最长的那个。
+// 输入框宽度由宿主固定为「窗口宽度的 65%」（ABI 没有 set_next_item_width），所以不要再塞进
+// 容器：定宽表格会把它挤成几像素宽的缝。行内统一为「标签(定宽列) → 输入框」，标签列 140
+// 是几个数值标签里最长的那个。
 constexpr float kLabelColumn = 140.0F;
 
 void AlignAt(const AnomalyUiServiceV1* ui, const float offset) {
@@ -520,7 +518,7 @@ void LabeledField(
 }
 
 // ---------------------------------------------------------------------------
-// 子模块：UE 反射直调（含一键刷新）→ 自动战斗 → 脚本循环
+// 子模块：UE 反射直调（刷新怪物）→ 自动战斗 → 脚本循环
 // ---------------------------------------------------------------------------
 #include "ue_access.hpp"
 #include "ue_direct.hpp"
@@ -702,9 +700,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.world = QueryService<AnomalyUe5WorldServiceV1>(
         host, ANOMALY_UE5_WORLD_SERVICE_V1_ID,
         ANOMALY_UE5_WORLD_SERVICE_V1_VERSION).service;
-    g_context.events = QueryService<AnomalyUe5ProcessEventServiceV1>(
-        host, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
-        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION).service;
     g_context.framework = QueryService<AnomalyUe5FrameworkServiceV1>(
         host, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION).service;

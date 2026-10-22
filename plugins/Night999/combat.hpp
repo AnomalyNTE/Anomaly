@@ -1,15 +1,15 @@
 #pragma once
-// 自动战斗：复用 plugins/common/combat 的共享状态机（与 CloneEnter / 打怪资源点同一份源码，
-// 由静态库 anomaly_plugin_combat 提供），本插件只负责接线与策略选择。
+// 自动战斗：复用 plugins/common/combat 的共享状态机（静态库 anomaly_plugin_combat 提供），
+// 本插件只负责接线与策略选择。
 //
-// 与那两个调用方的差别只在攻击策略：**技能优先**——先试大招、再试小技能（都要求冷却已走完），
-// 没有可放的技能才平A；平A / 小技能 / 大招 三项各由一个勾选框控制
-// （见 combat::Host 的 policy_custom 一组字段；为假时保持模块原有行为）。
+// 攻击策略：**技能优先**——先试大招、再试小技能（都要求冷却已走完），没有可放的技能才平A；
+// 平A / 小技能 / 大招 三项各由一个勾选框控制（见 combat::Host 的 policy_custom 一组字段，
+// 为假时保持模块原有行为）。
 //
-// 结束判据（沿用打怪资源点/CloneEnter 的成熟做法）：
+// 结束判据：
 //   ① 模块报 cleared —— 见过怪之后连续 5 秒没有怪；
 //   ② 见过怪，且「最近一次伤害 / 最近一次换目标 / 开打时刻」里最晚的那个到现在已超过设定秒数
-//      ⇒ 判定打完。这是伤害流读不到时的主判据（日志实测过打死了也收不到伤害事件）；
+//      ⇒ 判定打完。伤害事件常常读不到，这条是主判据；
 //   ③ 模块报 attack_failed —— 普攻/技能调用失败，打不动。
 
 namespace {
@@ -21,12 +21,11 @@ using anomaly::plugins::combat::State;
 // 技能输入号与 NTE 战斗示例一致：2 = 小技能，3 = 大招。
 constexpr std::int32_t kCombatSmallInputId = 2;
 constexpr std::int32_t kCombatUltimateInputId = 3;
-// 搜索半径（米）：模块只认这个范围内的怪，与打怪资源点的 search_radius_m 同一路数。
+// 搜索半径（米）：模块只认这个范围内的怪。
 constexpr double kCombatRadiusDefaultMeters = 15.0;
 constexpr double kCombatRadiusMinimumMeters = 5.0;
 constexpr double kCombatRadiusMaximumMeters = 300.0;
 // 首次接敌超时（秒）：开打后一次怪都没遇到过超过它 ⇒ 判定这个点没怪，直接进下一步。
-// 与打怪资源点的 first_contact_timeout_seconds 同一路数。
 constexpr double kCombatFirstContactDefaultSeconds = 15.0;
 constexpr double kCombatFirstContactMinimumSeconds = 1.0;
 constexpr double kCombatFirstContactMaximumSeconds = 120.0;
@@ -65,7 +64,7 @@ State g_combat_state;
 std::mutex g_combat_mutex;
 std::string g_combat_status;
 
-// 兜底计时的参考点（打怪资源点 NoDamageForTooLong 的同款做法）。
+// 兜底计时的参考点。
 std::chrono::steady_clock::time_point g_combat_started_at{};
 std::chrono::steady_clock::time_point g_combat_target_at{};
 bool g_combat_had_target{};
@@ -246,8 +245,8 @@ void AdvanceCombat() {
     Host host = CombatMakeHost();
     const Result result = anomaly::plugins::combat::Tick(host, g_combat_state);
 
-    // 只在「从没目标变成有目标」时重置兜底计时。不能用「换目标」做条件：目标会在几具
-    // 尸体之间每秒来回切（打怪资源点的日志实测），那样计时会被反复刷新、永远攒不满。
+    // 只在「从没目标变成有目标」时重置兜底计时。不能用「换目标」做条件：目标会在几具尸体
+    // 之间来回切，计时会被反复刷新，永远攒不满。
     if (g_combat_state.target_valid && !g_combat_had_target) g_combat_target_at = now;
     g_combat_had_target = g_combat_state.target_valid;
 
