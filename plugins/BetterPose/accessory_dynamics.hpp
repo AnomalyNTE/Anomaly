@@ -11,6 +11,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -144,6 +145,86 @@ struct AttachmentDrive {
   double weight{1.0};
 };
 
+inline std::vector<Capsule> BuildBodyCollisionCapsules(
+    std::span<const std::string> names,
+    std::span<const std::array<double, 3>> points, std::uint8_t masks,
+    bool extended_collision) {
+  std::vector<Capsule> capsules;
+  if (masks == 0 || names.empty() || names.size() != points.size())
+    return capsules;
+  const auto index=[&](std::string_view name) {
+    const auto it=std::find(names.begin(),names.end(),name);
+    return it==names.end() ? -1 : static_cast<int>(it-names.begin());
+  };
+  const auto position=[&](int bone) {
+    const auto& p=points[static_cast<std::size_t>(bone)];
+    return Vec{p[0],p[1],p[2]};
+  };
+  const auto add=[&](int a,int b,double radius,std::uint8_t mask,
+                     double end_radius=0.0) {
+    if (a>=0 && b>=0)
+      capsules.push_back({position(a),position(b),radius,mask,end_radius});
+  };
+  const auto add_chain=[&](const char* first,const char* second,double radius,
+                           std::uint8_t mask,double end_radius=0.0) {
+    add(index(first),index(second),radius,mask,end_radius);
+  };
+
+  if ((masks & secondary::kCollideTorso) != 0) {
+    add_chain("Bip001-Pelvis","Bip001-Spine",
+              secondary::kTorsoCollisionRadiusCm,secondary::kCollideTorso);
+    add_chain("Bip001-Spine","Bip001-Spine1",
+              secondary::kTorsoCollisionRadiusCm,secondary::kCollideTorso);
+    add_chain("Bip001-Spine1","Bip001-Spine2",
+              secondary::kTorsoCollisionRadiusCm,secondary::kCollideTorso);
+    add_chain("Bip001-Spine2","Bip001-Neck",
+              secondary::kChestCollisionRadiusCm,secondary::kCollideTorso);
+  }
+  if ((masks & secondary::kCollideHead) != 0) {
+    const int neck=index("Bip001-Neck"),head=index("Bip001-Head");
+    add(neck,head,secondary::kNeckCollisionRadiusCm,secondary::kCollideHead,
+        secondary::kNeckTopCollisionRadiusCm);
+    add(head,head,secondary::kHeadCollisionRadiusCm,secondary::kCollideHead);
+  }
+  if ((masks & secondary::kCollideArms) != 0) {
+    for (const char* side:{"L","R"}) {
+      const std::string clavicle=std::string("Bip001-")+side+"-Clavicle";
+      const std::string upper=std::string("Bip001-")+side+"-UpperArm";
+      const std::string forearm=std::string("Bip001-")+side+"-Forearm";
+      const std::string hand=std::string("Bip001-")+side+"-Hand";
+      add_chain(clavicle.c_str(),upper.c_str(),
+                secondary::kShoulderCollisionRadiusCm,secondary::kCollideArms);
+      add_chain(upper.c_str(),forearm.c_str(),
+                secondary::kArmCollisionRadiusCm,secondary::kCollideArms);
+      add_chain(forearm.c_str(),hand.c_str(),
+                secondary::kHandCollisionRadiusCm,secondary::kCollideArms);
+    }
+  }
+  if ((masks & secondary::kCollideLegs) != 0) {
+    const int left=index("Bip001-L-Thigh"),right=index("Bip001-R-Thigh");
+    double cap=left>=0 && right>=0
+                   ? .5*Length(position(left)-position(right))
+                   : 0.0;
+    if (extended_collision)
+      cap=(std::min)(secondary::kLegCollisionRadiusCm,cap);
+    const double thigh_radius=(std::max)(1.0,cap);
+    const double calf_radius=(std::max)(1.0,cap*.78);
+    for (const char* side:{"L","R"}) {
+      const std::string thigh=std::string("Bip001-")+side+"-Thigh";
+      const std::string calf=std::string("Bip001-")+side+"-Calf";
+      const std::string foot=std::string("Bip001-")+side+"-Foot";
+      const int a=index(thigh),b=index(calf),c=index(foot);
+      if (a>=0 && b>=0) {
+        const Vec start=position(a)+(position(b)-position(a))*.33;
+        capsules.push_back(
+            {start,position(b),thigh_radius,secondary::kCollideLegs,0.0});
+      }
+      add(b,c,calf_radius,secondary::kCollideLegs);
+    }
+  }
+  return capsules;
+}
+
 class Dynamics {
   struct BodyVolume {
     int a,b;
@@ -274,6 +355,11 @@ class Dynamics {
           body_volumes_.push_back(
               {a,b,0,secondary::kTorsoCollisionRadiusCm,0,secondary::kCollideTorso,0});
       }
+      const int chest=index("Bip001-Spine2"),neck=index("Bip001-Neck");
+      if (chest>=0 && neck>=0)
+        body_volumes_.push_back(
+            {chest,neck,0,secondary::kChestCollisionRadiusCm,0,
+             secondary::kCollideTorso,0});
     }
     if ((needed & secondary::kCollideHead) != 0) {
       const int neck=index("Bip001-Neck");

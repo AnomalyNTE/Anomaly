@@ -22,6 +22,7 @@ inline constexpr double kDrapedGravityWeight = 0.25;
 inline constexpr double kMovingAirResponse = 1.25;
 inline constexpr double kLagDegrees = 25.0;
 inline constexpr double kTorsoCollisionRadiusCm = 8.0;
+inline constexpr double kChestCollisionRadiusCm = 7.0;
 inline constexpr double kNeckCollisionRadiusCm = 3.5;
 inline constexpr double kNeckTopCollisionRadiusCm = 6.5;
 inline constexpr double kHeadCollisionRadiusCm = 7.0;

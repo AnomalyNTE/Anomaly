@@ -536,7 +536,9 @@ struct Context final {
   std::atomic_bool collision_debug_enabled{};
   std::atomic_bool collision_contacts_enabled{};
   std::atomic_bool collision_debug_page_visible{};
-  std::atomic<int> collision_overlay_request{};  // 1 subscribe, 0 unsubscribe
+  // 1 refresh/subscribe, 0 unsubscribe. Refresh also drops accessory debug
+  // snapshots left behind by a pose path that has stopped updating.
+  std::atomic<int> collision_overlay_request{};
   std::atomic<std::uint32_t> collision_debug_accessories{};
   std::atomic<std::uint32_t> collision_debug_capsules{};
   std::atomic<std::uint32_t> collision_debug_torso{};
@@ -6256,6 +6258,8 @@ void UnloadMotion(Context &context) noexcept {
   context.motion_seek_pending.store(false, std::memory_order_release);
   context.motion_seek_immediate.store(false, std::memory_order_release);
   context.motion_seek_serial.fetch_add(1, std::memory_order_release);
+  if (context.collision_debug_enabled.load(std::memory_order_acquire))
+    context.collision_overlay_request.store(1, std::memory_order_release);
   for (std::size_t limb{}; limb != limb_cal::kLimbCount; ++limb)
     context.motion_limb_status[limb].store(
         static_cast<int>(limb_cal::Status::Original),
@@ -15434,95 +15438,13 @@ std::uint8_t CollisionMasksForExtra(const Context &context,
 std::vector<better_pose::accessory::Capsule> FallbackCollisionCapsules(
     const Context &context, const std::uint8_t masks, const std::size_t body_count,
     const std::vector<std::array<double, 3>> &points) {
-  using better_pose::accessory::Capsule;
-  using better_pose::accessory::Vec;
-  std::vector<Capsule> capsules;
   if (masks == 0 || body_count == 0 || points.size() < body_count ||
       context.bone_names.size() < body_count)
-    return capsules;
-  const auto index = [&](const std::string_view name) {
-    for (std::size_t i{}; i != body_count; ++i)
-      if (context.bone_names[i] == name)
-        return static_cast<int>(i);
-    return -1;
-  };
-  const auto position = [&](const int bone) {
-    const auto &p = points[static_cast<std::size_t>(bone)];
-    return Vec{p[0], p[1], p[2]};
-  };
-  const auto add = [&](const int a, const int b, const double radius,
-                       const std::uint8_t mask, const double end_radius = 0.0) {
-    if (a >= 0 && b >= 0)
-      capsules.push_back({position(a), position(b), radius, mask, end_radius});
-  };
-  const auto add_chain = [&](const char *first, const char *second,
-                             const double radius, const std::uint8_t mask,
-                             const double end_radius = 0.0) {
-    add(index(first), index(second), radius, mask, end_radius);
-  };
-
-  if ((masks & better_pose::secondary::kCollideTorso) != 0) {
-    add_chain("Bip001-Pelvis", "Bip001-Spine",
-              better_pose::secondary::kTorsoCollisionRadiusCm,
-              better_pose::secondary::kCollideTorso);
-    add_chain("Bip001-Spine", "Bip001-Spine1",
-              better_pose::secondary::kTorsoCollisionRadiusCm,
-              better_pose::secondary::kCollideTorso);
-    add_chain("Bip001-Spine1", "Bip001-Spine2",
-              better_pose::secondary::kTorsoCollisionRadiusCm,
-              better_pose::secondary::kCollideTorso);
-  }
-  if ((masks & better_pose::secondary::kCollideHead) != 0) {
-    const int neck = index("Bip001-Neck");
-    const int head = index("Bip001-Head");
-    add(neck, head, better_pose::secondary::kNeckCollisionRadiusCm,
-        better_pose::secondary::kCollideHead,
-        better_pose::secondary::kNeckTopCollisionRadiusCm);
-    add(head, head, better_pose::secondary::kHeadCollisionRadiusCm,
-        better_pose::secondary::kCollideHead);
-  }
-  if ((masks & better_pose::secondary::kCollideArms) != 0) {
-    for (const char *side : {"L", "R"}) {
-      const std::string clavicle = std::string("Bip001-") + side + "-Clavicle";
-      const std::string upper = std::string("Bip001-") + side + "-UpperArm";
-      const std::string forearm = std::string("Bip001-") + side + "-Forearm";
-      const std::string hand = std::string("Bip001-") + side + "-Hand";
-      add_chain(clavicle.c_str(), upper.c_str(),
-                better_pose::secondary::kShoulderCollisionRadiusCm,
-                better_pose::secondary::kCollideArms);
-      add_chain(upper.c_str(), forearm.c_str(),
-                better_pose::secondary::kArmCollisionRadiusCm,
-                better_pose::secondary::kCollideArms);
-      add_chain(forearm.c_str(), hand.c_str(),
-                better_pose::secondary::kHandCollisionRadiusCm,
-                better_pose::secondary::kCollideArms);
-    }
-  }
-  if ((masks & better_pose::secondary::kCollideLegs) != 0) {
-    const int left_hip = index("Bip001-L-Thigh");
-    const int right_hip = index("Bip001-R-Thigh");
-    double cap = 0.0;
-    if (left_hip >= 0 && right_hip >= 0)
-      cap = 0.5 * better_pose::accessory::Length(
-                      position(left_hip) - position(right_hip));
-    if (context.secondary_tuning.Load().extended_collision)
-      cap = (std::min)(better_pose::secondary::kLegCollisionRadiusCm, cap);
-    const double thigh_radius = (std::max)(1.0, cap);
-    const double calf_radius = (std::max)(1.0, cap * 0.78);
-    for (const char *side : {"L", "R"}) {
-      const std::string thigh = std::string("Bip001-") + side + "-Thigh";
-      const std::string calf = std::string("Bip001-") + side + "-Calf";
-      const std::string foot = std::string("Bip001-") + side + "-Foot";
-      const int a = index(thigh), b = index(calf), c = index(foot);
-      if (a >= 0 && b >= 0) {
-        const Vec start = position(a) + (position(b) - position(a)) * 0.33;
-        capsules.push_back({start, position(b), thigh_radius,
-                            better_pose::secondary::kCollideLegs, 0.0});
-      }
-      add(b, c, calf_radius, better_pose::secondary::kCollideLegs);
-    }
-  }
-  return capsules;
+    return {};
+  return better_pose::accessory::BuildBodyCollisionCapsules(
+      std::span<const std::string>(context.bone_names.data(), body_count),
+      std::span<const std::array<double, 3>>(points.data(), body_count), masks,
+      context.secondary_tuning.Load().extended_collision);
 }
 
 [[maybe_unused]] std::uint32_t CorrectLegacyHierarchyCollisions(
@@ -18211,6 +18133,11 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
     const int collision_request =
         context->collision_overlay_request.exchange(-1, std::memory_order_acq_rel);
     if (collision_request == 1) {
+      {
+        std::lock_guard<std::mutex> lock(context->extra_mesh_mutex);
+        for (auto &extra : context->extra_meshes)
+          extra.accessory_dynamics.ClearCollisionDebug();
+      }
       context->collision_overlay_refresh_ms = 0;
     } else if (collision_request == 0) {
       UnsubscribeCollisionDebugOverlay(*context);
@@ -18757,8 +18684,8 @@ void DrawSecondaryPhysicsControls(Context &context,
   ui->text(ui->user,
            anomaly::sdk::StringView(context.localizer.Text(
                "pose.physics.extended_collision_hint",
-               "Off uses the v2.3.0 torso/leg collision range. Enable the "
-               "larger head and arm range explicitly. Native Kawaii capsule "
+               "The standard range includes torso, chest and legs. Enable the "
+               "larger head, arm and leg range explicitly. Native Kawaii capsule "
                "limits have their own switch; they constrain spring bones "
                "and are not body collisions. Distance constraints preserve "
                "spacing between adjacent strands and only correct large "
@@ -19774,9 +19701,14 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             " | " + context->localizer.Text("pose.collision.depth", "max depth") + " " +
             depth + " cm";
         ui->text(ui->user, anomaly::sdk::StringView(collision_summary));
+        char chest_radius[16]{};
+        std::snprintf(chest_radius, sizeof(chest_radius), "%.1f",
+                      better_pose::secondary::kChestCollisionRadiusCm);
         std::string collision_radii =
             context->localizer.Text("pose.collision.radii", "Visual radii") + ": " +
-            context->localizer.Text("pose.collision.torso", "torso") + " 8";
+            context->localizer.Text("pose.collision.torso", "torso") + " 8 / " +
+            context->localizer.Text("pose.collision.chest", "chest") + " " +
+            chest_radius;
         if (context->secondary_tuning.Load().extended_collision) {
           char head_radius[16]{};
           std::snprintf(

@@ -385,26 +385,61 @@ void Collisions() {
   const auto upper=head.BodyCapsules(
       upper_body.size(),[&](int i){return Position(upper_body[i]);},{});
   int torso_count=0,head_count=0,arm_count=0,tapered_count=0;
+  bool chest_capsule=false;
   for (const auto& capsule:upper) {
     torso_count+=(capsule.mask & better_pose::secondary::kCollideTorso)!=0;
     head_count+=(capsule.mask & better_pose::secondary::kCollideHead)!=0;
     arm_count+=(capsule.mask & better_pose::secondary::kCollideArms)!=0;
     tapered_count+=capsule.end_radius>0;
+    chest_capsule=chest_capsule ||
+        ((capsule.mask & better_pose::secondary::kCollideTorso)!=0 &&
+         std::abs(capsule.a.z-145.0)<1e-8 &&
+         std::abs(capsule.b.z-158.0)<1e-8 &&
+         std::abs(capsule.radius-
+                  better_pose::secondary::kChestCollisionRadiusCm)<1e-8);
   }
-  Check(torso_count==3 && head_count==2 && arm_count==6,
+  Check(torso_count==4 && chest_capsule && head_count==2 && arm_count==6,
         "hair did not receive torso, head and arm collision groups");
   Check(tapered_count==1,"neck-to-head capsule did not preserve its end radius");
   Check(head.BodyCapsuleCount(better_pose::secondary::kCollideHead)==2 &&
-            head.BodyCapsuleCount(better_pose::secondary::kCollideArms)==6,
+            head.BodyCapsuleCount(better_pose::secondary::kCollideArms)==6 &&
+            head.BodyCapsuleCount(better_pose::secondary::kCollideTorso)==4,
         "collision group diagnostics lost generated capsules");
+  std::vector<std::array<double, 3>> upper_points;
+  for (const auto& bone : upper_body)
+    upper_points.push_back({Position(bone).x, Position(bone).y, Position(bone).z});
+  const auto fallback=BuildBodyCollisionCapsules(
+      upper_names,upper_points,
+      better_pose::secondary::kCollideTorso |
+          better_pose::secondary::kCollideHead |
+          better_pose::secondary::kCollideArms |
+          better_pose::secondary::kCollideLegs,
+      false);
+  int fallback_torso=0,fallback_head=0,fallback_arms=0,fallback_legs=0;
+  bool fallback_chest=false;
+  for (const auto& capsule:fallback) {
+    fallback_torso+=(capsule.mask & better_pose::secondary::kCollideTorso)!=0;
+    fallback_head+=(capsule.mask & better_pose::secondary::kCollideHead)!=0;
+    fallback_arms+=(capsule.mask & better_pose::secondary::kCollideArms)!=0;
+    fallback_legs+=(capsule.mask & better_pose::secondary::kCollideLegs)!=0;
+    fallback_chest=fallback_chest ||
+        (capsule.mask==better_pose::secondary::kCollideTorso &&
+         std::abs(capsule.a.z-145.0)<1e-8 &&
+         std::abs(capsule.b.z-158.0)<1e-8 &&
+         std::abs(capsule.radius-
+                  better_pose::secondary::kChestCollisionRadiusCm)<1e-8);
+  }
+  Check(fallback_torso==4 && fallback_chest && fallback_head==2 &&
+            fallback_arms==6 && fallback_legs==4,
+        "fallback display capsules did not include the default chest volume");
   head.SetTuning({});
   head.ConfigureCollisions(upper_body,upper_names,{},"Bip001-Head");
   Check(head.MaskedBones(better_pose::secondary::kCollideHead)==0 &&
             head.MaskedBones(better_pose::secondary::kCollideArms)==0 &&
-            head.BodyCapsuleCount(better_pose::secondary::kCollideTorso)==3 &&
+            head.BodyCapsuleCount(better_pose::secondary::kCollideTorso)==4 &&
             head.BodyCapsuleCount(better_pose::secondary::kCollideHead)==0 &&
             head.BodyCapsuleCount(better_pose::secondary::kCollideArms)==0,
-        "compatibility collision did not restore the v2.3.0 torso/leg range");
+        "standard collision did not retain torso, chest and leg ranges");
   ribbon.ConfigureCollisions({}, {}, {}, "Bip001-Pelvis");
   Check(ribbon.BodyCapsules(body.size(),[&](int i){return Position(body[i]);},{}).empty(),"missing body retained old capsules");
 }
