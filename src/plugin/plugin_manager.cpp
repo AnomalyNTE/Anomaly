@@ -1366,6 +1366,7 @@ struct PluginServiceContext {
     AnomalyNotificationsServiceV1 notifications{};
     AnomalyNteEscMenuButtonServiceV1 nte_esc_menu_button{};
     AnomalySignatureServiceV1 signature{};
+    AnomalySignatureServiceV2 signature_v2{};
     AnomalyHookServiceV1 hook{};
     AnomalyPatchServiceV1 patch{};
     const AnomalyUiServiceV1* ui{};
@@ -2313,7 +2314,18 @@ AnomalyStatusV1 ANOMALY_CALL ResolveSignatureV1(
     return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
         return context.platform->ResolveSignature(
             ScopedPlatformOwner(context), ServiceString(module_name), ServiceString(section_name),
-            ServiceString(pattern), address);
+            ServiceString(pattern), address, !IsSynchronousStateIoForbidden());
+    });
+}
+
+AnomalyStatusV1 ANOMALY_CALL ResolveSignatureLayoutV2(
+    void* user, const AnomalySignatureLayoutRequestV2* request,
+    std::uintptr_t* addresses, const std::uint32_t address_count,
+    std::uint32_t* offsets, const std::uint32_t offset_count) {
+    return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
+        return context.platform->ResolveSignatureLayout(
+            ScopedPlatformOwner(context), request, addresses, address_count, offsets, offset_count,
+            !IsSynchronousStateIoForbidden());
     });
 }
 
@@ -3290,6 +3302,10 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
         *service = &context->nte_esc_menu_button;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
+    if (id == ANOMALY_SIGNATURE_SERVICE_V2_ID && minimum_version == ANOMALY_SIGNATURE_SERVICE_V2_VERSION) {
+        *service = &context->signature_v2;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
     if (id == ANOMALY_SIGNATURE_SERVICE_V1_ID &&
         minimum_version <= context->signature.service_version) {
         *service = &context->signature;
@@ -4258,6 +4274,9 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
     plugin.service_context.signature = {
         sizeof(AnomalySignatureServiceV1), ANOMALY_SIGNATURE_SERVICE_V1_VERSION,
         &plugin.service_context, ResolveSignatureV1};
+    plugin.service_context.signature_v2 = {
+        sizeof(AnomalySignatureServiceV2), ANOMALY_SIGNATURE_SERVICE_V2_VERSION,
+        &plugin.service_context, ResolveSignatureV1, ResolveSignatureLayoutV2};
     plugin.service_context.hook = {
         sizeof(AnomalyHookServiceV1), ANOMALY_HOOK_SERVICE_V1_VERSION,
         &plugin.service_context,
@@ -6092,7 +6111,7 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
                 ServiceCandidate{ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID,
                     plugin.service_context.nte_esc_menu_button.service_version, true},
                 ServiceCandidate{ANOMALY_SIGNATURE_SERVICE_V1_ID,
-                    plugin.service_context.signature.service_version, true},
+                    plugin.service_context.signature_v2.service_version, true},
                 ServiceCandidate{ANOMALY_HOOK_SERVICE_V1_ID,
                     plugin.service_context.hook.service_version, true},
                 ServiceCandidate{ANOMALY_PATCH_SERVICE_V1_ID,

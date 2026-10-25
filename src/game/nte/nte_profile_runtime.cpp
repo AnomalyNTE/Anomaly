@@ -1,4 +1,5 @@
 #include "anomaly/nte_profile_runtime.hpp"
+#include "anomaly/signature_updater.hpp"
 
 #include "anomaly/nte_navigation_input_policy.hpp"
 #include "anomaly/nte_ui_buttons.hpp"
@@ -1245,10 +1246,16 @@ public:
             return false;
         }
 
+        SymbolResolverOptions resolver_options;
+        if (options_.profile_overrides_enabled) {
+            resolver_options.signature_updater = std::make_shared<SignatureUpdater>(
+                options_.runtime_root / L"state/signatures" / options_.game_id);
+        }
         SymbolResolver resolver(
-            memory_, {}, {}, NteFeatureLayoutValidators(false, false));
+            memory_, {}, resolver_options, NteFeatureLayoutValidators(false, false));
         ProfileResolutionSnapshot resolved =
-            resolver.Resolve(adapter_context, selected ? &*selected : nullptr);
+            resolver.Resolve(adapter_context, selected ? &*selected : nullptr, stop_token);
+        if (stop_token.stop_requested()) return false;
         if (!selected) {
             resolution_ = std::make_shared<ProfileResolutionSnapshot>(std::move(resolved));
             diagnostics_.push_back("no active profile recipe for game " + options_.game_id);
@@ -1890,6 +1897,8 @@ public:
                 json += "{\"id\":" + Quote(id) + ",\"state\":" +
                     Quote(SymbolStateName(symbol.state)) + ",\"available\":" +
                     (symbol.Available() ? std::string("true") : std::string("false")) +
+                    ",\"signatureRecovered\":" + (symbol.recovered ? "true" : "false") +
+                    ",\"activePattern\":" + Quote(symbol.active_pattern) +
                     ",\"rva\":" + std::to_string(symbol.rva) +
                     ",\"address\":" + Quote(
                         symbol.Available() ? candidate_address : std::string{}) +

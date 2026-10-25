@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -130,6 +131,8 @@ struct ResolvedSymbol {
     std::uintptr_t address{};
     std::uint64_t rva{};
     std::size_t candidate_count{};
+    bool recovered{};
+    std::string active_pattern;
     std::vector<std::string> diagnostics;
 
     [[nodiscard]] bool Available() const noexcept {
@@ -197,6 +200,7 @@ private:
 
 struct SymbolResolverOptions {
     std::size_t maximum_candidates{16};
+    std::shared_ptr<class SignatureUpdater> signature_updater;
 };
 
 class SymbolResolver final {
@@ -209,7 +213,8 @@ public:
 
     [[nodiscard]] ProfileResolutionSnapshot Resolve(
         const BuildFingerprint& fingerprint,
-        const BuildProfile* profile) const;
+        const BuildProfile* profile,
+        std::stop_token stop = {}) const;
 
     // Retries validators for an already unique, resolved candidate without
     // scanning module text. This supports UE

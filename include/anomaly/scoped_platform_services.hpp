@@ -170,7 +170,14 @@ public:
         std::string_view module_name,
         std::string_view section_name,
         std::string_view pattern,
-        std::uintptr_t* address) noexcept;
+        std::uintptr_t* address,
+        bool allow_recovery_io = true) noexcept;
+    [[nodiscard]] AnomalyStatusV1 ResolveSignatureLayout(
+        const ScopedPluginServiceOwner& owner,
+        const AnomalySignatureLayoutRequestV2* request,
+        std::uintptr_t* addresses, std::uint32_t address_count,
+        std::uint32_t* offsets, std::uint32_t offset_count,
+        bool allow_recovery_io = true) noexcept;
     [[nodiscard]] AnomalyStatusV1 CreateHook(
         const ScopedPluginServiceOwner& owner,
         const AnomalyHookRequestV1* request,
