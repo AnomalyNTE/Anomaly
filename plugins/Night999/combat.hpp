@@ -228,7 +228,14 @@ void AdvanceCombat() {
         CombatResetState();
         g_combat_active.store(true);
         CombatPublish("自动战斗：开始（技能优先，平A 兜底）");
-        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "night999 combat: started");
+        // 伤害流的两条入口是否随服务一起发布：缺失说明是能力/版本问题，可用但收不到事件才是偏移
+        // 或句柄对不上的问题。两种情况的后续处理完全不同。
+        const bool stream_api = g_context.combat != nullptr &&
+            g_context.combat->latest_damage_sequence != nullptr &&
+            g_context.combat->next_damage_event != nullptr;
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            std::string("night999 combat: started, damage stream ") +
+                (stream_api ? "present" : "absent"));
     }
     if (g_combat_stop_requested.exchange(false)) {
         CombatFinish(CombatResult::stopped, "自动战斗：已停止");
