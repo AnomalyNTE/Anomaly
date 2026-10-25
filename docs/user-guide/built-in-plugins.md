@@ -49,7 +49,7 @@
 | --- | --- |
 | **ID** | `anomaly.local.nte.night999` |
 | **作用** | 999夜副本全自动刷怪循环。 |
-| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`、`anomaly.ue5.names/objects/world/process-event/framework`、`anomaly.interop.signature`（均为 V1，可选） |
+| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`、`anomaly.ue5.names/objects/world/framework`、`anomaly.interop.signature`（均为 V1，可选） |
 | **需要 Profile** | 是（会话与玩家快照、传送桥接、反射定位与自动战斗都依赖已验证符号） |
 
 **此脚本适用于999夜赤龙古堡地图**。窗口里有 **循环次数** 输入框（**0 = 无限循环**）和
@@ -65,10 +65,12 @@
 自动战斗的结束判据（命中任意一条即结束，然后进入下一轮）：
 
 - **首次接敌超时**（默认 15 秒，可改）：开打后一次怪都没遇到过，判定这个点没怪；
-- 连续 5 秒找不到怪（共享模块自带，必须先见过怪才开始计时）；
-- 见过怪，但「最近一次伤害 / 最近一次换目标 / 开始战斗」里最晚的那个已过去超过设定秒数
-  （默认 10 秒，可改；伤害流读不到时这条是主判据）；
+- **搜索半径内**连续 5 秒找不到怪（共享模块自带，必须先见过怪才开始计时）——半径就是这个点
+  的「打完」定义，所以要覆盖整个战斗点；
 - 普攻或技能调用失败（打不动）。
+
+判定不使用伤害读数：伤害流读不到时（偏移失效或参与者句柄对不上），「多久没伤害」会在怪还
+活着时成立，脚本就会在没打完的点上传送走。伤害只用于模块内部换靶，不参与本点是否完成的判定。
 
 ## NTE 伤害仪表盘
 

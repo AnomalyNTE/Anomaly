@@ -6,11 +6,12 @@
 // 平A / 小技能 / 大招 三项各由一个勾选框控制（见 combat::Host 的 policy_custom 一组字段，
 // 为假时保持模块原有行为）。
 //
-// 结束判据：
-//   ① 模块报 cleared —— 见过怪之后连续 5 秒没有怪；
-//   ② 见过怪，且「最近一次伤害 / 最近一次换目标 / 开打时刻」里最晚的那个到现在已超过设定秒数
-//      ⇒ 判定打完。伤害事件常常读不到，这条是主判据；
-//   ③ 模块报 attack_failed —— 普攻/技能调用失败，打不动。
+// 结束判据只有两条，都不依赖伤害流：
+//   ① 模块报 cleared —— 搜索半径内见过怪之后连续 5 秒没有怪，本点才算打完；
+//   ② 模块报 attack_failed —— 普攻/技能调用失败，打不动。
+// 不能拿「多久没伤害」当判据：伤害流读不到时（偏移失效、attacker 句柄对不上）它在怪还活着
+// 时就成立，脚本会在没打完的点上传送走。伤害只用于模块内部换靶，不参与本点是否完成的判定。
+// 首次接敌超时见 kCombatFirstContactDefaultSeconds。
 
 namespace {
 
@@ -29,9 +30,6 @@ constexpr double kCombatRadiusMaximumMeters = 300.0;
 constexpr double kCombatFirstContactDefaultSeconds = 15.0;
 constexpr double kCombatFirstContactMinimumSeconds = 1.0;
 constexpr double kCombatFirstContactMaximumSeconds = 120.0;
-constexpr double kCombatNoDamageDefaultSeconds = 10.0;
-constexpr double kCombatNoDamageMinimumSeconds = 1.0;
-constexpr double kCombatNoDamageMaximumSeconds = 300.0;
 constexpr std::size_t kCombatSecondsTextCapacity = 16;
 constexpr std::size_t kCombatRadiusTextCapacity = 8;
 
@@ -55,7 +53,6 @@ std::atomic_bool g_combat_use_ultimate{true};
 // 结束原因（打完后由调用方读取；CombatTakeResult 取走并清零）。
 std::atomic<std::int32_t> g_combat_result{static_cast<std::int32_t>(CombatResult::none)};
 // 面板参数：on_draw 解析后写进原子量，on_update 只读原子量，避免跨线程读 char 缓冲。
-std::atomic<double> g_combat_no_damage_seconds{kCombatNoDamageDefaultSeconds};
 std::atomic<double> g_combat_first_contact_seconds{kCombatFirstContactDefaultSeconds};
 std::atomic<std::uint32_t> g_combat_radius_meters{
     static_cast<std::uint32_t>(kCombatRadiusDefaultMeters)};
@@ -64,13 +61,12 @@ State g_combat_state;
 std::mutex g_combat_mutex;
 std::string g_combat_status;
 
-// 兜底计时的参考点。
+// 本次自动战斗的开始时刻：首次接敌超时以它为基准。
 std::chrono::steady_clock::time_point g_combat_started_at{};
-std::chrono::steady_clock::time_point g_combat_target_at{};
-bool g_combat_had_target{};
+// 开打那一刻模块记下的「最近一次玩家命中」：只有本次战斗内被刷新，才说明伤害流真的在工作。
+std::chrono::steady_clock::time_point g_combat_hit_baseline{};
 
-// 三个参数的输入缓冲（on_draw 线程独占，ImGui 文本存储必须跨帧保留）。
-std::array<char, kCombatSecondsTextCapacity> g_combat_no_damage_text{"10"};
+// 两个参数的输入缓冲（on_draw 线程独占，ImGui 文本存储必须跨帧保留）。
 std::array<char, kCombatSecondsTextCapacity> g_combat_first_contact_text{"15"};
 std::array<char, kCombatRadiusTextCapacity> g_combat_radius_text{"15"};
 
@@ -104,9 +100,6 @@ double CombatParseNumber(const char* text, const double fallback, const double m
 
 // 面板 → 原子量（在 on_draw 里调用；on_update 只读原子量）。
 void CombatSyncParameters() {
-    g_combat_no_damage_seconds.store(CombatParseNumber(
-        g_combat_no_damage_text.data(), kCombatNoDamageDefaultSeconds,
-        kCombatNoDamageMinimumSeconds, kCombatNoDamageMaximumSeconds));
     g_combat_first_contact_seconds.store(CombatParseNumber(
         g_combat_first_contact_text.data(), kCombatFirstContactDefaultSeconds,
         kCombatFirstContactMinimumSeconds, kCombatFirstContactMaximumSeconds));
@@ -186,9 +179,7 @@ Host CombatMakeHost() {
 void CombatResetState() {
     Host host = CombatMakeHost();
     anomaly::plugins::combat::Reset(host, g_combat_state);
-    g_combat_had_target = false;
     g_combat_started_at = {};
-    g_combat_target_at = {};
 }
 
 // 供生命周期调用：只清状态，不打日志、不改状态行。
@@ -201,11 +192,16 @@ void CombatShutdown() {
 }
 
 void CombatFinish(const CombatResult result, const std::string& reason) {
+    // 伤害流到底有没有报过玩家命中：读不到时模块只能靠快照换靶，这条日志用来区分「偏移失效」
+    // 与「确实打完了」。它只做诊断，不参与任何判定。
+    const bool saw_player_hit = g_combat_state.last_player_hit_at > g_combat_hit_baseline;
     g_combat_active.store(false);
     g_combat_result.store(static_cast<std::int32_t>(result));
     CombatResetState();
     CombatPublish(reason);
-    Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "night999 combat: " + reason);
+    Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+        "night999 combat: " + reason +
+            (saw_player_hit ? " [damage observed]" : " [damage never observed]"));
 }
 
 // 取走并清零本次结果（脚本循环用它决定下一步）。
@@ -227,9 +223,8 @@ const char* CombatResultName(const CombatResult result) {
 void AdvanceCombat() {
     if (g_combat_start_requested.exchange(false)) {
         g_combat_result.store(static_cast<std::int32_t>(CombatResult::none));
-        g_combat_had_target = false;
-        g_combat_target_at = {};
         g_combat_started_at = std::chrono::steady_clock::now();
+        g_combat_hit_baseline = g_combat_state.last_player_hit_at;
         CombatResetState();
         g_combat_active.store(true);
         CombatPublish("自动战斗：开始（技能优先，平A 兜底）");
@@ -244,11 +239,6 @@ void AdvanceCombat() {
     const auto now = std::chrono::steady_clock::now();
     Host host = CombatMakeHost();
     const Result result = anomaly::plugins::combat::Tick(host, g_combat_state);
-
-    // 只在「从没目标变成有目标」时重置兜底计时。不能用「换目标」做条件：目标会在几具尸体
-    // 之间来回切，计时会被反复刷新，永远攒不满。
-    if (g_combat_state.target_valid && !g_combat_had_target) g_combat_target_at = now;
-    g_combat_had_target = g_combat_state.target_valid;
 
     if (result == Result::cleared) {
         CombatFinish(CombatResult::cleared, "自动战斗：已清空（见过怪后连续 5 秒无怪）");
@@ -268,27 +258,6 @@ void AdvanceCombat() {
         std::snprintf(reason, sizeof(reason),
                       "自动战斗：首次接敌超时（%.0f 秒没遇到怪），进入下一步", first_contact);
         CombatFinish(CombatResult::first_contact_timeout, reason);
-        return;
-    }
-    // 兜底判据：见过怪，但「最近伤害 / 最近换目标 / 开打」里最晚的那个已过去太久。
-    // 伤害流读不到时这条就是主要判据。
-    if (g_combat_state.met_monster) {
-        auto reference = g_combat_started_at;
-        const auto last_hit = g_combat_state.last_player_hit_at;
-        if (last_hit.time_since_epoch().count() != 0 && last_hit > reference) {
-            reference = last_hit;
-        }
-        if (g_combat_target_at.time_since_epoch().count() != 0 &&
-            g_combat_target_at > reference) {
-            reference = g_combat_target_at;
-        }
-        const double seconds = g_combat_no_damage_seconds.load();
-        if (now - reference >
-            std::chrono::milliseconds(static_cast<long long>(seconds * 1000.0))) {
-            char reason[128]{};
-            std::snprintf(reason, sizeof(reason), "自动战斗：已清空（%.0f 秒没有伤害）", seconds);
-            CombatFinish(CombatResult::cleared, reason);
-        }
     }
 }
 
@@ -312,12 +281,11 @@ void CombatContent(const AnomalyUiServiceV1* ui) {
         }
     }
 
-    // 三个数值参数：首次接敌超时 / 多久没伤害算打完 / 搜索半径。单位直接写进标签，
+    // 两个数值参数：首次接敌超时 / 搜索半径。单位直接写进标签，
     // 因为输入框本身占掉窗口宽度的 65%，后面再挂说明文字会被挤出窗口。
     LabeledField(ui, "首次接敌超时(秒)", "##night999-combat-first-contact",
                  g_combat_first_contact_text.data(), g_combat_first_contact_text.size());
-    LabeledField(ui, "多久没伤害算打完(秒)", "##night999-combat-nodmg",
-                 g_combat_no_damage_text.data(), g_combat_no_damage_text.size());
+    // 半径就是「打完」的定义：半径内连续 5 秒找不到怪才收工，所以它必须覆盖整个战斗点。
     LabeledField(ui, "搜索半径(米)", "##night999-combat-radius", g_combat_radius_text.data(),
                  g_combat_radius_text.size());
     // 解析进原子量：on_update 只读原子量，不跨线程读这些 char 缓冲。
