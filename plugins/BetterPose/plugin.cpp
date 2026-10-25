@@ -31,6 +31,10 @@ using Microsoft::WRL::ComPtr;
 #include "pose_mirror.hpp"
 #include "morph_catalog.hpp"
 #include "mmd_morph_map.hpp"
+#include "motion_amplitude.hpp"
+#include "motion_travel.hpp"
+#include "motion_joint_calibration.hpp"
+#include "limb_calibration.hpp"
 #include "joint_limits.hpp"
 #include "pose_document.hpp"
 #include "retarget/motion_builder.hpp"
@@ -39,15 +43,20 @@ using Microsoft::WRL::ComPtr;
 #include <atomic>
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -57,11 +66,81 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 using namespace better_pose_profile;
+namespace amp = better_pose::motion_amplitude;
+namespace travel = better_pose::motion_travel;
+namespace joint_cal = better_pose::motion_joint;
+
+std::wstring Utf8ToWide(std::string_view value);
+namespace limb_cal = better_pose::limb_calibration;
 
 constexpr std::string_view kPoseSettingsSchemaId =
     "anomaly.builtin.character-pose.settings";
 constexpr std::uint32_t kPoseSettingsSchemaVersion = 1;
+constexpr std::uint32_t kMotionCalibrationDefaultsVersion = 2;
+constexpr std::uint32_t kDynamicPhysicsAirDefaultVersion = 4;
+constexpr std::uint32_t kDynamicPhysicsTuningVersion = 10;
 constexpr std::size_t kMaximumPoseSettingsBytes = 1U << 20;
+nlohmann::json TransformToJson(const double *raw) noexcept;
+
+enum class CalibrationPoseKind : int {
+  Unknown,
+  APose,
+  TPose,
+  Invalid,
+};
+
+enum class CalibrationIssue : int {
+  None,
+  MissingBones,
+  Spine,
+  LeftArm,
+  RightArm,
+  Asymmetry,
+  LeftLeg,
+  RightLeg,
+  WrongPoseMode,
+};
+
+int ControlTrackPriority(const std::string_view name) {
+  std::string lower(name);
+  for (char &value : lower)
+    value = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(value)));
+  const auto has = [&lower](const std::string_view needle) {
+    return lower.find(needle) != std::string::npos;
+  };
+  if (has("握") || has("拳") || has("grip"))
+    return 100;
+  if (has("張") || has("张") || has("开手") || has("開手") ||
+      has("spread"))
+    return 95;
+  if (has("hand") || has("finger") || has("controller") ||
+      has("control_") || has("ctrl"))
+    return 70;
+  if (has("手") || has("指")) {
+    if (has("手首") || has("手先") || has("手捩") || has("手指") ||
+        has("親指") || has("人指") || has("人差指") || has("中指") ||
+        has("薬指") || has("小指"))
+      return 0;
+    return 45;
+  }
+  if (has("腕ik") || has("arm_ik") || has("arm ik") || has("視線") ||
+      has("视线"))
+    return 60;
+  return 0;
+}
+
+bool IsStructuralControlTrack(const std::string_view name) {
+  static constexpr std::string_view kNames[] = {
+      "腰", "肩", "足", "ひざ", "足首", "つま先", "首", "頭", "胸",
+      "腕", "ひじ", "捩", "補助", "キャンセル", "IK", "操作中心",
+      "両目", "左目", "右目"};
+  for (const auto value : kNames)
+    if (name.find(value) != std::string_view::npos)
+      return true;
+  return false;
+}
+
 // UObject::ClassPrivate. Only used by the read-only mesh scan, where a wrong
 // value cannot corrupt anything: it just matches nothing and the scan reports
 // zero candidates.
@@ -216,17 +295,10 @@ struct RenderSnapshot {
 //
 // MMD's camera semantics: `position` is the look-at target, `rotation` is Euler in radians, the
 // camera itself sits `distance` back along its view axis, and `view_angle` is the FOV in degrees.
-struct CameraKey {
-  double frame = 0.0;
-  double distance = 0.0;
-  double position[3] = {0.0, 0.0, 0.0};
-  double rotation[3] = {0.0, 0.0, 0.0};
-  double view_angle = 0.0;
-};
 
 struct CameraTrack {
   std::string file;
-  std::vector<CameraKey> keys;   // ascending frame order
+  std::vector<better_pose::mmd2bip::VmdCameraKey> keys;   // ascending frame order
   double first_frame = 0.0;
   double last_frame = 0.0;
 
@@ -249,72 +321,189 @@ struct CameraTrack {
         *error = "this VMD has no camera keys (bone-only file)";
       return false;
     }
-    keys.reserve(document.camera.size());
-    for (const better_pose::mmd2bip::VmdCameraKey &source : document.camera) {
-      CameraKey key;
-      key.frame = static_cast<double>(source.frame);
-      key.distance = source.distance;
-      key.view_angle = static_cast<double>(source.view_angle);
-      for (int axis = 0; axis < 3; ++axis) {
-        key.position[axis] = source.position[axis];
-        key.rotation[axis] = source.rotation[axis];
-      }
-      keys.push_back(key);
-    }
-    std::sort(keys.begin(), keys.end(),
-              [](const CameraKey &a, const CameraKey &b) { return a.frame < b.frame; });
-    first_frame = keys.front().frame;
-    last_frame = keys.back().frame;
+    keys = document.camera;
+    first_frame = static_cast<double>(keys.front().frame);
+    last_frame = static_cast<double>(keys.back().frame);
     file = name;
     return true;
   }
 
-  // Linear between keys, held at the ends. MMD's per-key Bezier easing is not applied yet: for a
-  // file keyed every frame (the usual export) it makes no difference.
   bool Sample(const double frame, double out_position[3], double out_rotation[3],
               double *out_distance, double *out_fov) const {
-    if (keys.empty())
+    const better_pose::mmd2bip::VmdCameraPose pose =
+        better_pose::mmd2bip::SampleCameraTrack(keys, frame);
+    if (!pose.valid)
       return false;
-    if (frame <= keys.front().frame) {
-      Copy(keys.front(), out_position, out_rotation, out_distance, out_fov);
-      return true;
-    }
-    if (frame >= keys.back().frame) {
-      Copy(keys.back(), out_position, out_rotation, out_distance, out_fov);
-      return true;
-    }
-    std::size_t low = 0;
-    std::size_t high = keys.size() - 1;
-    while (high - low > 1) {
-      const std::size_t middle = (low + high) / 2;
-      if (keys[middle].frame <= frame)
-        low = middle;
-      else
-        high = middle;
-    }
-    const CameraKey &a = keys[low];
-    const CameraKey &b = keys[high];
-    const double span = b.frame - a.frame;
-    const double blend = span > 1e-9 ? (frame - a.frame) / span : 0.0;
     for (int axis = 0; axis < 3; ++axis) {
-      out_position[axis] = a.position[axis] + (b.position[axis] - a.position[axis]) * blend;
-      out_rotation[axis] = a.rotation[axis] + (b.rotation[axis] - a.rotation[axis]) * blend;
+      out_position[axis] = pose.position[axis];
+      out_rotation[axis] = pose.rotation[axis];
     }
-    *out_distance = a.distance + (b.distance - a.distance) * blend;
-    *out_fov = a.view_angle + (b.view_angle - a.view_angle) * blend;
+    *out_distance = pose.distance;
+    *out_fov = pose.view_angle;
     return true;
+  }
+};
+
+class AtomicMotionAmplitude final {
+ public:
+  AtomicMotionAmplitude() { Store(amp::Settings{}); }
+
+  amp::Settings Load() const noexcept {
+    amp::Settings settings;
+    settings.master = master_.load(std::memory_order_acquire);
+    for (std::size_t index{}; index != amp::kPartCount; ++index)
+      settings.parts[index] = parts_[index].load(std::memory_order_acquire);
+    return settings;
+  }
+
+  void Store(const amp::Settings &settings) noexcept {
+    master_.store(amp::SafeFactor(settings.master), std::memory_order_release);
+    for (std::size_t index{}; index != amp::kPartCount; ++index)
+      parts_[index].store(amp::SafeFactor(settings.parts[index]),
+                          std::memory_order_release);
+  }
+
+  float FactorForBone(const std::string_view bone_name) const noexcept {
+    const amp::Part part = amp::PartForBone(bone_name);
+    if (part < amp::Part::Torso || part >= amp::Part::Count)
+      return 1.0F;
+    return amp::SafeFactor(
+        amp::SafeFactor(master_.load(std::memory_order_acquire)) *
+        amp::SafeFactor(parts_[static_cast<std::size_t>(part)].load(
+            std::memory_order_acquire)));
   }
 
  private:
-  static void Copy(const CameraKey &key, double out_position[3], double out_rotation[3],
-                   double *out_distance, double *out_fov) {
-    for (int axis = 0; axis < 3; ++axis) {
-      out_position[axis] = key.position[axis];
-      out_rotation[axis] = key.rotation[axis];
-    }
-    *out_distance = key.distance;
-    *out_fov = key.view_angle;
+  std::atomic<float> master_{1.0F};
+  std::array<std::atomic<float>, amp::kPartCount> parts_{};
+};
+
+class AtomicMotionTravel final {
+ public:
+  AtomicMotionTravel() { Store(travel::Settings{}); }
+
+  travel::Settings Load() const noexcept {
+    travel::Settings settings;
+    for (std::size_t axis{}; axis != travel::kAxisCount; ++axis)
+      settings.scale[axis] = scale_[axis].load(std::memory_order_acquire);
+    return settings;
   }
+
+  void Store(const travel::Settings &settings) noexcept {
+    const travel::Settings clamped = travel::ClampSettings(settings);
+    for (std::size_t axis{}; axis != travel::kAxisCount; ++axis)
+      scale_[axis].store(clamped.scale[axis], std::memory_order_release);
+  }
+
+ private:
+  std::array<std::atomic<float>, travel::kAxisCount> scale_{};
+};
+
+class AtomicSecondaryTuning final {
+ public:
+  AtomicSecondaryTuning() { Store(better_pose::secondary::DynamicsTuning{}); }
+
+  better_pose::secondary::DynamicsTuning Load() const noexcept {
+    better_pose::secondary::DynamicsTuning tuning;
+    tuning.inertia = inertia_.load(std::memory_order_acquire);
+    tuning.air = air_.load(std::memory_order_acquire);
+    tuning.damping = damping_.load(std::memory_order_acquire);
+    tuning.ribbon_damping =
+        ribbon_damping_.load(std::memory_order_acquire);
+    tuning.gravity = gravity_.load(std::memory_order_acquire);
+    tuning.collision = collision_.load(std::memory_order_acquire);
+    tuning.extended_collision =
+        extended_collision_.load(std::memory_order_acquire);
+    tuning.native_limits = native_limits_.load(std::memory_order_acquire);
+    tuning.bone_constraints =
+        bone_constraints_.load(std::memory_order_acquire);
+    tuning.self_collision = self_collision_.load(std::memory_order_acquire);
+    tuning.self_collision_outer_priority =
+        self_collision_outer_priority_.load(std::memory_order_acquire);
+    tuning.self_collision_pairs =
+        self_collision_pairs_.load(std::memory_order_acquire);
+    for (std::size_t index{};
+         index != better_pose::secondary::kMotionMaterialCount; ++index) {
+      tuning.material_inertia[index] =
+          material_inertia_[index].load(std::memory_order_acquire);
+      tuning.material_collision[index] =
+          material_collision_[index].load(std::memory_order_acquire);
+      tuning.self_collision_radius[index] =
+          self_collision_radius_[index].load(std::memory_order_acquire);
+      tuning.self_collision_strength[index] =
+          self_collision_strength_[index].load(std::memory_order_acquire);
+      tuning.self_collision_damping[index] =
+          self_collision_damping_[index].load(std::memory_order_acquire);
+    }
+    return tuning;
+  }
+
+  void Store(better_pose::secondary::DynamicsTuning tuning) noexcept {
+    tuning = better_pose::secondary::SafeDynamicsTuning(tuning);
+    inertia_.store(tuning.inertia, std::memory_order_release);
+    air_.store(tuning.air, std::memory_order_release);
+    damping_.store(tuning.damping, std::memory_order_release);
+    ribbon_damping_.store(tuning.ribbon_damping, std::memory_order_release);
+    gravity_.store(tuning.gravity, std::memory_order_release);
+    collision_.store(tuning.collision, std::memory_order_release);
+    extended_collision_.store(tuning.extended_collision,
+                              std::memory_order_release);
+    native_limits_.store(tuning.native_limits, std::memory_order_release);
+    bone_constraints_.store(tuning.bone_constraints,
+                            std::memory_order_release);
+    self_collision_.store(tuning.self_collision,
+                          std::memory_order_release);
+    self_collision_outer_priority_.store(
+        tuning.self_collision_outer_priority,
+        std::memory_order_release);
+    self_collision_pairs_.store(tuning.self_collision_pairs,
+                                std::memory_order_release);
+    for (std::size_t index{};
+         index != better_pose::secondary::kMotionMaterialCount; ++index) {
+      material_inertia_[index].store(tuning.material_inertia[index],
+                                     std::memory_order_release);
+      material_collision_[index].store(tuning.material_collision[index],
+                                       std::memory_order_release);
+      self_collision_radius_[index].store(
+          tuning.self_collision_radius[index], std::memory_order_release);
+      self_collision_strength_[index].store(
+          tuning.self_collision_strength[index],
+          std::memory_order_release);
+      self_collision_damping_[index].store(
+          tuning.self_collision_damping[index],
+          std::memory_order_release);
+    }
+  }
+
+ private:
+  std::atomic<float> inertia_{1.0F};
+  std::atomic<float> air_{0.0F};
+  std::atomic<float> damping_{1.0F};
+  std::atomic<float> ribbon_damping_{1.0F};
+  std::atomic<float> gravity_{1.0F};
+  std::atomic<float> collision_{1.0F};
+  std::atomic_bool extended_collision_{false};
+  std::atomic_bool native_limits_{false};
+  std::atomic_bool bone_constraints_{false};
+  std::atomic_bool self_collision_{false};
+  std::atomic_bool self_collision_outer_priority_{false};
+  std::atomic<std::uint64_t> self_collision_pairs_{
+      better_pose::secondary::DefaultSelfCollisionPairs()};
+  std::array<std::atomic<float>,
+             better_pose::secondary::kMotionMaterialCount>
+      material_inertia_{};
+  std::array<std::atomic<float>,
+             better_pose::secondary::kMotionMaterialCount>
+      material_collision_{};
+  std::array<std::atomic<float>,
+             better_pose::secondary::kMotionMaterialCount>
+      self_collision_radius_{};
+  std::array<std::atomic<float>,
+             better_pose::secondary::kMotionMaterialCount>
+      self_collision_strength_{};
+  std::array<std::atomic<float>,
+             better_pose::secondary::kMotionMaterialCount>
+      self_collision_damping_{};
 };
 
 struct Context final {
@@ -341,12 +530,85 @@ struct Context final {
   // it and publishes the screen positions; Draw (render thread) picks the joint
   // under a click from those. overlay_mutex guards the published overlay_screen_*.
   std::atomic_bool skeleton_overlay_enabled{};
+  // Read-only dynamic-bone collision inspection. Off by default; simulation
+  // publishes a small snapshot after each accessory update and the AHUD callback
+  // only projects that snapshot. These counters drive the panel summary.
+  std::atomic_bool collision_debug_enabled{};
+  std::atomic_bool collision_contacts_enabled{};
+  std::atomic_bool collision_debug_page_visible{};
+  std::atomic<int> collision_overlay_request{};  // 1 subscribe, 0 unsubscribe
+  std::atomic<std::uint32_t> collision_debug_accessories{};
+  std::atomic<std::uint32_t> collision_debug_capsules{};
+  std::atomic<std::uint32_t> collision_debug_torso{};
+  std::atomic<std::uint32_t> collision_debug_head{};
+  std::atomic<std::uint32_t> collision_debug_arms{};
+  std::atomic<std::uint32_t> collision_debug_legs{};
+  std::atomic<std::uint32_t> collision_debug_contacts{};
+  std::atomic<std::uint32_t> collision_debug_contacts_torso{};
+  std::atomic<std::uint32_t> collision_debug_contacts_head{};
+  std::atomic<std::uint32_t> collision_debug_contacts_arms{};
+  std::atomic<std::uint32_t> collision_debug_contacts_legs{};
+  std::atomic<std::uint32_t> collision_debug_corrections{};
+  std::atomic<std::uint32_t> collision_debug_probes{};
+  std::atomic<float> collision_debug_max_depth{};
+  std::atomic<float> collision_debug_nearest_gap{};
+  std::atomic<std::uint64_t> collision_debug_last_log_ms{};
+  std::atomic<std::uint32_t> secondary_debug_components{};
+  std::atomic<std::uint32_t> secondary_debug_driven_bones{};
+  std::atomic<std::uint32_t> secondary_debug_native_springs{};
+  std::atomic<std::uint32_t> secondary_debug_kawaii_nodes{};
+  std::atomic<std::uint32_t> secondary_debug_kawaii_limits{};
+  std::atomic<std::uint32_t> secondary_debug_kawaii_spherical_limits{};
+  std::atomic<std::uint32_t> secondary_debug_kawaii_box_limits{};
+  std::atomic<std::uint32_t> secondary_debug_kawaii_planar_limits{};
+  std::atomic<std::uint32_t> secondary_debug_distance_links{};
+  std::atomic<std::uint32_t> secondary_debug_distance_corrections{};
+  std::atomic<std::uint32_t> secondary_debug_self_collision_links{};
+  std::atomic<std::uint32_t> secondary_debug_self_collision_contacts{};
+  std::array<std::atomic<std::uint32_t>,
+             better_pose::secondary::kMotionMaterialCount>
+      secondary_debug_self_candidates_by_material{};
+  std::array<std::atomic<std::uint32_t>,
+             better_pose::secondary::kMotionMaterialCount>
+      secondary_debug_self_contacts_by_material{};
+  std::atomic<std::uint32_t> secondary_debug_attachment_roots{};
+  std::atomic<std::uint32_t> secondary_debug_multi_attachment{};
+  std::array<std::atomic<std::uint32_t>,
+             better_pose::secondary::kMotionMaterialCount>
+      secondary_debug_materials{};
+  std::mutex secondary_debug_mutex;
+  std::string secondary_debug_summary;
+  std::atomic<int> main_kawaii_state{};  // 0 unconverted, 1 ready, 2 unavailable
+  std::atomic<std::uint32_t> main_kawaii_springs{};
+  std::atomic<std::uint32_t> main_kawaii_limits{};
+  std::atomic<std::uint32_t> main_kawaii_spherical_limits{};
+  std::atomic<std::uint32_t> main_kawaii_box_limits{};
+  std::atomic<std::uint32_t> main_kawaii_planar_limits{};
+  std::mutex main_kawaii_mutex;
+  std::string main_kawaii_detail;
+  std::atomic<std::uint32_t> main_distance_links{};
+  std::atomic<std::uint32_t> main_distance_corrections{};
+  std::atomic<std::uint32_t> main_self_collision_contacts{};
+  std::atomic<std::uint32_t> main_self_collision_corrections{};
+  std::atomic<std::uint32_t> main_self_collision_links{};
+  std::array<std::atomic<std::uint32_t>,
+             better_pose::secondary::kMotionMaterialCount>
+      main_self_candidates_by_material{};
+  std::array<std::atomic<std::uint32_t>,
+             better_pose::secondary::kMotionMaterialCount>
+      main_self_contacts_by_material{};
+  std::atomic<std::uint64_t> secondary_tuning_log_ms{};
+  bool secondary_panel_open{};  // render thread only
+  bool secondary_self_collision_open{};  // render thread only
+  std::atomic<std::uint64_t> pose_pipeline_last_log_ms{};
+  std::atomic<std::uint64_t> extra_write_last_log_ms{};
   // Hide hair, clothing and ornament bones from the overlay (drawing and picking).
   std::atomic_bool overlay_body_only{true};
   // Joint marker radius in canvas pixels; the pick radius follows it.
   std::atomic<float> overlay_joint_radius{7.0F};
   std::atomic_bool overlay_show_face{};
   std::atomic<std::uint32_t> overlay_hidden_count{};
+  std::atomic<std::uint64_t> overlay_perf_last_log_ms{};
   std::mutex overlay_mutex;
   std::vector<std::array<float, 2>> overlay_screen_joints;
   std::vector<std::uint8_t> overlay_screen_valid;
@@ -354,6 +616,29 @@ struct Context final {
   std::vector<std::array<double, 3>> overlay_joint_world;  // for focusing the pose camera
   bool overlay_component_world_valid{};
   std::vector<std::array<double, 3>> overlay_frame_world;  // game thread scratch
+  std::vector<better_pose::accessory::Capsule> overlay_collision_capsules;
+  std::vector<better_pose::accessory::CollisionContact> overlay_collision_contacts;
+  std::vector<better_pose::accessory::DistanceLinkDebug>
+      overlay_distance_constraint_links;
+  std::vector<better_pose::bone_constraints::ContactDebug>
+      overlay_self_collision_contacts;
+  struct OverlayCollisionLine {
+    std::array<float, 2> from{};
+    std::array<float, 2> to{};
+    std::uint32_t color{};
+    float thickness{};
+  };
+  struct OverlayCollisionPoint {
+    std::array<float, 2> position{};
+    float size{};
+    std::uint32_t color{};
+  };
+  std::vector<OverlayCollisionLine> overlay_collision_lines;
+  std::vector<OverlayCollisionPoint> overlay_collision_points;
+  std::vector<std::uint8_t> overlay_collision_raw_pose;
+  std::vector<std::array<double, 3>> overlay_collision_body_points;
+  std::uint64_t collision_overlay_refresh_ms{};
+  std::atomic<std::uint64_t> collision_overlay_perf_last_log_ms{};
   float overlay_viewport_width{};
   float overlay_viewport_height{};
   // Game thread only. The UFunction object is resolved once: looking it up by
@@ -534,9 +819,33 @@ struct Context final {
   AnomalyGenerationHandleV1 settings_schema{};
   std::vector<std::array<double, 3>> bone_angles;
   std::vector<std::array<double, 12>> pose_base_locals;
+  // A confirmed manual A/T-pose reference, keyed by bone name so it follows the
+  // character's profile across skeletons with different traversal indices.
+  std::map<std::string, std::array<double, 12>> manual_motion_reference;
   std::uintptr_t pose_base_mesh{};
   bool pose_base_ready{};
+  struct TPoseCalibrationSession {
+    bool pose_override_was_enabled{};
+    bool freeze_was_enabled{};
+    bool overlay_was_enabled{};
+    bool keyframe_playing_was_enabled{};
+    bool settings_dirty_was_set{};
+    bool pose_base_was_ready{};
+    std::uintptr_t pose_base_mesh{};
+    std::vector<std::array<double, 12>> pose_base_locals;
+    std::vector<std::array<double, 3>> angles;
+    std::array<double, 3> root_offset{};
+  };
+  TPoseCalibrationSession t_pose_session;
+  std::atomic_bool t_pose_calibration_active{};
+  std::atomic<int> t_pose_calibration_request{};  // 1 start, 2 confirm, 3 cancel, 4 clear
+  std::atomic_bool t_pose_calibration_use_t_pose{};
+  std::atomic<int> automatic_calibration_kind{};
+  std::atomic<int> automatic_calibration_issue{};
+  std::atomic<int> manual_calibration_issue{};
+  std::uintptr_t automatic_calibration_mesh{};
   std::atomic_bool pose_settings_dirty{};
+  std::atomic<std::uint64_t> pose_settings_save_error_log_ms{};
   std::uintptr_t g_objects_address{};
   ObjectRegistry object_registry{};
   std::string reflection_status{"reflection idle"};
@@ -652,7 +961,24 @@ struct Context final {
   // every driven bone gets an absolute local rotation, everything else keeps the
   // captured base pose.
   struct MotionTrack {
+    struct VisibilityKey {
+      std::uint32_t frame{};
+      bool visible{true};
+    };
+    struct ArmIkTarget {
+      std::string side;
+      std::string hand_name;
+      std::uint32_t upper_arm{};
+      std::uint32_t forearm{};
+      std::uint32_t hand{};
+      bool indices_ready{};
+      bool follow_wrist{};
+      float max_bend_degrees{150.0F};
+      std::vector<float> offsets;   // frame_count * 3
+      std::vector<float> rotations; // frame_count * 4, world deltas
+    };
     std::vector<std::string> bone_names;
+    std::vector<amp::Part> bone_parts;
     std::vector<std::uint32_t> bone_indices;
     bool indices_ready{};
     std::uint32_t bone_count{};
@@ -684,6 +1010,23 @@ struct Context final {
     // indexes into). Mapped onto the character's morphs at playback time.
     std::vector<std::string> morph_names;
     std::vector<std::vector<better_pose::mmd_morph::Key>> morph_keys;
+    // Whole-model display changes. Frames are the VMD's native frames; runtime samples by the
+    // same raw frame index used by morph keys.
+    std::vector<VisibilityKey> visibility_keys;
+    std::vector<ArmIkTarget> arm_ik_targets;
+  };
+  struct MotionTimelineCache {
+    std::uint32_t first_frame{};
+    std::uint32_t last_frame{};
+    double fps{30.0};
+    std::size_t bone_tracks{};
+    std::size_t morph_tracks{};
+    std::size_t bone_key_count{};
+    std::size_t morph_key_count{};
+    std::size_t camera_key_count{};
+    std::array<bool, 3> lane_span{};
+    std::array<double, 6> span_edges{};
+    std::vector<better_pose::timeline::KeyMark> marks;
   };
   // MMD morphs -> this character's morph catalogue, rebuilt when either the
   // motion or the catalogue changes. Game thread only.
@@ -698,12 +1041,33 @@ struct Context final {
   std::vector<std::uint8_t> motion_morph_driving;
   std::mutex motion_mutex;
   MotionTrack motion;
+  std::mutex motion_timeline_mutex;
+  std::shared_ptr<const MotionTimelineCache> motion_timeline;
   // Guarded by motion_mutex: a worker started before unload/switch cannot
   // publish a conversion made for the previous skeleton afterwards.
   std::uint64_t motion_load_epoch{};
   std::atomic_bool motion_loaded{};
   std::atomic_bool motion_playing{};
+  std::atomic_bool motion_secondary_tuning_stale{};
+  std::atomic<std::uint32_t> motion_secondary_bones{};
+  std::array<std::atomic<std::uint32_t>,
+             better_pose::secondary::kMotionMaterialCount>
+      motion_secondary_materials{};
   std::atomic_bool motion_loop{true};
+  std::atomic<float> motion_speed{1.0F};
+  std::atomic<float> motion_height_cm{0.0F};
+  std::atomic_bool motion_travel_enabled{};
+  AtomicMotionTravel motion_travel;
+  std::atomic_bool motion_amplitude_enabled{false};
+  AtomicMotionAmplitude motion_amplitude;
+  AtomicSecondaryTuning secondary_tuning;
+  std::mutex motion_joint_mutex;
+  joint_cal::Settings motion_joint_calibration;
+  std::mutex motion_limb_mutex;
+  limb_cal::AllSettings motion_limb_calibration;
+  std::atomic_bool motion_limb_enabled{};
+  std::atomic<int> motion_limb_edit_index{0};
+  std::array<std::atomic<int>, limb_cal::kLimbCount> motion_limb_status{};
   std::atomic_bool motion_apply_root{true};
   // Play the motion in place: drop the root translation's two horizontal components and keep the
   // height (mmd y -> the target's z, see the root application below), so a travelling motion can
@@ -714,7 +1078,56 @@ struct Context final {
   // plugin's own reference (Kinsama式初音ミクV4C). A motion authored against one rig reads
   // differently on the other -- resting arms differ by ~35 deg and the hips' travel around the
   // waist by up to 21 cm -- so this is a per-motion choice, not a global "better" one.
-  std::atomic_bool motion_reference_unity{true};
+  // 0 = bundled Miku PMX, 1 = Unity Miku V4C, 2 = Endfield Standard MMD / A-pose.
+  std::atomic<int> motion_reference_mode{1};
+  // Conversion-time source IK mode: 0 follow VMD switches, 1 force on, 2 force off.
+  std::atomic<int> motion_ik_mode{0};
+  std::mutex motion_mapping_mutex;
+  std::map<std::string, std::string> manual_motion_mappings;
+  std::vector<better_pose::mmd2bip::ManualParentMapping>
+      manual_motion_parents;
+  std::vector<better_pose::mmd2bip::ManualFingerControl>
+      manual_motion_finger_controls;
+  std::vector<better_pose::mmd2bip::ManualArmIkControl>
+      manual_motion_arm_ik_controls;
+  std::set<std::string> ignored_motion_tracks;
+  std::string motion_mapping_source;                 // render thread only
+  std::array<char, 128> motion_mapping_filter{};      // render thread only
+  bool motion_mapping_ui_enabled{};                  // render thread only
+  bool motion_mapping_parent_mode{};                 // render thread only
+  bool motion_mapping_control_mode{};                // render thread only
+  bool motion_mapping_parent_rotation{true};         // render thread only
+  bool motion_mapping_parent_position{};             // render thread only
+  bool motion_mapping_anchor_picker{};               // render thread only
+  std::string motion_mapping_anchor;                 // render thread only
+  std::atomic<int> motion_mapping_control_kind{};
+  std::atomic<int> motion_mapping_control_side{};
+  std::atomic<int> motion_mapping_control_finger{-1};
+  std::atomic<int> motion_mapping_control_axis{};
+  std::atomic<float> motion_mapping_control_gain{1.0F};
+  std::atomic_bool motion_mapping_control_paired{true};
+  std::atomic_bool motion_mapping_arm_follow_wrist{};
+  std::atomic<float> motion_mapping_arm_gain{1.0F};
+  std::atomic<float> motion_mapping_arm_max_bend{150.0F};
+  // Live configuration preview. This only affects the currently displayed pose and is never
+  // serialized into the motion document.
+  std::atomic_bool motion_finger_preview_enabled{};
+  std::atomic<float> motion_finger_preview_amount{0.65F};
+  std::atomic<int> motion_finger_preview_active_bones{};
+  std::atomic_bool motion_arm_preview_enabled{};
+  std::atomic<float> motion_arm_preview_amount{0.35F};
+  std::atomic<int> motion_arm_preview_active_sides{};
+  // Game-thread ownership for VMD whole-model visibility. Failed components stay in the map
+  // until they become queryable again, so unload/character changes can finish restoration.
+  std::uintptr_t motion_visibility_owner{};
+  std::map<std::uintptr_t, bool> motion_visibility_original;
+  std::map<std::uintptr_t, bool> motion_visibility_last;
+  std::atomic_bool motion_visibility_restore_requested{};
+  // Skeleton-independent VMD inspection. Guarded by the mutex because the file action
+  // writes it on the scheduler thread while the panel reads it on the render thread.
+  std::mutex motion_inspection_mutex;
+  std::optional<better_pose::mmd2bip::VmdCompatibilityReport> motion_inspection;
+  std::string motion_inspection_path;
   // Camera VMD (a separate file from the motion): loaded on the worker, sampled on the render
   // thread, so the track itself is guarded and only the flags are atomic.
   std::mutex camera_mutex;
@@ -802,6 +1215,9 @@ struct Context final {
   // the layout; the render thread uses that layout for picking and posts
   // seek/key-move requests back through the existing atomics.
   std::atomic_bool keyframe_overlay_enabled{};
+  // A display projection over the same track: one editing row becomes the
+  // bone, morph and camera lanes represented by a VMD export.
+  std::atomic_bool keyframe_mmd_export_timeline{};
   std::mutex keyframe_overlay_mutex;
   better_pose::timeline::Layout keyframe_overlay_layout;
   bool keyframe_overlay_valid{};
@@ -954,13 +1370,23 @@ struct Context final {
   // independent animation and budget scheduling; the diagnostic path records
   // their pose arrays without assuming a leader-pose relationship.
   struct ExtraMesh {
+    struct KawaiiLimit {
+      std::int32_t driving_bone{-1};
+      std::array<double, 3> offset_location{};
+      std::array<double, 3> offset_rotation{};
+      float radius{};
+      float length{};
+      float sphere_radius{};
+    };
     std::uintptr_t object{};
     std::uintptr_t asset{};
+    std::string display_name;
     std::uint32_t bone_count{};
     std::uintptr_t component_space_data{};
     std::uintptr_t bone_space_data{};
     std::vector<std::uint32_t> bone_map;   // its bone -> body bone (max = none)
     std::vector<std::array<std::uint8_t, 8>> bone_fnames;
+    std::vector<std::string> bone_names;
     std::vector<std::uint32_t> position_map;
     double position_match_cm{};
     bool used_position{};
@@ -985,6 +1411,11 @@ struct Context final {
     std::vector<std::array<double, 12>> bind_world;
     std::vector<std::array<double, 4>> lag;
     bool lag_ready{};
+    // A component may have several independently animated attachment branches.
+    // Keep the nearest mapped body bone for each branch, then drive those anchors
+    // from the body while the chains below them remain simulated.
+    std::vector<std::uint32_t> attachment_bones;
+    std::vector<better_pose::accessory::AttachmentDrive> attachment_drives;
     bool used_hierarchy{};
     std::uint32_t anchor_extra{};
     std::uint32_t anchor_body{};
@@ -997,6 +1428,10 @@ struct Context final {
     std::array<double, 12> poseable_expected_relative{};
     bool poseable_bind_written{};
     bool poseable_last_write_ok{};
+    bool original_animation_mode_saved{};
+    bool animation_mode_paused{};
+    std::uint8_t original_animation_mode{};
+    std::uint8_t original_animation_flags{};
     // Reflected entry points resolved once when the replacement is created.
     // CallVirtualUFunction looks its function up by name on every call, and the
     // accessory writer calls it once per bone per frame, so the lookup - not the
@@ -1005,6 +1440,24 @@ struct Context final {
     std::uintptr_t poseable_set_bone_function{};
     std::uintptr_t poseable_set_relative_function{};
     std::uintptr_t poseable_get_transform_function{};
+    // Read-only native secondary-bone data. The source component's AnimBP still
+    // owns these values; BetterPose only maps them into its independent solver.
+    bool kawaii_attempted{};
+    std::uint64_t kawaii_retry_after_ms{};
+    bool kawaii_configured{};
+    bool kawaii_component_space{};
+    std::uintptr_t kawaii_node{};
+    std::uint32_t kawaii_spring_count{};
+    std::uint32_t kawaii_spherical_limits{};
+    std::uint32_t kawaii_capsule_limits{};
+    std::uint32_t kawaii_box_limits{};
+    std::uint32_t kawaii_planar_limits{};
+    std::string kawaii_root;
+    better_pose::secondary::KawaiiPhysicsSettings kawaii_base;
+    std::array<double, 3> kawaii_gravity{};
+    double kawaii_wind_scale{};
+    bool kawaii_wind_enabled{};
+    std::vector<KawaiiLimit> kawaii_limits;
     // The pose last sent to the component: only the simulated bones move, so the rest
     // are skipped instead of being re-sent every frame. PackedTransform is not declared
     // yet at this point, so these hold its bytes.
@@ -1366,11 +1819,35 @@ struct PoseApplyReport {
   std::vector<std::string> missing;
 };
 
+bool JointCalibrationEnabled(Context &context) noexcept {
+  std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+  return context.motion_joint_calibration.enabled;
+}
+
+void SetJointCalibrationEnabled(Context &context, const bool enabled,
+                                const bool mark_dirty = true) noexcept {
+  {
+    std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+    context.motion_joint_calibration.enabled = enabled;
+  }
+  if (mark_dirty)
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+}
+
 bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
                        PoseApplyReport *report = nullptr) noexcept {  try {
     if (!json.is_object() || !json.contains("bones") ||
         !json.at("bones").is_array())
       return false;
+    std::uint32_t calibration_defaults_version = 0;
+    if (json.contains("motionCalibrationDefaultsVersion")) {
+      if (!json.at("motionCalibrationDefaultsVersion").is_number_integer())
+        return false;
+      calibration_defaults_version =
+          json.at("motionCalibrationDefaultsVersion").get<std::uint32_t>();
+    }
+    const bool current_calibration_defaults =
+        calibration_defaults_version >= kMotionCalibrationDefaultsVersion;
     std::vector<better_pose::pose_document::SavedBone> saved;
     for (const auto &item : json.at("bones")) {
       if (!item.is_object() || !item.contains("index") ||
@@ -1430,6 +1907,57 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
         root_offset[index] = json.at("rootOffset").at(index).get<double>();
       }
     }
+    std::optional<std::map<std::string, std::array<double, 12>>>
+        manual_reference;
+    if (json.contains("manualMotionReference")) {
+      const auto &reference = json.at("manualMotionReference");
+      if (!reference.is_object() || reference.size() > 4096)
+        return false;
+      std::map<std::string, std::array<double, 12>> parsed_reference;
+      for (auto item = reference.begin(); item != reference.end(); ++item) {
+        if (item.key().empty() || item.key().size() > 512 ||
+            !item.value().is_object())
+          return false;
+        const auto &value = item.value();
+        if (!value.contains("rotation") || !value.contains("translation") ||
+            !value.contains("scale"))
+          return false;
+        const auto &rotation = value.at("rotation");
+        const auto &translation = value.at("translation");
+        const auto &scale = value.at("scale");
+        if (!rotation.is_array() || rotation.size() != 4 ||
+            !translation.is_array() || translation.size() != 3 ||
+            !scale.is_array() || scale.size() != 3)
+          return false;
+        std::array<double, 12> local{};
+        for (std::size_t axis{}; axis != 4; ++axis) {
+          if (!rotation.at(axis).is_number())
+            return false;
+          local[axis] = rotation.at(axis).get<double>();
+          if (!std::isfinite(local[axis]))
+            return false;
+        }
+        for (std::size_t axis{}; axis != 3; ++axis) {
+          if (!translation.at(axis).is_number() ||
+              !scale.at(axis).is_number())
+            return false;
+          local[axis + 4] = translation.at(axis).get<double>();
+          local[axis + 8] = scale.at(axis).get<double>();
+          if (!std::isfinite(local[axis + 4]) ||
+              !std::isfinite(local[axis + 8]))
+            return false;
+        }
+        const double norm = std::sqrt(
+            local[0] * local[0] + local[1] * local[1] +
+            local[2] * local[2] + local[3] * local[3]);
+        if (!(norm > 1e-9) || !std::isfinite(norm))
+          return false;
+        for (std::size_t axis{}; axis != 4; ++axis)
+          local[axis] /= norm;
+        parsed_reference.emplace(item.key(), local);
+      }
+      manual_reference = std::move(parsed_reference);
+    }
     if (json.contains("musicVolume")) {
       if (!json.at("musicVolume").is_number_integer())
         return false;
@@ -1441,8 +1969,622 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
       g_music_request_volume.store(volume, std::memory_order_release);
       g_music_request_volume_pending.store(true, std::memory_order_release);
     }
+    std::optional<float> motion_speed;
+    std::optional<float> motion_height;
+    std::optional<int> motion_reference_mode;
+    std::optional<int> motion_ik_mode;
+    std::optional<std::map<std::string, std::string>> manual_motion_mappings;
+    std::optional<std::vector<better_pose::mmd2bip::ManualParentMapping>>
+        manual_motion_parents;
+    std::optional<std::vector<better_pose::mmd2bip::ManualFingerControl>>
+        manual_motion_finger_controls;
+    std::optional<std::vector<better_pose::mmd2bip::ManualArmIkControl>>
+        manual_motion_arm_ik_controls;
+    std::optional<std::set<std::string>> ignored_motion_tracks;
+    std::optional<bool> motion_travel_enabled;
+    std::optional<travel::Settings> motion_travel_scale;
+    std::optional<bool> motion_amplitude_enabled;
+    std::optional<amp::Settings> motion_amplitude;
+    std::optional<joint_cal::Settings> motion_joint_calibration;
+    std::optional<limb_cal::AllSettings> motion_limb_calibration;
+    std::optional<bool> motion_limb_enabled;
+    std::optional<better_pose::secondary::DynamicsTuning> secondary_tuning;
+    bool secondary_tuning_migrated = false;
+    if (json.contains("motionSpeed")) {
+      if (!json.at("motionSpeed").is_number())
+        return false;
+      const float speed = json.at("motionSpeed").get<float>();
+      if (!std::isfinite(speed) || speed < 0.25F || speed > 2.0F)
+        return false;
+      motion_speed = speed;
+    }
+    if (json.contains("motionHeightCm")) {
+      if (!json.at("motionHeightCm").is_number())
+        return false;
+      const float height = json.at("motionHeightCm").get<float>();
+      if (!std::isfinite(height) || height < -100.0F || height > 100.0F)
+        return false;
+      motion_height = height;
+    }
+    if (json.contains("motionReferenceMode")) {
+      if (!json.at("motionReferenceMode").is_number_integer())
+        return false;
+      const int mode = json.at("motionReferenceMode").get<int>();
+      if (mode < 0 || mode > 2)
+        return false;
+      motion_reference_mode = mode;
+    } else if (json.contains("motionReferenceUnity")) {
+      if (!json.at("motionReferenceUnity").is_boolean())
+        return false;
+      motion_reference_mode =
+          json.at("motionReferenceUnity").get<bool>() ? 1 : 0;
+    }
+    if (json.contains("motionIkMode")) {
+      if (!json.at("motionIkMode").is_number_integer())
+        return false;
+      const int mode = json.at("motionIkMode").get<int>();
+      if (mode < 0 || mode > 2)
+        return false;
+      motion_ik_mode = mode;
+    }
+    if (json.contains("manualMotionMappings")) {
+      if (!json.at("manualMotionMappings").is_object())
+        return false;
+      std::map<std::string, std::string> mappings;
+      for (const auto &item : json.at("manualMotionMappings").items()) {
+        if (item.key().empty() || !item.value().is_string())
+          return false;
+        const std::string target = item.value().get<std::string>();
+        if (target.empty())
+          return false;
+        mappings[item.key()] = target;
+      }
+      manual_motion_mappings = std::move(mappings);
+    }
+    if (json.contains("manualMotionParents")) {
+      if (!json.at("manualMotionParents").is_array() ||
+          json.at("manualMotionParents").size() > 4096)
+        return false;
+      std::vector<better_pose::mmd2bip::ManualParentMapping> mappings;
+      for (const auto &item : json.at("manualMotionParents")) {
+        if (!item.is_object() || !item.contains("source") ||
+            !item.contains("target") || !item.at("source").is_string() ||
+            !item.at("target").is_string())
+          return false;
+        better_pose::mmd2bip::ManualParentMapping mapping;
+        mapping.source = item.at("source").get<std::string>();
+        mapping.target = item.at("target").get<std::string>();
+        if (item.contains("anchor")) {
+          if (!item.at("anchor").is_string())
+            return false;
+          mapping.anchor = item.at("anchor").get<std::string>();
+        }
+        if (item.contains("inheritRotation")) {
+          if (!item.at("inheritRotation").is_boolean())
+            return false;
+          mapping.inherit_rotation =
+              item.at("inheritRotation").get<bool>();
+        }
+        if (item.contains("inheritPosition")) {
+          if (!item.at("inheritPosition").is_boolean())
+            return false;
+          mapping.inherit_position =
+              item.at("inheritPosition").get<bool>();
+        }
+        if (mapping.source.empty() || mapping.target.empty() ||
+            mapping.source.size() > 512 || mapping.target.size() > 512 ||
+            mapping.anchor.size() > 512 ||
+            (!mapping.inherit_rotation && !mapping.inherit_position))
+          return false;
+        const auto duplicate = std::find_if(
+            mappings.begin(), mappings.end(), [&mapping](const auto &existing) {
+              return existing.source == mapping.source &&
+                     existing.target == mapping.target;
+            });
+        if (duplicate == mappings.end())
+          mappings.push_back(std::move(mapping));
+      }
+      manual_motion_parents = std::move(mappings);
+    }
+    if (json.contains("manualMotionControls")) {
+      if (!json.at("manualMotionControls").is_array() ||
+          json.at("manualMotionControls").size() > 256)
+        return false;
+      std::vector<better_pose::mmd2bip::ManualFingerControl> controls;
+      for (const auto &item : json.at("manualMotionControls")) {
+        if (!item.is_object() || !item.contains("source") ||
+            !item.at("source").is_string() || !item.contains("kind") ||
+            !item.at("kind").is_string())
+          return false;
+        better_pose::mmd2bip::ManualFingerControl control;
+        control.source = item.at("source").get<std::string>();
+        const std::string kind = item.at("kind").get<std::string>();
+        if (kind == "grip")
+          control.kind = better_pose::mmd2bip::FingerControlKind::Grip;
+        else if (kind == "spread")
+          control.kind = better_pose::mmd2bip::FingerControlKind::Spread;
+        else
+          return false;
+        control.side = item.value("side", 0);
+        control.finger = item.value("finger", -1);
+        control.input_axis = item.value("inputAxis", 0);
+        control.gain = item.value("gain", 1.0F);
+        control.paired = item.value("paired", false);
+        if (control.source.empty() || control.source.size() > 512 ||
+            control.side < 0 || control.side > 1 ||
+            control.finger < -1 || control.finger > 4 ||
+            control.input_axis < 0 || control.input_axis > 2 ||
+            !std::isfinite(control.gain) ||
+            std::fabs(control.gain) > 3.0F)
+          return false;
+        controls.push_back(std::move(control));
+      }
+      manual_motion_finger_controls = std::move(controls);
+    }
+    if (json.contains("manualArmIkControls")) {
+      if (!json.at("manualArmIkControls").is_array() ||
+          json.at("manualArmIkControls").size() > 64)
+        return false;
+      std::vector<better_pose::mmd2bip::ManualArmIkControl> controls;
+      for (const auto &item : json.at("manualArmIkControls")) {
+        if (!item.is_object() || !item.contains("source") ||
+            !item.at("source").is_string())
+          return false;
+        better_pose::mmd2bip::ManualArmIkControl control;
+        control.source = item.at("source").get<std::string>();
+        control.side = item.value("side", 0);
+        control.paired = item.value("paired", false);
+        control.gain = item.value("gain", 1.0F);
+        control.max_bend_degrees = item.value("maxBendDegrees", 150.0F);
+        control.follow_wrist = item.value("followWrist", false);
+        if (control.source.empty() || control.source.size() > 512 ||
+            control.side < 0 || control.side > 1 ||
+            !std::isfinite(control.gain) || control.gain < 0.1F ||
+            control.gain > 3.0F ||
+            !std::isfinite(control.max_bend_degrees) ||
+            control.max_bend_degrees < 20.0F ||
+            control.max_bend_degrees > 170.0F)
+          return false;
+        controls.push_back(std::move(control));
+      }
+      manual_motion_arm_ik_controls = std::move(controls);
+    }
+    if (json.contains("ignoredMotionTracks")) {
+      if (!json.at("ignoredMotionTracks").is_array() ||
+          json.at("ignoredMotionTracks").size() > 8192)
+        return false;
+      std::set<std::string> tracks;
+      for (const auto &item : json.at("ignoredMotionTracks")) {
+        if (!item.is_string())
+          return false;
+        const std::string track = item.get<std::string>();
+        if (track.empty() || track.size() > 512)
+          return false;
+        tracks.insert(track);
+      }
+      ignored_motion_tracks = std::move(tracks);
+    }
+    if (json.contains("motionTravelScale")) {
+      const auto &value = json.at("motionTravelScale");
+      if (!value.is_array() || value.size() != travel::kAxisCount)
+        return false;
+      travel::Settings settings;
+      for (std::size_t axis{}; axis != travel::kAxisCount; ++axis) {
+        if (!value.at(axis).is_number())
+          return false;
+        settings.scale[axis] = value.at(axis).get<float>();
+        if (!std::isfinite(settings.scale[axis]) ||
+            settings.scale[axis] < 0.0F || settings.scale[axis] > 2.0F)
+          return false;
+      }
+      motion_travel_scale = settings;
+    }
+    if (json.contains("motionTravelEnabled")) {
+      if (!json.at("motionTravelEnabled").is_boolean())
+        return false;
+      motion_travel_enabled = json.at("motionTravelEnabled").get<bool>();
+    }
+    if (json.contains("motionAmplitude")) {
+      const auto &value = json.at("motionAmplitude");
+      if (!value.is_object())
+        return false;
+      if (value.contains("enabled")) {
+        if (!value.at("enabled").is_boolean())
+          return false;
+        motion_amplitude_enabled = value.at("enabled").get<bool>();
+      }
+      amp::Settings settings = context.motion_amplitude.Load();
+      const auto read_factor = [](const nlohmann::json &item, float &out) {
+        if (!item.is_number())
+          return false;
+        const float factor = item.get<float>();
+        if (!std::isfinite(factor) || factor < 0.0F || factor > 2.0F)
+          return false;
+        out = factor;
+        return true;
+      };
+      if (value.contains("master") &&
+          !read_factor(value.at("master"), settings.master))
+        return false;
+      if (value.contains("parts")) {
+        const auto &parts = value.at("parts");
+        if (!parts.is_object())
+          return false;
+        for (std::size_t index{}; index != amp::kPartCount; ++index) {
+          const std::string key(amp::kPartKeys[index]);
+          if (parts.contains(key) &&
+              !read_factor(parts.at(key), settings.parts[index]))
+            return false;
+        }
+      }
+      motion_amplitude = settings;
+    }
+    if (json.contains("motionJointCalibration")) {
+      const auto &value = json.at("motionJointCalibration");
+      if (!value.is_object())
+        return false;
+      joint_cal::Settings settings;
+      {
+        std::lock_guard<std::mutex> joint_lock(context.motion_joint_mutex);
+        settings = context.motion_joint_calibration;
+      }
+      if (value.contains("enabled")) {
+        if (!value.at("enabled").is_boolean())
+          return false;
+        settings.enabled = value.at("enabled").get<bool>();
+      }
+      if (value.contains("linked")) {
+        if (!value.at("linked").is_boolean())
+          return false;
+        settings.linked = value.at("linked").get<bool>();
+      }
+      if (value.contains("joints")) {
+        const auto &joints = value.at("joints");
+        if (!joints.is_object() || joints.size() > 2048)
+          return false;
+        settings.joints.clear();
+        for (auto it = joints.begin(); it != joints.end(); ++it) {
+          const std::string name = it.key();
+          if (name.empty() || name.size() > 256 || !it.value().is_object())
+            return false;
+          joint_cal::Joint joint;
+          if (it.value().contains("ratio")) {
+            if (!it.value().at("ratio").is_number())
+              return false;
+            joint.ratio = it.value().at("ratio").get<float>();
+            if (!std::isfinite(joint.ratio) || joint.ratio < 0.0F ||
+                joint.ratio > 2.0F)
+              return false;
+          }
+          if (it.value().contains("offset")) {
+            const auto &offset = it.value().at("offset");
+            if (!offset.is_array() || offset.size() != 3)
+              return false;
+            for (std::size_t axis{}; axis != 3; ++axis) {
+              if (!offset.at(axis).is_number())
+                return false;
+              joint.offset_degrees[axis] = offset.at(axis).get<float>();
+              if (!std::isfinite(joint.offset_degrees[axis]) ||
+                  joint.offset_degrees[axis] < -180.0F ||
+                  joint.offset_degrees[axis] > 180.0F)
+                return false;
+            }
+          }
+          if (it.value().contains("mirror")) {
+            const auto &mirror = it.value().at("mirror");
+            if (!mirror.is_array() || mirror.size() != 3)
+              return false;
+            for (std::size_t axis{}; axis != 3; ++axis) {
+              if (!mirror.at(axis).is_boolean())
+                return false;
+              joint.mirror_offset[axis] = mirror.at(axis).get<bool>();
+            }
+          }
+          settings.joints.emplace(name, joint);
+        }
+      }
+      motion_joint_calibration = std::move(settings);
+    }
+    if (json.contains("motionLimbCalibration")) {
+      const auto &value = json.at("motionLimbCalibration");
+      if (!value.is_object())
+        return false;
+      limb_cal::AllSettings settings;
+      {
+        std::lock_guard<std::mutex> limb_lock(context.motion_limb_mutex);
+        settings = context.motion_limb_calibration;
+      }
+      const auto read_ratio = [](const nlohmann::json &item, float &out) {
+        if (!item.is_number())
+          return false;
+        out = item.get<float>();
+        return std::isfinite(out) && out >= 0.5F && out <= 1.5F;
+      };
+      for (std::size_t index{}; index != limb_cal::kLimbCount; ++index) {
+        const std::string key(limb_cal::kLimbKeys[index]);
+        if (!value.contains(key))
+          continue;
+        const auto &item = value.at(key);
+        if (!item.is_object())
+          return false;
+        auto &limb = settings.limbs[index];
+        if (item.contains("enabled")) {
+          if (!item.at("enabled").is_boolean())
+            return false;
+          limb.enabled = item.at("enabled").get<bool>();
+        }
+        if (item.contains("upper") &&
+            !read_ratio(item.at("upper"), limb.upper))
+          return false;
+        if (item.contains("lower") &&
+            !read_ratio(item.at("lower"), limb.lower))
+          return false;
+        if (item.contains("offset")) {
+          const auto &offset = item.at("offset");
+          if (!offset.is_array() || offset.size() != 3)
+            return false;
+          for (std::size_t axis{}; axis != 3; ++axis) {
+            if (!offset.at(axis).is_number())
+              return false;
+            limb.offset[axis] = offset.at(axis).get<float>();
+            if (!std::isfinite(limb.offset[axis]) ||
+                limb.offset[axis] < -0.5F || limb.offset[axis] > 0.5F)
+              return false;
+          }
+        }
+      }
+      motion_limb_calibration = settings;
+    }
+    if (json.contains("motionLimbCalibrationEnabled")) {
+      if (!json.at("motionLimbCalibrationEnabled").is_boolean())
+        return false;
+      motion_limb_enabled =
+          json.at("motionLimbCalibrationEnabled").get<bool>();
+    }
+    if (json.contains("dynamicPhysicsTuning")) {
+      const auto &value = json.at("dynamicPhysicsTuning");
+      if (!value.is_object())
+        return false;
+      better_pose::secondary::DynamicsTuning tuning;
+      std::uint32_t tuning_version = 0;
+      if (value.contains("version")) {
+        if (!value.at("version").is_number_integer())
+          return false;
+        tuning_version = value.at("version").get<std::uint32_t>();
+      }
+      const auto read_factor = [](const nlohmann::json &item, float &out,
+                                  const float minimum,
+                                  const float maximum) {
+        if (!item.is_number())
+          return false;
+        out = item.get<float>();
+        return std::isfinite(out) && out >= minimum && out <= maximum;
+      };
+      if (value.contains("inertia") &&
+          !read_factor(value.at("inertia"), tuning.inertia, 0.0F, 3.0F))
+        return false;
+      if (value.contains("air") &&
+          !read_factor(value.at("air"), tuning.air, 0.0F, 3.0F))
+        return false;
+      if (value.contains("damping") &&
+          !read_factor(value.at("damping"), tuning.damping, 0.25F, 3.0F))
+        return false;
+      if (value.contains("ribbonDamping") &&
+          !read_factor(value.at("ribbonDamping"), tuning.ribbon_damping,
+                       0.25F, 3.0F))
+        return false;
+      if (value.contains("gravity") &&
+          !read_factor(value.at("gravity"), tuning.gravity, 0.0F, 2.0F))
+        return false;
+      if (value.contains("collision") &&
+          !read_factor(value.at("collision"), tuning.collision, 0.0F, 2.0F))
+        return false;
+      if (value.contains("extendedCollision")) {
+        if (!value.at("extendedCollision").is_boolean())
+          return false;
+        tuning.extended_collision =
+            value.at("extendedCollision").get<bool>();
+      }
+      if (value.contains("nativeKawaiiLimits")) {
+        if (!value.at("nativeKawaiiLimits").is_boolean())
+          return false;
+        tuning.native_limits =
+            value.at("nativeKawaiiLimits").get<bool>();
+      }
+      if (value.contains("boneConstraints")) {
+        if (!value.at("boneConstraints").is_boolean())
+          return false;
+        tuning.bone_constraints =
+            value.at("boneConstraints").get<bool>();
+      }
+      if (value.contains("selfCollision")) {
+        if (!value.at("selfCollision").is_boolean())
+          return false;
+        tuning.self_collision = value.at("selfCollision").get<bool>();
+      }
+      if (value.contains("selfCollisionOuterPriority")) {
+        if (!value.at("selfCollisionOuterPriority").is_boolean())
+          return false;
+        tuning.self_collision_outer_priority =
+            value.at("selfCollisionOuterPriority").get<bool>();
+      }
+      if (value.contains("selfCollisionPairs")) {
+        const auto &pairs = value.at("selfCollisionPairs");
+        if (!pairs.is_object())
+          return false;
+        const auto read_pair = [&](const char *key,
+                                   const better_pose::secondary::MotionMaterial
+                                       first,
+                                   const better_pose::secondary::MotionMaterial
+                                       second) {
+          if (!pairs.contains(key))
+            return true;
+          if (!pairs.at(key).is_boolean())
+            return false;
+          const auto bit =
+              std::uint64_t{1} <<
+              better_pose::secondary::SelfCollisionPairIndex(first, second);
+          if (pairs.at(key).get<bool>())
+            tuning.self_collision_pairs |= bit;
+          else
+            tuning.self_collision_pairs &= ~bit;
+          return true;
+        };
+        using Material = better_pose::secondary::MotionMaterial;
+        if (!read_pair("hairHair", Material::Hair, Material::Hair) ||
+            !read_pair("hairRibbon", Material::Hair, Material::Ribbon) ||
+            !read_pair("hairCloth", Material::Hair, Material::Cloth) ||
+            !read_pair("ribbonRibbon", Material::Ribbon, Material::Ribbon) ||
+            !read_pair("ribbonCloth", Material::Ribbon, Material::Cloth) ||
+            !read_pair("clothCloth", Material::Cloth, Material::Cloth))
+          return false;
+      }
+      const auto read_self_materials =
+          [&](const char *name,
+              std::array<float,
+                         better_pose::secondary::kMotionMaterialCount> &values,
+              const float minimum, const float maximum) {
+            if (!value.contains(name))
+              return true;
+            const auto &materials = value.at(name);
+            if (!materials.is_object())
+              return false;
+            for (std::size_t index{};
+                 index != better_pose::secondary::kMotionMaterialCount;
+                 ++index) {
+              const std::string key(
+                  better_pose::secondary::kMotionMaterialKeys[index]);
+              if (materials.contains(key) &&
+                  !read_factor(materials.at(key), values[index], minimum,
+                               maximum))
+                return false;
+            }
+            return true;
+          };
+      if (!read_self_materials("materialSelfRadius",
+                               tuning.self_collision_radius, 0.0F, 3.0F) ||
+          !read_self_materials("materialSelfStrength",
+                               tuning.self_collision_strength, 0.1F, 3.0F) ||
+          !read_self_materials("materialSelfDamping",
+                               tuning.self_collision_damping, 0.5F, 3.0F))
+        return false;
+      if (value.contains("materialInertia")) {
+        const auto &materials = value.at("materialInertia");
+        if (!materials.is_object())
+          return false;
+        for (std::size_t index{};
+             index != better_pose::secondary::kMotionMaterialCount; ++index) {
+          const std::string key(
+              better_pose::secondary::kMotionMaterialKeys[index]);
+          if (materials.contains(key) &&
+              !read_factor(materials.at(key), tuning.material_inertia[index],
+                           0.0F, 3.0F))
+            return false;
+        }
+      }
+      if (value.contains("materialCollision")) {
+        const auto &materials = value.at("materialCollision");
+        if (!materials.is_object())
+          return false;
+        for (std::size_t index{};
+             index != better_pose::secondary::kMotionMaterialCount; ++index) {
+          const std::string key(
+              better_pose::secondary::kMotionMaterialKeys[index]);
+          if (materials.contains(key) &&
+              !read_factor(materials.at(key),
+                           tuning.material_collision[index], 0.0F, 2.0F))
+            return false;
+        }
+      }
+      if (tuning_version < kDynamicPhysicsAirDefaultVersion &&
+          std::abs(tuning.air - 1.0F) < 1e-6F) {
+        tuning.air = 0.0F;
+        secondary_tuning_migrated = true;
+      }
+      if (tuning_version < kDynamicPhysicsTuningVersion)
+        secondary_tuning_migrated = true;
+      secondary_tuning =
+          better_pose::secondary::SafeDynamicsTuning(tuning);
+    }
+    if (!current_calibration_defaults) {
+      // Profiles written before the all-off default keep their tuning values, but the
+      // four master switches are migrated once. A later explicit enable writes version 2
+      // and is preserved normally.
+      motion_travel_enabled = false;
+      motion_amplitude_enabled = false;
+      motion_limb_enabled = false;
+      if (motion_joint_calibration)
+        motion_joint_calibration->enabled = false;
+    }
+    if (motion_speed)
+      context.motion_speed.store(*motion_speed, std::memory_order_release);
+    if (motion_reference_mode)
+      context.motion_reference_mode.store(*motion_reference_mode,
+                                          std::memory_order_release);
+    if (motion_ik_mode)
+      context.motion_ik_mode.store(*motion_ik_mode, std::memory_order_release);
+    if (manual_motion_mappings) {
+      std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+      context.manual_motion_mappings = std::move(*manual_motion_mappings);
+    }
+    if (manual_motion_parents) {
+      std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+      context.manual_motion_parents = std::move(*manual_motion_parents);
+    }
+    if (manual_motion_finger_controls) {
+      std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+      context.manual_motion_finger_controls =
+          std::move(*manual_motion_finger_controls);
+    }
+    if (manual_motion_arm_ik_controls) {
+      std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+      context.manual_motion_arm_ik_controls =
+          std::move(*manual_motion_arm_ik_controls);
+    }
+    if (ignored_motion_tracks) {
+      std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+      context.ignored_motion_tracks = std::move(*ignored_motion_tracks);
+    }
+    if (motion_height)
+      context.motion_height_cm.store(*motion_height, std::memory_order_release);
+    if (motion_travel_enabled)
+      context.motion_travel_enabled.store(*motion_travel_enabled,
+                                          std::memory_order_release);
+    if (motion_travel_scale)
+      context.motion_travel.Store(*motion_travel_scale);
+    if (motion_amplitude_enabled)
+      context.motion_amplitude_enabled.store(*motion_amplitude_enabled,
+                                             std::memory_order_release);
+    if (motion_amplitude)
+      context.motion_amplitude.Store(*motion_amplitude);
+    if (secondary_tuning)
+      context.secondary_tuning.Store(*secondary_tuning);
+    if (secondary_tuning_migrated)
+      context.pose_settings_dirty.store(true, std::memory_order_release);
+    if (motion_joint_calibration) {
+      {
+        std::lock_guard<std::mutex> joint_lock(context.motion_joint_mutex);
+        context.motion_joint_calibration = std::move(*motion_joint_calibration);
+      }
+    }
+    if (motion_limb_calibration) {
+      std::lock_guard<std::mutex> limb_lock(context.motion_limb_mutex);
+      context.motion_limb_calibration = *motion_limb_calibration;
+    }
+    if (motion_limb_enabled) {
+      context.motion_limb_enabled.store(*motion_limb_enabled,
+                                        std::memory_order_release);
+    } else if (motion_limb_calibration) {
+      bool any_enabled = false;
+      for (const auto &limb : motion_limb_calibration->limbs)
+        any_enabled = any_enabled || limb.enabled;
+      context.motion_limb_enabled.store(any_enabled,
+                                        std::memory_order_release);
+    }
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
     context.bone_angles = std::move(loaded);
+    if (manual_reference)
+      context.manual_motion_reference = std::move(*manual_reference);
     context.requested_root_offset[0].store(root_offset[0], std::memory_order_release);
     context.requested_root_offset[1].store(root_offset[1], std::memory_order_release);
     context.requested_root_offset[2].store(root_offset[2], std::memory_order_release);
@@ -1483,6 +2625,160 @@ std::string BuildPoseDocument(Context &context) noexcept {
   root["bones"] = std::move(bones);
   root["rootOffset"] = root_offset;
   root["musicVolume"] = g_music_volume.load(std::memory_order_acquire);
+  root["motionSpeed"] = context.motion_speed.load(std::memory_order_acquire);
+  root["motionReferenceMode"] =
+      context.motion_reference_mode.load(std::memory_order_acquire);
+  root["motionIkMode"] =
+      context.motion_ik_mode.load(std::memory_order_acquire);
+  {
+    std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+    root["manualMotionMappings"] = context.manual_motion_mappings;
+    root["manualMotionParents"] = nlohmann::json::array();
+    for (const auto &mapping : context.manual_motion_parents)
+      root["manualMotionParents"].push_back(
+          {{"source", mapping.source},
+           {"target", mapping.target},
+           {"anchor", mapping.anchor},
+           {"inheritRotation", mapping.inherit_rotation},
+           {"inheritPosition", mapping.inherit_position}});
+    root["manualMotionControls"] = nlohmann::json::array();
+    for (const auto &control : context.manual_motion_finger_controls)
+      root["manualMotionControls"].push_back(
+          {{"source", control.source},
+           {"kind", control.kind ==
+                            better_pose::mmd2bip::FingerControlKind::Grip
+                        ? "grip"
+                        : "spread"},
+           {"side", control.side},
+           {"finger", control.finger},
+           {"inputAxis", control.input_axis},
+           {"gain", control.gain},
+           {"paired", control.paired}});
+    root["manualArmIkControls"] = nlohmann::json::array();
+    for (const auto &control : context.manual_motion_arm_ik_controls)
+      root["manualArmIkControls"].push_back(
+          {{"source", control.source},
+           {"side", control.side},
+           {"paired", control.paired},
+           {"gain", control.gain},
+           {"maxBendDegrees", control.max_bend_degrees},
+           {"followWrist", control.follow_wrist}});
+    root["ignoredMotionTracks"] = context.ignored_motion_tracks;
+  }
+  root["motionHeightCm"] =
+      context.motion_height_cm.load(std::memory_order_acquire);
+  root["motionTravelEnabled"] =
+      context.motion_travel_enabled.load(std::memory_order_acquire);
+  root["motionTravelScale"] = context.motion_travel.Load().scale;
+  const amp::Settings amplitude = context.motion_amplitude.Load();
+  nlohmann::json parts = nlohmann::json::object();
+  for (std::size_t index{}; index != amp::kPartCount; ++index)
+    parts[std::string(amp::kPartKeys[index])] = amplitude.parts[index];
+  root["motionAmplitude"] =
+      {{"enabled", context.motion_amplitude_enabled.load(std::memory_order_acquire)},
+       {"master", amplitude.master}, {"parts", parts}};
+  joint_cal::Settings joint_settings;
+  {
+    std::lock_guard<std::mutex> joint_lock(context.motion_joint_mutex);
+    joint_settings = context.motion_joint_calibration;
+  }
+  nlohmann::json joints = nlohmann::json::object();
+  for (const auto &[name, calibration] : joint_settings.joints) {
+    if (calibration.IsDefault())
+      continue;
+    joints[name] = {
+        {"ratio", calibration.ratio},
+        {"offset", calibration.offset_degrees},
+        {"mirror", calibration.mirror_offset}};
+  }
+  root["motionJointCalibration"] = {
+      {"enabled", joint_settings.enabled},
+      {"linked", joint_settings.linked},
+      {"joints", std::move(joints)}};
+  limb_cal::AllSettings limb_settings;
+  {
+    std::lock_guard<std::mutex> limb_lock(context.motion_limb_mutex);
+    limb_settings = context.motion_limb_calibration;
+  }
+  nlohmann::json limbs = nlohmann::json::object();
+  for (std::size_t index{}; index != limb_cal::kLimbCount; ++index) {
+    const auto &limb = limb_settings.limbs[index];
+    if (limb.IsDefault())
+      continue;
+    limbs[std::string(limb_cal::kLimbKeys[index])] = {
+        {"enabled", limb.enabled},
+        {"upper", limb.upper},
+        {"lower", limb.lower},
+        {"offset", limb.offset}};
+  }
+  root["motionLimbCalibration"] = std::move(limbs);
+  root["motionLimbCalibrationEnabled"] =
+      context.motion_limb_enabled.load(std::memory_order_acquire);
+  root["motionCalibrationDefaultsVersion"] =
+      kMotionCalibrationDefaultsVersion;
+  const auto secondary_tuning = context.secondary_tuning.Load();
+  nlohmann::json material_inertia = nlohmann::json::object();
+  nlohmann::json material_collision = nlohmann::json::object();
+  nlohmann::json material_self_radius = nlohmann::json::object();
+  nlohmann::json material_self_strength = nlohmann::json::object();
+  nlohmann::json material_self_damping = nlohmann::json::object();
+  for (std::size_t index{};
+       index != better_pose::secondary::kMotionMaterialCount; ++index) {
+    const std::string key(
+        better_pose::secondary::kMotionMaterialKeys[index]);
+    material_inertia[key] = secondary_tuning.material_inertia[index];
+    material_collision[key] = secondary_tuning.material_collision[index];
+    material_self_radius[key] = secondary_tuning.self_collision_radius[index];
+    material_self_strength[key] =
+        secondary_tuning.self_collision_strength[index];
+    material_self_damping[key] =
+        secondary_tuning.self_collision_damping[index];
+  }
+  const auto pair_enabled = [&](
+                                const better_pose::secondary::MotionMaterial
+                                    first,
+                                const better_pose::secondary::MotionMaterial
+                                    second) {
+    return better_pose::secondary::SelfCollisionPairEnabled(
+        secondary_tuning.self_collision_pairs, first, second);
+  };
+  using Material = better_pose::secondary::MotionMaterial;
+  nlohmann::json self_collision_pairs = {
+      {"hairHair", pair_enabled(Material::Hair, Material::Hair)},
+      {"hairRibbon", pair_enabled(Material::Hair, Material::Ribbon)},
+      {"hairCloth", pair_enabled(Material::Hair, Material::Cloth)},
+      {"ribbonRibbon", pair_enabled(Material::Ribbon, Material::Ribbon)},
+      {"ribbonCloth", pair_enabled(Material::Ribbon, Material::Cloth)},
+      {"clothCloth", pair_enabled(Material::Cloth, Material::Cloth)}};
+  root["dynamicPhysicsTuning"] = {
+      {"version", kDynamicPhysicsTuningVersion},
+      {"inertia", secondary_tuning.inertia},
+      {"air", secondary_tuning.air},
+      {"damping", secondary_tuning.damping},
+      {"ribbonDamping", secondary_tuning.ribbon_damping},
+      {"gravity", secondary_tuning.gravity},
+      {"collision", secondary_tuning.collision},
+      {"extendedCollision", secondary_tuning.extended_collision},
+      {"nativeKawaiiLimits", secondary_tuning.native_limits},
+      {"boneConstraints", secondary_tuning.bone_constraints},
+      {"selfCollision", secondary_tuning.self_collision},
+      {"selfCollisionOuterPriority",
+       secondary_tuning.self_collision_outer_priority},
+      {"selfCollisionPairs", std::move(self_collision_pairs)},
+      {"materialInertia", std::move(material_inertia)},
+      {"materialCollision", std::move(material_collision)},
+      {"materialSelfRadius", std::move(material_self_radius)},
+      {"materialSelfStrength", std::move(material_self_strength)},
+      {"materialSelfDamping", std::move(material_self_damping)}};
+  std::map<std::string, std::array<double, 12>> manual_reference;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    manual_reference = context.manual_motion_reference;
+  }
+  nlohmann::json reference = nlohmann::json::object();
+  for (const auto &[name, local] : manual_reference)
+    reference[name] = TransformToJson(local.data());
+  root["manualMotionReference"] = std::move(reference);
   return root.dump();
 }
 
@@ -1490,29 +2786,125 @@ std::string PoseProfilePath(const std::string &character_id) noexcept {
   return "character-pose-profile-" + character_id + ".json";
 }
 
-bool PersistPoseSettings(Context &context) noexcept {
-  if (!ConfigReady(context.config))
+void LogDiagnostic(Context &context, const std::string &message) noexcept;
+std::string ModuleDirectory() noexcept;
+
+std::filesystem::path DirectPoseProfilePath(const std::string &character_id) {
+  const std::string module_directory = ModuleDirectory();
+  if (module_directory.empty())
+    return {};
+  std::filesystem::path current(module_directory);
+  std::filesystem::path anomaly_root;
+  while (!current.empty()) {
+    if (current.filename() == L"plugins") {
+      anomaly_root = current.parent_path();
+      break;
+    }
+    const auto parent = current.parent_path();
+    if (parent == current)
+      break;
+    current = parent;
+  }
+  if (anomaly_root.empty())
+    return {};
+  return anomaly_root / L"state" / L"plugins" /
+         L"anomaly.builtin.better-pose" / PoseProfilePath(character_id);
+}
+
+bool WriteDirectPoseProfile(const std::string &character_id,
+                            const std::string &document,
+                            std::string &error) {
+  try {
+    const auto path = DirectPoseProfilePath(character_id);
+    if (path.empty()) {
+      error = "direct profile root unavailable";
+      return false;
+    }
+    std::filesystem::create_directories(path.parent_path());
+    auto temporary = path;
+    temporary += L".tmp";
+    {
+      std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+      file.write(document.data(), static_cast<std::streamsize>(document.size()));
+      file.close();
+      if (!file) {
+        error = "direct profile write failed";
+        return false;
+      }
+    }
+    if (!MoveFileExW(temporary.wstring().c_str(), path.wstring().c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      error = "direct profile replace failed: " +
+              std::to_string(GetLastError());
+      static_cast<void>(std::filesystem::remove(temporary));
+      return false;
+    }
+    error.clear();
+    return true;
+  } catch (const std::exception &exception) {
+    error = exception.what();
     return false;
+  }
+}
+
+bool PersistPoseSettings(Context &context) noexcept {
+  const auto fail = [&context](const std::string &reason) {
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t last =
+        context.pose_settings_save_error_log_ms.load(std::memory_order_acquire);
+    if (last == 0 || now - last >= 2000) {
+      context.pose_settings_save_error_log_ms.store(now,
+                                                    std::memory_order_release);
+      LogDiagnostic(context, "betterpose settings save failed: " + reason);
+    }
+    return false;
+  };
+  if (!ConfigReady(context.config))
+    return fail("config service unavailable");
   try {
     const std::string document = BuildPoseDocument(context);
     if (document.size() > kMaximumPoseSettingsBytes)
-      return false;
+      return fail("document too large");
     const auto config_status = context.config->write_atomic(
         context.config->user, anomaly::sdk::StringView(kPoseSettingsSchemaId),
         kPoseSettingsSchemaVersion, Bytes(document));
-    bool profile_ok = true;
+    bool profile_attempted = false;
+    bool profile_ok = false;
+    AnomalyStatusV1 profile_status = anomaly::sdk::Ok();
+    std::string direct_error;
     if (!context.active_character_id.empty() && StorageReady(context.storage)) {
+      profile_attempted = true;
       const std::string path = PoseProfilePath(context.active_character_id);
       const std::string profile = BuildPoseDocument(context);
-      profile_ok =
+      profile_status =
           context.storage
               ->write_atomic(context.storage->user,
-                             anomaly::sdk::StringView(path), Bytes(profile))
-              .code == ANOMALY_STATUS_V1_OK;
+                             anomaly::sdk::StringView(path), Bytes(profile));
+      profile_ok = profile_status.code == ANOMALY_STATUS_V1_OK;
     }
-    return config_status.code == ANOMALY_STATUS_V1_OK && profile_ok;
+    if (!profile_ok && !context.active_character_id.empty())
+      profile_ok = WriteDirectPoseProfile(context.active_character_id,
+                                          BuildPoseDocument(context),
+                                          direct_error);
+    if (!profile_ok) {
+      std::string reason = "config write code=" +
+                           std::to_string(config_status.code);
+      reason += profile_attempted
+                    ? "; character profile write code=" +
+                          std::to_string(profile_status.code)
+                    : "; storage unavailable";
+      reason += direct_error.empty() ? std::string()
+                                     : "; direct=" + direct_error;
+      reason += " id=" + context.active_character_id;
+      return fail(reason);
+    }
+    context.pose_settings_save_error_log_ms.store(0,
+                                                  std::memory_order_release);
+    return true;
+  } catch (const std::exception &error) {
+    return fail(std::string("exception: ") + error.what());
   } catch (...) {
-    return false;
+    return fail("unknown exception");
   }
 }
 
@@ -1520,6 +2912,34 @@ int LoadCharacterPoseProfile(Context &context,
                              const std::string &character_id) noexcept {
   if (!StorageReady(context.storage))
     return -1;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.manual_motion_reference.clear();
+  }
+  context.motion_travel_enabled.store(false, std::memory_order_release);
+  context.motion_travel.Store(travel::Settings{});
+  context.motion_amplitude_enabled.store(false, std::memory_order_release);
+  context.motion_amplitude.Store(amp::Settings{});
+  context.secondary_tuning.Store(
+      better_pose::secondary::DynamicsTuning{});
+  context.motion_ik_mode.store(0, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+    context.manual_motion_mappings.clear();
+    context.manual_motion_parents.clear();
+    context.manual_motion_finger_controls.clear();
+    context.manual_motion_arm_ik_controls.clear();
+    context.ignored_motion_tracks.clear();
+  }
+  context.motion_limb_enabled.store(false, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+    context.motion_joint_calibration = joint_cal::Settings{};
+  }
+  {
+    std::lock_guard<std::mutex> lock(context.motion_limb_mutex);
+    context.motion_limb_calibration = limb_cal::AllSettings{};
+  }
   const std::string path = PoseProfilePath(character_id);
   std::size_t size{};
   const auto probe = context.storage->read(
@@ -1543,7 +2963,13 @@ int LoadCharacterPoseProfile(Context &context,
   try {
     const auto json =
         nlohmann::json::parse(document.begin(), document.begin() + copied);
-    return ApplyPoseDocument(context, json) ? 1 : -1;
+    const auto defaults_version =
+        json.value("motionCalibrationDefaultsVersion", 0U);
+    if (!ApplyPoseDocument(context, json))
+      return -1;
+    if (defaults_version < kMotionCalibrationDefaultsVersion)
+      context.pose_settings_dirty.store(true, std::memory_order_release);
+    return 1;
   } catch (...) {
     return -1;
   }
@@ -1670,6 +3096,16 @@ bool Read(Context &context, const std::uintptr_t address, T &value) noexcept {
       reinterpret_cast<std::uint8_t *>(&value), sizeof(value)};
   return context.core->read_memory(context.core->user, address, destination)
              .code == ANOMALY_STATUS_V1_OK;
+}
+
+bool ReadBytes(Context &context, const std::uintptr_t address, void *destination,
+               const std::size_t size) noexcept {
+  if (!CoreReady(context.core) || address == 0 || destination == nullptr ||
+      size == 0)
+    return false;
+  AnomalyMutableByteSpanV1 output{static_cast<std::uint8_t *>(destination), size};
+  return context.core->read_memory(context.core->user, address, output).code ==
+         ANOMALY_STATUS_V1_OK;
 }
 
 template <typename T>
@@ -2354,9 +3790,23 @@ void LogDiagnostic(Context &context, const std::string &message) noexcept;
 void BuildExtraMeshes(Context &context) noexcept;
 void WriteExtraMeshes(Context &context,
                       const std::vector<PackedTransform> &packed) noexcept;
+bool ReadMeshComponentToWorld(Context &context, std::uintptr_t mesh,
+                              Transformd &result) noexcept;
+[[maybe_unused]] void AppendKawaiiLimits(
+    const Context::ExtraMesh &extra,
+    const better_pose::accessory::Frame &frame,
+    std::vector<better_pose::accessory::Capsule> &capsules) noexcept;
+std::uint8_t CollisionMasksForExtra(const Context &context,
+                                    const Context::ExtraMesh &extra) noexcept;
+std::vector<better_pose::accessory::Capsule> FallbackCollisionCapsules(
+    const Context &context, std::uint8_t masks, std::size_t body_count,
+    const std::vector<std::array<double, 3>> &points);
 bool RestoreExtraMeshes(Context &context) noexcept;
 bool DropExtraMeshes(Context &context) noexcept;
 bool EnsurePoseableAccessory(Context &context, Context::ExtraMesh &extra) noexcept;
+bool EnsureExtraPoseAnimationMode(Context &context,
+                                  Context::ExtraMesh &extra,
+                                  bool enabled) noexcept;
 bool WritePoseableAccessoryPose(Context::ExtraMesh &extra,
                                 const std::vector<std::array<double, 12>> &components) noexcept;
 void DestroyPoseableAccessories(Context &context) noexcept;
@@ -3668,7 +5118,10 @@ void ApplyPoseOverridesDirect(Context &context) noexcept {
         RotatorToQuat(angle[0], angle[1], angle[2]);
     locals[bone].rotation = QuatMultiply(offset, locals[bone].rotation);
   }
-  if (!any_override && !has_root_offset)
+  const bool calibration_reference =
+      context.t_pose_calibration_active.load(std::memory_order_acquire) &&
+      !context.motion_loaded.load(std::memory_order_acquire);
+  if (!any_override && !has_root_offset && !calibration_reference)
     return;
 
   if (context.bone_parents.size() != count)
@@ -3708,14 +5161,30 @@ void ApplyPoseOverridesDirect(Context &context) noexcept {
 // exactly like the manual pose override does.
 // ---------------------------------------------------------------------------
 
+struct MotionArmIkSample {
+  std::uint32_t upper_arm{};
+  std::uint32_t forearm{};
+  std::uint32_t hand{};
+  std::array<double, 3> offset{};
+  std::array<double, 4> rotation{0.0, 0.0, 0.0, 1.0};
+  double max_bend_degrees{150.0};
+  bool follow_wrist{};
+};
+
 struct MotionSample {
   std::vector<std::uint32_t> indices;
+  std::vector<amp::Part> parts;
+  std::vector<float> joint_factors;
+  std::vector<std::array<double, 3>> joint_offsets;
   std::vector<std::array<double, 4>> rotations;
   std::array<double, 3> root_translation{0.0, 0.0, 0.0};
   std::uint32_t root_index{};
   bool has_root{};
+  bool visible{true};
+  bool has_visibility{};
   std::vector<std::uint32_t> offset_indices;
   std::vector<std::array<double, 3>> offsets;
+  std::vector<MotionArmIkSample> arm_ik_targets;
 };
 
 double MotionDuration(const Context::MotionTrack &motion) noexcept {
@@ -3798,6 +5267,53 @@ bool ResolveMotionIndices(Context &context) noexcept {
   }
   motion.offsets_ready = motion.offsets_ready &&
                          motion.offset_indices.size() == motion.offset_names.size();
+  const auto resolve_name = [&context](const std::string &name)
+      -> std::uint32_t {
+    for (std::size_t bone{}; bone != context.bone_names.size(); ++bone)
+      if (context.bone_names[bone] == name)
+        return static_cast<std::uint32_t>(bone);
+    return (std::numeric_limits<std::uint32_t>::max)();
+  };
+  for (auto &target : motion.arm_ik_targets) {
+    std::string upper_name = target.hand_name;
+    std::string forearm_name = target.hand_name;
+    const std::size_t suffix = upper_name.rfind("-Hand");
+    if (suffix != std::string::npos) {
+      upper_name.replace(suffix, 5, "-UpperArm");
+      forearm_name.replace(suffix, 5, "-Forearm");
+    }
+    target.upper_arm = resolve_name(upper_name);
+    target.forearm = resolve_name(forearm_name);
+    target.hand = resolve_name(target.hand_name);
+    target.indices_ready =
+        target.upper_arm != (std::numeric_limits<std::uint32_t>::max)() &&
+        target.forearm != (std::numeric_limits<std::uint32_t>::max)() &&
+        target.hand != (std::numeric_limits<std::uint32_t>::max)() &&
+        target.offsets.size() >=
+            static_cast<std::size_t>(motion.frame_count) * 3 &&
+        target.rotations.size() >=
+            static_cast<std::size_t>(motion.frame_count) * 4;
+  }
+  {
+    std::array<std::uint32_t,
+               better_pose::secondary::kMotionMaterialCount>
+        materials{};
+    std::uint32_t total{};
+    for (const std::string &name : motion.bone_names) {
+      if (!better_pose::secondary::IsSecondary(name) ||
+          better_pose::secondary::IsOrnament(name))
+        continue;
+      const auto material =
+          better_pose::secondary::ClassifyMotionMaterial(name);
+      ++materials[better_pose::secondary::MotionMaterialIndex(material)];
+      ++total;
+    }
+    context.motion_secondary_bones.store(total, std::memory_order_release);
+    for (std::size_t index{};
+         index != better_pose::secondary::kMotionMaterialCount; ++index)
+      context.motion_secondary_materials[index].store(
+          materials[index], std::memory_order_release);
+  }
   motion.indices_ready = true;
   return true;
 }
@@ -3806,6 +5322,8 @@ bool SampleMotion(Context &context, const double seconds,
                   MotionSample &out) noexcept {
   std::lock_guard<std::mutex> lock(context.motion_mutex);
   const auto &motion = context.motion;
+  out.has_visibility = false;
+  out.visible = true;
   if (!motion.indices_ready || motion.bone_count == 0 || motion.frame_count == 0)
     return false;
   const double fps = motion.fps > 0.0 ? motion.fps : 30.0;
@@ -3816,13 +5334,43 @@ bool SampleMotion(Context &context, const double seconds,
   if (time > duration)
     time = duration;
   const double position = time * fps;
+  if (!motion.visibility_keys.empty()) {
+    out.has_visibility = true;
+    const auto raw_frame = motion.first_frame +
+                           static_cast<std::uint32_t>(std::floor(position));
+    for (const auto &key : motion.visibility_keys) {
+      if (key.frame > raw_frame)
+        break;
+      out.visible = key.visible;
+    }
+  }
   const auto frame0 = static_cast<std::uint32_t>(position);
   const auto frame1 = frame0 + 1 < motion.frame_count ? frame0 + 1 : frame0;
   const float blend = static_cast<float>(position - static_cast<double>(frame0));
   out.indices.resize(motion.bone_count);
+  out.parts.resize(motion.bone_count);
+  out.joint_factors.assign(motion.bone_count, 1.0F);
+  out.joint_offsets.assign(motion.bone_count, {0.0, 0.0, 0.0});
   out.rotations.resize(motion.bone_count);
+  {
+    std::lock_guard<std::mutex> joint_lock(context.motion_joint_mutex);
+    if (context.motion_joint_calibration.enabled) {
+      for (std::size_t track{}; track != motion.bone_count; ++track) {
+        const auto found =
+            context.motion_joint_calibration.joints.find(motion.bone_names[track]);
+        if (found == context.motion_joint_calibration.joints.end())
+          continue;
+        out.joint_factors[track] = found->second.ratio;
+        for (std::size_t axis{}; axis != 3; ++axis)
+          out.joint_offsets[track][axis] = found->second.offset_degrees[axis];
+      }
+    }
+  }
   for (std::size_t track{}; track != motion.bone_count; ++track) {
     out.indices[track] = motion.bone_indices[track];
+    out.parts[track] = track < motion.bone_parts.size()
+                           ? motion.bone_parts[track]
+                           : amp::Part::Count;
     const auto offset0 =
         (static_cast<std::size_t>(frame0) * motion.bone_count + track) * 4;
     const auto offset1 =
@@ -3878,6 +5426,49 @@ bool SampleMotion(Context &context, const double seconds,
       }
     }
   }
+  out.arm_ik_targets.clear();
+  for (const auto &target : motion.arm_ik_targets) {
+    if (!target.indices_ready)
+      continue;
+    MotionArmIkSample sample;
+    sample.upper_arm = target.upper_arm;
+    sample.forearm = target.forearm;
+    sample.hand = target.hand;
+    sample.max_bend_degrees = target.max_bend_degrees;
+    sample.follow_wrist = target.follow_wrist;
+    for (int axis{}; axis != 3; ++axis) {
+      const double a = target.offsets[
+          static_cast<std::size_t>(frame0) * 3 + axis];
+      const double b = target.offsets[
+          static_cast<std::size_t>(frame1) * 3 + axis];
+      sample.offset[axis] = a + (b - a) * static_cast<double>(blend);
+    }
+    std::array<double, 4> rotation{};
+    double dot{};
+    for (int axis{}; axis != 4; ++axis)
+      dot += static_cast<double>(target.rotations[
+                 static_cast<std::size_t>(frame0) * 4 + axis]) *
+             static_cast<double>(target.rotations[
+                 static_cast<std::size_t>(frame1) * 4 + axis]);
+    const double sign = dot < 0.0 ? -1.0 : 1.0;
+    double length{};
+    for (int axis{}; axis != 4; ++axis) {
+      const double a = target.rotations[
+          static_cast<std::size_t>(frame0) * 4 + axis];
+      const double b = sign * target.rotations[
+                               static_cast<std::size_t>(frame1) * 4 + axis];
+      rotation[axis] = a + (b - a) * static_cast<double>(blend);
+      length += rotation[axis] * rotation[axis];
+    }
+    length = std::sqrt(length);
+    if (length > 1e-9)
+      for (double &value : rotation)
+        value /= length;
+    else
+      rotation = {0.0, 0.0, 0.0, 1.0};
+    sample.rotation = rotation;
+    out.arm_ik_targets.push_back(sample);
+  }
   return true;
 }
 
@@ -3915,19 +5506,50 @@ double LiveLegLength(Context &context) noexcept {
   return total;
 }
 
+bool ApplyLimbCalibration(
+    Context &context, std::vector<Transformd> &locals,
+    const std::vector<Transformd> &components,
+    const std::vector<std::int32_t> &parents,
+    const std::vector<std::string> &names,
+    std::array<limb_cal::Status, limb_cal::kLimbCount> *statuses = nullptr) noexcept;
+bool ApplyArmIkTargets(Context &context, const MotionSample &sample,
+                       std::vector<Transformd> &locals,
+                       std::vector<Transformd> &components) noexcept;
+
+bool StartTPoseCalibration(Context &context) noexcept;
+bool ConfirmTPoseCalibration(Context &context) noexcept;
+void CancelTPoseCalibration(Context &context, std::string_view status) noexcept;
+void StepTPoseCalibrationRequest(Context &context) noexcept;
+void StepAutomaticCalibrationStatus(Context &context) noexcept;
+void ApplyMotionVisibility(Context &context, bool visible) noexcept;
+void RestoreMotionVisibility(Context &context) noexcept;
 
 void ApplyMotionPoseDirect(Context &context) noexcept {
   RuntimeState &state = context.runtime;
+  const auto publish_limb_status = [&](const limb_cal::Status status) {
+    for (std::size_t limb{}; limb != limb_cal::kLimbCount; ++limb)
+      context.motion_limb_status[limb].store(
+          static_cast<int>(status), std::memory_order_release);
+  };
+  publish_limb_status(limb_cal::Status::Original);
   if (state.mesh == 0 || state.local_space_data == 0 ||
       state.local_space_count == 0 || state.component_space_data == 0 ||
-      state.component_space_count != state.local_space_count)
+      state.component_space_count != state.local_space_count) {
+    publish_limb_status(limb_cal::Status::NotApplicable);
     return;
+  }
   MotionSample sample;
   if (!SampleMotion(context, context.motion_seconds.load(std::memory_order_acquire),
-                    sample))
+                    sample)) {
+    publish_limb_status(limb_cal::Status::NotApplicable);
     return;
-  if (!CapturePoseBase(context))
+  }
+  if (sample.has_visibility)
+    ApplyMotionVisibility(context, sample.visible);
+  if (!CapturePoseBase(context)) {
+    publish_limb_status(limb_cal::Status::NotApplicable);
     return;
+  }
   // The reference pose is what undriven bones should sit at; read it once per
   // character. The mesh scan usually got there first, in which case this is free.
   if (context.ref_locals.empty() && !context.ref_pose_attempted) {
@@ -3942,13 +5564,17 @@ void ApplyMotionPoseDirect(Context &context) noexcept {
     }
   }
   const std::uint32_t count = state.local_space_count;
-  if (context.bone_parents.size() != count)
+  if (context.bone_parents.size() != count) {
+    publish_limb_status(limb_cal::Status::NotApplicable);
     return;
+  }
   std::vector<std::array<double, 12>> base_locals;
   {
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
-    if (context.pose_base_locals.size() != count)
+    if (context.pose_base_locals.size() != count) {
+      publish_limb_status(limb_cal::Status::NotApplicable);
       return;
+    }
     base_locals = context.pose_base_locals;
   }
   // Bones the motion does not drive are the ones that decide whether a skirt hangs
@@ -3959,12 +5585,23 @@ void ApplyMotionPoseDirect(Context &context) noexcept {
   // reference pose is the undeformed pose, so use it as the baseline whenever it has
   // been read; the captured pose stays the fallback.
   bool baseline_is_bind = false;
+  std::map<std::string, std::array<double, 12>> manual_reference;
   {
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
     if (context.ref_locals.size() == count) {
       base_locals = context.ref_locals;
       baseline_is_bind = true;
     }
+    manual_reference = context.manual_motion_reference;
+  }
+  if (!manual_reference.empty()) {
+    for (std::uint32_t bone{};
+         bone != count && bone < context.bone_names.size(); ++bone) {
+      const auto found = manual_reference.find(context.bone_names[bone]);
+      if (found != manual_reference.end())
+        base_locals[bone] = found->second;
+    }
+    baseline_is_bind = true;
   }
   if (baseline_is_bind && !context.motion_baseline_logged.exchange(true)) {
     LogDiagnostic(context,
@@ -3979,12 +5616,37 @@ void ApplyMotionPoseDirect(Context &context) noexcept {
     locals[bone].translation = Vec3d{raw[4], raw[5], raw[6]};
     locals[bone].scale = Vec3d{raw[8], raw[9], raw[10]};
   }
+  const amp::Settings amplitude =
+      context.motion_amplitude_enabled.load(std::memory_order_acquire)
+          ? context.motion_amplitude.Load()
+          : amp::Settings{};
   for (std::size_t track{}; track != sample.indices.size(); ++track) {
     const std::uint32_t bone = sample.indices[track];
     if (bone >= count)
       continue;
     const auto &q = sample.rotations[track];
-    locals[bone].rotation = Quatd{q[0], q[1], q[2], q[3]};
+    const amp::Part part =
+        track < sample.parts.size() ? sample.parts[track] : amp::Part::Count;
+    const amp::Quat neutral{
+        base_locals[bone][0], base_locals[bone][1], base_locals[bone][2],
+        base_locals[bone][3]};
+    const float joint_factor =
+        track < sample.joint_factors.size() ? sample.joint_factors[track] : 1.0F;
+    amp::Quat scaled =
+        amp::ScaleRotation(neutral, amp::Quat{q[0], q[1], q[2], q[3]},
+                           amp::SafeFactor(amplitude.Factor(part) * joint_factor));
+    if (track < sample.joint_offsets.size()) {
+      const auto &offset = sample.joint_offsets[track];
+      if (offset[0] != 0.0 || offset[1] != 0.0 || offset[2] != 0.0) {
+        scaled = amp::Normalize(amp::Multiply(
+            scaled,
+            joint_cal::RotationFromEulerDegreesYXZ(
+                {static_cast<float>(offset[0]), static_cast<float>(offset[1]),
+                 static_cast<float>(offset[2])})));
+      }
+    }
+    locals[bone].rotation =
+        Quatd{scaled[0], scaled[1], scaled[2], scaled[3]};
   }
   for (std::size_t track{}; track != sample.offset_indices.size(); ++track) {
     const std::uint32_t bone = sample.offset_indices[track];
@@ -3995,6 +5657,10 @@ void ApplyMotionPoseDirect(Context &context) noexcept {
   }
   const double no_offset[3] = {0.0, 0.0, 0.0};
   PublishRootOffsets(context, no_offset, no_offset);
+  const travel::Settings travel_scale =
+      context.motion_travel_enabled.load(std::memory_order_acquire)
+          ? context.motion_travel.Load()
+          : travel::Settings{};
   if (sample.has_root && sample.root_index < count &&
       context.motion_apply_root.load(std::memory_order_acquire)) {
     const auto &track = context.motion;
@@ -4013,22 +5679,296 @@ void ApplyMotionPoseDirect(Context &context) noexcept {
       // the plane is [0]/[1]. "Lock planar motion" keeps the height and drops the two horizontal
       // components: the character plays in place and still bobs and jumps.
       const bool lock_planar = context.motion_lock_planar.load(std::memory_order_acquire);
-      const double applied[3] = {lock_planar ? 0.0 : sample.root_translation[0] * scale,
-                                 lock_planar ? 0.0 : sample.root_translation[1] * scale,
-                                 sample.root_translation[2] * scale};
       const double authored[3] = {sample.root_translation[0] * scale,
                                   sample.root_translation[1] * scale,
                                   sample.root_translation[2] * scale};
+      const auto scaled =
+          travel::Apply(std::array<double, 3>{authored[0], authored[1], authored[2]},
+                        travel_scale, lock_planar);
       locals[sample.root_index].translation =
-          Vec3d{base.x + applied[0], base.y + applied[1], base.z + applied[2]};
+          Vec3d{base.x + scaled[0], base.y + scaled[1], base.z + scaled[2]};
+      const double applied[3] = {scaled[0], scaled[1], scaled[2]};
       PublishRootOffsets(context, applied, authored);
     } else {
+      const double authored[3] = {sample.root_translation[0],
+                                  sample.root_translation[1],
+                                  sample.root_translation[2]};
+      const auto scaled =
+          travel::Apply(std::array<double, 3>{authored[0], authored[1], authored[2]},
+                        travel_scale,
+                        context.motion_lock_planar.load(std::memory_order_acquire));
       locals[sample.root_index].translation =
-          Vec3d{sample.root_translation[0], sample.root_translation[1],
-                sample.root_translation[2]};
-      const double as_is[3] = {sample.root_translation[0], sample.root_translation[1],
-                               sample.root_translation[2]};
-      PublishRootOffsets(context, as_is, as_is);
+          Vec3d{scaled[0], scaled[1], scaled[2]};
+      const double applied[3] = {scaled[0], scaled[1], scaled[2]};
+      PublishRootOffsets(context, applied, authored);
+    }
+  }
+  const double height_cm =
+      static_cast<double>(context.motion_height_cm.load(std::memory_order_acquire));
+  if (std::abs(height_cm) > 1e-6) {
+    std::uint32_t root = sample.root_index;
+    if (root >= count) {
+      root = (std::numeric_limits<std::uint32_t>::max)();
+      for (std::uint32_t bone{}; bone != count; ++bone) {
+        const std::string &name = context.bone_names[bone];
+        if (name == "Bip001" || name == "Root" || name == "root") {
+          root = bone;
+          break;
+        }
+      }
+    }
+    if (root < count)
+      locals[root].translation.z += height_cm;
+  }
+
+  if (context.motion_finger_preview_enabled.load(
+          std::memory_order_acquire)) {
+    context.motion_finger_preview_active_bones.store(
+        0, std::memory_order_release);
+    const int preview_kind =
+        context.motion_mapping_control_kind.load(std::memory_order_acquire);
+    const int preview_side =
+        context.motion_mapping_control_side.load(std::memory_order_acquire);
+    const int preview_finger =
+        context.motion_mapping_control_finger.load(std::memory_order_acquire);
+    const float preview_gain =
+        context.motion_mapping_control_gain.load(std::memory_order_acquire);
+    const bool preview_paired =
+        context.motion_mapping_control_paired.load(std::memory_order_acquire);
+    const double preview_amount = std::clamp(
+        static_cast<double>(context.motion_finger_preview_amount.load(
+            std::memory_order_acquire)),
+        -1.0, 1.0);
+    const auto normalize_quat = [](const Quatd &q) {
+      const double length =
+          std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+      return length < 1e-12
+                 ? Quatd{}
+                 : Quatd{q.x / length, q.y / length, q.z / length,
+                         q.w / length};
+    };
+    const auto cross = [](const Vec3d &a, const Vec3d &b) {
+      return Vec3d{a.y * b.z - a.z * b.y,
+                   a.z * b.x - a.x * b.z,
+                   a.x * b.y - a.y * b.x};
+    };
+    const auto dot = [](const Vec3d &a, const Vec3d &b) {
+      return a.x * b.x + a.y * b.y + a.z * b.z;
+    };
+    const auto length = [&dot](const Vec3d &value) {
+      return std::sqrt(dot(value, value));
+    };
+    const auto unit = [&length](const Vec3d &value) {
+      const double size = length(value);
+      return size < 1e-12
+                 ? Vec3d{}
+                 : Vec3d{value.x / size, value.y / size, value.z / size};
+    };
+    std::vector<Quatd> rest_component_rotation(count);
+    std::vector<Vec3d> rest_component_position(count);
+    for (std::uint32_t bone{}; bone != count; ++bone) {
+      const Quatd parent =
+          context.bone_parents[bone] >= 0
+              ? rest_component_rotation[
+                    static_cast<std::size_t>(context.bone_parents[bone])]
+              : Quatd{};
+      const Quatd rest_local{
+          base_locals[bone][0], base_locals[bone][1],
+          base_locals[bone][2], base_locals[bone][3]};
+      rest_component_rotation[bone] =
+          normalize_quat(QuatMultiply(parent, rest_local));
+      const Vec3d offset =
+          QuatRotateVector(parent, base_locals[bone]
+                                      .size() >= 7
+                                   ? Vec3d{base_locals[bone][4],
+                                           base_locals[bone][5],
+                                           base_locals[bone][6]}
+                                   : locals[bone].translation);
+      if (context.bone_parents[bone] >= 0) {
+        const Vec3d &parent_position = rest_component_position[
+            static_cast<std::size_t>(context.bone_parents[bone])];
+        rest_component_position[bone] =
+            Vec3d{parent_position.x + offset.x,
+                  parent_position.y + offset.y,
+                  parent_position.z + offset.z};
+      } else {
+        rest_component_position[bone] = offset;
+      }
+    }
+    std::array<Vec3d, 2> palm_normals{Vec3d{0, 1, 0},
+                                      Vec3d{0, 1, 0}};
+    for (int side{}; side != 2; ++side) {
+      const std::string prefix =
+          std::string("Bip001-") + (side == 0 ? "L-" : "R-");
+      const auto position_of = [&](const std::string &suffix)
+          -> const Vec3d * {
+        const auto found =
+            std::find(context.bone_names.begin(), context.bone_names.end(),
+                      prefix + suffix);
+        return found == context.bone_names.end()
+                   ? nullptr
+                   : &rest_component_position[
+                         static_cast<std::size_t>(
+                             found - context.bone_names.begin())];
+      };
+      const Vec3d *hand = position_of("Hand");
+      const Vec3d *middle = position_of("Finger2");
+      const Vec3d *index = position_of("Finger1");
+      const Vec3d *pinky = position_of("Finger4");
+      if (hand == nullptr || (middle == nullptr && index == nullptr))
+        continue;
+      const Vec3d forward =
+          unit(Vec3d{(middle != nullptr ? middle->x : index->x) - hand->x,
+                     (middle != nullptr ? middle->y : index->y) - hand->y,
+                     (middle != nullptr ? middle->z : index->z) - hand->z});
+      Vec3d across{0, 0, -1};
+      if (index != nullptr && pinky != nullptr)
+        across = unit(Vec3d{index->x - pinky->x, index->y - pinky->y,
+                            index->z - pinky->z});
+      Vec3d normal = unit(cross(forward, across));
+      if (length(normal) < 1e-6)
+        normal = Vec3d{0, 1, 0};
+      if (dot(normal, Vec3d{0, 1, 0}) < 0.0)
+        normal = Vec3d{-normal.x, -normal.y, -normal.z};
+      palm_normals[static_cast<std::size_t>(side)] = normal;
+    }
+    static constexpr double kSpreadWeights[5] = {
+        -0.65, -0.35, 0.0, 0.25, 0.50};
+    std::vector<Quatd> finger_delta(count);
+    bool any_delta = false;
+    int active_bones = 0;
+    for (std::uint32_t bone{}; bone != count; ++bone) {
+      const std::string &name = context.bone_names[bone];
+      int side = -1;
+      if (name.rfind("Bip001-L-", 0) == 0)
+        side = 0;
+      else if (name.rfind("Bip001-R-", 0) == 0)
+        side = 1;
+      if (side < 0 || (!preview_paired && preview_side != side))
+        continue;
+      int matched_finger = -1;
+      int matched_joint = -1;
+      static const char *kEnglish[] = {
+          "Finger0", "Finger1", "Finger2", "Finger3", "Finger4"};
+      for (int finger{}; finger != 5; ++finger) {
+        if (preview_finger >= 0 && preview_finger != finger)
+          continue;
+        const std::string base =
+            std::string("Bip001-") + (side == 0 ? "L-" : "R-") +
+            kEnglish[finger];
+        if (name == base) {
+          matched_finger = finger;
+          matched_joint = 0;
+          break;
+        }
+        for (int joint = 1; joint != 4; ++joint) {
+          if (name == base + std::to_string(joint)) {
+            matched_finger = finger;
+            matched_joint = joint;
+            break;
+          }
+        }
+        if (matched_finger >= 0)
+          break;
+      }
+      if (matched_finger < 0)
+        continue;
+      Vec3d axis;
+      double weight = 1.0;
+      const Vec3d normal =
+          palm_normals[static_cast<std::size_t>(side)];
+      if (preview_kind == 1) {
+        if (matched_joint != 0)
+          continue;
+        axis = normal;
+        weight = kSpreadWeights[matched_finger] *
+                 (side == 0 ? 1.0 : -1.0);
+      } else {
+        weight = matched_finger == 0
+                     ? 0.55
+                     : (matched_joint == 0 ? 0.75 : 1.0);
+        Vec3d direction;
+        const auto previous = std::find(
+            context.bone_names.begin(), context.bone_names.end(),
+            name);
+        std::size_t previous_index = static_cast<std::size_t>(
+            previous - context.bone_names.begin());
+        const std::string base =
+            std::string("Bip001-") + (side == 0 ? "L-" : "R-") +
+            kEnglish[matched_finger];
+        if (matched_joint < 3) {
+          const auto next = std::find(
+              context.bone_names.begin(), context.bone_names.end(),
+              base + std::to_string(matched_joint + 1));
+          if (next != context.bone_names.end()) {
+            const Vec3d &next_position = rest_component_position[
+                static_cast<std::size_t>(
+                    next - context.bone_names.begin())];
+            direction = Vec3d{
+                next_position.x - rest_component_position[previous_index].x,
+                next_position.y - rest_component_position[previous_index].y,
+                next_position.z - rest_component_position[previous_index].z};
+          }
+        }
+        if (length(direction) < 1e-9 && matched_joint > 0) {
+          const std::string prior_name =
+              matched_joint == 1
+                  ? base
+                  : base + std::to_string(matched_joint - 1);
+          const auto prior = std::find(
+              context.bone_names.begin(), context.bone_names.end(),
+              prior_name);
+          if (prior != context.bone_names.end()) {
+            const Vec3d &prior_position = rest_component_position[
+                static_cast<std::size_t>(
+                    prior - context.bone_names.begin())];
+            const Vec3d &current =
+                rest_component_position[previous_index];
+            direction =
+                Vec3d{current.x - prior_position.x,
+                      current.y - prior_position.y,
+                      current.z - prior_position.z};
+          }
+        }
+        axis = unit(cross(unit(direction), normal));
+        if (length(axis) < 1e-6)
+          continue;
+      }
+      const double angle = std::clamp(
+          preview_amount * 1.2 * static_cast<double>(preview_gain) * weight,
+          -2.6, 2.6);
+      const double sine = std::sin(angle * 0.5);
+      finger_delta[bone] =
+          Quatd{axis.x * sine, axis.y * sine, axis.z * sine,
+                std::cos(angle * 0.5)};
+      if (std::fabs(angle) > 1e-5)
+        ++active_bones;
+      any_delta = true;
+    }
+    context.motion_finger_preview_active_bones.store(
+        active_bones, std::memory_order_release);
+    if (any_delta) {
+      std::vector<Quatd> preview_component(count);
+      for (std::uint32_t bone{}; bone != count; ++bone) {
+        const Quatd parent =
+            context.bone_parents[bone] >= 0
+                ? preview_component[
+                      static_cast<std::size_t>(context.bone_parents[bone])]
+                : Quatd{};
+        Quatd component =
+            normalize_quat(QuatMultiply(parent, locals[bone].rotation));
+        if (finger_delta[bone].w != 1.0 ||
+            finger_delta[bone].x != 0.0 ||
+            finger_delta[bone].y != 0.0 ||
+            finger_delta[bone].z != 0.0) {
+          component =
+              normalize_quat(QuatMultiply(component, finger_delta[bone]));
+          locals[bone].rotation = normalize_quat(
+              QuatMultiply(Quatd{-parent.x, -parent.y, -parent.z, parent.w},
+                           component));
+        }
+        preview_component[bone] = component;
+      }
     }
   }
 
@@ -4037,6 +5977,78 @@ void ApplyMotionPoseDirect(Context &context) noexcept {
   for (std::uint32_t bone{}; bone != count; ++bone)
     static_cast<void>(ComputeBoneComponent(bone, locals, context.bone_parents,
                                            components, marks));
+  std::array<limb_cal::Status, limb_cal::kLimbCount> limb_statuses;
+  limb_statuses.fill(limb_cal::Status::Original);
+  const bool limb_changed = ApplyLimbCalibration(
+      context, locals, components, context.bone_parents, context.bone_names,
+      &limb_statuses);
+  for (std::size_t limb{}; limb != limb_cal::kLimbCount; ++limb)
+    context.motion_limb_status[limb].store(
+        static_cast<int>(limb_statuses[limb]), std::memory_order_release);
+  if (limb_changed) {
+    std::fill(marks.begin(), marks.end(), std::uint8_t{0});
+    for (std::uint32_t bone{}; bone != count; ++bone)
+      static_cast<void>(ComputeBoneComponent(bone, locals, context.bone_parents,
+                                             components, marks));
+  }
+  MotionSample arm_preview_sample;
+  const MotionSample *arm_sample = &sample;
+  context.motion_arm_preview_active_sides.store(
+      0, std::memory_order_release);
+  if (context.motion_arm_preview_enabled.load(
+          std::memory_order_acquire)) {
+    arm_preview_sample = sample;
+    const int preview_side =
+        context.motion_mapping_control_side.load(std::memory_order_acquire);
+    const bool preview_paired =
+        context.motion_mapping_control_paired.load(std::memory_order_acquire);
+    const double preview_amount = std::clamp(
+        static_cast<double>(context.motion_arm_preview_amount.load(
+            std::memory_order_acquire)),
+        -1.0, 1.0);
+    int active_sides = 0;
+    const int first_side = preview_paired ? 0 : preview_side;
+    const int last_side = preview_paired ? 1 : preview_side;
+    for (int side = first_side; side <= last_side; ++side) {
+      const std::string upper_name =
+          std::string("Bip001-") + (side == 0 ? "L-UpperArm" : "R-UpperArm");
+      const std::string forearm_name =
+          std::string("Bip001-") + (side == 0 ? "L-Forearm" : "R-Forearm");
+      const std::string hand_name =
+          std::string("Bip001-") + (side == 0 ? "L-Hand" : "R-Hand");
+      const auto find_name = [&context](const std::string &name)
+          -> std::uint32_t {
+        for (std::size_t bone{}; bone != context.bone_names.size(); ++bone)
+          if (context.bone_names[bone] == name)
+            return static_cast<std::uint32_t>(bone);
+        return (std::numeric_limits<std::uint32_t>::max)();
+      };
+      const std::uint32_t upper = find_name(upper_name);
+      const std::uint32_t forearm = find_name(forearm_name);
+      const std::uint32_t hand = find_name(hand_name);
+      if (upper == (std::numeric_limits<std::uint32_t>::max)() ||
+          forearm == (std::numeric_limits<std::uint32_t>::max)() ||
+          hand == (std::numeric_limits<std::uint32_t>::max)())
+        continue;
+      MotionArmIkSample target;
+      target.upper_arm = upper;
+      target.forearm = forearm;
+      target.hand = hand;
+      target.offset = {0.0, preview_amount * 20.0, 0.0};
+      target.max_bend_degrees = 150.0;
+      arm_preview_sample.arm_ik_targets.push_back(target);
+      ++active_sides;
+    }
+    context.motion_arm_preview_active_sides.store(
+        active_sides, std::memory_order_release);
+    arm_sample = &arm_preview_sample;
+  }
+  if (ApplyArmIkTargets(context, *arm_sample, locals, components)) {
+    std::fill(marks.begin(), marks.end(), std::uint8_t{0});
+    for (std::uint32_t bone{}; bone != count; ++bone)
+      static_cast<void>(ComputeBoneComponent(bone, locals, context.bone_parents,
+                                             components, marks));
+  }
   std::vector<PackedTransform> packed(count);
   for (std::uint32_t bone{}; bone != count; ++bone)
     PackTransform(components[bone], packed[bone]);
@@ -4226,10 +6238,17 @@ void StepMeshScan(Context &context) noexcept {
 }
 
 void UnloadMotion(Context &context) noexcept {
+  context.motion_visibility_restore_requested.store(
+      true, std::memory_order_release);
   std::lock_guard<std::mutex> lock(context.motion_mutex);
   ++context.motion_load_epoch;
   context.motion_loaded.store(false, std::memory_order_release);
   context.motion_playing.store(false, std::memory_order_release);
+  context.motion_secondary_tuning_stale.store(false,
+                                               std::memory_order_release);
+  context.motion_secondary_bones.store(0, std::memory_order_release);
+  for (auto &count : context.motion_secondary_materials)
+    count.store(0, std::memory_order_release);
   context.motion = Context::MotionTrack{};
   context.motion_seconds.store(0.0, std::memory_order_release);
   context.motion_display_seconds.store(0.0, std::memory_order_release);
@@ -4237,10 +6256,116 @@ void UnloadMotion(Context &context) noexcept {
   context.motion_seek_pending.store(false, std::memory_order_release);
   context.motion_seek_immediate.store(false, std::memory_order_release);
   context.motion_seek_serial.fetch_add(1, std::memory_order_release);
+  for (std::size_t limb{}; limb != limb_cal::kLimbCount; ++limb)
+    context.motion_limb_status[limb].store(
+        static_cast<int>(limb_cal::Status::Original),
+        std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> timeline_lock(
+        context.motion_timeline_mutex);
+    context.motion_timeline.reset();
+  }
+}
+
+std::shared_ptr<const Context::MotionTimelineCache>
+BuildMotionTimelineCache(const Context::MotionTrack &track,
+                         const std::string &source_vmd_path) {
+  auto cache = std::make_shared<Context::MotionTimelineCache>();
+  cache->first_frame = track.first_frame;
+  cache->last_frame =
+      track.frame_count != 0
+          ? track.first_frame + track.frame_count - 1
+          : track.first_frame;
+  cache->fps = track.fps > 0.0 ? track.fps : 30.0;
+  cache->bone_tracks = track.bone_count + track.offset_names.size();
+  cache->morph_tracks = track.morph_names.size();
+
+  std::map<std::uint32_t, std::uint8_t> mark_bits;
+  for (const auto &keys : track.morph_keys) {
+    cache->morph_key_count += keys.size();
+    for (const auto &key : keys)
+      mark_bits[key.frame] |= 2U;
+  }
+
+  bool parsed_vmd = false;
+  if (!source_vmd_path.empty()) {
+    try {
+      std::ifstream file(Utf8ToWide(source_vmd_path), std::ios::binary);
+      if (file) {
+        std::vector<std::uint8_t> bytes(
+            (std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>());
+        if (!file.bad() && bytes.size() <= kMaximumMotionBytes) {
+          const auto document =
+              better_pose::mmd2bip::ParseVmd(bytes);
+          if (document.ok) {
+            parsed_vmd = true;
+            for (const auto &vmd_track : document.tracks) {
+              cache->bone_key_count += vmd_track.keys.size();
+              for (const auto &key : vmd_track.keys)
+                mark_bits[key.frame] |= 1U;
+            }
+            cache->camera_key_count = document.camera.size();
+            for (const auto &key : document.camera)
+              mark_bits[key.frame] |= 4U;
+          }
+        }
+      }
+    } catch (...) {
+      parsed_vmd = false;
+    }
+  }
+
+  const auto add_span = [&](const std::size_t lane,
+                            const double first, const double last) {
+    if (last < first)
+      return;
+    cache->lane_span[lane] = true;
+    cache->span_edges[lane * 2] = first;
+    cache->span_edges[lane * 2 + 1] = last;
+  };
+  if (!parsed_vmd && cache->bone_tracks != 0)
+    add_span(0, cache->first_frame, cache->last_frame);
+
+  cache->marks.reserve(mark_bits.size());
+  for (const auto &[frame, bits] : mark_bits) {
+    if (frame < cache->first_frame || frame > cache->last_frame)
+      continue;
+    cache->marks.push_back(
+        {frame, (bits & 1U) != 0, (bits & 2U) != 0,
+         (bits & 4U) != 0, 0.0F});
+  }
+  std::array<bool, 3> mark_lane{};
+  for (const auto &mark : cache->marks) {
+    mark_lane[0] = mark_lane[0] || mark.pose;
+    mark_lane[1] = mark_lane[1] || mark.expression;
+    mark_lane[2] = mark_lane[2] || mark.camera;
+  }
+  constexpr std::size_t kMaximumMotionTimelineMarks = 2048;
+  if (cache->marks.size() > kMaximumMotionTimelineMarks) {
+    const std::size_t stride =
+        (cache->marks.size() + kMaximumMotionTimelineMarks - 1) /
+        kMaximumMotionTimelineMarks;
+    std::vector<better_pose::timeline::KeyMark> reduced;
+    reduced.reserve(kMaximumMotionTimelineMarks + 1);
+    for (std::size_t index{}; index < cache->marks.size();
+         index += stride)
+      reduced.push_back(cache->marks[index]);
+    if (reduced.empty() ||
+        reduced.back().frame != cache->marks.back().frame)
+      reduced.push_back(cache->marks.back());
+    cache->marks = std::move(reduced);
+  }
+  if (!mark_lane[0] && cache->bone_tracks != 0)
+    add_span(0, cache->first_frame, cache->last_frame);
+  if (!mark_lane[1] && cache->morph_tracks != 0)
+    add_span(1, cache->first_frame, cache->last_frame);
+  return cache;
 }
 
 bool LoadMotionDocument(Context &context, const std::string &document,
-                        const std::string &path, const std::uint64_t load_epoch) {
+                        const std::string &path, const std::uint64_t load_epoch,
+                        const std::string &source_vmd_path = {}) {
   const auto json = nlohmann::json::parse(document);
   if (json.value("kind", std::string()) != "better-pose-motion")
     throw std::runtime_error("not a better-pose motion document");
@@ -4263,8 +6388,10 @@ bool LoadMotionDocument(Context &context, const std::string &document,
     throw std::runtime_error("motion is unreasonably long");
 
   track.bone_names.reserve(bones.size());
+  track.bone_parts.reserve(bones.size());
   for (auto it = bones.begin(); it != bones.end(); ++it) {
     track.bone_names.push_back(it.key());
+    track.bone_parts.push_back(amp::PartForBone(it.key()));
     if (!it.value().is_array() || it.value().size() != track.frame_count)
       throw std::runtime_error("bone track length does not match frameCount");
   }
@@ -4321,6 +6448,63 @@ bool LoadMotionDocument(Context &context, const std::string &document,
     }
     track.offsets_ready = true;
   }
+  const auto visibility = json.find("visibility");
+  if (visibility != json.end() && visibility->is_array()) {
+    for (const auto &key : *visibility) {
+      if (!key.is_array() || key.size() != 2 ||
+          !key[0].is_number_unsigned() || !key[1].is_boolean())
+        continue;
+      track.visibility_keys.push_back(
+          {key[0].get<std::uint32_t>(), key[1].get<bool>()});
+    }
+    std::stable_sort(track.visibility_keys.begin(), track.visibility_keys.end(),
+                     [](const auto &left, const auto &right) {
+                       return left.frame < right.frame;
+                     });
+  }
+  const auto arm_ik_targets = json.find("armIkTargets");
+  if (arm_ik_targets != json.end() && arm_ik_targets->is_array()) {
+    for (const auto &item : *arm_ik_targets) {
+      if (!item.is_object() || !item.contains("hand") ||
+          !item.at("hand").is_string() || !item.contains("offsets") ||
+          !item.at("offsets").is_array() ||
+          item.at("offsets").size() != track.frame_count)
+        throw std::runtime_error("invalid arm IK target");
+      Context::MotionTrack::ArmIkTarget target;
+      target.hand_name = item.at("hand").get<std::string>();
+      target.side = item.value("side", std::string());
+      target.follow_wrist = item.value("followWrist", false);
+      target.max_bend_degrees =
+          std::clamp(item.value("maxBendDegrees", 150.0F), 20.0F, 170.0F);
+      target.offsets.reserve(
+          static_cast<std::size_t>(track.frame_count) * 3);
+      for (const auto &key : item.at("offsets")) {
+        if (!key.is_array() || key.size() != 3)
+          throw std::runtime_error("invalid arm IK offset");
+        for (std::size_t axis{}; axis != 3; ++axis)
+          target.offsets.push_back(key[axis].get<float>());
+      }
+      if (item.contains("rotations")) {
+        if (!item.at("rotations").is_array() ||
+            item.at("rotations").size() != track.frame_count)
+          throw std::runtime_error("invalid arm IK rotations");
+        target.rotations.reserve(
+            static_cast<std::size_t>(track.frame_count) * 4);
+        for (const auto &key : item.at("rotations")) {
+          if (!key.is_array() || key.size() != 4)
+            throw std::runtime_error("invalid arm IK rotation");
+          for (std::size_t axis{}; axis != 4; ++axis)
+            target.rotations.push_back(key[axis].get<float>());
+        }
+      } else {
+        for (std::uint32_t frame{}; frame != track.frame_count; ++frame) {
+          target.rotations.insert(target.rotations.end(),
+                                  {0.0F, 0.0F, 0.0F, 1.0F});
+        }
+      }
+      track.arm_ik_targets.push_back(std::move(target));
+    }
+  }
   // Facial keys (optional; motions converted before this carry none).
   const auto morphs = json.find("morphs");
   if (morphs != json.end() && morphs->is_object()) {
@@ -4344,16 +6528,22 @@ bool LoadMotionDocument(Context &context, const std::string &document,
       track.morph_keys.push_back(std::move(keys));
     }
   }
+  auto timeline_cache =
+      BuildMotionTimelineCache(track, source_vmd_path);
   {
     std::lock_guard<std::mutex> lock(context.motion_mutex);
     if (load_epoch != context.motion_load_epoch)
       return false;
     context.motion = std::move(track);
-    context.motion_loaded.store(true, std::memory_order_release);
     context.motion_playing.store(false, std::memory_order_release);
     context.motion_seconds.store(0.0, std::memory_order_release);
     context.motion_display_seconds.store(0.0, std::memory_order_release);
   }
+  {
+    std::lock_guard<std::mutex> lock(context.motion_timeline_mutex);
+    context.motion_timeline = std::move(timeline_cache);
+  }
+  context.motion_loaded.store(true, std::memory_order_release);
   return true;
 }
 
@@ -4429,6 +6619,87 @@ bool GetBoneFNameForMesh(Context &context, const std::uintptr_t mesh,
     return true;
   name = "Bone_" + std::to_string(bone_index);
   return false;
+}
+
+bool QueryComponentVisible(Context &context, const std::uintptr_t object,
+                           bool &visible) noexcept {
+  if (object == 0)
+    return false;
+  std::string detail;
+  std::uint8_t value{};
+  if (!CallVirtualUFunction(context, object, kFunctionSceneIsVisiblePath,
+                            &value, sizeof(value), detail, &value))
+    return false;
+  visible = value != 0;
+  return true;
+}
+
+bool SetComponentVisible(Context &context, const std::uintptr_t object,
+                         const bool visible) noexcept {
+  if (object == 0)
+    return false;
+  std::string detail;
+  const std::array<std::uint8_t, 2> parameters{
+      static_cast<std::uint8_t>(visible ? 1 : 0), 0};
+  return CallVirtualUFunction(context, object, kFunctionSceneSetVisibilityPath,
+                              parameters.data(), parameters.size(), detail);
+}
+
+std::vector<std::uintptr_t> MotionVisibilityObjects(Context &context) {
+  std::vector<std::uintptr_t> objects;
+  const auto add = [&objects](const std::uintptr_t object) {
+    if (object != 0 &&
+        std::find(objects.begin(), objects.end(), object) == objects.end())
+      objects.push_back(object);
+  };
+  add(context.runtime.mesh);
+  for (const auto &extra : context.extra_meshes) {
+    if (extra.poseable_component != 0)
+      add(extra.poseable_component);
+    if (extra.object != 0 && !extra.poseable_source_visibility_changed)
+      add(extra.object);
+  }
+  return objects;
+}
+
+void RestoreMotionVisibility(Context &context) noexcept {
+  for (auto it = context.motion_visibility_original.begin();
+       it != context.motion_visibility_original.end();) {
+    if (SetComponentVisible(context, it->first, it->second)) {
+      context.motion_visibility_last.erase(it->first);
+      it = context.motion_visibility_original.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (context.motion_visibility_original.empty()) {
+    context.motion_visibility_last.clear();
+    context.motion_visibility_owner = 0;
+  }
+}
+
+void ApplyMotionVisibility(Context &context, const bool visible) noexcept {
+  if (context.motion_visibility_owner != 0 &&
+      context.motion_visibility_owner != context.runtime.mesh)
+    RestoreMotionVisibility(context);
+  context.motion_visibility_owner = context.runtime.mesh;
+  if (visible) {
+    RestoreMotionVisibility(context);
+    return;
+  }
+  for (const std::uintptr_t object : MotionVisibilityObjects(context)) {
+    if (context.motion_visibility_original.count(object) == 0) {
+      bool original = true;
+      if (!QueryComponentVisible(context, object, original))
+        continue;
+      context.motion_visibility_original[object] = original;
+    }
+    const auto last = context.motion_visibility_last.find(object);
+    if (last != context.motion_visibility_last.end() && !last->second)
+      continue;
+    if (SetComponentVisible(context, object, false))
+      context.motion_visibility_last[object] = false;
+  }
 }
 
 bool EnsurePoseableAccessory(Context &context,
@@ -4622,6 +6893,8 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
   const bool was_dynamic = extra.accessory_dynamics.Moving();
   const bool strand_enabled = extra.accessory_dynamics.DrivenBones() != 0;
   const std::vector<std::array<double, 12>>* desired_pose = &extra.bind_world;
+  if (!context.collision_debug_enabled.load(std::memory_order_acquire))
+    extra.accessory_dynamics.ClearCollisionDebug();
   if (strand_enabled) {
     std::array<std::uint8_t, 96> world_query{};
     PackedTransform component_world{};
@@ -4641,18 +6914,31 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
           {placement.translation[0],placement.translation[1],placement.translation[2]},
           {placement.rotation[0],placement.rotation[1],placement.rotation[2],placement.rotation[3]},placement.scale[0]};
       const Frame body_world = Compose(frame, Inverse(placement_frame));
-      const auto capsules = extra.accessory_dynamics.BodyCapsules(body_pose.size(),
+      auto capsules = extra.accessory_dynamics.BodyCapsules(body_pose.size(),
           [&](int bone) { const auto& p=body_pose[bone].translation; return Vec{p[0],p[1],p[2]}; }, body_world);
-      desired_pose = &extra.accessory_dynamics.Sample(
+      if (extra.kawaii_component_space && !extra.kawaii_limits.empty() &&
+          better_pose::secondary::IsDrapedRibbon(extra.kawaii_root))
+        capsules.clear();
+      if (context.secondary_tuning.Load().native_limits)
+        AppendKawaiiLimits(extra, frame, capsules);
+      const std::span<const AttachmentDrive> attachment_drives(
+          extra.attachment_drives.data(), extra.attachment_drives.size());
+      const auto& sampled = extra.accessory_dynamics.Sample(
           frame, context.motion_seconds.load(std::memory_order_acquire),
           context.motion_seek_serial.load(std::memory_order_acquire),
           context.motion_loaded.load(std::memory_order_acquire) &&
-              context.motion_playing.load(std::memory_order_acquire), capsules);
+              context.motion_playing.load(std::memory_order_acquire),
+          capsules, attachment_drives);
+      desired_pose = &sampled;
+      if (context.collision_debug_enabled.load(std::memory_order_acquire))
+        extra.accessory_dynamics.PublishCollisionDebugCapsules(capsules);
     } else {
       extra.accessory_dynamics.Reset();
     }
-  } else if (was_dynamic) {
-    extra.accessory_dynamics.Reset();
+  } else {
+    extra.accessory_dynamics.ClearCollisionDebug();
+    if (was_dynamic)
+      extra.accessory_dynamics.Reset();
   }
   if (!extra.poseable_bind_written || strand_enabled || was_dynamic) {
     if (extra.bind_world.size() != extra.bone_count)
@@ -5393,6 +7679,485 @@ void LogDiagnostic(Context &context, const std::string &message) noexcept {
 
 
 
+bool FindGeneratedAnimNode(Context &context, const std::uintptr_t anim_class,
+                           const std::string_view wanted,
+                           std::uint32_t &member_offset,
+                           std::uint32_t &element_size) noexcept {
+  member_offset = 0;
+  element_size = 0;
+  std::uintptr_t property{};
+  if (!ReadPointerAt(context, anim_class, kUStructChildPropertiesOffset,
+                     property))
+    return false;
+  for (std::uint32_t index{}; property != 0 && index != 2048; ++index) {
+    std::uint32_t name_id{};
+    std::string name;
+    if (!Read(context, property + kFFieldNameOffset, name_id) ||
+        !ResolveName(context, name_id, name))
+      return false;
+    const bool generated_suffix =
+        name.size() > wanted.size() &&
+        name.compare(0, wanted.size(), wanted) == 0 &&
+        name[wanted.size()] == '_';
+    if (name == wanted || generated_suffix) {
+      std::int32_t offset{};
+      std::int32_t size{};
+      if (!Read(context, property + kFPropertyOffsetInternalOffset, offset) ||
+          !Read(context, property + kFPropertyElementSizeOffset, size) ||
+          offset < 0 || size <= 0)
+        return false;
+      member_offset = static_cast<std::uint32_t>(offset);
+      element_size = static_cast<std::uint32_t>(size);
+      return true;
+    }
+    std::uintptr_t next{};
+    if (!Read(context, property + kFFieldNextOffset, next))
+      return false;
+    property = next;
+  }
+  return false;
+}
+
+struct KawaiiPhysicsSnapshot {
+  std::uintptr_t node{};
+  std::string root;
+  better_pose::secondary::KawaiiPhysicsSettings base;
+  std::array<double, 3> gravity{};
+  double wind_scale{};
+  bool wind_enabled{};
+  bool component_space{};
+  std::uint32_t source_bones{};
+  std::uint32_t spherical_limits{};
+  std::uint32_t capsule_limits{};
+  std::uint32_t box_limits{};
+  std::uint32_t planar_limits{};
+  std::vector<better_pose::mmd2bip::SecondaryBoneOverride> overrides;
+  std::vector<better_pose::mmd2bip::KawaiiCapsuleLimit> limits;
+};
+
+bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
+                               KawaiiPhysicsSnapshot &snapshot,
+                               std::string &error) noexcept {
+  error.clear();
+  snapshot = {};
+  if (mesh == 0) {
+    error = "mesh unavailable";
+    return false;
+  }
+  std::uintptr_t anim_class{};
+  std::uintptr_t anim_instance{};
+  if (!ReadPointerAt(context, mesh, kMeshAnimClassOffset, anim_class) ||
+      !ReadPointerAt(context, mesh, kMeshAnimScriptInstanceOffset,
+                     anim_instance)) {
+    error = "animation class or instance unreadable";
+    return false;
+  }
+  std::uint32_t node_offset{};
+  std::uint32_t node_size{};
+  if (!FindGeneratedAnimNode(context, anim_class,
+                             "AnimGraphNode_KawaiiPhysics", node_offset,
+                             node_size)) {
+    std::uint32_t batched_offset{};
+    std::uint32_t batched_size{};
+    error = FindGeneratedAnimNode(context, anim_class,
+                                  "AnimGraphNode_KawaiiPhysicsBatched",
+                                  batched_offset, batched_size)
+                ? "batched KawaiiPhysics layout is unsupported"
+                : "KawaiiPhysics node not found";
+    return false;
+  }
+  if (node_offset > (1U << 20) || node_size < 1500) {
+    error = "invalid generated KawaiiPhysics member layout";
+    return false;
+  }
+  snapshot.node = anim_instance + node_offset;
+  std::uint32_t root_id{};
+  if (!Read(context, snapshot.node + kKawaiiRootBoneOffset, root_id) ||
+      !ResolveName(context, root_id, snapshot.root)) {
+    error = "KawaiiPhysics root bone unreadable";
+    return false;
+  }
+  std::array<float, 7> base_raw{};
+  if (!Read(context, snapshot.node + kKawaiiPhysicsSettingsOffset, base_raw) ||
+      !std::all_of(base_raw.begin(), base_raw.end(),
+                   [](const float value) { return std::isfinite(value); })) {
+    error = "invalid KawaiiPhysics base settings";
+    return false;
+  }
+  snapshot.base.damping = base_raw[0];
+  snapshot.base.stiffness = base_raw[1];
+  snapshot.base.world_damping_location = base_raw[2];
+  snapshot.base.world_damping_rotation = base_raw[3];
+  snapshot.base.radius = base_raw[4];
+  snapshot.base.limit_angle = base_raw[5];
+  snapshot.base.forward_move_offset = base_raw[6];
+  if (!Read(context, snapshot.node + kKawaiiGravityOffset, snapshot.gravity) ||
+      !std::all_of(snapshot.gravity.begin(), snapshot.gravity.end(),
+                   [](const double value) { return std::isfinite(value); }))
+    snapshot.gravity = {};
+  std::uint8_t wind_flags{};
+  static_cast<void>(
+      Read(context, snapshot.node + kKawaiiWindEnabledOffset, wind_flags));
+  float wind_scale{};
+  static_cast<void>(
+      Read(context, snapshot.node + kKawaiiWindScaleOffset, wind_scale));
+  snapshot.wind_scale = std::isfinite(wind_scale) ? wind_scale : 0.0;
+  snapshot.wind_enabled = (wind_flags & 1U) != 0;
+  std::uint8_t simulation_space{};
+  if (!Read(context, snapshot.node + kKawaiiSimulationSpaceOffset,
+            simulation_space))
+    simulation_space = 0;
+  snapshot.component_space = simulation_space == 0;
+  const auto read_limit_count = [&](const std::uint32_t offset) {
+    std::uintptr_t data{};
+    std::uint32_t count{};
+    if (!ReadArrayHeader(context, snapshot.node + offset, data, count) ||
+        data == 0 || count > 256)
+      return 0U;
+    return count;
+  };
+  snapshot.spherical_limits =
+      read_limit_count(kKawaiiSphericalLimitsOffset);
+  snapshot.capsule_limits =
+      read_limit_count(kKawaiiCapsuleLimitsOffset);
+  snapshot.box_limits =
+      read_limit_count(kKawaiiBoxLimitsOffset);
+  snapshot.planar_limits =
+      read_limit_count(kKawaiiPlanarLimitsOffset);
+
+  std::uintptr_t bones_data{};
+  std::uint32_t bone_count{};
+  if (!ReadArrayHeader(context, snapshot.node + kKawaiiModifyBonesOffset,
+                       bones_data, bone_count) ||
+      bones_data == 0 || bone_count == 0 || bone_count > kMaximumBoneIndex) {
+    error = "KawaiiPhysics ModifyBones unavailable";
+    return false;
+  }
+  snapshot.source_bones = bone_count;
+  std::vector<std::uint8_t> bones(
+      static_cast<std::size_t>(bone_count) * kKawaiiModifyBoneSize);
+  if (!ReadBytes(context, bones_data, bones.data(), bones.size())) {
+    error = "KawaiiPhysics ModifyBones unreadable";
+    return false;
+  }
+  snapshot.overrides.reserve(bone_count);
+  for (std::uint32_t bone{}; bone != bone_count; ++bone) {
+    const std::size_t start =
+        static_cast<std::size_t>(bone) * kKawaiiModifyBoneSize;
+    const auto *entry = bones.data() + start;
+    if (entry[kKawaiiModifyBoneDummyOffset] != 0 ||
+        entry[kKawaiiModifyBoneSkipOffset] != 0)
+      continue;
+    std::uint32_t name_id{};
+    std::memcpy(&name_id, entry + kKawaiiModifyBoneNameOffset,
+                sizeof(name_id));
+    std::string name;
+    if (!ResolveName(context, name_id, name))
+      continue;
+    std::array<float, 7> raw{};
+    std::memcpy(raw.data(), entry + kKawaiiModifyBoneSettingsOffset,
+                sizeof(raw));
+    if (!std::all_of(raw.begin(), raw.end(),
+                     [](const float value) { return std::isfinite(value); }))
+      continue;
+    better_pose::secondary::KawaiiPhysicsSettings native;
+    native.damping = raw[0];
+    native.stiffness = raw[1];
+    native.world_damping_location = raw[2];
+    native.world_damping_rotation = raw[3];
+    native.radius = raw[4];
+    native.limit_angle = raw[5];
+    native.forward_move_offset = raw[6];
+    const bool hair = better_pose::secondary::IsHair(name);
+    const bool draped_ribbon =
+        better_pose::secondary::IsDrapedRibbon(name);
+    snapshot.overrides.push_back(
+        {std::move(name),
+         better_pose::secondary::SpringFromKawaii(native, hair,
+                                                  draped_ribbon),
+         native.radius,
+         std::clamp(1.0 - 0.5 * (native.world_damping_location +
+                                 native.world_damping_rotation),
+                    0.05, 1.0),
+         snapshot.gravity,
+         native.forward_move_offset});
+  }
+  std::uintptr_t limits_data{};
+  std::uint32_t limit_count{};
+  if (ReadArrayHeader(context, snapshot.node + kKawaiiCapsuleLimitsOffset,
+                      limits_data, limit_count) &&
+      limits_data != 0 && limit_count != 0 && limit_count <= 256) {
+    std::vector<std::uint8_t> limits(
+        static_cast<std::size_t>(limit_count) * kKawaiiCapsuleLimitSize);
+    if (ReadBytes(context, limits_data, limits.data(), limits.size())) {
+      snapshot.limits.reserve(limit_count);
+      for (std::uint32_t index{}; index != limit_count; ++index) {
+        const auto *entry =
+            limits.data() +
+            static_cast<std::size_t>(index) * kKawaiiCapsuleLimitSize;
+        if (entry[kKawaiiLimitEnabledOffset] == 0)
+          continue;
+        std::uint32_t driving_id{};
+        std::memcpy(&driving_id, entry + kKawaiiLimitDrivingBoneOffset,
+                    sizeof(driving_id));
+        better_pose::mmd2bip::KawaiiCapsuleLimit limit;
+        if (!ResolveName(context, driving_id, limit.driving_bone))
+          continue;
+        std::memcpy(limit.offset_location.data(),
+                    entry + kKawaiiLimitOffsetLocationOffset,
+                    sizeof(limit.offset_location));
+        std::memcpy(limit.offset_rotation.data(),
+                    entry + kKawaiiLimitOffsetRotationOffset,
+                    sizeof(limit.offset_rotation));
+        std::memcpy(&limit.radius, entry + kKawaiiLimitRadiusOffset,
+                    sizeof(limit.radius));
+        std::memcpy(&limit.length, entry + kKawaiiLimitLengthOffset,
+                    sizeof(limit.length));
+        std::memcpy(&limit.sphere_radius,
+                    entry + kKawaiiLimitSphereRadiusOffset,
+                    sizeof(limit.sphere_radius));
+        if (!std::all_of(limit.offset_location.begin(),
+                         limit.offset_location.end(),
+                         [](const double value) {
+                           return std::isfinite(value);
+                         }) ||
+            !std::all_of(limit.offset_rotation.begin(),
+                         limit.offset_rotation.end(),
+                         [](const double value) {
+                           return std::isfinite(value);
+                         }) ||
+            !std::isfinite(limit.radius) ||
+            !std::isfinite(limit.length) ||
+            !std::isfinite(limit.sphere_radius) || limit.radius <= 0.0 ||
+            limit.length < 0.0 || limit.sphere_radius < 0.0 ||
+            (limit.length <= 1e-4 && limit.sphere_radius <= 0.0))
+          continue;
+        snapshot.limits.push_back(std::move(limit));
+      }
+    }
+  }
+  if (snapshot.overrides.empty() && snapshot.limits.empty()) {
+    error = "KawaiiPhysics produced no usable springs or capsule limits";
+    return false;
+  }
+  return true;
+}
+
+bool ConfigureKawaiiPhysics(Context &context,
+                            Context::ExtraMesh &extra) noexcept {
+  if (extra.kawaii_configured)
+    return extra.kawaii_configured;
+  const std::uint64_t now = GetTickCount64();
+  if (extra.kawaii_attempted &&
+      extra.kawaii_retry_after_ms != 0 &&
+      now < extra.kawaii_retry_after_ms)
+    return false;
+  KawaiiPhysicsSnapshot snapshot;
+  std::string snapshot_error;
+  if (!ReadKawaiiPhysicsSnapshot(context, extra.object, snapshot,
+                                 snapshot_error)) {
+    extra.kawaii_attempted = true;
+    extra.kawaii_retry_after_ms = now + 2000;
+    LogDiagnostic(context, "betterpose kawaii node " + Hex(extra.object) +
+                               " unavailable: " + snapshot_error);
+    return false;
+  }
+  const std::uintptr_t node = snapshot.node;
+  std::vector<better_pose::accessory::BoneOverride> overrides;
+  overrides.reserve(snapshot.overrides.size());
+  std::uint32_t forward_move_count{};
+  double forward_move_min{};
+  double forward_move_max{};
+  for (const auto &native : snapshot.overrides) {
+    if (std::abs(native.forward_move_offset) > 1e-6) {
+      if (forward_move_count == 0) {
+        forward_move_min = native.forward_move_offset;
+        forward_move_max = native.forward_move_offset;
+      } else {
+        forward_move_min =
+            (std::min)(forward_move_min,
+                       static_cast<double>(native.forward_move_offset));
+        forward_move_max =
+            (std::max)(forward_move_max,
+                       static_cast<double>(native.forward_move_offset));
+      }
+      ++forward_move_count;
+    }
+    overrides.push_back({native.name, native.spring, native.collision_radius,
+                         native.motion_follow,
+                         {native.native_gravity[0], native.native_gravity[1],
+                          native.native_gravity[2]},
+                         native.forward_move_offset});
+  }
+  const std::size_t matched =
+      extra.accessory_dynamics.ConfigureBoneOverrides(overrides);
+
+  extra.kawaii_limits.clear();
+  if (snapshot.component_space) {
+    for (const auto &native : snapshot.limits) {
+      const auto found = std::find(extra.bone_names.begin(),
+                                   extra.bone_names.end(),
+                                   native.driving_bone);
+      if (found == extra.bone_names.end())
+        continue;
+      Context::ExtraMesh::KawaiiLimit limit;
+      limit.driving_bone =
+          static_cast<std::int32_t>(found - extra.bone_names.begin());
+      limit.offset_location = native.offset_location;
+      limit.offset_rotation = native.offset_rotation;
+      limit.radius = static_cast<float>(native.radius);
+      limit.length = static_cast<float>(native.length);
+      limit.sphere_radius = static_cast<float>(native.sphere_radius);
+      extra.kawaii_limits.push_back(limit);
+    }
+  }
+  const std::uint32_t capsule_count =
+      static_cast<std::uint32_t>(extra.kawaii_limits.size());
+
+  extra.kawaii_attempted = true;
+  extra.kawaii_retry_after_ms = 0;
+  extra.kawaii_node = node;
+  extra.kawaii_root = snapshot.root;
+  extra.kawaii_base = snapshot.base;
+  extra.kawaii_spring_count = static_cast<std::uint32_t>(matched);
+  extra.kawaii_spherical_limits = snapshot.spherical_limits;
+  extra.kawaii_capsule_limits = snapshot.capsule_limits;
+  extra.kawaii_box_limits = snapshot.box_limits;
+  extra.kawaii_planar_limits = snapshot.planar_limits;
+  extra.kawaii_component_space = snapshot.component_space;
+  extra.kawaii_gravity = snapshot.gravity;
+  extra.kawaii_wind_scale = snapshot.wind_scale;
+  extra.kawaii_wind_enabled = snapshot.wind_enabled;
+  extra.accessory_dynamics.ConfigureAir(extra.kawaii_wind_enabled,
+                                        extra.kawaii_wind_scale);
+  if (capsule_count != 0 && extra.kawaii_component_space)
+    extra.accessory_dynamics.EnableConstraintMask(
+        better_pose::secondary::kKawaiiLimit);
+  extra.kawaii_configured = matched != 0 || capsule_count != 0;
+  if (!extra.kawaii_configured) {
+    extra.kawaii_retry_after_ms = now + 2000;
+    LogDiagnostic(context, "betterpose kawaii node " + Hex(extra.object) +
+                               " root=" + extra.kawaii_root +
+                               " has no usable runtime bones or limits");
+    return false;
+  }
+  context.secondary_debug_kawaii_nodes.fetch_add(1,
+                                                  std::memory_order_release);
+  context.secondary_debug_native_springs.fetch_add(
+      static_cast<std::uint32_t>(matched), std::memory_order_release);
+  context.secondary_debug_kawaii_limits.fetch_add(
+      capsule_count, std::memory_order_release);
+  context.secondary_debug_kawaii_spherical_limits.fetch_add(
+      snapshot.spherical_limits, std::memory_order_release);
+  context.secondary_debug_kawaii_box_limits.fetch_add(
+      snapshot.box_limits, std::memory_order_release);
+  context.secondary_debug_kawaii_planar_limits.fetch_add(
+      snapshot.planar_limits, std::memory_order_release);
+  context.secondary_debug_distance_links.fetch_add(
+      static_cast<std::uint32_t>(
+          extra.accessory_dynamics.DistanceConstraintCount()),
+      std::memory_order_release);
+
+  char message[512]{};
+  std::snprintf(
+      message, sizeof(message),
+      "betterpose kawaii node %llX root=%s bones=%u/%u limits=%u/%u/%u/%u "
+      "damping=%.3f stiffness=%.3f world_damp=%.2f/%.2f radius=%.2f "
+      "limit=%.1f gravity=%.1f,%.1f,%.1f wind=%d/%.2f space=%u "
+      "forward=%u/%g..%g",
+      static_cast<unsigned long long>(node), extra.kawaii_root.c_str(),
+      static_cast<unsigned>(matched),
+      static_cast<unsigned>(snapshot.source_bones),
+      snapshot.capsule_limits, snapshot.spherical_limits,
+      snapshot.box_limits, snapshot.planar_limits, snapshot.base.damping,
+      snapshot.base.stiffness, snapshot.base.world_damping_location,
+      snapshot.base.world_damping_rotation, snapshot.base.radius,
+      snapshot.base.limit_angle, snapshot.gravity[0], snapshot.gravity[1],
+      snapshot.gravity[2], extra.kawaii_wind_enabled ? 1 : 0,
+      snapshot.wind_scale,
+      snapshot.component_space ? 0U : 1U,
+      static_cast<unsigned>(forward_move_count), forward_move_min,
+      forward_move_max);
+  LogDiagnostic(context, message);
+  return true;
+}
+
+void AppendKawaiiLimits(
+    const Context::ExtraMesh &extra,
+    const better_pose::accessory::Frame &frame,
+    std::vector<better_pose::accessory::Capsule> &capsules) noexcept {
+  // FCapsuleLimit constrains the native spring chain. It shares the capsule
+  // intersection math with body collision, but it is not a body-collision source.
+  if (!extra.kawaii_component_space || extra.kawaii_limits.empty())
+    return;
+  using better_pose::accessory::Capsule;
+  using better_pose::accessory::Normalize;
+  using better_pose::accessory::Quat;
+  using better_pose::accessory::Rotate;
+  using better_pose::accessory::Vec;
+  const auto rotator_quaternion =
+      [](const std::array<double, 3> &rotation) {
+        constexpr double kPi = 3.14159265358979323846;
+        const double half_pitch = rotation[0] * kPi / 360.0;
+        const double half_yaw = rotation[1] * kPi / 360.0;
+        const double half_roll = rotation[2] * kPi / 360.0;
+        const double sp = std::sin(half_pitch);
+        const double cp = std::cos(half_pitch);
+        const double sy = std::sin(half_yaw);
+        const double cy = std::cos(half_yaw);
+        const double sr = std::sin(half_roll);
+        const double cr = std::cos(half_roll);
+        return Normalize(Quat{
+            cr * sp * sy - sr * cp * cy,
+            -cr * sp * cy - sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy});
+      };
+  const auto &current_pose = extra.accessory_dynamics.Pose();
+  for (const auto &limit : extra.kawaii_limits) {
+    if (limit.driving_bone < 0 ||
+        static_cast<std::size_t>(limit.driving_bone) >=
+            extra.bind_world.size() ||
+        limit.radius <= 0.0F)
+      continue;
+    const std::size_t driver_index =
+        static_cast<std::size_t>(limit.driving_bone);
+    const auto &driver =
+        driver_index < current_pose.size()
+            ? current_pose[driver_index]
+            : extra.bind_world[driver_index];
+    const Quat driver_rotation{
+        driver[0], driver[1], driver[2], driver[3]};
+    const Vec driver_position{driver[4], driver[5], driver[6]};
+    const double driver_scale =
+        (driver[8] + driver[9] + driver[10]) / 3.0;
+    const Vec local_center =
+        driver_position +
+        Rotate(driver_rotation,
+               Vec{limit.offset_location[0], limit.offset_location[1],
+                   limit.offset_location[2]} *
+                   driver_scale);
+    const Quat local_rotation = Normalize(
+        better_pose::accessory::Multiply(
+            driver_rotation, rotator_quaternion(limit.offset_rotation)));
+    if (limit.length <= 1e-4F) {
+      if (limit.sphere_radius <= 0.0F)
+        continue;
+      const Vec center = frame.Point(local_center);
+      capsules.push_back(
+          {center, center, limit.sphere_radius,
+           better_pose::secondary::kKawaiiLimit, 0.0});
+      continue;
+    }
+    const Vec half_axis = Rotate(
+        local_rotation, {0.0, 0.0, limit.length * 0.5});
+    capsules.push_back(
+        {frame.Point(local_center - half_axis),
+         frame.Point(local_center + half_axis), limit.radius,
+         better_pose::secondary::kKawaiiLimit, 0.0});
+  }
+}
+
 void ResyncExtraMeshes(Context &context) noexcept {
   // Log the *state* even when this returns early: a silent no-op is what made the
   // previous test unreadable ("还是没有" told us nothing about which precondition
@@ -5559,6 +8324,7 @@ void BuildExtraMeshes(Context &context) noexcept {
         }
       }
     }
+    extra.bone_names = extra_names;
     if (first_name.empty())
       first_name = "(noname)";
     if (sample_name.empty())
@@ -5681,13 +8447,15 @@ void BuildExtraMeshes(Context &context) noexcept {
     // What are these meshes and how did each mapping do? Only a log can answer that
     // after a scan, and the bone names decide what is mappable at all.
     {
+      const std::string asset_name =
+          extra_asset != 0 ? ObjectNameOf(context, extra_asset) : "-";
+      extra.display_name = asset_name;
       char summary[512]{};
       std::snprintf(summary, sizeof(summary),
                     "betterpose extra mesh %llX asset %s class %s bones %u "
                     "name %u bind %u bindmean %.2fcm pos %u posmean %.1fcm",
                     static_cast<unsigned long long>(object),
-                    extra_asset != 0 ? ObjectNameOf(context, extra_asset).c_str()
-                                     : "-",
+                    asset_name.c_str(),
                     extra_asset != 0 ? ClassNameOf(context, extra_asset).c_str()
                                      : "-",
                     static_cast<unsigned>(bone_count),
@@ -5790,6 +8558,64 @@ void BuildExtraMeshes(Context &context) noexcept {
             extra.lag.assign(bone_count, std::array<double, 4>{0.0, 0.0, 0.0, 1.0});
             extra.anchor_extra = anchor;
             extra.anchor_body = extra.bone_map[anchor];
+            std::vector<std::uint32_t> attachment_subtrees(
+                bone_count, 0U);
+            for (std::uint32_t bone{}; bone != bone_count; ++bone) {
+              if (extra.bone_map[bone] !=
+                  (std::numeric_limits<std::uint32_t>::max)())
+                continue;
+              std::int32_t parent =
+                  bone < extra.parents.size() ? extra.parents[bone] : -1;
+              for (std::uint32_t guard{}; parent >= 0 && guard != bone_count;
+                   ++guard) {
+                const std::uint32_t mapped =
+                    static_cast<std::uint32_t>(parent);
+                if (mapped < extra.bone_map.size() &&
+                    extra.bone_map[mapped] !=
+                        (std::numeric_limits<std::uint32_t>::max)()) {
+                  const std::uint32_t body = extra.bone_map[mapped];
+                  const std::string body_name =
+                      body < context.bone_names.size()
+                          ? better_pose::secondary::Lower(
+                                context.bone_names[body])
+                          : std::string{};
+                  const bool structural =
+                      !body_name.empty() &&
+                      !better_pose::secondary::IsSecondary(body_name) &&
+                      !better_pose::secondary::IsOrnament(body_name) &&
+                      body_name.find("position") == std::string::npos &&
+                      body_name.find("dummy") == std::string::npos &&
+                      body_name.find("helper") == std::string::npos;
+                  if (structural) {
+                    ++attachment_subtrees[mapped];
+                    break;
+                  }
+                }
+                parent = mapped < extra.parents.size()
+                             ? extra.parents[mapped]
+                             : -1;
+              }
+            }
+            std::vector<std::uint32_t> attachment_bones;
+            for (std::uint32_t bone{}; bone != bone_count; ++bone)
+              if (attachment_subtrees[bone] != 0)
+                attachment_bones.push_back(bone);
+            std::stable_sort(
+                attachment_bones.begin(), attachment_bones.end(),
+                [&](std::uint32_t left, std::uint32_t right) {
+                  if (attachment_subtrees[left] !=
+                      attachment_subtrees[right])
+                    return attachment_subtrees[left] >
+                           attachment_subtrees[right];
+                  return left < right;
+                });
+            if (attachment_bones.empty() &&
+                extra.bone_map[anchor] !=
+                    (std::numeric_limits<std::uint32_t>::max)())
+              attachment_bones.push_back(anchor);
+            if (attachment_bones.size() > 8)
+              attachment_bones.resize(8);
+            extra.attachment_bones = std::move(attachment_bones);
             extra.used_hierarchy = true;
             drivable = true;
             mapped_total += matched;
@@ -5798,12 +8624,28 @@ void BuildExtraMeshes(Context &context) noexcept {
               joined += " ";
               joined += pair;
             }
+            std::string attachment_pairs;
+            for (const std::uint32_t extra_bone : extra.attachment_bones) {
+              attachment_pairs += " ";
+              attachment_pairs += extra.bone_names[extra_bone].empty()
+                                      ? std::to_string(extra_bone)
+                                      : extra.bone_names[extra_bone];
+              attachment_pairs += "->";
+              const std::uint32_t body = extra.bone_map[extra_bone];
+              attachment_pairs +=
+                  body < context.bone_names.size()
+                      ? context.bone_names[body]
+                      : std::to_string(body);
+            }
             LogDiagnostic(context, "betterpose extra mesh hierarchy " +
                                        std::to_string(object) + " matched " +
                                        std::to_string(matched) + "/" +
                                        std::to_string(bone_count) + " anchor " +
                                        std::to_string(anchor) + "->" +
-                                       std::to_string(extra.anchor_body) + joined);
+                                       std::to_string(extra.anchor_body) +
+                                       " attachments=" +
+                                       std::to_string(extra.attachment_bones.size()) +
+                                       attachment_pairs + joined);
           }
         }
       }
@@ -5825,8 +8667,12 @@ void BuildExtraMeshes(Context &context) noexcept {
     }
     if (extra.used_hierarchy) {
       const bool configured = extra.accessory_dynamics.Configure(extra.bind_world, extra.parents, extra_names);
+      static_cast<void>(ConfigureKawaiiPhysics(context, extra));
+      const bool final_configured =
+          configured || extra.accessory_dynamics.DrivenBones() != 0;
       LogDiagnostic(context, "betterpose accessory dynamics source=" + Hex(extra.object) +
-                             " rules=body-secondary configured=" + std::to_string(configured) + " driven_bones=" +
+                             " rules=body-secondary configured=" +
+                             std::to_string(final_configured) + " driven_bones=" +
                              std::to_string(extra.accessory_dynamics.DrivenBones()));
     }
     built.push_back(std::move(extra));
@@ -5846,12 +8692,305 @@ void BuildExtraMeshes(Context &context) noexcept {
   }
 }
 
+void ClearCollisionDebugStats(Context &context) noexcept {
+  context.collision_debug_accessories.store(0, std::memory_order_release);
+  context.collision_debug_capsules.store(0, std::memory_order_release);
+  context.collision_debug_torso.store(0, std::memory_order_release);
+  context.collision_debug_head.store(0, std::memory_order_release);
+  context.collision_debug_arms.store(0, std::memory_order_release);
+  context.collision_debug_legs.store(0, std::memory_order_release);
+  context.collision_debug_contacts.store(0, std::memory_order_release);
+  context.collision_debug_contacts_torso.store(0, std::memory_order_release);
+  context.collision_debug_contacts_head.store(0, std::memory_order_release);
+  context.collision_debug_contacts_arms.store(0, std::memory_order_release);
+  context.collision_debug_contacts_legs.store(0, std::memory_order_release);
+  context.collision_debug_corrections.store(0, std::memory_order_release);
+  context.collision_debug_probes.store(0, std::memory_order_release);
+  context.collision_debug_max_depth.store(0.0F, std::memory_order_release);
+  context.collision_debug_nearest_gap.store(
+      (std::numeric_limits<float>::infinity)(), std::memory_order_release);
+}
+
+void BuildAttachmentDrives(
+    Context::ExtraMesh &extra, const std::vector<PackedTransform> &body_pose,
+    const std::vector<Transformd> &body_bind) {
+  extra.attachment_drives.clear();
+  if (extra.attachment_bones.size() < 2 || body_bind.empty() ||
+      body_pose.size() < body_bind.size() ||
+      extra.bind_world.size() < extra.bone_count)
+    return;
+  std::uint32_t reference = extra.poseable_socket_bone;
+  if (reference >= body_bind.size())
+    reference = extra.anchor_body;
+  if (reference >= body_bind.size() || reference >= body_pose.size())
+    return;
+  const Transformd reference_delta = TransformMultiply(
+      UnpackTransform(body_pose[reference]), TransformInverse(body_bind[reference]));
+  const Transformd inverse_reference = TransformInverse(reference_delta);
+  extra.attachment_drives.reserve(extra.attachment_bones.size());
+  for (const std::uint32_t extra_bone : extra.attachment_bones) {
+    if (extra_bone >= extra.bone_map.size() ||
+        extra_bone >= extra.bind_world.size())
+      continue;
+    const std::uint32_t body_bone = extra.bone_map[extra_bone];
+    if (body_bone >= body_bind.size() || body_bone >= body_pose.size())
+      continue;
+    const Transformd body_delta = TransformMultiply(
+        UnpackTransform(body_pose[body_bone]), TransformInverse(body_bind[body_bone]));
+    const Transformd relative_delta =
+        TransformMultiply(inverse_reference, body_delta);
+    Transformd bind;
+    bind.rotation = Quatd{extra.bind_world[extra_bone][0],
+                          extra.bind_world[extra_bone][1],
+                          extra.bind_world[extra_bone][2],
+                          extra.bind_world[extra_bone][3]};
+    bind.translation = Vec3d{extra.bind_world[extra_bone][4],
+                             extra.bind_world[extra_bone][5],
+                             extra.bind_world[extra_bone][6]};
+    bind.scale = Vec3d{extra.bind_world[extra_bone][8],
+                       extra.bind_world[extra_bone][9],
+                       extra.bind_world[extra_bone][10]};
+    const Transformd wanted = TransformMultiply(relative_delta, bind);
+    PackedTransform packed{};
+    PackTransform(wanted, packed);
+    better_pose::accessory::AttachmentDrive drive;
+    drive.bone = extra_bone;
+    std::memcpy(drive.local.data(), &packed, sizeof(packed));
+    if (!std::all_of(drive.local.begin(), drive.local.end(),
+                     [](double value) { return std::isfinite(value); }))
+      continue;
+    const double dx = wanted.translation.x - bind.translation.x;
+    const double dy = wanted.translation.y - bind.translation.y;
+    const double dz = wanted.translation.z - bind.translation.z;
+    if (dx * dx + dy * dy + dz * dz > 250.0 * 250.0)
+      continue;
+    extra.attachment_drives.push_back(drive);
+  }
+  if (extra.attachment_drives.size() < 2)
+    extra.attachment_drives.clear();
+}
+
 void WriteExtraMeshes(Context &context,
                       const std::vector<PackedTransform> &packed) noexcept {
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
+  {
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t last =
+        context.extra_write_last_log_ms.load(std::memory_order_acquire);
+    if (last == 0 || now - last >= 2000) {
+      context.extra_write_last_log_ms.store(now, std::memory_order_release);
+      std::uint32_t hierarchies{};
+      std::uint32_t poseables{};
+      std::uint32_t driven_bones{};
+      std::uint32_t native_springs{};
+      std::uint32_t kawaii_nodes{};
+      std::uint32_t kawaii_limits{};
+      std::uint32_t spherical_limits{};
+      std::uint32_t box_limits{};
+      std::uint32_t planar_limits{};
+      std::uint32_t distance_links{};
+      std::uint32_t self_collision_links{};
+      std::uint32_t self_collision_contacts{};
+      std::array<std::uint32_t,
+                 better_pose::secondary::kMotionMaterialCount>
+          self_candidates_by_material{};
+      std::array<std::uint32_t,
+                 better_pose::secondary::kMotionMaterialCount>
+          self_contacts_by_material{};
+      std::uint32_t attachment_roots{};
+      std::uint32_t multi_attachment{};
+      std::array<std::uint32_t,
+                 better_pose::secondary::kMotionMaterialCount>
+          materials{};
+      std::string component_summary;
+      for (auto &extra : context.extra_meshes) {
+        hierarchies += extra.used_hierarchy ? 1U : 0U;
+        poseables += extra.poseable_active ? 1U : 0U;
+        if (!extra.used_hierarchy)
+          continue;
+        driven_bones +=
+            static_cast<std::uint32_t>(extra.accessory_dynamics.DrivenBones());
+        native_springs += extra.kawaii_spring_count;
+        kawaii_nodes += extra.kawaii_configured ? 1U : 0U;
+        kawaii_limits +=
+            static_cast<std::uint32_t>(extra.kawaii_limits.size());
+        spherical_limits += extra.kawaii_spherical_limits;
+        box_limits += extra.kawaii_box_limits;
+        planar_limits += extra.kawaii_planar_limits;
+        distance_links += static_cast<std::uint32_t>(
+            extra.accessory_dynamics.DistanceConstraintCount());
+        self_collision_contacts += static_cast<std::uint32_t>(
+            extra.accessory_dynamics.SelfCollisionCount());
+        self_collision_links += static_cast<std::uint32_t>(
+            extra.accessory_dynamics.SelfCollisionLinkCount());
+        for (std::size_t material{};
+             material != better_pose::secondary::kMotionMaterialCount;
+             ++material) {
+          const auto value =
+              static_cast<better_pose::secondary::MotionMaterial>(material);
+          self_candidates_by_material[material] +=
+              static_cast<std::uint32_t>(
+                  extra.accessory_dynamics
+                      .SelfCollisionCandidateCount(value));
+          self_contacts_by_material[material] +=
+              static_cast<std::uint32_t>(
+                  extra.accessory_dynamics.SelfCollisionContactCount(value));
+        }
+        attachment_roots +=
+            static_cast<std::uint32_t>(extra.attachment_bones.size());
+        multi_attachment += extra.attachment_bones.size() >= 2 ? 1U : 0U;
+        std::array<std::uint32_t,
+                   better_pose::secondary::kMotionMaterialCount>
+            component_materials{};
+        for (std::size_t index{};
+             index != better_pose::secondary::kMotionMaterialCount; ++index) {
+          component_materials[index] = static_cast<std::uint32_t>(
+              extra.accessory_dynamics.MaterialBoneCount(
+                  static_cast<better_pose::secondary::MotionMaterial>(
+                      index)));
+          materials[index] += component_materials[index];
+        }
+        if (component_summary.size() < 1800) {
+          std::string roots;
+          for (std::size_t index{}; index < extra.attachment_bones.size();
+               ++index) {
+            const std::uint32_t extra_bone = extra.attachment_bones[index];
+            const std::uint32_t body =
+                extra_bone < extra.bone_map.size()
+                    ? extra.bone_map[extra_bone]
+                    : (std::numeric_limits<std::uint32_t>::max)();
+            if (index != 0)
+              roots += ", ";
+            roots += body < context.bone_names.size()
+                         ? context.bone_names[body]
+                         : std::to_string(extra_bone);
+            if (index == 3 && extra.attachment_bones.size() > 4) {
+              roots += ", ...";
+              break;
+            }
+          }
+          char component[420]{};
+          std::snprintf(
+              component, sizeof(component),
+              "%s | driven %u | roots %zu [%s] | hair %u ribbon %u belt %u "
+              "accessory %u cloth %u sleeve %u\n",
+              extra.display_name.empty() ? Hex(extra.object).c_str()
+                                         : extra.display_name.c_str(),
+              static_cast<unsigned>(extra.accessory_dynamics.DrivenBones()),
+              extra.attachment_bones.size(), roots.c_str(),
+              component_materials[better_pose::secondary::MotionMaterialIndex(
+                  better_pose::secondary::MotionMaterial::Hair)],
+              component_materials[better_pose::secondary::MotionMaterialIndex(
+                  better_pose::secondary::MotionMaterial::Ribbon)],
+              component_materials[better_pose::secondary::MotionMaterialIndex(
+                  better_pose::secondary::MotionMaterial::Belt)],
+              component_materials[better_pose::secondary::MotionMaterialIndex(
+                  better_pose::secondary::MotionMaterial::Accessory)],
+              component_materials[better_pose::secondary::MotionMaterialIndex(
+                  better_pose::secondary::MotionMaterial::Cloth)],
+              component_materials[better_pose::secondary::MotionMaterialIndex(
+                  better_pose::secondary::MotionMaterial::Sleeve)]);
+          component_summary += component;
+        }
+      }
+      context.secondary_debug_components.store(hierarchies,
+                                                std::memory_order_release);
+      context.secondary_debug_driven_bones.store(
+          driven_bones, std::memory_order_release);
+      context.secondary_debug_native_springs.store(
+          native_springs, std::memory_order_release);
+      context.secondary_debug_kawaii_nodes.store(
+          kawaii_nodes, std::memory_order_release);
+      context.secondary_debug_kawaii_limits.store(
+          kawaii_limits, std::memory_order_release);
+      context.secondary_debug_kawaii_spherical_limits.store(
+          spherical_limits, std::memory_order_release);
+      context.secondary_debug_kawaii_box_limits.store(
+          box_limits, std::memory_order_release);
+      context.secondary_debug_kawaii_planar_limits.store(
+          planar_limits, std::memory_order_release);
+      context.secondary_debug_distance_links.store(
+          distance_links, std::memory_order_release);
+      context.secondary_debug_self_collision_contacts.store(
+          self_collision_contacts, std::memory_order_release);
+      context.secondary_debug_self_collision_links.store(
+          self_collision_links, std::memory_order_release);
+      for (std::size_t material{};
+           material != better_pose::secondary::kMotionMaterialCount;
+           ++material) {
+        context.secondary_debug_self_candidates_by_material[material].store(
+            self_candidates_by_material[material],
+            std::memory_order_release);
+        context.secondary_debug_self_contacts_by_material[material].store(
+            self_contacts_by_material[material], std::memory_order_release);
+      }
+      context.secondary_debug_attachment_roots.store(
+          attachment_roots, std::memory_order_release);
+      context.secondary_debug_multi_attachment.store(
+          multi_attachment, std::memory_order_release);
+      for (std::size_t index{};
+           index != better_pose::secondary::kMotionMaterialCount; ++index)
+        context.secondary_debug_materials[index].store(
+            materials[index], std::memory_order_release);
+      {
+        std::lock_guard<std::mutex> debug_lock(
+            context.secondary_debug_mutex);
+        context.secondary_debug_summary = std::move(component_summary);
+      }
+      char message[256]{};
+      std::snprintf(message, sizeof(message),
+                    "betterpose extra write meshes=%u hierarchy=%u poseable=%u "
+                    "driven=%u native=%u kawaii=%u/%u extra_limits=%u/%u/%u "
+                    "distance=%u self=%u/%u attachments=%u multi=%u "
+                    "body=%u owner=%llX",
+                    static_cast<unsigned>(context.extra_meshes.size()), hierarchies,
+                    poseables, driven_bones, native_springs, kawaii_nodes,
+                    kawaii_limits, spherical_limits, box_limits, planar_limits,
+                    distance_links, self_collision_links,
+                    self_collision_contacts, attachment_roots, multi_attachment,
+                    static_cast<unsigned>(packed.size()),
+                    static_cast<unsigned long long>(context.extra_mesh_owner));
+      LogDiagnostic(context, message);
+    }
+  }
   if (context.extra_meshes.empty() ||
-      context.extra_mesh_owner != context.runtime.mesh)
+      context.extra_mesh_owner != context.runtime.mesh) {
+    ClearCollisionDebugStats(context);
+    context.secondary_debug_components.store(0, std::memory_order_release);
+    context.secondary_debug_driven_bones.store(0, std::memory_order_release);
+    context.secondary_debug_native_springs.store(0, std::memory_order_release);
+    context.secondary_debug_kawaii_nodes.store(0, std::memory_order_release);
+    context.secondary_debug_kawaii_limits.store(0, std::memory_order_release);
+    context.secondary_debug_kawaii_spherical_limits.store(
+        0, std::memory_order_release);
+    context.secondary_debug_kawaii_box_limits.store(
+        0, std::memory_order_release);
+    context.secondary_debug_kawaii_planar_limits.store(
+        0, std::memory_order_release);
+    context.secondary_debug_distance_links.store(
+        0, std::memory_order_release);
+    context.secondary_debug_distance_corrections.store(
+        0, std::memory_order_release);
+    context.secondary_debug_self_collision_contacts.store(
+        0, std::memory_order_release);
+    context.secondary_debug_self_collision_links.store(
+        0, std::memory_order_release);
+    for (auto &count : context.secondary_debug_self_candidates_by_material)
+      count.store(0, std::memory_order_release);
+    for (auto &count : context.secondary_debug_self_contacts_by_material)
+      count.store(0, std::memory_order_release);
+    context.secondary_debug_attachment_roots.store(
+        0, std::memory_order_release);
+    context.secondary_debug_multi_attachment.store(
+        0, std::memory_order_release);
+    for (auto &count : context.secondary_debug_materials)
+      count.store(0, std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> debug_lock(context.secondary_debug_mutex);
+      context.secondary_debug_summary.clear();
+    }
     return;
+  }
   std::vector<PackedTransform> out;
   // The body's bind pose, needed to turn the anchor's current transform into a delta.
   // Read once per call and only when some mesh actually needs it.
@@ -5863,12 +9002,27 @@ void WriteExtraMeshes(Context &context,
       break;
     }
   }
+  const auto secondary_tuning = context.secondary_tuning.Load();
   for (auto &extra : context.extra_meshes) {
     if (extra.component_space_data == 0 || extra.bone_count == 0)
       continue;
-    if (context.poseable_prototype_enabled && extra.used_hierarchy) {
-      const bool ready = EnsurePoseableAccessory(context, extra);
-      if (ready && !extra.accessory_dynamics.CollisionsConfigured() &&
+    const std::uint64_t kawaii_now = GetTickCount64();
+    if (extra.used_hierarchy && !extra.kawaii_configured &&
+        (!extra.kawaii_attempted ||
+         extra.kawaii_retry_after_ms == 0 ||
+         kawaii_now >= extra.kawaii_retry_after_ms)) {
+      static_cast<void>(EnsureExtraPoseAnimationMode(context, extra, false));
+      static_cast<void>(ConfigureKawaiiPhysics(context, extra));
+    }
+    static_cast<void>(EnsureExtraPoseAnimationMode(
+        context, extra,
+        context.motion_loaded.load(std::memory_order_acquire) &&
+            context.motion_playing.load(std::memory_order_acquire)));
+    extra.accessory_dynamics.SetTuning(secondary_tuning);
+    if (context.poseable_prototype_enabled && extra.used_hierarchy &&
+        EnsurePoseableAccessory(context, extra)) {
+      BuildAttachmentDrives(extra, packed, body_bind);
+      if (!extra.accessory_dynamics.CollisionsConfigured() &&
           extra.poseable_socket_bone < body_bind.size()) {
         std::vector<better_pose::accessory::Bone> collision_bind(body_bind.size());
         for (std::size_t i{}; i != body_bind.size(); ++i) {
@@ -5926,6 +9080,24 @@ void WriteExtraMeshes(Context &context,
                                    " masked_torso=" +
                                    std::to_string(extra.accessory_dynamics.MaskedBones(
                                        better_pose::secondary::kCollideTorso)) +
+                                   " masked_head=" +
+                                   std::to_string(extra.accessory_dynamics.MaskedBones(
+                                       better_pose::secondary::kCollideHead)) +
+                                   " masked_arms=" +
+                                   std::to_string(extra.accessory_dynamics.MaskedBones(
+                                       better_pose::secondary::kCollideArms)) +
+                                   " capsules_torso=" +
+                                   std::to_string(extra.accessory_dynamics.BodyCapsuleCount(
+                                       better_pose::secondary::kCollideTorso)) +
+                                   " capsules_head=" +
+                                   std::to_string(extra.accessory_dynamics.BodyCapsuleCount(
+                                       better_pose::secondary::kCollideHead)) +
+                                   " capsules_arms=" +
+                                   std::to_string(extra.accessory_dynamics.BodyCapsuleCount(
+                                       better_pose::secondary::kCollideArms)) +
+                                   " capsules_legs=" +
+                                   std::to_string(extra.accessory_dynamics.BodyCapsuleCount(
+                                       better_pose::secondary::kCollideLegs)) +
                                    " leg_radii=" + (radii.empty() ? "none" : radii) +
                                    " leg_clearances=" +
                                    (clearances.empty() ? "none" : clearances) +
@@ -5934,10 +9106,86 @@ void WriteExtraMeshes(Context &context,
                                    "cm overlap=" +
                                    (pair_measured && tightest_pair < 0.0 ? "1" : "0"));
       }
-      extra.poseable_last_write_ok = ready && DrivePoseableSocketPose(context, extra, packed);
+      extra.poseable_last_write_ok =
+          DrivePoseableSocketPose(context, extra, packed);
       // The prototype owns the replacement only. Do not deform the hidden
       // source as well, or reapply a second body delta to individual hair bones.
       continue;
+    }
+    if (extra.used_hierarchy && extra.accessory_dynamics.DrivenBones() != 0 &&
+        extra.bind_world.size() == extra.bone_count) {
+      BuildAttachmentDrives(extra, packed, body_bind);
+      Transformd accessory_world;
+      const bool have_accessory_world =
+          ReadMeshComponentToWorld(context, extra.object, accessory_world);
+      {
+        using namespace better_pose::accessory;
+        Frame frame{};
+        if (have_accessory_world) {
+          frame = {
+              {accessory_world.translation.x, accessory_world.translation.y,
+               accessory_world.translation.z},
+              {accessory_world.rotation.x, accessory_world.rotation.y,
+               accessory_world.rotation.z, accessory_world.rotation.w},
+              accessory_world.scale.x};
+        }
+        const std::uint8_t collision_masks =
+            CollisionMasksForExtra(context, extra);
+        std::vector<Capsule> capsules;
+        Transformd body_world;
+        if (have_accessory_world && collision_masks != 0 &&
+            ReadMeshComponentToWorld(context, context.runtime.mesh,
+                                     body_world)) {
+          std::vector<std::array<double, 3>> body_points(packed.size());
+          for (std::size_t bone{}; bone != packed.size(); ++bone) {
+            const Transformd world =
+                TransformMultiply(body_world, UnpackTransform(packed[bone]));
+            body_points[bone] = {world.translation.x, world.translation.y,
+                                 world.translation.z};
+          }
+          capsules = FallbackCollisionCapsules(
+              context, collision_masks, packed.size(), body_points);
+        }
+        if (extra.kawaii_component_space && !extra.kawaii_limits.empty() &&
+            better_pose::secondary::IsDrapedRibbon(extra.kawaii_root))
+          capsules.clear();
+        if (secondary_tuning.native_limits && have_accessory_world)
+          AppendKawaiiLimits(extra, frame, capsules);
+        const std::span<const AttachmentDrive> attachment_drives(
+            extra.attachment_drives.data(), extra.attachment_drives.size());
+        const auto &sampled = extra.accessory_dynamics.Sample(
+            frame, context.motion_seconds.load(std::memory_order_acquire),
+            context.motion_seek_serial.load(std::memory_order_acquire),
+            context.motion_loaded.load(std::memory_order_acquire) &&
+                context.motion_playing.load(std::memory_order_acquire),
+            capsules, attachment_drives);
+        out.assign(extra.bone_count, PackedTransform{});
+        for (std::uint32_t bone{}; bone != extra.bone_count; ++bone) {
+          Transformd value;
+          value.rotation =
+              Quatd{sampled[bone][0], sampled[bone][1], sampled[bone][2],
+                    sampled[bone][3]};
+          value.translation =
+              Vec3d{sampled[bone][4], sampled[bone][5], sampled[bone][6]};
+          value.scale = Vec3d{sampled[bone][8], sampled[bone][9],
+                              sampled[bone][10]};
+          PackTransform(value, out[bone]);
+        }
+        if (context.collision_debug_enabled.load(std::memory_order_acquire)) {
+          extra.accessory_dynamics.PublishCollisionDebugCapsules(capsules);
+        }
+        extra.lag_ready = true;
+        extra.buffers_modified = true;
+        const auto *mesh_bytes =
+            reinterpret_cast<const std::uint8_t *>(out.data());
+        const auto mesh_size = out.size() * sizeof(PackedTransform);
+        static_cast<void>(WriteBytes(context, extra.component_space_data,
+                                     mesh_bytes, mesh_size));
+        static_cast<void>(WriteBytes(context, extra.bone_space_data,
+                                     mesh_bytes, mesh_size));
+        static_cast<void>(ForceMeshObjectUpdate(context, extra.object));
+        continue;
+      }
     }
     if (extra.used_hierarchy && extra.bind_locals.size() == extra.bone_count &&
         extra.parents.size() == extra.bone_count &&
@@ -6055,6 +9303,7 @@ bool RestoreExtraMeshes(Context &context) noexcept {
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
   DestroyPoseableAccessories(context);
   for (auto &extra : context.extra_meshes) {
+    static_cast<void>(EnsureExtraPoseAnimationMode(context, extra, false));
     if (extra.buffers_modified && extra.component_space_data != 0 && !extra.saved_component.empty())
       static_cast<void>(WriteBytes(context, extra.component_space_data,
                                    extra.saved_component.data(),
@@ -6065,6 +9314,7 @@ bool RestoreExtraMeshes(Context &context) noexcept {
                                    extra.saved_bone.size()));
     extra.buffers_modified = false;
   }
+  ClearCollisionDebugStats(context);
   return true;
 }
 
@@ -6074,9 +9324,31 @@ bool DropExtraMeshes(Context &context) noexcept {  // Put the original buffers b
   static_cast<void>(RestoreExtraMeshes(context));
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
   context.extra_meshes.clear();
+  ClearCollisionDebugStats(context);
   ++context.extra_drop_count;
   context.extra_mesh_owner = 0;
   context.extra_mesh_mapped = 0;
+  context.secondary_debug_components.store(0, std::memory_order_release);
+  context.secondary_debug_driven_bones.store(0, std::memory_order_release);
+  context.secondary_debug_native_springs.store(0, std::memory_order_release);
+  context.secondary_debug_kawaii_nodes.store(0, std::memory_order_release);
+  context.secondary_debug_kawaii_limits.store(0, std::memory_order_release);
+  context.secondary_debug_kawaii_spherical_limits.store(
+      0, std::memory_order_release);
+  context.secondary_debug_kawaii_box_limits.store(0, std::memory_order_release);
+  context.secondary_debug_kawaii_planar_limits.store(
+      0, std::memory_order_release);
+  context.secondary_debug_distance_links.store(0, std::memory_order_release);
+  context.secondary_debug_distance_corrections.store(
+      0, std::memory_order_release);
+  context.secondary_debug_self_collision_contacts.store(
+      0, std::memory_order_release);
+  context.secondary_debug_self_collision_links.store(
+      0, std::memory_order_release);
+  for (auto &count : context.secondary_debug_self_candidates_by_material)
+    count.store(0, std::memory_order_release);
+  for (auto &count : context.secondary_debug_self_contacts_by_material)
+    count.store(0, std::memory_order_release);
   return true;
 }
 
@@ -6254,6 +9526,78 @@ bool EnsurePoseAnimationMode(Context &context, const bool enabled) noexcept {
   if (!Write(context, state.mesh + kMeshAnimationModeOffset, custom))
     return false;
   state.animation_mode_applied = true;
+  return true;
+}
+
+bool EnsureExtraPoseAnimationMode(Context &context,
+                                  Context::ExtraMesh &extra,
+                                  const bool enabled) noexcept {
+  if (extra.object == 0)
+    return false;
+  if (!enabled) {
+    if (extra.original_animation_mode_saved && extra.animation_mode_paused) {
+      const std::uint8_t original = extra.original_animation_mode;
+      if (!Write(context, extra.object + kMeshAnimationModeOffset, original) ||
+          !Write(context, extra.object + kMeshAnimationFlagsOffset,
+                 extra.original_animation_flags))
+        return false;
+      extra.animation_mode_paused = false;
+      extra.original_animation_mode_saved = false;
+      extra.original_animation_mode = 0;
+      extra.original_animation_flags = 0;
+      LogDiagnostic(context, "betterpose accessory animation resumed source=" +
+                                 Hex(extra.object));
+    }
+    return true;
+  }
+  if (!extra.original_animation_mode_saved) {
+    std::uint8_t original{};
+    std::uint8_t original_flags{};
+    if (!Read(context, extra.object + kMeshAnimationModeOffset, original) ||
+        !Read(context, extra.object + kMeshAnimationFlagsOffset,
+              original_flags))
+      return false;
+    extra.original_animation_mode = original;
+    extra.original_animation_flags = original_flags;
+    extra.original_animation_mode_saved = true;
+    extra.animation_mode_paused = false;
+  }
+  if (extra.animation_mode_paused) {
+    const std::uint8_t custom = kAnimationModeCustom;
+    std::uint8_t paused_flags = extra.original_animation_flags;
+    paused_flags |= static_cast<std::uint8_t>(
+        1U << kAnimationFlagPauseAnimsBit);
+    paused_flags &= static_cast<std::uint8_t>(
+        ~(1U << kAnimationFlagEnableAnimationBit));
+    return Write(context, extra.object + kMeshAnimationModeOffset, custom) &&
+           Write(context, extra.object + kMeshAnimationFlagsOffset,
+                 paused_flags);
+  }
+
+  struct SetAnimationModeParameters {
+    std::uint8_t mode;
+    std::uint8_t force_init;
+  };
+  const SetAnimationModeParameters parameters{kAnimationModeCustom, 0};
+  std::string detail;
+  if (!CallVirtualUFunction(context, extra.object,
+                            kFunctionSetAnimationModePath, &parameters,
+                            sizeof(parameters), detail)) {
+    const std::uint8_t custom = kAnimationModeCustom;
+    if (!Write(context, extra.object + kMeshAnimationModeOffset, custom))
+      return false;
+  }
+  std::uint8_t paused_flags = extra.original_animation_flags;
+  paused_flags |= static_cast<std::uint8_t>(
+      1U << kAnimationFlagPauseAnimsBit);
+  paused_flags &= static_cast<std::uint8_t>(
+      ~(1U << kAnimationFlagEnableAnimationBit));
+  if (!Write(context, extra.object + kMeshAnimationFlagsOffset,
+             paused_flags))
+    return false;
+  extra.animation_mode_paused = true;
+  LogDiagnostic(context, "betterpose accessory animation paused source=" +
+                             Hex(extra.object));
   return true;
 }
 
@@ -6619,6 +9963,8 @@ class MusicPlayer {
         path_ = utf8_path;
         name_ = file_name;
         muted_ = false;
+        applied_speed_ = 1.0;
+        speed_supported_ = true;
         // Pin the time format: `play ... from`, `position` and `length` then all speak milliseconds.
         // Leaving it to the driver's default is how a seek ends up interpreted in another unit --
         // and 0 is the only position that means the same thing in every unit.
@@ -6670,6 +10016,8 @@ class MusicPlayer {
     timing_note_.clear();
     frame_table_ = Mp3FrameTable{};
     device_rate_ = 0.0;
+    applied_speed_ = 1.0;
+    speed_supported_ = true;
   }
 
   bool Play(std::string *error) {
@@ -6745,6 +10093,24 @@ class MusicPlayer {
                    error);
   }
   int Volume() const { return volume_percent_; }
+
+  bool SetSpeed(const double speed, std::string *error) {
+    if (alias_.empty())
+      return true;
+    if (!speed_supported_)
+      return false;
+    const double value = std::clamp(speed, 0.25, 2.0);
+    if (std::abs(value - applied_speed_) <= 1e-4)
+      return true;
+    if (!Command(L"set " + Utf8ToWide(alias_) + L" speed " +
+                     std::to_wstring(static_cast<int>(std::lround(value * 1000.0))),
+                 error)) {
+      speed_supported_ = false;
+      return false;
+    }
+    applied_speed_ = value;
+    return true;
+  }
 
   double Position() const {
     long long milliseconds{};
@@ -6851,6 +10217,8 @@ class MusicPlayer {
   long long origin_device_ms_ = 0;
   bool muted_{};
   int volume_percent_ = 100;
+  double applied_speed_ = 1.0;
+  bool speed_supported_ = true;
 };
 
 // One player per plugin instance. **The game tick thread owns it**, because MCI does not share a
@@ -6874,6 +10242,7 @@ std::atomic_bool g_music_opened{false};
 std::atomic_bool g_music_playing{false};
 std::atomic<double> g_music_position{0.0};
 std::atomic<double> g_music_length{0.0};
+std::atomic_bool g_music_speed_sync{true};
 // Auto-pairing (find the song next to the motion) runs on the tick too, so this remembers the
 // motion it was tried for.
 std::string g_music_paired_for;
@@ -7007,6 +10376,26 @@ void StepMusic(Context &context, const double delta_seconds) noexcept {
 
   // ---- follow -------------------------------------------------------------------------------
   const bool motion_plays = context.motion_playing.load(std::memory_order_acquire);
+  const double motion_speed =
+      std::clamp(static_cast<double>(context.motion_speed.load(std::memory_order_acquire)),
+                 0.25, 2.0);
+  static double logged_music_speed = 1.0;
+  std::string speed_error;
+  if (!g_music.SetSpeed(motion_speed, &speed_error)) {
+    g_music_speed_sync.store(false, std::memory_order_release);
+    if (!speed_error.empty() && speed_error != g_music_error) {
+      g_music_error = speed_error;
+      LogDiagnostic(context, "betterpose music speed failed: " + speed_error);
+    }
+  } else {
+    g_music_speed_sync.store(true, std::memory_order_release);
+    if (std::abs(logged_music_speed - motion_speed) > 1e-4) {
+      logged_music_speed = motion_speed;
+      char line[96]{};
+      std::snprintf(line, sizeof(line), "betterpose music speed %.2fx", motion_speed);
+      LogDiagnostic(context, line);
+    }
+  }
   const double want = context.motion_display_seconds.load(std::memory_order_acquire);
   const double lead = kMusicLeadSeconds;
   const double target = want + lead;
@@ -7035,7 +10424,8 @@ void StepMusic(Context &context, const double delta_seconds) noexcept {
   // has to go there) and a track that is not playing when the motion is. Drift is no longer one of
   // them -- it is corrected by nudging the *animation* clock in UpdateRuntime instead, because a
   // rate difference cannot be fixed by jumping the audio, only made audible.
-  if (motion_plays && (seek_ready || (!playing && since_resync >= kMusicResyncInterval))) {
+  if (motion_plays &&
+      (seek_ready || (!playing && since_resync >= kMusicResyncInterval))) {
     if (!g_music.PlayFrom(target, &g_music_error)) {
       LogDiagnostic(context, "betterpose music resync failed: " + g_music_error);
     } else {
@@ -7139,6 +10529,19 @@ struct PoseFileTaskData final {
   // the source motion.
   std::string skeleton_document;
   std::string reference_document;
+  std::map<std::string, std::string> manual_mappings;
+  std::vector<better_pose::mmd2bip::ManualParentMapping>
+      manual_parent_mappings;
+  std::vector<better_pose::mmd2bip::ManualFingerControl>
+      manual_finger_controls;
+  std::vector<better_pose::mmd2bip::ManualArmIkControl>
+      manual_arm_ik_controls;
+  std::vector<better_pose::mmd2bip::SecondaryBoneOverride>
+      secondary_bone_overrides;
+  std::vector<better_pose::mmd2bip::KawaiiCapsuleLimit>
+      kawaii_capsule_limits;
+  std::set<std::string> ignored_tracks;
+  int reference_mode{-1};
   std::string output_path;
 };
 
@@ -7169,12 +10572,14 @@ std::string ModuleDirectory() noexcept {
   return WideToUtf8(buffer.substr(0, slash));
 }
 
-std::string ReferenceBoneTablePath(bool unity_reference) noexcept {
+std::string ReferenceBoneTablePath(const int mode) noexcept {
   const std::string directory = ModuleDirectory();
   if (directory.empty())
     return std::string();
-  return directory + (unity_reference ? "\\data\\reference-miku-unity.json"
-                                      : "\\data\\reference-pmx.json");
+  if (mode == 2)
+    return directory + "\\data\\reference-endfield-standard-a.json";
+  return directory + (mode == 1 ? "\\data\\reference-miku-unity.json"
+                                : "\\data\\reference-pmx.json");
 }
 
 void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
@@ -7259,6 +10664,169 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
                               std::string("motion load failed: ") + error.what());
         }
       }
+    } else if (data->action == 6) {
+      const auto inspect_started = std::chrono::steady_clock::now();
+      SetReflectionStatus(*context, "VMD inspect running: parsing tracks");
+      std::ifstream vmd(Utf8ToWide(data->path), std::ios::binary);
+      if (!vmd) {
+        SetReflectionStatus(*context, "VMD inspect failed: cannot open file");
+        delete data;
+        return;
+      }
+      std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(vmd)),
+                                      std::istreambuf_iterator<char>());
+      if (vmd.bad() || bytes.empty()) {
+        SetReflectionStatus(*context, "VMD inspect failed: unreadable file");
+        delete data;
+        return;
+      }
+      auto inspection =
+          data->skeleton_document.empty() || data->reference_document.empty()
+              ? better_pose::mmd2bip::AnalyzeVmdCompatibility(bytes)
+              : better_pose::mmd2bip::AnalyzeVmdCompatibilityForReference(
+                    bytes, data->reference_document,
+                    data->skeleton_document, data->manual_mappings,
+                    data->ignored_tracks,
+                    data->reference_mode,
+                    data->manual_parent_mappings,
+                    data->manual_finger_controls,
+                    data->manual_arm_ik_controls);
+      if (!inspection.ok) {
+        SetReflectionStatus(*context, "VMD inspect failed: " + inspection.error);
+        delete data;
+        return;
+      }
+      const auto inspect_elapsed = std::chrono::duration_cast<
+          std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - inspect_started);
+      if (!inspection.reference_mapping_ready &&
+          inspection.reference_mapping_error.empty()) {
+        inspection.reference_mode = data->reference_mode;
+        inspection.reference_mapping_error =
+            data->skeleton_document.empty()
+                ? "current character skeleton unavailable"
+                : "selected reference source unavailable";
+      }
+      if (inspection.reference_mapping_ready) {
+        bool pruned = false;
+        {
+          std::lock_guard<std::mutex> lock(
+              context->motion_mapping_mutex);
+          for (const auto &issue : inspection.mapping_issues) {
+            if (issue.reason ==
+                better_pose::mmd2bip::VmdCompatibilityReport::
+                    MappingIssueReason::MissingTarget) {
+              if (context->manual_motion_mappings.erase(issue.source) != 0)
+                pruned = true;
+              const auto before =
+                  context->manual_motion_parents.size();
+              context->manual_motion_parents.erase(
+                  std::remove_if(
+                      context->manual_motion_parents.begin(),
+                      context->manual_motion_parents.end(),
+                      [&issue](const auto &mapping) {
+                        return mapping.source == issue.source &&
+                               mapping.target == issue.target;
+                      }),
+                  context->manual_motion_parents.end());
+              pruned |= before != context->manual_motion_parents.size();
+              if (issue.target == "Arm IK") {
+                const auto arm_before =
+                    context->manual_motion_arm_ik_controls.size();
+                context->manual_motion_arm_ik_controls.erase(
+                    std::remove_if(
+                        context->manual_motion_arm_ik_controls.begin(),
+                        context->manual_motion_arm_ik_controls.end(),
+                        [&issue](const auto &control) {
+                          return control.source == issue.source;
+                        }),
+                    context->manual_motion_arm_ik_controls.end());
+                pruned |=
+                    arm_before !=
+                    context->manual_motion_arm_ik_controls.size();
+              }
+            }
+          }
+        }
+        if (pruned) {
+          context->pose_settings_dirty.store(
+              true, std::memory_order_release);
+          context->pose_file_action_requested.store(
+              6, std::memory_order_release);
+        }
+      }
+      {
+        std::string sample;
+        const std::size_t shown =
+            (std::min)(inspection.unmapped_tracks.size(), std::size_t{24});
+        for (std::size_t index{}; index != shown; ++index) {
+          if (!sample.empty())
+            sample += ", ";
+          sample += inspection.unmapped_tracks[index].name;
+        }
+        if (inspection.unmapped_tracks.size() > shown)
+          sample += ", ...";
+        LogDiagnostic(
+            *context,
+            "betterpose VMD inspect unmapped " +
+                std::to_string(inspection.unmapped_tracks.size()) +
+                (sample.empty() ? std::string() : ": " + sample));
+        if (inspection.reference_mapping_ready) {
+          std::string unresolved_sample;
+          const std::size_t unresolved_shown = (std::min)(
+              inspection.reference_unmapped_tracks.size(), std::size_t{24});
+          for (std::size_t index{}; index != unresolved_shown; ++index) {
+            if (!unresolved_sample.empty())
+              unresolved_sample += ", ";
+            unresolved_sample +=
+                inspection.reference_unmapped_tracks[index].name;
+          }
+          if (inspection.reference_unmapped_tracks.size() > unresolved_shown)
+            unresolved_sample += ", ...";
+          LogDiagnostic(
+              *context,
+              "betterpose VMD reference mapping elapsedMs=" +
+                  std::to_string(inspect_elapsed.count()) + " mode=" +
+                  std::to_string(inspection.reference_mode) + " mapped=" +
+                  std::to_string(inspection.reference_mapped_tracks) +
+                  " targets=" +
+                  std::to_string(inspection.reference_mapped_targets) +
+                  " unmapped=" +
+                  std::to_string(inspection.reference_unmapped_tracks.size()) +
+                  " ignored=" +
+                  std::to_string(inspection.ignored_reference_tracks.size()) +
+                  " issues=" +
+                  std::to_string(inspection.mapping_issues.size()) +
+                  (unresolved_sample.empty()
+                       ? std::string()
+                       : ": " + unresolved_sample));
+          SetReflectionStatus(
+              *context,
+              "VMD inspected in " +
+                  std::to_string(inspect_elapsed.count()) +
+                  " ms: mapped " +
+                  std::to_string(inspection.reference_mapped_tracks) +
+                  ", unresolved " +
+                  std::to_string(
+                      inspection.reference_unmapped_tracks.size()));
+        } else if (!inspection.reference_mapping_error.empty()) {
+          LogDiagnostic(
+              *context, "betterpose VMD reference mapping unavailable: " +
+                            inspection.reference_mapping_error);
+          SetReflectionStatus(
+              *context,
+              "VMD inspected in " +
+                  std::to_string(inspect_elapsed.count()) +
+                  " ms; reference audit unavailable");
+        }
+      }
+      {
+        std::lock_guard<std::mutex> lock(context->motion_inspection_mutex);
+        context->motion_inspection = std::move(inspection);
+        context->motion_inspection_path = data->path;
+      }
+      if (!inspection.reference_mapping_ready)
+        SetReflectionStatus(*context, "VMD inspected");
     } else if (data->action == 5) {
       // VMD -> better-pose motion, entirely in process: the Python converter that produced
       // the accepted files was ported for exactly this, and the port is verified against
@@ -7279,11 +10847,22 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
       better_pose::mmd2bip::Input input;
       input.vmd_path = data->path;
       input.pmx_path = ReferenceBoneTablePath(
-          context->motion_reference_unity.load(std::memory_order_acquire));
+          context->motion_reference_mode.load(std::memory_order_acquire));
       input.skeleton_path = "";
       input.skeleton_json = data->skeleton_document;
       input.reference_pmx_json = data->reference_document;
       input.vmd_bytes = std::move(bytes);
+      input.manual_mappings = data->manual_mappings;
+      input.manual_parent_mappings = data->manual_parent_mappings;
+      input.manual_finger_controls = data->manual_finger_controls;
+      input.manual_arm_ik_controls = data->manual_arm_ik_controls;
+      input.secondary_bone_overrides = data->secondary_bone_overrides;
+      input.kawaii_capsule_limits = data->kawaii_capsule_limits;
+      input.ignored_tracks = data->ignored_tracks;
+      input.dynamics_tuning = context->secondary_tuning.Load();
+      const int ik_mode =
+          std::clamp(context->motion_ik_mode.load(std::memory_order_acquire), 0, 2);
+      input.ik_mode = static_cast<better_pose::mmd2bip::IkMode>(ik_mode);
       // These three were player-facing debug toggles; they are part of the conversion now: solve
       // the VMD's IK (a motion can drive the legs purely through 左足ＩＫ -- rigoutput.vmd has no
       // knee tracks at all), carry the hip rotation on the pelvis, and place the body from the
@@ -7296,6 +10875,26 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
         SetReflectionStatus(*context, "motion convert failed: " + result.error);
         delete data;
         return;
+      }
+      context->main_distance_links.store(
+          result.distance_constraint_links, std::memory_order_release);
+      context->main_distance_corrections.store(
+          result.distance_constraint_corrections,
+          std::memory_order_release);
+      context->main_self_collision_contacts.store(
+          result.self_collision_contacts, std::memory_order_release);
+      context->main_self_collision_corrections.store(
+          result.self_collision_corrections, std::memory_order_release);
+      context->main_self_collision_links.store(
+          result.self_collision_links, std::memory_order_release);
+      for (std::size_t index{};
+           index != better_pose::secondary::kMotionMaterialCount; ++index) {
+        context->main_self_candidates_by_material[index].store(
+            result.self_collision_candidates_by_material[index],
+            std::memory_order_release);
+        context->main_self_contacts_by_material[index].store(
+            result.self_collision_contacts_by_material[index],
+            std::memory_order_release);
       }
       {
         std::ofstream out(Utf8ToWide(data->output_path), std::ios::binary);
@@ -7315,7 +10914,11 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
       }
       LogDiagnostic(*context, "betterpose convert " + result.report);
       try {
-        if (LoadMotionDocument(*context, result.motion_json, data->output_path, data->motion_load_epoch)) {
+        if (LoadMotionDocument(*context, result.motion_json,
+                               data->output_path,
+                               data->motion_load_epoch, data->path)) {
+          context->motion_secondary_tuning_stale.store(
+              false, std::memory_order_release);
           // Keep the selected source VMD in the picker. Reloading after a character
           // switch must convert against the new skeleton instead of loading old JSON.
           // Surface how many bones carry a per-frame translation: the re-solved legs and the
@@ -7398,6 +11001,11 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
   // anything else (the document simply omits refLocal).
   static_cast<void>(FindReferencePose(context));
   const bool has_ref = context.ref_locals.size() == count;
+  std::map<std::string, std::array<double, 12>> manual_reference;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    manual_reference = context.manual_motion_reference;
+  }
   if (!has_ref) {
     char status[192]{};
     std::snprintf(status, sizeof(status),
@@ -7417,7 +11025,10 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
       local = context.pose_base_locals[index];
     }
     bone["baseLocal"] = TransformToJson(local.data());
-    if (has_ref)
+    const auto calibrated = manual_reference.find(context.bone_names[index]);
+    if (calibrated != manual_reference.end())
+      bone["refLocal"] = TransformToJson(calibrated->second.data());
+    else if (has_ref)
       bone["refLocal"] = TransformToJson(context.ref_locals[index].data());
     if (component_data != 0 && index < component_count) {
       std::uintptr_t address{};
@@ -7433,9 +11044,12 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
   nlohmann::json root = nlohmann::json::object();
   root["schemaVersion"] = 1;
   root["kind"] = "better-pose-skeleton";
-  root["basis"] = has_ref ? "captured-live-pose plus refLocal from the mesh asset's "
-                            "FReferenceSkeleton (the bind pose)"
-                          : "captured-live-pose (engine reference pose unavailable)";
+  root["basis"] =
+      !manual_reference.empty()
+          ? "captured-live-pose plus the confirmed manual A/T-pose reference"
+          : has_ref ? "captured-live-pose plus refLocal from the mesh asset's "
+                      "FReferenceSkeleton (the bind pose)"
+                    : "captured-live-pose (engine reference pose unavailable)";
   root["mesh"] = Hex(context.runtime.mesh);
   root["boneCount"] = count;
   root["boneSpaceCount"] = context.runtime.bone_space_count;
@@ -7449,6 +11063,11 @@ void ExecutePoseFileAction(Context &context) noexcept {
       context.pose_file_action_requested.exchange(0, std::memory_order_acquire);
   if (action == 0)
     return;
+  if ((action == 4 || action == 5) &&
+      context.t_pose_calibration_active.load(std::memory_order_acquire))
+    CancelTPoseCalibration(
+        context,
+        "A/T-pose calibration cancelled before loading an MMD motion");
   if (!SchedulerReady(context.scheduler)) {
     SetReflectionStatus(context, "pose file action failed: scheduler unavailable");
     return;
@@ -7518,6 +11137,32 @@ void ExecutePoseFileAction(Context &context) noexcept {
       return;
     }
     data->path = context.motion_file;
+  } else if (action == 6) {
+    if (context.motion_file.empty()) {
+      delete data;
+      SetReflectionStatus(context, "VMD inspect failed: no file selected");
+      return;
+    }
+    data->path = context.motion_file;
+    data->reference_mode = std::clamp(
+        context.motion_reference_mode.load(std::memory_order_acquire), 0, 2);
+    {
+      std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+      data->manual_mappings = context.manual_motion_mappings;
+      data->manual_parent_mappings = context.manual_motion_parents;
+      data->manual_finger_controls =
+          context.manual_motion_finger_controls;
+      data->manual_arm_ik_controls =
+          context.manual_motion_arm_ik_controls;
+      data->ignored_tracks = context.ignored_motion_tracks;
+    }
+    data->skeleton_document = BuildSkeletonDocument(context);
+    const std::string reference_path =
+        ReferenceBoneTablePath(data->reference_mode);
+    std::ifstream reference(Utf8ToWide(reference_path), std::ios::binary);
+    if (reference)
+      data->reference_document.assign(std::istreambuf_iterator<char>(reference),
+                                      std::istreambuf_iterator<char>());
   } else if (action == 5) {
     // Conversion: the skeleton export has to be read here, on the game thread, because it
     // walks live engine memory; the task thread only touches files and the documents.
@@ -7527,6 +11172,16 @@ void ExecutePoseFileAction(Context &context) noexcept {
       return;
     }
     data->path = context.motion_file;
+    {
+      std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+      data->manual_mappings = context.manual_motion_mappings;
+      data->manual_parent_mappings = context.manual_motion_parents;
+      data->manual_finger_controls =
+          context.manual_motion_finger_controls;
+      data->manual_arm_ik_controls =
+          context.manual_motion_arm_ik_controls;
+      data->ignored_tracks = context.ignored_motion_tracks;
+    }
     data->skeleton_document = BuildSkeletonDocument(context);
     if (data->skeleton_document.empty()) {
       delete data;
@@ -7534,8 +11189,73 @@ void ExecutePoseFileAction(Context &context) noexcept {
           context, "motion convert failed: skeleton unavailable (make the character visible)");
       return;
     }
+    {
+      KawaiiPhysicsSnapshot snapshot;
+      std::string kawaii_error;
+      if (ReadKawaiiPhysicsSnapshot(context, context.runtime.mesh, snapshot,
+                                    kawaii_error)) {
+        data->secondary_bone_overrides = std::move(snapshot.overrides);
+        if (snapshot.component_space)
+          data->kawaii_capsule_limits = std::move(snapshot.limits);
+        context.main_kawaii_state.store(1, std::memory_order_release);
+        context.main_kawaii_springs.store(
+            static_cast<std::uint32_t>(
+                data->secondary_bone_overrides.size()),
+            std::memory_order_release);
+        context.main_kawaii_limits.store(
+            static_cast<std::uint32_t>(
+                data->kawaii_capsule_limits.size()),
+            std::memory_order_release);
+        context.main_kawaii_spherical_limits.store(
+            snapshot.spherical_limits, std::memory_order_release);
+        context.main_kawaii_box_limits.store(
+            snapshot.box_limits, std::memory_order_release);
+        context.main_kawaii_planar_limits.store(
+            snapshot.planar_limits, std::memory_order_release);
+        {
+          std::lock_guard<std::mutex> lock(context.main_kawaii_mutex);
+          context.main_kawaii_detail = snapshot.root;
+        }
+        char line[448]{};
+        std::snprintf(
+            line, sizeof(line),
+            "betterpose main kawaii root=%s bones=%u usable=%zu "
+            "limits=%zu/%u/%u/%u space=%u "
+            "damping=%.3f stiffness=%.3f world_damp=%.2f/%.2f "
+            "radius=%.2f limit=%.1f gravity=%.1f,%.1f,%.1f",
+            snapshot.root.c_str(), static_cast<unsigned>(snapshot.source_bones),
+            data->secondary_bone_overrides.size(),
+            data->kawaii_capsule_limits.size(), snapshot.spherical_limits,
+            snapshot.box_limits, snapshot.planar_limits,
+            snapshot.component_space ? 0U : 1U, snapshot.base.damping,
+            snapshot.base.stiffness, snapshot.base.world_damping_location,
+            snapshot.base.world_damping_rotation, snapshot.base.radius,
+            snapshot.base.limit_angle, snapshot.gravity[0], snapshot.gravity[1],
+            snapshot.gravity[2]);
+        LogDiagnostic(context, line);
+      } else {
+        context.main_kawaii_state.store(2, std::memory_order_release);
+        context.main_kawaii_springs.store(0, std::memory_order_release);
+        context.main_kawaii_limits.store(0, std::memory_order_release);
+        context.main_kawaii_spherical_limits.store(
+            0, std::memory_order_release);
+        context.main_kawaii_box_limits.store(0, std::memory_order_release);
+        context.main_kawaii_planar_limits.store(0, std::memory_order_release);
+        {
+          std::lock_guard<std::mutex> lock(context.main_kawaii_mutex);
+          context.main_kawaii_detail = kawaii_error;
+        }
+        LogDiagnostic(context,
+                      "betterpose main kawaii unavailable, using built-in "
+                      "spring defaults: " +
+                          kawaii_error);
+      }
+    }
     const std::string reference_path =
-        ReferenceBoneTablePath(context.motion_reference_unity.load(std::memory_order_acquire));
+        ReferenceBoneTablePath(
+            context.motion_reference_mode.load(std::memory_order_acquire));
+    data->reference_mode = std::clamp(
+        context.motion_reference_mode.load(std::memory_order_acquire), 0, 2);
     {
       std::ifstream reference(Utf8ToWide(reference_path), std::ios::binary);
       if (!reference) {
@@ -7560,6 +11280,8 @@ void ExecutePoseFileAction(Context &context) noexcept {
     data->output_path = output + ".betterpose.json";
   }
   if (action == 4 || action == 5) {
+    context.motion_visibility_restore_requested.store(
+        true, std::memory_order_release);
     std::lock_guard<std::mutex> lock(context.motion_mutex);
     data->motion_load_epoch = ++context.motion_load_epoch;
   }
@@ -7577,6 +11299,7 @@ void ExecutePoseFileAction(Context &context) noexcept {
                                : action == 3 ? "skeleton export queued"
                                : action == 4 ? "motion load queued"
                                : action == 5 ? "motion convert queued"
+                               : action == 6 ? "VMD inspect queued"
                                              : "pose import queued");
 }
 void EnsureActiveCharacterProfile(Context &context) noexcept {
@@ -8851,8 +12574,15 @@ void StepLibrary(Context &context) noexcept {
 void StepEditHistory(Context &context) noexcept {
   try {
     const bool motion_owns = context.motion_loaded.load(std::memory_order_acquire);
-    const bool not_an_edit = context.keyframe_driving.load(std::memory_order_acquire);
-    if (context.edit_history_mesh != context.runtime.mesh || not_an_edit) {
+    const bool calibration_owns =
+        context.t_pose_calibration_active.load(std::memory_order_acquire);
+    const bool not_an_edit =
+        context.keyframe_driving.load(std::memory_order_acquire) ||
+        calibration_owns;
+    if (calibration_owns) {
+      context.edit_history_request.store(0, std::memory_order_release);
+    } else if (context.edit_history_mesh != context.runtime.mesh ||
+               not_an_edit) {
       context.edit_history_mesh = context.runtime.mesh;
       context.edit_history.Reset(CaptureEdit(context));
       context.edit_history_request.store(0, std::memory_order_release);
@@ -8922,8 +12652,11 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
     const std::uint32_t length =
         (std::max)(context.keyframe_length.load(std::memory_order_acquire), last);
     const bool motion_owns = context.motion_loaded.load(std::memory_order_acquire);
+    const bool calibration_owns =
+        context.t_pose_calibration_active.load(std::memory_order_acquire);
+    const bool pose_locked = motion_owns || calibration_owns;
     bool playing = context.keyframe_playing.load(std::memory_order_acquire);
-    if (playing && (empty || motion_owns)) {
+    if (playing && (empty || pose_locked)) {
       playing = false;
       context.keyframe_playing.store(false, std::memory_order_release);
     }
@@ -8948,7 +12681,8 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
 
     const bool moved = std::abs(frame - context.keyframe_applied_frame) > 1e-6;
     const bool changed = revision != context.keyframe_applied_revision;
-    const bool user_editing = !playing && !moved && !motion_owns;
+    const bool user_editing =
+        !playing && !moved && !motion_owns && !calibration_owns;
     // Selection follows the playhead: a paused playhead that lands on a key
     // selects it; one that leaves the selected key (scrub, step, play) drops
     // it, so the timeline's DEL and the panel always mean the key under it.
@@ -8979,7 +12713,7 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
       }
       context.keyframe_auto_user_state = current_state;
       context.keyframe_auto_user_state_valid = true;
-    } else if (playing || moved || motion_owns) {
+    } else if (playing || moved || pose_locked) {
       context.keyframe_auto_user_state_valid = false;
     }
     if (moved) {
@@ -8992,7 +12726,7 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
     // A track change re-samples the frame (delete, move, import, clear), so the
     // character shows the track. Recording and undo/redo both mark the frame
     // as applied themselves: the live state already *is* that frame.
-    const bool drive = !empty && !motion_owns && (playing || moved || changed);
+    const bool drive = !empty && !pose_locked && (playing || moved || changed);
     context.keyframe_driving.store(drive && playing, std::memory_order_release);
     if (!drive) {
       if (empty)
@@ -9019,6 +12753,8 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   }
 
   EnsureActiveCharacterProfile(context);
+  StepAutomaticCalibrationStatus(context);
+  StepTPoseCalibrationRequest(context);
   // Before the expression and pose steps: the keyframe sample is written into
   // the same weights and angles they then apply this frame.
   StepKeyframes(context, delta_seconds);
@@ -9035,11 +12771,16 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
       context.root_motion_override_enabled.load(std::memory_order_acquire);
   const float root = context.requested_root_motion_scale.load(
       std::memory_order_acquire);
+  const float motion_speed = std::clamp(
+      context.motion_speed.load(std::memory_order_acquire), 0.25F, 2.0F);
 
   ExecuteReflectionAction(context);
   ExecutePoseFileAction(context);
   StepMeshScan(context);
   StepAttachScan(context);
+  if (context.motion_visibility_restore_requested.exchange(
+          false, std::memory_order_acquire))
+    RestoreMotionVisibility(context);
   // Retry the extra-component mapping until the bone table is readable.
   if (context.extra_build_pending && !context.mesh_scan_candidates.empty() &&
       !context.mesh_scan_running)
@@ -9067,13 +12808,15 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
         std::lock_guard<std::mutex> lock(context.motion_mutex);
         duration = MotionDuration(context.motion);
       }
-      seconds += delta_seconds;
+      seconds += delta_seconds * static_cast<double>(motion_speed);
       // Audio is the master clock while a track plays. The device's position cannot be resampled
       // (MCI has no rate control) and restarting the track every few seconds is exactly what the
       // player hears as "it jumps back", so the *animation* clock is pulled towards the audio
       // instead: at most a quarter of its rate, which closes a 0.3 s gap in about two seconds and
       // is invisible. A gap too large to hide snaps the animation, never the audio.
       if (!context.motion_seek_pending.load(std::memory_order_acquire) &&
+          std::abs(motion_speed - 1.0F) <= 1e-4F &&
+          g_music_speed_sync.load(std::memory_order_acquire) &&
           g_music_opened.load(std::memory_order_acquire) &&
           g_music_playing.load(std::memory_order_acquire)) {
         const double audio_time =
@@ -9144,6 +12887,12 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     static_cast<void>(EnsurePoseForcedLod(context, false));
     context.pose_override_enabled.store(false, std::memory_order_release);
     ResetPoseValues(context);
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      context.pose_base_ready = false;
+      context.pose_base_mesh = 0;
+      context.pose_base_locals.clear();
+    }
     context.pose_settings_dirty.store(true, std::memory_order_release);
   }
 
@@ -9179,14 +12928,37 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
       context.requested_root_offset[2].load(std::memory_order_acquire) != 0.0;
   // A loaded motion drives the pose too, and takes precedence over the manual
   // joint offsets (they stay untouched and come back when playback is off).
+  const bool calibration_pose =
+      context.t_pose_calibration_active.load(std::memory_order_acquire);
   const bool pose_enabled =
-      motion_active || (master_enabled && (active_joints != 0 || has_root_offset));
+      motion_active ||
+      (master_enabled &&
+       (active_joints != 0 || has_root_offset || calibration_pose));
   const bool pose_available = context.runtime.bone_space_data != 0 &&
                               context.runtime.bone_space_count != 0 &&
                               context.runtime.component_space_data != 0 &&
                               context.runtime.component_space_count != 0 &&
                               context.runtime.local_space_data != 0 &&
                               context.runtime.local_space_count != 0;
+  // Manual joint editing is authored against the rig's bind A pose. A live
+  // game-animation frame already contains animation and locomotion on top of
+  // the skeleton, so using it as the edit base makes the same slider mean a
+  // different world-space bend from frame to frame.
+  if (pose_enabled && pose_available) {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    if (!context.pose_base_ready || context.pose_base_mesh != context.runtime.mesh ||
+        context.pose_base_locals.size() != context.runtime.local_space_count) {
+      if (context.ref_locals.size() == context.runtime.local_space_count) {
+        context.pose_base_locals = context.ref_locals;
+        context.pose_base_mesh = context.runtime.mesh;
+        context.pose_base_ready = true;
+      } else {
+        context.pose_base_ready = false;
+        context.pose_base_mesh = 0;
+        context.pose_base_locals.clear();
+      }
+    }
+  }
   const bool force_ok = ApplyMultiThreadedUpdate(context, pose_enabled);
   const bool pose_requested = pose_enabled && pose_available;
   // Two very different things can put the plugin in charge of the camera. Follow mode is a camera
@@ -9224,6 +12996,27 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   // The camera write rides the same mesh tick as the pose, so the hook is installed for it
   // too: that tick is the one that lands after the game has computed its own camera.
   const bool hook_ok = !pose_requested || EnsurePoseTickHook(context);
+  if (context.motion_loaded.load(std::memory_order_acquire)) {
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t last =
+        context.pose_pipeline_last_log_ms.load(std::memory_order_acquire);
+    if (last == 0 || now - last >= 2000) {
+      context.pose_pipeline_last_log_ms.store(now, std::memory_order_release);
+      char message[256]{};
+      std::snprintf(
+          message, sizeof(message),
+          "betterpose pipeline motion=%d playing=%d active=%d enabled=%d "
+          "available=%d requested=%d hook=%d bones=%u component=%llX local=%llX",
+          context.motion_loaded.load(std::memory_order_acquire) ? 1 : 0,
+          context.motion_playing.load(std::memory_order_acquire) ? 1 : 0,
+          motion_active ? 1 : 0, pose_enabled ? 1 : 0, pose_available ? 1 : 0,
+          pose_requested ? 1 : 0, hook_ok ? 1 : 0,
+          static_cast<unsigned>(context.runtime.component_space_count),
+          static_cast<unsigned long long>(context.runtime.component_space_data),
+          static_cast<unsigned long long>(context.runtime.local_space_data));
+      LogDiagnostic(context, message);
+    }
+  }
   // The camera owns the POV only while the dance is playing, so pausing hands the game's camera
   // straight back. Installing it restarts the shot: the anchor (the yaw captured from the game
   // camera's direction to the character) is dropped once, on the first play after a mode goes on,
@@ -9291,8 +13084,15 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
                 static_cast<unsigned>(context.extra_resync_count));
 
   bool settings_saved = true;
-  if (context.pose_settings_dirty.exchange(false, std::memory_order_acquire))
-    settings_saved = PersistPoseSettings(context);
+  if (!context.t_pose_calibration_active.load(std::memory_order_acquire)) {
+    const bool settings_dirty =
+        context.pose_settings_dirty.exchange(false, std::memory_order_acquire);
+    if (settings_dirty) {
+      settings_saved = PersistPoseSettings(context);
+      if (!settings_saved)
+        context.pose_settings_dirty.store(true, std::memory_order_release);
+    }
+  }
 
   if (pose_requested && !hook_ok) {
     PublishSnapshot(context,
@@ -9368,13 +13168,45 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   // character has matching names/counts. Require an explicit load for the new rig.
   if (previous_mesh != 0)
     UnloadMotion(context);
+  context.main_kawaii_state.store(0, std::memory_order_release);
+  context.main_kawaii_springs.store(0, std::memory_order_release);
+  context.main_kawaii_limits.store(0, std::memory_order_release);
+  context.main_kawaii_spherical_limits.store(0, std::memory_order_release);
+  context.main_kawaii_box_limits.store(0, std::memory_order_release);
+  context.main_kawaii_planar_limits.store(0, std::memory_order_release);
+  context.main_distance_links.store(0, std::memory_order_release);
+  context.main_distance_corrections.store(0, std::memory_order_release);
+  context.main_self_collision_contacts.store(0, std::memory_order_release);
+  context.main_self_collision_corrections.store(0,
+                                                std::memory_order_release);
+  context.main_self_collision_links.store(0, std::memory_order_release);
+  for (auto &count : context.main_self_candidates_by_material)
+    count.store(0, std::memory_order_release);
+  for (auto &count : context.main_self_contacts_by_material)
+    count.store(0, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(context.main_kawaii_mutex);
+    context.main_kawaii_detail.clear();
+  }
   {
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
     context.pose_base_ready = false;
     context.pose_base_mesh = 0;
     context.pose_base_locals.clear();
+    context.manual_motion_reference.clear();
     context.ref_locals.clear();
   }
+  context.t_pose_calibration_active.store(false, std::memory_order_release);
+  context.t_pose_calibration_request.store(0, std::memory_order_release);
+  context.t_pose_session = Context::TPoseCalibrationSession{};
+  context.automatic_calibration_mesh = 0;
+  context.automatic_calibration_kind.store(
+      static_cast<int>(CalibrationPoseKind::Unknown),
+      std::memory_order_release);
+  context.automatic_calibration_issue.store(
+      static_cast<int>(CalibrationIssue::None), std::memory_order_release);
+  context.manual_calibration_issue.store(
+      static_cast<int>(CalibrationIssue::None), std::memory_order_release);
   context.bone_names.clear();
   context.bone_names_mesh = 0;
   context.bone_names_count = 0;
@@ -10000,6 +13832,849 @@ TwoBoneRotations SolveTwoBone(const Vec3d &root, const Vec3d &mid, const Vec3d &
   return out;
 }
 
+bool ApplyArmIkTargets(Context &context, const MotionSample &sample,
+                       std::vector<Transformd> &locals,
+                       std::vector<Transformd> &components) noexcept {
+  bool changed = false;
+  const auto scale_angle = [](const Quatd &rotation, const double limit) {
+    const double absolute_w =
+        (std::max)(0.0, (std::min)(1.0, std::abs(rotation.w)));
+    const double angle = 2.0 * std::acos(absolute_w);
+    if (angle <= limit || angle < 1e-9)
+      return rotation;
+    const double vector_length =
+        std::sqrt(rotation.x * rotation.x + rotation.y * rotation.y +
+                  rotation.z * rotation.z);
+    if (vector_length < 1e-12)
+      return Quatd{};
+    const double scale = std::sin(limit * 0.5) /
+                         std::sin(angle * 0.5);
+    return Quatd{rotation.x * scale, rotation.y * scale,
+                 rotation.z * scale,
+                 rotation.w >= 0.0 ? std::cos(limit * 0.5)
+                                   : -std::cos(limit * 0.5)};
+  };
+  for (const MotionArmIkSample &target : sample.arm_ik_targets) {
+    if (target.upper_arm >= components.size() ||
+        target.forearm >= components.size() || target.hand >= components.size())
+      continue;
+    const Vec3d root = components[target.upper_arm].translation;
+    const Vec3d middle = components[target.forearm].translation;
+    const Vec3d end = components[target.hand].translation;
+    const Vec3d wanted =
+        V3Add(end, Vec3d{target.offset[0], target.offset[1], target.offset[2]});
+    TwoBoneRotations turn = SolveTwoBone(root, middle, end, wanted);
+    if (target.max_bend_degrees > 0.0)
+      turn.mid = scale_angle(
+          turn.mid, target.max_bend_degrees * 3.14159265358979323846 / 180.0);
+    const std::int32_t upper_parent = context.bone_parents[target.upper_arm];
+    const Quatd upper_parent_rotation =
+        upper_parent >= 0
+            ? components[static_cast<std::size_t>(upper_parent)].rotation
+            : Quatd{};
+    const Quatd upper_world =
+        QuatNormalize(QuatMultiply(turn.root,
+                                   components[target.upper_arm].rotation));
+    const Quatd upper_local = QuatNormalize(QuatMultiply(
+        Quatd{-upper_parent_rotation.x, -upper_parent_rotation.y,
+              -upper_parent_rotation.z, upper_parent_rotation.w},
+        upper_world));
+    const Quatd forearm_world =
+        QuatNormalize(QuatMultiply(turn.mid,
+                                   components[target.forearm].rotation));
+    const Quatd forearm_local = QuatNormalize(QuatMultiply(
+        Quatd{-upper_world.x, -upper_world.y, -upper_world.z, upper_world.w},
+        forearm_world));
+    locals[target.upper_arm].rotation = upper_local;
+    locals[target.forearm].rotation = forearm_local;
+    if (target.follow_wrist) {
+      const Quatd delta{target.rotation[0], target.rotation[1],
+                        target.rotation[2], target.rotation[3]};
+      const Quatd hand_world = QuatNormalize(
+          QuatMultiply(delta, components[target.hand].rotation));
+      const Quatd hand_local = QuatNormalize(QuatMultiply(
+          Quatd{-forearm_world.x, -forearm_world.y, -forearm_world.z,
+                forearm_world.w},
+          hand_world));
+      locals[target.hand].rotation = hand_local;
+    }
+    changed = true;
+  }
+  return changed;
+}
+
+bool ApplyLimbCalibration(
+    Context &context, std::vector<Transformd> &locals,
+    const std::vector<Transformd> &components,
+    const std::vector<std::int32_t> &parents,
+    const std::vector<std::string> &names,
+    std::array<limb_cal::Status, limb_cal::kLimbCount> *statuses) noexcept {
+  limb_cal::AllSettings settings;
+  {
+    std::lock_guard<std::mutex> lock(context.motion_limb_mutex);
+    settings = context.motion_limb_calibration;
+  }
+  if (statuses != nullptr)
+    statuses->fill(limb_cal::Status::Original);
+  if (!context.motion_limb_enabled.load(std::memory_order_acquire))
+    return false;
+  if (components.size() != locals.size() || parents.size() != locals.size() ||
+      names.size() != locals.size()) {
+    if (statuses != nullptr)
+      statuses->fill(limb_cal::Status::NotApplicable);
+    return false;
+  }
+  bool any = false;
+  for (const auto &limb : settings.limbs)
+    any = any || limb.enabled;
+  if (!any)
+    return false;
+
+  const auto find_bone = [&](const std::string_view wanted) {
+    const auto found = std::find(names.begin(), names.end(), wanted);
+    return found == names.end()
+               ? (std::numeric_limits<std::uint32_t>::max)()
+               : static_cast<std::uint32_t>(found - names.begin());
+  };
+  const std::uint32_t pelvis = find_bone("Bip001-Pelvis");
+  const std::uint32_t head = find_bone("Bip001-Head");
+  const std::uint32_t left_thigh = find_bone("Bip001-L-Thigh");
+  const std::uint32_t right_thigh = find_bone("Bip001-R-Thigh");
+  // Unreal world/component space: X forward, Y right, Z up. Keep the defaults
+  // in that space for rigs where the pelvis/head/thigh landmarks are absent.
+  Vec3d body_left{0, -1, 0}, body_up{0, 0, 1}, body_forward{1, 0, 0};
+  if (pelvis < components.size() && head < components.size() &&
+      left_thigh < components.size() && right_thigh < components.size()) {
+    const Vec3d across =
+        V3Sub(components[left_thigh].translation,
+              components[right_thigh].translation);
+    const Vec3d up =
+        V3Sub(components[head].translation,
+              components[pelvis].translation);
+    if (V3Length(across) > 1e-6 && V3Length(up) > 1e-6) {
+      body_left = V3Scale(across, 1.0 / V3Length(across));
+      body_up = V3Scale(up, 1.0 / V3Length(up));
+      Vec3d forward = V3Cross(body_up, body_left);
+      if (V3Length(forward) > 1e-6) {
+        body_forward = V3Scale(forward, 1.0 / V3Length(forward));
+        const Vec3d corrected_up = V3Cross(body_left, body_forward);
+        if (V3Length(corrected_up) > 1e-6)
+          body_up =
+              V3Scale(corrected_up, 1.0 / V3Length(corrected_up));
+      }
+    }
+  }
+
+  std::vector<Transformd> working = components;
+  std::vector<std::uint8_t> marks(working.size(), 0);
+  const auto rebuild = [&]() {
+    for (auto &transform : working)
+      transform = Transformd{};
+    std::fill(marks.begin(), marks.end(), std::uint8_t{0});
+    for (std::uint32_t bone{}; bone != working.size(); ++bone)
+      static_cast<void>(
+          ComputeBoneComponent(bone, locals, parents, working, marks));
+  };
+  bool changed = false;
+  for (std::size_t limb_index{}; limb_index != limb_cal::kLimbCount;
+       ++limb_index) {
+    const auto &limb = settings.limbs[limb_index];
+    if (!limb.enabled || limb.IsNeutral())
+      continue;
+    std::uint32_t chain[3]{};
+    bool valid = true;
+    for (std::size_t joint{}; joint != 3; ++joint) {
+      chain[joint] = find_bone(limb_cal::kBoneNames[limb_index][joint]);
+      valid = valid && chain[joint] < working.size();
+    }
+    if (!valid) {
+      if (statuses != nullptr)
+        (*statuses)[limb_index] = limb_cal::Status::NotApplicable;
+      continue;
+    }
+    const Vec3d root = working[chain[0]].translation;
+    const Vec3d middle = working[chain[1]].translation;
+    const Vec3d end = working[chain[2]].translation;
+    const Vec3d upper = V3Sub(middle, root);
+    const Vec3d lower = V3Sub(end, middle);
+    const double total = V3Length(upper) + V3Length(lower);
+    if (!(total > 1e-6)) {
+      if (statuses != nullptr)
+        (*statuses)[limb_index] = limb_cal::Status::NotApplicable;
+      continue;
+    }
+    const std::array<float, 3> &offset = limb.offset;
+    const Vec3d anatomical =
+        V3Add(V3Add(V3Scale(body_left, offset[0]),
+                    V3Scale(body_up, offset[1])),
+              V3Scale(body_forward, offset[2]));
+    const Vec3d target = V3Add(
+        V3Add(root, V3Scale(upper, std::clamp(limb.upper, 0.5F, 1.5F))),
+        V3Add(V3Scale(lower, std::clamp(limb.lower, 0.5F, 1.5F)),
+              V3Scale(anatomical, total)));
+    const double upper_length = V3Length(upper);
+    const double lower_length = V3Length(lower);
+    const double wanted = V3Length(V3Sub(target, root));
+    const double minimum = std::abs(upper_length - lower_length) + 1e-3;
+    const double maximum = (upper_length + lower_length) * 0.9995;
+    const bool clamped = wanted < minimum || wanted > maximum;
+    const TwoBoneRotations turn =
+        SolveTwoBone(root, middle, end, target);
+    const auto angle = [](const Quatd &q) {
+      const double w = std::clamp(std::abs(q.w), 0.0, 1.0);
+      return 2.0 * std::acos(w);
+    };
+    if (angle(turn.root) <= 1e-7 && angle(turn.mid) <= 1e-7) {
+      if (statuses != nullptr && clamped)
+        (*statuses)[limb_index] = limb_cal::Status::Clamped;
+      continue;
+    }
+    const std::int32_t root_parent = parents[chain[0]];
+    const Quatd root_parent_world =
+        root_parent >= 0 && static_cast<std::size_t>(root_parent) < working.size()
+            ? working[static_cast<std::size_t>(root_parent)].rotation
+            : Quatd{};
+    locals[chain[0]].rotation = ApplyWorldRotationToOffset(
+        root_parent_world, turn.root, locals[chain[0]].rotation);
+    rebuild();
+    const std::int32_t middle_parent = parents[chain[1]];
+    const Quatd middle_parent_world =
+        middle_parent >= 0 &&
+                static_cast<std::size_t>(middle_parent) < working.size()
+            ? working[static_cast<std::size_t>(middle_parent)].rotation
+            : Quatd{};
+    locals[chain[1]].rotation = ApplyWorldRotationToOffset(
+        middle_parent_world, turn.mid, locals[chain[1]].rotation);
+    rebuild();
+    if (statuses != nullptr)
+      (*statuses)[limb_index] =
+          clamped ? limb_cal::Status::Clamped : limb_cal::Status::Applied;
+    changed = true;
+  }
+  return changed;
+}
+
+std::uint32_t FindBoneIndexByName(const std::vector<std::string> &names,
+                                  const std::string_view wanted) noexcept {
+  const auto found = std::find(names.begin(), names.end(), wanted);
+  return found == names.end()
+             ? (std::numeric_limits<std::uint32_t>::max)()
+             : static_cast<std::uint32_t>(found - names.begin());
+}
+
+bool BuildCalibrationPoseLocals(const std::vector<Transformd> &source,
+                                const std::vector<std::int32_t> &parents,
+                                const std::vector<std::string> &names,
+                                const bool use_t_pose,
+                                std::vector<Transformd> &chosen) noexcept {
+  if (source.size() != parents.size() || source.size() != names.size() ||
+      source.empty())
+    return false;
+  const std::uint32_t pelvis = FindBoneIndexByName(names, "Bip001-Pelvis");
+  const std::uint32_t head = FindBoneIndexByName(names, "Bip001-Head");
+  const std::uint32_t left_thigh =
+      FindBoneIndexByName(names, "Bip001-L-Thigh");
+  const std::uint32_t right_thigh =
+      FindBoneIndexByName(names, "Bip001-R-Thigh");
+  if (pelvis >= source.size() || head >= source.size() ||
+      left_thigh >= source.size() || right_thigh >= source.size())
+    return false;
+
+  std::vector<Transformd> working = source;
+  std::vector<Transformd> components(source.size());
+  std::vector<std::uint8_t> marks(source.size(), 0);
+  const auto rebuild = [&]() {
+    for (auto &transform : components)
+      transform = Transformd{};
+    std::fill(marks.begin(), marks.end(), std::uint8_t{0});
+    for (std::uint32_t bone{}; bone != working.size(); ++bone)
+      static_cast<void>(ComputeBoneComponent(
+          bone, working, parents, components, marks));
+  };
+  rebuild();
+
+  Vec3d left = V3Sub(components[left_thigh].translation,
+                     components[right_thigh].translation);
+  Vec3d up = V3Sub(components[head].translation,
+                   components[pelvis].translation);
+  const double left_length = V3Length(left);
+  const double up_length = V3Length(up);
+  if (!(left_length > 1e-6) || !(up_length > 1e-6))
+    return false;
+  left = V3Scale(left, 1.0 / left_length);
+  up = V3Scale(up, 1.0 / up_length);
+  left = V3Sub(left, V3Scale(up, V3Dot(left, up)));
+  const double planar_left = V3Length(left);
+  if (!(planar_left > 1e-6))
+    return false;
+  left = V3Scale(left, 1.0 / planar_left);
+  Vec3d forward = V3Cross(up, left);
+  const double forward_length = V3Length(forward);
+  if (!(forward_length > 1e-6))
+    return false;
+  forward = V3Scale(forward, 1.0 / forward_length);
+  up = V3Scale(V3Cross(left, forward), 1.0);
+  const Vec3d down = V3Scale(up, -1.0);
+  // The game rig's natural calibration is an A pose. Forty-five degrees keeps
+  // the shoulder and clavicle in their usual axes while giving both arms the
+  // same rest direction; T pose remains available as an explicit comparison.
+  constexpr double kAPoseDownDegrees = 45.0;
+  constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+  const double a_cos = std::cos(kAPoseDownDegrees * kDegreesToRadians);
+  const double a_sin = std::sin(kAPoseDownDegrees * kDegreesToRadians);
+  const Vec3d a_arm_left =
+      V3Add(V3Scale(left, a_cos), V3Scale(down, a_sin));
+
+  const auto align = [&](const std::uint32_t bone,
+                         const std::uint32_t child,
+                         const Vec3d &direction) {
+    if (bone >= working.size() || child >= working.size())
+      return false;
+    const Vec3d from =
+        V3Sub(components[child].translation, components[bone].translation);
+    if (!(V3Length(from) > 1e-6) || !(V3Length(direction) > 1e-6))
+      return false;
+    const Quatd turn = QuatFromTo(from, direction);
+    const std::int32_t bone_parent = parents[bone];
+    const Quatd parent_world =
+        bone_parent >= 0 &&
+                static_cast<std::size_t>(bone_parent) < components.size()
+            ? components[static_cast<std::size_t>(bone_parent)].rotation
+            : Quatd{};
+    working[bone].rotation = ApplyWorldRotationToOffset(
+        parent_world, turn, working[bone].rotation);
+    rebuild();
+    return true;
+  };
+  const auto align_names = [&](const std::string_view bone_name,
+                               const std::string_view child_name,
+                               const Vec3d &direction,
+                               const bool required) {
+    const std::uint32_t bone = FindBoneIndexByName(names, bone_name);
+    const std::uint32_t child = FindBoneIndexByName(names, child_name);
+    if (bone >= working.size() || child >= working.size())
+      return !required;
+    return align(bone, child, direction);
+  };
+
+  if (!align_names("Bip001-Pelvis", "Bip001-Spine", up, true))
+    return false;
+  align_names("Bip001-Spine", "Bip001-Spine1", up, false);
+  align_names("Bip001-Spine1", "Bip001-Spine2", up, false);
+  align_names("Bip001-Spine2", "Bip001-Neck", up, false);
+  align_names("Bip001-Neck", "Bip001-Head", up, false);
+
+  for (const bool right : {false, true}) {
+    const std::string side = right ? "R" : "L";
+    const Vec3d arm =
+        use_t_pose
+            ? (right ? V3Scale(left, -1.0) : left)
+            : (right ? V3Add(V3Scale(left, -a_cos), V3Scale(down, a_sin))
+                     : a_arm_left);
+    // In an A pose the clavicle keeps its natural near-horizontal reference
+    // direction. Rotating it down with the upper arm collapses the shoulder
+    // and neck into a triangle. T pose still aligns the whole shoulder chain.
+    if (use_t_pose)
+      align_names("Bip001-" + side + "-Clavicle",
+                  "Bip001-" + side + "-UpperArm", arm, false);
+    if (!align_names("Bip001-" + side + "-UpperArm",
+                     "Bip001-" + side + "-Forearm", arm, true) ||
+        !align_names("Bip001-" + side + "-Forearm",
+                     "Bip001-" + side + "-Hand", arm, true))
+      return false;
+  }
+
+  for (const bool right : {false, true}) {
+    const std::string side = right ? "R" : "L";
+    const std::uint32_t foot =
+        FindBoneIndexByName(names, "Bip001-" + side + "-Foot");
+    const Quatd foot_world =
+        foot < components.size() ? components[foot].rotation : Quatd{};
+    if (!align_names("Bip001-" + side + "-Thigh",
+                     "Bip001-" + side + "-Calf", down, true) ||
+        !align_names("Bip001-" + side + "-Calf",
+                     "Bip001-" + side + "-Foot", down, true))
+      return false;
+    if (foot < components.size()) {
+      const std::int32_t parent = parents[foot];
+      const Quatd parent_world =
+          parent >= 0 &&
+                  static_cast<std::size_t>(parent) < components.size()
+              ? components[static_cast<std::size_t>(parent)].rotation
+              : Quatd{};
+      working[foot].rotation =
+          QuatNormalize(QuatMultiply(QuatConjugate(parent_world), foot_world));
+      rebuild();
+    }
+  }
+  chosen = std::move(working);
+  return true;
+}
+
+struct CalibrationValidation {
+  CalibrationPoseKind kind{CalibrationPoseKind::Invalid};
+  CalibrationIssue issue{CalibrationIssue::None};
+
+  bool Valid() const { return kind == CalibrationPoseKind::APose || kind == CalibrationPoseKind::TPose; }
+};
+
+CalibrationValidation ValidateCalibrationPoseLocals(
+    const std::vector<Transformd> &source,
+    const std::vector<std::int32_t> &parents,
+    const std::vector<std::string> &names) noexcept {
+  CalibrationValidation result;
+  if (source.size() != parents.size() || source.size() != names.size() ||
+      source.empty()) {
+    result.issue = CalibrationIssue::MissingBones;
+    return result;
+  }
+  const auto find = [&](const std::string_view name) {
+    return FindBoneIndexByName(names, name);
+  };
+  const std::uint32_t pelvis = find("Bip001-Pelvis");
+  const std::uint32_t spine = find("Bip001-Spine");
+  const std::uint32_t head = find("Bip001-Head");
+  const std::uint32_t left_thigh = find("Bip001-L-Thigh");
+  const std::uint32_t right_thigh = find("Bip001-R-Thigh");
+  const std::uint32_t left_upper = find("Bip001-L-UpperArm");
+  const std::uint32_t left_lower = find("Bip001-L-Forearm");
+  const std::uint32_t right_upper = find("Bip001-R-UpperArm");
+  const std::uint32_t right_lower = find("Bip001-R-Forearm");
+  const std::uint32_t left_calf = find("Bip001-L-Calf");
+  const std::uint32_t left_foot = find("Bip001-L-Foot");
+  const std::uint32_t right_calf = find("Bip001-R-Calf");
+  const std::uint32_t right_foot = find("Bip001-R-Foot");
+  for (const std::uint32_t bone :
+       {pelvis, spine, head, left_thigh, right_thigh, left_upper,
+        left_lower, right_upper, right_lower, left_calf, left_foot,
+        right_calf, right_foot}) {
+    if (bone >= source.size()) {
+      result.issue = CalibrationIssue::MissingBones;
+      return result;
+    }
+  }
+
+  std::vector<Transformd> components(source.size());
+  std::vector<std::uint8_t> marks(source.size(), 0);
+  for (std::uint32_t bone{}; bone != source.size(); ++bone)
+    static_cast<void>(
+        ComputeBoneComponent(bone, source, parents, components, marks));
+  const auto direction = [&](const std::uint32_t from,
+                             const std::uint32_t to) {
+    return V3Sub(components[to].translation, components[from].translation);
+  };
+  Vec3d left = direction(right_thigh, left_thigh);
+  Vec3d up = direction(pelvis, head);
+  const double left_length = V3Length(left);
+  const double up_length = V3Length(up);
+  if (!(left_length > 1e-6) || !(up_length > 1e-6)) {
+    result.issue = CalibrationIssue::MissingBones;
+    return result;
+  }
+  left = V3Scale(left, 1.0 / left_length);
+  up = V3Scale(up, 1.0 / up_length);
+  left = V3Sub(left, V3Scale(up, V3Dot(left, up)));
+  const double planar = V3Length(left);
+  if (!(planar > 1e-6)) {
+    result.issue = CalibrationIssue::Spine;
+    return result;
+  }
+  left = V3Scale(left, 1.0 / planar);
+  const Vec3d down = V3Scale(up, -1.0);
+  const auto unit_direction = [&](const std::uint32_t from,
+                                  const std::uint32_t to) {
+    const Vec3d value = direction(from, to);
+    const double length = V3Length(value);
+    return length > 1e-6 ? V3Scale(value, 1.0 / length) : Vec3d{};
+  };
+  if (V3Dot(unit_direction(pelvis, spine), up) < 0.82) {
+    result.issue = CalibrationIssue::Spine;
+    return result;
+  }
+  if (V3Dot(unit_direction(left_thigh, left_calf), down) < 0.80) {
+    result.issue = CalibrationIssue::LeftLeg;
+    return result;
+  }
+  if (V3Dot(unit_direction(left_calf, left_foot), down) < 0.80) {
+    result.issue = CalibrationIssue::LeftLeg;
+    return result;
+  }
+  if (V3Dot(unit_direction(right_thigh, right_calf), down) < 0.80) {
+    result.issue = CalibrationIssue::RightLeg;
+    return result;
+  }
+  if (V3Dot(unit_direction(right_calf, right_foot), down) < 0.80) {
+    result.issue = CalibrationIssue::RightLeg;
+    return result;
+  }
+
+  const Vec3d left_upper_direction = unit_direction(left_upper, left_lower);
+  const Vec3d right_upper_direction = unit_direction(right_upper, right_lower);
+  const std::uint32_t left_hand = FindBoneIndexByName(names, "Bip001-L-Hand");
+  const std::uint32_t right_hand = FindBoneIndexByName(names, "Bip001-R-Hand");
+  if (left_hand >= source.size() || right_hand >= source.size()) {
+    result.issue = CalibrationIssue::MissingBones;
+    return result;
+  }
+  const Vec3d left_lower_direction = unit_direction(left_lower, left_hand);
+  const Vec3d right_lower_direction = unit_direction(right_lower, right_hand);
+  if (V3Dot(left_upper_direction, left) <= 0.0) {
+    result.issue = CalibrationIssue::LeftArm;
+    return result;
+  }
+  if (V3Dot(right_upper_direction, left) >= 0.0) {
+    result.issue = CalibrationIssue::RightArm;
+    return result;
+  }
+
+  const double left_lateral = V3Dot(left_upper_direction, left);
+  const double right_lateral = -V3Dot(right_upper_direction, left);
+  const double left_down = V3Dot(left_upper_direction, down);
+  const double right_down = V3Dot(right_upper_direction, down);
+  const bool horizontal_t =
+      left_lateral > 0.85 && right_lateral > 0.85 &&
+      std::abs(left_down) < 0.35 && std::abs(right_down) < 0.35;
+  const bool symmetric_a =
+      left_lateral > 0.25 && right_lateral > 0.25 && left_down > 0.20 &&
+      right_down > 0.20 &&
+      std::abs(left_lateral - right_lateral) < 0.25 &&
+      std::abs(left_down - right_down) < 0.25;
+  const bool lower_matches =
+      (horizontal_t &&
+       V3Dot(left_lower_direction, left) > 0.80 &&
+       V3Dot(right_lower_direction, left) < -0.80) ||
+      (symmetric_a && V3Dot(left_lower_direction, left) > 0.20 &&
+       V3Dot(right_lower_direction, left) < -0.20 &&
+       V3Dot(left_lower_direction, down) > 0.15 &&
+       V3Dot(right_lower_direction, down) > 0.15);
+  if (!lower_matches) {
+    result.issue =
+        V3Dot(left_lower_direction, left) <= 0.0 ? CalibrationIssue::LeftArm
+                                                : CalibrationIssue::RightArm;
+    return result;
+  }
+  if (horizontal_t) {
+    result.kind = CalibrationPoseKind::TPose;
+    return result;
+  }
+  if (symmetric_a) {
+    result.kind = CalibrationPoseKind::APose;
+    return result;
+  }
+  result.issue = std::abs(left_down - right_down) >= 0.25
+                     ? CalibrationIssue::Asymmetry
+                     : left_down <= 0.20 ? CalibrationIssue::LeftArm
+                                         : CalibrationIssue::RightArm;
+  return result;
+}
+
+void StepAutomaticCalibrationStatus(Context &context) noexcept {
+  const auto mesh = context.runtime.mesh;
+  const auto count = context.runtime.local_space_count;
+  if (mesh == 0 || count == 0) {
+    context.automatic_calibration_kind.store(
+        static_cast<int>(CalibrationPoseKind::Unknown),
+        std::memory_order_release);
+    return;
+  }
+  if (context.automatic_calibration_mesh == mesh &&
+      context.automatic_calibration_kind.load(std::memory_order_acquire) !=
+          static_cast<int>(CalibrationPoseKind::Unknown))
+    return;
+  if (context.bone_names.size() != count ||
+      context.bone_parents.size() != count)
+    return;
+  std::vector<std::array<double, 12>> reference;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    if (context.ref_locals.size() == count)
+      reference = context.ref_locals;
+  }
+  if (reference.empty())
+    return;
+  std::vector<Transformd> locals(count);
+  for (std::uint32_t bone{}; bone != count; ++bone) {
+    const auto &raw = reference[bone];
+    locals[bone].rotation = Quatd{raw[0], raw[1], raw[2], raw[3]};
+    locals[bone].translation = Vec3d{raw[4], raw[5], raw[6]};
+    locals[bone].scale = Vec3d{raw[8], raw[9], raw[10]};
+  }
+  const CalibrationValidation validation =
+      ValidateCalibrationPoseLocals(locals, context.bone_parents,
+                                    context.bone_names);
+  context.automatic_calibration_kind.store(
+      static_cast<int>(validation.kind), std::memory_order_release);
+  context.automatic_calibration_issue.store(
+      static_cast<int>(validation.issue), std::memory_order_release);
+  context.automatic_calibration_mesh = mesh;
+}
+
+std::array<double, 3> RotationOffsetAngles(const Quatd &base,
+                                           const Quatd &target) noexcept {
+  return QuatToRotator(QuatNormalize(
+      QuatMultiply(target, QuatConjugate(base))));
+}
+
+bool StartTPoseCalibration(Context &context) noexcept {
+  if (context.t_pose_calibration_active.load(std::memory_order_acquire))
+    return true;
+  if (context.motion_loaded.load(std::memory_order_acquire)) {
+    SetReflectionStatus(
+        context, "A/T-pose calibration needs the MMD motion unloaded first");
+    return false;
+  }
+  RuntimeState &state = context.runtime;
+  if (state.mesh == 0 || state.local_space_data == 0 ||
+      state.local_space_count == 0) {
+    SetReflectionStatus(context,
+                        "A/T-pose calibration unavailable: character is not ready");
+    return false;
+  }
+  if (context.bone_names.size() != state.local_space_count ||
+      context.bone_names_mesh != state.mesh) {
+    std::vector<std::string> names;
+    std::string detail;
+    if (!RefreshBoneNames(context, names, detail)) {
+      SetReflectionStatus(context,
+                          "A/T-pose calibration failed: bone names unavailable");
+      return false;
+    }
+    context.bone_names = std::move(names);
+    context.bone_names_mesh = state.mesh;
+    context.bone_names_count = state.bone_space_count;
+    context.bone_names_attempted = true;
+    RefreshBoneHierarchy(context);
+  }
+  if (context.bone_parents.size() != state.local_space_count ||
+      !context.bone_parents_ready ||
+      context.bone_parents_count != state.local_space_count) {
+    SetReflectionStatus(context,
+                        "A/T-pose calibration failed: parent hierarchy unavailable");
+    return false;
+  }
+  if (!CapturePoseBase(context)) {
+    SetReflectionStatus(context,
+                        "A/T-pose calibration failed: local pose unavailable");
+    return false;
+  }
+  static_cast<void>(FindReferencePose(context));
+
+  Context::TPoseCalibrationSession session;
+  std::vector<std::array<double, 12>> base;
+  bool using_auto_reference = false;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    session.pose_base_was_ready = context.pose_base_ready;
+    session.pose_base_mesh = context.pose_base_mesh;
+    session.pose_base_locals = context.pose_base_locals;
+    session.angles = context.bone_angles;
+    for (std::size_t axis{}; axis != 3; ++axis)
+      session.root_offset[axis] =
+          context.requested_root_offset[axis].load(std::memory_order_acquire);
+    if (context.ref_locals.size() == state.local_space_count) {
+      base = context.ref_locals;
+      using_auto_reference = true;
+    } else {
+      base = context.pose_base_locals;
+    }
+  }
+  if (base.size() != state.local_space_count) {
+    SetReflectionStatus(context,
+                        "A/T-pose calibration failed: no reference pose");
+    return false;
+  }
+  std::vector<Transformd> source(base.size());
+  for (std::uint32_t bone{}; bone != base.size(); ++bone) {
+    const auto &raw = base[bone];
+    source[bone].rotation = Quatd{raw[0], raw[1], raw[2], raw[3]};
+    source[bone].translation = Vec3d{raw[4], raw[5], raw[6]};
+    source[bone].scale = Vec3d{raw[8], raw[9], raw[10]};
+  }
+  std::vector<Transformd> chosen;
+  const bool use_t_pose =
+      context.t_pose_calibration_use_t_pose.load(std::memory_order_acquire);
+  if (!use_t_pose && using_auto_reference) {
+    chosen = source;
+  } else if (!BuildCalibrationPoseLocals(
+                 source, context.bone_parents, context.bone_names, use_t_pose,
+                 chosen)) {
+    SetReflectionStatus(
+        context,
+        "A/T-pose calibration failed: required body bones are unavailable");
+    return false;
+  }
+  std::vector<std::array<double, 3>> angles(state.local_space_count);
+  for (std::uint32_t bone{}; bone != angles.size(); ++bone)
+    angles[bone] =
+        RotationOffsetAngles(source[bone].rotation, chosen[bone].rotation);
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.pose_base_locals = std::move(base);
+    context.pose_base_mesh = state.mesh;
+    context.pose_base_ready = true;
+    context.bone_angles = std::move(angles);
+  }
+  session.pose_override_was_enabled =
+      context.pose_override_enabled.load(std::memory_order_acquire);
+  session.freeze_was_enabled =
+      context.freeze_enabled.load(std::memory_order_acquire);
+  session.overlay_was_enabled =
+      context.skeleton_overlay_enabled.load(std::memory_order_acquire);
+  session.keyframe_playing_was_enabled =
+      context.keyframe_playing.load(std::memory_order_acquire);
+  session.settings_dirty_was_set =
+      context.pose_settings_dirty.load(std::memory_order_acquire);
+  context.t_pose_session = std::move(session);
+  context.t_pose_calibration_active.store(true, std::memory_order_release);
+  context.manual_calibration_issue.store(
+      static_cast<int>(CalibrationIssue::None), std::memory_order_release);
+  for (std::size_t axis{}; axis != 3; ++axis)
+    context.requested_root_offset[axis].store(0.0, std::memory_order_release);
+  context.freeze_enabled.store(true, std::memory_order_release);
+  context.pose_override_enabled.store(true, std::memory_order_release);
+  context.skeleton_overlay_enabled.store(true, std::memory_order_release);
+  context.keyframe_playing.store(false, std::memory_order_release);
+  SetReflectionStatus(
+      context,
+      use_t_pose
+          ? "T-pose preview ready: drag joints with the skeleton shown, then confirm or cancel"
+          : using_auto_reference
+                ? "Automatic A-pose reference ready: drag joints with the skeleton shown"
+                : "A-pose fallback ready: automatic reference was unavailable");
+  return true;
+}
+
+void CancelTPoseCalibration(Context &context,
+                            const std::string_view status) noexcept {
+  if (!context.t_pose_calibration_active.exchange(false,
+                                                 std::memory_order_acq_rel))
+    return;
+  const auto &session = context.t_pose_session;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.pose_base_ready = session.pose_base_was_ready;
+    context.pose_base_mesh = session.pose_base_mesh;
+    context.pose_base_locals = session.pose_base_locals;
+    context.bone_angles = session.angles;
+  }
+  for (std::size_t axis{}; axis != 3; ++axis)
+    context.requested_root_offset[axis].store(session.root_offset[axis],
+                                              std::memory_order_release);
+  context.pose_override_enabled.store(session.pose_override_was_enabled,
+                                      std::memory_order_release);
+  context.freeze_enabled.store(session.freeze_was_enabled,
+                               std::memory_order_release);
+  context.skeleton_overlay_enabled.store(session.overlay_was_enabled,
+                                         std::memory_order_release);
+  context.keyframe_playing.store(session.keyframe_playing_was_enabled,
+                                 std::memory_order_release);
+  context.pose_settings_dirty.store(session.settings_dirty_was_set,
+                                    std::memory_order_release);
+  context.t_pose_session = Context::TPoseCalibrationSession{};
+  SetReflectionStatus(context, status);
+}
+
+bool ConfirmTPoseCalibration(Context &context) noexcept {
+  if (!context.t_pose_calibration_active.load(std::memory_order_acquire))
+    return false;
+  std::vector<std::array<double, 12>> base;
+  std::vector<std::array<double, 3>> angles;
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    base = context.pose_base_locals;
+    angles = context.bone_angles;
+  }
+  if (base.size() != context.runtime.local_space_count ||
+      angles.size() < base.size() ||
+      context.bone_names.size() != base.size()) {
+    context.manual_calibration_issue.store(
+        static_cast<int>(CalibrationIssue::MissingBones),
+        std::memory_order_release);
+    SetReflectionStatus(
+        context, "A/T-pose calibration failed: edited pose is incomplete");
+    return false;
+  }
+  std::map<std::string, std::array<double, 12>> reference;
+  std::vector<Transformd> edited(base.size());
+  for (std::uint32_t bone{}; bone != base.size(); ++bone) {
+    std::array<double, 12> local = base[bone];
+    const auto offset = RotatorToQuat(
+        angles[bone][0], angles[bone][1], angles[bone][2]);
+    const Quatd rotation =
+        QuatNormalize(QuatMultiply(
+            offset, Quatd{local[0], local[1], local[2], local[3]}));
+    local[0] = rotation.x;
+    local[1] = rotation.y;
+    local[2] = rotation.z;
+    local[3] = rotation.w;
+    edited[bone].rotation = rotation;
+    edited[bone].translation = Vec3d{local[4], local[5], local[6]};
+    edited[bone].scale = Vec3d{local[8], local[9], local[10]};
+    if (!context.bone_names[bone].empty())
+      reference.emplace(context.bone_names[bone], local);
+  }
+  const CalibrationValidation validation = ValidateCalibrationPoseLocals(
+      edited, context.bone_parents, context.bone_names);
+  const CalibrationPoseKind expected =
+      context.t_pose_calibration_use_t_pose.load(std::memory_order_acquire)
+          ? CalibrationPoseKind::TPose
+          : CalibrationPoseKind::APose;
+  if (!validation.Valid() || validation.kind != expected) {
+    const CalibrationIssue issue =
+        validation.Valid() ? CalibrationIssue::WrongPoseMode
+                           : validation.issue;
+    context.manual_calibration_issue.store(
+        static_cast<int>(issue), std::memory_order_release);
+    SetReflectionStatus(
+        context,
+        "Calibration pose is invalid; correct the reported shoulder, spine, or leg chain");
+    return false;
+  }
+  context.manual_calibration_issue.store(
+      static_cast<int>(CalibrationIssue::None), std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.manual_motion_reference = std::move(reference);
+  }
+  const bool reconvert =
+      !context.motion_file.empty() &&
+      !PathIsConvertedMotion(context.motion_file);
+  if (reconvert)
+    context.pose_file_action_requested.store(5, std::memory_order_release);
+  CancelTPoseCalibration(
+      context,
+      reconvert
+          ? "Manual A/T-pose calibration saved; re-converting the current VMD"
+          : "Manual A/T-pose calibration saved; convert the VMD again to apply it");
+  context.pose_settings_dirty.store(true, std::memory_order_release);
+  return true;
+}
+
+void StepTPoseCalibrationRequest(Context &context) noexcept {
+  switch (context.t_pose_calibration_request.exchange(
+      0, std::memory_order_acq_rel)) {
+    case 1:
+      static_cast<void>(StartTPoseCalibration(context));
+      break;
+    case 2:
+      static_cast<void>(ConfirmTPoseCalibration(context));
+      break;
+    case 3:
+      CancelTPoseCalibration(context, "A/T-pose calibration cancelled");
+      break;
+    case 4:
+      {
+        std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+        context.manual_motion_reference.clear();
+      }
+      context.pose_settings_dirty.store(true, std::memory_order_release);
+      SetReflectionStatus(context, "Manual A/T-pose calibration cleared");
+      break;
+    default:
+      break;
+  }
+}
+
 // The IK target with its motion across the limb's plane taken out. The plane
 // goes through `root` with normal `hinge` (the elbow/knee's bend axis); the
 // target keeps the end joint's own distance from that plane, so a limb that
@@ -10561,18 +15236,24 @@ struct DiscRow {
   float half_width;
 };
 
-std::vector<DiscRow> DiscRows(const float radius, const float step) {
-  std::vector<DiscRow> rows;
+struct DiscRowSet {
+  std::array<DiscRow, 8> rows{};
+  std::size_t count{};
+};
+
+DiscRowSet DiscRows(const float radius, const float step) {
+  DiscRowSet result;
   if (!(radius > 0.0F) || !(step > 0.0F))
-    return rows;
-  for (float top = -radius; top < radius; top += step) {
+    return result;
+  for (float top = -radius;
+       top < radius && result.count != result.rows.size(); top += step) {
     const float height = (std::min)(step, radius - top);
     const float middle = top + height * 0.5F;
     const float half = std::sqrt((std::max)(0.0F, radius * radius - middle * middle));
     if (half > 0.25F)
-      rows.push_back({top, height, half});
+      result.rows[result.count++] = {top, height, half};
   }
-  return rows;
+  return result;
 }
 
 // How finely a marker is built, from its radius. Every rect and line is one
@@ -10600,9 +15281,13 @@ void DrawOverlayCircle(const AnomalyUe5AhudFrameV1 *frame, const float x, const 
                        const float radius, const std::uint32_t fill, const std::uint32_t ring,
                        const float ring_thickness, const std::uint32_t centre) noexcept {
   const CircleDetail detail = CircleDetailFor(radius);
-  for (const auto &row : DiscRows(radius, detail.strip))
-    frame->draw_rect(frame->user, x - row.half_width, y + row.top, row.half_width * 2.0F,
-                     row.height, fill);
+  const DiscRowSet rows = DiscRows(radius, detail.strip);
+  if (fill != 0)
+    for (std::size_t i{}; i != rows.count; ++i) {
+      const auto &row = rows.rows[i];
+      frame->draw_rect(frame->user, x - row.half_width, y + row.top, row.half_width * 2.0F,
+                       row.height, fill);
+    }
   if (ring != 0) {
     const int kSegments = detail.segments;
     const float kStep = 2.0F * 3.14159265F / static_cast<float>(kSegments);
@@ -10618,6 +15303,842 @@ void DrawOverlayCircle(const AnomalyUe5AhudFrameV1 *frame, const float x, const 
   }
   if (centre != 0)
     frame->draw_rect(frame->user, x - 1.0F, y - 1.0F, 2.0F, 2.0F, centre);
+}
+
+struct JointCircleGeometry {
+  DiscRowSet rows{};
+  std::array<std::array<float, 2>, 16> ring{};
+  int ring_segments{};
+  float radius{};
+};
+
+JointCircleGeometry BuildJointCircleGeometry(const float radius) noexcept {
+  JointCircleGeometry geometry;
+  geometry.radius = radius;
+  const CircleDetail detail = CircleDetailFor(radius);
+  geometry.rows = DiscRows(radius, detail.strip);
+  geometry.ring_segments = detail.segments;
+  const float step =
+      2.0F * 3.14159265F / static_cast<float>(detail.segments);
+  for (int segment{}; segment != detail.segments; ++segment) {
+    const float angle = step * static_cast<float>(segment);
+    geometry.ring[static_cast<std::size_t>(segment)] = {
+        radius * std::cos(angle), radius * std::sin(angle)};
+  }
+  return geometry;
+}
+
+void DrawOverlayJointCircle(
+    const AnomalyUe5AhudFrameV1 *frame, const float x, const float y,
+    const JointCircleGeometry &geometry) noexcept {
+  for (std::size_t i{}; i != geometry.rows.count; ++i) {
+    const auto &row = geometry.rows.rows[i];
+    frame->draw_rect(frame->user, x - row.half_width, y + row.top,
+                     row.half_width * 2.0F, row.height, kOverlayJointFill);
+  }
+  for (int segment{}; segment != geometry.ring_segments; ++segment) {
+    const auto &from =
+        geometry.ring[static_cast<std::size_t>(segment)];
+    const auto &to = geometry.ring[static_cast<std::size_t>(
+        (segment + 1) % geometry.ring_segments)];
+    frame->draw_line(frame->user, x + from[0], y + from[1], x + to[0],
+                     y + to[1], kOverlayJointRing, 1.0F);
+  }
+  frame->draw_rect(frame->user, x - 1.0F, y - 1.0F, 2.0F, 2.0F,
+                   kOverlayJointCentre);
+}
+
+constexpr std::uint32_t kCollisionTorsoColor = ANOMALY_RGBA_V1(70, 190, 255, 190);
+constexpr std::uint32_t kCollisionHeadColor = ANOMALY_RGBA_V1(255, 210, 80, 210);
+constexpr std::uint32_t kCollisionArmColor = ANOMALY_RGBA_V1(80, 220, 120, 190);
+constexpr std::uint32_t kCollisionLegColor = ANOMALY_RGBA_V1(240, 100, 210, 190);
+constexpr std::uint32_t kCollisionContactColor = ANOMALY_RGBA_V1(255, 65, 65, 245);
+
+std::uint32_t CollisionMaskColor(const std::uint8_t mask) noexcept {
+  if ((mask & better_pose::secondary::kCollideTorso) != 0)
+    return kCollisionTorsoColor;
+  if ((mask & better_pose::secondary::kCollideHead) != 0)
+    return kCollisionHeadColor;
+  if ((mask & better_pose::secondary::kCollideArms) != 0)
+    return kCollisionArmColor;
+  return kCollisionLegColor;
+}
+
+bool SameCollisionCapsule(const better_pose::accessory::Capsule &left,
+                          const better_pose::accessory::Capsule &right) noexcept {
+  const auto same = [](const better_pose::accessory::Vec &a,
+                       const better_pose::accessory::Vec &b) {
+    return std::abs(a.x - b.x) < 1e-5 && std::abs(a.y - b.y) < 1e-5 &&
+           std::abs(a.z - b.z) < 1e-5;
+  };
+  return left.mask == right.mask && std::abs(left.radius - right.radius) < 1e-5 &&
+         std::abs(left.end_radius - right.end_radius) < 1e-5 && same(left.a, right.a) &&
+         same(left.b, right.b);
+}
+
+std::uint8_t CollisionMasksForExtra(const Context &context,
+                                    const Context::ExtraMesh &extra) noexcept {
+  std::uint8_t masks = 0;
+  bool mapped_any = false;
+  bool reaches_lower_body = false;
+  for (const std::uint32_t mapped : extra.bone_map) {
+    if (mapped >= context.bone_names.size())
+      continue;
+    mapped_any = true;
+    masks |= better_pose::secondary::kCollideTorso;
+    const std::string &name = context.bone_names[mapped];
+    if (better_pose::secondary::IsHeadAttachment(name) ||
+        name.find("Spine") != std::string::npos ||
+        name.find("Pelvis") != std::string::npos)
+      reaches_lower_body = true;
+    if (better_pose::secondary::IsHeadAttachment(name))
+      masks |= better_pose::secondary::kCollideHead;
+    if (better_pose::secondary::IsArmAttachment(name))
+      masks |= better_pose::secondary::kCollideArms;
+    if (name.find("Thigh") != std::string::npos ||
+        name.find("Calf") != std::string::npos ||
+        name.find("Foot") != std::string::npos ||
+        better_pose::secondary::IsLegAttachment(name))
+      masks |= better_pose::secondary::kCollideLegs;
+  }
+  // A head-mounted ribbon can still be long enough to reach the hips. Its
+  // mapped head/spine anchors do not say where the tip ends, so use the actual
+  // chain size to add the optional leg group. Ornament-sized extras stay out.
+  if (reaches_lower_body && extra.bone_count >= 8)
+    masks |= better_pose::secondary::kCollideLegs;
+  // Also retain arm collision for accessories mounted through an arm socket.
+  if (extra.poseable_socket_bone < context.bone_names.size() &&
+      better_pose::secondary::IsArmAttachment(
+          context.bone_names[extra.poseable_socket_bone]))
+    masks |= better_pose::secondary::kCollideArms;
+  if (!mapped_any) {
+    std::uint32_t socket = extra.poseable_socket_bone;
+    if (socket == (std::numeric_limits<std::uint32_t>::max)())
+      socket = extra.anchor_body;
+    if (socket < context.bone_names.size()) {
+      const std::string &name = context.bone_names[socket];
+      masks |= better_pose::secondary::kCollideTorso;
+      if (better_pose::secondary::IsHeadAttachment(name))
+        masks |= better_pose::secondary::kCollideHead;
+      if (better_pose::secondary::IsArmAttachment(name))
+        masks |= better_pose::secondary::kCollideArms;
+      if (better_pose::secondary::IsLegAttachment(name))
+        masks |= better_pose::secondary::kCollideLegs;
+    }
+  }
+  const auto tuning = context.secondary_tuning.Load();
+  return better_pose::secondary::EffectiveCollisionMask(
+      masks, tuning.extended_collision, tuning.native_limits);
+}
+
+std::vector<better_pose::accessory::Capsule> FallbackCollisionCapsules(
+    const Context &context, const std::uint8_t masks, const std::size_t body_count,
+    const std::vector<std::array<double, 3>> &points) {
+  using better_pose::accessory::Capsule;
+  using better_pose::accessory::Vec;
+  std::vector<Capsule> capsules;
+  if (masks == 0 || body_count == 0 || points.size() < body_count ||
+      context.bone_names.size() < body_count)
+    return capsules;
+  const auto index = [&](const std::string_view name) {
+    for (std::size_t i{}; i != body_count; ++i)
+      if (context.bone_names[i] == name)
+        return static_cast<int>(i);
+    return -1;
+  };
+  const auto position = [&](const int bone) {
+    const auto &p = points[static_cast<std::size_t>(bone)];
+    return Vec{p[0], p[1], p[2]};
+  };
+  const auto add = [&](const int a, const int b, const double radius,
+                       const std::uint8_t mask, const double end_radius = 0.0) {
+    if (a >= 0 && b >= 0)
+      capsules.push_back({position(a), position(b), radius, mask, end_radius});
+  };
+  const auto add_chain = [&](const char *first, const char *second,
+                             const double radius, const std::uint8_t mask,
+                             const double end_radius = 0.0) {
+    add(index(first), index(second), radius, mask, end_radius);
+  };
+
+  if ((masks & better_pose::secondary::kCollideTorso) != 0) {
+    add_chain("Bip001-Pelvis", "Bip001-Spine",
+              better_pose::secondary::kTorsoCollisionRadiusCm,
+              better_pose::secondary::kCollideTorso);
+    add_chain("Bip001-Spine", "Bip001-Spine1",
+              better_pose::secondary::kTorsoCollisionRadiusCm,
+              better_pose::secondary::kCollideTorso);
+    add_chain("Bip001-Spine1", "Bip001-Spine2",
+              better_pose::secondary::kTorsoCollisionRadiusCm,
+              better_pose::secondary::kCollideTorso);
+  }
+  if ((masks & better_pose::secondary::kCollideHead) != 0) {
+    const int neck = index("Bip001-Neck");
+    const int head = index("Bip001-Head");
+    add(neck, head, better_pose::secondary::kNeckCollisionRadiusCm,
+        better_pose::secondary::kCollideHead,
+        better_pose::secondary::kNeckTopCollisionRadiusCm);
+    add(head, head, better_pose::secondary::kHeadCollisionRadiusCm,
+        better_pose::secondary::kCollideHead);
+  }
+  if ((masks & better_pose::secondary::kCollideArms) != 0) {
+    for (const char *side : {"L", "R"}) {
+      const std::string clavicle = std::string("Bip001-") + side + "-Clavicle";
+      const std::string upper = std::string("Bip001-") + side + "-UpperArm";
+      const std::string forearm = std::string("Bip001-") + side + "-Forearm";
+      const std::string hand = std::string("Bip001-") + side + "-Hand";
+      add_chain(clavicle.c_str(), upper.c_str(),
+                better_pose::secondary::kShoulderCollisionRadiusCm,
+                better_pose::secondary::kCollideArms);
+      add_chain(upper.c_str(), forearm.c_str(),
+                better_pose::secondary::kArmCollisionRadiusCm,
+                better_pose::secondary::kCollideArms);
+      add_chain(forearm.c_str(), hand.c_str(),
+                better_pose::secondary::kHandCollisionRadiusCm,
+                better_pose::secondary::kCollideArms);
+    }
+  }
+  if ((masks & better_pose::secondary::kCollideLegs) != 0) {
+    const int left_hip = index("Bip001-L-Thigh");
+    const int right_hip = index("Bip001-R-Thigh");
+    double cap = 0.0;
+    if (left_hip >= 0 && right_hip >= 0)
+      cap = 0.5 * better_pose::accessory::Length(
+                      position(left_hip) - position(right_hip));
+    if (context.secondary_tuning.Load().extended_collision)
+      cap = (std::min)(better_pose::secondary::kLegCollisionRadiusCm, cap);
+    const double thigh_radius = (std::max)(1.0, cap);
+    const double calf_radius = (std::max)(1.0, cap * 0.78);
+    for (const char *side : {"L", "R"}) {
+      const std::string thigh = std::string("Bip001-") + side + "-Thigh";
+      const std::string calf = std::string("Bip001-") + side + "-Calf";
+      const std::string foot = std::string("Bip001-") + side + "-Foot";
+      const int a = index(thigh), b = index(calf), c = index(foot);
+      if (a >= 0 && b >= 0) {
+        const Vec start = position(a) + (position(b) - position(a)) * 0.33;
+        capsules.push_back({start, position(b), thigh_radius,
+                            better_pose::secondary::kCollideLegs, 0.0});
+      }
+      add(b, c, calf_radius, better_pose::secondary::kCollideLegs);
+    }
+  }
+  return capsules;
+}
+
+[[maybe_unused]] std::uint32_t CorrectLegacyHierarchyCollisions(
+    Context &context, const Context::ExtraMesh &extra,
+    std::vector<Transformd> &world,
+    const std::vector<PackedTransform> &body_pose,
+    std::vector<std::uint8_t> &held) {
+  if (world.size() < 2 || extra.parents.size() != world.size() ||
+      extra.bone_map.size() != world.size() || body_pose.empty())
+    return 0;
+  const std::uint8_t masks = CollisionMasksForExtra(context, extra);
+  if (masks == 0)
+    return 0;
+  if (held.size() != world.size())
+    held.assign(world.size(), 0);
+  std::vector<std::array<double, 3>> body_points(body_pose.size());
+  for (std::size_t bone{}; bone != body_pose.size(); ++bone)
+    body_points[bone] = {body_pose[bone].translation[0],
+                         body_pose[bone].translation[1],
+                         body_pose[bone].translation[2]};
+  const auto capsules = FallbackCollisionCapsules(
+      context, masks, body_pose.size(), body_points);
+  if (capsules.empty())
+    return 0;
+
+  const std::vector<Transformd> driven_world = world;
+  std::vector<Transformd> local(world.size());
+  for (std::size_t bone{}; bone != world.size(); ++bone) {
+    const std::int32_t parent = extra.parents[bone];
+    local[bone] =
+        parent >= 0 && static_cast<std::size_t>(parent) < bone
+            ? TransformMultiply(TransformInverse(world[static_cast<std::size_t>(parent)]),
+                                world[bone])
+            : world[bone];
+  }
+  const auto rebuild_world = [&]() {
+    for (std::size_t bone{}; bone != world.size(); ++bone) {
+      const std::int32_t parent = extra.parents[bone];
+      if (extra.bone_map[bone] != (std::numeric_limits<std::uint32_t>::max)() ||
+          parent < 0 || static_cast<std::size_t>(parent) >= bone)
+        world[bone] = driven_world[bone];
+      else
+        world[bone] =
+            TransformMultiply(world[static_cast<std::size_t>(parent)], local[bone]);
+    }
+  };
+  const auto aligned_point =
+      [&](const std::size_t bone) -> std::optional<Vec3d> {
+    std::int32_t walk = extra.parents[bone];
+    for (std::size_t guard{}; walk >= 0 && guard != world.size(); ++guard) {
+      const std::size_t parent = static_cast<std::size_t>(walk);
+      if (parent < extra.bone_map.size() &&
+          extra.bone_map[parent] !=
+              (std::numeric_limits<std::uint32_t>::max)()) {
+        const std::uint32_t target = extra.bone_map[parent];
+        if (target < body_pose.size())
+          return V3Add(
+              world[bone].translation,
+              V3Sub(Vec3d{body_pose[target].translation[0],
+                          body_pose[target].translation[1],
+                          body_pose[target].translation[2]},
+                    world[parent].translation));
+      }
+      walk = extra.parents[parent];
+    }
+    return std::nullopt;
+  };
+  const auto limit_swing = [](Quatd swing) {
+    const double angle =
+        2.0 * std::acos(std::clamp(std::abs(swing.w), 0.0, 1.0));
+    constexpr double kMaximum = 3.0 * 3.14159265358979323846 / 180.0;
+    if (angle <= kMaximum || angle < 1e-9)
+      return swing;
+    const double scale = std::sin(kMaximum * 0.5) /
+                         std::sin(angle * 0.5);
+    return Quatd{swing.x * scale, swing.y * scale, swing.z * scale,
+                 swing.w >= 0.0 ? std::cos(kMaximum * 0.5)
+                                : -std::cos(kMaximum * 0.5)};
+  };
+
+  std::uint32_t corrections{};
+  for (int pass{}; pass != 2; ++pass) {
+    rebuild_world();
+    bool changed = false;
+    for (std::size_t bone{}; bone != world.size(); ++bone) {
+      if (extra.bone_map[bone] !=
+          (std::numeric_limits<std::uint32_t>::max)())
+        continue;
+      const std::int32_t parent = extra.parents[bone];
+      if (parent < 0 || static_cast<std::size_t>(parent) >= bone)
+        continue;
+      if (extra.bone_map[static_cast<std::size_t>(parent)] !=
+          (std::numeric_limits<std::uint32_t>::max)())
+        continue;  // Hair roots legitimately sit inside the head socket.
+      const auto head = aligned_point(static_cast<std::size_t>(parent));
+      const auto end = aligned_point(bone);
+      if (!head || !end)
+        continue;
+      better_pose::accessory::Vec best_slide{};
+      double best_gap = (std::numeric_limits<double>::infinity)();
+      for (const double slot : {0.5, 0.75, 1.0}) {
+        const Vec3d point = V3Add(*head, V3Scale(V3Sub(*end, *head), slot));
+        const better_pose::accessory::Vec a{point.x, point.y, point.z};
+        for (const auto &capsule : capsules) {
+          if ((capsule.mask & masks) == 0)
+            continue;
+          const auto closest =
+              better_pose::accessory::Closest(a, capsule.a, capsule.b);
+          const auto out = a - closest;
+          const double distance = better_pose::accessory::Length(out);
+          if (distance <= 0.25)
+            continue;
+          const double radius =
+              better_pose::accessory::RadiusAt(capsule, closest);
+          const double gap = distance - radius;
+          if (gap < best_gap) {
+            best_gap = gap;
+            const auto slide = closest + out * ((radius + 0.5) / distance);
+            best_slide = slide;
+          }
+        }
+      }
+      const bool was_held = held[bone] != 0;
+      const double release_gap = 1.0;
+      const double engage_gap = 0.2;
+      if (best_gap >= (was_held ? release_gap : engage_gap)) {
+        held[bone] = 0;
+        continue;
+      }
+      held[bone] = 1;
+      const Vec3d current = V3Sub(*end, *head);
+      const Vec3d wanted =
+          V3Sub(Vec3d{best_slide.x, best_slide.y, best_slide.z}, *head);
+      const double current_length = V3Length(current);
+      const double wanted_length = V3Length(wanted);
+      if (current_length < 1e-6 || wanted_length < 1e-6)
+        continue;
+      const Quatd swing =
+          limit_swing(QuatFromTo(V3Scale(current, 1.0 / current_length),
+                                V3Scale(wanted, 1.0 / wanted_length)));
+      const std::size_t parent_index = static_cast<std::size_t>(parent);
+      const Quatd inverse_parent =
+          Quatd{-world[parent_index].rotation.x,
+                -world[parent_index].rotation.y,
+                -world[parent_index].rotation.z,
+                world[parent_index].rotation.w};
+      const Quatd local_swing = QuatNormalize(QuatMultiply(
+          QuatMultiply(inverse_parent, swing), world[parent_index].rotation));
+      local[bone].rotation =
+          QuatNormalize(QuatMultiply(local_swing, local[bone].rotation));
+      local[bone].translation =
+          QuatRotateVector(local_swing, local[bone].translation);
+      changed = true;
+      ++corrections;
+    }
+    if (!changed)
+      break;
+  }
+  rebuild_world();
+  return corrections;
+}
+
+void DrawAccessoryCollisionDebug(Context &context,
+                                 const AnomalyUe5AhudFrameV1 *frame,
+                                 const std::size_t body_count,
+                                 const std::vector<std::array<double, 3>> &body_points,
+                                 const bool refresh_diagnostics,
+                                 const bool compute_contacts) {
+  if (!context.collision_debug_enabled.load(std::memory_order_acquire) ||
+      !context.collision_debug_page_visible.load(std::memory_order_acquire) ||
+      !AhudFrameReady(frame))
+    return;
+  auto &capsules = context.overlay_collision_capsules;
+  auto &contacts = context.overlay_collision_contacts;
+  if (refresh_diagnostics) {
+  capsules.clear();
+  contacts.clear();
+  context.overlay_distance_constraint_links.clear();
+  context.overlay_self_collision_contacts.clear();
+  struct ProbePose {
+    std::vector<better_pose::accessory::Vec> points;
+    std::vector<std::int32_t> parents;
+    std::vector<std::uint32_t> map;
+  };
+  std::vector<ProbePose> probes;
+  std::uint32_t accessories{};
+  std::uint32_t corrections{};
+  float maximum_depth{};
+  std::uint8_t needed_masks{};
+  {
+    std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
+    for (const auto &extra : context.extra_meshes) {
+      if (!extra.used_hierarchy)
+        continue;
+      ++accessories;
+      needed_masks |= CollisionMasksForExtra(context, extra);
+      if (compute_contacts && extra.bone_count > 1 &&
+          extra.parents.size() == extra.bone_count &&
+          extra.bone_map.size() == extra.bone_count) {
+        const std::uintptr_t accessory =
+            extra.poseable_active && extra.poseable_component != 0
+                ? extra.poseable_component
+                : extra.object;
+        Transformd accessory_world;
+        if (accessory != 0 &&
+            ReadMeshComponentToWorld(context, accessory, accessory_world)) {
+          ProbePose probe;
+          probe.parents = extra.parents;
+          probe.map = extra.bone_map;
+          probe.points.resize(extra.bone_count);
+          bool have_points = false;
+          if (extra.poseable_scratch_pose.size() == extra.bone_count) {
+            for (std::size_t bone{}; bone != extra.bone_count; ++bone) {
+              PackedTransform packed{};
+              std::memcpy(&packed, extra.poseable_scratch_pose[bone].data(),
+                          sizeof(PackedTransform));
+              const Transformd joint =
+                  TransformMultiply(accessory_world, UnpackTransform(packed));
+              probe.points[bone] = {joint.translation.x, joint.translation.y,
+                                    joint.translation.z};
+            }
+            have_points = true;
+          } else if (CoreReady(context.core) && extra.component_space_data != 0) {
+            std::vector<std::uint8_t> raw(
+                static_cast<std::size_t>(extra.bone_count) * kTransformSize);
+            AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
+            if (context.core->read_memory(context.core->user,
+                                          extra.component_space_data, span)
+                    .code == ANOMALY_STATUS_V1_OK) {
+              for (std::size_t bone{}; bone != extra.bone_count; ++bone) {
+                PackedTransform packed{};
+                std::memcpy(&packed,
+                            raw.data() + static_cast<std::size_t>(bone) * kTransformSize,
+                            sizeof(packed));
+                const Transformd joint =
+                    TransformMultiply(accessory_world, UnpackTransform(packed));
+                probe.points[bone] = {joint.translation.x, joint.translation.y,
+                                      joint.translation.z};
+              }
+              have_points = true;
+            }
+          } else if (extra.bind_world.size() == extra.bone_count) {
+            for (std::size_t bone{}; bone != extra.bone_count; ++bone) {
+              PackedTransform packed{};
+              std::memcpy(&packed, extra.bind_world[bone].data(),
+                          sizeof(PackedTransform));
+              const Transformd joint =
+                  TransformMultiply(accessory_world, UnpackTransform(packed));
+              probe.points[bone] = {joint.translation.x, joint.translation.y,
+                                    joint.translation.z};
+            }
+            have_points = true;
+          }
+          if (have_points)
+            probes.push_back(std::move(probe));
+        }
+      }
+      const auto &debug = extra.accessory_dynamics.CollisionDebug();
+      context.overlay_distance_constraint_links.insert(
+          context.overlay_distance_constraint_links.end(),
+          debug.distance_links.begin(), debug.distance_links.end());
+      for (const auto &contact : debug.self_contacts)
+        if (contact.active)
+          context.overlay_self_collision_contacts.push_back(contact);
+      for (const auto &capsule : debug.capsules) {
+        if ((capsule.mask & better_pose::secondary::kKawaiiLimit) != 0)
+          continue;
+        const bool duplicate =
+            std::any_of(capsules.begin(), capsules.end(), [&capsule](const auto &existing) {
+              return SameCollisionCapsule(existing, capsule);
+            });
+        if (!duplicate)
+          capsules.push_back(capsule);
+      }
+      for (const auto &contact : debug.contacts)
+        if ((contact.mask & better_pose::secondary::kKawaiiLimit) == 0)
+          contacts.push_back(contact);
+      corrections += static_cast<std::uint32_t>(debug.corrections);
+      maximum_depth = (std::max)(maximum_depth, static_cast<float>(debug.maximum_depth));
+    }
+  }
+  for (const auto &capsule :
+       FallbackCollisionCapsules(context, needed_masks, body_count, body_points)) {
+    const bool duplicate =
+        std::any_of(capsules.begin(), capsules.end(), [&capsule](const auto &existing) {
+          return SameCollisionCapsule(existing, capsule);
+        });
+    if (!duplicate)
+      capsules.push_back(capsule);
+  }
+  // Contact diagnostics must describe what is actually displayed. The
+  // simulation snapshot above only exists once the replacement accessory path
+  // is active; this pass reads the submitted component pose directly.
+  std::uint32_t probe_edges{};
+  double nearest_gap = (std::numeric_limits<double>::infinity)();
+  const auto aligned_probe_point =
+      [&](const ProbePose &probe, const std::size_t bone)
+      -> std::optional<better_pose::accessory::Vec> {
+    if (bone >= probe.points.size() || bone >= probe.parents.size())
+      return std::nullopt;
+    std::int32_t walk = probe.parents[bone];
+    for (std::size_t guard{}; walk >= 0 && guard != probe.parents.size(); ++guard) {
+      const std::size_t parent = static_cast<std::size_t>(walk);
+      if (parent < probe.map.size() &&
+          probe.map[parent] != (std::numeric_limits<std::uint32_t>::max)()) {
+        const std::uint32_t body = probe.map[parent];
+        if (body < body_points.size()) {
+          const auto &body_point = body_points[body];
+          const better_pose::accessory::Vec target{
+              body_point[0], body_point[1], body_point[2]};
+          const better_pose::accessory::Vec offset =
+              target - probe.points[parent];
+          return probe.points[bone] + offset;
+        }
+      }
+      walk = probe.parents[parent];
+    }
+    return std::nullopt;
+  };
+  for (const auto &probe : probes) {
+    for (std::size_t bone{}; bone < probe.points.size(); ++bone) {
+      if (bone >= probe.map.size() ||
+          probe.map[bone] != (std::numeric_limits<std::uint32_t>::max)())
+        continue;
+      const std::int32_t parent =
+          bone < probe.parents.size() ? probe.parents[bone] : -1;
+      if (parent < 0 || static_cast<std::size_t>(parent) >= probe.points.size())
+        continue;
+      if (probe.map[static_cast<std::size_t>(parent)] !=
+          (std::numeric_limits<std::uint32_t>::max)())
+        continue;  // The first root segment is fixed inside the head socket.
+      ++probe_edges;
+      better_pose::accessory::CollisionContact deepest;
+      const auto aligned_head =
+          aligned_probe_point(probe, static_cast<std::size_t>(parent));
+      const auto aligned_end = aligned_probe_point(probe, bone);
+      if (!aligned_head || !aligned_end)
+        continue;
+      const better_pose::accessory::Vec head = *aligned_head;
+      const better_pose::accessory::Vec end = *aligned_end;
+      for (const double slot : {0.5, 0.75, 1.0}) {
+        const better_pose::accessory::Vec point =
+            head + (end - head) * slot;
+        for (const auto &capsule : capsules) {
+          if ((capsule.mask & needed_masks) == 0)
+            continue;
+          const better_pose::accessory::Vec closest =
+              better_pose::accessory::Closest(point, capsule.a, capsule.b);
+          const better_pose::accessory::Vec out = point - closest;
+          const double distance = better_pose::accessory::Length(out);
+          if (distance <= 0.25)
+            continue;
+          const double radius = better_pose::accessory::RadiusAt(capsule, closest);
+          nearest_gap =
+              (std::min)(nearest_gap, distance - radius);
+          const double depth = radius - distance;
+          if (depth <= deepest.depth)
+            continue;
+          deepest.strand = point;
+          deepest.surface = closest + out * (radius / distance);
+          deepest.capsule_a = capsule.a;
+          deepest.capsule_b = capsule.b;
+          deepest.radius = radius;
+          deepest.depth = depth;
+          deepest.bone = static_cast<std::uint32_t>(bone);
+          deepest.mask = capsule.mask;
+        }
+      }
+      if (deepest.depth <= 0.0)
+        continue;
+      const bool duplicate = std::any_of(
+          contacts.begin(), contacts.end(), [&deepest](const auto &existing) {
+            const auto same_point = [](const auto &a, const auto &b) {
+              return better_pose::accessory::Length(a - b) < 0.2;
+            };
+            return existing.mask == deepest.mask &&
+                   same_point(existing.strand, deepest.strand) &&
+                   same_point(existing.surface, deepest.surface);
+          });
+      if (!duplicate) {
+        maximum_depth =
+            (std::max)(maximum_depth, static_cast<float>(deepest.depth));
+        contacts.push_back(deepest);
+      }
+    }
+  }
+  std::uint32_t torso{}, head{}, arms{}, legs{};
+  for (const auto &capsule : capsules) {
+    torso += (capsule.mask & better_pose::secondary::kCollideTorso) != 0;
+    head += (capsule.mask & better_pose::secondary::kCollideHead) != 0;
+    arms += (capsule.mask & better_pose::secondary::kCollideArms) != 0;
+    legs += (capsule.mask & better_pose::secondary::kCollideLegs) != 0;
+  }
+  std::uint32_t contact_torso{}, contact_head{}, contact_arms{}, contact_legs{};
+  for (const auto &contact : contacts) {
+    contact_torso += (contact.mask & better_pose::secondary::kCollideTorso) != 0;
+    contact_head += (contact.mask & better_pose::secondary::kCollideHead) != 0;
+    contact_arms += (contact.mask & better_pose::secondary::kCollideArms) != 0;
+    contact_legs += (contact.mask & better_pose::secondary::kCollideLegs) != 0;
+  }
+  context.collision_debug_accessories.store(accessories, std::memory_order_release);
+  context.collision_debug_capsules.store(
+      static_cast<std::uint32_t>(capsules.size()), std::memory_order_release);
+  context.collision_debug_torso.store(torso, std::memory_order_release);
+  context.collision_debug_head.store(head, std::memory_order_release);
+  context.collision_debug_arms.store(arms, std::memory_order_release);
+  context.collision_debug_legs.store(legs, std::memory_order_release);
+  context.collision_debug_contacts.store(
+      static_cast<std::uint32_t>(contacts.size()), std::memory_order_release);
+  context.collision_debug_contacts_torso.store(contact_torso, std::memory_order_release);
+  context.collision_debug_contacts_head.store(contact_head, std::memory_order_release);
+  context.collision_debug_contacts_arms.store(contact_arms, std::memory_order_release);
+  context.collision_debug_contacts_legs.store(contact_legs, std::memory_order_release);
+  context.collision_debug_corrections.store(corrections, std::memory_order_release);
+  context.collision_debug_probes.store(probe_edges, std::memory_order_release);
+  context.collision_debug_max_depth.store(maximum_depth, std::memory_order_release);
+  context.collision_debug_nearest_gap.store(
+      std::isfinite(nearest_gap)
+          ? static_cast<float>(nearest_gap)
+          : (std::numeric_limits<float>::infinity)(),
+      std::memory_order_release);
+  {
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t last =
+        context.collision_debug_last_log_ms.load(std::memory_order_acquire);
+    if (compute_contacts && (last == 0 || now - last >= 5000)) {
+      context.collision_debug_last_log_ms.store(now, std::memory_order_release);
+      char message[384]{};
+      if (std::isfinite(nearest_gap))
+        std::snprintf(
+            message, sizeof(message),
+            "betterpose collision debug accessories=%u capsules=%u probes=%u "
+            "contacts=%u groups=%u/%u/%u/%u nearest_gap=%.3fcm max_depth=%.3fcm",
+            accessories, static_cast<unsigned>(capsules.size()), probe_edges,
+            static_cast<unsigned>(contacts.size()), contact_torso, contact_head,
+            contact_arms, contact_legs, nearest_gap, maximum_depth);
+      else
+        std::snprintf(
+            message, sizeof(message),
+            "betterpose collision debug accessories=%u capsules=%u probes=%u "
+            "contacts=%u groups=%u/%u/%u/%u nearest_gap=n/a max_depth=%.3fcm",
+            accessories, static_cast<unsigned>(capsules.size()), probe_edges,
+            static_cast<unsigned>(contacts.size()), contact_torso, contact_head,
+            contact_arms, contact_legs, maximum_depth);
+      LogDiagnostic(context, message);
+    }
+  }
+  }
+  if (refresh_diagnostics && capsules.empty() && contacts.empty() &&
+      context.overlay_distance_constraint_links.empty() &&
+      context.overlay_self_collision_contacts.empty()) {
+    context.overlay_collision_lines.clear();
+    context.overlay_collision_points.clear();
+  }
+  if (capsules.empty() && contacts.empty() &&
+      context.overlay_distance_constraint_links.empty() &&
+      context.overlay_self_collision_contacts.empty())
+    return;
+
+  if (refresh_diagnostics) {
+    auto &lines = context.overlay_collision_lines;
+    auto &screen_points = context.overlay_collision_points;
+    lines.clear();
+    screen_points.clear();
+    const float width = static_cast<float>(frame->viewport_width);
+    const float height = static_cast<float>(frame->viewport_height);
+    const auto project_point = [&](const better_pose::accessory::Vec &point,
+                                   std::array<float, 2> &screen) {
+      const double world[3]{point.x, point.y, point.z};
+      float projected[2]{};
+      double depth{};
+      if (frame->project(frame->user, world, projected, &depth) == 0 ||
+          !(depth > 0.0) || !std::isfinite(projected[0]) ||
+          !std::isfinite(projected[1]) || projected[0] < -64.0F ||
+          projected[1] < -64.0F || projected[0] > width + 64.0F ||
+          projected[1] > height + 64.0F)
+        return false;
+      screen = {projected[0], projected[1]};
+      return true;
+    };
+    const auto add_line = [&](const std::array<float, 2> &from,
+                              const std::array<float, 2> &to,
+                              const std::uint32_t color,
+                              const float thickness) {
+      lines.push_back({from, to, color, thickness});
+    };
+    const auto add_point = [&](const std::array<float, 2> &position,
+                               const float size, const std::uint32_t color) {
+      screen_points.push_back({position, size, color});
+    };
+    for (const auto &capsule : capsules) {
+      std::array<float, 2> a{}, b{};
+      if (!project_point(capsule.a, a) || !project_point(capsule.b, b))
+        continue;
+      const std::uint32_t color = CollisionMaskColor(capsule.mask);
+      const double end_radius =
+          capsule.end_radius > 0.0 ? capsule.end_radius : capsule.radius;
+      const better_pose::accessory::Vec axis = capsule.b - capsule.a;
+      const double world_length = better_pose::accessory::Length(axis);
+      better_pose::accessory::Vec basis_u{1, 0, 0};
+      better_pose::accessory::Vec basis_v{0, 1, 0};
+      if (world_length > 1e-6) {
+        const auto unit_axis = axis * (1.0 / world_length);
+        const auto candidate =
+            std::abs(unit_axis.x) < 0.8
+                ? better_pose::accessory::Vec{1, 0, 0}
+                : better_pose::accessory::Vec{0, 1, 0};
+        basis_u = better_pose::accessory::Unit(
+            better_pose::accessory::Cross(unit_axis, candidate));
+        basis_v = better_pose::accessory::Unit(
+            better_pose::accessory::Cross(unit_axis, basis_u));
+      }
+      constexpr int kRingSegments = 6;
+      const auto ring_points =
+          [&](const better_pose::accessory::Vec &centre,
+              const double radius,
+              std::array<std::array<float, 2>, kRingSegments> &ring) {
+            for (int segment{}; segment != kRingSegments; ++segment) {
+              const double angle =
+                  2.0 * 3.14159265358979323846 *
+                  static_cast<double>(segment) /
+                  static_cast<double>(kRingSegments);
+              const auto point =
+                  centre + basis_u * (std::cos(angle) * radius) +
+                  basis_v * (std::sin(angle) * radius);
+              if (!project_point(
+                      point, ring[static_cast<std::size_t>(segment)]))
+                return false;
+            }
+            return true;
+          };
+      std::array<std::array<float, 2>, kRingSegments> ring_a{}, ring_b{};
+      const bool have_a = ring_points(capsule.a, capsule.radius, ring_a);
+      const bool have_b =
+          world_length > 1e-6 &&
+          ring_points(capsule.b, end_radius, ring_b);
+      const auto add_ring =
+          [&](const std::array<std::array<float, 2>, kRingSegments> &ring) {
+            for (int segment{}; segment != kRingSegments; ++segment) {
+              add_line(ring[static_cast<std::size_t>(segment)],
+                       ring[static_cast<std::size_t>(
+                           (segment + 1) % kRingSegments)],
+                       color, 1.2F);
+            }
+          };
+      if (have_a)
+        add_ring(ring_a);
+      if (have_b)
+        add_ring(ring_b);
+      if (have_a && have_b) {
+        for (const int segment : {0, 2, 4})
+          add_line(ring_a[static_cast<std::size_t>(segment)],
+                   ring_b[static_cast<std::size_t>(segment)], color, 1.2F);
+        add_line(a, b, color, 1.0F);
+      }
+      add_point(a, 2.0F, color);
+      if (world_length > 1e-6)
+        add_point(b, 2.0F, color);
+    }
+
+    std::stable_sort(contacts.begin(), contacts.end(),
+                     [](const auto &left, const auto &right) {
+                       return left.depth > right.depth;
+                     });
+    const std::size_t shown_contacts =
+        (std::min)(contacts.size(), std::size_t{12});
+    for (std::size_t i{}; i != shown_contacts; ++i) {
+      std::array<float, 2> strand{}, surface{};
+      if (!project_point(contacts[i].strand, strand) ||
+          !project_point(contacts[i].surface, surface))
+        continue;
+      const std::uint32_t group_color = CollisionMaskColor(contacts[i].mask);
+      add_line(strand, surface, group_color, 2.0F);
+      add_point(strand, 3.0F, kCollisionContactColor);
+      add_point(surface, 5.0F, group_color);
+    }
+    for (const auto &link : context.overlay_distance_constraint_links) {
+      std::array<float, 2> a{}, b{};
+      if (!project_point(link.a, a) || !project_point(link.b, b))
+        continue;
+      const std::uint32_t color =
+          link.corrected ? kCollisionContactColor
+                         : ANOMALY_RGBA_V1(90, 225, 230, 210);
+      add_line(a, b, color, link.corrected ? 2.2F : 1.5F);
+      add_point(a, link.corrected ? 3.5F : 2.5F, color);
+      add_point(b, link.corrected ? 3.5F : 2.5F, color);
+    }
+    for (const auto &contact : context.overlay_self_collision_contacts) {
+      std::array<float, 2> a{}, b{};
+      const better_pose::accessory::Vec contact_a{
+          contact.a.x, contact.a.y, contact.a.z};
+      const better_pose::accessory::Vec contact_b{
+          contact.b.x, contact.b.y, contact.b.z};
+      if (!project_point(contact_a, a) || !project_point(contact_b, b))
+        continue;
+      const std::uint32_t color =
+          contact.distance < contact.safety
+              ? ANOMALY_RGBA_V1(255, 70, 70, 245)
+              : ANOMALY_RGBA_V1(255, 205, 70, 235);
+      const std::uint32_t outer =
+          ANOMALY_RGBA_V1(255, 255, 255, 245);
+      add_line(a, b, color, 2.6F);
+      add_point(a, contact.a_outer ? 5.0F : 4.0F,
+                contact.a_outer ? outer : color);
+      add_point(b, contact.b_outer ? 5.0F : 4.0F,
+                contact.b_outer ? outer : color);
+    }
+  }
+
+  for (const auto &line : context.overlay_collision_lines)
+    frame->draw_line(frame->user, line.from[0], line.from[1], line.to[0],
+                     line.to[1], line.color, line.thickness);
+  for (const auto &point : context.overlay_collision_points)
+    frame->draw_rect(frame->user, point.position[0] - point.size * 0.5F,
+                     point.position[1] - point.size * 0.5F, point.size,
+                     point.size, point.color);
 }
 
 // A joint's world position, for focusing the pose camera on it. Render
@@ -11129,8 +16650,14 @@ void TimelineDiamond(const AnomalyUe5AhudFrameV1 *frame, const float x, const fl
 
 void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) noexcept {
   namespace tl = better_pose::timeline;
+  const bool motion_loaded =
+      context.motion_loaded.load(std::memory_order_acquire);
+  const bool mmd_export_timeline =
+      context.keyframe_mmd_export_timeline.load(std::memory_order_acquire);
+  const bool motion_export_timeline =
+      motion_loaded && mmd_export_timeline;
   if (!context.keyframe_overlay_enabled.load(std::memory_order_acquire) ||
-      context.motion_loaded.load(std::memory_order_acquire) || frame == nullptr ||
+      (motion_loaded && !mmd_export_timeline) || frame == nullptr ||
       frame->viewport_width < 400 || frame->viewport_height < 200) {
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
     context.keyframe_overlay_valid = false;
@@ -11138,22 +16665,75 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
   }
   std::vector<tl::KeyMark> marks;
   std::uint32_t length{};
+  std::uint32_t last_key_frame{};
   std::size_t key_count{};
-  {
+  std::size_t bone_keys{};
+  std::size_t morph_keys{};
+  std::size_t camera_keys{};
+  std::array<bool, 3> span_visible{};
+  std::array<double, 6> span_edges{};
+  std::shared_ptr<const Context::MotionTimelineCache> motion_timeline_cache;
+  double playhead{};
+  if (motion_export_timeline) {
+    {
+      std::lock_guard<std::mutex> lock(context.motion_timeline_mutex);
+      motion_timeline_cache = context.motion_timeline;
+    }
+    if (motion_timeline_cache) {
+      length = motion_timeline_cache->last_frame;
+      bone_keys = motion_timeline_cache->bone_key_count;
+      morph_keys = motion_timeline_cache->morph_key_count;
+      camera_keys = motion_timeline_cache->camera_key_count;
+      span_visible = motion_timeline_cache->lane_span;
+      span_edges = motion_timeline_cache->span_edges;
+      playhead =
+          static_cast<double>(motion_timeline_cache->first_frame) +
+          context.motion_seconds.load(std::memory_order_acquire) *
+              motion_timeline_cache->fps;
+    }
+  } else {
     std::lock_guard<std::mutex> lock(context.keyframe_mutex);
     key_count = context.keyframe_track.Size();
-    length = context.keyframe_track.LastFrame();
+    last_key_frame = context.keyframe_track.LastFrame();
     marks.reserve(key_count);
-    for (const auto &key : context.keyframe_track.Keys())
-      marks.push_back({key.frame, key.has_pose, key.has_expression, key.has_camera, 0.0F});
+    for (const auto &key : context.keyframe_track.Keys()) {
+      const bool root_translation = std::any_of(
+          key.root_offset.begin(), key.root_offset.end(),
+          [](const double value) { return std::abs(value) > 1e-9; });
+      const bool bone_export =
+          key.has_pose && (!key.bones.empty() || root_translation);
+      const bool morph_export =
+          key.has_expression && !key.morphs.empty();
+      const bool camera_export = key.has_camera;
+      if (mmd_export_timeline) {
+        bone_keys += key.bones.size() + (root_translation ? 1U : 0U);
+        morph_keys += key.morphs.size();
+        camera_keys += camera_export ? 1U : 0U;
+      }
+      marks.push_back(mmd_export_timeline
+                          ? tl::KeyMark{key.frame, bone_export, morph_export,
+                                        camera_export, 0.0F}
+                          : tl::KeyMark{key.frame, key.has_pose,
+                                        key.has_expression, key.has_camera,
+                                        0.0F});
+    }
+    length = mmd_export_timeline
+                 ? last_key_frame
+                 : (std::max)(last_key_frame,
+                              context.keyframe_length.load(
+                                  std::memory_order_acquire));
+    playhead =
+        context.keyframe_frame.load(std::memory_order_acquire);
   }
-  length = (std::max)(length, context.keyframe_length.load(std::memory_order_acquire));
-  const double playhead = context.keyframe_frame.load(std::memory_order_acquire);
+  const bool timeline_playing =
+      motion_export_timeline
+          ? context.motion_playing.load(std::memory_order_acquire)
+          : context.keyframe_playing.load(std::memory_order_acquire);
   tl::View view;
   {
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
     // Playing, the zoomed window turns the page to keep the playhead in it.
-    if (context.keyframe_playing.load(std::memory_order_acquire))
+    if (timeline_playing)
       context.keyframe_overlay_view = tl::FollowPlayhead(context.keyframe_overlay_view, length,
                                                          playhead);
     context.keyframe_overlay_view = tl::ClampView(context.keyframe_overlay_view, length);
@@ -11161,7 +16741,12 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
   }
   const auto layout = tl::MakeLayout(static_cast<float>(frame->viewport_width),
                                      static_cast<float>(frame->viewport_height), length,
-                                     playhead, marks, view);
+                                     playhead,
+                                     motion_timeline_cache
+                                         ? motion_timeline_cache->marks
+                                         : marks,
+                                     view,
+                                     mmd_export_timeline);
   const bool zoomed = view.start > 0.0 || view.end < static_cast<double>((std::max)(length, 1U));
   frame->draw_rect(frame->user, layout.panel.left, layout.panel.top,
                    layout.panel.right - layout.panel.left, layout.panel.bottom - layout.panel.top,
@@ -11170,6 +16755,35 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
   frame->draw_rect(frame->user, layout.track.left, layout.track.top,
                    layout.track.right - layout.track.left, layout.track.bottom - layout.track.top,
                    kTimelineTrack);
+  const auto lane_y = tl::TrackLaneY(layout);
+  if (layout.export_tracks) {
+    const std::array<std::string, 3> lane_labels{
+        context.localizer.Text("keyframe.lane.bones", "Bones"),
+        context.localizer.Text("keyframe.lane.morphs", "Morphs"),
+        context.localizer.Text("keyframe.lane.camera", "Camera")};
+    const std::array<std::uint32_t, 3> lane_colors{
+        kTimelinePose, kTimelineExpression, kTimelineCamera};
+    for (std::size_t lane{}; lane != lane_y.size(); ++lane) {
+      TimelineLine(frame, layout.track.left, lane_y[lane],
+                   layout.track.right, lane_y[lane], lane_colors[lane], 1.0F);
+      frame->draw_text(frame->user,
+                       anomaly::sdk::StringView(lane_labels[lane]),
+                       layout.panel.left + 12.0F, lane_y[lane] - 5.0F,
+                       lane_colors[lane], 0.7F);
+      if (span_visible[lane]) {
+        const double first = span_edges[lane * 2];
+        const double last = span_edges[lane * 2 + 1];
+        if (last >= static_cast<double>(layout.frame_start) &&
+            first <= static_cast<double>(layout.frame_end)) {
+          const float first_x = tl::FrameToX(layout, first);
+          const float last_x =
+              tl::FrameToX(layout, (std::max)(first, last));
+          TimelineLine(frame, first_x, lane_y[lane], last_x,
+                       lane_y[lane], lane_colors[lane], 5.0F);
+        }
+      }
+    }
+  }
   // Ticks over the visible window. The step is the finest of 1 frame, 5,
   // 1 s, 5 s, 30 s that keeps ticks at least 6 px apart; every fifth tick is
   // taller and labelled, in frames up to 1 s steps and in seconds above.
@@ -11190,8 +16804,11 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
        static_cast<double>(tick) <= static_cast<double>(layout.frame_end); tick += tick_step) {
     const float x = tl::FrameToX(layout, tick);
     const bool major = tick % major_step == 0;
-    TimelineLine(frame, x, layout.track.bottom - (major ? 10.0F : 5.0F), x, layout.track.bottom,
-                 kTimelineTick, 1.0F);
+    TimelineLine(frame, x,
+                 layout.export_tracks
+                     ? layout.track.top + 2.0F
+                     : layout.track.bottom - (major ? 10.0F : 5.0F),
+                 x, layout.track.bottom, kTimelineTick, 1.0F);
     if (major) {
       char label[16]{};
       if (major_step >= 30U)
@@ -11210,28 +16827,56 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
   const float cursor_x = context.keyframe_overlay_cursor_x.load(std::memory_order_acquire);
   const float cursor_y = context.keyframe_overlay_cursor_y.load(std::memory_order_acquire);
   const auto hot = [&](const tl::Rect &r) { return tl::Contains(r, cursor_x, cursor_y); };
-  const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
-  TimelineButton(frame, layout.play_button, playing ? "||" : ">", kTimelinePlayhead, true,
+  TimelineButton(frame, layout.play_button, timeline_playing ? "||" : ">",
+                 kTimelinePlayhead, true,
                  hot(layout.play_button));
   TimelineButton(frame, layout.stop_button, "|<", kTimelinePlayhead, true, hot(layout.stop_button));
   TimelineButton(frame, layout.delete_button, "删除关键帧", kTimelineDelete, has_selected_key,
                  hot(layout.delete_button));
-  TimelineButton(frame, layout.record_button, "记录关键帧", kTimelineRecord, true,
+  TimelineButton(frame, layout.record_button, "记录关键帧", kTimelineRecord,
+                 !motion_export_timeline,
                  hot(layout.record_button));
+  TimelineButton(frame, layout.export_button,
+                 layout.export_tracks ? "KEY" : "MMD",
+                 layout.export_tracks ? kTimelineRecord : kTimelineCamera,
+                 true, hot(layout.export_button));
   // Usable only when zoomed in; the accent is the playhead's, like the other
   // view/playback buttons.
   TimelineButton(frame, layout.fit_button, "显示全部", kTimelinePlayhead, zoomed,
                  hot(layout.fit_button));
-  const float key_y = (layout.track.top + layout.track.bottom) * 0.5F;
+  const float key_y = lane_y[1];
+  std::array<float, 3> lane_last_x{-1.0e9F, -1.0e9F, -1.0e9F};
   for (std::size_t i{}; i != layout.keys.size(); ++i) {
     const auto &key = layout.keys[i];
     if (!key.visible)
       continue;
-    if (has_selected_key && static_cast<std::size_t>(selected) == i)
-      TimelineDiamond(frame, key.x, key_y, kTimelineText, 10.0F);  // selection frame
-    if (key.pose) TimelineDiamond(frame, key.x, key_y, kTimelinePose);
-    if (key.expression) TimelineDiamond(frame, key.x + 2.0F, key_y, kTimelineExpression, 4.0F);
-    if (key.camera) TimelineDiamond(frame, key.x - 2.0F, key_y, kTimelineCamera, 3.0F);
+    const bool selected_key =
+        has_selected_key && static_cast<std::size_t>(selected) == i;
+    if (layout.export_tracks) {
+      const std::array<bool, 3> active{key.pose, key.expression, key.camera};
+      const std::array<std::uint32_t, 3> colors{
+          kTimelinePose, kTimelineExpression, kTimelineCamera};
+      for (std::size_t lane{}; lane != active.size(); ++lane) {
+        if (!active[lane])
+          continue;
+        if (selected_key)
+          TimelineDiamond(frame, key.x, lane_y[lane], kTimelineText, 7.0F);
+        if (!selected_key &&
+            std::abs(key.x - lane_last_x[lane]) < 3.0F)
+          continue;
+        TimelineDiamond(frame, key.x, lane_y[lane], colors[lane], 4.0F);
+        lane_last_x[lane] = key.x;
+      }
+    } else {
+      if (selected_key)
+        TimelineDiamond(frame, key.x, key_y, kTimelineText, 10.0F);
+      if (key.pose) TimelineDiamond(frame, key.x, key_y, kTimelinePose);
+      if (key.expression)
+        TimelineDiamond(frame, key.x + 2.0F, key_y,
+                        kTimelineExpression, 4.0F);
+      if (key.camera)
+        TimelineDiamond(frame, key.x - 2.0F, key_y, kTimelineCamera, 3.0F);
+    }
   }
   if (layout.playhead_visible) {
     TimelineLine(frame, layout.playhead_x, layout.track.top - 8.0F, layout.playhead_x,
@@ -11252,14 +16897,18 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
     TimelineLine(frame, edge, mid - 6.0F, tip, mid, kTimelinePlayhead, 2.0F);
     TimelineLine(frame, tip, mid, edge, mid + 6.0F, kTimelinePlayhead, 2.0F);
   }
-  const double current_frame = context.keyframe_frame.load(std::memory_order_acquire);
+  const double current_frame =
+      motion_export_timeline
+          ? playhead
+          : context.keyframe_frame.load(std::memory_order_acquire);
   std::size_t current_key{};
-  {
+  if (!motion_export_timeline) {
     std::lock_guard<std::mutex> lock(context.keyframe_mutex);
     current_key = context.keyframe_track.Find(
         static_cast<std::uint32_t>(std::lround((std::max)(0.0, current_frame))));
   }
-  const bool unsaved = !context.keyframe_playing.load(std::memory_order_acquire) &&
+  const bool unsaved = !motion_export_timeline &&
+      !context.keyframe_playing.load(std::memory_order_acquire) &&
       context.keyframe_applied_frame >= 0.0 &&
       std::abs(context.keyframe_applied_frame - current_frame) < 0.5 &&
       current_key == key_count && key_count != 0;
@@ -11267,22 +16916,56 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
     frame->draw_text(frame->user, anomaly::sdk::StringView("*未记录"), layout.track.left,
                      layout.panel.bottom - 18.0F, kTimelineUnsaved, 0.85F);
   else
-    frame->draw_text(frame->user, anomaly::sdk::StringView("关键帧"), layout.track.left,
+    frame->draw_text(frame->user,
+                     anomaly::sdk::StringView(
+                         mmd_export_timeline
+                             ? context.localizer.Text(
+                                   "keyframe.mmd_timeline",
+                                   "MMD export timeline")
+                             : context.localizer.Text(
+                                   "keyframe.track", "Keyframes")),
+                     layout.track.left,
                      layout.panel.bottom - 18.0F, kTimelineMuted, 0.85F);
-  char count_text[96]{};
-  if (zoomed)
-    std::snprintf(count_text, sizeof(count_text), "%zu keys  %.0f / %u   [%.0f-%.0f]",
-                  key_count, current_frame, length, static_cast<double>(layout.frame_start),
-                  static_cast<double>(layout.frame_end));
-  else
-    std::snprintf(count_text, sizeof(count_text), "%zu keys  %.0f / %u", key_count,
+  std::string count_text;
+  if (mmd_export_timeline) {
+    count_text =
+        context.localizer.Text("keyframe.lane.bones", "Bones") + " " +
+        std::to_string(bone_keys) + "  " +
+        context.localizer.Text("keyframe.lane.morphs", "Morphs") + " " +
+        std::to_string(morph_keys) + "  " +
+        context.localizer.Text("keyframe.lane.camera", "Camera") + " " +
+        std::to_string(camera_keys);
+    char where[64]{};
+    std::snprintf(where, sizeof(where), "  %.0f / %u",
                   current_frame, length);
+    if (zoomed) {
+      char window[64]{};
+      std::snprintf(window, sizeof(window), "  [%.0f-%.0f]",
+                    static_cast<double>(layout.frame_start),
+                    static_cast<double>(layout.frame_end));
+      count_text += window;
+    }
+    count_text += where;
+  } else if (zoomed) {
+    char text_buffer[96]{};
+    std::snprintf(text_buffer, sizeof(text_buffer),
+                  "%zu keys  %.0f / %u   [%.0f-%.0f]", key_count,
+                  current_frame, length,
+                  static_cast<double>(layout.frame_start),
+                  static_cast<double>(layout.frame_end));
+    count_text = text_buffer;
+  } else {
+    char text_buffer[64]{};
+    std::snprintf(text_buffer, sizeof(text_buffer), "%zu keys  %.0f / %u",
+                  key_count, current_frame, length);
+    count_text = text_buffer;
+  }
   float count_width = 0.0F;
   float count_height = 0.0F;
   if (frame->measure_text == nullptr ||
       frame->measure_text(frame->user, anomaly::sdk::StringView(count_text), 0.75F, &count_width,
                           &count_height) == 0)
-    count_width = static_cast<float>(std::strlen(count_text)) * 6.0F;
+    count_width = static_cast<float>(count_text.size()) * 6.0F;
   frame->draw_text(frame->user, anomaly::sdk::StringView(count_text),
                    layout.track.right - count_width, layout.panel.bottom - 18.0F,
                    kTimelineMuted, 0.75F);
@@ -11370,16 +17053,24 @@ void DrawBoneTooltip(Context &context, const AnomalyUe5AhudFrameV1 *frame,
                    box.top + kPadY, kTimelineText, kScale);
 }
 
+void ANOMALY_CALL DrawCollisionDebugOverlay(
+    void *user, const AnomalyUe5AhudFrameV1 *frame) noexcept;
+
 void ANOMALY_CALL DrawSkeletonOverlay(void *user,
                                       const AnomalyUe5AhudFrameV1 *frame) noexcept {
   auto *context = static_cast<Context *>(user);
   if (context == nullptr)
     return;
   try {
+    const auto perf_start = std::chrono::steady_clock::now();
     if (AhudFrameReady(frame))
       MeasureOrbitFocal(*context, frame);
     if (AhudFrameReady(frame))
       DrawKeyframeOverlay(*context, frame);
+    if (AhudFrameReady(frame) &&
+        context->collision_debug_enabled.load(std::memory_order_acquire) &&
+        context->collision_debug_page_visible.load(std::memory_order_acquire))
+      DrawCollisionDebugOverlay(user, frame);
     if (!context->skeleton_overlay_enabled.load(std::memory_order_acquire) ||
         !AhudFrameReady(frame)) {
       ClearOverlayScreen(*context);
@@ -11404,6 +17095,40 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       return;
     }
 
+    const bool body_only =
+        context->overlay_body_only.load(std::memory_order_acquire);
+    bool body_mask_ready = false;
+    if (body_only) {
+      const bool parents_ready = context->bone_parents.size() == count;
+      const bool hide_face =
+          !context->overlay_show_face.load(std::memory_order_acquire);
+      if (context->overlay_hidden_mesh != mesh ||
+          context->overlay_hidden_names != context->bone_names.size() ||
+          context->overlay_hidden.size() != count ||
+          context->overlay_hidden_parents != parents_ready ||
+          context->overlay_hidden_face != hide_face) {
+        context->overlay_hidden_parents = parents_ready;
+        context->overlay_hidden_face = hide_face;
+        context->overlay_hidden_total = BuildOverlayHiddenMask(
+            context->bone_names,
+            context->bone_parents.size() == count
+                ? context->bone_parents
+                : std::vector<std::int32_t>(count, -1),
+            context->overlay_hidden, hide_face);
+        context->overlay_hidden_mesh = mesh;
+        context->overlay_hidden_names = context->bone_names.size();
+      }
+      body_mask_ready = context->overlay_hidden.size() == count;
+      context->overlay_hidden_count.store(context->overlay_hidden_total,
+                                          std::memory_order_release);
+    } else {
+      context->overlay_hidden_count.store(0, std::memory_order_release);
+    }
+    const bool project_hidden =
+        context->overlay_drag.valid || context->overlay_gizmo_drag.valid ||
+        context->overlay_arrow_drag.valid ||
+        context->overlay_press_joint != kOverlayNoBone;
+
     auto &screen = context->overlay_frame_joints;
     auto &valid = context->overlay_frame_valid;
     auto &world_points = context->overlay_frame_world;
@@ -11414,6 +17139,9 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
     const float height = static_cast<float>(frame->viewport_height);
     constexpr float kMargin = 64.0F;
     for (std::uint32_t bone{}; bone != count; ++bone) {
+      if (body_mask_ready && !project_hidden &&
+          context->overlay_hidden[bone] != 0)
+        continue;
       PackedTransform packed{};
       std::memcpy(&packed, raw.data() + static_cast<std::size_t>(bone) * kTransformSize,
                   sizeof(packed));
@@ -11432,42 +17160,21 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       screen[bone] = {projected[0], projected[1]};
       valid[bone] = 1;
     }
+    const auto perf_projected = std::chrono::steady_clock::now();
 
     // The drag needs every joint (a hidden bone can still be the pivot's
     // parent), so the body-only mask applies after it, to drawing and picking.
     // A held gizmo ring owns the bone; the joint drag waits.
     if (!StepGizmoDrag(*context, frame))
       StepSkeletonDrag(*context, frame, component_world, count, screen, valid);
-    if (context->overlay_body_only.load(std::memory_order_acquire)) {
-      const bool parents_ready = context->bone_parents.size() == count;
-      const bool hide_face = !context->overlay_show_face.load(std::memory_order_acquire);
-      if (context->overlay_hidden_mesh != mesh ||
-          context->overlay_hidden_names != context->bone_names.size() ||
-          context->overlay_hidden.size() != count ||
-          context->overlay_hidden_parents != parents_ready ||
-          context->overlay_hidden_face != hide_face) {
-        context->overlay_hidden_parents = parents_ready;
-        context->overlay_hidden_face = hide_face;
-        context->overlay_hidden_total = BuildOverlayHiddenMask(
-            context->bone_names, context->bone_parents.size() == count
-                                     ? context->bone_parents
-                                     : std::vector<std::int32_t>(count, -1),
-            context->overlay_hidden, hide_face);
-        context->overlay_hidden_mesh = mesh;
-        context->overlay_hidden_names = context->bone_names.size();
-      }
-      if (context->overlay_hidden.size() == count)
-        for (std::uint32_t bone{}; bone != count; ++bone)
-          if (context->overlay_hidden[bone] != 0)
-            valid[bone] = 0;
-      context->overlay_hidden_count.store(context->overlay_hidden_total,
-                                          std::memory_order_release);
-    } else {
-      context->overlay_hidden_count.store(0, std::memory_order_release);
-    }
+    if (body_mask_ready && project_hidden)
+      for (std::uint32_t bone{}; bone != count; ++bone)
+        if (context->overlay_hidden[bone] != 0)
+          valid[bone] = 0;
 
     // Bones first, joints on top, the hovered and selected joints last.
     const auto &parents = context->bone_parents;
+    std::uint32_t visible_edges{};
     for (std::uint32_t bone{}; bone != count; ++bone) {
       if (valid[bone] == 0 || bone >= parents.size())
         continue;
@@ -11478,6 +17185,7 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       const auto &from = screen[static_cast<std::size_t>(parent)];
       frame->draw_line(frame->user, from[0], from[1], screen[bone][0],
                        screen[bone][1], kOverlayLineColor, 1.5F);
+      ++visible_edges;
     }
     const std::uint32_t selected =
         context->requested_bone_index.load(std::memory_order_acquire);
@@ -11490,12 +17198,16 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
     const float radius = std::clamp(
         context->overlay_joint_radius.load(std::memory_order_acquire), kOverlayMinimumRadius,
         kOverlayMaximumRadius);
+    const JointCircleGeometry joint_circle =
+        BuildJointCircleGeometry(radius);
     const float big = radius + 3.0F;
+    std::uint32_t visible_joints{};
     for (std::uint32_t bone{}; bone != count; ++bone) {
       if (valid[bone] == 0 || bone == selected || bone == hovered)
         continue;
-      DrawOverlayCircle(frame, screen[bone][0], screen[bone][1], radius, kOverlayJointFill,
-                        kOverlayJointRing, 1.0F, kOverlayJointCentre);
+      DrawOverlayJointCircle(frame, screen[bone][0], screen[bone][1],
+                             joint_circle);
+      ++visible_joints;
     }
     if (hovered < count && valid[hovered] != 0 && hovered != selected)
       DrawOverlayCircle(frame, screen[hovered][0], screen[hovered][1], big, kOverlayHoverFill,
@@ -11540,8 +17252,120 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
     context->overlay_viewport_width = width;
     context->overlay_viewport_height = height;
     context->overlay_published = true;
+    const auto perf_end = std::chrono::steady_clock::now();
+    const std::uint64_t perf_now = GetTickCount64();
+    const std::uint64_t perf_last =
+        context->overlay_perf_last_log_ms.load(std::memory_order_acquire);
+    if (perf_last == 0 || perf_now - perf_last >= 5000) {
+      context->overlay_perf_last_log_ms.store(perf_now,
+                                              std::memory_order_release);
+      const auto project_us =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              perf_projected - perf_start)
+              .count();
+      const auto draw_us =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              perf_end - perf_projected)
+              .count();
+      char message[320]{};
+      std::snprintf(
+          message, sizeof(message),
+          "betterpose skeleton perf project_us=%lld draw_us=%lld total_us=%lld "
+          "bones=%u visible_joints=%u hidden=%u edges=%u draw_calls=%u",
+          static_cast<long long>(project_us),
+          static_cast<long long>(draw_us),
+          static_cast<long long>(project_us + draw_us),
+          static_cast<unsigned>(count),
+          static_cast<unsigned>(visible_joints),
+          static_cast<unsigned>(context->overlay_hidden_total),
+          static_cast<unsigned>(visible_edges),
+          static_cast<unsigned>(
+              visible_joints *
+                  static_cast<std::uint32_t>(
+                      joint_circle.rows.count +
+                      joint_circle.ring_segments + 1) +
+              visible_edges));
+      LogDiagnostic(*context, message);
+    }
   } catch (...) {
     // The callback must not throw into the host; drop this frame's overlay.
+  }
+}
+
+void ANOMALY_CALL DrawCollisionDebugOverlay(void *user,
+                                            const AnomalyUe5AhudFrameV1 *frame) noexcept {
+  auto *context = static_cast<Context *>(user);
+  if (context == nullptr ||
+      !context->collision_debug_enabled.load(std::memory_order_acquire) ||
+      !context->collision_debug_page_visible.load(std::memory_order_acquire) ||
+      !AhudFrameReady(frame))
+    return;
+  try {
+    const auto perf_start = std::chrono::steady_clock::now();
+    const std::uint32_t count = context->runtime.component_space_count;
+    const std::uint64_t now = GetTickCount64();
+    const bool refresh_diagnostics =
+        context->collision_overlay_refresh_ms == 0 ||
+        now - context->collision_overlay_refresh_ms >= 16;
+    if (refresh_diagnostics) {
+      const std::uintptr_t mesh = context->runtime.mesh;
+      const std::uintptr_t pose = context->runtime.component_space_data;
+      Transformd component_world;
+      if (mesh == 0 || pose == 0 || count == 0 ||
+          count > kMaximumBoneIndex + 1U || !CoreReady(context->core) ||
+          !ReadMeshComponentToWorld(*context, mesh, component_world))
+        return;
+      auto &raw = context->overlay_collision_raw_pose;
+      raw.resize(static_cast<std::size_t>(count) * kTransformSize);
+      AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
+      if (context->core->read_memory(context->core->user, pose, span).code !=
+          ANOMALY_STATUS_V1_OK)
+        return;
+      auto &points = context->overlay_collision_body_points;
+      points.assign(count, {0.0, 0.0, 0.0});
+      for (std::uint32_t bone{}; bone != count; ++bone) {
+        PackedTransform packed{};
+        std::memcpy(
+            &packed,
+            raw.data() + static_cast<std::size_t>(bone) * kTransformSize,
+            sizeof(packed));
+        const Transformd joint =
+            TransformMultiply(component_world, UnpackTransform(packed));
+        points[bone] = {joint.translation.x, joint.translation.y,
+                        joint.translation.z};
+      }
+    }
+    DrawAccessoryCollisionDebug(
+        *context, frame, context->overlay_collision_body_points.size(),
+        context->overlay_collision_body_points, refresh_diagnostics,
+        context->collision_contacts_enabled.load(std::memory_order_acquire));
+    if (refresh_diagnostics)
+      context->collision_overlay_refresh_ms = now;
+    const std::uint64_t perf_now = GetTickCount64();
+    const std::uint64_t perf_last =
+        context->collision_overlay_perf_last_log_ms.load(
+            std::memory_order_acquire);
+    if (perf_last == 0 || perf_now - perf_last >= 5000) {
+      context->collision_overlay_perf_last_log_ms.store(
+          perf_now, std::memory_order_release);
+      const auto total_us =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - perf_start)
+              .count();
+      char message[256]{};
+      std::snprintf(
+          message, sizeof(message),
+          "betterpose collision overlay perf total_us=%lld refresh=%u "
+          "capsules=%u lines=%u points=%u",
+          static_cast<long long>(total_us),
+          refresh_diagnostics ? 1U : 0U,
+          static_cast<unsigned>(context->overlay_collision_capsules.size()),
+          static_cast<unsigned>(context->overlay_collision_lines.size()),
+          static_cast<unsigned>(context->overlay_collision_points.size()));
+      LogDiagnostic(*context, message);
+    }
+  } catch (...) {
+    // The independent overlay must not affect the skeleton or host callback.
   }
 }
 
@@ -11572,13 +17396,30 @@ void UnsubscribeSkeletonOverlay(Context &context) noexcept {
   context.overlay_published = false;
 }
 
+void UnsubscribeCollisionDebugOverlay(Context &context) noexcept {
+  context.collision_overlay_refresh_ms = 0;
+  context.overlay_collision_capsules.clear();
+  context.overlay_collision_contacts.clear();
+  context.overlay_collision_lines.clear();
+  context.overlay_collision_points.clear();
+  context.overlay_collision_raw_pose.clear();
+  context.overlay_collision_body_points.clear();
+}
+
 // Render thread: the on-screen timeline owns mouse input inside its panel.
 // It posts the same seek/key-edit requests as the keyframe page. Returns true
 // when the mouse belongs to the timeline and bone picking must not see it.
 bool UpdateKeyframeOverlayPicking(Context &context, const AnomalyUiServiceV1 * /*ui*/) noexcept {
   namespace tl = better_pose::timeline;
+  const bool motion_loaded =
+      context.motion_loaded.load(std::memory_order_acquire);
+  const bool mmd_export_timeline =
+      context.keyframe_mmd_export_timeline.load(
+          std::memory_order_acquire);
+  const bool motion_export_timeline =
+      motion_loaded && mmd_export_timeline;
   if (!context.keyframe_overlay_enabled.load(std::memory_order_acquire) ||
-      context.motion_loaded.load(std::memory_order_acquire) || !InputReady(context.input))
+      (motion_loaded && !mmd_export_timeline) || !InputReady(context.input))
     return false;
   tl::Layout layout;
   {
@@ -11630,10 +17471,27 @@ bool UpdateKeyframeOverlayPicking(Context &context, const AnomalyUiServiceV1 * /
   // under the cursor; a middle drag that starts on the panel slides it. Both
   // are the timeline's here, so the pose camera does not also take them.
   std::uint32_t length{};
-  {
+  std::uint32_t motion_first_frame{};
+  double motion_fps = 30.0;
+  if (motion_export_timeline) {
+    std::shared_ptr<const Context::MotionTimelineCache> cache;
+    {
+      std::lock_guard<std::mutex> lock(context.motion_timeline_mutex);
+      cache = context.motion_timeline;
+    }
+    if (cache) {
+      motion_first_frame = cache->first_frame;
+      motion_fps = cache->fps;
+      length = cache->last_frame;
+    }
+  } else {
     std::lock_guard<std::mutex> lock(context.keyframe_mutex);
-    length = (std::max)(context.keyframe_track.LastFrame(),
-                        context.keyframe_length.load(std::memory_order_acquire));
+    length = mmd_export_timeline
+                 ? context.keyframe_track.LastFrame()
+                 : (std::max)(
+                       context.keyframe_track.LastFrame(),
+                       context.keyframe_length.load(
+                           std::memory_order_acquire));
   }
   if (input.mouse_wheel != 0) {
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
@@ -11658,27 +17516,66 @@ bool UpdateKeyframeOverlayPicking(Context &context, const AnomalyUiServiceV1 * /
       // Zoom back out to the whole timeline.
       std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
       context.keyframe_overlay_view = {};
+    } else if (hit == tl::Hit::Export) {
+      const bool export_mode =
+          context.keyframe_mmd_export_timeline.load(
+              std::memory_order_acquire);
+      context.keyframe_mmd_export_timeline.store(
+          !export_mode, std::memory_order_release);
+      std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
+      context.keyframe_overlay_view = {};
     } else if (hit == tl::Hit::Play) {
-      const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
-      context.keyframe_playing.store(!playing, std::memory_order_release);
+      if (motion_export_timeline) {
+        const bool playing =
+            context.motion_playing.load(std::memory_order_acquire);
+        context.motion_playing.store(!playing, std::memory_order_release);
+      } else {
+        const bool playing =
+            context.keyframe_playing.load(std::memory_order_acquire);
+        context.keyframe_playing.store(!playing, std::memory_order_release);
+      }
     } else if (hit == tl::Hit::Stop) {
-      context.keyframe_playing.store(false, std::memory_order_release);
-      context.keyframe_seek.store(0.0, std::memory_order_release);
+      if (motion_export_timeline) {
+        context.motion_playing.store(false, std::memory_order_release);
+        context.motion_seek.store(0.0, std::memory_order_release);
+      } else {
+        context.keyframe_playing.store(false, std::memory_order_release);
+        context.keyframe_seek.store(0.0, std::memory_order_release);
+      }
     } else if (hit == tl::Hit::Record) {
-      context.keyframe_request.store(1, std::memory_order_release);
+      if (!motion_export_timeline)
+        context.keyframe_request.store(1, std::memory_order_release);
     } else if (hit == tl::Hit::Delete) {
-      if (context.keyframe_selected.load(std::memory_order_acquire) >= 0)
+      if (!motion_export_timeline &&
+          context.keyframe_selected.load(std::memory_order_acquire) >= 0)
         context.keyframe_request.store(2, std::memory_order_release);
     } else if (hit == tl::Hit::Key) {
-      context.keyframe_selected.store(key_index, std::memory_order_release);
-      context.keyframe_overlay_dragging_key.store(true, std::memory_order_release);
-      context.keyframe_playing.store(false, std::memory_order_release);
+      if (motion_export_timeline) {
+        context.motion_playing.store(false, std::memory_order_release);
+        if (key_index >= 0 &&
+            static_cast<std::size_t>(key_index) < layout.keys.size()) {
+          const double seconds =
+              (static_cast<double>(layout.keys[key_index].frame) -
+               static_cast<double>(motion_first_frame)) /
+              motion_fps;
+          context.motion_seek.store((std::max)(0.0, seconds),
+                                    std::memory_order_release);
+        }
+      } else {
+        context.keyframe_selected.store(key_index, std::memory_order_release);
+        context.keyframe_overlay_dragging_key.store(true, std::memory_order_release);
+        context.keyframe_playing.store(false, std::memory_order_release);
+      }
     } else if (hit == tl::Hit::Playhead || hit == tl::Hit::Track) {
       context.keyframe_overlay_dragging_playhead.store(true, std::memory_order_release);
-      context.keyframe_playing.store(false, std::memory_order_release);
-      // Scrubbing leaves the key it was on; landing on one selects it again
-      // (StepKeyframes), so DEL always means the key under the playhead.
-      context.keyframe_selected.store(-1, std::memory_order_release);
+      if (motion_export_timeline) {
+        context.motion_playing.store(false, std::memory_order_release);
+      } else {
+        context.keyframe_playing.store(false, std::memory_order_release);
+        // Scrubbing leaves the key it was on; landing on one selects it again
+        // (StepKeyframes), so DEL always means the key under the playhead.
+        context.keyframe_selected.store(-1, std::memory_order_release);
+      }
     }
   }
   if (context.keyframe_overlay_dragging_playhead.load(std::memory_order_acquire) ||
@@ -11688,6 +17585,11 @@ bool UpdateKeyframeOverlayPicking(Context &context, const AnomalyUiServiceV1 * /
       context.keyframe_move_frame.store(frame, std::memory_order_release);
       context.keyframe_request.store(3, std::memory_order_release);
       context.keyframe_seek.store(frame, std::memory_order_release);
+    } else if (motion_export_timeline) {
+      const double seconds =
+          (frame - static_cast<double>(motion_first_frame)) / motion_fps;
+      context.motion_seek.store((std::max)(0.0, seconds),
+                                std::memory_order_release);
     } else {
       context.keyframe_seek.store(frame, std::memory_order_release);
     }
@@ -12254,12 +18156,16 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   // First: the overlay callback reads runtime, which is reset below.
   UnsubscribeSkeletonOverlay(*context);
+  UnsubscribeCollisionDebugOverlay(*context);
   // The hook is released below; drop the pose camera with it so a reload
   // starts from the game's own view.
   context->orbit_enabled.store(false, std::memory_order_release);
   context->orbit_initialized.store(false, std::memory_order_release);
   static_cast<void>(ReleasePoseTickHook(*context));
   static_cast<void>(ReleaseCameraPovHook(*context));
+  context->t_pose_calibration_active.store(false, std::memory_order_release);
+  context->t_pose_calibration_request.store(0, std::memory_order_release);
+  context->t_pose_session = Context::TPoseCalibrationSession{};
   RestoreAll(*context);
   g_active.store(nullptr, std::memory_order_release);
   context->runtime = RuntimeState{};
@@ -12302,6 +18208,13 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
     return;
   try {
     UpdateRuntime(*context, delta_seconds);
+    const int collision_request =
+        context->collision_overlay_request.exchange(-1, std::memory_order_acq_rel);
+    if (collision_request == 1) {
+      context->collision_overlay_refresh_ms = 0;
+    } else if (collision_request == 0) {
+      UnsubscribeCollisionDebugOverlay(*context);
+    }
   } catch (...) {
     RestoreAll(*context);
     PublishSnapshot(*context, "update failed; overrides restored");
@@ -12352,11 +18265,17 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
   };
 
   const bool motion_owns = context.motion_loaded.load(std::memory_order_acquire);
+  const bool calibration_owns =
+      context.t_pose_calibration_active.load(std::memory_order_acquire);
   if (motion_owns)
     text(context.localizer.Text(
         "keyframe.motion_loaded",
         "An MMD motion is loaded and owns the character: unload it on the MMD page to play "
         "keyframes. Keys can still be edited."));
+  else if (calibration_owns)
+    text(context.localizer.Text(
+        "keyframe.calibration_active",
+        "A/T-pose calibration is active: confirm or cancel it before playing keyframes."));
   text(context.localizer.Text(
       "keyframe.hint",
       "Diamonds on the timeline are keys: click the track to seek, drag a diamond to move "
@@ -12377,6 +18296,33 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
                        "keyframe.timeline", "Show screen timeline", "keyframe-timeline")),
                    &show_timeline) != 0)
     context.keyframe_overlay_enabled.store(show_timeline != 0, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 10.0F);
+  int mmd_export_timeline =
+      context.keyframe_mmd_export_timeline.load(std::memory_order_acquire)
+          ? 1
+          : 0;
+  if (ui->checkbox(
+          ui->user,
+          anomaly::sdk::StringView(context.localizer.Label(
+              "keyframe.mmd_timeline", "MMD export timeline",
+              "keyframe-mmd-timeline")),
+          &mmd_export_timeline) != 0) {
+    context.keyframe_mmd_export_timeline.store(
+        mmd_export_timeline != 0, std::memory_order_release);
+    if (mmd_export_timeline != 0)
+      context.keyframe_overlay_enabled.store(true,
+                                             std::memory_order_release);
+  }
+  if (mmd_export_timeline != 0)
+    text(context.localizer.Text(
+        "keyframe.mmd_timeline_hint",
+        "Previewing bone, morph and camera export lanes; selection and playback "
+        "still edit the same keyframe track."));
+  if (mmd_export_timeline != 0 && motion_owns)
+    text(context.localizer.Text(
+        "keyframe.mmd_timeline_motion_loaded",
+        "The loaded MMD action is being shown through its converted bone, "
+        "morph and camera tracks."));
   ui->same_line(ui->user, 0.0F, 10.0F);
   text(context.localizer.Text("keyframe.record", "Record into keys:"));
   ui->same_line(ui->user, 0.0F, 8.0F);
@@ -12407,7 +18353,8 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
   const std::string play_label =
       playing ? context.localizer.Label("keyframe.pause", "Pause", "keyframe-play")
               : context.localizer.Label("keyframe.play", "Play", "keyframe-play");
-  if (button(play_label, key_count >= 2 && !motion_owns, 70.0F))
+  if (button(play_label,
+             key_count >= 2 && !motion_owns && !calibration_owns, 70.0F))
     context.keyframe_playing.store(!playing, std::memory_order_release);
   ui->same_line(ui->user, 0.0F, 6.0F);
   if (button(context.localizer.Label("keyframe.stop", "To start", "keyframe-stop"), true, 70.0F)) {
@@ -12656,6 +18603,710 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
   }
 }
 
+void DrawSecondaryPhysicsControls(Context &context,
+                                  const AnomalyUiServiceV1 *ui) {
+  int open = context.secondary_panel_open ? 1 : 0;
+  const std::string open_label =
+      context.localizer.Text("pose.physics.panel",
+                             "Dynamic-bone tuning and diagnostics");
+  if (ui->checkbox(ui->user, anomaly::sdk::StringView(open_label), &open) != 0)
+    context.secondary_panel_open = open != 0;
+  if (!context.secondary_panel_open)
+    return;
+
+  auto tuning = context.secondary_tuning.Load();
+  bool changed = false;
+  const bool has_modules =
+      context.secondary_debug_components.load(std::memory_order_acquire) != 0;
+  const bool has_body =
+      context.motion_secondary_bones.load(std::memory_order_acquire) != 0;
+  const auto effect_suffix = [&](const bool modules, const bool body) {
+    if (modules && body)
+      return context.localizer.Text(
+          "pose.physics.effect.module_body",
+          " (module immediate; body reconvert)");
+    if (modules)
+      return context.localizer.Text("pose.physics.effect.module",
+                                    " (immediate)");
+    if (body)
+      return context.localizer.Text("pose.physics.effect.body",
+                                    " (reconvert)");
+    return std::string();
+  };
+  int extended_collision = tuning.extended_collision ? 1 : 0;
+  const std::string extended_collision_label =
+      context.localizer.Text(
+          "pose.physics.extended_collision",
+          "Extended collision (head and arms)") +
+      effect_suffix(has_modules, has_body);
+  if (ui->checkbox(ui->user,
+                   anomaly::sdk::StringView(extended_collision_label),
+                   &extended_collision) != 0) {
+    tuning.extended_collision = extended_collision != 0;
+    changed = true;
+  }
+  ui->same_line(ui->user, 0.0F, 10.0F);
+  int native_limits = tuning.native_limits ? 1 : 0;
+  const std::string native_limits_label =
+      context.localizer.Text(
+          "pose.physics.native_kawaii_limits",
+          "Native Kawaii capsule limits") +
+      effect_suffix(has_modules, has_body);
+  if (ui->checkbox(ui->user,
+                   anomaly::sdk::StringView(native_limits_label),
+                   &native_limits) != 0) {
+    tuning.native_limits = native_limits != 0;
+    changed = true;
+  }
+  int bone_constraints = tuning.bone_constraints ? 1 : 0;
+  const std::string bone_constraints_label =
+      context.localizer.Text(
+          "pose.physics.bone_constraints",
+          "Adjacent bone distance constraints") +
+      effect_suffix(has_modules, has_body);
+  if (ui->checkbox(ui->user,
+                   anomaly::sdk::StringView(bone_constraints_label),
+                   &bone_constraints) != 0) {
+    tuning.bone_constraints = bone_constraints != 0;
+    changed = true;
+  }
+  ui->same_line(ui->user, 0.0F, 10.0F);
+  int self_collision = tuning.self_collision ? 1 : 0;
+  const std::string self_collision_label =
+      context.localizer.Text(
+          "pose.physics.self_collision",
+          "Adjacent strand self-collision") +
+      effect_suffix(has_modules, has_body);
+  if (ui->checkbox(ui->user,
+                   anomaly::sdk::StringView(self_collision_label),
+                   &self_collision) != 0) {
+    tuning.self_collision = self_collision != 0;
+    changed = true;
+  }
+  int self_details = context.secondary_self_collision_open ? 1 : 0;
+  const std::string self_details_label =
+      context.localizer.Text("pose.physics.self_collision_details",
+                             "Self-collision materials and parameters");
+  if (ui->checkbox(ui->user,
+                   anomaly::sdk::StringView(self_details_label),
+                   &self_details) != 0)
+    context.secondary_self_collision_open = self_details != 0;
+  using MotionMaterial = better_pose::secondary::MotionMaterial;
+  if (context.secondary_self_collision_open) {
+    int outer_priority =
+        tuning.self_collision_outer_priority ? 1 : 0;
+    if (ui->checkbox(
+            ui->user,
+            anomaly::sdk::StringView(context.localizer.Text(
+                "pose.physics.self_outer_priority",
+                "Outer-layer priority")),
+            &outer_priority) != 0) {
+      tuning.self_collision_outer_priority = outer_priority != 0;
+      changed = true;
+    }
+    ui->text(ui->user,
+             anomaly::sdk::StringView(context.localizer.Text(
+                 "pose.physics.self_collision_hint",
+                 "Choose which material pairs collide. Radius controls the "
+                 "contact envelope, push controls correction strength, and "
+                  "damping scales the automatic speed response. Slow contact "
+                  "stays soft while fast contact sheds more rebound.")));
+    const auto self_pair_checkbox =
+        [&](const char *key, const char *fallback, const MotionMaterial first,
+            const MotionMaterial second) {
+          const bool enabled =
+              better_pose::secondary::SelfCollisionPairEnabled(
+                  tuning.self_collision_pairs, first, second);
+          int value = enabled ? 1 : 0;
+          const std::string label =
+              context.localizer.Text(key, fallback);
+          if (ui->checkbox(ui->user,
+                           anomaly::sdk::StringView(label), &value) == 0)
+            return;
+          const std::uint64_t bit =
+              std::uint64_t{1} <<
+              better_pose::secondary::SelfCollisionPairIndex(first, second);
+          if (value != 0)
+            tuning.self_collision_pairs |= bit;
+          else
+            tuning.self_collision_pairs &= ~bit;
+          changed = true;
+        };
+    self_pair_checkbox("pose.physics.self_pair_hair_hair",
+                       "Hair <-> hair", MotionMaterial::Hair,
+                       MotionMaterial::Hair);
+    ui->same_line(ui->user, 0.0F, 10.0F);
+    self_pair_checkbox("pose.physics.self_pair_hair_ribbon",
+                       "Hair <-> ribbon", MotionMaterial::Hair,
+                       MotionMaterial::Ribbon);
+    self_pair_checkbox("pose.physics.self_pair_hair_cloth",
+                       "Hair <-> cloth", MotionMaterial::Hair,
+                       MotionMaterial::Cloth);
+    ui->same_line(ui->user, 0.0F, 10.0F);
+    self_pair_checkbox("pose.physics.self_pair_ribbon_ribbon",
+                       "Ribbon <-> ribbon", MotionMaterial::Ribbon,
+                       MotionMaterial::Ribbon);
+    self_pair_checkbox("pose.physics.self_pair_ribbon_cloth",
+                       "Ribbon <-> cloth", MotionMaterial::Ribbon,
+                       MotionMaterial::Cloth);
+    ui->same_line(ui->user, 0.0F, 10.0F);
+    self_pair_checkbox("pose.physics.self_pair_cloth_cloth",
+                       "Cloth <-> cloth", MotionMaterial::Cloth,
+                       MotionMaterial::Cloth);
+  }
+  ui->text(ui->user,
+           anomaly::sdk::StringView(context.localizer.Text(
+               "pose.physics.extended_collision_hint",
+               "Off uses the v2.3.0 torso/leg collision range. Enable the "
+               "larger head and arm range explicitly. Native Kawaii capsule "
+               "limits have their own switch; they constrain spring bones "
+               "and are not body collisions. Distance constraints preserve "
+               "spacing between adjacent strands and only correct large "
+               "stretch or compression.")));
+  {
+    const int main_state =
+        context.main_kawaii_state.load(std::memory_order_acquire);
+    const std::uint32_t main_springs =
+        context.main_kawaii_springs.load(std::memory_order_acquire);
+    const std::uint32_t main_limits =
+        context.main_kawaii_limits.load(std::memory_order_acquire);
+    std::string main_detail;
+    {
+      std::lock_guard<std::mutex> lock(context.main_kawaii_mutex);
+      main_detail = context.main_kawaii_detail;
+    }
+    char main_status[384]{};
+    if (main_state == 0) {
+      std::snprintf(
+          main_status, sizeof(main_status), "%s",
+          context.localizer
+              .Text("pose.physics.kawaii_status_none",
+                    "Main character Kawaii: reconvert a motion to inspect")
+              .c_str());
+    } else if (main_state == 1) {
+      std::snprintf(
+          main_status, sizeof(main_status),
+          context.localizer
+              .Text("pose.physics.kawaii_status_ready",
+                    "Main character Kawaii: found (%u springs; limits capsule "
+                    "%u / sphere %u / box %u / planar %u)")
+              .c_str(),
+          static_cast<unsigned>(main_springs),
+          static_cast<unsigned>(main_limits),
+          static_cast<unsigned>(
+              context.main_kawaii_spherical_limits.load(
+                  std::memory_order_acquire)),
+          static_cast<unsigned>(
+              context.main_kawaii_box_limits.load(
+                  std::memory_order_acquire)),
+          static_cast<unsigned>(
+              context.main_kawaii_planar_limits.load(
+                  std::memory_order_acquire)));
+    } else {
+      std::snprintf(
+          main_status, sizeof(main_status),
+          context.localizer
+              .Text("pose.physics.kawaii_status_unavailable",
+                    "Main character Kawaii: unavailable (%s)")
+              .c_str(),
+          main_detail.c_str());
+    }
+    ui->text(ui->user,
+             anomaly::sdk::StringView(std::string(main_status)));
+    char module_status[256]{};
+    std::snprintf(
+        module_status, sizeof(module_status),
+        context.localizer
+            .Text("pose.physics.kawaii_status_modules",
+                  "Modular accessories Kawaii: %u nodes, %u springs; limits "
+                  "capsule %u / sphere %u / box %u / planar %u")
+            .c_str(),
+        static_cast<unsigned>(
+            context.secondary_debug_kawaii_nodes.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_native_springs.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_kawaii_limits.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_kawaii_spherical_limits.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_kawaii_box_limits.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_kawaii_planar_limits.load(
+                std::memory_order_acquire)));
+    ui->text(ui->user,
+             anomaly::sdk::StringView(std::string(module_status)));
+  }
+  {
+    char distance_status[192]{};
+    std::snprintf(
+        distance_status, sizeof(distance_status),
+        context.localizer
+            .Text("pose.physics.distance_status",
+                  "Adjacent bone constraints: main %u, modules %u; "
+                  "self-collision contacts: main %u, modules %u")
+            .c_str(),
+        static_cast<unsigned>(
+            context.main_distance_links.load(std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_distance_links.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.main_self_collision_contacts.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_self_collision_contacts.load(
+                std::memory_order_acquire)));
+    ui->text(ui->user,
+             anomaly::sdk::StringView(std::string(distance_status)));
+    char self_collision_status[192]{};
+    std::snprintf(
+        self_collision_status, sizeof(self_collision_status),
+        context.localizer
+            .Text("pose.physics.self_collision_status",
+                  "Self-collision candidates: main %u, modules %u; "
+                  "active contacts: main %u, modules %u")
+            .c_str(),
+        static_cast<unsigned>(
+            context.main_self_collision_links.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_self_collision_links.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.main_self_collision_contacts.load(
+                std::memory_order_acquire)),
+        static_cast<unsigned>(
+            context.secondary_debug_self_collision_contacts.load(
+                std::memory_order_acquire)));
+    ui->text(ui->user,
+             anomaly::sdk::StringView(
+                 std::string(self_collision_status)));
+    if (context.secondary_self_collision_open) {
+      const auto material_stats =
+          [&](const MotionMaterial material, const char *fallback) {
+          const auto index =
+              better_pose::secondary::MotionMaterialIndex(material);
+          const auto body_candidates =
+              context.main_self_candidates_by_material[index].load(
+                  std::memory_order_acquire);
+          const auto module_candidates =
+              context.secondary_debug_self_candidates_by_material[index].load(
+                  std::memory_order_acquire);
+          const auto body_contacts =
+              context.main_self_contacts_by_material[index].load(
+                  std::memory_order_acquire);
+          const auto module_contacts =
+              context.secondary_debug_self_contacts_by_material[index].load(
+                  std::memory_order_acquire);
+          if (body_candidates == 0 && module_candidates == 0 &&
+              body_contacts == 0 && module_contacts == 0)
+            return;
+          char line[192]{};
+          std::snprintf(
+              line, sizeof(line),
+              context.localizer
+                  .Text("pose.physics.self_material_stats",
+                        "%s: candidates main %u / modules %u; contacts main "
+                        "%u / modules %u")
+                  .c_str(),
+              fallback, static_cast<unsigned>(body_candidates),
+              static_cast<unsigned>(module_candidates),
+              static_cast<unsigned>(body_contacts),
+              static_cast<unsigned>(module_contacts));
+          ui->text(ui->user, anomaly::sdk::StringView(std::string(line)));
+          };
+      material_stats(MotionMaterial::Hair, "Hair");
+      material_stats(MotionMaterial::Ribbon, "Ribbon");
+      material_stats(MotionMaterial::Cloth, "Cloth");
+      material_stats(MotionMaterial::Sleeve, "Sleeve");
+    }
+  }
+  const auto slider = [&](const char *key, const char *fallback, float &value,
+                          const float minimum, const float maximum,
+                          const bool modules, const bool body) {
+    const std::string id(key);
+    const std::string minus_label = "-##" + id;
+    if (ui->button(ui->user, anomaly::sdk::StringView(minus_label), 22.0F,
+                   0.0F) != 0) {
+      value = std::clamp(value - 0.1F, minimum, maximum);
+      changed = true;
+    }
+    ui->same_line(ui->user, 0.0F, 2.0F);
+    const std::string plus_label = "+##" + id;
+    if (ui->button(ui->user, anomaly::sdk::StringView(plus_label), 22.0F,
+                   0.0F) != 0) {
+      value = std::clamp(value + 0.1F, minimum, maximum);
+      changed = true;
+    }
+    ui->same_line(ui->user, 0.0F, 4.0F);
+    const std::string label =
+        context.localizer.Text(key, fallback) +
+        effect_suffix(modules, body);
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(label), &value,
+                         minimum, maximum) != 0)
+      changed = true;
+  };
+  slider("pose.physics.inertia", "Overall motion inertia", tuning.inertia,
+         0.0F, 3.0F, has_modules, has_body);
+  slider("pose.physics.air", "Air response", tuning.air, 0.0F, 3.0F,
+         has_modules, has_body);
+  slider("pose.physics.damping", "Overall spring damping", tuning.damping,
+         0.25F, 3.0F, has_modules, has_body);
+  slider("pose.physics.gravity", "Gravity weight", tuning.gravity, 0.0F,
+         2.0F, has_modules, has_body);
+  slider("pose.physics.collision", "Collision correction", tuning.collision,
+         0.0F, 2.0F, has_modules, has_body);
+  const auto material_module_count = [&](const MotionMaterial material) {
+    const std::size_t index =
+        better_pose::secondary::MotionMaterialIndex(material);
+    return context.secondary_debug_materials[index].load(
+        std::memory_order_acquire);
+  };
+  const auto material_body_count = [&](const MotionMaterial material) {
+    const std::size_t index =
+        better_pose::secondary::MotionMaterialIndex(material);
+    return context.motion_secondary_materials[index].load(
+        std::memory_order_acquire);
+  };
+  const bool module_ribbon =
+      material_module_count(MotionMaterial::Ribbon) != 0;
+  const bool body_ribbon =
+      material_body_count(MotionMaterial::Ribbon) != 0;
+  if (module_ribbon || body_ribbon)
+    slider("pose.physics.ribbon_damping", "Extra ribbon damping",
+           tuning.ribbon_damping, 0.25F, 3.0F, module_ribbon, body_ribbon);
+  const auto material_slider = [&](const char *key, const char *fallback,
+                                   const MotionMaterial material,
+                                   const bool collision) {
+    const bool modules = material_module_count(material) != 0;
+    const bool body = material_body_count(material) != 0;
+    if (!modules && !body)
+      return;
+    auto &value =
+        collision
+            ? tuning.material_collision[
+                  better_pose::secondary::MotionMaterialIndex(material)]
+            : tuning.material_inertia[
+                  better_pose::secondary::MotionMaterialIndex(material)];
+    slider(key, fallback, value, 0.0F, collision ? 2.0F : 3.0F,
+           modules, body);
+  };
+  material_slider("pose.physics.hair_inertia", "Hair inertia",
+                  MotionMaterial::Hair, false);
+  material_slider("pose.physics.hair_collision", "Hair collision",
+                  MotionMaterial::Hair, true);
+  material_slider("pose.physics.ribbon_inertia", "Ribbon inertia",
+                  MotionMaterial::Ribbon, false);
+  material_slider("pose.physics.ribbon_collision", "Ribbon collision",
+                  MotionMaterial::Ribbon, true);
+  material_slider("pose.physics.belt_inertia", "Belt / rope inertia",
+                  MotionMaterial::Belt, false);
+  material_slider("pose.physics.belt_collision", "Belt / rope collision",
+                  MotionMaterial::Belt, true);
+  material_slider("pose.physics.accessory_inertia", "Accessory inertia",
+                  MotionMaterial::Accessory, false);
+  material_slider("pose.physics.accessory_collision",
+                  "Accessory collision", MotionMaterial::Accessory, true);
+  material_slider("pose.physics.cloth_inertia", "Cloth inertia",
+                  MotionMaterial::Cloth, false);
+  material_slider("pose.physics.cloth_collision", "Cloth collision",
+                  MotionMaterial::Cloth, true);
+  material_slider("pose.physics.sleeve_inertia", "Sleeve inertia",
+                  MotionMaterial::Sleeve, false);
+  material_slider("pose.physics.sleeve_collision", "Sleeve collision",
+                  MotionMaterial::Sleeve, true);
+  if (context.secondary_self_collision_open) {
+  const auto self_material_slider =
+      [&](const char *key, const char *fallback,
+          const MotionMaterial material, float &value, const float minimum,
+          const float maximum) {
+        const bool modules = material_module_count(material) != 0;
+        const bool body = material_body_count(material) != 0;
+        if (!modules && !body)
+          return;
+        slider(key, fallback, value, minimum, maximum, modules, body);
+      };
+  const auto self_material_values =
+      [&](const MotionMaterial material,
+          const char *radius_key, const char *radius_label,
+          const char *strength_key, const char *strength_label,
+          const char *damping_key, const char *damping_label) {
+        const auto index =
+            better_pose::secondary::MotionMaterialIndex(material);
+        self_material_slider(radius_key, radius_label, material,
+                             tuning.self_collision_radius[index],
+                             0.0F, 3.0F);
+        self_material_slider(strength_key, strength_label, material,
+                             tuning.self_collision_strength[index],
+                             0.1F, 3.0F);
+        self_material_slider(damping_key, damping_label, material,
+                             tuning.self_collision_damping[index],
+                             0.5F, 3.0F);
+      };
+  self_material_values(
+      MotionMaterial::Hair, "pose.physics.self_hair_radius",
+      "Hair self radius", "pose.physics.self_hair_strength",
+      "Hair self push", "pose.physics.self_hair_damping",
+      "Hair self damping");
+  self_material_values(
+      MotionMaterial::Ribbon, "pose.physics.self_ribbon_radius",
+      "Ribbon self radius", "pose.physics.self_ribbon_strength",
+      "Ribbon self push", "pose.physics.self_ribbon_damping",
+      "Ribbon self damping");
+  self_material_values(
+      MotionMaterial::Cloth, "pose.physics.self_cloth_radius",
+      "Cloth self radius", "pose.physics.self_cloth_strength",
+      "Cloth self push", "pose.physics.self_cloth_damping",
+      "Cloth self damping");
+  self_material_values(
+      MotionMaterial::Sleeve, "pose.physics.self_sleeve_radius",
+      "Sleeve self radius", "pose.physics.self_sleeve_strength",
+      "Sleeve self push", "pose.physics.self_sleeve_damping",
+      "Sleeve self damping");
+  }
+  char multipliers[320]{};
+  const std::string multiplier_format = context.localizer.Text(
+      "pose.physics.multipliers",
+      "Current: inertia %.2f / air %.2f / damping %.2f / gravity %.2f / "
+      "collision %.2f");
+  std::snprintf(
+      multipliers, sizeof(multipliers), multiplier_format.c_str(),
+      tuning.inertia, tuning.air, tuning.damping, tuning.gravity,
+      tuning.collision);
+  ui->text(ui->user, anomaly::sdk::StringView(std::string(multipliers)));
+  char material_multipliers[768]{};
+  const std::string material_multiplier_format = context.localizer.Text(
+      "pose.physics.material_multipliers",
+      "Material inertia: hair %.2f / ribbon %.2f / belt %.2f / accessory "
+      "%.2f / cloth %.2f / sleeve %.2f; material collision: hair %.2f / "
+      "ribbon %.2f / belt %.2f / accessory %.2f / cloth %.2f / sleeve %.2f; "
+      "ribbon damping %.2f");
+  const auto material_gain = [&](const MotionMaterial material) {
+    return tuning.material_inertia[
+        better_pose::secondary::MotionMaterialIndex(material)];
+  };
+  const auto material_collision_gain = [&](const MotionMaterial material) {
+    return tuning.material_collision[
+        better_pose::secondary::MotionMaterialIndex(material)];
+  };
+  std::snprintf(
+      material_multipliers, sizeof(material_multipliers),
+      material_multiplier_format.c_str(),
+      material_gain(MotionMaterial::Hair),
+      material_gain(MotionMaterial::Ribbon),
+      material_gain(MotionMaterial::Belt),
+      material_gain(MotionMaterial::Accessory),
+      material_gain(MotionMaterial::Cloth),
+      material_gain(MotionMaterial::Sleeve),
+      material_collision_gain(MotionMaterial::Hair),
+      material_collision_gain(MotionMaterial::Ribbon),
+      material_collision_gain(MotionMaterial::Belt),
+      material_collision_gain(MotionMaterial::Accessory),
+      material_collision_gain(MotionMaterial::Cloth),
+      material_collision_gain(MotionMaterial::Sleeve),
+      tuning.ribbon_damping);
+  ui->text(ui->user,
+           anomaly::sdk::StringView(std::string(material_multipliers)));
+
+  const std::string reset_label =
+      context.localizer.Text("pose.physics.reset", "Restore defaults");
+  if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 96.0F,
+                 0.0F) != 0) {
+    tuning = better_pose::secondary::DynamicsTuning{};
+    changed = true;
+  }
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  const std::string rescan_label =
+      context.localizer.Text("pose.physics.rescan", "Rescan accessories");
+  if (ui->button(ui->user, anomaly::sdk::StringView(rescan_label), 112.0F,
+                 0.0F) != 0) {
+    context.mesh_scan_requested.store(true, std::memory_order_release);
+  }
+  if (changed) {
+    context.secondary_tuning.Store(tuning);
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+    if (context.motion_loaded.load(std::memory_order_acquire))
+      context.motion_secondary_tuning_stale.store(
+          true, std::memory_order_release);
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t last =
+        context.secondary_tuning_log_ms.load(std::memory_order_acquire);
+    if (last == 0 || now - last >= 500) {
+      context.secondary_tuning_log_ms.store(now, std::memory_order_release);
+      char message[768]{};
+      std::snprintf(
+          message, sizeof(message),
+          "betterpose tuning inertia=%.2f air=%.2f damping=%.2f "
+          "ribbon_damping=%.2f gravity=%.2f collision=%.2f extended=%u native=%u "
+          "constraints=%u self=%u "
+          "hair=%.2f ribbon=%.2f belt=%.2f accessory=%.2f cloth=%.2f sleeve=%.2f "
+          "hair_col=%.2f ribbon_col=%.2f belt_col=%.2f accessory_col=%.2f "
+          "cloth_col=%.2f sleeve_col=%.2f",
+          tuning.inertia, tuning.air, tuning.damping,
+          tuning.ribbon_damping, tuning.gravity, tuning.collision,
+          tuning.extended_collision ? 1U : 0U,
+          tuning.native_limits ? 1U : 0U,
+          tuning.bone_constraints ? 1U : 0U,
+          tuning.self_collision ? 1U : 0U,
+          tuning.material_inertia[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Hair)],
+          tuning.material_inertia[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Ribbon)],
+          tuning.material_inertia[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Belt)],
+          tuning.material_inertia[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Accessory)],
+          tuning.material_inertia[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Cloth)],
+          tuning.material_inertia[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Sleeve)],
+          tuning.material_collision[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Hair)],
+          tuning.material_collision[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Ribbon)],
+          tuning.material_collision[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Belt)],
+          tuning.material_collision[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Accessory)],
+          tuning.material_collision[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Cloth)],
+          tuning.material_collision[
+              better_pose::secondary::MotionMaterialIndex(
+                  MotionMaterial::Sleeve)]);
+      LogDiagnostic(context, message);
+    }
+  }
+
+  char state[320]{};
+  std::snprintf(
+      state, sizeof(state),
+      "%s: %u | driven %u | native springs %u | roots %u | multi-root %u",
+      context.localizer.Text("pose.physics.summary", "Dynamic-bone state").c_str(),
+      context.secondary_debug_components.load(std::memory_order_acquire),
+      context.secondary_debug_driven_bones.load(std::memory_order_acquire),
+      context.secondary_debug_native_springs.load(std::memory_order_acquire),
+      context.secondary_debug_attachment_roots.load(std::memory_order_acquire),
+      context.secondary_debug_multi_attachment.load(std::memory_order_acquire));
+  ui->text(ui->user, anomaly::sdk::StringView(std::string(state)));
+  char materials[512]{};
+  std::snprintf(
+      materials, sizeof(materials),
+      "%s: hair %u | ribbon %u | belt %u | accessory %u | cloth %u | sleeve %u",
+      context.localizer.Text("pose.physics.materials", "Material bones").c_str(),
+      context.secondary_debug_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Hair)]
+          .load(std::memory_order_acquire),
+      context.secondary_debug_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Ribbon)]
+          .load(std::memory_order_acquire),
+      context.secondary_debug_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Belt)]
+          .load(std::memory_order_acquire),
+      context.secondary_debug_materials[better_pose::secondary::
+                                            MotionMaterialIndex(
+                                                MotionMaterial::Accessory)]
+          .load(std::memory_order_acquire),
+      context.secondary_debug_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Cloth)]
+          .load(std::memory_order_acquire),
+      context.secondary_debug_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Sleeve)]
+          .load(std::memory_order_acquire));
+  ui->text(ui->user, anomaly::sdk::StringView(std::string(materials)));
+  char body_state[512]{};
+  std::snprintf(
+      body_state, sizeof(body_state),
+      "%s: %u | hair %u | ribbon %u | belt %u | accessory %u | cloth %u | sleeve %u",
+      context.localizer.Text("pose.physics.body", "Main-skeleton dynamics").c_str(),
+      context.motion_secondary_bones.load(std::memory_order_acquire),
+      context.motion_secondary_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Hair)]
+          .load(std::memory_order_acquire),
+      context.motion_secondary_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Ribbon)]
+          .load(std::memory_order_acquire),
+      context.motion_secondary_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Belt)]
+          .load(std::memory_order_acquire),
+      context.motion_secondary_materials[better_pose::secondary::
+                                            MotionMaterialIndex(
+                                                MotionMaterial::Accessory)]
+          .load(std::memory_order_acquire),
+      context.motion_secondary_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Cloth)]
+          .load(std::memory_order_acquire),
+      context.motion_secondary_materials[
+          better_pose::secondary::MotionMaterialIndex(MotionMaterial::Sleeve)]
+          .load(std::memory_order_acquire));
+  ui->text(ui->user, anomaly::sdk::StringView(std::string(body_state)));
+  if (context.motion_loaded.load(std::memory_order_acquire) &&
+      !context.motion_file.empty()) {
+    const std::string apply_body_label = context.localizer.Text(
+        "pose.physics.body_apply",
+        "Reconvert and apply to main-skeleton dynamics");
+    if (ui->button(ui->user,
+                   anomaly::sdk::StringView(apply_body_label), 180.0F,
+                   0.0F) != 0)
+      context.pose_file_action_requested.store(5, std::memory_order_release);
+    if (context.motion_secondary_tuning_stale.load(
+            std::memory_order_acquire)) {
+      const std::string stale = context.localizer.Text(
+          "pose.physics.body_stale",
+          "Main-skeleton tuning changed; reconvert the motion to apply it.");
+      ui->text(ui->user, anomaly::sdk::StringView(stale));
+    }
+  } else {
+    const std::string missing = context.localizer.Text(
+        "pose.physics.body_missing",
+        "No VMD motion is available to reconvert.");
+    ui->text(ui->user, anomaly::sdk::StringView(missing));
+  }
+  std::string component_summary;
+  {
+    std::unique_lock<std::mutex> lock(context.secondary_debug_mutex,
+                                      std::try_to_lock);
+    if (lock.owns_lock())
+      component_summary = context.secondary_debug_summary;
+  }
+  if (component_summary.empty()) {
+    component_summary = context.localizer.Text(
+        "pose.physics.none",
+        "No independent modular accessory mesh is currently detected.");
+  }
+  ui->text(ui->user, anomaly::sdk::StringView(component_summary));
+  if (context.collision_debug_enabled.load(std::memory_order_acquire)) {
+    char contacts[192]{};
+    std::snprintf(
+        contacts, sizeof(contacts), "contacts %u | max depth %.2f cm",
+        context.collision_debug_contacts.load(std::memory_order_acquire),
+        static_cast<double>(
+            context.collision_debug_max_depth.load(std::memory_order_acquire)));
+    ui->text(ui->user, anomaly::sdk::StringView(std::string(contacts)));
+  }
+  const std::string hint = context.localizer.Text(
+      "pose.physics.hint",
+      "Settings are saved per character and take effect immediately. Zero disables "
+      "the corresponding inertia or collision correction.");
+  ui->text(ui->user, anomaly::sdk::StringView(hint));
+}
+
 void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   auto *context = static_cast<Context *>(plugin_context);
   if (context == nullptr || !UiReady(ui))
@@ -12718,6 +19369,9 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     // reset the same way the pose page's Reset does it (undoable there).
     if (context->motion_loaded.load(std::memory_order_acquire))
       UnloadMotion(*context);
+    if (context->t_pose_calibration_active.load(std::memory_order_acquire))
+      context->t_pose_calibration_request.store(3,
+                                                std::memory_order_release);
     context->keyframe_playing.store(false, std::memory_order_release);
     context->pose_reset_requested.store(true, std::memory_order_release);
     context->reflection_action_requested.store(4, std::memory_order_release);
@@ -12728,6 +19382,157 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   if (ui->button(ui->user, anomaly::sdk::StringView(load_bones_label), 80.0F,
                  0.0F) != 0)
     context->reflection_action_requested.store(6, std::memory_order_release);
+  if (context->ahud != nullptr) {
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    int overlay_enabled =
+        context->skeleton_overlay_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string overlay_label =
+        context->localizer.Text("pose.skeleton.overlay", "Show skeleton");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(overlay_label),
+                     &overlay_enabled) != 0)
+      context->skeleton_overlay_enabled.store(overlay_enabled != 0,
+                                              std::memory_order_release);
+  }
+  if (context->input != nullptr) {
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    int orbit = context->orbit_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string orbit_label =
+        context->localizer.Text("pose.camera.orbit", "Pose camera");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(orbit_label), &orbit) !=
+        0) {
+      if (orbit != 0)
+        context->orbit_initialized.store(false, std::memory_order_release);
+      context->orbit_enabled.store(orbit != 0, std::memory_order_release);
+    }
+  }
+
+  const auto draw_motion_calibration = [&]() {
+    const std::string title = context->localizer.Text(
+        "motion.calibration.title", "Motion reference calibration");
+    ui->text(ui->user, anomaly::sdk::StringView(title));
+    const auto issue_text = [&](const CalibrationIssue issue) {
+      switch (issue) {
+        case CalibrationIssue::MissingBones:
+          return context->localizer.Text(
+              "calibration.issue.missing", "Required body bones are missing");
+        case CalibrationIssue::Spine:
+          return context->localizer.Text(
+              "calibration.issue.spine", "Spine or neck axis is not upright");
+        case CalibrationIssue::LeftArm:
+          return context->localizer.Text(
+              "calibration.issue.left_arm", "Left shoulder or arm chain is invalid");
+        case CalibrationIssue::RightArm:
+          return context->localizer.Text(
+              "calibration.issue.right_arm", "Right shoulder or arm chain is invalid");
+        case CalibrationIssue::Asymmetry:
+          return context->localizer.Text(
+              "calibration.issue.asymmetry", "Left and right arm angles are asymmetrical");
+        case CalibrationIssue::LeftLeg:
+          return context->localizer.Text(
+              "calibration.issue.left_leg", "Left leg is not straight or is not pointing down");
+        case CalibrationIssue::RightLeg:
+          return context->localizer.Text(
+              "calibration.issue.right_leg", "Right leg is not straight or is not pointing down");
+        case CalibrationIssue::WrongPoseMode:
+          return context->localizer.Text(
+              "calibration.issue.wrong_mode", "The pose does not match the selected A/T mode");
+        case CalibrationIssue::None:
+        default:
+          return std::string{};
+      }
+    };
+    std::size_t manual_reference_count = 0;
+    {
+      std::lock_guard<std::mutex> lock(context->pose_angles_mutex);
+      manual_reference_count = context->manual_motion_reference.size();
+    }
+    const auto automatic_kind = static_cast<CalibrationPoseKind>(
+        context->automatic_calibration_kind.load(std::memory_order_acquire));
+    const auto automatic_issue = static_cast<CalibrationIssue>(
+        context->automatic_calibration_issue.load(std::memory_order_acquire));
+    std::string automatic_status;
+    if (automatic_kind == CalibrationPoseKind::APose)
+      automatic_status = context->localizer.Text(
+          "calibration.auto.a", "Automatic reference: valid A pose");
+    else if (automatic_kind == CalibrationPoseKind::TPose)
+      automatic_status = context->localizer.Text(
+          "calibration.auto.t", "Automatic reference: valid T pose");
+    else if (automatic_kind == CalibrationPoseKind::Invalid)
+      automatic_status =
+          context->localizer.Text("calibration.auto.invalid",
+                                  "Automatic reference is invalid") +
+          ": " + issue_text(automatic_issue);
+    else
+      automatic_status = context->localizer.Text(
+          "calibration.auto.waiting", "Automatic reference is not available yet");
+    ui->text(ui->user, anomaly::sdk::StringView(automatic_status));
+    if (manual_reference_count != 0) {
+      const std::string override_status = context->localizer.Text(
+          "calibration.manual.active", "Manual calibration override is active");
+      ui->text(ui->user, anomaly::sdk::StringView(override_status));
+    }
+    const bool active =
+        context->t_pose_calibration_active.load(std::memory_order_acquire);
+    if (active) {
+      const std::string active_label = context->localizer.Text(
+          "pose.tpose.active",
+          "A/T-pose preview: use the skeleton points in the scene to correct the pose");
+      ui->text(ui->user, anomaly::sdk::StringView(active_label));
+      const std::string confirm_label =
+          context->localizer.Text("pose.tpose.confirm", "Save calibration");
+      if (ui->button(ui->user, anomaly::sdk::StringView(confirm_label), 100.0F,
+                     0.0F) != 0)
+        context->t_pose_calibration_request.store(2, std::memory_order_release);
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      const std::string cancel_label =
+          context->localizer.Text("pose.tpose.cancel", "Cancel");
+      if (ui->button(ui->user, anomaly::sdk::StringView(cancel_label), 70.0F,
+                     0.0F) != 0)
+        context->t_pose_calibration_request.store(3, std::memory_order_release);
+      const auto manual_issue = static_cast<CalibrationIssue>(
+          context->manual_calibration_issue.load(std::memory_order_acquire));
+      if (manual_issue != CalibrationIssue::None) {
+        const std::string invalid =
+            context->localizer.Text("calibration.manual.invalid",
+                                    "Cannot save this calibration") +
+            ": " + issue_text(manual_issue);
+        ui->text(ui->user, anomaly::sdk::StringView(invalid));
+      }
+      return;
+    }
+    int use_t_pose =
+        context->t_pose_calibration_use_t_pose.load(std::memory_order_acquire)
+            ? 1
+            : 0;
+    const std::string use_t_pose_label = context->localizer.Text(
+        "pose.tpose.use_t", "Use T-pose instead of the default A-pose");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(use_t_pose_label),
+                     &use_t_pose) != 0)
+      context->t_pose_calibration_use_t_pose.store(use_t_pose != 0,
+                                                   std::memory_order_release);
+    const std::string start_label = context->localizer.Text(
+        use_t_pose != 0 ? "pose.tpose.start_t" : "pose.tpose.start",
+        use_t_pose != 0 ? "Start T-pose calibration"
+                        : "Load automatic A-pose calibration");
+    if (ui->button(ui->user, anomaly::sdk::StringView(start_label), 120.0F,
+                   0.0F) != 0)
+      context->t_pose_calibration_request.store(1, std::memory_order_release);
+    if (manual_reference_count != 0) {
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      const std::string clear_label =
+          context->localizer.Text("pose.tpose.clear", "Clear calibration");
+      if (ui->button(ui->user, anomaly::sdk::StringView(clear_label), 100.0F,
+                     0.0F) != 0)
+        context->t_pose_calibration_request.store(4,
+                                                  std::memory_order_release);
+    }
+    const std::string hint = context->localizer.Text(
+        "pose.tpose.hint",
+        "A-pose calibration loads the engine's bind pose by default and shows the skeleton. "
+        "A generated A pose is only a fallback; T pose remains optional. "
+        "Confirm saves this character's motion reference; unload an MMD motion first.");
+    ui->text(ui->user, anomaly::sdk::StringView(hint));
+  };
 
   // Two pages: the MMD motion player and the joint-pose tool. Tab containers
   // are tail members of the UI service, so a host that predates them keeps the
@@ -12760,8 +19565,36 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       !use_tabs ||
       ui->begin_tab_item(ui->user, anomaly::sdk::StringView(mmd_tab_label),
                          nullptr, 0U, 1) != 0;
+  if (!mmd_page) {
+    if (context->collision_debug_page_visible.exchange(false, std::memory_order_acq_rel) &&
+        context->collision_debug_enabled.load(std::memory_order_acquire))
+      context->collision_overlay_request.store(0, std::memory_order_release);
+  } else if (context->collision_debug_enabled.load(std::memory_order_acquire) &&
+             !context->collision_debug_page_visible.exchange(true,
+                                                             std::memory_order_acq_rel)) {
+    context->collision_overlay_request.store(1, std::memory_order_release);
+  }
   if (mmd_page) {
     // --- MMD motion playback -------------------------------------------------
+    const std::string motion_inspect_label =
+        context->localizer.Text("motion.inspect", "Inspect VMD");
+    if (ui->button(ui->user, anomaly::sdk::StringView(motion_inspect_label),
+                   92.0F, 0.0F) != 0) {
+      const auto selected = ChooseFile(context->motion_file, FileKind::Vmd);
+      if (selected) {
+        const std::string file_utf8 = WideToUtf8(selected->native());
+        if (!file_utf8.empty()) {
+          context->motion_file = file_utf8;
+          {
+            std::lock_guard<std::mutex> lock(context->motion_inspection_mutex);
+            context->motion_inspection.reset();
+            context->motion_inspection_path.clear();
+          }
+          context->pose_file_action_requested.store(6, std::memory_order_release);
+        }
+      }
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
     const std::string motion_convert_label =
         context->localizer.Text("motion.convert", "Convert VMD and load");
     if (ui->button(ui->user, anomaly::sdk::StringView(motion_convert_label), 110.0F,
@@ -12773,6 +19606,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         const std::string file_utf8 = WideToUtf8(selected->native());
         if (!file_utf8.empty()) {
           context->motion_file = file_utf8;
+          {
+            std::lock_guard<std::mutex> lock(context->motion_inspection_mutex);
+            context->motion_inspection.reset();
+            context->motion_inspection_path.clear();
+          }
           context->pose_file_action_requested.store(5, std::memory_order_release);
         }
       }
@@ -12790,8 +19628,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         const auto selected = ChooseFile(context->motion_file, FileKind::Motion);
         if (selected) {
           const std::string file_utf8 = WideToUtf8(selected->native());
-          if (!file_utf8.empty())
+          if (!file_utf8.empty()) {
             context->motion_file = file_utf8;
+            std::lock_guard<std::mutex> lock(context->motion_inspection_mutex);
+            context->motion_inspection.reset();
+            context->motion_inspection_path.clear();
+          }
         }
       }
       if (!context->motion_file.empty())
@@ -12828,13 +19670,13 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       // animation once the plugin stops writing the bone buffers.
       context->reflection_action_requested.store(4, std::memory_order_release);
     }
-    ui->same_line(ui->user, 0.0F, 6.0F);
     int motion_loop = context->motion_loop.load(std::memory_order_acquire) ? 1 : 0;
     const std::string motion_loop_label =
         context->localizer.Text("motion.loop", "Loop");
     if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_loop_label),
                      &motion_loop) != 0)
       context->motion_loop.store(motion_loop != 0, std::memory_order_release);
+    ui->same_line(ui->user, 0.0F, 6.0F);
     int motion_root =
         context->motion_apply_root.load(std::memory_order_acquire) ? 1 : 0;
     const std::string motion_root_label =
@@ -12848,12 +19690,2240 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         context->localizer.Text("motion.planar", "Lock planar motion");
     if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_planar_label), &motion_planar) != 0)
       context->motion_lock_planar.store(motion_planar != 0, std::memory_order_release);
+    if (context->ahud != nullptr) {
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      int collision_debug =
+          context->collision_debug_enabled.load(std::memory_order_acquire) ? 1 : 0;
+      const std::string collision_debug_label =
+          context->localizer.Text("pose.collision.overlay", "Show dynamic collision");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(collision_debug_label),
+                       &collision_debug) != 0) {
+        context->collision_debug_enabled.store(collision_debug != 0,
+                                               std::memory_order_release);
+        context->collision_debug_page_visible.store(collision_debug != 0,
+                                                    std::memory_order_release);
+        context->collision_overlay_request.store(collision_debug != 0 ? 1 : 0,
+                                                 std::memory_order_release);
+        if (collision_debug == 0)
+          ClearCollisionDebugStats(*context);
+      }
+      if (collision_debug != 0) {
+        ui->same_line(ui->user, 0.0F, 6.0F);
+        int contact_diagnostics =
+            context->collision_contacts_enabled.load(std::memory_order_acquire) ? 1 : 0;
+        const std::string contact_diagnostics_label = context->localizer.Text(
+            "pose.collision.contact_diagnostics",
+            "Contact diagnostics (slow)");
+        if (ui->checkbox(ui->user,
+                         anomaly::sdk::StringView(contact_diagnostics_label),
+                         &contact_diagnostics) != 0) {
+          context->collision_contacts_enabled.store(
+              contact_diagnostics != 0, std::memory_order_release);
+          context->collision_overlay_refresh_ms = 0;
+        }
+        char depth[32]{};
+        char gap[32]{};
+        std::snprintf(depth, sizeof(depth), "%.2f",
+                      static_cast<double>(context->collision_debug_max_depth.load(
+                          std::memory_order_acquire)));
+        const float nearest_gap =
+            context->collision_debug_nearest_gap.load(std::memory_order_acquire);
+        if (std::isfinite(nearest_gap))
+          std::snprintf(gap, sizeof(gap), "%.2f", static_cast<double>(nearest_gap));
+        else
+          std::snprintf(gap, sizeof(gap), "n/a");
+        const std::string collision_summary =
+            context->localizer.Text("pose.collision.summary", "Dynamic collision") + ": " +
+            std::to_string(context->collision_debug_accessories.load(
+                std::memory_order_acquire)) +
+            " x " + std::to_string(context->collision_debug_capsules.load(
+                            std::memory_order_acquire)) +
+            " | " + context->localizer.Text("pose.collision.torso", "torso") + " " +
+            std::to_string(context->collision_debug_torso.load(
+                std::memory_order_acquire)) +
+            " / " + context->localizer.Text("pose.collision.head", "head") + " " +
+            std::to_string(context->collision_debug_head.load(
+                std::memory_order_acquire)) +
+            " / " + context->localizer.Text("pose.collision.arms", "arms") + " " +
+            std::to_string(context->collision_debug_arms.load(
+                std::memory_order_acquire)) +
+            " / " + context->localizer.Text("pose.collision.legs", "legs") + " " +
+            std::to_string(context->collision_debug_legs.load(
+                std::memory_order_acquire)) +
+            " | " + context->localizer.Text("pose.collision.contacts", "contacts") + " " +
+            std::to_string(context->collision_debug_contacts.load(
+                std::memory_order_acquire)) +
+            " (" + context->localizer.Text("pose.collision.by_group", "by group") + " " +
+            std::to_string(context->collision_debug_contacts_torso.load(
+                std::memory_order_acquire)) +
+            "/" + std::to_string(context->collision_debug_contacts_head.load(
+                         std::memory_order_acquire)) +
+            "/" + std::to_string(context->collision_debug_contacts_arms.load(
+                         std::memory_order_acquire)) +
+            "/" + std::to_string(context->collision_debug_contacts_legs.load(
+                         std::memory_order_acquire)) +
+            ")" +
+            " | " + context->localizer.Text("pose.collision.corrections", "corrections") +
+            " " + std::to_string(context->collision_debug_corrections.load(
+                                std::memory_order_acquire)) +
+            " | " + context->localizer.Text("pose.collision.probes", "probes") + " " +
+            std::to_string(context->collision_debug_probes.load(
+                std::memory_order_acquire)) +
+            " | " + context->localizer.Text("pose.collision.gap", "closest gap") + " " +
+            gap + " cm" +
+            " | " + context->localizer.Text("pose.collision.depth", "max depth") + " " +
+            depth + " cm";
+        ui->text(ui->user, anomaly::sdk::StringView(collision_summary));
+        std::string collision_radii =
+            context->localizer.Text("pose.collision.radii", "Visual radii") + ": " +
+            context->localizer.Text("pose.collision.torso", "torso") + " 8";
+        if (context->secondary_tuning.Load().extended_collision) {
+          char head_radius[16]{};
+          std::snprintf(
+              head_radius, sizeof(head_radius), "%.1f",
+              better_pose::secondary::kHeadCollisionRadiusCm);
+          collision_radii +=
+              " / " + context->localizer.Text("pose.collision.neck", "neck") +
+              " 3.5-6.5 / " +
+              context->localizer.Text("pose.collision.head", "head") + " " +
+              head_radius +
+              " / " + context->localizer.Text("pose.collision.arms", "arms") +
+              " 3.5-5";
+        }
+        collision_radii +=
+            " / " + context->localizer.Text("pose.collision.legs", "legs") +
+            " <= 6 cm";
+        ui->text(ui->user, anomaly::sdk::StringView(collision_radii));
+      }
+    }
+    DrawSecondaryPhysicsControls(*context, ui);
+    const std::string motion_ref_title =
+        context->localizer.Text("motion.ref", "MMD source skeleton");
+    ui->text(ui->user, anomaly::sdk::StringView(motion_ref_title));
+    const int motion_ref =
+        std::clamp(context->motion_reference_mode.load(
+                       std::memory_order_acquire),
+                   0, 2);
+    const std::array<std::string, 3> motion_ref_labels{
+        context->localizer.Text("motion.ref.pmx", "Standard Miku PMX"),
+        context->localizer.Text("motion.ref.unity", "Unity Miku V4C"),
+        context->localizer.Text("motion.ref.endfield", "Endfield Standard MMD / A")};
+    bool motion_ref_changed = false;
+    for (int index{}; index != 3; ++index) {
+      if (index != 0)
+        ui->same_line(ui->user, 0.0F, 4.0F);
+      const std::string label =
+          (index == motion_ref ? "> " : "") + motion_ref_labels[index];
+      if (ui->button(ui->user, anomaly::sdk::StringView(label), 112.0F,
+                     0.0F) != 0) {
+        context->motion_reference_mode.store(index,
+                                             std::memory_order_release);
+        motion_ref_changed = index != motion_ref;
+      }
+    }
+    if (motion_ref_changed) {
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+      if (!context->motion_file.empty())
+        context->pose_file_action_requested.store(
+            6, std::memory_order_release);
+    }
+    const std::string motion_ref_hint = context->localizer.Text(
+        "motion.ref.hint",
+        "Changing the source skeleton takes effect when the VMD is converted again.");
+    ui->text(ui->user, anomaly::sdk::StringView(motion_ref_hint));
+    int motion_mapping_ui =
+        context->motion_mapping_ui_enabled ? 1 : 0;
+    const std::string motion_mapping_ui_label =
+        context->localizer.Text("motion.mapping.ui",
+                                "Show mapping details and editing");
+    if (ui->checkbox(ui->user,
+                     anomaly::sdk::StringView(motion_mapping_ui_label),
+                     &motion_mapping_ui) != 0) {
+      context->motion_mapping_ui_enabled = motion_mapping_ui != 0;
+      if (!context->motion_mapping_ui_enabled) {
+        context->motion_mapping_source.clear();
+        context->motion_mapping_parent_mode = false;
+        context->motion_mapping_anchor_picker = false;
+        context->motion_mapping_anchor.clear();
+        context->motion_mapping_control_mode = false;
+        context->motion_finger_preview_enabled.store(
+            false, std::memory_order_release);
+        context->motion_arm_preview_enabled.store(
+            false, std::memory_order_release);
+      }
+    }
+    std::optional<better_pose::mmd2bip::VmdCompatibilityReport> inspection;
+    std::map<std::string, std::string> manual_mappings;
+    std::vector<better_pose::mmd2bip::ManualParentMapping>
+        manual_parent_mappings;
+    std::vector<better_pose::mmd2bip::ManualFingerControl>
+        manual_finger_controls;
+    std::vector<better_pose::mmd2bip::ManualArmIkControl>
+        manual_arm_ik_controls;
+    std::set<std::string> ignored_tracks;
+    {
+      std::lock_guard<std::mutex> lock(context->motion_inspection_mutex);
+      inspection = context->motion_inspection;
+    }
+    {
+      std::lock_guard<std::mutex> lock(context->motion_mapping_mutex);
+      manual_mappings = context->manual_motion_mappings;
+      manual_parent_mappings = context->manual_motion_parents;
+      manual_finger_controls = context->manual_motion_finger_controls;
+      manual_arm_ik_controls = context->manual_motion_arm_ik_controls;
+      ignored_tracks = context->ignored_motion_tracks;
+    }
+    if (inspection && inspection->ok) {
+      const bool use_reference_mapping =
+          inspection->reference_mapping_ready &&
+          inspection->reference_mode == motion_ref;
+      const auto &unmapped_tracks =
+          use_reference_mapping
+              ? inspection->reference_unmapped_tracks
+              : inspection->unmapped_tracks;
+      const std::uint32_t unmapped_humanoid =
+          use_reference_mapping
+              ? inspection->reference_unmapped_humanoid
+              : inspection->unmapped_humanoid;
+      const std::uint32_t unmapped_control =
+          use_reference_mapping
+              ? inspection->reference_unmapped_control
+              : inspection->unmapped_control;
+      const std::uint32_t unmapped_accessory =
+          use_reference_mapping
+              ? inspection->reference_unmapped_accessory
+              : inspection->unmapped_accessory;
+      const std::uint32_t unmapped_other =
+          use_reference_mapping
+              ? inspection->reference_unmapped_other
+              : inspection->unmapped_other;
+      const std::string inspection_title =
+          context->localizer.Text("motion.inspect.title", "VMD compatibility");
+      const std::string recommended =
+          motion_ref_labels[std::clamp(inspection->recommended_reference, 0, 2)];
+      ui->text(ui->user, anomaly::sdk::StringView(
+                             inspection_title + ": " + recommended));
+      const std::string confidence =
+          inspection->confidence >= 5
+              ? context->localizer.Text("motion.inspect.confidence.high", "high")
+              : inspection->confidence >= 2
+                    ? context->localizer.Text("motion.inspect.confidence.medium",
+                                              "medium")
+                    : context->localizer.Text("motion.inspect.confidence.low",
+                                              "low");
+      ui->text(ui->user, anomaly::sdk::StringView(
+                             context->localizer.Text("motion.inspect.confidence",
+                                                     "confidence") +
+                             ": " + confidence + "  |  " +
+                             std::to_string(inspection->track_count) + " tracks  |  " +
+                             std::to_string(inspection->bone_key_count) + " keys  |  " +
+                             std::to_string(inspection->frame_count) + " frames"));
+      if (context->motion_mapping_ui_enabled) {
+        if (use_reference_mapping) {
+          ui->text(ui->user, anomaly::sdk::StringView(
+                                 context->localizer.Text(
+                                     "motion.inspect.reference_mapping",
+                                     "Current reference mapping") +
+                                 ": " + motion_ref_labels[motion_ref] + " | " +
+                                 context->localizer.Text(
+                                     "motion.inspect.mapped", "mapped") +
+                                 " " +
+                                 std::to_string(
+                                     inspection->reference_mapped_tracks) +
+                                 " -> " +
+                                 std::to_string(
+                                     inspection->reference_mapped_targets) +
+                                 " " +
+                                 context->localizer.Text(
+                                     "motion.inspect.targets", "targets")));
+        } else if (!inspection->reference_mapping_error.empty()) {
+          ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                                 "motion.inspect.reference_unavailable",
+                                 "Reference mapping unavailable") +
+                             ": " +
+                             inspection->reference_mapping_error));
+        } else {
+          ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                                 "motion.inspect.reference_pending",
+                                 "Reference changed; rechecking VMD mapping.")));
+        }
+      }
+      std::string features;
+      const auto append_feature = [&](const bool present, const char *key,
+                                      const char *fallback) {
+        if (!present)
+          return;
+        if (!features.empty())
+          features += ", ";
+        features += context->localizer.Text(key, fallback);
+      };
+      append_feature(inspection->complete_leg_fk, "motion.inspect.fk",
+                     "complete leg FK");
+      append_feature(inspection->foot_ik && !inspection->complete_leg_fk,
+                     "motion.inspect.ik_no_fk", "IK without complete FK");
+      append_feature(inspection->leg_d, "motion.inspect.leg_d", "D/EX legs");
+      append_feature(inspection->waist_cancel, "motion.inspect.waist_cancel",
+                     "waist cancel");
+      append_feature(inspection->shoulder_cancel, "motion.inspect.shoulder",
+                     "shoulder P/C");
+      append_feature(inspection->twist_tracks, "motion.inspect.twist",
+                     "arm/wrist twist");
+      append_feature(inspection->upper_body_3, "motion.inspect.spine3",
+                     "three-section spine");
+      append_feature(inspection->upper_body_1, "motion.inspect.spine1",
+                     "upper body 1");
+      append_feature(inspection->visibility_keys != 0,
+                     "motion.inspect.visibility", "model visibility");
+      if (!features.empty())
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text("motion.inspect.features",
+                                                       "features") +
+                               ": " + features));
+      if (inspection->confidence < 2) {
+        ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                               "motion.inspect.risk.mixed",
+                               "Mixed rig signature; compare the choices in game.")));
+      } else if (inspection->foot_ik && !inspection->complete_leg_fk) {
+        ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                               "motion.inspect.risk.ik_no_fk",
+                               "No complete leg FK; a bad IK match cannot fall back.")));
+      }
+      const bool track_child =
+          HasField<AnomalyUiServiceV1,
+                   decltype(AnomalyUiServiceV1::begin_child)>(
+              ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+          ui->begin_child != nullptr &&
+          HasField<AnomalyUiServiceV1,
+                   decltype(AnomalyUiServiceV1::end_child)>(
+              ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+          ui->end_child != nullptr;
+      const auto mapping_reason_text =
+          [&](const better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason reason) {
+            switch (reason) {
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::Ignored:
+                return context->localizer.Text("motion.reason.ignored",
+                                               "ignored");
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::MissingReference:
+                return context->localizer.Text("motion.reason.reference",
+                                               "missing in reference");
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::MissingTarget:
+                return context->localizer.Text("motion.reason.target",
+                                               "missing target bone");
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::TargetOccupied:
+                return context->localizer.Text("motion.reason.occupied",
+                                               "target already mapped");
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::SourceMissing:
+                return context->localizer.Text("motion.reason.source_missing",
+                                               "source absent in VMD");
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::Disconnected:
+                return context->localizer.Text("motion.reason.disconnected",
+                                               "target not connected");
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::Unmapped:
+              case better_pose::mmd2bip::VmdCompatibilityReport::
+                  MappingIssueReason::None:
+                return context->localizer.Text("motion.reason.unmapped",
+                                               "unmapped");
+            }
+            return std::string();
+          };
+      if (context->motion_mapping_ui_enabled && use_reference_mapping &&
+          !inspection->mapped_reference_tracks.empty()) {
+        const std::string mapped_title =
+            context->localizer.Text("motion.inspect.mapped_tracks",
+                                    "Mapped tracks");
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               mapped_title + ": " +
+                               std::to_string(
+                                   inspection->mapped_reference_tracks.size())));
+        const int mapped_open =
+            track_child
+                ? ui->begin_child(
+                      ui->user,
+                      anomaly::sdk::StringView("vmd-reference-mapped-tracks"),
+                      0.0F, 150.0F, 0U)
+                : 1;
+        if (mapped_open != 0) {
+          const std::size_t shown_mapped =
+              (std::min)(inspection->mapped_reference_tracks.size(),
+                         std::size_t{80});
+          for (std::size_t index{}; index != shown_mapped; ++index) {
+            const auto &track = inspection->mapped_reference_tracks[index];
+            const std::string line =
+                track.name + " -> " + track.target + " | " +
+                context->localizer.Text("motion.inspect.keys", "keys") +
+                " " + std::to_string(track.key_count) +
+                (track.manual
+                     ? " | " +
+                           context->localizer.Text("motion.inspect.manual",
+                                                   "manual")
+                     : std::string());
+            const std::string select_label =
+                line + " | " +
+                context->localizer.Text(
+                    context->motion_mapping_source == track.name
+                        ? "motion.mapping.selected"
+                        : "motion.mapping.select",
+                    context->motion_mapping_source == track.name ? "selected"
+                                                                 : "map");
+            if (ui->button(ui->user,
+                           anomaly::sdk::StringView(select_label), 0.0F,
+                           0.0F) != 0) {
+              context->motion_mapping_source = track.name;
+              context->motion_mapping_parent_mode = false;
+              context->motion_mapping_parent_rotation = true;
+              context->motion_mapping_parent_position = false;
+              context->motion_mapping_anchor_picker = false;
+              context->motion_mapping_anchor.clear();
+              context->motion_mapping_control_mode = false;
+              context->motion_finger_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_arm_preview_enabled.store(
+                  false, std::memory_order_release);
+            }
+          }
+          if (inspection->mapped_reference_tracks.size() > shown_mapped)
+            ui->text(ui->user, anomaly::sdk::StringView(
+                                   "+" +
+                                   std::to_string(
+                                       inspection->mapped_reference_tracks.size() -
+                                       shown_mapped)));
+        }
+        if (track_child)
+          ui->end_child(ui->user);
+      }
+      if (context->motion_mapping_ui_enabled && use_reference_mapping &&
+          !inspection->ignored_reference_tracks.empty()) {
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "motion.inspect.ignored_tracks",
+                                   "Ignored tracks") +
+                               ": " +
+                               std::to_string(
+                                   inspection->ignored_reference_tracks.size())));
+        const int ignored_open =
+            track_child
+                ? ui->begin_child(
+                      ui->user,
+                      anomaly::sdk::StringView("vmd-ignored-tracks"),
+                      0.0F, 120.0F, 0U)
+                : 1;
+        if (ignored_open != 0) {
+          const std::size_t shown_ignored =
+              (std::min)(inspection->ignored_reference_tracks.size(),
+                         std::size_t{60});
+          for (std::size_t index{}; index != shown_ignored; ++index) {
+            const auto &track =
+                inspection->ignored_reference_tracks[index];
+            const std::string label =
+                track.name + " | " +
+                context->localizer.Text("motion.inspect.keys", "keys") +
+                " " + std::to_string(track.key_count) + " | " +
+                mapping_reason_text(track.reason);
+            if (ui->button(ui->user,
+                           anomaly::sdk::StringView(label), 0.0F,
+                           0.0F) != 0) {
+              context->motion_mapping_source = track.name;
+              context->motion_mapping_parent_mode = false;
+              context->motion_mapping_parent_rotation = true;
+              context->motion_mapping_parent_position = false;
+              context->motion_mapping_anchor_picker = false;
+              context->motion_mapping_anchor.clear();
+              context->motion_mapping_control_mode = false;
+              context->motion_finger_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_arm_preview_enabled.store(
+                  false, std::memory_order_release);
+            }
+          }
+          if (inspection->ignored_reference_tracks.size() >
+              shown_ignored)
+            ui->text(ui->user, anomaly::sdk::StringView(
+                                   "+" +
+                                   std::to_string(
+                                       inspection->ignored_reference_tracks
+                                           .size() -
+                                       shown_ignored)));
+        }
+        if (track_child)
+          ui->end_child(ui->user);
+      }
+      if (context->motion_mapping_ui_enabled && use_reference_mapping &&
+          !inspection->mapping_issues.empty()) {
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "motion.inspect.mapping_issues",
+                                   "Mapping issues") +
+                               ": " +
+                               std::to_string(
+                                   inspection->mapping_issues.size())));
+        const std::size_t shown_issues =
+            (std::min)(inspection->mapping_issues.size(),
+                       std::size_t{40});
+        for (std::size_t index{}; index != shown_issues; ++index) {
+          const auto &issue = inspection->mapping_issues[index];
+          const std::string label =
+              issue.source + " -> " + issue.target + " | " +
+              mapping_reason_text(issue.reason) + " | " +
+              context->localizer.Text("motion.mapping.remove",
+                                      "Remove mapping");
+          if (ui->button(ui->user,
+                         anomaly::sdk::StringView(label), 0.0F,
+                         0.0F) != 0) {
+            {
+              std::lock_guard<std::mutex> lock(
+                  context->motion_mapping_mutex);
+              context->manual_motion_mappings.erase(issue.source);
+              context->manual_motion_parents.erase(
+                  std::remove_if(
+                      context->manual_motion_parents.begin(),
+                      context->manual_motion_parents.end(),
+                      [&issue](const auto &mapping) {
+                        return mapping.source == issue.source &&
+                               mapping.target == issue.target;
+                      }),
+                  context->manual_motion_parents.end());
+              if (issue.target == "(hand finger chain)")
+                context->manual_motion_finger_controls.erase(
+                    std::remove_if(
+                        context->manual_motion_finger_controls.begin(),
+                        context->manual_motion_finger_controls.end(),
+                        [&issue](const auto &control) {
+                          return control.source == issue.source;
+                        }),
+                    context->manual_motion_finger_controls.end());
+              if (issue.target == "Arm IK")
+                context->manual_motion_arm_ik_controls.erase(
+                    std::remove_if(
+                        context->manual_motion_arm_ik_controls.begin(),
+                        context->manual_motion_arm_ik_controls.end(),
+                        [&issue](const auto &control) {
+                          return control.source == issue.source;
+                        }),
+                    context->manual_motion_arm_ik_controls.end());
+            }
+            context->pose_settings_dirty.store(
+                true, std::memory_order_release);
+            if (!context->motion_file.empty())
+              context->pose_file_action_requested.store(
+                  6, std::memory_order_release);
+          }
+        }
+      }
+      const std::uint32_t unmapped_total =
+          static_cast<std::uint32_t>(unmapped_tracks.size());
+      if (context->motion_mapping_ui_enabled) {
+        struct ControlTrackChoice {
+          std::string name;
+          std::uint32_t keys{};
+          std::uint32_t first_nonzero{};
+          bool animated{};
+          bool mapped{};
+          int name_priority{};
+          int behavior_score{};
+          better_pose::mmd2bip::VmdCompatibilityReport::TrackKind kind =
+              better_pose::mmd2bip::VmdCompatibilityReport::TrackKind::Other;
+          better_pose::mmd2bip::VmdCompatibilityReport::TrackMotionSignature
+              signature;
+        };
+        std::map<std::string, ControlTrackChoice> choices;
+        const auto add_choice =
+            [&choices](const std::string &name, const std::uint32_t keys,
+                       const std::uint32_t first_nonzero,
+                       const bool animated, const bool mapped,
+                       const better_pose::mmd2bip::VmdCompatibilityReport::
+                           TrackKind kind,
+                       const better_pose::mmd2bip::VmdCompatibilityReport::
+                           TrackMotionSignature &signature) {
+              auto &choice = choices[name];
+              choice.name = name;
+              choice.keys = (std::max)(choice.keys, keys);
+              choice.first_nonzero =
+                  choice.animated && choice.first_nonzero != 0
+                      ? choice.first_nonzero
+                      : first_nonzero;
+              choice.animated = choice.animated || animated;
+              choice.mapped = choice.mapped || mapped;
+              if (kind == better_pose::mmd2bip::VmdCompatibilityReport::
+                              TrackKind::Control)
+                choice.kind = kind;
+              choice.name_priority =
+                  (std::max)(choice.name_priority,
+                             ControlTrackPriority(name));
+              int behavior = 0;
+              if (animated && choice.kind ==
+                                  better_pose::mmd2bip::
+                                      VmdCompatibilityReport::TrackKind::
+                                          Control &&
+                  !IsStructuralControlTrack(name)) {
+                if (signature.dominant_axis >= 0 &&
+                    signature.direction_changes >= 1 &&
+                    signature.axis_dominance >= 0.75 &&
+                    signature.rotation_span[static_cast<std::size_t>(
+                        signature.dominant_axis)] >= 0.03)
+                  behavior += 60 +
+                              static_cast<int>(signature.direction_changes) *
+                                  5 +
+                              (std::min)(20,
+                                         static_cast<int>(keys / 4U));
+              }
+              choice.behavior_score =
+                  (std::max)(choice.behavior_score, behavior);
+              if (choice.signature.dominant_axis < 0 &&
+                  signature.dominant_axis >= 0)
+                choice.signature = signature;
+            };
+        for (const auto &track : inspection->mapped_reference_tracks)
+          add_choice(track.name, track.key_count, track.first_nonzero_frame,
+                     track.animated, true, track.kind, track.signature);
+        for (const auto &track : inspection->unmapped_tracks)
+          add_choice(track.name, track.key_count, track.first_nonzero_frame,
+                     track.animated, false, track.kind, track.signature);
+        if (use_reference_mapping) {
+          for (const auto &track : inspection->reference_unmapped_tracks)
+            add_choice(track.name, track.key_count,
+                       track.first_nonzero_frame, track.animated, false,
+                       track.kind, track.signature);
+          for (const auto &track : inspection->ignored_reference_tracks)
+            add_choice(track.name, track.key_count,
+                       track.first_nonzero_frame, track.animated, true,
+                       track.kind, track.signature);
+        }
+        std::vector<ControlTrackChoice> ordered;
+        ordered.reserve(choices.size());
+        for (auto &[name, choice] : choices) {
+          static_cast<void>(name);
+          ordered.push_back(std::move(choice));
+        }
+        std::stable_sort(
+            ordered.begin(), ordered.end(),
+            [](const ControlTrackChoice &left,
+               const ControlTrackChoice &right) {
+              if (left.name_priority != right.name_priority)
+                return left.name_priority > right.name_priority;
+              if (left.behavior_score != right.behavior_score)
+                return left.behavior_score > right.behavior_score;
+              if (left.animated != right.animated)
+                return left.animated;
+              if (left.keys != right.keys)
+                return left.keys > right.keys;
+              return left.name < right.name;
+            });
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "motion.control.source_title",
+                                   "Automatically detected control candidates")));
+        const bool has_control_candidates =
+            std::any_of(ordered.begin(), ordered.end(),
+                        [](const ControlTrackChoice &choice) {
+                          return choice.name_priority > 0 ||
+                                 choice.behavior_score > 0;
+                        });
+        const std::size_t control_candidate_count =
+            static_cast<std::size_t>(std::count_if(
+                ordered.begin(), ordered.end(),
+                [](const ControlTrackChoice &choice) {
+                  return choice.name_priority > 0 ||
+                         choice.behavior_score > 0;
+                }));
+        if (!has_control_candidates) {
+          ui->text(ui->user, anomaly::sdk::StringView(
+                                 context->localizer.Text(
+                                     "motion.control.source_none",
+                                     "No matching VMD tracks")));
+        } else {
+          const bool use_source_scroll =
+              track_child && control_candidate_count > 4;
+          const int source_open =
+              use_source_scroll
+                  ? ui->begin_child(
+                        ui->user,
+                        anomaly::sdk::StringView("hand-control-source-tracks"),
+                        0.0F,
+                        (std::min)(
+                            180.0F,
+                            24.0F +
+                                static_cast<float>(control_candidate_count) *
+                                    22.0F),
+                        0U)
+                  : 1;
+          if (source_open != 0) {
+            std::size_t shown_sources{};
+            for (const auto &choice : ordered) {
+              if (shown_sources >= 160)
+                break;
+              if (choice.name_priority <= 0 &&
+                  choice.behavior_score <= 0)
+                continue;
+              const std::string first =
+                  choice.animated
+                      ? std::to_string(choice.first_nonzero)
+                      : context->localizer.Text("motion.inspect.no_motion",
+                                                "no motion");
+              const std::string label =
+                  std::string("[") +
+                  context->localizer.Text(
+                      choice.name_priority > 0
+                          ? "motion.control.source_suggested"
+                          : "motion.control.source_behavior",
+                      choice.name_priority > 0 ? "suggested"
+                                               : "motion signature") +
+                  "] " +
+                  choice.name + " | " +
+                  std::to_string(choice.keys) + " " +
+                  context->localizer.Text("motion.inspect.keys", "keys") +
+                  " | " +
+                  context->localizer.Text(
+                      "motion.inspect.first_nonzero", "first nonzero") +
+                  " " + first +
+                  (choice.mapped
+                       ? " | " +
+                             context->localizer.Text(
+                                 "motion.control.source_mapped", "mapped")
+                       : std::string());
+              if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F,
+                             0.0F) != 0) {
+                context->motion_mapping_source = choice.name;
+                context->motion_mapping_parent_mode = false;
+                context->motion_mapping_control_mode = true;
+                context->motion_mapping_parent_rotation = true;
+                context->motion_mapping_parent_position = false;
+                context->motion_mapping_anchor_picker = false;
+                context->motion_mapping_anchor.clear();
+                const int control_kind =
+                    context->motion_mapping_control_kind.load(
+                        std::memory_order_acquire);
+                context->motion_finger_preview_enabled.store(
+                    control_kind != 2, std::memory_order_release);
+                context->motion_arm_preview_enabled.store(
+                    control_kind == 2, std::memory_order_release);
+              }
+              ++shown_sources;
+            }
+          }
+          if (use_source_scroll)
+            ui->end_child(ui->user);
+        }
+      }
+      if (context->motion_mapping_ui_enabled &&
+          !manual_arm_ik_controls.empty()) {
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "motion.control.arm_list",
+                                   "Manual arm IK") +
+                               ": " +
+                               std::to_string(manual_arm_ik_controls.size())));
+        const std::size_t shown_arm_controls =
+            (std::min)(manual_arm_ik_controls.size(), std::size_t{32});
+        for (std::size_t index{}; index != shown_arm_controls; ++index) {
+          const auto &control = manual_arm_ik_controls[index];
+          const std::string side =
+              control.paired
+                  ? context->localizer.Text("motion.control.paired",
+                                            "Both hands")
+                  : context->localizer.Text(
+                        control.side == 0 ? "motion.control.left"
+                                          : "motion.control.right",
+                        control.side == 0 ? "Left hand" : "Right hand");
+          const std::string label =
+              control.source + " | " + side + " | " +
+              std::to_string(control.gain) + "x | " +
+              std::to_string(control.max_bend_degrees) + " deg | " +
+              (control.follow_wrist
+                   ? context->localizer.Text("motion.control.arm_follow",
+                                             "Follow wrist")
+                   : context->localizer.Text("motion.control.arm_hold",
+                                             "Keep wrist")) +
+              " | " +
+              context->localizer.Text("motion.control.arm_remove",
+                                      "Remove arm IK");
+          if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F,
+                         0.0F) == 0)
+            continue;
+          {
+            std::lock_guard<std::mutex> lock(
+                context->motion_mapping_mutex);
+            const auto found = std::find_if(
+                context->manual_motion_arm_ik_controls.begin(),
+                context->manual_motion_arm_ik_controls.end(),
+                [&control](const auto &candidate) {
+                  return candidate.source == control.source &&
+                         candidate.side == control.side &&
+                         candidate.paired == control.paired;
+                });
+            if (found != context->manual_motion_arm_ik_controls.end())
+              context->manual_motion_arm_ik_controls.erase(found);
+          }
+          context->pose_settings_dirty.store(true,
+                                             std::memory_order_release);
+          if (!context->motion_file.empty())
+            context->pose_file_action_requested.store(
+                6, std::memory_order_release);
+          if (context->motion_mapping_source == control.source)
+            context->motion_mapping_source.clear();
+          context->motion_mapping_control_mode = false;
+          break;
+        }
+        if (manual_arm_ik_controls.size() > shown_arm_controls)
+          ui->text(ui->user, anomaly::sdk::StringView(
+                                 "+" +
+                                 std::to_string(manual_arm_ik_controls.size() -
+                                                shown_arm_controls)));
+      }
+      if (context->motion_mapping_ui_enabled &&
+          !manual_finger_controls.empty()) {
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "motion.control.list",
+                                   "Manual hand controls") +
+                               ": " +
+                               std::to_string(manual_finger_controls.size())));
+        const std::size_t shown_controls =
+            (std::min)(manual_finger_controls.size(), std::size_t{80});
+        static const char *kFingerKeys[] = {
+            "motion.control.finger.thumb", "motion.control.finger.index",
+            "motion.control.finger.middle", "motion.control.finger.ring",
+            "motion.control.finger.pinky"};
+        static const char *kFingerDefaults[] = {
+            "Thumb", "Index", "Middle", "Ring", "Pinky"};
+        for (std::size_t index{}; index != shown_controls; ++index) {
+          const auto &control = manual_finger_controls[index];
+          const std::string finger =
+              control.finger < 0
+                  ? context->localizer.Text(
+                        "motion.control.finger.all", "All")
+                  : context->localizer.Text(
+                        kFingerKeys[control.finger],
+                        kFingerDefaults[control.finger]);
+          const std::string side =
+              control.paired
+                  ? context->localizer.Text(
+                        "motion.control.paired", "Both hands")
+                  : context->localizer.Text(
+                        control.side == 0 ? "motion.control.left"
+                                          : "motion.control.right",
+                        control.side == 0 ? "Left hand" : "Right hand");
+          const std::string label =
+              control.source + " -> " +
+              context->localizer.Text(
+                  control.kind ==
+                          better_pose::mmd2bip::FingerControlKind::Grip
+                      ? "motion.control.grip"
+                      : "motion.control.spread",
+                  control.kind ==
+                          better_pose::mmd2bip::FingerControlKind::Grip
+                      ? "Grip"
+                      : "Spread") +
+              " | " + side + " | " + finger +
+              " | " + std::string(1, static_cast<char>('X' + control.input_axis)) +
+              " | " + std::to_string(control.gain) + " | " +
+              context->localizer.Text("motion.control.remove",
+                                      "Remove hand control");
+          if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F,
+                         0.0F) == 0)
+            continue;
+          {
+            std::lock_guard<std::mutex> lock(
+                context->motion_mapping_mutex);
+            const auto found = std::find_if(
+                context->manual_motion_finger_controls.begin(),
+                context->manual_motion_finger_controls.end(),
+                [&control](const auto &candidate) {
+                  return candidate.source == control.source &&
+                         candidate.kind == control.kind &&
+                         candidate.side == control.side &&
+                         candidate.finger == control.finger &&
+                         candidate.input_axis == control.input_axis &&
+                         candidate.paired == control.paired &&
+                         std::fabs(candidate.gain - control.gain) < 1e-6F;
+                });
+            if (found != context->manual_motion_finger_controls.end())
+              context->manual_motion_finger_controls.erase(found);
+          }
+          context->pose_settings_dirty.store(true,
+                                             std::memory_order_release);
+          if (!context->motion_file.empty())
+            context->pose_file_action_requested.store(
+                6, std::memory_order_release);
+          if (context->motion_mapping_source == control.source)
+            context->motion_mapping_source.clear();
+          context->motion_mapping_control_mode = false;
+          context->motion_finger_preview_enabled.store(
+              false, std::memory_order_release);
+          context->motion_arm_preview_enabled.store(
+              false, std::memory_order_release);
+          break;
+        }
+        if (manual_finger_controls.size() > shown_controls)
+          ui->text(ui->user, anomaly::sdk::StringView(
+                                 "+" +
+                                 std::to_string(manual_finger_controls.size() -
+                                                shown_controls)));
+      }
+      if (context->motion_mapping_ui_enabled &&
+          !manual_parent_mappings.empty()) {
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "motion.mapping.parents",
+                                   "Manual parent insertions") +
+                               ": " +
+                               std::to_string(manual_parent_mappings.size())));
+        const std::size_t shown_parents =
+            (std::min)(manual_parent_mappings.size(), std::size_t{80});
+        for (std::size_t index{}; index != shown_parents; ++index) {
+          const auto &mapping = manual_parent_mappings[index];
+          const std::string label =
+              mapping.source + " -> " + mapping.target + " | " +
+              (mapping.inherit_rotation
+                   ? context->localizer.Text(
+                         "motion.mapping.parent_rotation",
+                         "Inherit rotation")
+                   : std::string()) +
+              (mapping.inherit_position
+                   ? " | " +
+                         context->localizer.Text(
+                             "motion.mapping.parent_position",
+                             "Inherit position") +
+                         (mapping.anchor.empty()
+                              ? std::string()
+                              : " (" + mapping.anchor + ")")
+                   : std::string()) +
+              " | " +
+              context->localizer.Text("motion.mapping.parent_remove",
+                                      "Remove parent insertion");
+          if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F,
+                         0.0F) == 0)
+            continue;
+          {
+            std::lock_guard<std::mutex> lock(
+                context->motion_mapping_mutex);
+            const auto found = std::find_if(
+                context->manual_motion_parents.begin(),
+                context->manual_motion_parents.end(),
+                [&mapping](const auto &candidate) {
+                  return candidate.source == mapping.source &&
+                         candidate.target == mapping.target;
+                });
+            if (found != context->manual_motion_parents.end())
+              context->manual_motion_parents.erase(found);
+          }
+          context->pose_settings_dirty.store(true,
+                                             std::memory_order_release);
+          if (!context->motion_file.empty())
+            context->pose_file_action_requested.store(
+                6, std::memory_order_release);
+          if (context->motion_mapping_source == mapping.source)
+            context->motion_mapping_source.clear();
+          context->motion_mapping_parent_mode = false;
+          context->motion_mapping_anchor_picker = false;
+          context->motion_mapping_anchor.clear();
+          break;
+        }
+        if (manual_parent_mappings.size() > shown_parents)
+          ui->text(ui->user, anomaly::sdk::StringView(
+                                 "+" +
+                                 std::to_string(manual_parent_mappings.size() -
+                                                shown_parents)));
+      }
+      if (context->motion_mapping_ui_enabled && unmapped_total != 0) {
+        ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "motion.inspect.unmapped",
+                                   "Unmapped tracks") +
+                               ": " + std::to_string(unmapped_total) +
+                               " (" +
+                               context->localizer.Text(
+                                   "motion.inspect.kind.humanoid",
+                                   "humanoid") +
+                               " " + std::to_string(unmapped_humanoid) +
+                               ", " +
+                               context->localizer.Text(
+                                   "motion.inspect.kind.control",
+                                   "control") +
+                               " " + std::to_string(unmapped_control) +
+                               ", " +
+                               context->localizer.Text(
+                                   "motion.inspect.kind.accessory",
+                                   "accessory") +
+                               " " + std::to_string(unmapped_accessory) +
+                               ", " +
+                               context->localizer.Text(
+                                   "motion.inspect.kind.other", "other") +
+                               " " + std::to_string(unmapped_other) +
+                               ")"));
+        const int track_open =
+            track_child
+                ? ui->begin_child(
+                      ui->user,
+                      anomaly::sdk::StringView("vmd-unmapped-tracks"),
+                      0.0F, 190.0F, 0U)
+                : 1;
+        if (track_open != 0) {
+          const std::size_t shown =
+              (std::min)(unmapped_tracks.size(),
+                         std::size_t{80});
+          for (std::size_t index{}; index < shown; ++index) {
+            const auto &track = unmapped_tracks[index];
+            const char *kind_key = "motion.inspect.kind.other";
+            const char *kind_default = "other";
+            switch (track.kind) {
+              case better_pose::mmd2bip::VmdCompatibilityReport::TrackKind::
+                  Humanoid:
+                kind_key = "motion.inspect.kind.humanoid";
+                kind_default = "humanoid";
+                break;
+              case better_pose::mmd2bip::VmdCompatibilityReport::TrackKind::
+                  Control:
+                kind_key = "motion.inspect.kind.control";
+                kind_default = "control";
+                break;
+              case better_pose::mmd2bip::VmdCompatibilityReport::TrackKind::
+                  Accessory:
+                kind_key = "motion.inspect.kind.accessory";
+                kind_default = "accessory";
+                break;
+              case better_pose::mmd2bip::VmdCompatibilityReport::TrackKind::
+                  Other:
+                break;
+            }
+            const std::string first =
+                track.animated
+                    ? std::to_string(track.first_nonzero_frame)
+                    : context->localizer.Text("motion.inspect.no_motion",
+                                              "no motion");
+            const std::string line =
+                "[" + context->localizer.Text(kind_key, kind_default) + "] " +
+                track.name + " | " +
+                context->localizer.Text("motion.inspect.keys", "keys") + " " +
+                std::to_string(track.key_count) + " | " +
+                context->localizer.Text("motion.inspect.first_nonzero",
+                                        "first nonzero") +
+                " " + first +
+                " | " +
+                mapping_reason_text(track.reason) +
+                (manual_mappings.count(track.name) != 0
+                     ? " -> " + manual_mappings.at(track.name)
+                     : std::string());
+            const std::string select_label =
+                line + " | " +
+                context->localizer.Text(
+                    context->motion_mapping_source == track.name
+                        ? "motion.mapping.selected"
+                        : "motion.mapping.select",
+                    context->motion_mapping_source == track.name
+                        ? "selected"
+                        : "map");
+            if (ui->button(ui->user,
+                           anomaly::sdk::StringView(select_label), 0.0F,
+                           0.0F) != 0) {
+              context->motion_mapping_source = track.name;
+              context->motion_mapping_parent_mode = false;
+              context->motion_mapping_parent_rotation = true;
+              context->motion_mapping_parent_position = false;
+              context->motion_mapping_anchor_picker = false;
+              context->motion_mapping_anchor.clear();
+              context->motion_mapping_control_mode = false;
+              context->motion_finger_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_arm_preview_enabled.store(
+                  false, std::memory_order_release);
+            }
+          }
+          if (unmapped_tracks.size() > shown) {
+            ui->text(ui->user, anomaly::sdk::StringView(
+                                   "+" +
+                                   std::to_string(unmapped_tracks.size() -
+                                                  shown)));
+          }
+        }
+        if (track_child)
+          ui->end_child(ui->user);
+      }
+      if (context->motion_mapping_ui_enabled &&
+          !context->motion_mapping_source.empty()) {
+          bool parent_mode = context->motion_mapping_parent_mode;
+          bool control_mode = context->motion_mapping_control_mode;
+          const std::string mapping_title =
+              context->localizer.Text(
+                  control_mode ? "motion.control.title"
+                               : parent_mode
+                                     ? "motion.mapping.parent_title"
+                                     : "motion.mapping.title",
+                  control_mode
+                      ? "Hand control template"
+                      : parent_mode
+                            ? "Insert source track as a target-bone parent"
+                            : "Map source track to target bone");
+          ui->text(ui->user, anomaly::sdk::StringView(
+                                 mapping_title + ": " +
+                                 context->motion_mapping_source));
+          int parent_insert = parent_mode ? 1 : 0;
+          const std::string parent_insert_label =
+              context->localizer.Text("motion.mapping.parent_mode",
+                                      "Insert as a parent");
+          if (ui->checkbox(ui->user,
+                           anomaly::sdk::StringView(parent_insert_label),
+                           &parent_insert) != 0) {
+            context->motion_mapping_parent_mode = parent_insert != 0;
+            parent_mode = parent_insert != 0;
+            if (parent_mode) {
+              context->motion_mapping_control_mode = false;
+              context->motion_finger_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_arm_preview_enabled.store(
+                  false, std::memory_order_release);
+              control_mode = false;
+            }
+            if (!parent_mode)
+              context->motion_mapping_anchor_picker = false;
+          }
+          ui->same_line(ui->user, 0.0F, 6.0F);
+          int control_insert = control_mode ? 1 : 0;
+          const std::string control_insert_label =
+              context->localizer.Text("motion.control.mode",
+                                      "Use as hand control template");
+          if (ui->checkbox(ui->user,
+                           anomaly::sdk::StringView(control_insert_label),
+                           &control_insert) != 0) {
+            context->motion_mapping_control_mode = control_insert != 0;
+            control_mode = control_insert != 0;
+            if (control_mode) {
+              context->motion_mapping_parent_mode = false;
+              parent_mode = false;
+              context->motion_mapping_anchor_picker = false;
+            }
+            context->motion_finger_preview_enabled.store(
+                control_mode &&
+                    context->motion_mapping_control_kind.load(
+                        std::memory_order_acquire) != 2,
+                std::memory_order_release);
+            context->motion_arm_preview_enabled.store(
+                control_mode &&
+                    context->motion_mapping_control_kind.load(
+                        std::memory_order_acquire) == 2,
+                std::memory_order_release);
+          }
+          if (parent_mode) {
+            int inherit_rotation =
+                context->motion_mapping_parent_rotation ? 1 : 0;
+            const std::string inherit_rotation_label =
+                context->localizer.Text("motion.mapping.parent_rotation",
+                                        "Inherit rotation");
+            if (ui->checkbox(ui->user,
+                             anomaly::sdk::StringView(inherit_rotation_label),
+                             &inherit_rotation) != 0)
+              context->motion_mapping_parent_rotation =
+                  inherit_rotation != 0;
+            ui->same_line(ui->user, 0.0F, 6.0F);
+            int inherit_position =
+                context->motion_mapping_parent_position ? 1 : 0;
+            const std::string inherit_position_label =
+                context->localizer.Text("motion.mapping.parent_position",
+                                        "Inherit position");
+            if (ui->checkbox(ui->user,
+                             anomaly::sdk::StringView(inherit_position_label),
+                             &inherit_position) != 0) {
+              context->motion_mapping_parent_position =
+                  inherit_position != 0;
+              if (!context->motion_mapping_parent_position)
+                context->motion_mapping_anchor_picker = false;
+            }
+            if (context->motion_mapping_parent_position) {
+              const std::string anchor_label =
+                  context->motion_mapping_anchor.empty()
+                      ? context->localizer.Text(
+                            "motion.mapping.parent_anchor_default",
+                            "Anchor: original parent")
+                      : context->localizer.Text(
+                            "motion.mapping.parent_anchor_named",
+                            "Anchor") + ": " +
+                            context->motion_mapping_anchor;
+              if (ui->button(ui->user,
+                             anomaly::sdk::StringView(anchor_label), 0.0F,
+                             0.0F) != 0)
+                context->motion_mapping_anchor_picker =
+                    !context->motion_mapping_anchor_picker;
+              ui->same_line(ui->user, 0.0F, 6.0F);
+              const std::string anchor_reset_label =
+                  context->localizer.Text(
+                      "motion.mapping.parent_anchor_reset",
+                      "Use original parent");
+              if (ui->button(ui->user,
+                             anomaly::sdk::StringView(anchor_reset_label),
+                             110.0F, 0.0F) != 0) {
+                context->motion_mapping_anchor.clear();
+                context->motion_mapping_anchor_picker = false;
+              }
+            }
+            ui->text(ui->user, anomaly::sdk::StringView(
+                                   context->localizer.Text(
+                                       "motion.mapping.parent_hint",
+                                       "The new parent drives the target and its "
+                                       "descendants. Position inheritance uses the "
+                                       "selected rest anchor; later insertions become "
+                                       "the outer segment.")));
+          }
+          if (control_mode) {
+            ui->text(ui->user, anomaly::sdk::StringView(
+                                   context->localizer.Text(
+                                       "motion.control.hint",
+                                       "Hand controls automatically use this "
+                                       "character's finger chains; selecting target "
+                                       "bones is only needed for direct mapping or "
+                                       "parent insertion.")));
+            int control_kind =
+                context->motion_mapping_control_kind.load(
+                    std::memory_order_acquire);
+            if (control_kind != 2) {
+            int preview_enabled =
+                context->motion_finger_preview_enabled.load(
+                    std::memory_order_acquire)
+                    ? 1
+                    : 0;
+            const std::string preview_label =
+                context->localizer.Text("motion.control.preview",
+                                        "Live configuration preview");
+            if (ui->checkbox(ui->user,
+                             anomaly::sdk::StringView(preview_label),
+                             &preview_enabled) != 0)
+              context->motion_finger_preview_enabled.store(
+                  preview_enabled != 0, std::memory_order_release);
+            float preview_amount =
+                context->motion_finger_preview_amount.load(
+                    std::memory_order_acquire);
+            const std::string preview_amount_label =
+                context->localizer.Text("motion.control.preview_amount",
+                                        "Preview amount");
+            if (ui->slider_float(
+                    ui->user,
+                    anomaly::sdk::StringView(preview_amount_label),
+                    &preview_amount, -1.0F, 1.0F) != 0)
+              context->motion_finger_preview_amount.store(
+                  std::clamp(preview_amount, -1.0F, 1.0F),
+                  std::memory_order_release);
+            if (preview_enabled != 0) {
+              if (!context->motion_loaded.load(std::memory_order_acquire)) {
+                ui->text(ui->user, anomaly::sdk::StringView(
+                                       context->localizer.Text(
+                                           "motion.control.preview.no_motion",
+                                           "Load and display an MMD motion to preview")));
+              } else {
+                const int active_bones =
+                    context->motion_finger_preview_active_bones.load(
+                        std::memory_order_acquire);
+                ui->text(ui->user, anomaly::sdk::StringView(
+                                       active_bones > 0
+                                           ? context->localizer.Text(
+                                                 "motion.control.preview.active",
+                                                 "Previewing finger joints") +
+                                                 ": " +
+                                                 std::to_string(active_bones)
+                                           : context->localizer.Text(
+                                                 "motion.control.preview.no_fingers",
+                                                 "No finger joints matched the current hand, finger, or control type")));
+              }
+            }
+            }
+            int control_side =
+                context->motion_mapping_control_side.load(
+                    std::memory_order_acquire);
+            int control_finger =
+                context->motion_mapping_control_finger.load(
+                    std::memory_order_acquire);
+            int control_axis =
+                context->motion_mapping_control_axis.load(
+                    std::memory_order_acquire);
+            bool control_paired =
+                context->motion_mapping_control_paired.load(
+                    std::memory_order_acquire);
+            const std::array<std::string, 3> kind_labels{
+                context->localizer.Text("motion.control.grip", "Grip"),
+                context->localizer.Text("motion.control.spread", "Spread"),
+                context->localizer.Text("motion.control.arm_ik", "Arm IK")};
+            for (int kind{}; kind != 3; ++kind) {
+              if (kind != 0)
+                ui->same_line(ui->user, 0.0F, 4.0F);
+              const std::string label =
+                  (kind == control_kind ? "> " : "") +
+                  kind_labels[kind];
+              if (ui->button(ui->user, anomaly::sdk::StringView(label), 82.0F,
+                             0.0F) != 0) {
+                control_kind = kind;
+                context->motion_mapping_control_kind.store(
+                    kind, std::memory_order_release);
+                context->motion_arm_preview_enabled.store(
+                    kind == 2, std::memory_order_release);
+                context->motion_finger_preview_enabled.store(
+                    kind != 2, std::memory_order_release);
+              }
+            }
+            int paired = control_paired ? 1 : 0;
+            const std::string paired_label =
+                context->localizer.Text("motion.control.paired",
+                                        "Both hands");
+            if (ui->checkbox(ui->user,
+                             anomaly::sdk::StringView(paired_label),
+                             &paired) != 0)
+            {
+              control_paired = paired != 0;
+              context->motion_mapping_control_paired.store(
+                  control_paired, std::memory_order_release);
+            }
+            if (!control_paired) {
+              for (int side{}; side != 2; ++side) {
+                ui->same_line(ui->user, 0.0F, 4.0F);
+                const std::string label =
+                    (side == control_side ? "> " : "") +
+                    context->localizer.Text(
+                        side == 0 ? "motion.control.left"
+                                  : "motion.control.right",
+                        side == 0 ? "Left hand" : "Right hand");
+                if (ui->button(ui->user, anomaly::sdk::StringView(label),
+                               82.0F, 0.0F) != 0) {
+                  control_side = side;
+                  context->motion_mapping_control_side.store(
+                      side, std::memory_order_release);
+                }
+              }
+            }
+            if (control_kind == 2) {
+              int arm_preview_enabled =
+                  context->motion_arm_preview_enabled.load(
+                      std::memory_order_acquire)
+                      ? 1
+                      : 0;
+              const std::string arm_preview_label =
+                  context->localizer.Text("motion.control.arm_preview",
+                                          "Enable arm IK preview");
+              if (ui->checkbox(ui->user,
+                               anomaly::sdk::StringView(arm_preview_label),
+                               &arm_preview_enabled) != 0)
+                context->motion_arm_preview_enabled.store(
+                    arm_preview_enabled != 0,
+                    std::memory_order_release);
+              float arm_preview_amount =
+                  context->motion_arm_preview_amount.load(
+                      std::memory_order_acquire);
+              const std::string arm_preview_amount_label =
+                  context->localizer.Text(
+                      "motion.control.arm_preview_amount",
+                      "Wrist preview offset");
+              if (ui->slider_float(
+                      ui->user,
+                      anomaly::sdk::StringView(arm_preview_amount_label),
+                      &arm_preview_amount, -1.0F, 1.0F) != 0)
+                context->motion_arm_preview_amount.store(
+                    std::clamp(arm_preview_amount, -1.0F, 1.0F),
+                    std::memory_order_release);
+              if (arm_preview_enabled != 0) {
+                if (!context->motion_loaded.load(
+                        std::memory_order_acquire)) {
+                  ui->text(ui->user, anomaly::sdk::StringView(
+                                         context->localizer.Text(
+                                             "motion.control.preview.no_motion",
+                                             "Load and display an MMD motion to preview")));
+                } else {
+                  const int active_sides =
+                      context->motion_arm_preview_active_sides.load(
+                          std::memory_order_acquire);
+                  ui->text(ui->user, anomaly::sdk::StringView(
+                                         active_sides > 0
+                                             ? context->localizer.Text(
+                                                   "motion.control.arm_preview.active",
+                                                   "Previewing arms") +
+                                                   ": " +
+                                                   std::to_string(active_sides)
+                                             : context->localizer.Text(
+                                                   "motion.control.arm_preview.no_arms",
+                                                   "No solvable arm chain matched")));
+                }
+              }
+            }
+            if (control_kind != 2) {
+            static const char *kFingerKeys[] = {
+                "motion.control.finger.all",
+                "motion.control.finger.thumb",
+                "motion.control.finger.index",
+                "motion.control.finger.middle",
+                "motion.control.finger.ring",
+                "motion.control.finger.pinky"};
+            static const char *kFingerDefaults[] = {
+                "All", "Thumb", "Index", "Middle", "Ring", "Pinky"};
+            for (int slot{}; slot != 6; ++slot) {
+              const int finger = slot - 1;
+              if (slot != 0)
+                ui->same_line(ui->user, 0.0F, 4.0F);
+              const std::string label =
+                  (finger == control_finger ? "> " : "") +
+                  context->localizer.Text(
+                      kFingerKeys[slot], kFingerDefaults[slot]);
+              if (ui->button(ui->user, anomaly::sdk::StringView(label), 62.0F,
+                             0.0F) != 0) {
+                control_finger = finger;
+                context->motion_mapping_control_finger.store(
+                    finger, std::memory_order_release);
+              }
+            }
+            for (int axis{}; axis != 3; ++axis) {
+              ui->same_line(ui->user, 0.0F, 4.0F);
+              const std::string label =
+                  (axis == control_axis ? "> " : "") +
+                  std::string("XYZ").substr(
+                      static_cast<std::size_t>(axis), 1);
+              if (ui->button(ui->user, anomaly::sdk::StringView(label), 34.0F,
+                             0.0F) != 0) {
+                control_axis = axis;
+                context->motion_mapping_control_axis.store(
+                    axis, std::memory_order_release);
+              }
+            }
+            float gain =
+                context->motion_mapping_control_gain.load(
+                    std::memory_order_acquire);
+            const std::string gain_label =
+                context->localizer.Text("motion.control.gain",
+                                        "Control gain");
+            if (ui->slider_float(ui->user,
+                                 anomaly::sdk::StringView(gain_label),
+                                 &gain, -3.0F, 3.0F) != 0)
+              context->motion_mapping_control_gain.store(
+                  std::clamp(gain, -3.0F, 3.0F),
+                  std::memory_order_release);
+            const std::string add_label =
+                context->localizer.Text("motion.control.add",
+                                        "Add hand control");
+            if (ui->button(ui->user, anomaly::sdk::StringView(add_label),
+                           110.0F, 0.0F) != 0) {
+              better_pose::mmd2bip::ManualFingerControl control;
+              control.source = context->motion_mapping_source;
+              control.kind =
+                  control_kind == 0
+                      ? better_pose::mmd2bip::FingerControlKind::Grip
+                      : better_pose::mmd2bip::FingerControlKind::Spread;
+              control.side = control_side;
+              control.finger = control_finger;
+              control.input_axis = control_axis;
+              control.gain = std::clamp(gain, -3.0F, 3.0F);
+              control.paired = control_paired;
+              {
+                std::lock_guard<std::mutex> lock(
+                    context->motion_mapping_mutex);
+                const auto duplicate = std::find_if(
+                    context->manual_motion_finger_controls.begin(),
+                    context->manual_motion_finger_controls.end(),
+                    [&control](const auto &existing) {
+                      return existing.source == control.source &&
+                             existing.kind == control.kind &&
+                             existing.side == control.side &&
+                             existing.finger == control.finger &&
+                             existing.input_axis == control.input_axis &&
+                             existing.paired == control.paired &&
+                             std::fabs(existing.gain - control.gain) <
+                                 1e-6F;
+                    });
+                if (duplicate ==
+                    context->manual_motion_finger_controls.end())
+                  context->manual_motion_finger_controls.push_back(
+                      std::move(control));
+              }
+              context->pose_settings_dirty.store(
+                  true, std::memory_order_release);
+              if (!context->motion_file.empty())
+                context->pose_file_action_requested.store(
+                    6, std::memory_order_release);
+              context->motion_mapping_source.clear();
+              context->motion_mapping_control_mode = false;
+              context->motion_finger_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_arm_preview_enabled.store(
+                  false, std::memory_order_release);
+            }
+            } else {
+              bool follow_wrist =
+                  context->motion_mapping_arm_follow_wrist.load(
+                      std::memory_order_acquire);
+              int follow_wrist_value = follow_wrist ? 1 : 0;
+              const std::string follow_label =
+                  context->localizer.Text(
+                      "motion.control.arm_follow",
+                      "Follow the control track's wrist rotation");
+              if (ui->checkbox(ui->user,
+                               anomaly::sdk::StringView(follow_label),
+                               &follow_wrist_value) != 0) {
+                follow_wrist = follow_wrist_value != 0;
+                context->motion_mapping_arm_follow_wrist.store(
+                    follow_wrist, std::memory_order_release);
+              }
+              float arm_gain =
+                  context->motion_mapping_arm_gain.load(
+                      std::memory_order_acquire);
+              const std::string arm_gain_label =
+                  context->localizer.Text("motion.control.arm_gain",
+                                          "Arm IK control gain");
+              if (ui->slider_float(
+                      ui->user,
+                      anomaly::sdk::StringView(arm_gain_label),
+                      &arm_gain, 0.1F, 3.0F) != 0)
+                context->motion_mapping_arm_gain.store(
+                    std::clamp(arm_gain, 0.1F, 3.0F),
+                    std::memory_order_release);
+              float max_bend =
+                  context->motion_mapping_arm_max_bend.load(
+                      std::memory_order_acquire);
+              const std::string max_bend_label =
+                  context->localizer.Text("motion.control.arm_max_bend",
+                                          "Maximum elbow bend");
+              if (ui->slider_float(
+                      ui->user,
+                      anomaly::sdk::StringView(max_bend_label),
+                      &max_bend, 20.0F, 170.0F) != 0)
+                context->motion_mapping_arm_max_bend.store(
+                    std::clamp(max_bend, 20.0F, 170.0F),
+                    std::memory_order_release);
+              const std::string arm_add_label =
+                  context->localizer.Text("motion.control.arm_add",
+                                          "Add arm IK");
+              if (ui->button(ui->user,
+                             anomaly::sdk::StringView(arm_add_label),
+                             110.0F, 0.0F) != 0) {
+                better_pose::mmd2bip::ManualArmIkControl control;
+                control.source = context->motion_mapping_source;
+                control.side = control_side;
+                control.paired = control_paired;
+                control.gain = std::clamp(arm_gain, 0.1F, 3.0F);
+                control.max_bend_degrees =
+                    std::clamp(max_bend, 20.0F, 170.0F);
+                control.follow_wrist = follow_wrist;
+                {
+                  std::lock_guard<std::mutex> lock(
+                      context->motion_mapping_mutex);
+                  const auto duplicate = std::find_if(
+                      context->manual_motion_arm_ik_controls.begin(),
+                      context->manual_motion_arm_ik_controls.end(),
+                      [&control](const auto &existing) {
+                        return existing.source == control.source &&
+                               existing.side == control.side &&
+                               existing.paired == control.paired;
+                      });
+                  if (duplicate ==
+                      context->manual_motion_arm_ik_controls.end())
+                    context->manual_motion_arm_ik_controls.push_back(
+                        std::move(control));
+                }
+                context->pose_settings_dirty.store(
+                    true, std::memory_order_release);
+                if (!context->motion_file.empty())
+                  context->pose_file_action_requested.store(
+                      6, std::memory_order_release);
+                context->motion_mapping_source.clear();
+                context->motion_mapping_control_mode = false;
+                context->motion_finger_preview_enabled.store(
+                    false, std::memory_order_release);
+                context->motion_arm_preview_enabled.store(
+                    false, std::memory_order_release);
+              }
+            }
+          }
+          if (ui->button(ui->user,
+                         anomaly::sdk::StringView(
+                             context->localizer.Text("motion.mapping.cancel",
+                                                     "Cancel")),
+                         64.0F, 0.0F) != 0) {
+            context->motion_mapping_source.clear();
+            context->motion_mapping_parent_mode = false;
+            context->motion_mapping_control_mode = false;
+            context->motion_finger_preview_enabled.store(
+                false, std::memory_order_release);
+            context->motion_arm_preview_enabled.store(
+                false, std::memory_order_release);
+            context->motion_mapping_anchor_picker = false;
+            context->motion_mapping_anchor.clear();
+          }
+          ui->same_line(ui->user, 0.0F, 5.0F);
+          if (ignored_tracks.count(context->motion_mapping_source) == 0) {
+            const std::string ignore_label = context->localizer.Text(
+                "motion.mapping.ignore", "Ignore track");
+            if (ui->button(
+                    ui->user, anomaly::sdk::StringView(ignore_label),
+                    92.0F, 0.0F) != 0) {
+              {
+                std::lock_guard<std::mutex> lock(
+                    context->motion_mapping_mutex);
+                context->ignored_motion_tracks.insert(
+                    context->motion_mapping_source);
+                context->manual_motion_mappings.erase(
+                    context->motion_mapping_source);
+                context->manual_motion_parents.erase(
+                    std::remove_if(
+                        context->manual_motion_parents.begin(),
+                        context->manual_motion_parents.end(),
+                        [context](const auto &mapping) {
+                          return mapping.source ==
+                                 context->motion_mapping_source;
+                        }),
+                    context->manual_motion_parents.end());
+                context->manual_motion_finger_controls.erase(
+                    std::remove_if(
+                        context->manual_motion_finger_controls.begin(),
+                        context->manual_motion_finger_controls.end(),
+                        [context](const auto &control) {
+                          return control.source ==
+                                 context->motion_mapping_source;
+                        }),
+                    context->manual_motion_finger_controls.end());
+                context->manual_motion_arm_ik_controls.erase(
+                    std::remove_if(
+                        context->manual_motion_arm_ik_controls.begin(),
+                        context->manual_motion_arm_ik_controls.end(),
+                        [context](const auto &control) {
+                          return control.source ==
+                                 context->motion_mapping_source;
+                        }),
+                    context->manual_motion_arm_ik_controls.end());
+              context->pose_settings_dirty.store(
+                  true, std::memory_order_release);
+              if (!context->motion_file.empty())
+                context->pose_file_action_requested.store(
+                    6, std::memory_order_release);
+              context->motion_mapping_source.clear();
+              context->motion_mapping_parent_mode = false;
+              context->motion_mapping_control_mode = false;
+              context->motion_finger_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_arm_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_mapping_anchor_picker = false;
+              context->motion_mapping_anchor.clear();
+            }
+          }
+          if (manual_mappings.count(context->motion_mapping_source) != 0 ||
+              ignored_tracks.count(context->motion_mapping_source) != 0 ||
+              std::any_of(
+                  manual_parent_mappings.begin(),
+                  manual_parent_mappings.end(),
+                  [context](const auto &mapping) {
+                    return mapping.source ==
+                           context->motion_mapping_source;
+                  }) ||
+              std::any_of(
+                  manual_finger_controls.begin(),
+                  manual_finger_controls.end(),
+                  [context](const auto &control) {
+                    return control.source ==
+                           context->motion_mapping_source;
+                  }) ||
+              std::any_of(
+                  manual_arm_ik_controls.begin(),
+                  manual_arm_ik_controls.end(),
+                  [context](const auto &control) {
+                    return control.source ==
+                           context->motion_mapping_source;
+                  })) {
+            ui->same_line(ui->user, 0.0F, 5.0F);
+            const std::string restore_label = context->localizer.Text(
+                "motion.mapping.restore", "Restore automatic");
+            if (ui->button(
+                    ui->user, anomaly::sdk::StringView(restore_label),
+                    120.0F, 0.0F) != 0) {
+              {
+                std::lock_guard<std::mutex> lock(
+                    context->motion_mapping_mutex);
+                context->manual_motion_mappings.erase(
+                    context->motion_mapping_source);
+                context->manual_motion_parents.erase(
+                    std::remove_if(
+                        context->manual_motion_parents.begin(),
+                        context->manual_motion_parents.end(),
+                        [context](const auto &mapping) {
+                          return mapping.source ==
+                                 context->motion_mapping_source;
+                        }),
+                    context->manual_motion_parents.end());
+                context->manual_motion_finger_controls.erase(
+                    std::remove_if(
+                        context->manual_motion_finger_controls.begin(),
+                        context->manual_motion_finger_controls.end(),
+                        [context](const auto &control) {
+                          return control.source ==
+                                 context->motion_mapping_source;
+                        }),
+                    context->manual_motion_finger_controls.end());
+                context->manual_motion_arm_ik_controls.erase(
+                    std::remove_if(
+                        context->manual_motion_arm_ik_controls.begin(),
+                        context->manual_motion_arm_ik_controls.end(),
+                        [context](const auto &control) {
+                          return control.source ==
+                                 context->motion_mapping_source;
+                        }),
+                    context->manual_motion_arm_ik_controls.end());
+                context->ignored_motion_tracks.erase(
+                    context->motion_mapping_source);
+              }
+              context->pose_settings_dirty.store(
+                  true, std::memory_order_release);
+              if (!context->motion_file.empty())
+                context->pose_file_action_requested.store(
+                    6, std::memory_order_release);
+              context->motion_mapping_source.clear();
+              context->motion_mapping_parent_mode = false;
+              context->motion_mapping_control_mode = false;
+              context->motion_finger_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_arm_preview_enabled.store(
+                  false, std::memory_order_release);
+              context->motion_mapping_anchor_picker = false;
+              context->motion_mapping_anchor.clear();
+            }
+          }
+          if (!control_mode) {
+            const std::string mapping_filter_label =
+                context->localizer.Text("motion.mapping.filter",
+                                        "Target bone filter");
+            static_cast<void>(ui->input_text(
+                ui->user, anomaly::sdk::StringView(mapping_filter_label),
+                context->motion_mapping_filter.data(),
+                context->motion_mapping_filter.size(),
+                ANOMALY_UI_TEXT_INPUT_V1_NONE));
+          }
+          const bool can_mapping_list =
+              track_child &&
+              HasField<AnomalyUiServiceV1,
+                       decltype(AnomalyUiServiceV1::filter_match)>(
+                  ui, offsetof(AnomalyUiServiceV1, filter_match)) &&
+              ui->filter_match != nullptr;
+          const bool parent_has_transform =
+              !parent_mode || context->motion_mapping_parent_rotation ||
+              context->motion_mapping_parent_position;
+          if (parent_mode && !parent_has_transform) {
+            ui->text(ui->user, anomaly::sdk::StringView(
+                                   context->localizer.Text(
+                                       "motion.mapping.parent_needs_transform",
+                                       "Enable rotation, position, or both before "
+                                       "choosing a target bone.")));
+          }
+          if (can_mapping_list && !control_mode && parent_has_transform) {
+            const std::string filter(context->motion_mapping_filter.data());
+            const int mapping_open =
+                ui->begin_child(
+                    ui->user,
+                    anomaly::sdk::StringView("vmd-mapping-targets"),
+                    0.0F, 180.0F, 0U);
+            if (mapping_open != 0) {
+              for (const std::string &bone : context->snapshot.bone_names) {
+                if (ui->filter_match(ui->user,
+                                     anomaly::sdk::StringView(filter),
+                                     anomaly::sdk::StringView(bone)) == 0)
+                  continue;
+                if (parent_mode &&
+                    context->motion_mapping_anchor_picker) {
+                  if (ui->button(ui->user,
+                                 anomaly::sdk::StringView(bone), 0.0F,
+                                 0.0F) != 0) {
+                    context->motion_mapping_anchor = bone;
+                    context->motion_mapping_anchor_picker = false;
+                    break;
+                  }
+                  continue;
+                }
+                if (ui->button(ui->user,
+                               anomaly::sdk::StringView(bone), 0.0F,
+                               0.0F) != 0) {
+                  const std::string source =
+                      context->motion_mapping_source;
+                  {
+                    std::lock_guard<std::mutex> lock(
+                        context->motion_mapping_mutex);
+                    if (parent_mode) {
+                      better_pose::mmd2bip::ManualParentMapping relation;
+                      relation.source = source;
+                      relation.target = bone;
+                      relation.anchor =
+                          context->motion_mapping_anchor;
+                      relation.inherit_rotation =
+                          context->motion_mapping_parent_rotation;
+                      relation.inherit_position =
+                          context->motion_mapping_parent_position;
+                      const auto existing = std::find_if(
+                          context->manual_motion_parents.begin(),
+                          context->manual_motion_parents.end(),
+                          [&source, &bone](const auto &mapping) {
+                            return mapping.source == source &&
+                                   mapping.target == bone;
+                          });
+                      if (existing ==
+                          context->manual_motion_parents.end()) {
+                        context->manual_motion_parents.push_back(
+                            std::move(relation));
+                      } else {
+                        existing->inherit_rotation |=
+                            relation.inherit_rotation;
+                        existing->inherit_position |=
+                            relation.inherit_position;
+                        if (!relation.anchor.empty())
+                          existing->anchor = relation.anchor;
+                      }
+                    } else {
+                      context->manual_motion_mappings[source] = bone;
+                    }
+                  }
+                  context->pose_settings_dirty.store(
+                      true, std::memory_order_release);
+                  if (!context->motion_file.empty())
+                    context->pose_file_action_requested.store(
+                        6, std::memory_order_release);
+                  context->motion_mapping_source.clear();
+                  context->motion_mapping_parent_mode = false;
+                  context->motion_mapping_anchor_picker = false;
+                  context->motion_mapping_anchor.clear();
+                  break;
+                }
+              }
+            }
+            ui->end_child(ui->user);
+          }
+          if (manual_mappings.count(context->motion_mapping_source) != 0) {
+            const std::string remove_label =
+                context->localizer.Text("motion.mapping.remove",
+                                        "Remove mapping");
+            if (ui->button(ui->user,
+                           anomaly::sdk::StringView(remove_label), 110.0F,
+                           0.0F) != 0) {
+              {
+                std::lock_guard<std::mutex> lock(
+                    context->motion_mapping_mutex);
+                context->manual_motion_mappings.erase(
+                    context->motion_mapping_source);
+              }
+              context->pose_settings_dirty.store(
+                  true, std::memory_order_release);
+              if (!context->motion_file.empty())
+                context->pose_file_action_requested.store(
+                    6, std::memory_order_release);
+              context->motion_mapping_source.clear();
+            }
+          }
+      }
+      if (inspection->recommended_reference == motion_ref) {
+        ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                               "motion.inspect.match",
+                               "Current source skeleton matches the recommendation.")));
+      } else {
+        ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                               "motion.inspect.diff",
+                               "Current source skeleton differs; apply the recommendation before converting.")));
+        const std::string apply_label =
+            context->localizer.Text("motion.inspect.apply", "Apply recommendation");
+        if (ui->button(ui->user, anomaly::sdk::StringView(apply_label), 150.0F,
+                       0.0F) != 0) {
+          context->motion_reference_mode.store(
+              inspection->recommended_reference, std::memory_order_release);
+          context->pose_settings_dirty.store(true, std::memory_order_release);
+        }
+      }
+      }
+    }
+
+    float motion_speed =
+        context->motion_speed.load(std::memory_order_acquire);
+    const std::string motion_speed_label =
+        context->localizer.Text("motion.speed", "Playback speed");
+    if (ui->slider_float(ui->user,
+                         anomaly::sdk::StringView(motion_speed_label),
+                         &motion_speed, 0.25F, 2.0F) != 0) {
+      context->motion_speed.store(std::clamp(motion_speed, 0.25F, 2.0F),
+                                  std::memory_order_release);
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    float motion_height =
+        context->motion_height_cm.load(std::memory_order_acquire);
+    const std::string motion_height_label =
+        context->localizer.Text("motion.height", "Height correction (cm)");
+    if (ui->slider_float(ui->user,
+                         anomaly::sdk::StringView(motion_height_label),
+                         &motion_height, -100.0F, 100.0F) != 0) {
+      context->motion_height_cm.store(
+          std::clamp(motion_height, -100.0F, 100.0F),
+          std::memory_order_release);
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    int travel_enabled =
+        context->motion_travel_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string travel_enabled_label =
+        context->localizer.Text("motion.travel.enabled",
+                                "Enable XYZ movement scaling");
+    if (ui->checkbox(ui->user,
+                     anomaly::sdk::StringView(travel_enabled_label),
+                     &travel_enabled) != 0) {
+      context->motion_travel_enabled.store(travel_enabled != 0,
+                                           std::memory_order_release);
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    if (travel_enabled != 0) {
+      travel::Settings travel_settings = context->motion_travel.Load();
+      bool travel_changed = false;
+      const std::array<std::string, 3> travel_labels{
+          context->localizer.Text("motion.travel.x", "Left/right movement (%)"),
+          context->localizer.Text("motion.travel.y", "Forward/back movement (%)"),
+          context->localizer.Text("motion.travel.z", "Up/down movement (%)")};
+      for (std::size_t axis{}; axis != travel::kAxisCount; ++axis) {
+        float percent = travel_settings.scale[axis] * 100.0F;
+        if (ui->slider_float(ui->user,
+                             anomaly::sdk::StringView(travel_labels[axis]),
+                             &percent, 0.0F, 200.0F) != 0) {
+          travel_settings.scale[axis] =
+              std::clamp(percent, 0.0F, 200.0F) / 100.0F;
+          travel_changed = true;
+        }
+      }
+      const std::string travel_reset_label = context->localizer.Label(
+          "motion.travel.reset", "Reset movement scale", "motion-travel-reset");
+      if (ui->button(ui->user, anomaly::sdk::StringView(travel_reset_label),
+                     120.0F, 0.0F) != 0) {
+        travel_settings = travel::Settings{};
+        travel_changed = true;
+      }
+      if (travel_changed) {
+        context->motion_travel.Store(travel_settings);
+        context->pose_settings_dirty.store(true, std::memory_order_release);
+      }
+    }
+    int amplitude_enabled =
+        context->motion_amplitude_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string amplitude_enabled_label =
+        context->localizer.Text("motion.amplitude.enabled", "Motion amplitude tuning");
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView(amplitude_enabled_label),
+                     &amplitude_enabled) != 0) {
+      context->motion_amplitude_enabled.store(amplitude_enabled != 0,
+                                              std::memory_order_release);
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    if (amplitude_enabled != 0) {
+      amp::Settings amplitude = context->motion_amplitude.Load();
+      bool amplitude_changed = false;
+      ui->same_line(ui->user, 0.0F, 6.0F);
+      const std::string amplitude_reset_label = context->localizer.Label(
+          "motion.amplitude.reset", "Reset", "motion-amplitude-reset");
+      if (ui->button(ui->user, anomaly::sdk::StringView(amplitude_reset_label),
+                     70.0F, 0.0F) != 0) {
+        amplitude = amp::Settings{};
+        amplitude_changed = true;
+      }
+      float amplitude_master = amplitude.master * 100.0F;
+      const std::string amplitude_master_label =
+          context->localizer.Text("motion.amplitude.master", "Motion amplitude (%)");
+      if (ui->slider_float(ui->user,
+                           anomaly::sdk::StringView(amplitude_master_label),
+                           &amplitude_master, 0.0F, 200.0F) != 0) {
+        amplitude.master =
+            std::clamp(amplitude_master, 0.0F, 200.0F) / 100.0F;
+        amplitude_changed = true;
+      }
+      const bool amplitude_child =
+          HasField<AnomalyUiServiceV1,
+                   decltype(AnomalyUiServiceV1::begin_child)>(
+              ui, offsetof(AnomalyUiServiceV1, begin_child)) &&
+          ui->begin_child != nullptr &&
+          HasField<AnomalyUiServiceV1,
+                   decltype(AnomalyUiServiceV1::end_child)>(
+              ui, offsetof(AnomalyUiServiceV1, end_child)) &&
+          ui->end_child != nullptr;
+      const int amplitude_open =
+          amplitude_child
+              ? ui->begin_child(ui->user,
+                                anomaly::sdk::StringView("motion-amplitude-parts"),
+                                0.0F, 220.0F, 0U)
+              : 1;
+      if (amplitude_open != 0) {
+        for (std::size_t part_index{}; part_index != amp::kPartCount;
+             ++part_index) {
+          float percent = amplitude.parts[part_index] * 100.0F;
+          const std::string key =
+              "motion.amplitude." + std::string(amp::kPartKeys[part_index]);
+          const std::string label = context->localizer.Label(
+              key, std::string(amp::kPartLabels[part_index]),
+              std::string("motion-amplitude-") +
+                  std::string(amp::kPartKeys[part_index]));
+          if (ui->slider_float(ui->user, anomaly::sdk::StringView(label),
+                               &percent, 0.0F, 200.0F) != 0) {
+            amplitude.parts[part_index] =
+                std::clamp(percent, 0.0F, 200.0F) / 100.0F;
+            amplitude_changed = true;
+          }
+        }
+      }
+      if (amplitude_child)
+        ui->end_child(ui->user);
+      if (amplitude_changed) {
+        context->motion_amplitude.Store(amplitude);
+        context->pose_settings_dirty.store(true, std::memory_order_release);
+      }
+    }
+
+    joint_cal::Settings joint_settings;
+    {
+      std::lock_guard<std::mutex> lock(context->motion_joint_mutex);
+      joint_settings = context->motion_joint_calibration;
+    }
+    int joint_enabled = joint_settings.enabled ? 1 : 0;
+    const std::string joint_enabled_label =
+        context->localizer.Text("motion.joint.enabled", "Per-joint calibration");
+    if (ui->checkbox(ui->user,
+                     anomaly::sdk::StringView(joint_enabled_label),
+                     &joint_enabled) != 0) {
+      joint_settings.enabled = joint_enabled != 0;
+      SetJointCalibrationEnabled(*context, joint_enabled != 0);
+    }
+    if (joint_enabled != 0) {
+      const std::string joint_reset_label = context->localizer.Label(
+          "motion.joint.reset", "Reset all", "motion-joint-reset");
+      if (ui->button(ui->user, anomaly::sdk::StringView(joint_reset_label),
+                     90.0F, 0.0F) != 0) {
+        joint_settings.joints.clear();
+        {
+          std::lock_guard<std::mutex> lock(context->motion_joint_mutex);
+          context->motion_joint_calibration = joint_settings;
+        }
+        context->pose_settings_dirty.store(true, std::memory_order_release);
+      }
+      const std::uint32_t selected =
+          context->requested_bone_index.load(std::memory_order_acquire);
+      std::string selected_name;
+      {
+        std::lock_guard<std::mutex> lock(context->state_mutex);
+        if (selected < context->snapshot.bone_names.size())
+          selected_name = context->snapshot.bone_names[selected];
+      }
+      if (selected_name.empty()) {
+        const std::string no_joint =
+            context->localizer.Text("motion.joint.none", "No joint selected");
+        ui->text(ui->user, anomaly::sdk::StringView(no_joint));
+      } else {
+        const std::string selected_label =
+            context->localizer.Text("motion.joint.selected", "Selected joint");
+        ui->text(ui->user,
+                 anomaly::sdk::StringView(selected_label + ": " + selected_name));
+        const auto found = joint_settings.joints.find(selected_name);
+        joint_cal::Joint joint =
+            found == joint_settings.joints.end() ? joint_cal::Joint{} : found->second;
+        bool changed = false;
+        float ratio_percent = joint.ratio * 100.0F;
+        const std::string ratio_label =
+            context->localizer.Text("motion.joint.ratio", "Joint amplitude (%)");
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(ratio_label),
+                             &ratio_percent, 0.0F, 200.0F) != 0) {
+          joint.ratio = std::clamp(ratio_percent, 0.0F, 200.0F) / 100.0F;
+          changed = true;
+        }
+        const std::array<std::string, 3> axis_defaults{
+            "Joint X offset", "Joint Y offset", "Joint Z offset"};
+        const std::array<std::string, 3> axis_keys{
+            "motion.joint.offset.x", "motion.joint.offset.y",
+            "motion.joint.offset.z"};
+        for (std::size_t axis{}; axis != 3; ++axis) {
+          float degrees = joint.offset_degrees[axis];
+          const std::string label =
+              context->localizer.Text(axis_keys[axis], axis_defaults[axis]);
+          if (ui->slider_float(ui->user, anomaly::sdk::StringView(label),
+                               &degrees, -180.0F, 180.0F) != 0) {
+            joint.offset_degrees[axis] =
+                std::clamp(degrees, -180.0F, 180.0F);
+            changed = true;
+          }
+        }
+        int linked = joint_settings.linked ? 1 : 0;
+        const std::string linked_label =
+            context->localizer.Text("motion.joint.linked", "Link left and right");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(linked_label),
+                         &linked) != 0) {
+          joint_settings.linked = linked != 0;
+          changed = true;
+        }
+        const bool mirror_name_available =
+            !joint_cal::MirrorBoneName(selected_name).empty();
+        if (linked != 0 && mirror_name_available) {
+          for (std::size_t axis{}; axis != 3; ++axis) {
+            if (axis != 0)
+              ui->same_line(ui->user, 0.0F, 6.0F);
+            int mirror = joint.mirror_offset[axis] ? 1 : 0;
+            const std::array<std::string, 3> defaults{
+                "Mirror X", "Mirror Y", "Mirror Z"};
+            const std::array<std::string, 3> keys{
+                "motion.joint.mirror.x", "motion.joint.mirror.y",
+                "motion.joint.mirror.z"};
+            const std::string label =
+                context->localizer.Label(keys[axis], defaults[axis],
+                                         "motion-joint-mirror-" +
+                                             std::to_string(axis));
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(label),
+                             &mirror) != 0) {
+              joint.mirror_offset[axis] = mirror != 0;
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          joint_settings.joints[selected_name] = joint;
+          if (joint_settings.linked && mirror_name_available) {
+            const std::string mirror_name =
+                joint_cal::MirrorBoneName(selected_name);
+            joint_settings.joints[mirror_name] =
+                joint_cal::MirroredJoint(joint);
+          }
+          {
+            std::lock_guard<std::mutex> lock(context->motion_joint_mutex);
+            context->motion_joint_calibration = joint_settings;
+          }
+          context->pose_settings_dirty.store(true, std::memory_order_release);
+        }
+      }
+    }
+
+    limb_cal::AllSettings limb_settings;
+    {
+      std::lock_guard<std::mutex> lock(context->motion_limb_mutex);
+      limb_settings = context->motion_limb_calibration;
+    }
+    bool limb_changed = false;
+    int limb_enabled_master =
+        context->motion_limb_enabled.load(std::memory_order_acquire) ? 1 : 0;
+    const std::string limb_enabled_master_label =
+        context->localizer.Text("motion.limb.enabled_master",
+                                "Enable limb reach and endpoint calibration");
+    if (ui->checkbox(ui->user,
+                     anomaly::sdk::StringView(limb_enabled_master_label),
+                     &limb_enabled_master) != 0) {
+      context->motion_limb_enabled.store(limb_enabled_master != 0,
+                                         std::memory_order_release);
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    if (limb_enabled_master != 0) {
+    const std::string limb_title =
+        context->localizer.Text("motion.limb.title", "Limb reach and endpoint");
+    ui->text(ui->user, anomaly::sdk::StringView(limb_title));
     ui->same_line(ui->user, 0.0F, 6.0F);
-    int motion_ref = context->motion_reference_unity.load(std::memory_order_acquire) ? 1 : 0;
-    const std::string motion_ref_label =
-        context->localizer.Text("motion.ref", "Unity Miku reference");
-    if (ui->checkbox(ui->user, anomaly::sdk::StringView(motion_ref_label), &motion_ref) != 0)
-      context->motion_reference_unity.store(motion_ref != 0, std::memory_order_release);
+    const std::string limb_reset_all_label = context->localizer.Label(
+        "motion.limb.reset_all", "Reset all limbs", "motion-limb-reset-all");
+    if (ui->button(ui->user,
+                   anomaly::sdk::StringView(limb_reset_all_label), 100.0F,
+                   0.0F) != 0) {
+      limb_settings = limb_cal::AllSettings{};
+      limb_changed = true;
+    }
+    int limb_index =
+        std::clamp(context->motion_limb_edit_index.load(std::memory_order_acquire),
+                   0, static_cast<int>(limb_cal::kLimbCount) - 1);
+    for (std::size_t index{}; index != limb_cal::kLimbCount; ++index) {
+      if (index != 0)
+        ui->same_line(ui->user, 0.0F, 4.0F);
+      const std::string key =
+          "motion.limb." + std::string(limb_cal::kLimbKeys[index]);
+      const std::string label = context->localizer.Label(
+          key, std::string(limb_cal::kLimbLabels[index]),
+          std::string("motion-limb-") + std::string(limb_cal::kLimbKeys[index]));
+      const std::string shown =
+          (static_cast<int>(index) == limb_index ? "> " : "") + label;
+      if (ui->button(ui->user, anomaly::sdk::StringView(shown), 72.0F,
+                     0.0F) != 0) {
+        limb_index = static_cast<int>(index);
+        context->motion_limb_edit_index.store(limb_index,
+                                              std::memory_order_release);
+      }
+    }
+    auto &limb = limb_settings.limbs[static_cast<std::size_t>(limb_index)];
+    int limb_enabled = limb.enabled ? 1 : 0;
+    const std::string limb_enabled_label =
+        context->localizer.Text("motion.limb.enabled", "Enable this limb");
+    if (ui->checkbox(ui->user,
+                     anomaly::sdk::StringView(limb_enabled_label),
+                     &limb_enabled) != 0) {
+      limb.enabled = limb_enabled != 0;
+      limb_changed = true;
+    }
+    ui->same_line(ui->user, 0.0F, 6.0F);
+    const std::string limb_reset_label = context->localizer.Label(
+        "motion.limb.reset", "Reset this limb", "motion-limb-reset");
+    if (ui->button(ui->user, anomaly::sdk::StringView(limb_reset_label),
+                   100.0F, 0.0F) != 0) {
+      limb = limb_cal::Settings{};
+      limb_changed = true;
+    }
+    float limb_upper = limb.upper * 100.0F;
+    const std::string limb_upper_label =
+        context->localizer.Text("motion.limb.upper", "Upper segment reach (%)");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(limb_upper_label),
+                         &limb_upper, 50.0F, 150.0F) != 0) {
+      limb.upper = std::clamp(limb_upper, 50.0F, 150.0F) / 100.0F;
+      limb_changed = true;
+    }
+    float limb_lower = limb.lower * 100.0F;
+    const std::string limb_lower_label =
+        context->localizer.Text("motion.limb.lower", "Lower segment reach (%)");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(limb_lower_label),
+                         &limb_lower, 50.0F, 150.0F) != 0) {
+      limb.lower = std::clamp(limb_lower, 50.0F, 150.0F) / 100.0F;
+      limb_changed = true;
+    }
+    const std::array<std::string, 3> limb_offset_defaults{
+        "Endpoint left/right (%)", "Endpoint up/down (%)",
+        "Endpoint forward/back (%)"};
+    const std::array<std::string, 3> limb_offset_keys{
+        "motion.limb.offset.x", "motion.limb.offset.y",
+        "motion.limb.offset.z"};
+    for (std::size_t axis{}; axis != 3; ++axis) {
+      float offset_percent = limb.offset[axis] * 100.0F;
+      const std::string label = context->localizer.Text(
+          limb_offset_keys[axis], limb_offset_defaults[axis]);
+      if (ui->slider_float(ui->user, anomaly::sdk::StringView(label),
+                           &offset_percent, -50.0F, 50.0F) != 0) {
+        limb.offset[axis] =
+            std::clamp(offset_percent, -50.0F, 50.0F) / 100.0F;
+        limb_changed = true;
+      }
+    }
+    const auto limb_status = static_cast<limb_cal::Status>(
+        context->motion_limb_status[static_cast<std::size_t>(limb_index)].load(
+            std::memory_order_acquire));
+    const bool limb_motion_loaded =
+        context->motion_loaded.load(std::memory_order_acquire);
+    const char *status_key =
+        !limb_motion_loaded
+            ? "motion.limb.status.waiting"
+            : limb_status == limb_cal::Status::Applied
+            ? "motion.limb.status.applied"
+            : limb_status == limb_cal::Status::Clamped
+                  ? "motion.limb.status.clamped"
+                  : limb_status == limb_cal::Status::NotApplicable
+                        ? "motion.limb.status.unavailable"
+                        : "motion.limb.status.original";
+    const char *status_default =
+        !limb_motion_loaded
+            ? "Load a motion to see IK status"
+            : limb_status == limb_cal::Status::Applied
+            ? "Correction applied"
+            : limb_status == limb_cal::Status::Clamped
+                  ? "Target unreachable; clamped"
+                  : limb_status == limb_cal::Status::NotApplicable
+                        ? "Limb bones are unavailable"
+                        : "Using original motion";
+    const std::string limb_status_label =
+        context->localizer.Text(status_key, status_default);
+    ui->text(ui->user, anomaly::sdk::StringView(limb_status_label));
+    if (limb_changed) {
+      {
+        std::lock_guard<std::mutex> lock(context->motion_limb_mutex);
+        context->motion_limb_calibration = limb_settings;
+      }
+      context->pose_settings_dirty.store(true, std::memory_order_release);
+    }
+    }
 
     // Music: pick a track and it follows the motion's own transport and playhead, so judging sync
     // needs no manual transport (which only fought the follower). MP3/WAV go through the system
@@ -13089,6 +22159,32 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         ui->text(ui->user, anomaly::sdk::StringView(std::string(line)));
       }
     }
+    ui->separator(ui->user);
+    const std::string motion_ik_title =
+        context->localizer.Text("motion.ik", "Motion IK");
+    ui->text(ui->user, anomaly::sdk::StringView(motion_ik_title));
+    const int motion_ik_mode =
+        std::clamp(context->motion_ik_mode.load(std::memory_order_acquire), 0, 2);
+    const std::array<std::string, 3> motion_ik_labels{
+        context->localizer.Text("motion.ik.follow", "Follow motion"),
+        context->localizer.Text("motion.ik.force_on", "Force on"),
+        context->localizer.Text("motion.ik.force_off", "Force off")};
+    for (int index{}; index != 3; ++index) {
+      if (index != 0)
+        ui->same_line(ui->user, 0.0F, 4.0F);
+      const std::string label =
+          (index == motion_ik_mode ? "> " : "") + motion_ik_labels[index];
+      if (ui->button(ui->user, anomaly::sdk::StringView(label), 108.0F,
+                     0.0F) != 0 &&
+          index != motion_ik_mode) {
+        context->motion_ik_mode.store(index, std::memory_order_release);
+        context->pose_settings_dirty.store(true, std::memory_order_release);
+      }
+    }
+    ui->text(ui->user, anomaly::sdk::StringView(context->localizer.Text(
+                           "motion.ik.hint",
+                           "Re-convert the VMD after changing source IK mode.")));
+    draw_motion_calibration();
     if (use_tabs)
       ui->end_tab_item(ui->user);
   }
@@ -13134,20 +22230,19 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       context->pose_override_enabled.store(pose_enabled != 0,
                                            std::memory_order_release);
     }
+    const bool t_pose_active =
+        context->t_pose_calibration_active.load(std::memory_order_acquire);
+    if (t_pose_active) {
+      const std::string active_label = context->localizer.Text(
+          "pose.tpose.pose_page",
+          "MMD reference calibration is active. Adjust the visible joints here; "
+          "save or cancel on the MMD page.");
+      ui->text(ui->user, anomaly::sdk::StringView(active_label));
+    }
 
     // Pose camera: mouse-only orbit, independent of the skeleton overlay.
-    if (context->input != nullptr) {
-      int orbit = context->orbit_enabled.load(std::memory_order_acquire) ? 1 : 0;
-      const std::string orbit_label =
-          context->localizer.Text("pose.camera.orbit", "Pose camera");
-      if (ui->checkbox(ui->user, anomaly::sdk::StringView(orbit_label), &orbit) != 0) {
-        // Every switch-on starts again from the game's current view.
-        if (orbit != 0)
-          context->orbit_initialized.store(false, std::memory_order_release);
-        context->orbit_enabled.store(orbit != 0, std::memory_order_release);
-      }
-      if (orbit != 0) {
-        ui->same_line(ui->user, 0.0F, 12.0F);
+    if (context->input != nullptr &&
+        context->orbit_enabled.load(std::memory_order_acquire)) {
         const std::uint32_t selected =
             context->requested_bone_index.load(std::memory_order_acquire);
         const std::string focus_label =
@@ -13193,21 +22288,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
           context->orbit_fov.store(0.0F, std::memory_order_release);
           context->orbit_fov_restore.store(true, std::memory_order_release);
         }
-      }
     }
 
-    if (context->ahud != nullptr) {
-      int overlay_enabled =
-          context->skeleton_overlay_enabled.load(std::memory_order_acquire) ? 1 : 0;
-      const std::string overlay_toggle =
-          context->localizer.Text("pose.skeleton.overlay", "Show skeleton");
-      if (ui->checkbox(ui->user, anomaly::sdk::StringView(overlay_toggle),
-                       &overlay_enabled) != 0) {
-        context->skeleton_overlay_enabled.store(overlay_enabled != 0,
-                                                std::memory_order_release);
-      }
-      if (overlay_enabled != 0) {
-        ui->same_line(ui->user, 0.0F, 12.0F);
+    const bool overlay_enabled =
+        context->skeleton_overlay_enabled.load(std::memory_order_acquire);
+    if (context->ahud != nullptr && overlay_enabled) {
         int body_only = context->overlay_body_only.load(std::memory_order_acquire) ? 1 : 0;
         const std::string body_only_label =
             context->localizer.Text("pose.skeleton.body_only", "Body only");
@@ -13269,8 +22354,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             "pose.skeleton.limits", "Joint limits (fingers, elbows, knees, shoulders, hips)");
         if (ui->checkbox(ui->user, anomaly::sdk::StringView(limits_label), &limits) != 0)
           context->overlay_limits_enabled.store(limits != 0, std::memory_order_release);
-      }
-      if (overlay_enabled != 0 && context->input != nullptr) {
+      if (context->input != nullptr) {
         const std::string overlay_hint = context->localizer.Text(
             "pose.skeleton.overlay.hint",
             "Click a joint to select it.\n"
@@ -13443,6 +22527,9 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       if (can_confirm_popup)
         ui->open_popup(ui->user, anomaly::sdk::StringView("pose-reset-confirm"));
       else
+        context->t_pose_calibration_request.store(3,
+                                                  std::memory_order_release);
+      if (!can_confirm_popup)
         context->pose_reset_requested.store(true, std::memory_order_release);
     }
 
@@ -13656,6 +22743,8 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             context->localizer.Text("pose.reset.confirm.yes", "Reset");
         if (ui->button(ui->user, anomaly::sdk::StringView(confirm_yes), 90.0F,
                        0.0F) != 0) {
+          context->t_pose_calibration_request.store(3,
+                                                    std::memory_order_release);
           context->pose_reset_requested.store(true, std::memory_order_release);
           ui->close_current_popup(ui->user);
         }

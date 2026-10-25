@@ -77,7 +77,7 @@ def main() -> int:
             tracks[name] = []
             order.append(name)
         tracks[name].append({"frame": frame, "pos": pos, "quat": quat,
-                             "interp": interp[:4].hex()})
+                             "interp": interp[:16].hex()})
 
     morphs = {}
     morph_order = []
@@ -100,16 +100,20 @@ def main() -> int:
 
     visible_frames = 0
     ik_states = {}
+    visibility_keys = []
+    ik_state_records = {}
     if version == 2 and r.p < len(data):
         visible_frames = r.u32()
         for _ in range(visible_frames):
             frame = r.u32()
             visible = r.u8()
+            visibility_keys.append({"frame": frame, "visible": visible})
             for _ in range(r.u32()):
                 ik_name = r.name(20)
                 on = r.u8()
-                ik_states.setdefault(ik_name, []).append(
-                    {"frame": frame, "visible": visible, "on": on})
+                record = {"frame": frame, "visible": visible, "on": on}
+                ik_states.setdefault(ik_name, []).append(record)
+                ik_state_records.setdefault(ik_name, []).append(record)
 
     frames = [k["frame"] for t in tracks.values() for k in t]
     morph_frames = [k["frame"] for t in morphs.values() for k in t]
@@ -130,7 +134,9 @@ def main() -> int:
         "lightKeys": light_keys,
         "shadowKeys": shadow_keys,
         "visibleFrames": visible_frames,
+        "visibilityKeys": visibility_keys,
         "ikStates": {k: len(v) for k, v in ik_states.items()},
+        "ikStateRecords": ik_state_records,
         "bytesConsumed": r.p,
         "fileSize": len(data),
         "bones": {name: tracks[name] for name in order},

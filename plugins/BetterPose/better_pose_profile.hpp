@@ -146,6 +146,48 @@ inline constexpr std::uint32_t kMeshAnimationFlagsOffset = 0xAC0;
 // part of the validated plugin contract.
 inline constexpr std::uint32_t kSkeletalMeshTickVtableSlot = 128;
 
+// FField / FProperty fields used to locate generated AnimBP nodes without
+// hard-coding a node's final member offset. The generated class owns the chain
+// at UStruct::ChildProperties; AnimBP graphs currently place the standard
+// KawaiiPhysics node at +0x510 or +0x520 depending on generated members.
+inline constexpr std::uint32_t kUStructChildPropertiesOffset = 0x70;
+inline constexpr std::uint32_t kFFieldNextOffset = 0x18;
+inline constexpr std::uint32_t kFFieldNameOffset = 0x20;
+inline constexpr std::uint32_t kFPropertyElementSizeOffset = 0x34;
+inline constexpr std::uint32_t kFPropertyOffsetInternalOffset = 0x44;
+
+// FAnimNode_KawaiiPhysics, verified against the installed NTE build. These are
+// read-only runtime layout offsets; simulation still belongs to BetterPose.
+inline constexpr std::uint32_t kKawaiiRootBoneOffset = 208;
+inline constexpr std::uint32_t kKawaiiPhysicsSettingsOffset = 268;
+inline constexpr std::uint32_t kKawaiiTargetFrameRateOffset = 296;
+inline constexpr std::uint32_t kKawaiiWarmUpFramesOffset = 304;
+inline constexpr std::uint32_t kKawaiiSphericalLimitsOffset = 1192;
+inline constexpr std::uint32_t kKawaiiCapsuleLimitsOffset = 1208;
+inline constexpr std::uint32_t kKawaiiBoxLimitsOffset = 1224;
+inline constexpr std::uint32_t kKawaiiPlanarLimitsOffset = 1240;
+inline constexpr std::uint32_t kKawaiiGravityOffset = 1408;
+inline constexpr std::uint32_t kKawaiiWindEnabledOffset = 1432;
+inline constexpr std::uint32_t kKawaiiWindScaleOffset = 1436;
+inline constexpr std::uint32_t kKawaiiSimulationSpaceOffset = 656;
+inline constexpr std::uint32_t kKawaiiModifyBonesOffset = 1944;
+inline constexpr std::uint32_t kKawaiiModifyBoneSize = 288;
+inline constexpr std::uint32_t kKawaiiModifyBoneNameOffset = 0;
+inline constexpr std::uint32_t kKawaiiModifyBoneSettingsOffset = 40;
+inline constexpr std::uint32_t kKawaiiModifyBoneDummyOffset = 272;
+inline constexpr std::uint32_t kKawaiiModifyBoneSkipOffset = 273;
+
+// FCapsuleLimit, used by KawaiiPhysics to constrain its spring bones. These
+// entries are not body-collision capsules.
+inline constexpr std::uint32_t kKawaiiLimitDrivingBoneOffset = 0;
+inline constexpr std::uint32_t kKawaiiLimitOffsetLocationOffset = 16;
+inline constexpr std::uint32_t kKawaiiLimitOffsetRotationOffset = 40;
+inline constexpr std::uint32_t kKawaiiLimitEnabledOffset = 128;
+inline constexpr std::uint32_t kKawaiiLimitRadiusOffset = 136;
+inline constexpr std::uint32_t kKawaiiLimitLengthOffset = 140;
+inline constexpr std::uint32_t kKawaiiLimitSphereRadiusOffset = 144;
+inline constexpr std::uint32_t kKawaiiCapsuleLimitSize = 176;
+
 // EAnimationMode values relevant to the pose override. Switching the
 // SkeletalMeshComponent to AnimationCustomMode stops AnimInstance/animation
 // evaluation from rewriting BoneSpaceTransforms every frame, which is required

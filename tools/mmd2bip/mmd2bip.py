@@ -87,6 +87,58 @@ def qslerp(a, b, t):
     return qnorm(tuple(a[i] * s0 + b[i] * s1 for i in range(4)))
 
 
+LINEAR_CURVE = (0.0, 0.0, 1.0, 1.0)
+
+
+def sample_vmd_curve(curve, x):
+    """Resolve MMD's x -> y cubic Bezier timing, with exact endpoint holds."""
+    x = max(0.0, min(1.0, x))
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    x1, y1, x2, y2 = curve
+    if abs(x1 - y1) <= 1e-12 and abs(x2 - y2) <= 1e-12:
+        return x
+
+    def cubic(t, a, b):
+        inverse = 1.0 - t
+        return 3.0 * inverse * inverse * t * a + 3.0 * inverse * t * t * b + t * t * t
+
+    low, high, t = 0.0, 1.0, x
+    for _ in range(22):
+        solved = cubic(t, x1, x2)
+        if abs(solved - x) <= 1e-7:
+            break
+        if solved < x:
+            low = t
+        else:
+            high = t
+        t = (low + high) * 0.5
+    return max(0.0, min(1.0, cubic(t, y1, y2)))
+
+
+def vmd_interpolation_curves(value):
+    """Decode the four bone channels from a VMD dump.
+
+    New dumps carry the first 16 interpolation bytes. Older dumps only carried the
+    first four bytes, so those, and the all-zero malformed form, remain linear.
+    """
+    try:
+        raw = bytes.fromhex(value or "")
+    except (TypeError, ValueError):
+        raw = b""
+    if len(raw) < 16:
+        return (LINEAR_CURVE,) * 4
+    curves = []
+    for channel in range(4):
+        values = (raw[channel], raw[channel + 4],
+                  raw[channel + 8], raw[channel + 12])
+        curves.append((LINEAR_CURVE if not any(values) else
+                       tuple(max(0.0, min(1.0, byte / 127.0)) for byte in values)))
+    return tuple(curves)
+
+
 def qswing(u, v):
     """Minimal rotation taking unit vector u to unit vector v."""
     d = sum(a * b for a, b in zip(u, v))
@@ -128,6 +180,21 @@ def ik_swing(u, v):
 
 
 A_AXIS = (0.7071067811865476, 0.0, 0.0, 0.7071067811865476)  # MMD -> Bip001
+
+
+# VMD exporters are not consistent about full-width digits, Latin letters or the
+# index-finger spelling. Finger names use 左人指１ while target bones use 1, some
+# motions call the same finger 人差指, and many motions write 左足ＩＫ while the
+# StandardRig reference writes 左足IK. Exact matching silently skipped those tracks;
+# a skipped leg-IK controller leaves the feet at rest while the rest of the body moves.
+_FULL_WIDTH = "０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ" \
+              "ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ"
+_HALF_WIDTH = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_BONE_NAME_TRANSLATION = str.maketrans(_FULL_WIDTH, _HALF_WIDTH)
+
+
+def canonical_bone_name(name):
+    return name.translate(_BONE_NAME_TRANSLATION).replace("人差指", "人指")
 
 
 # ------------------------------------------------------------------ mappings
@@ -175,6 +242,12 @@ MAPPING = [
 FINGER_PREFIX = {"親指": "Finger0", "人指": "Finger1", "中指": "Finger2",
                  "薬指": "Finger3", "小指": "Finger4"}
 FINGER_JOINTS = [("0", ""), ("1", "1"), ("2", "2"), ("3", "2")]
+LEG_FALLBACK = {
+    "Bip001-L-Thigh": "左足D", "Bip001-L-Calf": "左ひざD",
+    "Bip001-L-Foot": "左足首D", "Bip001-L-Toe0": "左足先EX",
+    "Bip001-R-Thigh": "右足D", "Bip001-R-Calf": "右ひざD",
+    "Bip001-R-Foot": "右足首D", "Bip001-R-Toe0": "右足先EX",
+}
 
 # Hair is swing-only for every character, whatever the bone group is called: this rig
 # family says "hair" (Bn_*_hair*), a hand-made MMD model may spell it hari/kami/髪.
@@ -239,7 +312,9 @@ def align_chains(source_fractions, target_fractions):
     return pairs
 
 
-def build_mapping(mm_names, skel=None, pmx_positions=None):
+def build_mapping(mm_names, skel=None, pmx_positions=None, manual_mappings=None,
+                  vmd_track_names=(), ignored_tracks=(),
+                  manual_parent_mappings=(), manual_finger_controls=()):
     """Explicit table plus the finger chain, skipping anything absent.
 
     MMD bone names use full width digits (左人指１) while the target uses plain
@@ -256,12 +331,37 @@ def build_mapping(mm_names, skel=None, pmx_positions=None):
     for is emitted as a static track, which holds the rest local rotation and so
     follows the hand rigidly.
     """
-    full_width = "０１２３４５６７８９"
-    table_names = {name.translate(str.maketrans(full_width, "0123456789"))
-                   for name in mm_names}
+    reference_name = {canonical_bone_name(name): name for name in mm_names}
+    table_names = set(reference_name)
 
     def has(name):
-        return name.translate(str.maketrans(full_width, "0123456789")) in table_names
+        return canonical_bone_name(name) in table_names
+
+    canonical_vmd_tracks = {
+        canonical_bone_name(name): name for name in vmd_track_names
+    }
+
+    def finger_tip_source(side, japanese):
+        prefix = canonical_bone_name(side + japanese)
+        exact = prefix + "先"
+        fallback = ""
+        for canonical, original in canonical_vmd_tracks.items():
+            if canonical == exact:
+                return original
+            if not fallback and canonical.startswith(prefix) and canonical.endswith("先"):
+                fallback = original
+        return fallback
+
+    def finger_digit_sources(side, japanese):
+        prefix = canonical_bone_name(side + japanese)
+        numbered = []
+        for canonical, original in canonical_vmd_tracks.items():
+            if len(canonical) != len(prefix) + 1 or not canonical.startswith(prefix):
+                continue
+            digit = canonical[-1]
+            if digit in "01234":
+                numbered.append((int(digit), original))
+        return [original for _, original in sorted(numbered)]
 
     table = []
     for entry in MAPPING:
@@ -280,25 +380,85 @@ def build_mapping(mm_names, skel=None, pmx_positions=None):
                 and all(has(s) for s in inverse + prefix)):
             sources = [s for s in sources if has(s)] or ["下半身"]
             dir_src = "下半身"
+        if target == "Bip001-Spine1" and not has(dir_src) \
+                and has("上半身3") and has("上半身2"):
+            sources = ["上半身2"]
+            dir_src = "上半身2"
+        if target == "Bip001-Spine2" and has("上半身3"):
+            sources = ["上半身3"]
+            dir_src = "上半身3"
+        if target in ("Bip001-L-Clavicle", "Bip001-R-Clavicle"):
+            side = "左" if target == "Bip001-L-Clavicle" else "右"
+            sources = [s for s in (side + "肩P", dir_src) if has(s)]
+        if target in ("Bip001-L-UpperArm", "Bip001-R-UpperArm"):
+            side = "左" if target == "Bip001-L-UpperArm" else "右"
+            if has(side + "肩P") and has(side + "肩C"):
+                prefix = [side + "肩P"]
+        fallback = LEG_FALLBACK.get(target)
+        if fallback and not has(dir_src) and has(fallback):
+            sources = [fallback]
+            dir_src = fallback
         if all(has(s) for s in sources + inverse + prefix) and has(dir_src):
             table.append({"target": target, "sources": sources, "dir": dir_src,
                           "position": has_pos, "inverse": inverse, "prefix": prefix})
     for side, side_en in (("左", "L"), ("右", "R")):
         for jp, en in FINGER_PREFIX.items():
-            digits = [d for d in "０１２３４" if has(f"{side}{jp}{d}")]
-            mm_chain = [f"{side}{jp}{d}" for d in digits[:3]]
-            if not mm_chain:
-                continue
             base = f"Bip001-{side_en}-{en}"
+            chain = target_finger_chain(skel, base) if skel is not None else []
+            digits = [d for d in "０１２３４" if has(f"{side}{jp}{d}")]
+            chain_capacity = max(3, len(chain))
+            mm_chain = [
+                reference_name[canonical_bone_name(f"{side}{jp}{d}")]
+                for d in digits[:chain_capacity]
+            ]
+            tip_source = finger_tip_source(side, jp)
+            if not mm_chain and not tip_source:
+                continue
             if skel is None or pmx_positions is None:
                 # Legacy positional mapping, kept for the measurement scripts.
                 for position, mm in enumerate(mm_chain):
                     target = base + ("" if position == 0 else str(position))
                     table.append({"target": target, "sources": [mm], "dir": mm,
                                   "position": False})
+                if tip_source and table:
+                    if tip_source not in table[-1]["sources"]:
+                        table[-1]["sources"].append(tip_source)
                 continue
-            chain = target_finger_chain(skel, base)
             if not chain:
+                continue
+            vmd_digits = finger_digit_sources(side, jp)
+            if len(vmd_digits) == len(chain):
+                for target, source in zip(chain, vmd_digits):
+                    table.append({
+                        "target": target,
+                        "sources": [source],
+                        "dir": source,
+                        "position": False,
+                    })
+                if tip_source:
+                    table[-1]["sources"].append(tip_source)
+                continue
+            if len(vmd_digits) > len(chain):
+                # Preserve every source joint when this costume exposes fewer target finger
+                # bones. Adjacent source rotations are composed on the nearest target joint.
+                groups = [[] for _ in chain]
+                for source_index, source in enumerate(vmd_digits):
+                    target_index = min(
+                        source_index * len(chain) // len(vmd_digits),
+                        len(chain) - 1)
+                    groups[target_index].append(source)
+                for target, sources in zip(chain, groups):
+                    table.append({
+                        "target": target,
+                        "sources": sources,
+                        "dir": sources[0] if sources else target,
+                        "position": False,
+                        "static": not sources,
+                    })
+                if tip_source and table and table[-1]["target"] == chain[-1]:
+                    table[-1]["sources"].append(tip_source)
+                    if not table[-1]["dir"]:
+                        table[-1]["dir"] = tip_source
                 continue
             target_fractions = cumulative_fractions([
                 math.sqrt(sum(c * c for c in skel[n]["baseLocal"]["translation"]))
@@ -307,7 +467,7 @@ def build_mapping(mm_names, skel=None, pmx_positions=None):
             mm_positions = [pmx_positions[n] for n in mm_chain]
             source_lengths = []
             hand = pmx_positions.get(f"{side}手首")
-            if hand is not None:
+            if hand is not None and mm_positions:
                 source_lengths.append(math.dist(hand, mm_positions[0]))
             for i in range(len(mm_positions) - 1):
                 source_lengths.append(math.dist(mm_positions[i], mm_positions[i + 1]))
@@ -322,12 +482,188 @@ def build_mapping(mm_names, skel=None, pmx_positions=None):
                 table.append({"target": target, "sources": [mm] if mm else [],
                               "dir": mm if mm else target,
                               "position": False, "static": mm is None})
+            if tip_source and table and table[-1]["target"] == chain[-1]:
+                if not table[-1]["sources"]:
+                    table[-1]["sources"] = [tip_source]
+                    table[-1]["dir"] = tip_source
+                elif tip_source not in table[-1]["sources"]:
+                    table[-1]["sources"].append(tip_source)
+    if skel is not None:
+        mapped_sources = {
+            canonical_bone_name(source)
+            for entry in table for source in entry["sources"]
+        }
+        for side, side_en in (("左", "L"), ("右", "R")):
+            for jp, en in FINGER_PREFIX.items():
+                chain = target_finger_chain(skel, f"Bip001-{side_en}-{en}")
+                if not chain:
+                    continue
+                for source in finger_digit_sources(side, jp):
+                    canonical = canonical_bone_name(source)
+                    if canonical in mapped_sources:
+                        continue
+                    digit = int(canonical[-1])
+                    target = chain[0] if digit == 0 else chain[-1]
+                    entry = next(
+                        (item for item in table if item["target"] == target),
+                        None)
+                    if entry is None:
+                        table.append({
+                            "target": target,
+                            "sources": [source],
+                            "dir": source,
+                            "position": False,
+                        })
+                    elif digit == 0:
+                        entry["sources"].insert(0, source)
+                    else:
+                        tip_source = finger_tip_source(side, jp)
+                        if tip_source and tip_source in entry["sources"]:
+                            entry["sources"].insert(
+                                entry["sources"].index(tip_source), source)
+                        else:
+                            entry["sources"].append(source)
+                    mapped_sources.add(canonical)
+    for source, target in sorted((manual_mappings or {}).items()):
+        if not source or not target:
+            continue
+        if skel is not None and target not in skel:
+            continue
+        if any(entry["target"] == target for entry in table):
+            continue
+        table.append({
+            "target": target,
+            "sources": [source],
+            "dir": source,
+            "position": False,
+        })
+    # Insert each source as a rotation parent above the selected target. A source may
+    # target several bones; later additions become the outermost segment.
+    for raw_mapping in manual_parent_mappings or ():
+        if isinstance(raw_mapping, dict):
+            source = raw_mapping.get("source", "")
+            target = raw_mapping.get("target", "")
+            anchor = raw_mapping.get("anchor", "")
+            inherit_rotation = bool(raw_mapping.get("inherit_rotation", True))
+            inherit_position = bool(raw_mapping.get("inherit_position", False))
+        else:
+            source, target = raw_mapping[:2]
+            anchor = raw_mapping[2] if len(raw_mapping) > 2 else ""
+            inherit_rotation = raw_mapping[3] if len(raw_mapping) > 3 else True
+            inherit_position = raw_mapping[4] if len(raw_mapping) > 4 else False
+        mapping = {
+            "source": source,
+            "target": target,
+            "anchor": anchor,
+            "inherit_rotation": inherit_rotation,
+            "inherit_position": inherit_position,
+        }
+        if not source or not target:
+            continue
+        if not inherit_rotation and not inherit_position:
+            continue
+        if skel is not None and target not in skel:
+            continue
+        entry = next((item for item in table if item["target"] == target), None)
+        if entry is None:
+            entry = {"target": target, "sources": [], "dir": target,
+                     "position": False, "parents": []}
+            table.append(entry)
+        existing_parent = next(
+            (item for item in entry.setdefault("parents", [])
+             if item["source"] == source), None)
+        if existing_parent is None:
+            entry["parents"].append(mapping)
+        else:
+            existing_parent["inherit_rotation"] |= inherit_rotation
+            existing_parent["inherit_position"] |= inherit_position
+            if anchor:
+                existing_parent["anchor"] = anchor
+        already_used = any(source in entry.get(key, ())
+                           for key in ("sources", "inverse", "prefix"))
+        if inherit_rotation and not already_used:
+            entry["sources"].insert(0, source)
+    for control in manual_finger_controls or ():
+        source = control.get("source", "")
+        kind = control.get("kind", "grip")
+        side = int(control.get("side", 0))
+        finger = int(control.get("finger", -1))
+        axis = int(control.get("input_axis", 0))
+        gain = float(control.get("gain", 1.0))
+        paired = bool(control.get("paired", False))
+        if (not source or kind not in ("grip", "spread") or side not in (0, 1)
+                or finger < -1 or finger > 4 or axis not in (0, 1, 2)
+                or not math.isfinite(gain) or abs(gain) > 3.0):
+            continue
+        for entry in table:
+            target = entry["target"]
+            target_left = target.startswith("Bip001-L-")
+            target_right = target.startswith("Bip001-R-")
+            if not (target_left or target_right):
+                continue
+            if not paired and (side == 0) != target_left:
+                continue
+            side_char = "L" if target_left else "R"
+            matched = False
+            for finger_index, english in enumerate(FINGER_PREFIX.values()):
+                if finger >= 0 and finger != finger_index:
+                    continue
+                base = f"Bip001-{side_char}-{english}"
+                if target in (base, base + "1", base + "2", base + "3"):
+                    matched = True
+                    break
+            if matched:
+                entry.setdefault("finger_controls", []).append({
+                    "source": source, "kind": kind, "side": side,
+                    "finger": finger, "input_axis": axis, "gain": gain,
+                    "paired": paired,
+                })
+    ignored = {canonical_bone_name(source) for source in ignored_tracks}
+    if ignored:
+        filtered = []
+        for entry in table:
+            had_source = bool(entry["sources"] or entry.get("inverse") or
+                              entry.get("prefix") or entry.get("parents") or
+                              entry.get("finger_controls"))
+            entry["sources"] = [
+                source for source in entry["sources"]
+                if canonical_bone_name(source) not in ignored
+            ]
+            if "inverse" in entry:
+                entry["inverse"] = [
+                    source for source in entry["inverse"]
+                    if canonical_bone_name(source) not in ignored
+                ]
+            if "prefix" in entry:
+                entry["prefix"] = [
+                    source for source in entry["prefix"]
+                    if canonical_bone_name(source) not in ignored
+                ]
+            if "parents" in entry:
+                entry["parents"] = [
+                    mapping for mapping in entry["parents"]
+                    if canonical_bone_name(mapping["source"]) not in ignored
+                ]
+            if "finger_controls" in entry:
+                entry["finger_controls"] = [
+                    control for control in entry["finger_controls"]
+                    if canonical_bone_name(control["source"]) not in ignored
+                ]
+            if (canonical_bone_name(entry["dir"]) in ignored and
+                    entry["sources"]):
+                entry["dir"] = entry["sources"][0]
+            if not (had_source and not entry["sources"] and
+                    not entry.get("inverse") and not entry.get("prefix") and
+                    not entry.get("parents") and
+                    not entry.get("finger_controls")):
+                filtered.append(entry)
+        table = filtered
     return table
 
 
 
 def build_sampler(tracks):
-    """Sample a track at an arbitrary frame: hold at the ends, slerp between keys.
+    """Sample a track at an arbitrary frame: hold at the ends, then apply VMD Bezier.
 
     VMD keyframes are sparse -- MMD interpolates between them itself. Reading only
     exact frames and treating a miss as the identity quaternion made every
@@ -336,14 +672,21 @@ def build_sampler(tracks):
     used the same shortcut, so it never caught this: a check that shares the
     implementation's assumptions cannot falsify it.
     """
+    exact = {}
     keyed = {}
     for name, keys in tracks.items():
         frames = sorted(keys)
         if frames:
-            keyed[name] = (frames, keys)
+            entry = (frames, keys)
+            exact[name] = entry
+            canonical = canonical_bone_name(name)
+            if canonical not in keyed:
+                keyed[canonical] = entry
 
     def sample(name, frame):
-        entry = keyed.get(name)
+        entry = exact.get(name)
+        if entry is None:
+            entry = keyed.get(canonical_bone_name(name))
         if entry is None:
             return None
         frames, keys = entry
@@ -356,10 +699,16 @@ def build_sampler(tracks):
         if second == first:
             return keys[first]
         blend = (frame - first) / float(second - first)
-        q0, p0 = keys[first]
-        q1, p1 = keys[second]
-        position = tuple(p0[k] + (p1[k] - p0[k]) * blend for k in range(3))
-        return (qslerp(qnorm(q0), qnorm(q1), blend), position)
+        first_key, second_key = keys[first], keys[second]
+        q0, p0 = first_key[0], first_key[1]
+        q1, p1 = second_key[0], second_key[1]
+        curves = second_key[2] if len(second_key) > 2 else (LINEAR_CURVE,) * 4
+        position = tuple(
+            p0[k] + (p1[k] - p0[k]) * sample_vmd_curve(curves[k], blend)
+            for k in range(3))
+        rotation = qslerp(qnorm(q0), qnorm(q1),
+                          sample_vmd_curve(curves[3], blend))
+        return (rotation, position)
 
     return sample
 
@@ -389,7 +738,7 @@ def scale_quat_angle(q, gain):
     return q_from_axis_angle(unit((q[0], q[1], q[2])), angle * gain)
 
 
-def build_twist_list(skel, mapped_targets, axis_of):
+def build_twist_list(skel, mapped_targets, axis_of, source_axis_of=None):
     """Target twist helper bones and how much of the limb's twist they take.
 
     These bones exist to spread a joint's twist across the mesh, and the target
@@ -407,7 +756,8 @@ def build_twist_list(skel, mapped_targets, axis_of):
         side = match.group(2)
         limb = {"UpperArm": "腕", "ForeArm": "ひじ",
                 "Thigh": "足", "Calf": "ひざ"}[match.group(3)]
-        source = f"{'左' if side == 'L' else '右'}{limb}"
+        side_jp = "左" if side == "L" else "右"
+        source = f"{side_jp}{limb}"
         arm_target = None
         for mmd_name, target_name in mapped_targets.items():
             if mmd_name == source:
@@ -418,9 +768,16 @@ def build_twist_list(skel, mapped_targets, axis_of):
         axis = axis_of(arm_target)
         if axis is None:
             continue
+        source_twist = {
+            "UpperArm": f"{side_jp}腕捩",
+            "ForeArm": f"{side_jp}手捩",
+        }.get(match.group(3), "")
         twist.append({"target": bone["name"], "index": bone["index"],
                       "parent": bone["parent"],
                       "arm_index": skel[arm_target]["index"], "axis": axis,
+                      "source_twist": source_twist,
+                      "source_axis": source_axis_of(source_twist)
+                      if source_axis_of and source_twist else None,
                       # Twist takes half of the limb twist, Twist1 a quarter, so
                       # the two of them spread three quarters along the limb.
                       "weight": 0.25 if match.group(4) == "1" else 0.5})
@@ -594,10 +951,13 @@ class MmdIkPose:
         self.wrot = [ident] * self.count
         self.wpos = [(0.0, 0.0, 0.0)] * self.count
         self.chains = []
+        self.fallback_counts = {}
         for bone in self.bones:
             if not bone.get("ik"):
                 continue
-            data = bone["ikData"]
+            data = bone.get("ikData")
+            if data is None and isinstance(bone.get("ik"), dict):
+                data = bone["ik"]
             self.chains.append({
                 "bone": bone["index"], "target": data["target"],
                 "loop": max(0, int(data["loop"])),
@@ -660,7 +1020,7 @@ class MmdIkPose:
     def effector_gap(self, chain):
         return math.dist(self.wpos[chain["target"]], self.wpos[chain["bone"]])
 
-    def solve(self, disabled=frozenset()):
+    def solve(self, disabled=frozenset(), fk_fallback=None):
         """Run every enabled chain, in bone order, MMD's way.
 
         One iteration walks the chain from the bone closest to the effector outwards and
@@ -669,9 +1029,12 @@ class MmdIkPose:
         """
         gaps = []
         for chain in self.chains:
-            if self.name[chain["bone"]] in disabled:
+            if canonical_bone_name(self.name[chain["bone"]]) in disabled:
                 continue
-            before, after, applied = self.apply_chain(chain)
+            allow_fk = bool(
+                fk_fallback and
+                fk_fallback.get(canonical_bone_name(self.name[chain["bone"]]), False))
+            before, after, applied = self.apply_chain(chain, allow_fk)
             gaps.append((self.name[chain["bone"]], before, after, applied))
         return gaps
 
@@ -683,14 +1046,24 @@ class MmdIkPose:
             worst = max(worst, math.degrees(2.0 * math.acos(w)))
         return worst
 
-    def apply_chain(self, chain):
+    def apply_chain(self, chain, allow_fk_fallback=False):
         """Solve one chain and report how much of it was the solver's own doing."""
         before = [self.rot[link] for link in chain["links"]]
         gap_before = self.effector_gap(chain)
         self.solve_chain(chain)
         applied = max((quat_angle(before[i], self.rot[link])
                        for i, link in enumerate(chain["links"])), default=0.0)
-        return gap_before, self.effector_gap(chain), applied
+        gap_after = self.effector_gap(chain)
+        if (allow_fk_fallback and gap_before > 0.5 and
+                gap_after > max(0.5, gap_before * 0.35)):
+            for link, original in zip(chain["links"], before):
+                self.rot[link] = original
+            for link in chain["links"]:
+                self.refresh(self.subtrees[link])
+            gap_after = self.effector_gap(chain)
+            name = self.name[chain["bone"]]
+            self.fallback_counts[name] = self.fallback_counts.get(name, 0) + 1
+        return gap_before, gap_after, applied
 
     def solve_chain(self, chain):
         target, ik_index = chain["target"], chain["bone"]
@@ -841,14 +1214,20 @@ def vmd_tracks(path):
 
 
 def vmd_track_dict(path):
-    """Frame list -> dict name -> {frame: (quat, pos)} (sampled VMD layout)."""
+    """Frame list -> dict name -> {frame: (quat, pos, curves)}."""
     doc = json.load(open(path, encoding="utf-8"))
     out = {}
     for name, keys in doc["bones"].items():
         q = {}
         for k in keys:
-            q[int(k["frame"])] = (tuple(k["quat"]), tuple(k["pos"]))
+            q[int(k["frame"])] = (
+                tuple(k["quat"]), tuple(k["pos"]),
+                vmd_interpolation_curves(k.get("interp", "")))
         out[name] = q
+    for name in tuple(out):
+        canonical = canonical_bone_name(name)
+        if canonical not in out:
+            out[canonical] = out[name]
     return out, doc
 
 
@@ -938,6 +1317,32 @@ def main() -> int:
                          "leg and toe on this rig) before mapping, so a motion that only "
                          "carries IK-bone positions still moves the legs. 0 = skip the "
                          "solver, which reproduces the pre-IK output exactly")
+    ap.add_argument("--ik-mode", choices=("follow", "on", "off"), default="follow",
+                    help="follow = obey VMD IK switch records; on = ignore switch-off "
+                         "records; off = force pure FK")
+    ap.add_argument("--mapping", action="append", default=[], metavar="SOURCE=TARGET",
+                    help="map an otherwise unmapped VMD track to a target bone; "
+                         "repeat for multiple tracks")
+    ap.add_argument("--parent", action="append", default=[], metavar="SOURCE=TARGET",
+                    help="insert a source track as an additional rotation parent above "
+                         "a target bone; repeat for multiple segments")
+    ap.add_argument("--parent-position", action="append", default=[],
+                    metavar="SOURCE=TARGET",
+                    help="also inherit the parent's local position")
+    ap.add_argument("--parent-no-rotation", action="append", default=[],
+                    metavar="SOURCE=TARGET",
+                    help="use an existing parent relation for position only")
+    ap.add_argument("--parent-anchor", action="append", default=[],
+                    metavar="SOURCE=TARGET=ANCHOR",
+                    help="set the target-space rest anchor for a parent relation")
+    ap.add_argument("--control", action="append", default=[],
+                    metavar="SOURCE=KIND,SIDE,FINGER,AXIS,GAIN[,PAIRED]",
+                    help="interpret a source track as a grip/spread hand control")
+    ap.add_argument("--arm-ik", action="append", default=[],
+                    metavar="SOURCE=SIDE,GAIN,BEND[,BOTH][,FOLLOW]",
+                    help="interpret a source track as a wrist position target for arm IK")
+    ap.add_argument("--ignore", action="append", default=[], metavar="SOURCE",
+                    help="explicitly ignore a source VMD track; repeat for multiple tracks")
     ap.add_argument("--track-untracked", type=int, default=1,
                     help="1 (default) = every bone the file would otherwise leave "
                          "undriven gets a constant track holding its reference local "
@@ -986,8 +1391,106 @@ def main() -> int:
                          "*because* the legs push, so freezing it while the legs still "
                          "move puts the feet under the floor")
     args = ap.parse_args()
+    manual_mappings = {}
+    for value in args.mapping:
+        source, separator, target = value.partition("=")
+        if not separator or not source or not target:
+            ap.error(f"invalid --mapping {value!r} (expected SOURCE=TARGET)")
+        manual_mappings[source] = target
+    manual_parent_mappings = []
+    def parent_relation(value):
+        source, separator, target = value.partition("=")
+        if not separator or not source or not target:
+            ap.error(f"invalid parent relation {value!r} (expected SOURCE=TARGET)")
+        relation = next((item for item in manual_parent_mappings
+                         if item["source"] == source and
+                         item["target"] == target), None)
+        if relation is None:
+            relation = {
+                "source": source, "target": target, "anchor": "",
+                "inherit_rotation": True, "inherit_position": False,
+            }
+            manual_parent_mappings.append(relation)
+        return relation
+    for value in args.parent:
+        parent_relation(value)
+    for value in args.parent_position:
+        parent_relation(value)["inherit_position"] = True
+    for value in args.parent_no_rotation:
+        parent_relation(value)["inherit_rotation"] = False
+    for value in args.parent_anchor:
+        relation, separator, anchor = value.rpartition("=")
+        if not separator or not anchor:
+            ap.error(f"invalid --parent-anchor {value!r} "
+                     "(expected SOURCE=TARGET=ANCHOR)")
+        parent_relation(relation)["anchor"] = anchor
+    manual_finger_controls = []
+    finger_names = {"all": -1, "thumb": 0, "index": 1,
+                    "middle": 2, "ring": 3, "pinky": 4}
+    for value in args.control:
+        source, separator, spec = value.partition("=")
+        fields = spec.split(",")
+        if not separator or not source or len(fields) not in (5, 6):
+            ap.error(f"invalid --control {value!r}")
+        kind, side_name, finger_name, axis_name, gain_text = fields[:5]
+        if kind not in ("grip", "spread") or side_name not in ("left", "right", "both") \
+                or finger_name not in finger_names or axis_name not in ("x", "y", "z"):
+            ap.error(f"invalid --control {value!r}")
+        try:
+            gain = float(gain_text)
+        except ValueError:
+            ap.error(f"invalid --control gain {gain_text!r}")
+        if not math.isfinite(gain) or abs(gain) > 3.0:
+            ap.error("--control gain must be finite and within -3..3")
+        side_name = side_name.lower()
+        paired = side_name == "both" or (len(fields) == 6 and
+                                         fields[5].lower() in ("both", "paired"))
+        manual_finger_controls.append({
+            "source": source,
+            "kind": kind,
+            "side": 1 if side_name == "right" else 0,
+            "finger": finger_names[finger_name],
+            "input_axis": ("x", "y", "z").index(axis_name),
+            "gain": gain,
+            "paired": paired,
+        })
+    manual_arm_ik_controls = []
+    for value in args.arm_ik:
+        source, separator, spec = value.partition("=")
+        fields = spec.split(",")
+        if not separator or not source or len(fields) < 3:
+            ap.error(f"invalid --arm-ik {value!r}")
+        side_name, gain_text, bend_text = fields[:3]
+        if side_name not in ("left", "right", "both"):
+            ap.error(f"invalid --arm-ik side {side_name!r}")
+        try:
+            gain = float(gain_text)
+            bend = float(bend_text)
+        except ValueError:
+            ap.error(f"invalid --arm-ik numbers {value!r}")
+        if not math.isfinite(gain) or not math.isfinite(bend):
+            ap.error("--arm-ik values must be finite")
+        if gain < 0.1 or gain > 3.0 or bend < 20.0 or bend > 170.0:
+            ap.error("--arm-ik gain must be 0.1..3 and bend 20..170")
+        flags = {field.lower() for field in fields[3:]}
+        manual_arm_ik_controls.append({
+            "source": source,
+            "side": 1 if side_name == "right" else 0,
+            "paired": side_name == "both" or "both" in flags,
+            "gain": gain,
+            "max_bend_degrees": bend,
+            "follow_wrist": "follow" in flags,
+        })
 
     skel_doc, skel = load_skeleton(args.skeleton)
+    manual_mappings = {
+        source: target for source, target in manual_mappings.items()
+        if target in skel
+    }
+    manual_parent_mappings = [
+        mapping for mapping in manual_parent_mappings
+        if mapping["target"] in skel
+    ]
     bones = skel_doc["bones"]
     # The engine's reference (bind) pose, when the exporter managed to read it, is
     # the rest pose the geometry is really skinned in. Everything downstream wants
@@ -1021,12 +1524,19 @@ def main() -> int:
     pmx_bones, mmd_dirs = pmx_rest_dirs(args.pmx)
     mmd_names = set(pmx_bones)
     pmx_positions = {name: tuple(b["position"]) for name, b in pmx_bones.items()}
-    table = build_mapping(mmd_names, skel, pmx_positions)
+    tracks, vmd_doc = vmd_track_dict(args.vmd_json)
+    vmd_track_names = tuple(vmd_doc.get("bones", {}))
+    table = build_mapping(mmd_names, skel, pmx_positions, manual_mappings,
+                          vmd_track_names, args.ignore,
+                          manual_parent_mappings, manual_finger_controls)
     if args.finger_mapping == "positional":
         # The mapping as it was before the length alignment: index-by-index, which on a
         # four-bone finger chain drove Finger1/Finger11/Finger12 and never the tip.
-        table = build_mapping(mmd_names)
-    tracks, vmd_doc = vmd_track_dict(args.vmd_json)
+        table = build_mapping(mmd_names, manual_mappings=manual_mappings,
+                              vmd_track_names=vmd_track_names,
+                              ignored_tracks=args.ignore,
+                              manual_parent_mappings=manual_parent_mappings,
+                              manual_finger_controls=manual_finger_controls)
     native_fps = 30.0
     last_frame = int(vmd_doc.get("boneFrameRange", [0, 0])[1]) if vmd_doc.get(
         "boneFrameRange") else 0
@@ -1312,6 +1822,21 @@ def main() -> int:
     out_bones = {m["target"]: [] for m in table}
     out_pos = []
     out_offsets = {}
+    arm_ik_outputs = {}
+    for control in manual_arm_ik_controls:
+        sides = (0, 1) if control["paired"] else (control["side"],)
+        for side in sides:
+            hand_name = f"Bip001-{'L' if side == 0 else 'R'}-Hand"
+            if hand_name not in skel:
+                continue
+            output = arm_ik_outputs.setdefault(side, {
+                "hand": hand_name, "offsets": [], "rotations": [],
+                "max_bend_degrees": 150.0, "follow_wrist": False,
+            })
+            output["max_bend_degrees"] = min(
+                output["max_bend_degrees"],
+                max(20.0, min(170.0, control["max_bend_degrees"])))
+            output["follow_wrist"] |= control["follow_wrist"]
     pelvis_idx = skel.get("Bip001-Pelvis", {}).get("index")
     for name in ("Bip001-Spine",):
         if name in skel:
@@ -1441,6 +1966,94 @@ def main() -> int:
     for s in secondary:
         out_bones[s["name"]] = []
     base_trans = [b["baseLocal"]["translation"] for b in bones]
+    rest_component_position = [None] * len(bones)
+    for b in bones:
+        i, p = b["index"], b["parent"]
+        if p < 0:
+            rest_component_position[i] = tuple(b["baseLocal"]["translation"])
+        else:
+            offset = qrot(rest_crot[p], b["baseLocal"]["translation"])
+            parent_position = rest_component_position[p]
+            rest_component_position[i] = tuple(
+                parent_position[k] + offset[k] for k in range(3))
+    parent_offset_targets = {
+        target: entry for target, entry in mapped_targets.items()
+        if any(mapping.get("inherit_position", False)
+               for mapping in entry.get("parents", ()))
+    }
+    for target in parent_offset_targets:
+        out_offsets.setdefault(target, [])
+    palm_normals = [(0.0, 1.0, 0.0), (0.0, 1.0, 0.0)]
+    for side, prefix in enumerate(("L-", "R-")):
+        def position_of(suffix):
+            name = f"Bip001-{prefix}{suffix}"
+            return (rest_component_position[skel[name]["index"]]
+                    if name in skel else None)
+        hand = position_of("Hand")
+        middle = position_of("Finger2")
+        index = position_of("Finger1")
+        pinky = position_of("Finger4")
+        if hand is None or (middle is None and index is None):
+            continue
+        forward = unit(tuple((middle or index)[k] - hand[k] for k in range(3)))
+        across = ((unit(tuple(index[k] - pinky[k] for k in range(3))))
+                  if index is not None and pinky is not None
+                  else (0.0, 0.0, -1.0))
+        normal = unit((
+            forward[1] * across[2] - forward[2] * across[1],
+            forward[2] * across[0] - forward[0] * across[2],
+            forward[0] * across[1] - forward[1] * across[0],
+        ))
+        if normal == (0.0, 0.0, 0.0):
+            normal = (0.0, 1.0, 0.0)
+        if sum(normal[k] * (0.0, 1.0, 0.0)[k] for k in range(3)) < 0:
+            normal = tuple(-value for value in normal)
+        palm_normals[side] = normal
+
+    def finger_control_axis(target, control):
+        if target.startswith("Bip001-L-"):
+            side = 0
+        elif target.startswith("Bip001-R-"):
+            side = 1
+        else:
+            return None
+        spread_weights = (-.65, -.35, 0.0, .25, .5)
+        for finger_index, english in enumerate(FINGER_PREFIX.values()):
+            if control["finger"] >= 0 and control["finger"] != finger_index:
+                continue
+            base = f"Bip001-{'L' if side == 0 else 'R'}-{english}"
+            for joint in range(4):
+                name = base if joint == 0 else base + str(joint)
+                if target != name:
+                    continue
+                if control["kind"] == "spread":
+                    if joint != 0:
+                        return None
+                    return (palm_normals[side],
+                            spread_weights[finger_index] * (1 if side == 0 else -1))
+                weight = .55 if finger_index == 0 else (.75 if joint == 0 else 1.0)
+                current = rest_component_position[skel[name]["index"]]
+                direction = None
+                if joint < 3 and base + str(joint + 1) in skel:
+                    following = rest_component_position[
+                        skel[base + str(joint + 1)]["index"]]
+                    direction = tuple(following[k] - current[k] for k in range(3))
+                elif joint > 0:
+                    previous_name = base if joint == 1 else base + str(joint - 1)
+                    previous = rest_component_position[skel[previous_name]["index"]]
+                    direction = tuple(current[k] - previous[k] for k in range(3))
+                if direction is None:
+                    return None
+                normal = palm_normals[side]
+                axis = unit((
+                    direction[1] * normal[2] - direction[2] * normal[1],
+                    direction[2] * normal[0] - direction[0] * normal[2],
+                    direction[0] * normal[1] - direction[1] * normal[0],
+                ))
+                if axis == (0.0, 0.0, 0.0):
+                    return None
+                return axis, weight
+        return None
 
     root = mapped_targets.get("Bip001")
     root_rest_t = None
@@ -1459,7 +2072,10 @@ def main() -> int:
             a, b, c = (pmx_bones[mm_hip]["position"], pmx_bones[mm_knee]["position"],
                        pmx_bones[mm_ankle]["position"])
             return (math.dist(a, b) + math.dist(b, c))
-        mm_leg = leg_len("左足", "左ひざ", "左足首")
+        left_hip = "左足" if "左足" in pmx_bones else "左足D"
+        left_knee = "左ひざ" if "左ひざ" in pmx_bones else "左ひざD"
+        left_ankle = "左足首" if "左足首" in pmx_bones else "左足首D"
+        mm_leg = leg_len(left_hip, left_knee, left_ankle)
         tl = 0.0
         # The thigh bone's own translation is the hip's *lateral* offset (~7.7 cm sideways),
         # not a leg segment -- counting it inflated the scale ~10% and lifted the ankles
@@ -1485,7 +2101,11 @@ def main() -> int:
     if root and scale > 1e-9:
         for side, jp in (("L", "左"), ("R", "右")):
             names = {k: f"Bip001-{side}-{k}" for k in ("Thigh", "Calf", "Foot")}
-            src = {k: jp + v for k, v in (("thigh", "足"), ("knee", "ひざ"), ("ankle", "足首"))}
+            src = {
+                "thigh": jp + ("足" if jp + "足" in pmx_bones else "足D"),
+                "knee": jp + ("ひざ" if jp + "ひざ" in pmx_bones else "ひざD"),
+                "ankle": jp + ("足首" if jp + "足首" in pmx_bones else "足首D"),
+            }
             if not all(n in skel for n in names.values()):
                 continue
             if not all(n in pmx_bones for n in src.values()):
@@ -1528,6 +2148,21 @@ def main() -> int:
     # the regression switch: with it the output must be byte-identical to the pre-IK
     # converter.
     mmd_pose = MmdIkPose(pmx_bones) if pmx_bones else None
+    fk_fallback = {}
+    if mmd_pose is not None:
+        def leg_source(primary, fallback):
+            return primary if primary in pmx_bones else (
+                fallback if fallback in pmx_bones else "")
+
+        for side in ("左", "右"):
+            hip = leg_source(side + "足", side + "足D")
+            knee = leg_source(side + "ひざ", side + "ひざD")
+            ankle = leg_source(side + "足首", side + "足首D")
+            toe = leg_source(side + "つま先", side + "足先EX")
+            foot_fk = all(name and name in tracks for name in (hip, knee, ankle))
+            toe_fk = bool(toe and toe in tracks)
+            fk_fallback[canonical_bone_name(side + "足IK")] = foot_fk
+            fk_fallback[canonical_bone_name(side + "つま先IK")] = toe_fk
     # ---- which bone carries the body's travel -----------------------------------------
     # The target's root link (Bip001) absorbs the whole MMD root chain, and the pelvis it
     # carries (mapped from 腰) never moves its own local offset, so the chain's *combined*
@@ -1586,7 +2221,8 @@ def main() -> int:
     twist_bones = build_twist_list(
         skel, {src: m["target"] for m in table for src in m["sources"]},
         lambda target: rest_direction(target, mapped_targets[target]["dir"])
-        if target in mapped_targets else bone_dir_local(bones, skel, target))
+        if target in mapped_targets else bone_dir_local(bones, skel, target),
+        lambda source: mmd_mapped_dirs.get(source, mmd_dirs.get(source)))
     if not args.twist:
         # Keep the tracks (so the bone set stays identical between runs) but stop
         # spreading the limb twist, to A/B whether those synthesised rotations are
@@ -1595,7 +2231,7 @@ def main() -> int:
             item["weight"] = 0.0
     for item in twist_bones:
         out_bones[item["target"]] = []
-    for f in out_frames:
+    for frame_slot, f in enumerate(out_frames):
         local_rot = list(rest_local)
         local_trans = list(base_trans)
         comp_rot_frame = [None] * len(bones)
@@ -1603,31 +2239,61 @@ def main() -> int:
         ik_local = None
         if mmd_pose is not None:
             mmd_pose.set_frame(lambda name: sample_track(name, f))
-            if args.ik:
+            if args.ik and args.ik_mode != "off":
                 disabled = set()
-                for name, records in ik_records.items():
-                    state = None
-                    for record in records:
-                        if record["frame"] > f:
-                            break
-                        state = record["on"]
-                    if state == 0:
-                        disabled.add(name)
-                ik_gaps.extend(mmd_pose.solve(disabled))
+                if args.ik_mode == "follow":
+                    for name, records in ik_records.items():
+                        state = None
+                        for record in records:
+                            if record["frame"] > f:
+                                break
+                            state = record["on"]
+                        if state == 0:
+                            disabled.add(canonical_bone_name(name))
+                ik_gaps.extend(mmd_pose.solve(disabled, fk_fallback))
                 ik_local = {mmd_pose.name[i]: mmd_pose.rot[i]
                             for i in range(mmd_pose.count)}
+        def sample_source(source):
+            if ik_local is not None and source in ik_local:
+                index = pmx_bones[source]["index"]
+                return ik_local[source], mmd_pose.pos[index]
+            value = sample_track(source, f)
+            if value is None:
+                return None
+            return qnorm(value[0]), value[1]
+        for side, output in arm_ik_outputs.items():
+            offset = [0.0, 0.0, 0.0]
+            wrist_rotation = ident
+            for control in manual_arm_ik_controls:
+                if not control["paired"] and control["side"] != side:
+                    continue
+                sampled = sample_source(control["source"])
+                if sampled is None:
+                    continue
+                rotation, position = sampled
+                moved = qrot(A_AXIS, tuple(
+                    position[axis] * scale * control["gain"]
+                    for axis in range(3)))
+                for axis in range(3):
+                    offset[axis] += moved[axis]
+                if control["follow_wrist"]:
+                    wrist_rotation = qmul(
+                        wrist_rotation,
+                        qmul(qmul(A_AXIS, rotation), qconj(A_AXIS)))
+            output["offsets"].append(tuple(offset))
+            output["rotations"].append(qnorm(wrist_rotation))
         for m in table:
             q = ident
             # 前置逆源先乘：父链多带的旋转是左乘进来的，只有左乘回去才能抵消。
             for src in m.get("prefix", ()):
-                if ik_local is not None:
+                if ik_local is not None and src in ik_local:
                     q = qmul(q, qconj(ik_local.get(src, ident)))
                     continue
                 v = sample_track(src, f)
                 if v is not None:
                     q = qmul(q, qconj(qnorm(v[0])))
             for src in m["sources"]:
-                if ik_local is not None:
+                if ik_local is not None and src in ik_local:
                     q = qmul(q, ik_local.get(src, ident))
                     continue
                 v = sample_track(src, f)
@@ -1635,7 +2301,7 @@ def main() -> int:
                     q = qmul(q, qnorm(v[0]))
             # 后置逆源：用于抵消同一条链里后段源多带进来的旋转。
             for src in m.get("inverse", ()):
-                if ik_local is not None:
+                if ik_local is not None and src in ik_local:
                     q = qmul(q, qconj(ik_local.get(src, ident)))
                     continue
                 v = sample_track(src, f)
@@ -1646,6 +2312,20 @@ def main() -> int:
             p = b["parent"]
             cp_rest = rest_crot[p] if p >= 0 else ident
             delta = qmul(qmul(A_AXIS, q), qconj(A_AXIS))     # world delta
+            for control in m.get("finger_controls", ()):
+                sampled = sample_source(control["source"])
+                axis_info = finger_control_axis(tgt, control)
+                if sampled is None or axis_info is None:
+                    continue
+                control_rotation = qnorm(sampled[0])
+                if control_rotation[3] < 0:
+                    control_rotation = tuple(-value for value in control_rotation)
+                component = control_rotation[control["input_axis"]]
+                angle = 2.0 * math.atan2(component, control_rotation[3])
+                axis, weight = axis_info
+                weighted = max(-2.6, min(
+                    2.6, angle * control["gain"] * weight))
+                delta = qmul(delta, q_from_axis_angle(axis, weighted))
             # conj(Cp(rest), delta) * Cg(rest): the conjugation brings the world
             # delta into the parent's frame, and Cg(rest) (not Rg(rest)) puts it
             # back into this bone's local frame. At Q=identity both coincide,
@@ -1681,6 +2361,49 @@ def main() -> int:
                     offset = tuple(offset[k] + local_shift[k] for k in range(3))
                 local_trans[idx] = list(offset)
                 out_offsets[name].append([round(c, 6) for c in offset])
+        for target, entry in parent_offset_targets.items():
+            b = skel[target]
+            index, parent_index = b["index"], b["parent"]
+            parent_rest = rest_crot[parent_index] if parent_index >= 0 else ident
+            local_delta = [0.0, 0.0, 0.0]
+            for mapping in entry["parents"]:
+                sampled = sample_source(mapping["source"])
+                if sampled is None:
+                    continue
+                rotation, translation = sampled
+                if not mapping.get("inherit_position", False):
+                    continue
+                moved_world = qrot(A_AXIS, tuple(
+                    translation[k] * scale for k in range(3)))
+                moved_parent = qrot(qconj(parent_rest), moved_world)
+                for k in range(3):
+                    local_delta[k] += moved_parent[k]
+
+                anchor_index = parent_index if parent_index >= 0 else index
+                anchor = mapping.get("anchor", "")
+                if anchor and anchor in skel:
+                    anchor_index = skel[anchor]["index"]
+                anchor_position = rest_component_position[anchor_index]
+                target_position = rest_component_position[index]
+                anchor_to_child_world = tuple(
+                    target_position[k] - anchor_position[k] for k in range(3))
+                anchor_to_child = qrot(
+                    qconj(parent_rest), anchor_to_child_world)
+                if mapping.get("inherit_rotation", True):
+                    parent_rotation = qmul(
+                        qmul(A_AXIS, rotation), qconj(A_AXIS))
+                    rotated = qrot(parent_rotation, anchor_to_child)
+                    for k in range(3):
+                        local_delta[k] += rotated[k] - anchor_to_child[k]
+            local_trans[index] = [
+                local_trans[index][k] + local_delta[k] for k in range(3)
+            ]
+            values = [round(value, 6) for value in local_trans[index]]
+            track = out_offsets.setdefault(target, [])
+            if len(track) > frame_slot:
+                track[frame_slot] = values
+            else:
+                track.append(values)
         if root and root_rest_t is not None and mmd_pose is not None:
             # The reference bone's *world* position, not just its own translation. The target
             # rig's pelvis sits exactly on its root bone (Bip001 and Bip001-Pelvis share an
@@ -1940,12 +2663,30 @@ def main() -> int:
             delta_world = qmul(comp_rot_frame[arm_index], qconj(base))
             delta_local = qmul(qmul(qconj(base), delta_world), base)
             u = item["axis"]
-            angle = 2.0 * math.atan2(
-                sum(delta_local[k] * u[k] for k in range(3)), delta_local[3])
-            # Clamped hard on purpose: an unclamped share measured up to 164 deg,
-            # which would spin the forearm. A twist helper only ever needs a small
-            # correction, and a bounded one cannot wreck the limb.
-            angle = max(-0.35, min(0.35, angle * item["weight"]))
+            angle = 0.0
+            authored = False
+            source_twist = item.get("source_twist", "")
+            source_axis = item.get("source_axis")
+            if source_twist and source_axis:
+                value = sample_track(source_twist, f)
+                if value is not None:
+                    axial = twist_about(qnorm(value[0]), source_axis)
+                    source_angle = 2.0 * math.atan2(
+                        sum(axial[k] * source_axis[k] for k in range(3)),
+                        axial[3])
+                    while source_angle > math.pi:
+                        source_angle -= 2.0 * math.pi
+                    while source_angle < -math.pi:
+                        source_angle += 2.0 * math.pi
+                    angle = source_angle * item["weight"]
+                    authored = True
+            if not authored:
+                angle = 2.0 * math.atan2(
+                    sum(delta_local[k] * u[k] for k in range(3)), delta_local[3])
+                # Derived twist stays bounded: an unclamped share measured up to 164
+                # degrees, which would spin the forearm. Explicit 腕捩/手捩 is author
+                # data and keeps its authored angle over the target helper bones.
+                angle = max(-0.35, min(0.35, angle * item["weight"]))
             share = q_from_axis_angle(u, angle)
             local = qmul(share, rest_local[index])
             local_rot[index] = qnorm(local)
@@ -1977,9 +2718,25 @@ def main() -> int:
         rigid_names.append(name)
         rigid_tracks += 1
 
-    track_names = set(tracks)
-    mapped_mmd = {s for m in table for s in m["sources"]}
-    unmapped_tracks = sorted(n for n in track_names if n not in mapped_mmd)
+    track_names = {}
+    for name in tracks:
+        track_names.setdefault(canonical_bone_name(name), name)
+    mapped_mmd = {
+        canonical_bone_name(source)
+        for mapping in table for source in (
+            list(mapping["sources"]) +
+            [parent["source"] for parent in mapping.get("parents", [])] +
+            [control["source"] for control in mapping.get("finger_controls", [])]
+        )
+    }
+    mapped_mmd.update(
+        canonical_bone_name(control["source"])
+        for control in manual_arm_ik_controls
+    )
+    unmapped_tracks = sorted(
+        name for canonical, name in track_names.items()
+        if canonical not in mapped_mmd
+    )
 
     doc = {
         "schemaVersion": 1,
@@ -2005,10 +2762,31 @@ def main() -> int:
         "bones": out_bones,
         "rootTranslation": out_pos,
         "boneOffsets": out_offsets,
+        "armIkTargets": [
+            {
+                "side": "L" if side == 0 else "R",
+                "hand": output["hand"],
+                "offsets": [[round(value, 6) for value in offset]
+                            for offset in output["offsets"]],
+                "rotations": [[round(value, 6) for value in rotation]
+                              for rotation in output["rotations"]],
+                "maxBendDegrees": output["max_bend_degrees"],
+                "followWrist": output["follow_wrist"],
+            }
+            for side, output in sorted(arm_ik_outputs.items())
+        ],
         "diagnostics": {
             "mappedBones": len(table),
             "directionCorrected": dir_ok,
             "directionSkipped": dir_skipped,
+            "manualParentMappings": [
+                mapping for mapping in manual_parent_mappings
+            ],
+            "manualFingerControls": manual_finger_controls,
+            "manualArmIkControls": manual_arm_ik_controls,
+            "armIkTargets": len(arm_ik_outputs),
+            "ikFkFallbackFrames": sum(mmd_pose.fallback_counts.values())
+            if mmd_pose else 0,
             "unmappedVmdTracks": unmapped_tracks,
             "worstUnitError": worst_unit,
             "secondaryBones": len(secondary),
@@ -2019,6 +2797,12 @@ def main() -> int:
             "worstSecondaryDeviationDeg": round(worst_secondary_deviation, 2),
         },
     }
+    visibility_keys = vmd_doc.get("visibilityKeys") or []
+    if visibility_keys:
+        doc["visibility"] = [
+            [int(item["frame"]), bool(item["visible"])]
+            for item in visibility_keys
+        ]
     json.dump(doc, open(args.out, "w", encoding="utf-8"), ensure_ascii=False)
     print(f"frames {len(out_frames)} ({frame_lo}..{out_frames[-1]}) at {args.fps} fps")
     print(f"mapped bones {len(table)}; direction-corrected {len(dir_ok)}, "

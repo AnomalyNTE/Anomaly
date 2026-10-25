@@ -579,29 +579,34 @@ void CircleCost() {
   for (const float radius : {3.0F, 5.0F, 7.0F, 10.0F, 13.0F, 16.0F}) {
     const auto detail = CircleDetailFor(radius);
     const auto rows = DiscRows(radius, detail.strip);
-    const std::size_t calls = rows.size() + static_cast<std::size_t>(detail.segments) + 1;
+    const std::size_t calls = rows.count + static_cast<std::size_t>(detail.segments) + 1;
     Check(calls <= 22, "a marker costs at most 22 draw calls");
     // The ring's chords stay within 0.4 px of the true circle.
     const double sagitta = radius * (1.0 - std::cos(kPi / detail.segments));
     Check(sagitta < 0.4, "the ring looks round");
     double area{};
-    for (const auto &row : rows)
+    for (std::size_t i{}; i != rows.count; ++i) {
+      const auto &row = rows.rows[i];
       area += static_cast<double>(row.height) * row.half_width * 2.0;
+    }
     const double circle = kPi * radius * radius;
     Check(std::abs(area - circle) / circle < 0.08, "the coarse fill still covers the circle");
   }
   const auto standard = CircleDetailFor(7.0F);
-  Check(DiscRows(7.0F, standard.strip).size() + static_cast<std::size_t>(standard.segments) + 1 == 16,
+  Check(DiscRows(7.0F, standard.strip).count + static_cast<std::size_t>(standard.segments) + 1 == 16,
         "the default 7 px marker is 16 calls");
 }
 
 void DiscStrips() {
   for (const float radius : {3.0F, 7.0F, 10.5F, 16.0F}) {
-    const auto rows = DiscRows(radius, 2.0F);
-    Check(!rows.empty(), "a disc has rows");
+    const float step = (std::max)(2.0F, radius / 4.0F);
+    const auto rows = DiscRows(radius, step);
+    Check(rows.count != 0, "a disc has rows");
+    Check(rows.count <= rows.rows.size(), "disc rows respect the fixed draw budget");
     double area{};
     float next_top = -radius;
-    for (const auto &row : rows) {
+    for (std::size_t i{}; i != rows.count; ++i) {
+      const auto &row = rows.rows[i];
       Check(std::abs(row.top - next_top) < 1e-4F, "rows are contiguous and never overlap");
       Check(row.half_width <= radius + 1e-4F, "rows stay inside the circle");
       area += static_cast<double>(row.height) * row.half_width * 2.0;
@@ -611,7 +616,7 @@ void DiscStrips() {
     const double circle = 3.14159265358979323846 * radius * radius;
     Check(std::abs(area - circle) / circle < 0.06, "the strips fill the circle's area");
   }
-  Check(DiscRows(0.0F, 2.0F).empty() && DiscRows(5.0F, 0.0F).empty(),
+  Check(DiscRows(0.0F, 2.0F).count == 0 && DiscRows(5.0F, 0.0F).count == 0,
         "degenerate discs draw nothing");
 }
 
