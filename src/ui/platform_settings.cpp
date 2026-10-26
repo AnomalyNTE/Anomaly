@@ -149,6 +149,7 @@ nlohmann::json Serialize(
             {"interface.scale_percent", values.interface_scale_percent},
             {"interface.opacity_percent", values.interface_opacity_percent},
             {"interface.reduced_motion", values.interface_reduced_motion},
+            {"interface.reduced_transparency", values.interface_reduced_transparency},
             {"interface.remember_last_route", values.interface_remember_last_route},
             {"input.menu_toggle", values.input_menu_toggle},
             {"input.capture_policy", PlatformInputCapturePolicyName(values.input_capture_policy)},
@@ -316,6 +317,8 @@ public:
             }
             ReadValue(values, "interface.opacity_percent", snapshot_.values.interface_opacity_percent);
             ReadValue(values, "interface.reduced_motion", snapshot_.values.interface_reduced_motion);
+            ReadValue(values, "interface.reduced_transparency",
+                snapshot_.values.interface_reduced_transparency);
             ReadValue(values, "interface.remember_last_route", snapshot_.values.interface_remember_last_route);
             const auto persisted_toggle = values.find("input.menu_toggle");
             if (persisted_toggle != values.end()) {

@@ -1,6 +1,7 @@
 #include "platform_host.hpp"
 
 #include "anomaly/host_ui_service.hpp"
+#include "anomaly/liquid_glass.hpp"
 #include "anomaly/adapter_service_registry.hpp"
 #include "anomaly/platform_ui_layout.hpp"
 #include "anomaly/platform_ui_model.hpp"
@@ -36,6 +37,7 @@
 #include <cstdio>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <map>
@@ -535,6 +537,9 @@ constexpr float kPlatformHeaderLogoSize = 30.0f;
 constexpr float kPlatformHeaderActionColumnWidth = 110.0f;
 constexpr float kPlatformToastHeight = 38.0f;
 constexpr float kPlatformToastBottomMargin = 14.0f;
+// Height above the bottom of the shell that the floating tab bar covers, plus
+// a gap; toasts rise above it.
+constexpr float kPlatformTabBarReserve = 82.0f;
 constexpr float kPlatformGloballyCollapsedWidth = 132.0f;
 constexpr float kPlatformInitialShellWidth = 1180.0f;
 constexpr float kPlatformInitialShellHeight = 700.0f;
@@ -1615,6 +1620,9 @@ public:
                 // can paint over the wallpaper without ever landing on the text.
                 DrawThemeImages(management_window_origin, management_window_size, true);
             }
+            // Everything the shell's glass refracts is on screen now: the
+            // wallpaper, its veil and the stickers behind the panels.
+            anomaly::glass::CaptureBackdrop(ImGui::GetWindowDrawList());
             RecordPerformance(PlatformUiPerformanceStage::FrameSetup, phase_started);
             phase_started = measure ? std::chrono::steady_clock::now()
                                     : std::chrono::steady_clock::time_point{};
@@ -1862,10 +1870,14 @@ private:
     // surface forwards to the resource backend, while the standalone surface has
     // no backend and records the geometry straight onto its own draw list.
     void EmitThemeImage(const ThemeImage& image, const anomaly::UiTextureDrawRequest& request,
-        ImDrawList* const list) noexcept {
+        ImDrawList* const list, const float rounding = 0.0F) noexcept {
         if (image.handle) {
+            // The embedded surface draws the quad itself, so it is the request
+            // that has to carry the body's corners rather than a local rounding.
+            anomaly::UiTextureDrawRequest shaped = request;
+            shaped.rounding = rounding;
             static_cast<void>(
-                plugins_.DrawUiTextureEx(management_window_scope_, image.handle, request));
+                plugins_.DrawUiTextureEx(management_window_scope_, image.handle, shaped));
             return;
         }
         if (image.standalone_view == nullptr || list == nullptr) return;
@@ -1876,6 +1888,11 @@ private:
         const ImVec2 uv_min(request.uv0_x, request.uv0_y);
         const ImVec2 uv_max(request.uv1_x, request.uv1_y);
         if (request.rotation_degrees == 0.0F) {
+            if (rounding > 0.0F) {
+                list->AddImageRounded(
+                    texture, minimum, maximum, uv_min, uv_max, request.tint_rgba, rounding);
+                return;
+            }
             list->AddImage(texture, minimum, maximum, uv_min, uv_max, request.tint_rgba);
             return;
         }
@@ -1916,6 +1933,9 @@ private:
                 front ? ImGui::GetForegroundDrawList() : ImGui::GetWindowDrawList();
             if (list == nullptr) return;
             const auto& layout = applied->layout;
+            // The shell body follows the window's continuous corners, so the
+            // wallpaper and the veil are clipped to the same rounded shape.
+            const float body_rounding = ImGui::GetStyle().WindowRounding;
             if (!front && applied->background.Valid() &&
                 layout.background.mode != anomaly::PlatformUiBackgroundMode::Disabled) {
                 const auto placement = anomaly::ComputePlatformUiBackgroundPlacement(
@@ -1935,7 +1955,12 @@ private:
                         layout.background.tint, layout.background.opacity);
                     list->PushClipRect(
                         origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
-                    EmitThemeImage(applied->background, request, list);
+                    const bool covers_body = placement.x <= origin.x + 0.5f &&
+                        placement.y <= origin.y + 0.5f &&
+                        placement.x + placement.width >= origin.x + size.x - 0.5f &&
+                        placement.y + placement.height >= origin.y + size.y - 0.5f;
+                    EmitThemeImage(applied->background, request, list,
+                        covers_body ? body_rounding : 0.0F);
                     list->PopClipRect();
                 }
             }
@@ -1967,7 +1992,8 @@ private:
                         origin, ImVec2(origin.x + size.x, origin.y + size.y),
                         IM_COL32(
                             channel(veil.red), channel(veil.green), channel(veil.blue),
-                            channel(veil_alpha)));
+                            channel(veil_alpha)),
+                        body_rounding);
                     list->PopClipRect();
                 }
             }
@@ -2647,6 +2673,11 @@ private:
                 custom_colors_changed)) {
             ApplyPlatformUiStyle();
         }
+        anomaly::glass::SetReduceMotion(values.interface_reduced_motion);
+        if (anomaly::glass::ReduceTransparency() != values.interface_reduced_transparency) {
+            anomaly::glass::SetReduceTransparency(values.interface_reduced_transparency);
+            theme_style_dirty_ = true;
+        }
         SetDeveloperMode(values.advanced_developer_mode);
         anomaly::SetHostUiInputCapturePolicy(values.input_capture_policy);
         ImGuiIO& io = ImGui::GetIO();
@@ -2861,11 +2892,10 @@ private:
 
     [[nodiscard]] LayoutMode ComputeLayoutMode() const noexcept {
         const ImVec2 size = ImGui::GetWindowSize();
-        if (size.x >= Scaled(1180.0f) && size.y >= Scaled(720.0f)) {
+        if (size.x >= Scaled(980.0f) && size.y >= Scaled(600.0f)) {
             return LayoutMode::Wide;
         }
-        if (size.x >= Scaled(kPlatformStandardShellWidth) &&
-            size.y >= Scaled(kPlatformStandardShellHeight)) {
+        if (size.x >= Scaled(720.0f) && size.y >= Scaled(480.0f)) {
             return LayoutMode::Standard;
         }
         return LayoutMode::Compact;
@@ -2890,14 +2920,14 @@ private:
         return management_shell_collapsed_ || ManagementShellGloballyCollapsed();
     }
 
-    [[nodiscard]] bool NavigationCollapsed() const noexcept {
-        return IsCompact() || navigation_collapsed_;
-    }
-
-    [[nodiscard]] float NavigationWidth() const noexcept {
-        if (NavigationCollapsed()) return Scaled(56.0f);
-        return Scaled(layout_mode_ == LayoutMode::Wide ? 184.0f : 164.0f);
-    }
+    // The floating tab bar at the bottom of the shell. Items are equal width
+    // and laid out inside the bar with a fixed inset; the selection lens and
+    // the bar share one centre of curvature, so their corners stay concentric.
+    static constexpr float kTabBarItemHeight = 54.0f;
+    static constexpr float kTabBarInset = 5.0f;
+    static constexpr float kTabBarBottomMargin = 22.0f;
+    static constexpr float kTabBarItemPadding = 20.0f;
+    static constexpr float kTabBarRounding = 0.36f;
 
     [[nodiscard]] float PluginListWidth(const float available) const noexcept {
         const float default_width = Scaled(layout_mode_ == LayoutMode::Wide ? 360.0f : 320.0f);
@@ -2917,23 +2947,139 @@ private:
         ImGui::SetTooltip("%s", text);
     }
 
+    static void DrawGlass(ImDrawList* const list, const ImVec2 min, const ImVec2 max,
+        const anomaly::glass::Variant variant, const float rounding,
+        const bool shadow = true, const bool clip = true) noexcept {
+        anomaly::glass::SurfaceOptions options;
+        options.variant = variant;
+        options.rounding = Scaled(rounding);
+        options.scale = PlatformUiScale();
+        options.shadow = shadow;
+        options.clip = clip;
+        anomaly::glass::DrawSurface(list, min, max, options);
+    }
+
+    static ImVec4 InkColor(const float alpha) noexcept {
+        return ThemeColorWithAlpha(anomaly::PlatformUiTheme().text, alpha);
+    }
+
+    // The accent darkened toward the text colour until it reads as ink on the
+    // light glass; the raw accent of light palettes is too pale for a label.
+    static ImVec4 AccentInk() noexcept {
+        const auto& theme = anomaly::PlatformUiTheme();
+        const float mix = anomaly::glass::DarkAppearance() ? 0.0f : 0.45f;
+        return ImVec4(theme.accent.red + (theme.text.red - theme.accent.red) * mix,
+            theme.accent.green + (theme.text.green - theme.accent.green) * mix,
+            theme.accent.blue + (theme.text.blue - theme.accent.blue) * mix, 1.0f);
+    }
+
+    static constexpr ImVec4 kClear{0.0f, 0.0f, 0.0f, 0.0f};
+
+    // Buttons are continuous rounded rectangles whose radius follows their
+    // height, the proportion Apple's controls use.
+    static float CapsuleRounding(const ImVec2 size) noexcept {
+        return (size.y > 0.0f ? size.y : ImGui::GetFrameHeight()) * kTabBarRounding;
+    }
+
+    // Vertical padding that makes a text field or combo 36 px tall, the height
+    // of the segmented controls it sits beside.
+    static float FieldPaddingY() noexcept {
+        return std::max(0.0f, std::round((Scaled(36.0f) - ImGui::GetFontSize()) * 0.5f));
+    }
+
+    // Where the leading glyph of the text field just submitted is drawn.
+    static ImVec2 FieldGlyphPosition() noexcept {
+        return Offset(ImGui::GetItemRectMin(), Scaled(11.0f),
+            (ImGui::GetItemRectSize().y - ImGui::GetTextLineHeight()) * 0.5f + Scaled(1.0f));
+    }
+
+    // How much of the route's bottom edge the floating tab bar covers, with a
+    // small gap: content that must stay reachable ends above this.
+    [[nodiscard]] static float FloatingBarClearance() noexcept {
+        return Scaled(kTabBarItemHeight + kTabBarInset * 2.0f + 8.0f);
+    }
+
+    // A selectable whose highlight is a rounded, animated capsule drawn under
+    // its label instead of ImGui's square header fill.
+    // A selectable with no fill at all: hover and selection only change the
+    // ink of its label. Callers lay a glass lens over the selected one.
+    bool CapsuleSelectable(const char* label, const bool selected, const ImVec2 size) const {
+        const auto& theme = anomaly::PlatformUiTheme();
+        const ImVec2 cursor = ImGui::GetCursorScreenPos();
+        const ImVec2 resolved = ImGui::CalcItemSize(size,
+            ImGui::GetContentRegionAvail().x, ImGui::GetTextLineHeight());
+        const bool pointer_over = ImGui::IsWindowHovered() &&
+            ImGui::IsMouseHoveringRect(cursor, Offset(cursor, resolved.x, resolved.y));
+        ImGui::PushStyleColor(ImGuiCol_Header, kClear);
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kClear);
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, kClear);
+        ImGui::PushStyleColor(ImGuiCol_Text, selected ? AccentInk()
+            : pointer_over ? ThemeColor(theme.text) : InkColor(0.62f));
+        const bool clicked = ImGui::Selectable(label, selected, 0, size);
+        ImGui::PopStyleColor(4);
+        return clicked;
+    }
+
+    // A vertical list of choices on a content card. Labels change ink on hover
+    // and selection, and a glass lens slides under the selected row.
+    template <typename Label>
+    bool DrawLensRail(const char* id, const std::size_t count, std::size_t& selected,
+        Label&& label, const float row_height) const {
+        ImDrawList* const list = ImGui::GetWindowDrawList();
+        list->ChannelsSplit(2);
+        list->ChannelsSetCurrent(1);
+        ImRect selected_rect;
+        bool changed = false;
+        ImGui::PushID(id);
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.08f, 0.5f));
+        for (std::size_t index = 0; index < count; ++index) {
+            ImGui::PushID(static_cast<int>(index));
+            if (CapsuleSelectable(label(index).c_str(), index == selected,
+                    FillAvailableSize(row_height))) {
+                changed = changed || selected != index;
+                selected = index;
+            }
+            if (index == selected) {
+                selected_rect = ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+            }
+            ImGui::PopID();
+        }
+        ImGui::PopStyleVar();
+        list->ChannelsSetCurrent(0);
+        if (selected_rect.GetWidth() > 0.0f) {
+            const ImRect thumb = anomaly::glass::AnimateThumb(
+                ImGui::GetID("##rail-thumb"), selected_rect, ImGui::GetWindowPos());
+            anomaly::glass::DrawThumb(list, thumb.Min, thumb.Max,
+                thumb.GetHeight() * kTabBarRounding, PlatformUiScale(), true);
+        }
+        list->ChannelsMerge();
+        ImGui::PopID();
+        return changed;
+    }
+
     [[nodiscard]] bool PrimaryButton(const char* label, ImVec2 size = {}) const {
         const auto& theme = anomaly::PlatformUiTheme();
         ImGui::PushStyleColor(ImGuiCol_Button, AccentColor());
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ThemeColor(theme.accent_hovered));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, AccentColor());
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColor(theme.accent_active));
+        ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(theme.inverse_text));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, CapsuleRounding(size));
         const bool pressed = ImGui::Button(label, size);
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(4);
         return pressed;
     }
 
     [[nodiscard]] bool DestructiveButton(const char* label, ImVec2 size = {}) const {
         const auto& theme = anomaly::PlatformUiTheme();
-        ImGui::PushStyleColor(ImGuiCol_Button, ThemeColorWithAlpha(theme.danger, 0.72f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ThemeColor(theme.danger));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColorWithAlpha(theme.danger, 0.60f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ThemeColorWithAlpha(theme.danger, 0.86f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ThemeColorWithAlpha(theme.danger, 0.86f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColorWithAlpha(theme.danger, 0.70f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, CapsuleRounding(size));
         const bool pressed = ImGui::Button(label, size);
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(4);
         return pressed;
     }
 
@@ -2947,18 +3093,21 @@ private:
         const char* tooltip, const bool enabled = true, const bool selected = false) const {
         const auto& theme = anomaly::PlatformUiTheme();
         ImGui::PushID(id);
-        ImGui::PushStyleColor(ImGuiCol_Button,
-            selected ? ThemeColorWithAlpha(theme.accent, 0.16f)
-                    : ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-            selected ? ThemeColorWithAlpha(theme.accent, 0.26f) : RaisedColor());
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColor(theme.button_active));
-        ImGui::PushStyleColor(ImGuiCol_Text, selected ? AccentColor()
-            : ThemeColor(theme.text_muted));
+        const ImVec2 cursor = ImGui::GetCursorScreenPos();
+        const bool pointer_over = enabled && ImGui::IsWindowHovered() &&
+            ImGui::IsMouseHoveringRect(cursor, Offset(cursor, Scaled(30.0f), Scaled(30.0f)));
+        const ImVec4 fill = selected ? ThemeColorWithAlpha(theme.accent, 0.24f) : kClear;
+        ImGui::PushStyleColor(ImGuiCol_Button, fill);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fill);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, fill);
+        ImGui::PushStyleColor(ImGuiCol_Text, selected || pointer_over
+            ? ThemeColor(theme.text) : ThemeColor(theme.text_muted));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(10.0f));
         ImGui::BeginDisabled(!enabled);
         const bool pressed = ImGui::Button(ShellGlyphText(glyph), Scaled(30.0f, 30.0f));
         ImGui::EndDisabled();
         const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        ImGui::PopStyleVar();
         ImGui::PopStyleColor(4);
         ImGui::PopID();
         if (hovered && tooltip != nullptr) ImGui::SetTooltip("%s", tooltip);
@@ -2971,17 +3120,18 @@ private:
         const auto& theme = anomaly::PlatformUiTheme();
         const std::string text = std::string(ShellGlyphText(glyph)) + "  " + label;
         ImGui::PushID(id);
-        ImGui::PushStyleColor(ImGuiCol_Button, primary ? AccentColor() : SurfaceColor());
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-            primary ? ThemeColor(theme.accent_hovered) : RaisedColor());
+        ImGui::PushStyleColor(ImGuiCol_Button, primary ? AccentColor() : InkColor(0.085f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, primary ? AccentColor() : InkColor(0.085f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-            primary ? ThemeColor(theme.accent_active) : ThemeColor(theme.button_active));
+            primary ? ThemeColor(theme.accent_active) : InkColor(0.14f));
         ImGui::PushStyleColor(ImGuiCol_Text,
-            primary ? ThemeColor(theme.inverse_text) : ThemeColor(theme.text_muted));
+            primary ? ThemeColor(theme.inverse_text) : ThemeColor(theme.text));
+        const ImVec2 button_size = size.x > 0.0f ? size : ImVec2(0.0f, Scaled(30.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, CapsuleRounding(button_size));
         ImGui::BeginDisabled(!enabled);
-        const bool pressed = ImGui::Button(
-            text.c_str(), size.x > 0.0f ? size : ImVec2(0.0f, Scaled(30.0f)));
+        const bool pressed = ImGui::Button(text.c_str(), button_size);
         ImGui::EndDisabled();
+        ImGui::PopStyleVar();
         ImGui::PopStyleColor(4);
         ImGui::PopID();
         return pressed && enabled;
@@ -2990,17 +3140,39 @@ private:
     void BeginShellBodyChild(const char* id, const ImVec2 size = {},
         const bool bordered = false, const ImGuiWindowFlags window_flags = 0) const {
         const float padding = Scaled(IsCompact() ? 12.0f : 16.0f);
+        if (bordered) {
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            const ImVec2 available = ImGui::GetContentRegionAvail();
+            const ImVec2 resolved = ImGui::CalcItemSize(size, available.x, available.y);
+            DrawGlass(ImGui::GetWindowDrawList(), origin,
+                Offset(origin, resolved.x, resolved.y), anomaly::glass::Variant::Material, 14.0f);
+        }
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padding, padding));
-        ImGui::BeginChild(id, size,
-            bordered ? ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding
-                     : ImGuiChildFlags_AlwaysUseWindowPadding,
-            window_flags);
+        ImGui::BeginChild(id, size, ImGuiChildFlags_AlwaysUseWindowPadding,
+            window_flags | (bordered ? ImGuiWindowFlags_NoBackground : 0));
     }
 
     void EndShellBodyChild() const {
         ImGui::EndChild();
         ImGui::PopStyleVar();
     }
+
+    // A content-layer card: the frosted material is drawn on the parent under
+    // the child's rectangle, and the child itself paints no background.
+    void BeginCardChild(const char* id, const ImVec2 size, const float padding,
+        const ImGuiWindowFlags window_flags = 0) const {
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        const ImVec2 resolved = ImGui::CalcItemSize(size, available.x, available.y);
+        DrawGlass(ImGui::GetWindowDrawList(), origin,
+            Offset(origin, resolved.x, resolved.y), anomaly::glass::Variant::Material, 14.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scaled(padding, padding));
+        ImGui::BeginChild(id, resolved, ImGuiChildFlags_AlwaysUseWindowPadding,
+            window_flags | ImGuiWindowFlags_NoBackground);
+        ImGui::PopStyleVar();
+    }
+
+    void EndCardChild() const { ImGui::EndChild(); }
 
     enum class ShellHeaderControl { Collapse, Lock, Close };
 
@@ -3038,10 +3210,16 @@ private:
     static void DrawGenericPluginIcon(const ImVec2 position, const float size) {
         const auto& theme = anomaly::PlatformUiTheme();
         ImDrawList* const draw_list = ImGui::GetWindowDrawList();
-        const ImU32 border = ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.icon_border));
+        const ImU32 border = ImGui::ColorConvertFloat4ToU32(
+            ThemeColorWithAlpha(theme.icon_border, 0.55f));
         const ImU32 fill = ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.icon_fill));
-        draw_list->AddRectFilled(position, Offset(position, size, size), fill, Scaled(4.0f));
-        draw_list->AddRect(position, Offset(position, size, size), border, Scaled(4.0f));
+        // A continuous-corner tile in the proportion Apple uses for app icons.
+        const float rounding = size * 0.26f;
+        draw_list->AddRectFilled(position, Offset(position, size, size), fill, rounding);
+        draw_list->AddRectFilledMultiColor(position, Offset(position, size, size * 0.5f),
+            IM_COL32(255, 255, 255, 40), IM_COL32(255, 255, 255, 40),
+            IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
+        draw_list->AddRect(position, Offset(position, size, size), border, rounding);
         const ImVec2 glyph_size = ImGui::CalcTextSize(ShellGlyphText(ShellGlyph::Package));
         draw_list->AddText(Offset(position, (size - glyph_size.x) * 0.5f,
             (size - glyph_size.y) * 0.5f - Scaled(1.0f)),
@@ -3067,11 +3245,8 @@ private:
         const ImVec4 color = PluginStateColor(state);
         ImDrawList* const draw_list = ImGui::GetWindowDrawList();
         draw_list->AddRectFilled(position, Offset(position, width, height),
-            ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.15f)),
-            Scaled(3.0f));
-        draw_list->AddRect(position, Offset(position, width, height),
-            ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.34f)),
-            Scaled(3.0f));
+            ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.17f)),
+            height * 0.5f);
         draw_list->AddText(ScaledOffset(position, 7.0f, 4.0f),
             ImGui::ColorConvertFloat4ToU32(color), glyph);
         draw_list->AddText(Offset(
@@ -3109,29 +3284,166 @@ private:
 
     void DrawManagementShell() {
         RedirectHiddenNteCompatibilityRoute();
-        const bool was_collapsed = ManagementShellCollapsed();
+        page_header_actions_ = nullptr;
+        // The route is drawn first so the header can carry the route's actions
+        // in the same row as the window controls.
+        const ImVec2 top = ImGui::GetCursorPos();
+        if (!ManagementShellCollapsed()) {
+            ImGui::SetCursorPos(ImVec2(top.x, top.y + Scaled(kPlatformHeaderHeight)));
+            DrawShellWorkspace();
+        }
+        ImGui::SetCursorPos(top);
         DrawShellHeader();
-        if (was_collapsed || ManagementShellCollapsed()) return;
+    }
 
+    void DrawShellWorkspace() {
         const float workspace_height = ImGui::GetContentRegionAvail().y;
         ImGui::BeginChild("PlatformShellWorkspace", ImVec2(0.0f, workspace_height), false,
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        const float navigation_width = NavigationWidth();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, NavColor());
-        // Shell navigation applies its own 8px inset so the selected state
-        // has the same width in compact and expanded layouts.
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        ImGui::BeginChild("PlatformShellNavigation", ImVec2(navigation_width, 0.0f), true,
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        DrawShellNavigation();
-        ImGui::EndChild();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
-        ImGui::SameLine(0.0f, 0.0f);
-        ImGui::BeginChild("PlatformShellRoute", ImVec2(0.0f, 0.0f), false,
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                ImGuiWindowFlags_NoBackground);
+        ImGui::SetCursorPos(ImVec2(Scaled(14.0f), 0.0f));
+        ImGui::BeginChild("PlatformShellRoute",
+            ImVec2(-Scaled(14.0f), -Scaled(12.0f)), false,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                ImGuiWindowFlags_NoBackground);
         DrawShellRoute();
         ImGui::EndChild();
+        DrawShellTabBar();
+        DrawSettingsDraftBar();
+        ImGui::EndChild();
+    }
+
+    // The route switcher: a floating Liquid Glass tab bar centred at the
+    // bottom of the shell, with each route's icon above its label and a glass
+    // lens sliding under the selected one.
+    void DrawShellTabBar() {
+        const auto& theme = anomaly::PlatformUiTheme();
+        const auto& snapshot = model_.Snapshot();
+        constexpr std::array<Route, 3> routes{
+            Route::Plugins, Route::Diagnostics, Route::Settings};
+        const float scale = PlatformUiScale();
+        const float icon_scale = IsCompact() ? 1.40f : 1.55f;
+        ImFont* const icon_font = ue5mem::PlatformUiFontForScale(scale * icon_scale);
+        const float icon_size = Scaled(ue5mem::PlatformUiBaseFontSize() * icon_scale);
+        ImFont* const label_font = ImGui::GetFont();
+        const float label_size = ImGui::GetFontSize();
+        float content_width = 0.0f;
+        for (const Route route : routes) {
+            content_width = std::max(content_width,
+                label_font->CalcTextSizeA(label_size, FLT_MAX, 0.0f, RouteLabel(route)).x);
+            content_width = std::max(content_width, icon_size);
+        }
+        const float item_width = content_width + Scaled(kTabBarItemPadding) * 2.0f;
+        const float item_height = Scaled(kTabBarItemHeight);
+        const float inset = Scaled(kTabBarInset);
+        const float item_rounding = item_height * kTabBarRounding;
+        const float bar_width = item_width * static_cast<float>(routes.size()) + inset * 2.0f;
+        const float bar_height = item_height + inset * 2.0f;
+        const ImVec2 window_position = ImGui::GetWindowPos();
+        const ImVec2 window_size = ImGui::GetWindowSize();
+        const ImVec2 bar_min(
+            std::round(window_position.x + (window_size.x - bar_width) * 0.5f),
+            std::round(window_position.y + window_size.y - Scaled(kTabBarBottomMargin) -
+                bar_height));
+        const ImVec2 bar_max = Offset(bar_min, bar_width, bar_height);
+        tab_bar_rect_ = ImRect(bar_min, bar_max);
+        // The bar is a child window of its own, submitted after the route, so it
+        // floats over the page and takes the pointer before the page does.
+        ImGui::SetCursorScreenPos(bar_min);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::BeginChild("PlatformShellTabBar", ImVec2(bar_width, bar_height), false,
+            ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar();
+        ImDrawList* const list = ImGui::GetWindowDrawList();
+
+        // The bar floats over the wallpaper and the stickers, so it is captured
+        // fresh: everything the route drew is part of what it refracts.
+        anomaly::glass::CaptureBackdrop(list);
+        anomaly::glass::SurfaceOptions bar;
+        bar.variant = anomaly::glass::Variant::Regular;
+        bar.rounding = item_rounding + inset;
+        bar.scale = scale;
+        bar.shadow = false;
+        bar.tint_strength = anomaly::glass::DarkAppearance() ? 0.30f : 0.16f;
+        anomaly::glass::DrawSurface(list, bar_min, bar_max, bar);
+
+        std::size_t selected_index = 0;
+        for (std::size_t index = 0; index < routes.size(); ++index) {
+            if (model_.State().route == routes[index]) selected_index = index;
+        }
+        {
+            const ImVec2 item_min = Offset(bar_min,
+                inset + item_width * static_cast<float>(selected_index), inset);
+            const ImRect target(item_min, Offset(item_min, item_width, item_height));
+            ImRect thumb = anomaly::glass::AnimateThumb(
+                ImGui::GetID("##tab-bar-thumb"), target, bar_min);
+            const float press = anomaly::glass::Animate(
+                ImGui::GetID("##tab-bar-press"), tab_bar_held_ ? 1.0f : 0.0f, 20.0f);
+            const float grow = press * Scaled(2.5f);
+            thumb.Expand(ImVec2(grow * 1.4f, grow));
+            anomaly::glass::DrawThumb(list, thumb.Min, thumb.Max, item_rounding + grow,
+                scale, false);
+        }
+
+        bool held = false;
+        for (std::size_t index = 0; index < routes.size(); ++index) {
+            const Route route = routes[index];
+            const bool selected = index == selected_index;
+            const ImVec2 item_min = Offset(bar_min,
+                inset + item_width * static_cast<float>(index), inset);
+            ImGui::SetCursorScreenPos(item_min);
+            std::string item_id{"##tab-"};
+            item_id += anomaly::ToString(route);
+            const bool clicked = ImGui::InvisibleButton(
+                item_id.c_str(), ImVec2(item_width, item_height));
+            const bool hovered = ImGui::IsItemHovered();
+            held = held || ImGui::IsItemActive();
+            // Hover only changes the ink of the icon and the label.
+            const ImU32 ink = ImGui::GetColorU32(
+                selected ? AccentInk() : hovered ? ThemeColor(theme.text) : InkColor(0.62f));
+            const char* const glyph = ShellGlyphText(RouteGlyph(route));
+            const ImVec2 glyph_center =
+                anomaly::glass::GlyphInkCenter(icon_font, icon_size, glyph);
+            const float center_x = item_min.x + item_width * 0.5f;
+            const ImVec2 icon_center(center_x, item_min.y + item_height * 0.36f);
+            list->AddText(icon_font, icon_size,
+                ImVec2(std::round(icon_center.x - glyph_center.x),
+                    std::round(icon_center.y - glyph_center.y)),
+                ink, glyph);
+            const char* const label = RouteLabel(route);
+            const ImVec2 label_extent =
+                label_font->CalcTextSizeA(label_size, FLT_MAX, 0.0f, label);
+            list->AddText(label_font, label_size,
+                ImVec2(std::round(center_x - label_extent.x * 0.5f),
+                    std::round(item_min.y + item_height * 0.77f - label_extent.y * 0.5f)),
+                ink, label);
+
+            std::string badge;
+            bool dot = false;
+            if (route == Route::Plugins && snapshot.runtime_summary.issues != 0) {
+                badge = std::to_string(snapshot.runtime_summary.issues);
+            } else if (route == Route::Settings && SettingsDirty()) {
+                dot = true;
+            }
+            if (!badge.empty() || dot) {
+                const ImVec2 badge_center(icon_center.x + icon_size * 0.52f,
+                    icon_center.y - icon_size * 0.40f);
+                const float badge_radius = Scaled(dot ? 4.0f : 8.0f);
+                list->AddCircleFilled(badge_center, badge_radius,
+                    ImGui::GetColorU32(dot ? WarningColor() : ErrorColor()));
+                if (!badge.empty()) {
+                    const float badge_text = ImGui::GetFontSize() * 0.80f;
+                    const ImVec2 extent = label_font->CalcTextSizeA(
+                        badge_text, FLT_MAX, 0.0f, badge.c_str());
+                    list->AddText(label_font, badge_text,
+                        ImVec2(badge_center.x - extent.x * 0.5f, badge_center.y - extent.y * 0.5f),
+                        IM_COL32(255, 255, 255, 255), badge.c_str());
+                }
+            }
+            if (clicked) Navigate(route);
+        }
+        tab_bar_held_ = held;
         ImGui::EndChild();
     }
 
@@ -3190,11 +3502,11 @@ private:
         const auto& theme = anomaly::PlatformUiTheme();
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.header_background));
         ImGui::BeginChild("PlatformGlobalHeader",
-            ImVec2(0.0f, Scaled(kPlatformHeaderHeight)), true,
+            ImVec2(0.0f, Scaled(kPlatformHeaderHeight)), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 origin = ImGui::GetWindowPos();
         const ImVec2 size = ImGui::GetWindowSize();
-        DrawShellDragRegion(origin, size);
+        ImDrawList* const list = ImGui::GetWindowDrawList();
         ImGui::SetCursorScreenPos(ScaledOffset(origin, 16.0f, 11.0f));
         const float logo_size = Scaled(kPlatformHeaderLogoSize);
         const bool logo_drawn = (logo_texture_ && plugins_.DrawUiTexture(
@@ -3202,116 +3514,49 @@ private:
             logo_size, 0xffffffffU)) ||
             DrawStandaloneHeaderLogo(logo_size, logo_size);
         if (!logo_drawn) ImGui::Dummy(ImVec2(logo_size, logo_size));
-        ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 1.35f,
-            ScaledOffset(origin, 56.0f, 16.0f),
-            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)),
-            Text(anomaly::MessageId::ApplicationTitle));
+        const bool strip = ManagementShellCollapsed();
+        {
+            // A fixed product title, drawn from a bake of its own size.
+            const float title_scale = 1.45f;
+            ImFont* const title_font =
+                ue5mem::PlatformUiFontForScale(PlatformUiScale() * title_scale);
+            const float title_size = Scaled(ue5mem::PlatformUiBaseFontSize() * title_scale);
+            list->AddText(title_font, title_size,
+                ImVec2(std::round(origin.x + Scaled(56.0f)),
+                    std::round(origin.y + (size.y - title_size) * 0.5f)),
+                ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)),
+                Text(anomaly::MessageId::ApplicationTitle));
+        }
+        // Page actions go in before the drag region so they own the pointer.
+        if (!strip && page_header_actions_) {
+            const ImVec2 area_origin = Offset(origin, Scaled(40.0f), Scaled(1.0f));
+            const ImVec2 area_size(std::max(0.0f, size.x - Scaled(40.0f) -
+                    Scaled(kPlatformHeaderActionColumnWidth) - Scaled(6.0f)),
+                Scaled(kPlatformHeaderHeight));
+            page_header_actions_(area_origin, area_size);
+        }
+        DrawShellDragRegion(origin, size);
         if (!ManagementShellGloballyCollapsed()) {
-            ImGui::SetCursorScreenPos(
-                Offset(origin, size.x - Scaled(kPlatformHeaderActionColumnWidth), Scaled(11.0f)));
+            const ImVec2 controls = Offset(
+                origin, size.x - Scaled(kPlatformHeaderActionColumnWidth), Scaled(11.0f));
+            DrawGlass(list, Offset(controls, -Scaled(4.0f), -Scaled(4.0f)),
+                Offset(controls, Scaled(102.0f), Scaled(34.0f)),
+                anomaly::glass::Variant::Regular, 12.0f);
+            ImGui::SetCursorScreenPos(controls);
             DrawShellWindowControls();
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();
     }
 
-    void DrawShellNavigation() {
-        const auto& theme = anomaly::PlatformUiTheme();
-        constexpr std::array<Route, 3> routes{
-            Route::Plugins, Route::Diagnostics, Route::Settings};
-        const bool collapsed = NavigationCollapsed();
-        const auto& snapshot = model_.Snapshot();
-        const float width = ImGui::GetContentRegionAvail().x;
-        float y = Scaled(10.0f);
-        for (const Route route : routes) {
-            ImGui::SetCursorPos(ImVec2(Scaled(8.0f), y));
-            const bool selected = model_.State().route == route;
-            std::string item_id{"##nav-"};
-            item_id += anomaly::ToString(route);
-            ImGui::PushStyleColor(ImGuiCol_Header, selected
-                ? ThemeColorWithAlpha(theme.accent, 0.16f) : ImVec4(0, 0, 0, 0));
-            const bool clicked = ImGui::Selectable(item_id.c_str(), selected, 0,
-                ImVec2(std::max(0.0f, width - Scaled(16.0f)), Scaled(40.0f)));
-            ImGui::PopStyleColor();
-            const ImVec2 item_min = ImGui::GetItemRectMin();
-            const ImVec2 item_max = ImGui::GetItemRectMax();
-            ImDrawList* const draw_list = ImGui::GetWindowDrawList();
-            if (selected) {
-                draw_list->AddRectFilled(
-                    item_min, ImVec2(item_min.x + Scaled(3.0f), item_max.y),
-                    ImGui::ColorConvertFloat4ToU32(AccentColor()), Scaled(2.0f));
-            }
-            const ImU32 primary_text = ImGui::ColorConvertFloat4ToU32(selected
-                ? ThemeColor(theme.text) : ThemeColor(theme.text_muted));
-            const char* const glyph = ShellGlyphText(RouteGlyph(route));
-            // Keep the route icons on one left-aligned grid when the rail changes width.
-            const float icon_x = Scaled(12.0f);
-            draw_list->AddText(Offset(item_min, icon_x, Scaled(12.0f)), primary_text, glyph);
-            if (!collapsed) {
-                const char* route_label = RouteLabel(route);
-                draw_list->AddText(ScaledOffset(item_min, 38.0f, 12.0f), primary_text, route_label);
-                std::string indicator;
-                if (route == Route::Plugins && snapshot.runtime_summary.issues != 0) {
-                    indicator = std::to_string(snapshot.runtime_summary.issues);
-                } else if (route == Route::Settings && SettingsDirty()) {
-                    indicator = "*";
-                }
-                if (!indicator.empty()) {
-                    const float indicator_width = ImGui::CalcTextSize(indicator.c_str()).x;
-                    const float indicator_slot_width = Scaled(16.0f);
-                    const float indicator_x = item_max.x - Scaled(12.0f) - indicator_slot_width +
-                        (indicator_slot_width - indicator_width) * 0.5f;
-                    draw_list->AddText(ImVec2(indicator_x, item_min.y + Scaled(12.0f)),
-                        ImGui::ColorConvertFloat4ToU32(WarningColor()), indicator.c_str());
-                }
-            }
-            if (collapsed) {
-                std::string tooltip{RouteLabel(route)};
-                if (route == Route::Plugins && snapshot.runtime_summary.issues != 0) {
-                    const std::string count = std::to_string(snapshot.runtime_summary.issues);
-                    const std::array<std::string_view, 1> arguments{count};
-                    tooltip += ": " + Format(anomaly::MessageId::ShellIssues, arguments);
-                }
-                DrawTooltip(tooltip.c_str());
-            }
-            if (clicked) Navigate(route);
-            y += Scaled(44.0f);
-        }
-
-        ImGui::SetCursorPos(ImVec2(Scaled(8.0f),
-            std::max(y + Scaled(8.0f), ImGui::GetWindowSize().y - Scaled(48.0f))));
-        if (DrawShellIconButton("navigation-collapse",
-                collapsed ? ShellGlyph::ChevronRight : ShellGlyph::ChevronLeft,
-                Text(collapsed ? anomaly::MessageId::ShellExpandNavigation
-                               : anomaly::MessageId::ShellCollapseNavigation),
-                !IsCompact())) {
-            navigation_collapsed_ = !navigation_collapsed_;
-        }
-    }
-
+    // Publishes the route's header actions; the global header draws them
+    // after the route. `actions` receives the origin and size of the header
+    // area left of the window controls. The title is fixed to the product
+    // name, so the route's own title is not shown.
     template <typename DrawActions>
     void DrawShellPageHeader(
-        const char* title, const std::string_view subtitle, DrawActions&& actions,
-        const float title_inset = 0.0f) {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg,
-            ThemeColor(anomaly::PlatformUiTheme().window_background));
-        ImGui::BeginChild("PlatformPageHeader", ImVec2(0.0f, Scaled(48.0f)), true,
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        const ImVec2 origin = ImGui::GetWindowPos();
-        const ImVec2 size = ImGui::GetWindowSize();
-        const float title_x = Scaled(IsCompact() ? 10.0f : 16.0f) + title_inset;
-        ImGui::SetCursorScreenPos(Offset(
-            origin, title_x, Scaled(subtitle.empty() ? 14.0f : 7.0f)));
-        ImGui::SetWindowFontScale(IsCompact() ? 1.12f : 1.35f);
-        ImGui::TextUnformatted(title);
-        ImGui::SetWindowFontScale(1.0f);
-        if (!subtitle.empty() && !IsCompact()) {
-            ImGui::SetCursorScreenPos(Offset(origin, title_x, Scaled(28.0f)));
-            ImGui::TextDisabled("%.*s", static_cast<int>(subtitle.size()), subtitle.data());
-        }
-        actions(origin, size);
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
+        const char*, const std::string_view, DrawActions&& actions, const float = 0.0f) {
+        page_header_actions_ = std::forward<DrawActions>(actions);
     }
 
     void DrawShellProviderUnavailable(const char* subject, const char* reason) {
@@ -3404,15 +3649,29 @@ private:
 
     void DrawRepositoryWorkspace(bool updates_only) {
         auto& state = model_.State();
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
         SetAvailableItemWidth(0.0f, 360.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Scaled(30.0f), FieldPaddingY()));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(10.0f));
         if (ImGui::InputTextWithHint("##RepositorySearch",
                 Text(anomaly::MessageId::PluginsSearchRepositoryHint), search_.data(),
                 search_.size())) {
             state.search = search_.data();
         }
-        ImGui::PopStyleVar();
-        ImGui::Separator();
+        ImGui::PopStyleVar(2);
+        ImGui::GetWindowDrawList()->AddText(
+            FieldGlyphPosition(),
+            ImGui::GetColorU32(ThemeColor(anomaly::PlatformUiTheme().text_muted)),
+            ShellGlyphText(ShellGlyph::Search));
+        {
+            const float field_height = ImGui::GetItemRectSize().y;
+            ImGui::SameLine(0.0f, Scaled(12.0f));
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                (field_height - ImGui::GetTextLineHeight()) * 0.5f);
+            const auto& repository = model_.Snapshot().repository;
+            ImGui::TextDisabled("%s", repository.BrowseAvailable()
+                ? DisplayRepositoryState(repository.state) : repository.reason.c_str());
+        }
+        ImGui::Dummy(Scaled(0.0f, 4.0f));
 
         std::size_t visible{};
         for (const auto& plugin : model_.Snapshot().repository.plugins) {
@@ -3443,16 +3702,31 @@ private:
                 : current ? Text(anomaly::MessageId::CommonUninstall)
                 : install_state.update_available ? Text(anomaly::MessageId::CommonUpdate)
                          : Text(anomaly::MessageId::CommonInstall);
-            const float button_width = 104.0f;
-            if (ImGui::BeginTable("RepositoryRow", 2,
+            const float button_width = Scaled(96.0f);
+            const float icon_size = Scaled(40.0f);
+            if (visible > 1) {
+                const ImVec2 line = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddLine(
+                    Offset(line, icon_size + Scaled(12.0f), -Scaled(4.0f)),
+                    Offset(line, ImGui::GetContentRegionAvail().x, -Scaled(4.0f)),
+                    ImGui::GetColorU32(InkColor(0.07f)));
+            }
+            if (ImGui::BeginTable("RepositoryRow", 3,
                     ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 0.0f))) {
+                ImGui::TableSetupColumn("##icon", ImGuiTableColumnFlags_WidthFixed,
+                    icon_size + Scaled(4.0f));
                 ImGui::TableSetupColumn(
                     Text(anomaly::MessageId::CommonPlugin), ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableSetupColumn(
                     Text(anomaly::MessageId::CommonAction),
                     ImGuiTableColumnFlags_WidthFixed, button_width);
-                ImGui::TableNextRow(ImGuiTableRowFlags_None, 52.0f);
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, Scaled(56.0f));
                 ImGui::TableSetColumnIndex(0);
+                const ImVec2 icon_position = Offset(ImGui::GetCursorScreenPos(), 0.0f, Scaled(4.0f));
+                DrawGenericPluginIcon(icon_position, icon_size);
+                ImGui::Dummy(ImVec2(icon_size, icon_size + Scaled(4.0f)));
+                ImGui::TableSetColumnIndex(1);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Scaled(4.0f));
                 ImGui::TextUnformatted(plugin.entry.name.empty()
                     ? plugin.entry.internal_name.c_str()
                     : plugin.entry.name.c_str());
@@ -3469,10 +3743,12 @@ private:
                      operation->state == anomaly::RepositoryOperationState::Succeeded)) {
                     ImGui::TextDisabled("%s", operation->message.c_str());
                 }
-                ImGui::TableSetColumnIndex(1);
-                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
-                ImGui::BeginDisabled(!enabled);
-                if (ImGui::Button(label, ImVec2(button_width, 30.0f))) {
+                ImGui::TableSetColumnIndex(2);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Scaled(12.0f));
+                const ShellGlyph glyph = current ? ShellGlyph::Close
+                    : install_state.update_available ? ShellGlyph::Refresh : ShellGlyph::Play;
+                if (DrawShellCommandButton("repository-action", label, glyph, !current,
+                        enabled, ImVec2(button_width, Scaled(30.0f)))) {
                     if (current) {
                         RequestRepositoryUninstall(plugin.entry.internal_name,
                             plugin.entry.name);
@@ -3480,10 +3756,9 @@ private:
                         SubmitRepositoryInstall(plugin);
                     }
                 }
-                ImGui::EndDisabled();
                 ImGui::EndTable();
             }
-            ImGui::Separator();
+            ImGui::Dummy(Scaled(0.0f, 6.0f));
             ImGui::PopID();
         }
         if (visible == 0) {
@@ -3527,14 +3802,17 @@ private:
             state.plugin_tab == Tab::Installed;
         const auto* selected = model_.Snapshot().FindPlugin(state.selected_plugin_id);
         if (compact_detail && selected != nullptr) {
-            DrawShellPageHeader(selected->name.empty() ? selected->id.c_str() : selected->name.c_str(), {},
-                [this](const ImVec2& origin, const ImVec2&) {
-                    ImGui::SetCursorScreenPos(ScaledOffset(origin, 10.0f, 9.0f));
-                    if (DrawShellIconButton("back-to-plugin-list", ShellGlyph::ChevronLeft,
-                            Text(anomaly::MessageId::CommonBack))) {
-                        compact_plugin_detail_ = false;
-                    }
-                }, Scaled(42.0f));
+            DrawShellPageHeader(Text(anomaly::MessageId::ShellRoutePlugins), {},
+                [](const ImVec2&, const ImVec2&) {});
+            if (DrawShellIconButton("back-to-plugin-list", ShellGlyph::ChevronLeft,
+                    Text(anomaly::MessageId::CommonBack))) {
+                compact_plugin_detail_ = false;
+            }
+            ImGui::SameLine();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                (Scaled(30.0f) - ImGui::GetTextLineHeight()) * 0.5f);
+            ImGui::TextUnformatted(
+                selected->name.empty() ? selected->id.c_str() : selected->name.c_str());
             ImGui::BeginChild("PlatformCompactPluginDetail", ImVec2(0.0f, 0.0f), false,
                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             DrawPluginPublicDetail(*selected);
@@ -3553,8 +3831,12 @@ private:
         DrawShellPageHeader(Text(anomaly::MessageId::ShellRoutePlugins),
             installed ? std::string_view{} : repository_subtitle,
             [this, installed, repository_catalog](const ImVec2& origin, const ImVec2& size) {
-                const float more_x = size.x - Scaled(46.0f);
-                ImGui::SetCursorScreenPos(Offset(origin, more_x, Scaled(9.0f)));
+                const float more_x = size.x - Scaled(42.0f);
+                const ImVec2 disc = Offset(origin, more_x, Scaled(10.0f));
+                DrawGlass(ImGui::GetWindowDrawList(), Offset(disc, -Scaled(4.0f), -Scaled(4.0f)),
+                    Offset(disc, Scaled(34.0f), Scaled(34.0f)),
+                    anomaly::glass::Variant::Regular, 12.0f);
+                ImGui::SetCursorScreenPos(disc);
                 if (repository_catalog) {
                     if (DrawShellIconButton("repository-refresh", ShellGlyph::Refresh,
                             Text(anomaly::MessageId::PluginsRefreshRepositories)) &&
@@ -3592,14 +3874,14 @@ private:
 
         ImGui::BeginChild("PlatformPluginsRoute", ImVec2(0.0f, 0.0f), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        DrawPluginTabs();
+        DrawPluginsTopBar(installed);
         if (third_party) {
-            BeginShellBodyChild("PlatformThirdPartyPlugins");
+            BeginShellBodyChild("PlatformThirdPartyPlugins", {}, true);
             DrawRepositoryChannelsEditor();
             EndShellBodyChild();
         } else if (!installed) {
             if (repository.BrowseAvailable()) {
-                BeginShellBodyChild("PlatformRepositoryCatalog");
+                BeginShellBodyChild("PlatformRepositoryCatalog", {}, true);
                 DrawRepositoryWorkspace(state.plugin_tab == Tab::Updates);
                 EndShellBodyChild();
             } else {
@@ -3610,113 +3892,151 @@ private:
                     repository.reason.c_str());
             }
         } else {
-            DrawPluginToolbar();
             DrawInstalledPluginWorkspace();
         }
         ImGui::EndChild();
     }
 
-    void DrawPluginTabs() {
-        const std::size_t installed = model_.Snapshot().runtime_summary.installed;
-        const auto& theme = anomaly::PlatformUiTheme();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.toolbar_background));
-        ImGui::BeginChild("PlatformPluginTabs", ImVec2(0.0f, Scaled(36.0f)), true,
+    // The tabs, the search field, the state filter and the sort order sit on
+    // one row; a window too narrow for that moves the filter and the sort to a
+    // second row under the search field.
+    void DrawPluginsTopBar(const bool installed) {
+        auto& state = model_.State();
+        const std::size_t installed_count = model_.Snapshot().runtime_summary.installed;
+        const std::string installed_label =
+            std::string(PluginTabLabel(Tab::Installed)) + "  " + std::to_string(installed_count);
+        const std::array<const char*, 4> tab_labels{installed_label.c_str(),
+            PluginTabLabel(Tab::Available), PluginTabLabel(Tab::Updates),
+            PluginTabLabel(Tab::ThirdParty)};
+        anomaly::glass::SegmentedOptions tab_options;
+        tab_options.height = 40.0f;
+        tab_options.scale = PlatformUiScale();
+        tab_options.padding_x = IsCompact() ? 10.0f : 16.0f;
+        const float tabs_width = anomaly::glass::SegmentedControlWidth(tab_labels, tab_options);
+        const std::array<const char*, 4> filter_labels{FilterLabel(Filter::All),
+            FilterLabel(Filter::Running), FilterLabel(Filter::Disabled),
+            FilterLabel(Filter::Issues)};
+        const float filter_width = IsCompact() ? Scaled(100.0f)
+            : anomaly::glass::SegmentedControlWidth(filter_labels, FilterSegmentOptions());
+        const float sort_width = Scaled(IsCompact() ? 86.0f : 112.0f);
+        const float edge = Scaled(4.0f);
+        const float gap = Scaled(10.0f);
+        const float row_height = Scaled(52.0f);
+        const float available = ImGui::GetContentRegionAvail().x;
+        const float search_collapsed = Scaled(40.0f);
+        const bool one_row = !installed || available >= edge + tabs_width + gap +
+            search_collapsed + Scaled(8.0f) + filter_width + Scaled(8.0f) + sort_width + edge;
+        ImGui::BeginChild("PlatformPluginsTopBar",
+            ImVec2(0.0f, one_row ? row_height : row_height * 2.0f), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 origin = ImGui::GetWindowPos();
-        float x = Scaled(IsCompact() ? 8.0f : 16.0f);
-        const auto draw_tab = [this, &origin, &x, &theme](
-            const Tab tab, const std::string& label) {
-            const bool selected = model_.State().plugin_tab == tab;
-            const float width = ImGui::CalcTextSize(label.c_str()).x + Scaled(20.0f);
-            ImGui::SetCursorScreenPos(Offset(origin, x, Scaled(3.0f)));
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                ThemeColorWithAlpha(theme.text, 0.08f));
-            const std::string stable_label = anomaly::StableDisplayLabel(
-                label, "plugin-tab-" + std::to_string(static_cast<unsigned>(tab)));
-            if (ImGui::Button(stable_label.c_str(), ImVec2(width, Scaled(30.0f)))) {
-                model_.State().plugin_tab = tab;
-                compact_plugin_detail_ = false;
-                compact_plugin_detail_pending_id_.clear();
-            }
-            ImGui::PopStyleColor(2);
-            if (selected) {
-                const ImVec2 minimum = ImGui::GetItemRectMin();
-                const ImVec2 maximum = ImGui::GetItemRectMax();
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                    Offset(minimum, 0.0f, Scaled(28.0f)), maximum,
-                    ImGui::ColorConvertFloat4ToU32(AccentColor()));
-            }
-            x += width + Scaled(2.0f);
-        };
-        draw_tab(Tab::Installed,
-            std::string(PluginTabLabel(Tab::Installed)) + "  " + std::to_string(installed));
-        draw_tab(Tab::Available, PluginTabLabel(Tab::Available));
-        draw_tab(Tab::Updates, PluginTabLabel(Tab::Updates));
-        draw_tab(Tab::ThirdParty, PluginTabLabel(Tab::ThirdParty));
+        const float width = ImGui::GetWindowSize().x;
+        ImGui::SetCursorScreenPos(Offset(origin, edge, Scaled(6.0f)));
+        int selected = static_cast<int>(state.plugin_tab);
+        if (anomaly::glass::SegmentedControl("plugin-tabs", tab_labels, selected, tab_options)) {
+            state.plugin_tab = static_cast<Tab>(selected);
+            compact_plugin_detail_ = false;
+            compact_plugin_detail_pending_id_.clear();
+        }
+        if (installed) {
+            const float controls_y = one_row ? Scaled(8.0f) : row_height + Scaled(8.0f);
+            const float sort_x = width - edge - sort_width;
+            const float filter_x = sort_x - Scaled(8.0f) - filter_width;
+            // The search field is anchored to the filter and grows to the
+            // left; on its own row it may reach the left edge.
+            const float search_right = filter_x - Scaled(8.0f);
+            const float search_limit = one_row ? edge + tabs_width + gap : edge;
+            DrawPluginSearchField(Offset(origin, search_right, controls_y),
+                std::max(search_collapsed, std::min(Scaled(320.0f), search_right - search_limit)),
+                search_collapsed);
+            ImGui::SetCursorScreenPos(Offset(origin, filter_x, controls_y));
+            DrawPluginFilterControl(IsCompact());
+            ImGui::SetCursorScreenPos(Offset(origin, sort_x, controls_y));
+            DrawPluginSortControl();
+        }
         ImGui::EndChild();
-        ImGui::PopStyleColor();
     }
 
-    void DrawPluginToolbar() {
-        const float toolbar_height = Scaled(
-            layout_mode_ == LayoutMode::Wide ? 46.0f : 84.0f);
-        const auto& theme = anomaly::PlatformUiTheme();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.window_background));
-        ImGui::BeginChild("PlatformPluginToolbar", ImVec2(0.0f, toolbar_height), true,
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    // A search field that rests as a magnifier button and opens to the left,
+    // toward `expanded` width, while the pointer is over it, while it has
+    // keyboard focus and for as long as it holds text. `right` is the
+    // top-right corner it is anchored to.
+    void DrawPluginSearchField(const ImVec2 right, const float expanded, const float collapsed) {
         auto& state = model_.State();
-        const ImVec2 origin = ImGui::GetWindowPos();
-        const ImVec2 size = ImGui::GetWindowSize();
-        const float padding = Scaled(IsCompact() ? 8.0f : 12.0f);
-        const bool wide = layout_mode_ == LayoutMode::Wide;
-        const float search_width = wide
-            ? Scaled(280.0f) : size.x - padding * 2.0f - Scaled(38.0f);
-        ImGui::SetCursorScreenPos(Offset(origin, padding, Scaled(8.0f)));
+        const auto& theme = anomaly::PlatformUiTheme();
+        const float height = Scaled(36.0f);
+        const float shown_width = collapsed + (expanded - collapsed) * plugin_search_reveal_;
+        const ImVec2 field_min(right.x - shown_width, right.y);
+        const ImVec2 field_max(right.x, right.y + height);
+        const bool pointer_over = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+            ImGui::IsMouseHoveringRect(field_min, field_max);
+        const bool open = pointer_over || plugin_search_active_ || focus_plugin_search_ ||
+            !state.search.empty();
+        const float target = open ? 1.0f : 0.0f;
+        if (anomaly::glass::ReduceMotion()) {
+            plugin_search_reveal_ = target;
+        } else {
+            const float step = 1.0f - std::exp(-16.0f * std::max(0.0f, ImGui::GetIO().DeltaTime));
+            plugin_search_reveal_ += (target - plugin_search_reveal_) * step;
+            if (std::abs(target - plugin_search_reveal_) < 0.002f) plugin_search_reveal_ = target;
+        }
+        const float reveal = plugin_search_reveal_;
+        const float field_width = collapsed + (expanded - collapsed) * reveal;
+        const ImVec2 min(right.x - field_width, right.y);
+        ImDrawList* const list = ImGui::GetWindowDrawList();
+        const ImVec4 fill = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
+        if (reveal < 0.02f) {
+            // Resting state: just the magnifier on a small rounded tile.
+            ImGui::SetCursorScreenPos(min);
+            if (ImGui::InvisibleButton("##plugin-search-button", ImVec2(collapsed, height))) {
+                focus_plugin_search_ = true;
+            }
+            list->AddRectFilled(min, Offset(min, collapsed, height),
+                ImGui::GetColorU32(fill), Scaled(11.0f));
+            const char* const glyph = ShellGlyphText(ShellGlyph::Search);
+            const ImVec2 glyph_size = ImGui::CalcTextSize(glyph);
+            list->AddText(Offset(min, (collapsed - glyph_size.x) * 0.5f,
+                    (height - ImGui::GetTextLineHeight()) * 0.5f + Scaled(1.0f)),
+                ImGui::GetColorU32(ImGui::IsItemHovered()
+                    ? ThemeColor(theme.text) : ThemeColor(theme.text_muted)), glyph);
+            DrawTooltip(Text(anomaly::MessageId::PluginsSearchHint));
+            plugin_search_active_ = false;
+            return;
+        }
+        ImGui::SetCursorScreenPos(min);
         if (focus_plugin_search_) {
             ImGui::SetKeyboardFocusHere();
             focus_plugin_search_ = false;
         }
-        ImGui::SetNextItemWidth(std::max(Scaled(80.0f), search_width));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, Scaled(28.0f, 6.0f));
+        ImGui::SetNextItemWidth(field_width);
+        ImGui::SetNextItemAllowOverlap();
+        const bool show_clear = !state.search.empty() && reveal > 0.6f;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Scaled(30.0f), FieldPaddingY()));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(11.0f));
         if (ImGui::InputTextWithHint("##plugin-search",
-                Text(anomaly::MessageId::PluginsSearchHint), search_.data(), search_.size())) {
+                reveal > 0.6f ? Text(anomaly::MessageId::PluginsSearchHint) : "",
+                search_.data(), search_.size())) {
             state.search = search_.data();
             anomaly::ReconcileUiStateSelection(model_.Snapshot(), state, developer_mode_);
         }
-        ImGui::PopStyleVar();
-        const ImVec2 search_min = ImGui::GetItemRectMin();
-        ImGui::GetWindowDrawList()->AddText(ScaledOffset(search_min, 8.0f, 7.0f),
+        ImGui::PopStyleVar(2);
+        plugin_search_active_ = ImGui::IsItemActive();
+        const ImVec2 field_rect_min = ImGui::GetItemRectMin();
+        const ImVec2 field_rect_max = ImGui::GetItemRectMax();
+        list->AddText(FieldGlyphPosition(),
             ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text_muted)),
             ShellGlyphText(ShellGlyph::Search));
-        ImGui::SetCursorScreenPos(Offset(
-            origin, padding + search_width + Scaled(8.0f), Scaled(8.0f)));
-        if (DrawShellIconButton("clear-plugin-search", ShellGlyph::Close,
-                Text(anomaly::MessageId::PluginsClearSearch),
-                !state.search.empty())) {
-            search_.fill('\0');
-            state.search.clear();
-            anomaly::ReconcileUiStateSelection(model_.Snapshot(), state, developer_mode_);
-            focus_plugin_search_ = true;
+        if (show_clear) {
+            ImGui::SetCursorScreenPos(ImVec2(field_rect_max.x - Scaled(33.0f),
+                field_rect_min.y + (field_rect_max.y - field_rect_min.y - Scaled(30.0f)) * 0.5f));
+            if (DrawShellIconButton("clear-plugin-search", ShellGlyph::Close,
+                    Text(anomaly::MessageId::PluginsClearSearch))) {
+                search_.fill('\0');
+                state.search.clear();
+                anomaly::ReconcileUiStateSelection(model_.Snapshot(), state, developer_mode_);
+                focus_plugin_search_ = true;
+            }
         }
-        const float controls_y = Scaled(wide ? 8.0f : 46.0f);
-        float x = wide ? padding + search_width + Scaled(46.0f) : padding;
-        ImGui::SetCursorScreenPos(Offset(origin, x, controls_y));
-        if (IsCompact()) {
-            DrawPluginFilterControl(true);
-        } else {
-            DrawPluginFilterControl(false);
-        }
-        const float filter_width = IsCompact() ? Scaled(100.0f) :
-            ImGui::CalcTextSize(FilterLabel(Filter::All)).x + Scaled(18.0f) +
-            ImGui::CalcTextSize(FilterLabel(Filter::Running)).x + Scaled(18.0f) +
-            ImGui::CalcTextSize(FilterLabel(Filter::Disabled)).x + Scaled(18.0f) +
-            ImGui::CalcTextSize(FilterLabel(Filter::Issues)).x + Scaled(18.0f);
-        x += filter_width + Scaled(8.0f);
-        ImGui::SetCursorScreenPos(Offset(origin, x, controls_y));
-        DrawPluginSortControl();
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
     }
 
     void DrawPluginFilterControl(const bool compact_control) {
@@ -3725,7 +4045,13 @@ private:
             Filter::All, Filter::Running, Filter::Disabled, Filter::Issues};
         if (compact_control) {
             ImGui::SetNextItemWidth(Scaled(100.0f));
-            if (ImGui::BeginCombo("##plugin-filter", FilterLabel(state.plugin_filter))) {
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(11.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                ImVec2(ImGui::GetStyle().FramePadding.x, FieldPaddingY()));
+            const bool filter_open =
+                anomaly::glass::BeginCombo("##plugin-filter", FilterLabel(state.plugin_filter));
+            ImGui::PopStyleVar(2);
+            if (filter_open) {
                 for (const Filter filter : filters) {
                     if (ImGui::Selectable(FilterLabel(filter), state.plugin_filter == filter)) {
                         state.plugin_filter = filter;
@@ -3738,32 +4064,34 @@ private:
             DrawTooltip(Text(anomaly::MessageId::PluginsFilterAll));
             return;
         }
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-        for (std::size_t index = 0; index < filters.size(); ++index) {
-            if (index != 0) ImGui::SameLine(0.0f, 0.0f);
-            const Filter filter = filters[index];
-            const bool selected = state.plugin_filter == filter;
-            const char* const label = FilterLabel(filter);
-            ImGui::PushStyleColor(ImGuiCol_Button, selected
-                ? ThemeColorWithAlpha(anomaly::PlatformUiTheme().accent, 0.18f)
-                : SurfaceColor());
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, RaisedColor());
-            ImGui::PushID(static_cast<int>(filter));
-            if (ImGui::Button(label, ImVec2(
-                    ImGui::CalcTextSize(label).x + Scaled(18.0f), Scaled(30.0f)))) {
-                state.plugin_filter = filter;
-                anomaly::ReconcileUiStateSelection(model_.Snapshot(), state, developer_mode_);
-            }
-            ImGui::PopID();
-            ImGui::PopStyleColor(2);
+        const std::array<const char*, 4> labels{FilterLabel(filters[0]),
+            FilterLabel(filters[1]), FilterLabel(filters[2]), FilterLabel(filters[3])};
+        int selected = static_cast<int>(state.plugin_filter);
+        if (anomaly::glass::SegmentedControl(
+                "plugin-filter", labels, selected, FilterSegmentOptions())) {
+            state.plugin_filter = static_cast<Filter>(selected);
+            anomaly::ReconcileUiStateSelection(model_.Snapshot(), state, developer_mode_);
         }
-        ImGui::PopStyleVar();
+    }
+
+    [[nodiscard]] static anomaly::glass::SegmentedOptions FilterSegmentOptions() noexcept {
+        anomaly::glass::SegmentedOptions options;
+        options.height = 36.0f;
+        options.padding_x = 13.0f;
+        options.scale = PlatformUiScale();
+        options.glass_track = false;
+        return options;
     }
 
     void DrawPluginSortControl() {
         auto& state = model_.State();
         ImGui::SetNextItemWidth(Scaled(IsCompact() ? 86.0f : 112.0f));
-        if (ImGui::BeginCombo("##plugin-sort", SortLabel(state.plugin_sort))) {
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(11.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+            ImVec2(ImGui::GetStyle().FramePadding.x, FieldPaddingY()));
+        const bool sort_open = anomaly::glass::BeginCombo("##plugin-sort", SortLabel(state.plugin_sort));
+        ImGui::PopStyleVar(2);
+        if (sort_open) {
             constexpr std::array<Sort, 3> sorts{Sort::Name, Sort::State, Sort::Author};
             for (const Sort sort : sorts) {
                 const char* label = sort == Sort::State
@@ -3822,48 +4150,52 @@ private:
         }
 
         if (IsCompact()) {
-            ImGui::BeginChild("PlatformPluginList", ImVec2(0.0f, 0.0f), true);
+            BeginCardChild("PlatformPluginList", ImVec2(0.0f, 0.0f), 6.0f);
             for (std::size_t index = 0; index < visible.size(); ++index) {
                 DrawShellPluginRow(visible[index],
                     index == 0 ? std::string_view{} : std::string_view{visible[index - 1].id},
                     index + 1 == visible.size() ? std::string_view{}
                                                : std::string_view{visible[index + 1].id});
             }
-            ImGui::EndChild();
+            EndCardChild();
             return;
         }
 
         const float available = ImGui::GetContentRegionAvail().x;
         const float list_width = PluginListWidth(available);
-        ImGui::BeginChild("PlatformPluginList", ImVec2(list_width, 0.0f), true);
+        BeginCardChild("PlatformPluginList", ImVec2(list_width, 0.0f), 6.0f);
         for (std::size_t index = 0; index < visible.size(); ++index) {
             DrawShellPluginRow(visible[index],
                 index == 0 ? std::string_view{} : std::string_view{visible[index - 1].id},
                 index + 1 == visible.size() ? std::string_view{}
                                            : std::string_view{visible[index + 1].id});
         }
-        ImGui::EndChild();
+        EndCardChild();
         ImGui::SameLine(0.0f, 0.0f);
         const ImVec2 splitter_origin = ImGui::GetCursorScreenPos();
         ImGui::InvisibleButton("PlatformPluginSplit",
-            ImVec2(Scaled(6.0f), ImGui::GetContentRegionAvail().y));
+            ImVec2(Scaled(10.0f), ImGui::GetContentRegionAvail().y));
         if (ImGui::IsItemActive()) {
             plugin_list_width_ =
                 (list_width + ImGui::GetIO().MouseDelta.x) / PlatformUiScale();
         }
-        ImGui::GetWindowDrawList()->AddLine(
-            ImVec2(splitter_origin.x + Scaled(2.5f), splitter_origin.y),
-            ImVec2(splitter_origin.x + Scaled(2.5f),
-                splitter_origin.y + ImGui::GetItemRectSize().y),
-            ImGui::ColorConvertFloat4ToU32(
-                ThemeColor(anomaly::PlatformUiTheme().border)));
+        // A grabber capsule that only shows while the divider is in use.
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            const float middle = splitter_origin.y + ImGui::GetItemRectSize().y * 0.5f;
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(splitter_origin.x + Scaled(3.5f), middle - Scaled(18.0f)),
+                ImVec2(splitter_origin.x + Scaled(6.5f), middle + Scaled(18.0f)),
+                ImGui::GetColorU32(InkColor(ImGui::IsItemActive() ? 0.40f : 0.24f)),
+                Scaled(2.0f));
+        }
         ImGui::SameLine(0.0f, 0.0f);
-        ImGui::BeginChild("PlatformPluginDetail", ImVec2(0.0f, 0.0f), true,
+        BeginCardChild("PlatformPluginDetail", ImVec2(0.0f, 0.0f), 0.0f,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const auto* selected = model_.Snapshot().FindPlugin(model_.State().selected_plugin_id);
         if (selected != nullptr) DrawPluginPublicDetail(*selected);
         else ImGui::TextDisabled("%s", Text(anomaly::MessageId::PluginsSelectDetails));
-        ImGui::EndChild();
+        EndCardChild();
     }
 
     [[nodiscard]] bool PluginToggleAllowed(
@@ -3904,11 +4236,12 @@ private:
         const float height = Scaled(IsCompact() ? 60.0f : 64.0f);
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         const float width = ImGui::GetContentRegionAvail().x;
-        const float toggle_x = width - Scaled(IsCompact() ? 40.0f : 44.0f);
+        const ImVec2 toggle_size = Scaled(40.0f, 24.0f);
+        const float toggle_x = width - toggle_size.x - Scaled(12.0f);
         const ImVec2 toggle_position = Offset(
-            origin, toggle_x, (height - Scaled(18.0f)) * 0.5f);
+            origin, toggle_x, (height - toggle_size.y) * 0.5f);
         const bool toggle_hovered = ImGui::IsMouseHoveringRect(
-            toggle_position, ScaledOffset(toggle_position, 32.0f, 18.0f));
+            toggle_position, Offset(toggle_position, toggle_size.x, toggle_size.y));
         const bool selected = model_.State().selected_plugin_id == plugin.id;
         ImGui::PushID(plugin.id.c_str());
         // Keep the row hit target clear of the toggle. Overlapping invisible
@@ -3971,13 +4304,13 @@ private:
         }
 
         const auto& theme = anomaly::PlatformUiTheme();
-        const ImVec4 background = selected ? ThemeColorWithAlpha(theme.accent, 0.14f)
-            : (row_hovered ? ThemeColor(theme.row_hovered) : SurfaceColor());
         ImDrawList* const draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddRectFilled(origin, Offset(origin, width, height),
-            ImGui::ColorConvertFloat4ToU32(background));
-        draw_list->AddRectFilled(origin, Offset(origin, Scaled(3.0f), height),
-            ImGui::ColorConvertFloat4ToU32(PluginStateColor(plugin.UiState())));
+        // The selected row sits under a glass lens; its content is drawn on top.
+        if (selected) {
+            anomaly::glass::DrawThumb(draw_list, Offset(origin, 0.0f, Scaled(2.0f)),
+                Offset(origin, width, height - Scaled(2.0f)), Scaled(12.0f),
+                PlatformUiScale(), false);
+        }
         const float icon_size = Scaled(IsCompact() ? 36.0f : 40.0f);
         const ImVec2 icon_position = Offset(
             origin, Scaled(11.0f), (height - icon_size) * 0.5f);
@@ -4008,27 +4341,28 @@ private:
         const bool toggle_allowed = PluginToggleAllowed(plugin);
         ImGui::SetCursorScreenPos(toggle_position);
         ImGui::BeginDisabled(!toggle_allowed);
-        const bool toggle_clicked =
-            ImGui::InvisibleButton("enable-toggle", Scaled(32.0f, 18.0f));
+        const bool toggle_clicked = ImGui::InvisibleButton("enable-toggle", toggle_size);
+        const bool toggle_held = ImGui::IsItemActive();
         ImGui::EndDisabled();
         const bool current_toggle_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
         if (toggle_clicked && toggle_allowed) {
             model_.State().selected_plugin_id = plugin.id;
             SubmitPluginToggle(plugin);
         }
-        const ImVec4 toggle_background = plugin.enabled
-            ? ThemeColorWithAlpha(theme.accent, 0.35f) : ThemeColor(theme.toggle_off);
-        const ImVec4 toggle_border = plugin.enabled ? AccentColor()
-            : ThemeColor(theme.toggle_off_border);
-        draw_list->AddRectFilled(toggle_position, ScaledOffset(toggle_position, 32.0f, 18.0f),
-            ImGui::ColorConvertFloat4ToU32(toggle_background), Scaled(9.0f));
-        draw_list->AddRect(toggle_position, ScaledOffset(toggle_position, 32.0f, 18.0f),
-            ImGui::ColorConvertFloat4ToU32(toggle_border), Scaled(9.0f));
-        const float knob_x = Scaled(plugin.enabled ? 23.0f : 9.0f);
-        draw_list->AddCircleFilled(
-            Offset(toggle_position, knob_x, Scaled(9.0f)), Scaled(6.0f),
-            ImGui::ColorConvertFloat4ToU32(plugin.enabled
-                ? ThemeColor(theme.toggle_on_knob) : ThemeColor(theme.text_muted)));
+        // The switch follows the requested state while the toggle is in
+        // flight, so it does not snap back until the host reports a result.
+        const bool pending = HasPendingMutation(plugin.id, Mutation::None);
+        const ImGuiID switch_id = ImGui::GetID("enable-switch");
+        const float switch_on = anomaly::glass::Animate(
+            switch_id, plugin.enabled ? 1.0f : 0.0f, 15.0f);
+        const float switch_press = anomaly::glass::Animate(
+            switch_id ^ 0x9e3779b9U, toggle_held ? 1.0f : 0.0f, 22.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha,
+            ImGui::GetStyle().Alpha * (toggle_allowed || pending ? 1.0f : 0.45f));
+        anomaly::glass::DrawSwitch(draw_list, toggle_position,
+            Offset(toggle_position, toggle_size.x, toggle_size.y), switch_on, switch_press,
+            current_toggle_hovered && toggle_allowed, PlatformUiScale());
+        ImGui::PopStyleVar();
         if (current_toggle_hovered && !toggle_allowed) {
             const std::string reason = PluginToggleDisabledReason(plugin);
             ImGui::SetTooltip("%s", reason.c_str());
@@ -4117,6 +4451,17 @@ private:
         ImGui::EndPopup();
     }
 
+    [[nodiscard]] bool ShowPluginReloadAction(
+        const anomaly::InstalledPluginView& plugin) const {
+        const auto state = plugin.UiState();
+        // Lifecycle snapshots can temporarily lose the runtime view or report
+        // Stopping. Keep the reload slot until the operation settles.
+        const bool pending = HasPendingMutation(plugin.id, Mutation::None);
+        return (plugin.has_runtime_view || pending) &&
+            (state != anomaly::PlatformUiPluginState::Stopping || pending) &&
+            state != anomaly::PlatformUiPluginState::Faulted;
+    }
+
     [[nodiscard]] float PluginPublicActionsWidth(
         const anomaly::InstalledPluginView& plugin,
         const bool compact_secondary) const {
@@ -4135,9 +4480,7 @@ private:
                 : Text(anomaly::MessageId::CommonDisable);
         float width = std::max(
             Scaled(74.0f), ImGui::CalcTextSize(primary_label).x + Scaled(38.0f));
-        const bool show_reload = plugin.has_runtime_view &&
-            state != anomaly::PlatformUiPluginState::Stopping &&
-            state != anomaly::PlatformUiPluginState::Faulted;
+        const bool show_reload = ShowPluginReloadAction(plugin);
         if (show_reload) width += Scaled(compact_secondary ? 36.0f : 82.0f);
         const auto* repository_plugin = RepositoryPlugin(plugin.id);
         const auto* repository_operation = RepositoryOperation(plugin.id);
@@ -4147,7 +4490,9 @@ private:
         if (developer_mode_ || (repository_plugin != nullptr && !repository_removed)) {
             width += Scaled(34.0f);
         }
-        return width;
+        // The render path adds each scaled gap separately; round the allocation
+        // up so float rounding cannot make the last button fail its fit check.
+        return std::ceil(width);
     }
 
     void DrawPluginPublicDetail(const anomaly::InstalledPluginView& plugin) {
@@ -4170,7 +4515,7 @@ private:
             : (IsCompact() ? 84.0f : 96.0f));
         ImGui::PushStyleColor(ImGuiCol_ChildBg,
             ThemeColor(anomaly::PlatformUiTheme().panel_background));
-        ImGui::BeginChild("PlatformPluginDetailHeader", ImVec2(0.0f, height), true,
+        ImGui::BeginChild("PlatformPluginDetailHeader", ImVec2(0.0f, height), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 origin = ImGui::GetWindowPos();
         const ImVec2 size = ImGui::GetWindowSize();
@@ -4207,6 +4552,9 @@ private:
         DrawPluginPublicActions(plugin, actions_origin,
             stack_actions ? size.x - title_x - inset : actions_width,
             compact_actions && !stack_actions);
+        ImGui::GetWindowDrawList()->AddLine(
+            Offset(origin, inset, size.y - 1.0f), Offset(origin, size.x - inset, size.y - 1.0f),
+            ImGui::GetColorU32(InkColor(0.08f)));
         ImGui::EndChild();
         ImGui::PopStyleColor();
 
@@ -4231,6 +4579,9 @@ private:
     void DrawPluginPublicActions(const anomaly::InstalledPluginView& plugin,
         const ImVec2 origin, const float available, const bool compact_secondary) {
         const bool frozen = HasPendingMutation(plugin.id, Mutation::None);
+        // Pending work blocks input without flashing both buttons at disabled alpha.
+        ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha,
+            frozen ? 1.0f : ImGui::GetStyle().DisabledAlpha);
         const auto* repository_plugin = RepositoryPlugin(plugin.id);
         const auto* repository_operation = RepositoryOperation(plugin.id);
         const bool repository_removed = repository_operation != nullptr &&
@@ -4288,18 +4639,17 @@ private:
         if (!primary_allowed) DrawTooltip(
             frozen ? Text(anomaly::MessageId::OperationInProgress)
                    : PluginToggleDisabledReason(plugin).c_str());
-        const bool show_reload = plugin.has_runtime_view &&
-            state != anomaly::PlatformUiPluginState::Stopping &&
-            state != anomaly::PlatformUiPluginState::Faulted;
+        const bool show_reload = ShowPluginReloadAction(plugin);
+        const bool reload_allowed = !frozen && plugin.has_runtime_view;
         const float reload_width = Scaled(compact_secondary ? 30.0f : 76.0f);
         if (show_reload && primary_width + Scaled(6.0f) + reload_width <= available) {
             ImGui::SameLine(0.0f, Scaled(6.0f));
             const bool reload_pressed = compact_secondary
                 ? DrawShellIconButton("detail-reload", ShellGlyph::Refresh,
-                    Text(anomaly::MessageId::CommonReload), !frozen)
+                    Text(anomaly::MessageId::CommonReload), reload_allowed)
                 : DrawShellCommandButton("detail-reload",
                     Text(anomaly::MessageId::CommonReload), ShellGlyph::Refresh, false,
-                    !frozen, ImVec2(reload_width, Scaled(30.0f)));
+                    reload_allowed, ImVec2(reload_width, Scaled(30.0f)));
             if (reload_pressed) {
                 submit_reload();
             }
@@ -4345,6 +4695,7 @@ private:
             }
         }
         if (frozen) DrawTooltip(Text(anomaly::MessageId::OperationInProgress));
+        ImGui::PopStyleVar();
     }
 
     void OpenDeveloperPlugin(const std::string_view plugin_id) {
@@ -4365,7 +4716,7 @@ private:
         } else {
             const int columns = IsCompact() ? 3 : 4;
             if (ImGui::BeginTable("PlatformNteFeatures", columns,
-                    ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+                    ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
                 ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonFeature),
                     ImGuiTableColumnFlags_WidthStretch, 1.0f);
                 ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonAvailability),
@@ -4415,7 +4766,7 @@ private:
         const auto& compatibility = model_.Snapshot().nte_compatibility;
         ImGui::TextUnformatted(Text(anomaly::MessageId::PluginsBuildDetails));
         if (ImGui::BeginTable("PlatformNteBuild", 2,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
             const auto row = [this](const char* label, const std::string& value) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -4451,45 +4802,33 @@ private:
     }
 
     void DrawDiagnosticTabs() {
-        ImGui::BeginChild("PlatformDiagnosticTabs", ImVec2(0.0f, Scaled(36.0f)), true,
+        ImGui::BeginChild("PlatformDiagnosticTabs", ImVec2(0.0f, Scaled(54.0f)), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        const auto draw_tab = [this](const DiagnosticTab tab, const char* label) {
-            const bool selected = model_.State().diagnostics_tab == tab;
-            ImGui::PushStyleColor(ImGuiCol_Button, selected ? SurfaceColor() : ImVec4(0, 0, 0, 0));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, RaisedColor());
-            const std::string stable_label = anomaly::StableDisplayLabel(
-                label, "diagnostics-tab-" + std::to_string(static_cast<unsigned>(tab)));
-            if (ImGui::Button(stable_label.c_str(), ImVec2(0.0f, Scaled(30.0f)))) {
-                model_.State().diagnostics_tab = tab;
-            }
-            ImGui::PopStyleColor(2);
-            if (selected) {
-                const ImVec2 minimum = ImGui::GetItemRectMin();
-                const ImVec2 maximum = ImGui::GetItemRectMax();
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                    ImVec2(minimum.x, maximum.y - Scaled(2.0f)), maximum,
-                    ImGui::ColorConvertFloat4ToU32(AccentColor()));
-            }
-        };
-        draw_tab(DiagnosticTab::Overview, DiagnosticTabLabel(DiagnosticTab::Overview));
-        ImGui::SameLine();
-        draw_tab(DiagnosticTab::PluginPerformance,
-            DiagnosticTabLabel(DiagnosticTab::PluginPerformance));
-        ImGui::SameLine();
-        draw_tab(DiagnosticTab::Logs, DiagnosticTabLabel(DiagnosticTab::Logs));
-        if (developer_mode_) {
-            ImGui::SameLine();
-            draw_tab(DiagnosticTab::Developer, DiagnosticTabLabel(DiagnosticTab::Developer));
+        const std::array<const char*, 4> labels{
+            DiagnosticTabLabel(DiagnosticTab::Overview),
+            DiagnosticTabLabel(DiagnosticTab::PluginPerformance),
+            DiagnosticTabLabel(DiagnosticTab::Logs),
+            DiagnosticTabLabel(DiagnosticTab::Developer)};
+        const std::span<const char* const> shown(
+            labels.data(), developer_mode_ ? labels.size() : labels.size() - 1);
+        ImGui::SetCursorPos(ImVec2(Scaled(IsCompact() ? 4.0f : 8.0f), Scaled(6.0f)));
+        int selected = static_cast<int>(model_.State().diagnostics_tab);
+        anomaly::glass::SegmentedOptions options;
+        options.height = 40.0f;
+        options.scale = PlatformUiScale();
+        options.padding_x = IsCompact() ? 10.0f : 16.0f;
+        if (anomaly::glass::SegmentedControl("diagnostic-tabs", shown, selected, options)) {
+            model_.State().diagnostics_tab = static_cast<DiagnosticTab>(selected);
         }
         ImGui::EndChild();
     }
 
     void DrawDiagnosticsOverviewShell() {
         const auto& snapshot = model_.Snapshot();
-        BeginShellBodyChild("PlatformDiagnosticsOverview");
+        BeginShellBodyChild("PlatformDiagnosticsOverview", {}, true);
         const int summary_columns = IsCompact() ? 2 : 4;
         if (ImGui::BeginTable("PlatformDiagnosticsSummary", summary_columns,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
             const auto summary = [](const char* label, const std::string& value) {
                 ImGui::TableNextColumn();
                 ImGui::TextDisabled("%s", label);
@@ -4537,7 +4876,7 @@ private:
 
     void DrawPerformanceShell() {
         ImGui::BeginChild("PlatformPerformanceToolbar",
-            ImVec2(0.0f, Scaled(IsCompact() ? 82.0f : 50.0f)), true,
+            ImVec2(0.0f, Scaled(IsCompact() ? 82.0f : 50.0f)), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         SetAvailableItemWidth(IsCompact() ? 40.0f : 0.0f, 260.0f);
         ImGui::InputTextWithHint("##performance-search",
@@ -4550,7 +4889,7 @@ private:
             Text(anomaly::MessageId::PluginsFilterAll),
             Text(anomaly::MessageId::CommonUpdate),
             Text(anomaly::MessageId::CommonDraw)};
-        ImGui::Combo("##performance-callback", &performance_callback_filter_, callbacks, IM_ARRAYSIZE(callbacks));
+        anomaly::glass::Combo("##performance-callback", &performance_callback_filter_, callbacks, IM_ARRAYSIZE(callbacks));
         ImGui::SameLine();
         ImGui::SetNextItemWidth(Scaled(90.0f));
         const char* states[] = {
@@ -4558,13 +4897,13 @@ private:
             Text(anomaly::MessageId::PluginStateRunning),
             Text(anomaly::MessageId::PluginsFilterIssues),
             Text(anomaly::MessageId::PluginStateDisabled)};
-        ImGui::Combo("##performance-state", &performance_state_filter_, states, IM_ARRAYSIZE(states));
+        anomaly::glass::Combo("##performance-state", &performance_state_filter_, states, IM_ARRAYSIZE(states));
         ImGui::SameLine();
         ImGui::SetNextItemWidth(Scaled(106.0f));
         const char* sorts[] = {"p95", "p99", Text(anomaly::MessageId::CommonFaults),
             Text(anomaly::MessageId::DiagnosticsSlowCalls),
             Text(anomaly::MessageId::CommonName)};
-        ImGui::Combo("##performance-sort", &performance_sort_, sorts, IM_ARRAYSIZE(sorts));
+        anomaly::glass::Combo("##performance-sort", &performance_sort_, sorts, IM_ARRAYSIZE(sorts));
         ImGui::EndChild();
 
         std::vector<PerformanceRow> rows;
@@ -4633,7 +4972,7 @@ private:
     void DrawPerformanceTable(const std::vector<PerformanceRow>& rows) {
         const int columns = IsCompact() ? 5 : 9;
         if (!ImGui::BeginTable("PlatformPerformanceTable", columns,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY |
                 ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 0.0f))) {
             return;
         }
@@ -4734,7 +5073,7 @@ private:
 
     void DrawLogsShell() {
         ImGui::BeginChild("PlatformLogsToolbar",
-            ImVec2(0.0f, Scaled(IsCompact() ? 82.0f : 50.0f)), true,
+            ImVec2(0.0f, Scaled(IsCompact() ? 82.0f : 50.0f)), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         SetAvailableItemWidth(IsCompact() ? 40.0f : 0.0f, 280.0f);
         if (ImGui::InputTextWithHint("##diagnostic-log-filter",
@@ -4743,18 +5082,17 @@ private:
             model_.State().diagnostics_log_filter = log_filter_.data();
         }
         ImGui::SameLine();
-        ImGui::BeginDisabled(model_.State().diagnostics_log_filter.empty());
-        if (IconButton("x##clear-log-filter", Text(anomaly::MessageId::PluginsClearSearch))) {
+        if (DrawShellIconButton("clear-log-filter", ShellGlyph::Close,
+                Text(anomaly::MessageId::PluginsClearSearch),
+                !model_.State().diagnostics_log_filter.empty())) {
             log_filter_.fill('\0');
             model_.State().diagnostics_log_filter.clear();
         }
-        ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Button, logs_follow_live_ ? AccentColor() : SurfaceColor());
-        const std::string live_label = StableLabel(
-            anomaly::MessageId::DiagnosticsLive, "diagnostics-live");
-        if (ImGui::Button(live_label.c_str())) logs_follow_live_ = !logs_follow_live_;
-        ImGui::PopStyleColor();
+        if (DrawShellCommandButton("diagnostics-live", Text(anomaly::MessageId::DiagnosticsLive),
+                ShellGlyph::Activity, logs_follow_live_)) {
+            logs_follow_live_ = !logs_follow_live_;
+        }
 
         const auto events = plugins_.Events();
         const std::string_view text_filter(log_filter_.data());
@@ -4767,10 +5105,9 @@ private:
             filtered.push_back(index);
         }
         ImGui::SameLine();
-        ImGui::BeginDisabled(filtered.empty());
-        const std::string copy_filtered = StableLabel(
-            anomaly::MessageId::DiagnosticsCopyFiltered, "diagnostics-copy-filtered");
-        if (ImGui::Button(copy_filtered.c_str())) {
+        if (DrawShellCommandButton("diagnostics-copy-filtered",
+                Text(anomaly::MessageId::DiagnosticsCopyFiltered), ShellGlyph::Copy, false,
+                !filtered.empty())) {
             std::string copied;
             for (const std::size_t index : filtered) {
                 copied += events[index];
@@ -4780,7 +5117,6 @@ private:
             status_ = Text(anomaly::MessageId::DiagnosticsFilteredCopied);
             status_failure_ = false;
         }
-        ImGui::EndDisabled();
         ImGui::EndChild();
 
         if (selected_log_index_ >= events.size() && !filtered.empty()) selected_log_index_ = filtered.front();
@@ -4796,7 +5132,7 @@ private:
             Format(anomaly::MessageId::DiagnosticsBufferedRecords, count_arguments);
         ImGui::TextDisabled("%s", buffered.c_str());
         if (ImGui::BeginTable("PlatformLogTable", IsCompact() ? 1 : 2,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY |
                 ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 0.0f))) {
             if (!IsCompact()) ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonRecord),
                 ImGuiTableColumnFlags_WidthFixed, 84.0f);
@@ -4869,15 +5205,15 @@ private:
                 ImGui::EndChild();
                 return;
             }
-            BeginShellBodyChild("PlatformDeveloperContent");
+            BeginShellBodyChild("PlatformDeveloperContent", {}, true);
             draw_content();
             EndShellBodyChild();
         };
         if (IsCompact()) {
-            ImGui::BeginChild("PlatformDeveloperPicker", ImVec2(0.0f, 48.0f), true,
+            ImGui::BeginChild("PlatformDeveloperPicker", ImVec2(0.0f, Scaled(48.0f)), false,
                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             SetAvailableItemWidth();
-            if (ImGui::BeginCombo("##developer-panel", DeveloperPanelLabel(developer_panel_))) {
+            if (anomaly::glass::BeginCombo("##developer-panel", DeveloperPanelLabel(developer_panel_))) {
                 constexpr std::array<DeveloperPanel, 5> panels{
                     DeveloperPanel::Plugins, DeveloperPanel::Services, DeveloperPanel::Hooks,
                     DeveloperPanel::Memory, DeveloperPanel::NteProfile};
@@ -4895,25 +5231,18 @@ private:
             return;
         }
 
-        ImGui::BeginChild("PlatformDeveloperRail", ImVec2(168.0f, 0.0f), true);
         constexpr std::array<DeveloperPanel, 5> panels{
             DeveloperPanel::Plugins, DeveloperPanel::Services, DeveloperPanel::Hooks,
             DeveloperPanel::Memory, DeveloperPanel::NteProfile};
-        for (const DeveloperPanel panel : panels) {
-            const bool selected = developer_panel_ == panel;
-            ImGui::PushStyleColor(ImGuiCol_Header, selected
-                ? ThemeColorWithAlpha(anomaly::PlatformUiTheme().accent, 0.16f)
-                : ImVec4(0, 0, 0, 0));
-            ImGui::PushID(static_cast<int>(panel));
-            if (ImGui::Selectable(
-                    DeveloperPanelLabel(panel), selected, 0, ImVec2(0.0f, 32.0f))) {
-                developer_panel_ = panel;
-            }
-            ImGui::PopID();
-            ImGui::PopStyleColor();
-        }
-        ImGui::EndChild();
-        ImGui::SameLine(0.0f, 0.0f);
+        BeginCardChild("PlatformDeveloperRail", ImVec2(Scaled(168.0f), 0.0f), 8.0f);
+        std::size_t panel_index = static_cast<std::size_t>(
+            std::ranges::find(panels, developer_panel_) - panels.begin());
+        DrawLensRail("developer-panels", panels.size(), panel_index,
+            [&](const std::size_t index) { return std::string(DeveloperPanelLabel(panels[index])); },
+            40.0f);
+        if (panel_index < panels.size()) developer_panel_ = panels[panel_index];
+        EndCardChild();
+        ImGui::SameLine(0.0f, Scaled(10.0f));
         draw_content_panel();
     }
 
@@ -4927,12 +5256,12 @@ private:
         }
         const auto* selected = model_.Snapshot().FindPlugin(model_.State().selected_plugin_id);
         if (selected == nullptr) selected = &plugins.front();
-        ImGui::BeginChild("PlatformDeveloperPluginToolbar", ImVec2(0.0f, 50.0f), true,
+        ImGui::BeginChild("PlatformDeveloperPluginToolbar", ImVec2(0.0f, Scaled(48.0f)), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         ImGui::TextDisabled("%s", Text(anomaly::MessageId::CommonPlugin));
         ImGui::SameLine();
         SetAvailableItemWidth(56.0f, 300.0f);
-        if (ImGui::BeginCombo("##developer-plugin", selected->name.empty()
+        if (anomaly::glass::BeginCombo("##developer-plugin", selected->name.empty()
                 ? selected->id.c_str() : selected->name.c_str())) {
             for (const auto& plugin : plugins) {
                 const char* name = plugin.name.empty() ? plugin.id.c_str() : plugin.name.c_str();
@@ -4946,7 +5275,7 @@ private:
         ImGui::EndChild();
 
         ImGui::PushID(selected->id.c_str());
-        ImGui::BeginChild("PlatformDeveloperPluginHeader", ImVec2(0.0f, 84.0f), true,
+        BeginCardChild("PlatformDeveloperPluginHeader", ImVec2(0.0f, Scaled(84.0f)), 0.0f,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 icon_position = Offset(ImGui::GetCursorScreenPos(), 12.0f, 14.0f);
         DrawGenericPluginIcon(icon_position, 56.0f);
@@ -4961,39 +5290,53 @@ private:
             DisplayPluginState(selected->UiState()));
         ImGui::TextDisabled("%s", selected->id.c_str());
         ImGui::EndGroup();
-        ImGui::EndChild();
+        EndCardChild();
 
-        ImGui::BeginChild("PlatformDeveloperPluginTabs", ImVec2(0.0f, 36.0f), true,
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        const auto draw_tab = [this](const DeveloperPluginTab tab, const char* label) {
-            const bool active = developer_plugin_tab_ == tab;
-            ImGui::PushStyleColor(ImGuiCol_Button, active ? SurfaceColor() : ImVec4(0, 0, 0, 0));
-            const std::string stable_label = anomaly::StableDisplayLabel(
-                label, "developer-plugin-tab-" + std::to_string(static_cast<unsigned>(tab)));
-            if (ImGui::Button(stable_label.c_str(), ImVec2(0.0f, 30.0f))) {
-                developer_plugin_tab_ = tab;
+        ImGui::Dummy(Scaled(0.0f, 4.0f));
+        {
+            std::vector<DeveloperPluginTab> tabs{DeveloperPluginTab::Overview};
+            if (selected->has_runtime_view) {
+                tabs.push_back(DeveloperPluginTab::Capabilities);
+                tabs.push_back(DeveloperPluginTab::Performance);
             }
-            ImGui::PopStyleColor();
-        };
-        draw_tab(DeveloperPluginTab::Overview, Text(anomaly::MessageId::DiagnosticsTabOverview));
-        if (selected->has_runtime_view) {
-            ImGui::SameLine();
-            draw_tab(DeveloperPluginTab::Capabilities,
-                Text(anomaly::MessageId::DeveloperTabCapabilities));
-            ImGui::SameLine();
-            draw_tab(DeveloperPluginTab::Performance,
-                Text(anomaly::MessageId::DeveloperTabPerformance));
+            tabs.push_back(DeveloperPluginTab::Logs);
+            std::vector<const char*> labels;
+            labels.reserve(tabs.size());
+            for (const DeveloperPluginTab tab : tabs) {
+                switch (tab) {
+                case DeveloperPluginTab::Overview:
+                    labels.push_back(Text(anomaly::MessageId::DiagnosticsTabOverview));
+                    break;
+                case DeveloperPluginTab::Capabilities:
+                    labels.push_back(Text(anomaly::MessageId::DeveloperTabCapabilities));
+                    break;
+                case DeveloperPluginTab::Performance:
+                    labels.push_back(Text(anomaly::MessageId::DeveloperTabPerformance));
+                    break;
+                case DeveloperPluginTab::Logs:
+                    labels.push_back(Text(anomaly::MessageId::DiagnosticsTabLogs));
+                    break;
+                }
+            }
+            const auto found = std::ranges::find(tabs, developer_plugin_tab_);
+            int current = found == tabs.end() ? 0 : static_cast<int>(found - tabs.begin());
+            anomaly::glass::SegmentedOptions options;
+            options.height = 36.0f;
+            options.scale = PlatformUiScale();
+            options.padding_x = 14.0f;
+            if (anomaly::glass::SegmentedControl(
+                    "developer-plugin-tabs", labels, current, options)) {
+                developer_plugin_tab_ = tabs[static_cast<std::size_t>(current)];
+            }
         }
-        ImGui::SameLine();
-        draw_tab(DeveloperPluginTab::Logs, Text(anomaly::MessageId::DiagnosticsTabLogs));
-        ImGui::EndChild();
+        ImGui::Dummy(Scaled(0.0f, 4.0f));
 
         if (!selected->has_runtime_view &&
             (developer_plugin_tab_ == DeveloperPluginTab::Capabilities ||
              developer_plugin_tab_ == DeveloperPluginTab::Performance)) {
             developer_plugin_tab_ = DeveloperPluginTab::Overview;
         }
-        BeginShellBodyChild("PlatformDeveloperPluginBody");
+        BeginShellBodyChild("PlatformDeveloperPluginBody", {}, true);
         switch (developer_plugin_tab_) {
         case DeveloperPluginTab::Overview: DrawDeveloperPluginOverview(*selected); break;
         case DeveloperPluginTab::Capabilities: DrawDeveloperPluginCapabilities(*selected); break;
@@ -5017,7 +5360,7 @@ private:
             ? Format(anomaly::MessageId::DeveloperCurrentAbi, generation_arguments)
             : Text(anomaly::MessageId::DeveloperNoGeneration);
         if (ImGui::BeginTable("PlatformDeveloperOverview", 2,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
             const auto row = [](const char* label, const std::string_view value) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -5067,7 +5410,7 @@ private:
         ImGui::Spacing();
         ImGui::TextUnformatted(Text(anomaly::MessageId::DeveloperResourceCounts));
         if (ImGui::BeginTable("PlatformDeveloperResources", 2,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
             const PluginResourceCountsView& resources = diagnostics.resources;
             const std::array<std::pair<const char*, std::size_t>, 13> rows{{
                 {Text(anomaly::MessageId::DeveloperResourceLedger), resources.ledger_resources},
@@ -5104,7 +5447,7 @@ private:
             return;
         }
         if (ImGui::BeginTable("PlatformDeveloperPluginPerformance", 7,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonCallback));
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonCalls));
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonFaults));
@@ -5138,7 +5481,7 @@ private:
             return;
         }
         if (ImGui::BeginTable("PlatformDeveloperPluginIpc", 8,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
                     ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollX)) {
             ImGui::TableSetupColumn(Text(anomaly::MessageId::DeveloperEndpoint));
             ImGui::TableSetupColumn(Text(anomaly::MessageId::DeveloperRole));
@@ -5319,15 +5662,14 @@ private:
         const char* badge = nullptr) {
         if (!SettingMatches(label, consequence, keywords)) return false;
         if (!settings_section_heading_drawn_) {
-            ImGui::SetWindowFontScale(1.15f);
+            ImGui::SetWindowFontScale(1.3f);
             ImGui::TextUnformatted(SettingsSectionName(settings_drawing_section_));
             ImGui::SetWindowFontScale(1.0f);
-            ImGui::Separator();
+            ImGui::Spacing();
             settings_section_heading_drawn_ = true;
         }
         ImGui::PushID(id);
-        if (ImGui::BeginTable("##setting-row", 2,
-                ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
+        if (ImGui::BeginTable("##setting-row", 2, ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("##setting", ImGuiTableColumnFlags_WidthStretch, 1.0f);
             ImGui::TableSetupColumn(
                 "##control", ImGuiTableColumnFlags_WidthFixed, Scaled(250.0f));
@@ -5335,18 +5677,32 @@ private:
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(label);
             if (badge != nullptr) {
-                ImGui::SameLine();
-                ImGui::TextColored(InfoColor(), "%s", badge);
+                ImGui::SameLine(0.0f, Scaled(8.0f));
+                const ImVec2 badge_size = ImGui::CalcTextSize(badge);
+                const ImVec2 badge_min = Offset(ImGui::GetCursorScreenPos(), 0.0f, -Scaled(1.0f));
+                const ImVec2 badge_max = Offset(badge_min, badge_size.x + Scaled(14.0f),
+                    badge_size.y + Scaled(2.0f));
+                ImGui::GetWindowDrawList()->AddRectFilled(badge_min, badge_max,
+                    ImGui::GetColorU32(InkColor(0.07f)), (badge_max.y - badge_min.y) * 0.4f);
+                ImGui::SetCursorScreenPos(Offset(badge_min, Scaled(7.0f), Scaled(1.0f)));
+                ImGui::TextDisabled("%s", badge);
             }
             ImGui::TextDisabled("%s", consequence);
             ImGui::TableNextColumn();
             SetAvailableItemWidth(0.0f, 238.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(10.0f));
             draw_control();
+            ImGui::PopStyleVar();
             if (const char* error = SettingError(id)) {
                 ImGui::TextColored(ErrorColor(), "%s", error);
             }
             ImGui::EndTable();
         }
+        // A hairline between rows, inset on the label side like a grouped list.
+        const ImVec2 line_start = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(Offset(line_start, Scaled(2.0f), -Scaled(3.0f)),
+            Offset(line_start, ImGui::GetContentRegionAvail().x, -Scaled(3.0f)),
+            ImGui::GetColorU32(InkColor(0.07f)));
         ImGui::PopID();
         return true;
     }
@@ -5543,7 +5899,7 @@ private:
         EnsureRepositoryEditorLoaded();
 
         ImGui::BeginDisabled(repo_editor_save_pending_);
-        ImGui::Checkbox(StableLabel(anomaly::MessageId::SettingsRepositoriesEnable,
+        anomaly::glass::Switch(StableLabel(anomaly::MessageId::SettingsRepositoriesEnable,
             "repo-master-enable").c_str(), &repo_editor_master_enabled_);
         ImGui::TextDisabled("%s", Text(anomaly::MessageId::SettingsRepositoriesEnableHint));
         ImGui::Spacing();
@@ -5570,7 +5926,7 @@ private:
         for (std::size_t index = 0; index < repo_editor_rows_.size(); ++index) {
             ImGui::PushID(static_cast<int>(index));
             auto& row = repo_editor_rows_[index];
-            ImGui::Checkbox("##channel-enabled", &row.enabled);
+            anomaly::glass::Switch("##channel-enabled", &row.enabled);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("%s", Text(anomaly::MessageId::SettingsRepositoriesToggleHint));
             }
@@ -5635,10 +5991,10 @@ private:
         settings_section_heading_drawn_ = false;
         const auto heading = [&] {
             if (!settings_section_heading_drawn_) {
-                ImGui::SetWindowFontScale(1.15f);
+                ImGui::SetWindowFontScale(1.3f);
                 ImGui::TextUnformatted(SettingsSectionName(section));
                 ImGui::SetWindowFontScale(1.0f);
-                ImGui::Separator();
+                ImGui::Spacing();
                 settings_section_heading_drawn_ = true;
             }
             visible = true;
@@ -5651,7 +6007,7 @@ private:
         case SettingsSection::Interface:
             row("interface.language", Text(anomaly::MessageId::SettingsLanguage),
                 Text(anomaly::MessageId::SettingsLanguageHint), "locale language", [&] {
-                    if (ImGui::BeginCombo(
+                    if (anomaly::glass::BeginCombo(
                             "##value", LanguagePreferenceLabel(values.interface_language))) {
                         constexpr std::array<anomaly::LanguagePreference, 3> options{
                             anomaly::LanguagePreference::Auto,
@@ -5673,7 +6029,7 @@ private:
             row("interface.palette", Text(anomaly::MessageId::SettingsPalette),
                 Text(anomaly::MessageId::SettingsPaletteHint),
                 "palette theme color moss aurora ember paper naiwa anomalyhub custom", [&] {
-                    if (ImGui::BeginCombo("##value", PaletteLabel(values.interface_palette))) {
+                    if (anomaly::glass::BeginCombo("##value", PaletteLabel(values.interface_palette))) {
                         constexpr std::array<anomaly::PlatformUiPalette, 7> options{
                             anomaly::PlatformUiPalette::Moss,
                             anomaly::PlatformUiPalette::Aurora,
@@ -5756,7 +6112,7 @@ private:
                     constexpr int crop =
                         static_cast<int>(anomaly::PlatformUiBackgroundMode::Crop);
                     bool enabled = theme_background_mode_ != disabled;
-                    if (ImGui::Checkbox("##background-enabled", &enabled)) {
+                    if (anomaly::glass::Switch("##background-enabled", &enabled)) {
                         // 从关闭切到开启时默认用裁剪。
                         const int next = enabled
                             ? (theme_background_mode_ == disabled ? crop
@@ -5841,7 +6197,7 @@ private:
                 "veil opacity dim wallpaper readability", [&] {
                     int value = static_cast<int>(std::lround(
                         std::clamp(theme_surface_opacity_, 0.0f, 1.0f) * 100.0f));
-                    if (ImGui::SliderInt("##value", &value,
+                    if (anomaly::glass::SliderInt("##value", &value,
                             static_cast<int>(
                                 anomaly::kPlatformUiLayoutSurfaceOpacityMinimum * 100.0f),
                             100, "%d%%")) {
@@ -5858,7 +6214,7 @@ private:
                 "dpi font size zoom", [&] {
                     int value = static_cast<int>(settings_scale_edit_percent_.value_or(
                         values.interface_scale_percent));
-                    if (ImGui::SliderInt("##value", &value,
+                    if (anomaly::glass::SliderInt("##value", &value,
                             static_cast<int>(anomaly::kPlatformInterfaceScaleMinimumPercent),
                             static_cast<int>(anomaly::kPlatformInterfaceScaleMaximumPercent),
                             "%d%%")) {
@@ -5876,12 +6232,18 @@ private:
             row("interface.reduced_motion", Text(anomaly::MessageId::SettingsReduceMotion),
                 Text(anomaly::MessageId::SettingsReduceMotionHint),
                 "animation accessibility", [&] {
-                    ImGui::Checkbox("##value", &values.interface_reduced_motion);
+                    anomaly::glass::Switch("##value", &values.interface_reduced_motion);
+                });
+            row("interface.reduced_transparency",
+                Text(anomaly::MessageId::SettingsReduceTransparency),
+                Text(anomaly::MessageId::SettingsReduceTransparencyHint),
+                "glass blur transparency contrast accessibility", [&] {
+                    anomaly::glass::Switch("##value", &values.interface_reduced_transparency);
                 });
             row("interface.remember_last_route", Text(anomaly::MessageId::SettingsRememberLastPage),
                 Text(anomaly::MessageId::SettingsRememberLastPageHint),
                 "startup route page", [&] {
-                    ImGui::Checkbox("##value", &values.interface_remember_last_route);
+                    anomaly::glass::Switch("##value", &values.interface_remember_last_route);
                 });
             break;
         case SettingsSection::Input:
@@ -5898,7 +6260,7 @@ private:
                 });
             row("input.gamepad_navigation", Text(anomaly::MessageId::SettingsGamepadNavigation),
                 Text(anomaly::MessageId::SettingsGamepadNavigationHint),
-                "controller", [&] { ImGui::Checkbox("##value", &values.input_gamepad_navigation); });
+                "controller", [&] { anomaly::glass::Switch("##value", &values.input_gamepad_navigation); });
             break;
         case SettingsSection::Updates:
             row("updates.channel", Text(anomaly::MessageId::SettingsUpdateChannel),
@@ -5928,16 +6290,16 @@ private:
                 });
             row("updates.automatic_check", Text(anomaly::MessageId::SettingsAutomaticUpdates),
                 Text(anomaly::MessageId::SettingsAutomaticUpdatesHint),
-                "repository network", [&] { ImGui::Checkbox("##value", &values.updates_automatic_check); });
+                "repository network", [&] { anomaly::glass::Switch("##value", &values.updates_automatic_check); });
             row("updates.include_disabled", Text(anomaly::MessageId::SettingsIncludeDisabled),
                 Text(anomaly::MessageId::SettingsIncludeDisabledHint),
-                "repository profile", [&] { ImGui::Checkbox("##value", &values.updates_include_disabled); });
+                "repository profile", [&] { anomaly::glass::Switch("##value", &values.updates_include_disabled); });
             break;
         case SettingsSection::Diagnostics:
             row("diagnostics.log_level", Text(anomaly::MessageId::SettingsMinimumLogLevel),
                 Text(anomaly::MessageId::SettingsLogLevelHint),
                 "trace debug info warning error", [&] {
-                    if (ImGui::BeginCombo(
+                    if (anomaly::glass::BeginCombo(
                             "##value", MinimumLogLevelLabel(values.diagnostics_log_level))) {
                         constexpr std::array<anomaly::PlatformMinimumLogLevel, 5> levels{
                             anomaly::PlatformMinimumLogLevel::Trace,
@@ -5972,13 +6334,13 @@ private:
             row("advanced.developer_mode", Text(anomaly::MessageId::SettingsDeveloperMode),
                 Text(anomaly::MessageId::SettingsDeveloperModeHint),
                 "services hooks memory nte", [&] {
-                    ImGui::Checkbox("##value", &values.advanced_developer_mode);
+                    anomaly::glass::Switch("##value", &values.advanced_developer_mode);
                 });
             row("advanced.detailed_performance_diagnostics",
                 Text(anomaly::MessageId::SettingsDetailedPerformanceDiagnostics),
                 Text(anomaly::MessageId::SettingsDetailedPerformanceDiagnosticsHint),
                 "performance timing render ui tick worker plugin", [&] {
-                    ImGui::Checkbox(
+                    anomaly::glass::Switch(
                         "##value", &values.advanced_detailed_performance_diagnostics);
                 });
             break;
@@ -6126,7 +6488,7 @@ private:
             const std::string developer_session = StableLabel(
                 anomaly::MessageId::SettingsEnableDeveloperSession,
                 "settings-developer-session");
-            if (ImGui::Checkbox(developer_session.c_str(), &developer_mode)) {
+            if (anomaly::glass::Switch(developer_session.c_str(), &developer_mode)) {
                 SetDeveloperMode(developer_mode);
             }
             EndShellBodyChild();
@@ -6136,37 +6498,40 @@ private:
         settings_validation_errors_ = anomaly::ValidatePlatformSettings(*settings_draft_);
         ImGui::BeginChild("PlatformSettingsRoute", ImVec2(0.0f, 0.0f), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        ImGui::BeginChild("PlatformSettingsSearch", ImVec2(0.0f, Scaled(44.0f)), true,
+        ImGui::BeginChild("PlatformSettingsSearch", ImVec2(0.0f, Scaled(48.0f)), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        ImGui::SetCursorPos(Scaled(16.0f, 7.0f));
+        ImGui::SetCursorPos(Scaled(12.0f, 6.0f));
         SetAvailableItemWidth(16.0f, 520.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Scaled(30.0f), FieldPaddingY()));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(10.0f));
         ImGui::InputTextWithHint("##settings-search", Text(anomaly::MessageId::SettingsSearchHint),
             settings_search_.data(), settings_search_.size());
+        ImGui::PopStyleVar(2);
+        ImGui::GetWindowDrawList()->AddText(
+            FieldGlyphPosition(),
+            ImGui::GetColorU32(ThemeColor(anomaly::PlatformUiTheme().text_muted)),
+            ShellGlyphText(ShellGlyph::Search));
         ImGui::EndChild();
 
-        const bool dirty = SettingsDirty();
-        const float footer_height = dirty || settings_save_pending_ || !settings_apply_error_.empty()
-            ? Scaled(54.0f) : 0.0f;
-        ImGui::BeginChild("PlatformSettingsWorkspace", ImVec2(0.0f, -footer_height), false,
+        ImGui::BeginChild("PlatformSettingsWorkspace", ImVec2(0.0f, 0.0f), false,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         constexpr std::array<SettingsSection, 6> sections{
             SettingsSection::Interface, SettingsSection::Input, SettingsSection::Updates,
             SettingsSection::Diagnostics, SettingsSection::Advanced, SettingsSection::About};
         const float rail_width = Scaled(
             layout_mode_ == LayoutMode::Wide ? 200.0f : 180.0f);
-        ImGui::BeginChild("PlatformSettingsSections", ImVec2(rail_width, 0.0f), true);
-        for (const auto section : sections) {
-            const std::string label = anomaly::StableDisplayLabel(
-                SettingsSectionName(section), std::to_string(static_cast<int>(section)));
-            if (ImGui::Selectable(label.c_str(), settings_section_ == section,
-                    0, FillAvailableSize(34.0f))) {
-                settings_section_ = section;
-            }
-        }
-        ImGui::EndChild();
-        ImGui::SameLine(0.0f, 0.0f);
-        ImGui::BeginChild("PlatformSettingsContent", ImVec2(0.0f, 0.0f), true,
-            ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        BeginCardChild("PlatformSettingsSections", ImVec2(rail_width, 0.0f), 8.0f);
+        std::size_t section_index = static_cast<std::size_t>(
+            std::ranges::find(sections, settings_section_) - sections.begin());
+        DrawLensRail("settings-sections", sections.size(), section_index,
+            [&](const std::size_t index) {
+                return anomaly::StableDisplayLabel(SettingsSectionName(sections[index]),
+                    std::to_string(static_cast<int>(sections[index])));
+            }, 40.0f);
+        if (section_index < sections.size()) settings_section_ = sections[section_index];
+        EndCardChild();
+        ImGui::SameLine(0.0f, Scaled(10.0f));
+        BeginCardChild("PlatformSettingsContent", ImVec2(0.0f, 0.0f), 16.0f, 0);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scaled(12.0f, 10.0f));
         bool any_visible{};
         if (settings_search_[0] == '\0') {
@@ -6189,54 +6554,105 @@ private:
                 anomaly::MessageId::CommonClearSearch, "settings-clear-search");
             if (ImGui::Button(clear_search.c_str())) settings_search_.fill('\0');
         }
+        ImGui::Dummy(ImVec2(0.0f, FloatingBarClearance()));
         ImGui::PopStyleVar();
-        ImGui::EndChild();
+        EndCardChild();
         ImGui::EndChild();
 
-        if (footer_height > 0.0f) {
-            ImGui::BeginChild("PlatformSettingsDraftBar", ImVec2(0.0f, footer_height), true,
-                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            ImGui::SetCursorPos(Scaled(12.0f, 17.0f));
-            if (!settings_apply_error_.empty()) {
-                ImGui::TextColored(ErrorColor(), "%s", settings_apply_error_.c_str());
-            } else if (!settings_validation_errors_.empty()) {
-                const std::string error_count =
-                    std::to_string(settings_validation_errors_.size());
-                const std::array<std::string_view, 1> error_arguments{error_count};
-                const std::string error_text = Format(
-                    anomaly::MessageId::SettingsValidationErrors, error_arguments);
-                ImGui::TextColored(ErrorColor(), "%s", error_text.c_str());
-            } else {
-                ImGui::TextDisabled("%s", Text(settings_save_pending_
-                    ? anomaly::MessageId::SettingsSavingChanges
-                    : anomaly::MessageId::SettingsUnsavedChanges));
-            }
-            const float save_width = Scaled(76.0f);
-            const float discard_width = Scaled(82.0f);
-            ImGui::SetCursorPos(ImVec2((std::max)(Scaled(12.0f),
-                ImGui::GetWindowSize().x - save_width - discard_width - Scaled(28.0f)),
-                Scaled(10.0f)));
-            ImGui::BeginDisabled(settings_save_pending_);
-            const std::string discard = StableLabel(
-                anomaly::MessageId::CommonDiscard, "settings-discard");
-            if (ImGui::Button(discard.c_str(), ImVec2(discard_width, Scaled(32.0f)))) {
-                DiscardSettingsDraft();
-            }
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            const bool stale = settings_base_revision_ != settings_snapshot_.revision;
-            ImGui::BeginDisabled(settings_save_pending_ || !settings_validation_errors_.empty() || stale);
-            const std::string save = StableLabel(settings_save_pending_
-                    ? anomaly::MessageId::CommonSaving
-                    : anomaly::MessageId::CommonSave,
-                "settings-save");
-            if (PrimaryButton(save.c_str(),
-                    ImVec2(save_width, Scaled(32.0f)))) {
-                QueueSettingsSave();
-            }
-            ImGui::EndDisabled();
-            ImGui::EndChild();
+        ImGui::EndChild();
+    }
+
+    // Unsaved settings float as a glass bar in the bottom-right corner, beside
+    // the tab bar, so the page never changes height while it is edited. In a
+    // window too narrow for both it rises above the tab bar.
+    void DrawSettingsDraftBar() {
+        if (model_.State().route != Route::Settings || !settings_snapshot_.ready ||
+            !settings_draft_) {
+            return;
         }
+        if (!SettingsDirty() && !settings_save_pending_ && settings_apply_error_.empty()) return;
+        const auto& theme = anomaly::PlatformUiTheme();
+        std::string status;
+        ImVec4 status_ink = ThemeColor(theme.text_muted);
+        if (!settings_apply_error_.empty()) {
+            status = settings_apply_error_;
+            status_ink = ErrorColor();
+        } else if (!settings_validation_errors_.empty()) {
+            const std::string error_count = std::to_string(settings_validation_errors_.size());
+            const std::array<std::string_view, 1> error_arguments{error_count};
+            status = Format(anomaly::MessageId::SettingsValidationErrors, error_arguments);
+            status_ink = ErrorColor();
+        } else {
+            status = Text(settings_save_pending_
+                ? anomaly::MessageId::SettingsSavingChanges
+                : anomaly::MessageId::SettingsUnsavedChanges);
+        }
+        const float button_height = Scaled(36.0f);
+        const float inset = Scaled(kTabBarInset + 2.0f);
+        const float discard_width = Scaled(84.0f);
+        const float save_width = Scaled(84.0f);
+        const float gap = Scaled(8.0f);
+        const float text_padding = Scaled(16.0f);
+        status = Ellipsize(status, Scaled(320.0f));
+        const float text_width = ImGui::CalcTextSize(status.c_str()).x;
+        const float bar_width = text_padding + text_width + text_padding +
+            discard_width + gap + save_width + inset;
+        const float bar_height = button_height + inset * 2.0f;
+        const ImVec2 window_position = ImGui::GetWindowPos();
+        const ImVec2 window_size = ImGui::GetWindowSize();
+        ImVec2 bar_min(
+            std::round(window_position.x + window_size.x - Scaled(14.0f) - bar_width),
+            std::round(tab_bar_rect_.GetCenter().y - bar_height * 0.5f));
+        if (tab_bar_rect_.GetWidth() <= 0.0f || bar_min.x < tab_bar_rect_.Max.x + Scaled(12.0f)) {
+            bar_min.y = std::round((tab_bar_rect_.GetWidth() > 0.0f ? tab_bar_rect_.Min.y
+                : window_position.y + window_size.y) - Scaled(10.0f) - bar_height);
+        }
+        ImGui::SetCursorScreenPos(bar_min);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::BeginChild("PlatformSettingsDraftBar", ImVec2(bar_width, bar_height), false,
+            ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar();
+        ImDrawList* const list = ImGui::GetWindowDrawList();
+        anomaly::glass::CaptureBackdrop(list);
+        anomaly::glass::SurfaceOptions surface;
+        surface.variant = anomaly::glass::Variant::Regular;
+        surface.rounding = button_height * kTabBarRounding + inset;
+        surface.scale = PlatformUiScale();
+        surface.shadow = false;
+        surface.tint_strength = anomaly::glass::DarkAppearance() ? 0.30f : 0.16f;
+        anomaly::glass::DrawSurface(list, bar_min, Offset(bar_min, bar_width, bar_height), surface);
+        list->AddText(Offset(bar_min, text_padding,
+                (bar_height - ImGui::GetTextLineHeight()) * 0.5f),
+            ImGui::GetColorU32(status_ink), status.c_str());
+
+        ImGui::SetCursorScreenPos(Offset(bar_min,
+            bar_width - inset - save_width - gap - discard_width, inset));
+        ImGui::BeginDisabled(settings_save_pending_);
+        const std::string discard = StableLabel(
+            anomaly::MessageId::CommonDiscard, "settings-discard");
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, button_height * kTabBarRounding);
+        ImGui::PushStyleColor(ImGuiCol_Button, InkColor(0.085f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, InkColor(0.085f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, InkColor(0.14f));
+        const bool discard_pressed =
+            ImGui::Button(discard.c_str(), ImVec2(discard_width, button_height));
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+        if (discard_pressed) DiscardSettingsDraft();
+        ImGui::EndDisabled();
+        ImGui::SameLine(0.0f, gap);
+        const bool stale = settings_base_revision_ != settings_snapshot_.revision;
+        ImGui::BeginDisabled(
+            settings_save_pending_ || !settings_validation_errors_.empty() || stale);
+        const std::string save = StableLabel(settings_save_pending_
+                ? anomaly::MessageId::CommonSaving
+                : anomaly::MessageId::CommonSave,
+            "settings-save");
+        if (PrimaryButton(save.c_str(), ImVec2(save_width, button_height))) {
+            QueueSettingsSave();
+        }
+        ImGui::EndDisabled();
         ImGui::EndChild();
     }
 
@@ -6254,28 +6670,44 @@ private:
             return;
         }
         const float text_width = ImGui::CalcTextSize(toast_status_.c_str()).x;
-        const float minimum_width = Scaled(220.0f);
-        const float width = std::min(std::max(minimum_width, text_width + Scaled(58.0f)),
+        const float minimum_width = Scaled(200.0f);
+        const float width = std::min(std::max(minimum_width, text_width + Scaled(64.0f)),
             std::max(minimum_width, size.x - Scaled(28.0f)));
-        const float height = Scaled(kPlatformToastHeight);
-        const float margin = Scaled(kPlatformToastBottomMargin);
-        const ImVec2 position = Offset(
-            origin, size.x - width - margin, size.y - height - margin);
+        const float height = Scaled(kPlatformToastHeight + 4.0f);
+        const float margin = Scaled(kPlatformTabBarReserve + 2.0f);
+        // The toast rises into place and fades out over its last quarter second.
+        const double now = ImGui::GetTime();
+        const float age = static_cast<float>(now - (toast_expires_at_ - 3.2));
+        const float remaining = static_cast<float>(toast_expires_at_ - now);
+        const bool motion = !anomaly::glass::ReduceMotion();
+        const float enter = motion ? std::clamp(age / 0.22f, 0.0f, 1.0f) : 1.0f;
+        const float eased = 1.0f - (1.0f - enter) * (1.0f - enter) * (1.0f - enter);
+        const float fade = std::clamp(remaining / 0.25f, 0.0f, 1.0f) *
+            (motion ? std::clamp(age / 0.12f, 0.0f, 1.0f) : 1.0f);
+        const ImVec2 position = Offset(origin, (size.x - width) * 0.5f,
+            size.y - height - margin + (1.0f - eased) * Scaled(16.0f));
         const ImVec4 color = toast_failure_ ? ErrorColor() : SuccessColor();
         const auto& theme = anomaly::PlatformUiTheme();
         ImDrawList* const draw_list = ImGui::GetForegroundDrawList();
         draw_list->PushClipRect(origin, Offset(origin, size.x, size.y), true);
-        draw_list->AddRectFilled(position, Offset(position, width, height),
-            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.toast_background)), Scaled(4.0f));
-        draw_list->AddRect(position, Offset(position, width, height),
-            ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.42f)),
-            Scaled(4.0f));
-        draw_list->AddText(ScaledOffset(position, 12.0f, 11.0f),
-            ImGui::ColorConvertFloat4ToU32(color),
-            ShellGlyphText(toast_failure_ ? ShellGlyph::Warning : ShellGlyph::Check));
-        draw_list->AddText(ScaledOffset(position, 34.0f, 11.0f),
-            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)),
-            Ellipsize(toast_status_, width - Scaled(46.0f)).c_str());
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * fade);
+        anomaly::glass::CaptureBackdrop(draw_list);
+        DrawGlass(draw_list, position, Offset(position, width, height),
+            anomaly::glass::Variant::Regular, (kPlatformToastHeight + 4.0f) * kTabBarRounding,
+            true, false);
+        const float text_y = (height - ImGui::GetTextLineHeight()) * 0.5f;
+        draw_list->AddCircleFilled(Offset(position, Scaled(22.0f), height * 0.5f), Scaled(9.0f),
+            ImGui::GetColorU32(ImVec4(color.x, color.y, color.z, 0.20f)));
+        const char* const glyph =
+            ShellGlyphText(toast_failure_ ? ShellGlyph::Warning : ShellGlyph::Check);
+        const ImVec2 glyph_size = ImGui::CalcTextSize(glyph);
+        draw_list->AddText(Offset(position, Scaled(22.0f) - glyph_size.x * 0.5f,
+                height * 0.5f - glyph_size.y * 0.5f),
+            ImGui::GetColorU32(color), glyph);
+        draw_list->AddText(Offset(position, Scaled(42.0f), text_y),
+            ImGui::GetColorU32(ThemeColor(theme.text)),
+            Ellipsize(toast_status_, width - Scaled(56.0f)).c_str());
+        ImGui::PopStyleVar();
         draw_list->PopClipRect();
     }
 
@@ -6378,7 +6810,7 @@ private:
         ImGui::TextDisabled("%s", Format(
             anomaly::MessageId::DeveloperServiceSummary, summary_arguments).c_str());
         if (ImGui::BeginTable("DeveloperServices", 7,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonService));
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonState));
             ImGui::TableSetupColumn(Text(anomaly::MessageId::DeveloperServiceAffinity));
@@ -6408,7 +6840,7 @@ private:
             return;
         }
         if (ImGui::BeginTable("DeveloperHooks", 5,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY)) {
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonOwner));
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonLabel));
             ImGui::TableSetupColumn(Text(anomaly::MessageId::CommonGeneration));
@@ -6479,7 +6911,7 @@ private:
         ImGui::SameLine();
         const std::string patch_label = StableLabel(
             anomaly::MessageId::DeveloperMemoryPatchProtection, "memory-patch-protection");
-        ImGui::Checkbox(patch_label.c_str(), &patch_);
+        anomaly::glass::Switch(patch_label.c_str(), &patch_);
         ImGui::SameLine();
         const std::string apply = StableLabel(
             anomaly::MessageId::CommonApply, "memory-apply");
@@ -7550,7 +7982,13 @@ private:
     bool management_shell_was_collapsed_{};
     float management_shell_ui_scale_{1.0f};
     ImVec2 management_shell_expanded_size_{};
-    bool navigation_collapsed_{};
+    // The current route publishes its title and its header actions while it is
+    // drawn; the global header, drawn after the route, shows them.
+    std::function<void(const ImVec2&, const ImVec2&)> page_header_actions_;
+    bool tab_bar_held_{};
+    bool plugin_search_active_{};
+    float plugin_search_reveal_{};
+    ImRect tab_bar_rect_;
     bool compact_plugin_detail_{};
     std::string compact_plugin_detail_pending_id_;
     double compact_plugin_detail_requested_at_{};
@@ -8004,6 +8442,7 @@ void RunPlatform(
             retain_generation();
             return;
         }
+        anomaly::glass::ShutdownRenderer();
         if (imgui_dx11_initialized) {
             try { ImGui_ImplDX11_Shutdown(); } catch (...) { }
             imgui_dx11_initialized = false;
@@ -8096,6 +8535,14 @@ void RunPlatform(
     if (!imgui_win32_initialized) return;
     imgui_dx11_initialized = ImGui_ImplDX11_Init(host.device, host.context);
     if (!imgui_dx11_initialized) return;
+    // The standalone host owns its device, so it can give the shell real
+    // backdrop glass. A failure only costs the effect: every surface has a
+    // solid fallback.
+    if (!anomaly::glass::InitializeRenderer(host.device, host.context)) {
+        std::ofstream(root / L"anomaly-platform.log", std::ios::app)
+            << "liquid glass renderer unavailable; using solid surfaces\n";
+    }
+    ApplyPlatformUiStyle();
     static_cast<void>(CreateStandaloneHeaderLogo(host));
 
     plugin_mutex = std::make_shared<std::mutex>();
@@ -8255,6 +8702,7 @@ void RunPlatform(
         UpdateHostWindowRegion(host);
         host.context->OMSetRenderTargets(1, &host.render_target, nullptr);
         host.context->ClearRenderTargetView(host.render_target, kHostClearColor);
+        anomaly::glass::PrepareDrawData(ImGui::GetDrawData());
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         host.swap_chain->Present(1, 0);
         FlushPlatformUiActions();

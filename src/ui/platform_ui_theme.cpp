@@ -1,5 +1,7 @@
 #include "anomaly/platform_ui_theme.hpp"
 
+#include "anomaly/liquid_glass.hpp"
+
 #include <imgui.h>
 
 #include "platform_ui_gb2312.hpp"
@@ -404,66 +406,99 @@ void ApplyPlatformUiStyle() noexcept {
         ? ImGui::GetIO().FontGlobalScale
         : 1.0f;
     const PlatformUiThemeColors& theme = PlatformUiTheme();
-    style.WindowRounding = 4.0f;
-    style.ChildRounding = 0.0f;
-    style.FrameRounding = 3.0f;
-    // FrameBg matches ChildBg, so without a frame border an unchecked checkbox
-    // (and other empty frames) is indistinguishable from its surroundings.
-    style.FrameBorderSize = 1.0f;
-    // Keep native tab controls legible against the plugin body background.
-    style.TabBorderSize = 1.0f;
+    // Liquid glass geometry: continuous, generous corners. Panels draw their
+    // own material, so ImGui's child and frame borders are off and every frame
+    // is a soft neutral fill derived from the text colour instead. That keeps a
+    // field legible on any palette and on any glass tint without a hard outline.
+    const bool glass = anomaly::glass::Active();
+    style.WindowRounding = 18.0f;
+    style.ChildRounding = 14.0f;
+    style.FrameRounding = 9.0f;
+    style.PopupRounding = 14.0f;
+    style.ScrollbarRounding = 9.0f;
+    style.GrabRounding = 9.0f;
+    style.TabRounding = 9.0f;
+    style.WindowBorderSize = glass ? 0.0f : 1.0f;
+    style.PopupBorderSize = glass ? 0.0f : 1.0f;
+    style.ChildBorderSize = 0.0f;
+    style.FrameBorderSize = 0.0f;
+    style.TabBorderSize = 0.0f;
     style.TabBarBorderSize = 1.0f;
-    style.PopupRounding = 4.0f;
-    style.ScrollbarRounding = 3.0f;
-    style.WindowPadding = ImVec2(12.0f, 12.0f);
-    style.FramePadding = ImVec2(8.0f, 6.0f);
-    style.ItemSpacing = ImVec2(8.0f, 6.0f);
-    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.TabBarOverlineSize = 0.0f;
+    style.SeparatorTextBorderSize = 1.0f;
+    style.WindowPadding = ImVec2(14.0f, 14.0f);
+    style.FramePadding = ImVec2(10.0f, 6.0f);
+    style.ItemSpacing = ImVec2(8.0f, 7.0f);
+    style.ItemInnerSpacing = ImVec2(8.0f, 5.0f);
+    style.CellPadding = ImVec2(8.0f, 5.0f);
     style.IndentSpacing = 16.0f;
-    style.ScrollbarSize = 12.0f;
-    style.GrabMinSize = 10.0f;
+    style.ScrollbarSize = 10.0f;
+    style.GrabMinSize = 12.0f;
+    style.SelectableTextAlign = ImVec2(0.0f, 0.5f);
+    const auto ink = [&theme](const float alpha) {
+        return ImVec4(theme.text.red, theme.text.green, theme.text.blue, alpha);
+    };
+    const auto accent = [&theme](const float alpha) {
+        return ImVec4(theme.accent.red, theme.accent.green, theme.accent.blue, alpha);
+    };
     auto* colors = style.Colors;
     colors[ImGuiCol_Text] = ImGuiColor(theme.text);
     colors[ImGuiCol_TextDisabled] = ImGuiColor(theme.text_muted);
     colors[ImGuiCol_WindowBg] = ImGuiColor(theme.window_background);
     colors[ImGuiCol_ChildBg] = ImGuiColor(theme.child_background);
-    colors[ImGuiCol_PopupBg] = ImGuiColor(theme.popup_background);
-    colors[ImGuiCol_Border] = ImGuiColor(theme.border);
-    colors[ImGuiCol_FrameBg] = ImGuiColor(theme.frame);
-    colors[ImGuiCol_FrameBgHovered] = ImGuiColor(theme.frame_hovered);
-    colors[ImGuiCol_FrameBgActive] = ImGuiColor(theme.frame_active);
+    // Popups, menus and tooltips receive a glass body from the renderer, so
+    // their own fill must stay out of its way.
+    colors[ImGuiCol_PopupBg] = glass
+        ? ImVec4(theme.popup_background.red, theme.popup_background.green,
+              theme.popup_background.blue, 0.0f)
+        : ImGuiColor(theme.popup_background);
+    colors[ImGuiCol_Border] = ink(0.12f);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_FrameBg] = ink(0.075f);
+    colors[ImGuiCol_FrameBgHovered] = ink(0.075f);
+    colors[ImGuiCol_FrameBgActive] = ink(0.15f);
     colors[ImGuiCol_TitleBg] = ImGuiColor(theme.navigation_background);
     colors[ImGuiCol_TitleBgActive] = ImGuiColor(theme.window_background);
-    colors[ImGuiCol_Button] = ImGuiColor(theme.button);
-    colors[ImGuiCol_ButtonHovered] = ImGuiColor(theme.button_hovered);
-    colors[ImGuiCol_ButtonActive] = ImGuiColor(theme.button_active);
-    colors[ImGuiCol_Header] = ImGuiColor(theme.accent_soft);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(
-        theme.accent.red, theme.accent.green, theme.accent.blue, 0.24f);
-    colors[ImGuiCol_HeaderActive] = ImVec4(
-        theme.accent.red, theme.accent.green, theme.accent.blue, 0.32f);
+    colors[ImGuiCol_TitleBgCollapsed] = ImGuiColor(theme.navigation_background);
+    colors[ImGuiCol_MenuBarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_Button] = ink(0.085f);
+    colors[ImGuiCol_ButtonHovered] = ink(0.085f);
+    colors[ImGuiCol_ButtonActive] = ink(0.18f);
+    colors[ImGuiCol_Header] = accent(0.20f);
+    // Hover never changes a background: on glass any fill under the pointer
+    // reads as a shadow. Controls signal hover through their label instead.
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_HeaderActive] = accent(0.30f);
     colors[ImGuiCol_CheckMark] = ImGuiColor(theme.accent);
     colors[ImGuiCol_SliderGrab] = ImGuiColor(theme.accent);
-    colors[ImGuiCol_SliderGrabActive] = ImGuiColor(theme.accent_hovered);
-    colors[ImGuiCol_Separator] = colors[ImGuiCol_Border];
-    colors[ImGuiCol_ScrollbarBg] = ImGuiColor(theme.navigation_background);
-    colors[ImGuiCol_ScrollbarGrab] = ImGuiColor(theme.border);
-    colors[ImGuiCol_ScrollbarGrabHovered] = ImGuiColor(theme.button_hovered);
-    colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(
-        theme.accent.red, theme.accent.green, theme.accent.blue, 0.70f);
-    colors[ImGuiCol_ResizeGrip] = ImVec4(
-        theme.accent.red, theme.accent.green, theme.accent.blue, 0.0f);
-    colors[ImGuiCol_ResizeGripHovered] = ImVec4(
-        theme.accent.red, theme.accent.green, theme.accent.blue, 0.45f);
-    colors[ImGuiCol_ResizeGripActive] = ImVec4(
-        theme.accent.red, theme.accent.green, theme.accent.blue, 0.80f);
-    colors[ImGuiCol_Tab] = ImGuiColor(theme.window_background);
-    colors[ImGuiCol_TabHovered] = ImGuiColor(theme.button_hovered);
-    colors[ImGuiCol_TabSelected] = ImGuiColor(theme.child_background);
-    colors[ImGuiCol_TableHeaderBg] = ImGuiColor(theme.child_background);
-    colors[ImGuiCol_TableBorderStrong] = colors[ImGuiCol_Border];
-    colors[ImGuiCol_TableBorderLight] = ImVec4(
-        theme.border.red, theme.border.green, theme.border.blue, 0.55f);
+    colors[ImGuiCol_SliderGrabActive] = ImGuiColor(theme.accent_active);
+    colors[ImGuiCol_Separator] = ink(0.10f);
+    colors[ImGuiCol_SeparatorHovered] = accent(0.55f);
+    colors[ImGuiCol_SeparatorActive] = accent(0.85f);
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_ScrollbarGrab] = ink(0.20f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = ink(0.30f);
+    colors[ImGuiCol_ScrollbarGrabActive] = ink(0.40f);
+    colors[ImGuiCol_ResizeGrip] = accent(0.0f);
+    colors[ImGuiCol_ResizeGripHovered] = accent(0.45f);
+    colors[ImGuiCol_ResizeGripActive] = accent(0.80f);
+    colors[ImGuiCol_Tab] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_TabHovered] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_TabSelected] = ink(0.11f);
+    colors[ImGuiCol_TabSelectedOverline] = ImGuiColor(theme.accent);
+    colors[ImGuiCol_TabDimmed] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_TabDimmedSelected] = ink(0.08f);
+    colors[ImGuiCol_TableHeaderBg] = ink(0.05f);
+    colors[ImGuiCol_TableBorderStrong] = ink(0.12f);
+    colors[ImGuiCol_TableBorderLight] = ink(0.07f);
+    colors[ImGuiCol_TableRowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_TableRowBgAlt] = ink(0.03f);
+    colors[ImGuiCol_TextLink] = ImGuiColor(theme.info);
+    colors[ImGuiCol_TextSelectedBg] = accent(0.32f);
+    colors[ImGuiCol_NavCursor] = ImGuiColor(theme.accent);
+    colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.22f);
+    colors[ImGuiCol_PlotLines] = ImGuiColor(theme.accent);
+    colors[ImGuiCol_PlotHistogram] = ImGuiColor(theme.accent);
     style.ScaleAllSizes(scale);
 }
 
@@ -549,5 +584,29 @@ bool ApplyPlatformUiFontScale(const float scale) noexcept {
     ApplyPlatformUiStyle();
     return true;
 }
+
+ImFont* PlatformUiFontForScale(const float scale) noexcept {
+    if (ImGui::GetCurrentContext() == nullptr) return nullptr;
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.Fonts == nullptr) return nullptr;
+    ImFont* best = nullptr;
+    ImFont* largest = nullptr;
+    for (const float baked : kPlatformFontBakeScales) {
+        ImFont* found = nullptr;
+        for (ImFont* const font : io.Fonts->Fonts) {
+            if (font != nullptr && IsPlatformFont(*font, baked)) {
+                found = font;
+                break;
+            }
+        }
+        if (found == nullptr) continue;
+        largest = found;
+        if (best == nullptr && baked >= scale - 0.001f) best = found;
+    }
+    if (best != nullptr) return best;
+    return largest != nullptr ? largest : io.FontDefault;
+}
+
+float PlatformUiBaseFontSize() noexcept { return kPlatformFontSizePixels; }
 
 }  // namespace ue5mem

@@ -297,6 +297,8 @@
     "settings.interface.background_visibility_hint": "背景图之上的遮罩浓度。调低让图片更清晰，调高让文字更好读。",
     "settings.interface.reduce_motion": "减少动效",
     "settings.interface.reduce_motion_hint": "使用克制的界面过渡效果。",
+    "settings.interface.reduce_transparency": "降低透明度",
+    "settings.interface.reduce_transparency_hint": "用不透明的表面替换液态玻璃，提高对比度。",
     "settings.interface.remember_last_page": "记住上次页面",
     "settings.interface.remember_last_page_hint": "下次启动时恢复上次打开的页面。",
     "settings.input.menu_toggle": "菜单切换键",

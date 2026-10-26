@@ -293,6 +293,8 @@ ANOMALY_I18N_MESSAGE(SettingsBackgroundVisibility, "settings.interface.backgroun
 ANOMALY_I18N_MESSAGE(SettingsBackgroundVisibilityHint, "settings.interface.background_visibility_hint")
 ANOMALY_I18N_MESSAGE(SettingsReduceMotion, "settings.interface.reduce_motion")
 ANOMALY_I18N_MESSAGE(SettingsReduceMotionHint, "settings.interface.reduce_motion_hint")
+ANOMALY_I18N_MESSAGE(SettingsReduceTransparency, "settings.interface.reduce_transparency")
+ANOMALY_I18N_MESSAGE(SettingsReduceTransparencyHint, "settings.interface.reduce_transparency_hint")
 ANOMALY_I18N_MESSAGE(SettingsRememberLastPage, "settings.interface.remember_last_page")
 ANOMALY_I18N_MESSAGE(SettingsRememberLastPageHint, "settings.interface.remember_last_page_hint")
 ANOMALY_I18N_MESSAGE(SettingsMenuToggle, "settings.input.menu_toggle")

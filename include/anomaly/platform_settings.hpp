@@ -43,6 +43,7 @@ struct PlatformSettingsValues final {
     std::uint32_t interface_scale_percent{kPlatformInterfaceScaleDefaultPercent};
     std::uint32_t interface_opacity_percent{100};
     bool interface_reduced_motion{};
+    bool interface_reduced_transparency{};
     bool interface_remember_last_route{true};
     std::uint32_t input_menu_toggle{0x2d};
     PlatformInputCapturePolicy input_capture_policy{PlatformInputCapturePolicy::Automatic};
