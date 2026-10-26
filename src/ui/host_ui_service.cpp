@@ -474,7 +474,19 @@ int ANOMALY_CALL BeginWindow(
         body.variant = glass::Variant::Regular;
         body.rounding = ImGui::GetStyle().WindowRounding;
         body.clip = false;
-        body.tint_strength = glass::DarkAppearance() ? 0.58F : 0.48F;
+        // A plugin window floats on the game frame itself: no themed veil stands
+        // between its face and a moving scene, so it asks for the deep backdrop
+        // and the heavy face, and carries slightly more of the palette than the
+        // shell's own surfaces do. A label has to stay readable against the
+        // scene, and a light blur leaves its silhouettes running through the text.
+        body.face_blur = 2.0F;
+        // The rim stays nearly as soft as the face: the shipped clamp samples a
+        // much sharper copy along the bevel, which over a deep face drew a hard
+        // ring inside the window -- the outer glass and the blurred body read as
+        // two materials meeting at an edge instead of one pane.
+        body.rim_blur = 1.7F;
+        body.deep_backdrop = true;
+        body.tint_strength = glass::DarkAppearance() ? 0.62F : 0.52F;
         glass::RegisterWindowSurface(body);
     }
     g_host_ui_window_scopes.Get().emplace_back();

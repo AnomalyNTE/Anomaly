@@ -101,6 +101,7 @@ struct Command final {
     int frame{};
     bool clip{true};
     bool blur{true};
+    bool deep{false};
     GlassConstants constants;
 };
 
@@ -289,6 +290,20 @@ void CaptureCallback(const ImDrawList*, const ImDrawCmd* draw_command) {
         renderer->blur.Get(), 1.0f, 0.0f, 1.8f);
     pass(renderer->quarter, renderer->scratch.resource.Get(), width, height,
         renderer->blur.Get(), 0.0f, 1.0f, 1.8f);
+    // A host with a picture directly behind a pane -- a plugin window floating
+    // over the game -- asks for the deep backdrop: two more runs over the heavy
+    // level, still ending in the quarter target the face samples. Only that
+    // capture pays for them; every other surface keeps the shipped chain.
+    if (command->deep) {
+        pass(renderer->scratch, renderer->quarter.resource.Get(), width, height,
+            renderer->blur.Get(), 1.0f, 0.0f, 2.6f);
+        pass(renderer->quarter, renderer->scratch.resource.Get(), width, height,
+            renderer->blur.Get(), 0.0f, 1.0f, 2.6f);
+        pass(renderer->scratch, renderer->quarter.resource.Get(), width, height,
+            renderer->blur.Get(), 1.0f, 0.0f, 3.8f);
+        pass(renderer->quarter, renderer->scratch.resource.Get(), width, height,
+            renderer->blur.Get(), 0.0f, 1.0f, 3.8f);
+    }
     context->PSSetShaderResources(0, 3, unbound);
     context->OMSetRenderTargets(1, output.GetAddressOf(), depth.Get());
     renderer->captured_frame = command->frame;
@@ -679,7 +694,8 @@ void D3d12Capture(Command& command) noexcept {
         return;
     }
     // The shipped chain, pass for pass: light blur at half resolution, heavy at
-    // quarter resolution with two wider Gaussian runs.
+    // quarter resolution with two wider Gaussian runs, plus the deep runs below
+    // when the pane sits directly on a picture.
     RunPass(*renderer, kGlassCaptureSlot, renderer->half,
         renderer->width, renderer->height, renderer->downsample.Get(), 0.0F, 0.0F, 0.0F);
     RunPass(*renderer, kGlassHalfSlot, renderer->half_scratch,
@@ -696,6 +712,20 @@ void D3d12Capture(Command& command) noexcept {
         renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 1.0F, 0.0F, 1.8F);
     RunPass(*renderer, kGlassQuarterScratchSlot, renderer->quarter,
         renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 0.0F, 1.0F, 1.8F);
+    if (command.deep) {
+        RunPass(*renderer, kGlassQuarterSlot, renderer->quarter_scratch,
+            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 1.0F, 0.0F,
+            2.6F);
+        RunPass(*renderer, kGlassQuarterScratchSlot, renderer->quarter,
+            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 0.0F, 1.0F,
+            2.6F);
+        RunPass(*renderer, kGlassQuarterSlot, renderer->quarter_scratch,
+            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 1.0F, 0.0F,
+            3.8F);
+        RunPass(*renderer, kGlassQuarterScratchSlot, renderer->quarter,
+            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 0.0F, 1.0F,
+            3.8F);
+    }
     list->OMSetRenderTargets(1, &renderer->frame_rtv, FALSE, nullptr);
     const D3D12_VIEWPORT viewport{0.0F, 0.0F, static_cast<float>(renderer->width),
         static_cast<float>(renderer->height), 0.0F, 1.0F};
@@ -782,6 +812,10 @@ struct Look final {
     // How much the inner shoulder darkens, mostly on the side facing away
     // from the light. This is what gives a pane its thickness.
     float shade{};
+    // The sharpest blur the shoulder may sample. A deeply frosted face needs a
+    // shoulder that is still soft, or the bevel turns into a hard ring inside
+    // the pane.
+    float rim_blur{0.25f};
     float fallback_alpha{0.9f};
 };
 
@@ -893,6 +927,8 @@ Look ResolveLook(const SurfaceOptions& options) noexcept {
         look.tint.w = 1.0f;
     }
     if (options.tint_strength >= 0.0f) look.tint_strength = options.tint_strength;
+    if (options.face_blur >= 0.0f) look.blur_mix = options.face_blur;
+    if (options.rim_blur >= 0.0f) look.rim_blur = options.rim_blur;
     if (!options.shadow) {
         look.shadow_alpha = 0.0f;
         look.contact = 0.0f;
@@ -1225,12 +1261,13 @@ bool DarkAppearance() noexcept {
     return 0.2126f * surface.red + 0.7152f * surface.green + 0.0722f * surface.blue < 0.45f;
 }
 
-void CaptureBackdrop(ImDrawList* list, const bool blur) noexcept {
+void CaptureBackdrop(ImDrawList* list, const bool blur, const bool deep) noexcept {
     if (list == nullptr || !Active()) return;
     try {
         Command& command = NewCommand();
         command.kind = CommandKind::Capture;
         command.blur = blur;
+        command.deep = blur && deep;
         list->AddCallback(CaptureCallback, &command);
         list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
     } catch (...) {
@@ -1282,6 +1319,7 @@ void DrawSurface(ImDrawList* list, const ImVec2 min, const ImVec2 max,
         constants.extra[2] = look.magnify;
         constants.extra[3] = look.contact;
         constants.edge[0] = look.shade;
+        constants.edge[1] = look.rim_blur;
         list->AddCallback(SurfaceCallback, &command);
         list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
     } catch (...) {
@@ -1359,7 +1397,7 @@ void PrepareDrawData(ImDrawData* data) noexcept {
             underlay->_ResetForNewFrame();
             underlay->PushClipRectFullScreen();
             underlay->PushTextureID(ImGui::GetIO().Fonts->TexID);
-            CaptureBackdrop(underlay);
+            CaptureBackdrop(underlay, true, entry.options.deep_backdrop);
             DrawSurface(underlay, entry.min, entry.max, entry.options);
             underlay->_PopUnusedDrawCmd();
             data->CmdLists.insert(data->CmdLists.Data + index, underlay);

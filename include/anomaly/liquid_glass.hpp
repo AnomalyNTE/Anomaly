@@ -56,6 +56,16 @@ struct SurfaceOptions final {
     bool clip{true};
     // Overrides the variant's tint strength when >= 0.
     float tint_strength{-1.0f};
+    // Overrides the variant's face blur when >= 0: 0 sharp, 1 light, 2 heavy.
+    float face_blur{-1.0f};
+    // Overrides the sharpest blur the rim may sample when >= 0, in the same
+    // units as face_blur. A deep face needs a soft rim, or the bevel reads as a
+    // hard ring inside the pane.
+    float rim_blur{-1.0f};
+    // Ask the capture behind this surface for the deep backdrop: two extra blur
+    // runs over the heavy level, for a pane that sits on a picture rather than on
+    // a themed background. Only the frame that requests it pays for the passes.
+    bool deep_backdrop{false};
     // Overrides the variant's tint colour when its alpha is > 0; the alpha is
     // how far toward the colour the tint moves.
     ImVec4 tint{0.0f, 0.0f, 0.0f, 0.0f};
@@ -91,8 +101,9 @@ void SetReduceMotion(bool enabled) noexcept;
 
 // Snapshots everything rendered so far in the frame. Glass drawn afterwards
 // refracts that snapshot. `blur` also refreshes the blurred copy; a thumb only
-// needs the sharp one.
-void CaptureBackdrop(ImDrawList* list, bool blur = true) noexcept;
+// needs the sharp one. `deep` adds the wider runs a pane over a live picture
+// asks for, and is ignored without `blur`.
+void CaptureBackdrop(ImDrawList* list, bool blur = true, bool deep = false) noexcept;
 // Draws the sliding selection droplet over what is already drawn under it.
 // Draw it before the labels it carries so they stay crisp on top.
 void DrawThumb(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding, float scale,

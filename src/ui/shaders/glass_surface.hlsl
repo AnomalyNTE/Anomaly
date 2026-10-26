@@ -22,7 +22,7 @@ cbuffer GlassConstants : register(b0) {
     float4 g_light;   // rim, lift, dark appearance, minimum alpha
     float4 g_shadow;  // alpha, offset y, blur, gloss
     float4 g_extra;   // bevel width, inner glow, magnification, contact line
-    float4 g_edge;    // shoulder shade
+    float4 g_edge;    // shoulder shade, shoulder blur
 };
 
 Texture2D g_sharp : register(t0);
@@ -90,10 +90,14 @@ float4 ps_glass(float4 position : SV_Position) : SV_Target {
     float2 offset = -n * g_optics.x * s * bend * g_screen.zw;
     float split = g_optics.y * bend;
 
-    // The face is blurred as much as the variant asks; the shoulder samples a
-    // much sharper copy, which is what lets the bending be seen.
+    // The face is blurred as much as the variant asks, and the shoulder of the
+    // lens samples a sharper copy, which is what lets the bending be seen. The
+    // two have to meet somewhere: a shoulder far sharper than a deeply frosted
+    // face reads as a second edge inside the pane -- a glass ring around a
+    // separate, blurred picture -- so the sharpest level the shoulder may use is
+    // g_edge.y, which the host sets per surface.
     float face_blur = g_optics.z;
-    float blur = lerp(face_blur, min(face_blur, 0.25), shoulder);
+    float blur = lerp(face_blur, min(face_blur, g_edge.y), shoulder);
     float4 color = sample_blurred(uv + offset, blur);
     color.r = sample_blurred(uv + offset * (1.0 + split), blur).r;
     color.b = sample_blurred(uv + offset * (1.0 - split), blur).b;
