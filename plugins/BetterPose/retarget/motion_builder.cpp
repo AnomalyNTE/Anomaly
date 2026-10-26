@@ -3114,7 +3114,6 @@ Result BuildMotion(const Input &input) {
   std::uint32_t rigid_accessories = 0;
   std::uint32_t sleeve_bones = 0;
   std::uint32_t native_secondary_overrides = 0;
-  std::uint32_t native_limit_capsules = 0;
   std::uint32_t strand_collisions = 0;
   // The deepest a strand still sits inside its proxy after the correction, per proxy set, over the
   // whole conversion -- in the converter's own geometry (see the note at the collision pass).
@@ -3227,12 +3226,8 @@ Result BuildMotion(const Input &input) {
           secondary::IsArmAttachment(ancestor) && !is_sleeve(bone.name))
         entry.collide |= kCollideArms;
     }
-    if (input.dynamics_tuning.native_limits &&
-        !input.kawaii_capsule_limits.empty())
-      entry.collide |= secondary::kKawaiiLimit;
     entry.collide = secondary::EffectiveCollisionMask(
-        entry.collide, input.dynamics_tuning.extended_collision,
-        input.dynamics_tuning.native_limits);
+        entry.collide, input.dynamics_tuning.extended_collision);
     secondary.push_back(entry);
     ++rigid_accessories;
     if (is_sleeve(bone.name))
@@ -4943,7 +4938,6 @@ Result BuildMotion(const Input &input) {
     // enough there, because the body is already in the source's f0 pose and a rigid strand can sit
     // inside it (measured: 浔's 3.8 cm, 残虹's 4.7 cm, both at f0 and nowhere else).
     strand_capsules.clear();
-    native_limit_capsules = 0;
     {
       const auto add_capsule = [&](const char *first, const char *second, const double radius,
                                    const std::uint8_t mask,
@@ -4986,61 +4980,6 @@ Result BuildMotion(const Input &input) {
                       kCollideArms);
           add_capsule(forearm.c_str(), hand.c_str(), kHandCollisionRadiusCm,
                       kCollideArms);
-        }
-      }
-      if (input.dynamics_tuning.native_limits &&
-          !input.kawaii_capsule_limits.empty()) {
-        const auto kawaii_rotation = [](const double *rotation) {
-          constexpr double kPi = 3.14159265358979323846;
-          const double half_pitch = rotation[0] * kPi / 360.0;
-          const double half_yaw = rotation[1] * kPi / 360.0;
-          const double half_roll = rotation[2] * kPi / 360.0;
-          const double sp = std::sin(half_pitch);
-          const double cp = std::cos(half_pitch);
-          const double sy = std::sin(half_yaw);
-          const double cy = std::cos(half_yaw);
-          const double sr = std::sin(half_roll);
-          const double cr = std::cos(half_roll);
-          return Normalize(Quat{
-              cr * sp * sy - sr * cp * cy,
-              -cr * sp * cy - sr * cp * sy,
-              cr * cp * sy - sr * sp * cy,
-              cr * cp * cy + sr * sp * sy});
-        };
-        for (const KawaiiCapsuleLimit &limit : input.kawaii_capsule_limits) {
-          const auto driver = skeleton.by_name.find(limit.driving_bone);
-          if (driver == skeleton.by_name.end())
-            continue;
-          const std::size_t driver_index = driver->second;
-          const Quat driver_rotation =
-              Normalize(frame_rot[driver_index]);
-          const Vec3 driver_position = frame_pos[driver_index];
-          const Vec3 local_offset = Rotate(
-              driver_rotation,
-              Vec3{limit.offset_location[0], limit.offset_location[1],
-                   limit.offset_location[2]});
-          const Vec3 center{
-              driver_position.x + local_offset.x,
-              driver_position.y + local_offset.y,
-              driver_position.z + local_offset.z};
-          if (limit.length <= 1e-4) {
-            strand_capsules.push_back(StrandCapsule{
-                center, center, limit.sphere_radius, 0.0,
-                secondary::kKawaiiLimit});
-          } else {
-            const Quat rotation = Normalize(Multiply(
-                driver_rotation,
-                kawaii_rotation(limit.offset_rotation.data())));
-            const Vec3 half_axis =
-                Rotate(rotation, Vec3{0.0, 0.0, limit.length * 0.5});
-            strand_capsules.push_back(StrandCapsule{
-                Vec3{center.x - half_axis.x, center.y - half_axis.y,
-                     center.z - half_axis.z},
-                Vec3{center.x + half_axis.x, center.y + half_axis.y,
-                     center.z + half_axis.z},
-                limit.radius, 0.0, secondary::kKawaiiLimit});
-          }
-          ++native_limit_capsules;
         }
       }
       // The thigh capsule starts a third of the way down the bone: a strand's *root* sits on the
@@ -5509,7 +5448,6 @@ Result BuildMotion(const Input &input) {
             {"strandCapsulesHead", capsule_count(kCollideHead)},
             {"strandCapsulesArms", capsule_count(kCollideArms)},
             {"strandCapsulesLegs", capsule_count(kCollideLegs)},
-           {"strandCapsulesKawaii", native_limit_capsules},
            // The leg volumes' radii, measured from the rig's rest pose: a probe replaying this
            // document needs them to measure the same geometry the correction used.
            {"strandLegRadiusCm", leg_json},

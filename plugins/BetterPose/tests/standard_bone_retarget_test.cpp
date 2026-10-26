@@ -1188,9 +1188,6 @@ int main() {
       0.0F, 0.0F);
   native_spring_input.secondary_bone_overrides.push_back(
       {"Bn_l_piaodai_001", {0.0, 0.25, 75.0}, 0.0, 1.0, {}, 0.0});
-  native_spring_input.dynamics_tuning.native_limits = true;
-  native_spring_input.kawaii_capsule_limits.push_back(
-      {"Bip001", {0, 0, 0}, {0, 0, 0}, 2.0, 10.0, 0.0});
   const mb::Result native_spring_result =
       mb::BuildMotion(native_spring_input);
   ok &= Check(native_spring_result.ok,
@@ -1211,12 +1208,6 @@ int main() {
                 .get<int>() ==
             1,
         "main-skeleton native override diagnostic did not report the match");
-    ok &= Check(
-        native_document.at("diagnostics")
-                .at("strandCapsulesKawaii")
-                .get<int>() ==
-            1,
-        "main-skeleton did not build the captured Kawaii capsule limit");
   }
   mb::Input constraint_input = collision_input;
   constraint_input.vmd_bytes =

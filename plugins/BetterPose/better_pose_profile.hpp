@@ -58,6 +58,13 @@ inline constexpr std::string_view kFunctionSetForcedLodPath =
     "/Script/Engine.SkinnedMeshComponent.SetForcedLOD";
 inline constexpr std::string_view kFunctionSetAnimationModePath =
     "/Script/Engine.SkeletalMeshComponent.SetAnimationMode";
+inline constexpr std::string_view kFunctionGetAnimInstancePath =
+    "/Script/Engine.SkeletalMeshComponent.GetAnimInstance";
+inline constexpr std::string_view kFunctionSetAutoRegisterBudgetPath =
+    "/Script/AnimationBudgetAllocator.SkeletalMeshComponentBudgeted."
+    "SetAutoRegisterWithBudgetAllocator";
+inline constexpr std::string_view kFunctionSetComponentTickEnabledPath =
+    "/Script/Engine.ActorComponent.SetComponentTickEnabled";
 inline constexpr std::string_view kFunctionActorAddComponentByClassPath =
     "/Script/Engine.Actor.AddComponentByClass";
 inline constexpr std::string_view kFunctionSetSkeletalMeshAssetPath =
@@ -137,6 +144,7 @@ inline constexpr std::uint32_t kMeshComponentSpaceBuffer1Offset = 0x638;
 inline constexpr std::uint32_t kMeshLocalSpaceTransformsOffset = 0x968;
 inline constexpr std::uint32_t kMeshGlobalAnimRateScaleOffset = 0xAA8;
 inline constexpr std::uint32_t kMeshForcedLodModelOffset = 0x7A0;
+inline constexpr std::uint32_t kMeshVisibilityBasedAnimTickOptionOffset = 0x7F4;
 inline constexpr std::uint32_t kMeshAnimationModeOffset = 0xAAF;
 inline constexpr std::uint32_t kMeshForceMeshObjectUpdateOffset = 0x7FA;
 inline constexpr std::uint32_t kMeshForceMeshObjectUpdateBit = 6;
@@ -169,7 +177,6 @@ inline constexpr std::uint32_t kKawaiiPlanarLimitsOffset = 1240;
 inline constexpr std::uint32_t kKawaiiGravityOffset = 1408;
 inline constexpr std::uint32_t kKawaiiWindEnabledOffset = 1432;
 inline constexpr std::uint32_t kKawaiiWindScaleOffset = 1436;
-inline constexpr std::uint32_t kKawaiiSimulationSpaceOffset = 656;
 inline constexpr std::uint32_t kKawaiiModifyBonesOffset = 1944;
 inline constexpr std::uint32_t kKawaiiModifyBoneSize = 288;
 inline constexpr std::uint32_t kKawaiiModifyBoneNameOffset = 0;
@@ -180,6 +187,7 @@ inline constexpr std::uint32_t kKawaiiModifyBoneSkipOffset = 273;
 // FCapsuleLimit, used by KawaiiPhysics to constrain its spring bones. These
 // entries are not body-collision capsules.
 inline constexpr std::uint32_t kKawaiiLimitDrivingBoneOffset = 0;
+inline constexpr std::uint32_t kKawaiiLimitCachedBoneIndexOffset = 8;
 inline constexpr std::uint32_t kKawaiiLimitOffsetLocationOffset = 16;
 inline constexpr std::uint32_t kKawaiiLimitOffsetRotationOffset = 40;
 inline constexpr std::uint32_t kKawaiiLimitEnabledOffset = 128;
