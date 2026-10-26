@@ -14,6 +14,11 @@
 namespace better_pose::timeline {
 
 inline constexpr int kNone = -1;
+enum class SpaceAction : std::uint8_t {
+  None,
+  ToggleKeyframes,
+  ToggleMotion
+};
 enum class Hit : std::uint8_t {
   None,
   Track,
@@ -26,6 +31,17 @@ enum class Hit : std::uint8_t {
   Export,
   Fit
 };
+
+inline SpaceAction ResolveSpaceAction(
+    const bool menu_owns_keyboard, const bool space_down,
+    const bool space_was_down, const bool typing, const bool control,
+    const bool motion_loaded, const bool keyframes_available) noexcept {
+  if (!menu_owns_keyboard || !space_down || space_was_down || typing || control)
+    return SpaceAction::None;
+  if (motion_loaded)
+    return SpaceAction::ToggleMotion;
+  return keyframes_available ? SpaceAction::ToggleKeyframes : SpaceAction::None;
+}
 
 struct Rect {
   float left{};

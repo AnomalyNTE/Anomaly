@@ -78,7 +78,7 @@ constexpr std::string_view kPoseSettingsSchemaId =
 constexpr std::uint32_t kPoseSettingsSchemaVersion = 1;
 constexpr std::uint32_t kMotionCalibrationDefaultsVersion = 2;
 constexpr std::uint32_t kDynamicPhysicsAirDefaultVersion = 4;
-constexpr std::uint32_t kDynamicPhysicsTuningVersion = 10;
+constexpr std::uint32_t kDynamicPhysicsTuningVersion = 12;
 constexpr std::size_t kMaximumPoseSettingsBytes = 1U << 20;
 nlohmann::json TransformToJson(const double *raw) noexcept;
 
@@ -412,6 +412,16 @@ class AtomicSecondaryTuning final {
         ribbon_damping_.load(std::memory_order_acquire);
     tuning.gravity = gravity_.load(std::memory_order_acquire);
     tuning.collision = collision_.load(std::memory_order_acquire);
+    tuning.breast_inertia =
+        breast_inertia_.load(std::memory_order_acquire);
+    tuning.breast_stiffness =
+        breast_stiffness_.load(std::memory_order_acquire);
+    tuning.breast_damping =
+        breast_damping_.load(std::memory_order_acquire);
+    tuning.breast_gravity =
+        breast_gravity_.load(std::memory_order_acquire);
+    tuning.breast_amplitude =
+        breast_amplitude_.load(std::memory_order_acquire);
     tuning.extended_collision =
         extended_collision_.load(std::memory_order_acquire);
     tuning.native_limits = native_limits_.load(std::memory_order_acquire);
@@ -446,6 +456,13 @@ class AtomicSecondaryTuning final {
     ribbon_damping_.store(tuning.ribbon_damping, std::memory_order_release);
     gravity_.store(tuning.gravity, std::memory_order_release);
     collision_.store(tuning.collision, std::memory_order_release);
+    breast_inertia_.store(tuning.breast_inertia, std::memory_order_release);
+    breast_stiffness_.store(tuning.breast_stiffness,
+                            std::memory_order_release);
+    breast_damping_.store(tuning.breast_damping, std::memory_order_release);
+    breast_gravity_.store(tuning.breast_gravity, std::memory_order_release);
+    breast_amplitude_.store(tuning.breast_amplitude,
+                            std::memory_order_release);
     extended_collision_.store(tuning.extended_collision,
                               std::memory_order_release);
     native_limits_.store(tuning.native_limits, std::memory_order_release);
@@ -482,6 +499,11 @@ class AtomicSecondaryTuning final {
   std::atomic<float> ribbon_damping_{1.0F};
   std::atomic<float> gravity_{1.0F};
   std::atomic<float> collision_{1.0F};
+  std::atomic<float> breast_inertia_{1.0F};
+  std::atomic<float> breast_stiffness_{1.0F};
+  std::atomic<float> breast_damping_{1.0F};
+  std::atomic<float> breast_gravity_{1.0F};
+  std::atomic<float> breast_amplitude_{1.0F};
   std::atomic_bool extended_collision_{false};
   std::atomic_bool native_limits_{false};
   std::atomic_bool bone_constraints_{false};
@@ -1052,6 +1074,7 @@ struct Context final {
   std::atomic_bool motion_playing{};
   std::atomic_bool motion_secondary_tuning_stale{};
   std::atomic<std::uint32_t> motion_secondary_bones{};
+  std::atomic<std::uint32_t> motion_breast_bones{};
   std::array<std::atomic<std::uint32_t>,
              better_pose::secondary::kMotionMaterialCount>
       motion_secondary_materials{};
@@ -2363,23 +2386,51 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
         return std::isfinite(out) && out >= minimum && out <= maximum;
       };
       if (value.contains("inertia") &&
-          !read_factor(value.at("inertia"), tuning.inertia, 0.0F, 3.0F))
+          !read_factor(value.at("inertia"), tuning.inertia, 0.0F,
+                       better_pose::secondary::kDynamicsInertiaMax))
         return false;
       if (value.contains("air") &&
-          !read_factor(value.at("air"), tuning.air, 0.0F, 3.0F))
+          !read_factor(value.at("air"), tuning.air, 0.0F,
+                       better_pose::secondary::kDynamicsAirMax))
         return false;
       if (value.contains("damping") &&
-          !read_factor(value.at("damping"), tuning.damping, 0.25F, 3.0F))
+          !read_factor(value.at("damping"), tuning.damping,
+                       better_pose::secondary::kDynamicsDampingMin,
+                       better_pose::secondary::kDynamicsDampingMax))
         return false;
       if (value.contains("ribbonDamping") &&
           !read_factor(value.at("ribbonDamping"), tuning.ribbon_damping,
-                       0.25F, 3.0F))
+                       better_pose::secondary::kDynamicsDampingMin,
+                       better_pose::secondary::kDynamicsDampingMax))
         return false;
       if (value.contains("gravity") &&
-          !read_factor(value.at("gravity"), tuning.gravity, 0.0F, 2.0F))
+          !read_factor(value.at("gravity"), tuning.gravity, 0.0F,
+                       better_pose::secondary::kDynamicsGravityMax))
         return false;
       if (value.contains("collision") &&
-          !read_factor(value.at("collision"), tuning.collision, 0.0F, 2.0F))
+          !read_factor(value.at("collision"), tuning.collision, 0.0F,
+                       better_pose::secondary::kDynamicsCollisionMax))
+        return false;
+      if (value.contains("breastInertia") &&
+          !read_factor(value.at("breastInertia"), tuning.breast_inertia,
+                       0.0F, 10.0F))
+        return false;
+      if (value.contains("breastStiffness") &&
+          !read_factor(value.at("breastStiffness"), tuning.breast_stiffness,
+                       0.1F, better_pose::secondary::kDynamicsDampingMax))
+        return false;
+      if (value.contains("breastDamping") &&
+          !read_factor(value.at("breastDamping"), tuning.breast_damping,
+                       better_pose::secondary::kDynamicsDampingMin,
+                       better_pose::secondary::kDynamicsDampingMax))
+        return false;
+      if (value.contains("breastGravity") &&
+          !read_factor(value.at("breastGravity"), tuning.breast_gravity,
+                       0.0F, better_pose::secondary::kDynamicsGravityMax))
+        return false;
+      if (value.contains("breastAmplitude") &&
+          !read_factor(value.at("breastAmplitude"), tuning.breast_amplitude,
+                       0.0F, 5.0F))
         return false;
       if (value.contains("extendedCollision")) {
         if (!value.at("extendedCollision").is_boolean())
@@ -2464,11 +2515,16 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
             return true;
           };
       if (!read_self_materials("materialSelfRadius",
-                               tuning.self_collision_radius, 0.0F, 3.0F) ||
+                               tuning.self_collision_radius, 0.0F,
+                               better_pose::secondary::kDynamicsSelfRadiusMax) ||
           !read_self_materials("materialSelfStrength",
-                               tuning.self_collision_strength, 0.1F, 3.0F) ||
+                               tuning.self_collision_strength,
+                               better_pose::secondary::kDynamicsSelfStrengthMin,
+                               better_pose::secondary::kDynamicsSelfStrengthMax) ||
           !read_self_materials("materialSelfDamping",
-                               tuning.self_collision_damping, 0.5F, 3.0F))
+                               tuning.self_collision_damping,
+                               better_pose::secondary::kDynamicsSelfDampingMin,
+                               better_pose::secondary::kDynamicsSelfDampingMax))
         return false;
       if (value.contains("materialInertia")) {
         const auto &materials = value.at("materialInertia");
@@ -2480,7 +2536,8 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
               better_pose::secondary::kMotionMaterialKeys[index]);
           if (materials.contains(key) &&
               !read_factor(materials.at(key), tuning.material_inertia[index],
-                           0.0F, 3.0F))
+                           0.0F,
+                           better_pose::secondary::kDynamicsInertiaMax))
             return false;
         }
       }
@@ -2494,7 +2551,8 @@ bool ApplyPoseDocument(Context &context, const nlohmann::json &json,
               better_pose::secondary::kMotionMaterialKeys[index]);
           if (materials.contains(key) &&
               !read_factor(materials.at(key),
-                           tuning.material_collision[index], 0.0F, 2.0F))
+                           tuning.material_collision[index], 0.0F,
+                           better_pose::secondary::kDynamicsCollisionMax))
             return false;
         }
       }
@@ -2760,6 +2818,11 @@ std::string BuildPoseDocument(Context &context) noexcept {
       {"ribbonDamping", secondary_tuning.ribbon_damping},
       {"gravity", secondary_tuning.gravity},
       {"collision", secondary_tuning.collision},
+      {"breastInertia", secondary_tuning.breast_inertia},
+      {"breastStiffness", secondary_tuning.breast_stiffness},
+      {"breastDamping", secondary_tuning.breast_damping},
+      {"breastGravity", secondary_tuning.breast_gravity},
+      {"breastAmplitude", secondary_tuning.breast_amplitude},
       {"extendedCollision", secondary_tuning.extended_collision},
       {"nativeKawaiiLimits", secondary_tuning.native_limits},
       {"boneConstraints", secondary_tuning.bone_constraints},
@@ -5300,7 +5363,7 @@ bool ResolveMotionIndices(Context &context) noexcept {
     std::array<std::uint32_t,
                better_pose::secondary::kMotionMaterialCount>
         materials{};
-    std::uint32_t total{};
+    std::uint32_t total{}, breast{};
     for (const std::string &name : motion.bone_names) {
       if (!better_pose::secondary::IsSecondary(name) ||
           better_pose::secondary::IsOrnament(name))
@@ -5309,8 +5372,11 @@ bool ResolveMotionIndices(Context &context) noexcept {
           better_pose::secondary::ClassifyMotionMaterial(name);
       ++materials[better_pose::secondary::MotionMaterialIndex(material)];
       ++total;
+      if (better_pose::secondary::IsBreast(name))
+        ++breast;
     }
     context.motion_secondary_bones.store(total, std::memory_order_release);
+    context.motion_breast_bones.store(breast, std::memory_order_release);
     for (std::size_t index{};
          index != better_pose::secondary::kMotionMaterialCount; ++index)
       context.motion_secondary_materials[index].store(
@@ -6249,6 +6315,7 @@ void UnloadMotion(Context &context) noexcept {
   context.motion_secondary_tuning_stale.store(false,
                                                std::memory_order_release);
   context.motion_secondary_bones.store(0, std::memory_order_release);
+  context.motion_breast_bones.store(0, std::memory_order_release);
   for (auto &count : context.motion_secondary_materials)
     count.store(0, std::memory_order_release);
   context.motion = Context::MotionTrack{};
@@ -17873,22 +17940,35 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
     if (redo_down && !context.pose_redo_key_was_down)
       context.edit_history_request.store(2, std::memory_order_release);
   }
-  // Space plays/pauses the keyframe timeline, on the press. Not while typing,
-  // and not while an MMD motion is loaded (it owns the character, and the
-  // track does not play then). The game sees the key too: the host does not
-  // let a plugin swallow keyboard input.
+  // Space toggles the active timeline on the press. A loaded MMD motion owns
+  // playback; otherwise the keyframe timeline does. The game sees the key too:
+  // the host does not let a plugin swallow keyboard input.
   const bool space_down = menu_owns_mouse && !control && key_down(VK_SPACE);
+  const bool motion_loaded =
+      context.motion_loaded.load(std::memory_order_acquire);
+  bool has_keyframes{};
   if (space_down && !context.keyframe_space_was_down && !typing &&
-      !context.motion_loaded.load(std::memory_order_acquire)) {
-    bool has_keys{};
+      !motion_loaded) {
     {
       std::lock_guard<std::mutex> lock(context.keyframe_mutex);
-      has_keys = !context.keyframe_track.Empty();
+      has_keyframes = !context.keyframe_track.Empty();
     }
-    if (has_keys) {
+  }
+  switch (better_pose::timeline::ResolveSpaceAction(
+      menu_owns_mouse, space_down, context.keyframe_space_was_down, typing,
+      control, motion_loaded, has_keyframes)) {
+    case better_pose::timeline::SpaceAction::ToggleMotion: {
+      const bool playing = context.motion_playing.load(std::memory_order_acquire);
+      context.motion_playing.store(!playing, std::memory_order_release);
+      break;
+    }
+    case better_pose::timeline::SpaceAction::ToggleKeyframes: {
       const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
       context.keyframe_playing.store(!playing, std::memory_order_release);
+      break;
     }
+    case better_pose::timeline::SpaceAction::None:
+      break;
   }
   context.keyframe_space_was_down = space_down;
   context.pose_undo_key_was_down = undo_down;
@@ -18618,7 +18698,8 @@ void DrawSecondaryPhysicsControls(Context &context,
                    anomaly::sdk::StringView(self_details_label),
                    &self_details) != 0)
     context.secondary_self_collision_open = self_details != 0;
-  using MotionMaterial = better_pose::secondary::MotionMaterial;
+  namespace secondary = better_pose::secondary;
+  using MotionMaterial = secondary::MotionMaterial;
   if (context.secondary_self_collision_open) {
     int outer_priority =
         tuning.self_collision_outer_priority ? 1 : 0;
@@ -18856,19 +18937,20 @@ void DrawSecondaryPhysicsControls(Context &context,
   }
   const auto slider = [&](const char *key, const char *fallback, float &value,
                           const float minimum, const float maximum,
-                          const bool modules, const bool body) {
+                          const bool modules, const bool body,
+                          const float step = 0.1F) {
     const std::string id(key);
     const std::string minus_label = "-##" + id;
     if (ui->button(ui->user, anomaly::sdk::StringView(minus_label), 22.0F,
                    0.0F) != 0) {
-      value = std::clamp(value - 0.1F, minimum, maximum);
+      value = std::clamp(value - step, minimum, maximum);
       changed = true;
     }
     ui->same_line(ui->user, 0.0F, 2.0F);
     const std::string plus_label = "+##" + id;
     if (ui->button(ui->user, anomaly::sdk::StringView(plus_label), 22.0F,
                    0.0F) != 0) {
-      value = std::clamp(value + 0.1F, minimum, maximum);
+      value = std::clamp(value + step, minimum, maximum);
       changed = true;
     }
     ui->same_line(ui->user, 0.0F, 4.0F);
@@ -18880,15 +18962,16 @@ void DrawSecondaryPhysicsControls(Context &context,
       changed = true;
   };
   slider("pose.physics.inertia", "Overall motion inertia", tuning.inertia,
-         0.0F, 3.0F, has_modules, has_body);
-  slider("pose.physics.air", "Air response", tuning.air, 0.0F, 3.0F,
-         has_modules, has_body);
+         0.0F, secondary::kDynamicsInertiaMax, has_modules, has_body, 0.25F);
+  slider("pose.physics.air", "Air response", tuning.air, 0.0F,
+         secondary::kDynamicsAirMax, has_modules, has_body, 0.25F);
   slider("pose.physics.damping", "Overall spring damping", tuning.damping,
-         0.25F, 3.0F, has_modules, has_body);
+         secondary::kDynamicsDampingMin, secondary::kDynamicsDampingMax,
+         has_modules, has_body, 0.25F);
   slider("pose.physics.gravity", "Gravity weight", tuning.gravity, 0.0F,
-         2.0F, has_modules, has_body);
+         secondary::kDynamicsGravityMax, has_modules, has_body, 0.25F);
   slider("pose.physics.collision", "Collision correction", tuning.collision,
-         0.0F, 2.0F, has_modules, has_body);
+         0.0F, secondary::kDynamicsCollisionMax, has_modules, has_body, 0.25F);
   const auto material_module_count = [&](const MotionMaterial material) {
     const std::size_t index =
         better_pose::secondary::MotionMaterialIndex(material);
@@ -18907,7 +18990,8 @@ void DrawSecondaryPhysicsControls(Context &context,
       material_body_count(MotionMaterial::Ribbon) != 0;
   if (module_ribbon || body_ribbon)
     slider("pose.physics.ribbon_damping", "Extra ribbon damping",
-           tuning.ribbon_damping, 0.25F, 3.0F, module_ribbon, body_ribbon);
+           tuning.ribbon_damping, secondary::kDynamicsDampingMin,
+           secondary::kDynamicsDampingMax, module_ribbon, body_ribbon, 0.25F);
   const auto material_slider = [&](const char *key, const char *fallback,
                                    const MotionMaterial material,
                                    const bool collision) {
@@ -18921,8 +19005,10 @@ void DrawSecondaryPhysicsControls(Context &context,
                   better_pose::secondary::MotionMaterialIndex(material)]
             : tuning.material_inertia[
                   better_pose::secondary::MotionMaterialIndex(material)];
-    slider(key, fallback, value, 0.0F, collision ? 2.0F : 3.0F,
-           modules, body);
+    slider(key, fallback, value, 0.0F,
+           collision ? secondary::kDynamicsCollisionMax
+                     : secondary::kDynamicsInertiaMax,
+           modules, body, 0.25F);
   };
   material_slider("pose.physics.hair_inertia", "Hair inertia",
                   MotionMaterial::Hair, false);
@@ -18948,6 +19034,34 @@ void DrawSecondaryPhysicsControls(Context &context,
                   MotionMaterial::Sleeve, false);
   material_slider("pose.physics.sleeve_collision", "Sleeve collision",
                   MotionMaterial::Sleeve, true);
+  if (context.motion_breast_bones.load(std::memory_order_acquire) != 0) {
+    ui->separator(ui->user);
+    ui->text(ui->user,
+             anomaly::sdk::StringView(context.localizer.Text(
+                 "pose.physics.breast_section",
+                 "Breast soft-body bones (main skeleton; reconvert to apply)")));
+    ui->text(ui->user,
+             anomaly::sdk::StringView(context.localizer.Text(
+                 "pose.physics.breast_hint",
+                 "Inertia reaches 10x and swing amplitude reaches 5x. Return "
+                 "strength and damping control rebound; gravity reaches 5x. "
+                 "These apply only to breast, bust, boob and xiong secondary "
+                 "bones.")));
+    slider("pose.physics.breast_inertia", "Breast sway inertia",
+           tuning.breast_inertia, 0.0F, secondary::kDynamicsInertiaMax,
+           false, true, 0.5F);
+    slider("pose.physics.breast_amplitude", "Breast swing amplitude",
+           tuning.breast_amplitude, 0.0F, 5.0F, false, true, 0.25F);
+    slider("pose.physics.breast_stiffness", "Breast return strength",
+           tuning.breast_stiffness, 0.1F, secondary::kDynamicsDampingMax,
+           false, true, 0.5F);
+    slider("pose.physics.breast_damping", "Breast rebound damping",
+           tuning.breast_damping, secondary::kDynamicsDampingMin,
+           secondary::kDynamicsDampingMax, false, true, 0.5F);
+    slider("pose.physics.breast_gravity", "Breast gravity",
+           tuning.breast_gravity, 0.0F, secondary::kDynamicsGravityMax,
+           false, true, 0.25F);
+  }
   if (context.secondary_self_collision_open) {
   const auto self_material_slider =
       [&](const char *key, const char *fallback,
@@ -18968,13 +19082,15 @@ void DrawSecondaryPhysicsControls(Context &context,
             better_pose::secondary::MotionMaterialIndex(material);
         self_material_slider(radius_key, radius_label, material,
                              tuning.self_collision_radius[index],
-                             0.0F, 3.0F);
+                             0.0F, secondary::kDynamicsSelfRadiusMax);
         self_material_slider(strength_key, strength_label, material,
                              tuning.self_collision_strength[index],
-                             0.1F, 3.0F);
+                             secondary::kDynamicsSelfStrengthMin,
+                             secondary::kDynamicsSelfStrengthMax);
         self_material_slider(damping_key, damping_label, material,
                              tuning.self_collision_damping[index],
-                             0.5F, 3.0F);
+                             secondary::kDynamicsSelfDampingMin,
+                             secondary::kDynamicsSelfDampingMax);
       };
   self_material_values(
       MotionMaterial::Hair, "pose.physics.self_hair_radius",
@@ -19007,13 +19123,14 @@ void DrawSecondaryPhysicsControls(Context &context,
       tuning.inertia, tuning.air, tuning.damping, tuning.gravity,
       tuning.collision);
   ui->text(ui->user, anomaly::sdk::StringView(std::string(multipliers)));
-  char material_multipliers[768]{};
+  char material_multipliers[1024]{};
   const std::string material_multiplier_format = context.localizer.Text(
       "pose.physics.material_multipliers",
       "Material inertia: hair %.2f / ribbon %.2f / belt %.2f / accessory "
       "%.2f / cloth %.2f / sleeve %.2f; material collision: hair %.2f / "
       "ribbon %.2f / belt %.2f / accessory %.2f / cloth %.2f / sleeve %.2f; "
-      "ribbon damping %.2f");
+      "ribbon damping %.2f; breast: inertia %.2f / swing %.2f / "
+      "stiffness %.2f / damping %.2f / gravity %.2f");
   const auto material_gain = [&](const MotionMaterial material) {
     return tuning.material_inertia[
         better_pose::secondary::MotionMaterialIndex(material)];
@@ -19037,7 +19154,10 @@ void DrawSecondaryPhysicsControls(Context &context,
       material_collision_gain(MotionMaterial::Accessory),
       material_collision_gain(MotionMaterial::Cloth),
       material_collision_gain(MotionMaterial::Sleeve),
-      tuning.ribbon_damping);
+      tuning.ribbon_damping, tuning.breast_inertia,
+      tuning.breast_amplitude,
+      tuning.breast_stiffness, tuning.breast_damping,
+      tuning.breast_gravity);
   ui->text(ui->user,
            anomaly::sdk::StringView(std::string(material_multipliers)));
 
@@ -19071,7 +19191,7 @@ void DrawSecondaryPhysicsControls(Context &context,
           message, sizeof(message),
           "betterpose tuning inertia=%.2f air=%.2f damping=%.2f "
           "ribbon_damping=%.2f gravity=%.2f collision=%.2f extended=%u native=%u "
-          "constraints=%u self=%u "
+          "constraints=%u self=%u breast=%.2f/%.2f/%.2f/%.2f/%.2f "
           "hair=%.2f ribbon=%.2f belt=%.2f accessory=%.2f cloth=%.2f sleeve=%.2f "
           "hair_col=%.2f ribbon_col=%.2f belt_col=%.2f accessory_col=%.2f "
           "cloth_col=%.2f sleeve_col=%.2f",
@@ -19081,6 +19201,9 @@ void DrawSecondaryPhysicsControls(Context &context,
           tuning.native_limits ? 1U : 0U,
           tuning.bone_constraints ? 1U : 0U,
           tuning.self_collision ? 1U : 0U,
+          tuning.breast_inertia, tuning.breast_amplitude,
+          tuning.breast_stiffness,
+          tuning.breast_damping, tuning.breast_gravity,
           tuning.material_inertia[
               better_pose::secondary::MotionMaterialIndex(
                   MotionMaterial::Hair)],
@@ -19157,12 +19280,13 @@ void DrawSecondaryPhysicsControls(Context &context,
           better_pose::secondary::MotionMaterialIndex(MotionMaterial::Sleeve)]
           .load(std::memory_order_acquire));
   ui->text(ui->user, anomaly::sdk::StringView(std::string(materials)));
-  char body_state[512]{};
+  char body_state[560]{};
   std::snprintf(
       body_state, sizeof(body_state),
-      "%s: %u | hair %u | ribbon %u | belt %u | accessory %u | cloth %u | sleeve %u",
+      "%s: %u | breast %u | hair %u | ribbon %u | belt %u | accessory %u | cloth %u | sleeve %u",
       context.localizer.Text("pose.physics.body", "Main-skeleton dynamics").c_str(),
       context.motion_secondary_bones.load(std::memory_order_acquire),
+      context.motion_breast_bones.load(std::memory_order_acquire),
       context.motion_secondary_materials[
           better_pose::secondary::MotionMaterialIndex(MotionMaterial::Hair)]
           .load(std::memory_order_acquire),
@@ -19229,8 +19353,9 @@ void DrawSecondaryPhysicsControls(Context &context,
   }
   const std::string hint = context.localizer.Text(
       "pose.physics.hint",
-      "Settings are saved per character and take effect immediately. Zero disables "
-      "the corresponding inertia or collision correction.");
+      "Settings are saved per character. The expanded inertia, air, damping "
+      "and material ranges are immediate for modules; main-skeleton and chest "
+      "bones require reconverting the motion.");
   ui->text(ui->user, anomaly::sdk::StringView(hint));
 }
 
@@ -19597,6 +19722,10 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       // animation once the plugin stops writing the bone buffers.
       context->reflection_action_requested.store(4, std::memory_order_release);
     }
+    ui->same_line(ui->user, 0.0F, 10.0F);
+    ui->text(ui->user,
+             anomaly::sdk::StringView(context->localizer.Text(
+                 "motion.shortcut_space", "Space: Play / Pause")));
     int motion_loop = context->motion_loop.load(std::memory_order_acquire) ? 1 : 0;
     const std::string motion_loop_label =
         context->localizer.Text("motion.loop", "Loop");

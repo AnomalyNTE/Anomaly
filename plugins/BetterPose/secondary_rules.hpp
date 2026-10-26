@@ -55,6 +55,17 @@ inline constexpr std::size_t kMotionMaterialCount = 7;
 inline constexpr std::array<std::string_view, kMotionMaterialCount>
     kMotionMaterialKeys{"general", "cloth", "hair", "ribbon",
                         "belt", "accessory", "sleeve"};
+inline constexpr float kDynamicsInertiaMax = 10.0F;
+inline constexpr float kDynamicsAirMax = 10.0F;
+inline constexpr float kDynamicsDampingMin = 0.1F;
+inline constexpr float kDynamicsDampingMax = 10.0F;
+inline constexpr float kDynamicsGravityMax = 5.0F;
+inline constexpr float kDynamicsCollisionMax = 5.0F;
+inline constexpr float kDynamicsSelfRadiusMax = 5.0F;
+inline constexpr float kDynamicsSelfStrengthMin = 0.1F;
+inline constexpr float kDynamicsSelfStrengthMax = 10.0F;
+inline constexpr float kDynamicsSelfDampingMin = 0.1F;
+inline constexpr float kDynamicsSelfDampingMax = 10.0F;
 
 inline constexpr std::size_t SelfCollisionPairIndex(
     const MotionMaterial first, const MotionMaterial second) {
@@ -118,6 +129,11 @@ struct DynamicsTuning {
   float ribbon_damping{1.0F};
   float gravity{1.0F};
   float collision{1.0F};
+  float breast_inertia{1.0F};
+  float breast_stiffness{1.0F};
+  float breast_damping{1.0F};
+  float breast_gravity{1.0F};
+  float breast_amplitude{1.0F};
   // The v2.3.0 release used only torso and leg volumes. Keep that range as
   // the default; head/arm collision and native Kawaii spring limits are
   // opt-in because they materially change the constraint envelope.
@@ -148,23 +164,41 @@ inline DynamicsTuning SafeDynamicsTuning(DynamicsTuning tuning) {
     return std::isfinite(value) ? std::clamp(value, minimum, maximum)
                                 : fallback;
   };
-  tuning.inertia = finite(tuning.inertia, 1.0F, 0.0F, 3.0F);
-  tuning.air = finite(tuning.air, 0.0F, 0.0F, 3.0F);
-  tuning.damping = finite(tuning.damping, 1.0F, 0.25F, 3.0F);
+  tuning.inertia =
+      finite(tuning.inertia, 1.0F, 0.0F, kDynamicsInertiaMax);
+  tuning.air = finite(tuning.air, 0.0F, 0.0F, kDynamicsAirMax);
+  tuning.damping =
+      finite(tuning.damping, 1.0F, kDynamicsDampingMin, kDynamicsDampingMax);
   tuning.ribbon_damping =
-      finite(tuning.ribbon_damping, 1.0F, 0.25F, 3.0F);
-  tuning.gravity = finite(tuning.gravity, 1.0F, 0.0F, 2.0F);
-  tuning.collision = finite(tuning.collision, 1.0F, 0.0F, 2.0F);
+      finite(tuning.ribbon_damping, 1.0F, kDynamicsDampingMin,
+             kDynamicsDampingMax);
+  tuning.gravity =
+      finite(tuning.gravity, 1.0F, 0.0F, kDynamicsGravityMax);
+  tuning.collision =
+      finite(tuning.collision, 1.0F, 0.0F, kDynamicsCollisionMax);
+  tuning.breast_inertia =
+      finite(tuning.breast_inertia, 1.0F, 0.0F, kDynamicsInertiaMax);
+  tuning.breast_stiffness =
+      finite(tuning.breast_stiffness, 1.0F, 0.1F, kDynamicsDampingMax);
+  tuning.breast_damping =
+      finite(tuning.breast_damping, 1.0F, kDynamicsDampingMin,
+             kDynamicsDampingMax);
+  tuning.breast_gravity =
+      finite(tuning.breast_gravity, 1.0F, 0.0F, kDynamicsGravityMax);
+  tuning.breast_amplitude =
+      finite(tuning.breast_amplitude, 1.0F, 0.0F, 5.0F);
   for (float& gain : tuning.material_inertia)
-    gain = finite(gain, 1.0F, 0.0F, 3.0F);
+    gain = finite(gain, 1.0F, 0.0F, kDynamicsInertiaMax);
   for (float& gain : tuning.material_collision)
-    gain = finite(gain, 1.0F, 0.0F, 2.0F);
+    gain = finite(gain, 1.0F, 0.0F, kDynamicsCollisionMax);
   for (float& gain : tuning.self_collision_radius)
-    gain = finite(gain, 1.0F, 0.0F, 3.0F);
+    gain = finite(gain, 1.0F, 0.0F, kDynamicsSelfRadiusMax);
   for (float& gain : tuning.self_collision_strength)
-    gain = finite(gain, 1.0F, 0.1F, 3.0F);
+    gain = finite(gain, 1.0F, kDynamicsSelfStrengthMin,
+                  kDynamicsSelfStrengthMax);
   for (float& gain : tuning.self_collision_damping)
-    gain = finite(gain, 1.0F, 0.5F, 3.0F);
+    gain = finite(gain, 1.0F, kDynamicsSelfDampingMin,
+                  kDynamicsSelfDampingMax);
   return tuning;
 }
 
@@ -308,8 +342,14 @@ inline bool IsSecondary(std::string_view name) {
     if (low.find(key) != std::string::npos) return false;
   if (name.rfind("Bn_", 0) == 0) return true;
   for (const char* key : {"hair", "qun", "cloth", "piao", "gongpai", "lalian",
-                           "xiong", "tie", "skirt", "ribbon", "b_l_cb",
-                           "b_r_cb"})
+                           "xiong", "breast", "bust", "boob", "tie", "skirt",
+                           "ribbon", "b_l_cb", "b_r_cb"})
+    if (low.find(key) != std::string::npos) return true;
+  return false;
+}
+inline bool IsBreast(std::string_view name) {
+  const auto low = Lower(name);
+  for (const char* key : {"breast", "bust", "boob", "xiong"})
     if (low.find(key) != std::string::npos) return true;
   return false;
 }

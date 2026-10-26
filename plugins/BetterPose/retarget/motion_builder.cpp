@@ -4532,10 +4532,12 @@ Result BuildMotion(const Input &input) {
         frame_pos[bone.index] = head;
         const Quat rigid_rotation = Multiply(component_parent, spring->local);
         const Vec3 axis_world = Rotate(rigid_rotation, spring->axis);
+        const bool breast = secondary::IsBreast(bone.name);
         const double inertia_gain =
             dynamics_tuning.inertia *
             dynamics_tuning.material_inertia[
-                secondary::MotionMaterialIndex(spring->material)];
+                secondary::MotionMaterialIndex(spring->material)] *
+            (breast ? dynamics_tuning.breast_inertia : 1.0);
         if (inertia_gain <= 1e-6) {
           // Zero inertia means the authored material is stationary relative to
           // its parent. The spring may only add acceleration to a non-zero
@@ -4627,7 +4629,8 @@ Result BuildMotion(const Input &input) {
             const double gravity_share = std::clamp(
                 (is_sleeve(spring->name) ? kSleeveGravityWeight
                                          : secondary::kGravityWeight) *
-                    dynamics_tuning.gravity,
+                    dynamics_tuning.gravity *
+                    (breast ? dynamics_tuning.breast_gravity : 1.0),
                 0.0, 1.0);
             const Vec3 blended{axis_world.x * (1.0 - gravity_share) + hang.x * gravity_share,
                                axis_world.y * (1.0 - gravity_share) + hang.y * gravity_share,
@@ -4639,6 +4642,10 @@ Result BuildMotion(const Input &input) {
         const bool hair_swing = is_swing_only(bone.name);
         auto spring_settings = spring->spring;
         spring_settings.damping *= dynamics_tuning.damping;
+        if (breast) {
+          spring_settings.stiffness *= dynamics_tuning.breast_stiffness;
+          spring_settings.damping *= dynamics_tuning.breast_damping;
+        }
         const Vec3 previous_ribbon_direction = direction;
         double ribbon_raw_response = 0.0;
         if (spring->material == secondary::MotionMaterial::Ribbon) {
@@ -4651,9 +4658,12 @@ Result BuildMotion(const Input &input) {
           spring_settings.stiffness *= response;
           spring_settings.damping *= dynamics_tuning.ribbon_damping;
         }
-        // Four substeps: one explicit step at 30 fps with stiffness 200 is only
-        // marginally stable (mmd2bip.py:1253-1271).
-        const int substeps = 4;
+        // High rebound settings need more integration steps; otherwise the
+        // explicit damper can reverse velocity and make the motion unstable.
+        const double step_rate =
+            (std::max)(120.0, spring_settings.damping * 2.0);
+        const int substeps = std::clamp(
+            static_cast<int>(std::ceil(dt * step_rate - 1e-8)), 4, 128);
         const double h = dt / substeps;
         for (int substep = 0; substep < substeps; ++substep) {
           const Vec3 cross{direction.y * target.z - direction.z * target.y,
@@ -4680,12 +4690,32 @@ Result BuildMotion(const Input &input) {
           if (Length(direction) < 0.5)
             direction = target;
         }
+        const double breast_amplitude =
+            breast ? dynamics_tuning.breast_amplitude : 1.0;
+        if (breast && breast_amplitude <= 1e-6) {
+          direction = axis_world;
+          target = axis_world;
+          velocity = Vec3{};
+        } else if (breast &&
+                   std::abs(breast_amplitude - 1.0) > 1e-6) {
+          direction = Unit(Vec3{
+              axis_world.x +
+                  (direction.x - axis_world.x) * breast_amplitude,
+              axis_world.y +
+                  (direction.y - axis_world.y) * breast_amplitude,
+              axis_world.z +
+                  (direction.z - axis_world.z) * breast_amplitude});
+        }
         const double alignment =
             (std::max)(-1.0, (std::min)(1.0, Dot(direction, target)));
         const double lag =
             std::acos(alignment) * 180.0 / 3.14159265358979323846;
-        if (lag > spring_settings.lag_degrees) {
-          const double t = spring_settings.lag_degrees / lag;
+        const double maximum_lag = breast
+            ? std::clamp(spring_settings.lag_degrees * breast_amplitude,
+                         0.0, 120.0)
+            : spring_settings.lag_degrees;
+        if (lag > maximum_lag) {
+          const double t = maximum_lag / lag;
           direction = Unit(Vec3{
               direction.x + (target.x - direction.x) * t,
               direction.y + (target.y - direction.y) * t,

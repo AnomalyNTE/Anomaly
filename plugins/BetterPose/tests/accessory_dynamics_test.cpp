@@ -60,6 +60,12 @@ void Classifications() {
   Check(better_pose::secondary::IsSleeve("Bn_l_xiu"),"sleeve rule");
   Check(!better_pose::secondary::IsSleeve("Bn_qunFxiuA_L"),"skirt weighted as sleeve");
   Check(better_pose::secondary::IsSwingOnly("Bn_kami"),"hair spelling rule");
+  Check(better_pose::secondary::IsBreast("Bn_l_breast_001") &&
+            better_pose::secondary::IsSecondary("Bn_l_breast_001"),
+        "breast secondary bone was not classified");
+  Check(better_pose::secondary::IsBreast("soft_bust_L") &&
+            !better_pose::secondary::IsBreast("hair_bang_L"),
+        "breast name classification was too narrow or too broad");
   using better_pose::secondary::MotionMaterial;
   Check(better_pose::secondary::ClassifyMotionMaterial("Bn_hairR") ==
             MotionMaterial::Hair,
@@ -82,6 +88,24 @@ void Classifications() {
   Check(better_pose::secondary::ClassifyMotionMaterial("B_L_cb00") ==
             MotionMaterial::Cloth,
         "cape accessory classification");
+  auto expanded=better_pose::secondary::DynamicsTuning{};
+  expanded.inertia=8.0F;
+  expanded.air=8.0F;
+  expanded.damping=8.0F;
+  expanded.gravity=4.0F;
+  expanded.collision=4.0F;
+  expanded.material_inertia[better_pose::secondary::MotionMaterialIndex(
+      MotionMaterial::Hair)]=8.0F;
+  expanded.self_collision_strength[0]=8.0F;
+  const auto safe_expanded=
+      better_pose::secondary::SafeDynamicsTuning(expanded);
+  Check(safe_expanded.inertia==8.0F && safe_expanded.air==8.0F &&
+            safe_expanded.damping==8.0F && safe_expanded.gravity==4.0F &&
+            safe_expanded.collision==4.0F &&
+            safe_expanded.material_inertia[better_pose::secondary::
+                MotionMaterialIndex(MotionMaterial::Hair)]==8.0F &&
+            safe_expanded.self_collision_strength[0]==8.0F,
+        "expanded dynamic tuning ranges were clamped to the old limits");
   const double chain_response =
       better_pose::secondary::NormalizedChainResponse(0.01, 10);
   Check(chain_response * 10 > 0.0099 && chain_response * 10 < 0.0102,
@@ -664,6 +688,53 @@ void TuningControls() {
   }
   Check(normal_motion>inertia_off_motion+.2,
         "inertia tuning did not attenuate body-driven sway");
+
+  Dynamics breast_full, breast_off;
+  const std::vector<std::string> breast_names{
+      "Bn_l_breast_001","Bip001-L-Hair-Tip"};
+  Check(breast_full.Configure(vertical,parents,breast_names) &&
+            breast_off.Configure(vertical,parents,breast_names),
+        "breast secondary rig was rejected");
+  tuning=better_pose::secondary::DynamicsTuning{};
+  tuning.breast_inertia=0.0F;
+  breast_off.SetTuning(tuning);
+  double breast_motion=0,breast_off_motion=0;
+  for(int i=0;i<=480;++i){
+    const double t=i/120.0;
+    const Frame frame{{20*std::sin(t*3),0,150},{},1};
+    breast_motion=(std::max)(
+        breast_motion,
+        MaximumLocalOffset(vertical,breast_full.Sample(frame,t,0,true)[1]));
+    breast_off_motion=(std::max)(
+        breast_off_motion,
+        MaximumLocalOffset(vertical,breast_off.Sample(frame,t,0,true)[1]));
+  }
+  Check(breast_motion>breast_off_motion+.2,
+        "breast inertia override did not isolate chest sway");
+
+  Dynamics breast_amplitude_full, breast_amplitude_off;
+  Check(breast_amplitude_full.Configure(vertical,parents,breast_names) &&
+            breast_amplitude_off.Configure(vertical,parents,breast_names),
+        "breast amplitude rig was rejected");
+  tuning=better_pose::secondary::DynamicsTuning{};
+  breast_amplitude_full.SetTuning(tuning);
+  tuning.breast_amplitude=0.0F;
+  breast_amplitude_off.SetTuning(tuning);
+  double breast_amplitude_motion=0,breast_amplitude_off_motion=0;
+  for(int i=0;i<=480;++i){
+    const double t=i/120.0;
+    const Frame frame{{20*std::sin(t*3),0,150},{},1};
+    breast_amplitude_motion=(std::max)(
+        breast_amplitude_motion,
+        MaximumLocalOffset(
+            vertical,breast_amplitude_full.Sample(frame,t,0,true)[1]));
+    breast_amplitude_off_motion=(std::max)(
+        breast_amplitude_off_motion,
+        MaximumLocalOffset(
+            vertical,breast_amplitude_off.Sample(frame,t,0,true)[1]));
+  }
+  Check(breast_amplitude_motion>breast_amplitude_off_motion+.2,
+        "breast amplitude override did not change visible deflection");
 
   Dynamics ribbon_frozen;
   const std::vector<Bone> ribbon_bind{Make({}),Make({0,0,-20})};

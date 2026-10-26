@@ -161,13 +161,36 @@ void FitButton() {
             layout.fit_button.left >= layout.panel.left,
         "inside the panel");
 }
+
+void PlaybackShortcut() {
+  using tl::SpaceAction;
+  Check(tl::ResolveSpaceAction(true, true, false, false, false, true, false) ==
+            SpaceAction::ToggleMotion,
+        "space does not toggle a loaded MMD motion");
+  Check(tl::ResolveSpaceAction(true, true, false, false, false, true, true) ==
+            SpaceAction::ToggleMotion,
+        "loaded MMD motion does not take precedence over keyframes");
+  Check(tl::ResolveSpaceAction(true, true, false, false, false, false, true) ==
+            SpaceAction::ToggleKeyframes,
+        "space does not toggle an available keyframe timeline");
+  Check(tl::ResolveSpaceAction(true, true, false, false, false, false, false) ==
+            SpaceAction::None,
+        "space toggled an empty keyframe timeline");
+  Check(tl::ResolveSpaceAction(true, true, false, true, false, true, false) ==
+                SpaceAction::None &&
+            tl::ResolveSpaceAction(true, true, true, false, false, true, false) ==
+                SpaceAction::None &&
+            tl::ResolveSpaceAction(true, true, false, false, true, true, false) ==
+                SpaceAction::None,
+        "space shortcut ignored typing or key-repeat guards");
+}
 }  // namespace
 
 int main() {
   LayoutAndMapping(); HitTargets(); KeyHit(); ExportLanes(); SmallAndZeroLength();
   ViewClamp(); ZoomKeepsTheCursorFrame(); PanAndFollow(); ZoomedLayout();
-  FitButton();
+  FitButton(); PlaybackShortcut();
   std::cout << "PASS timeline layout, mapping, hit targets, key hit, zero length, view clamp, "
                "export lanes and switch, zoom around cursor (120 units/notch), "
-               "pan and follow, zoomed layout, fit button\n";
+               "pan and follow, zoomed layout, fit button, playback shortcut\n";
 }

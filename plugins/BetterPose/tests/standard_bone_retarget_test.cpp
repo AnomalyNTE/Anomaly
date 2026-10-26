@@ -1075,6 +1075,8 @@ int main() {
   add_bone("Bip001-R-Hand", right_forearm, {-3, 0, 0});
   const int cloth = add_bone("Bn_qun_test", 0, {5, 0, 0});
   add_bone("Bn_qun_test_tip", cloth, {5, 0, 0});
+  const int breast = add_bone("Bn_l_breast_001", 13, {2, 0, 3});
+  add_bone("Bn_l_breast_001_tip", breast, {0, 0, -5});
   const int piaodai =
       add_bone("Bn_l_piaodai_001", 0, {5, 0, 4});
   add_bone("Bn_l_piaodai_001_tip", piaodai, {5, 0, -4});
@@ -1117,6 +1119,28 @@ int main() {
                     diagnostics.at("strandCapsulesHead").get<int>() == 2 &&
                     diagnostics.at("strandCapsulesArms").get<int>() == 6,
                 "strand collision groups omit torso, head, or both arm chains");
+  }
+  mb::Input breast_amplitude_input = collision_input;
+  breast_amplitude_input.vmd_bytes = VmdWithBone(
+      {0x42, 0x69, 0x70, 0x30, 0x30, 0x31}, 0.0F, 0.17364818F);
+  const mb::Result breast_amplitude_result =
+      mb::BuildMotion(breast_amplitude_input);
+  breast_amplitude_input.dynamics_tuning.breast_amplitude = 0.0F;
+  const mb::Result breast_flat_result =
+      mb::BuildMotion(breast_amplitude_input);
+  ok &= Check(breast_amplitude_result.ok && breast_flat_result.ok,
+              "main-skeleton breast amplitude fixture converts");
+  if (breast_amplitude_result.ok && breast_flat_result.ok) {
+    const json moving =
+        json::parse(breast_amplitude_result.motion_json)
+            .at("bones")
+            .at("Bn_l_breast_001");
+    const json flat =
+        json::parse(breast_flat_result.motion_json)
+            .at("bones")
+            .at("Bn_l_breast_001");
+    ok &= Check(moving != flat,
+                "main-skeleton breast amplitude did not change chest motion");
   }
   mb::Input no_gravity_input = collision_input;
   no_gravity_input.dynamics_tuning.gravity = 0.0F;

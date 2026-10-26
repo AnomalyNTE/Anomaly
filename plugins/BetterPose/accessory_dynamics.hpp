@@ -754,6 +754,7 @@ class Dynamics {
       }
       const Vec head=parent.Point(n.offset);
       if (n.active && !n.body_driven) {
+        const bool breast=secondary::IsBreast(n.name);
         const Vec axis=Rotate(Multiply(parent.rotation,n.rest),n.axis);
         const double inertia_gain=InertiaGain(n);
         if (inertia_gain<=1e-6) {
@@ -793,10 +794,16 @@ class Dynamics {
           }
           const Vec hang=Unit(gravity-accel*.5+air);
           const double gravity_weight=
-              std::clamp(n.gravity*tuning_.gravity,0.0,1.0);
+              std::clamp(n.gravity*tuning_.gravity*
+                             (breast ? tuning_.breast_gravity : 1.0),
+                         0.0,1.0);
           Vec target=Unit(axis*(1-gravity_weight)+hang*gravity_weight,axis);
           auto spring=n.spring;
           spring.damping*=tuning_.damping;
+          if (breast) {
+            spring.stiffness*=tuning_.breast_stiffness;
+            spring.damping*=tuning_.breast_damping;
+          }
           double ribbon_raw_response=0.0;
           const Vec previous_ribbon_direction=n.direction;
           if (n.material==secondary::MotionMaterial::Ribbon) {
@@ -808,15 +815,31 @@ class Dynamics {
             spring.stiffness*=response;
             spring.damping*=tuning_.ribbon_damping;
           }
-          const int steps=(std::max)(4,static_cast<int>(std::ceil(dt*120-1e-8)));
+          const double step_rate=(std::max)(120.0,spring.damping*2.0);
+          const int steps=std::clamp(
+              static_cast<int>(std::ceil(dt*step_rate-1e-8)),4,128);
           const double h=dt/steps;
           for (int step=0;step<steps;++step) {
             n.velocity=n.velocity+(Cross(n.direction,target)*spring.stiffness-n.velocity*spring.damping)*h;
             n.direction=Unit(n.direction+Cross(n.velocity*h,n.direction),target);
           }
+          const double breast_amplitude=
+              breast ? tuning_.breast_amplitude : 1.0;
+          if (breast && breast_amplitude<=1e-6) {
+            n.direction=axis;
+            target=axis;
+            n.velocity={};
+          } else if (breast && std::abs(breast_amplitude-1.0)>1e-6) {
+            n.direction=Unit(
+                axis+(n.direction-axis)*breast_amplitude,n.direction);
+          }
           const double lag=std::acos(std::clamp(Dot(n.direction,target),-1.0,1.0))*180.0/3.14159265358979323846;
-          if (lag>spring.lag_degrees) {
-            n.direction=Unit(n.direction+(target-n.direction)*(spring.lag_degrees/lag),target);
+          const double maximum_lag=breast
+              ? std::clamp(spring.lag_degrees*breast_amplitude,0.0,120.0)
+              : spring.lag_degrees;
+          if (lag>maximum_lag) {
+            n.direction=Unit(
+                n.direction+(target-n.direction)*(maximum_lag/lag),target);
             n.velocity=n.velocity*.5;
           }
           if (n.material==secondary::MotionMaterial::Ribbon) {
@@ -1226,8 +1249,10 @@ class Dynamics {
     }
   }
   double InertiaGain(const Node& node) const {
-    return tuning_.inertia *
-           tuning_.material_inertia[secondary::MotionMaterialIndex(node.material)];
+    const double material =
+        tuning_.material_inertia[secondary::MotionMaterialIndex(node.material)];
+    return tuning_.inertia * material *
+           (secondary::IsBreast(node.name) ? tuning_.breast_inertia : 1.0);
   }
   double CollisionGain(const Node& node) const {
     return tuning_.collision *
