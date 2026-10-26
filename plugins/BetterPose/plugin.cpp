@@ -604,10 +604,6 @@ struct Context final {
   std::string secondary_debug_summary;
   std::atomic<int> main_kawaii_state{};  // 0 unconverted, 1 ready, 2 unavailable
   std::atomic<std::uint32_t> main_kawaii_springs{};
-  std::atomic<std::uint32_t> main_kawaii_limits{};
-  std::atomic<std::uint32_t> main_kawaii_spherical_limits{};
-  std::atomic<std::uint32_t> main_kawaii_box_limits{};
-  std::atomic<std::uint32_t> main_kawaii_planar_limits{};
   std::mutex main_kawaii_mutex;
   std::string main_kawaii_detail;
   std::atomic<std::uint32_t> main_distance_links{};
@@ -1470,6 +1466,13 @@ struct Context final {
     bool kawaii_attempted{};
     std::uint64_t kawaii_retry_after_ms{};
     bool kawaii_configured{};
+    bool kawaii_init_attempted{};
+    bool kawaii_retry_pending{};
+    std::uint32_t kawaii_limit_retry_count{};
+    bool kawaii_budget_disabled{};
+    bool kawaii_tick_option_overridden{};
+    std::uint8_t kawaii_original_anim_tick_option{};
+    std::int32_t kawaii_original_forced_lod{};
     bool kawaii_component_space{};
     std::uintptr_t kawaii_node{};
     std::uint32_t kawaii_spring_count{};
@@ -3857,7 +3860,7 @@ void WriteExtraMeshes(Context &context,
                       const std::vector<PackedTransform> &packed) noexcept;
 bool ReadMeshComponentToWorld(Context &context, std::uintptr_t mesh,
                               Transformd &result) noexcept;
-[[maybe_unused]] void AppendKawaiiLimits(
+void AppendKawaiiLimits(
     const Context::ExtraMesh &extra,
     const better_pose::accessory::Frame &frame,
     std::vector<better_pose::accessory::Capsule> &capsules) noexcept;
@@ -3869,6 +3872,9 @@ std::vector<better_pose::accessory::Capsule> FallbackCollisionCapsules(
 bool RestoreExtraMeshes(Context &context) noexcept;
 bool DropExtraMeshes(Context &context) noexcept;
 bool EnsurePoseableAccessory(Context &context, Context::ExtraMesh &extra) noexcept;
+bool ConfigureKawaiiPhysics(Context &context,
+                            Context::ExtraMesh &extra) noexcept;
+void StepKawaiiRetry(Context &context) noexcept;
 bool EnsureExtraPoseAnimationMode(Context &context,
                                   Context::ExtraMesh &extra,
                                   bool enabled) noexcept;
@@ -3968,6 +3974,21 @@ void ANOMALY_CALL SkeletalMeshTickDetour(void *object, float delta_seconds,
         ApplyMotionPoseDirect(*context);
       else
         ApplyPoseOverridesDirect(*context);
+    }
+  } catch (...) {
+  }
+  try {
+    if (context != nullptr) {
+      const auto address = reinterpret_cast<std::uintptr_t>(object);
+      const bool watched =
+          address == context->runtime.mesh ||
+          std::any_of(context->extra_meshes.begin(),
+                      context->extra_meshes.end(),
+                      [address](const Context::ExtraMesh &extra) {
+                        return address == extra.object;
+                      });
+      if (watched)
+        StepKawaiiRetry(*context);
     }
   } catch (...) {
   }
@@ -6987,11 +7008,13 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
       const Frame body_world = Compose(frame, Inverse(placement_frame));
       auto capsules = extra.accessory_dynamics.BodyCapsules(body_pose.size(),
           [&](int bone) { const auto& p=body_pose[bone].translation; return Vec{p[0],p[1],p[2]}; }, body_world);
-      if (extra.kawaii_component_space && !extra.kawaii_limits.empty() &&
-          better_pose::secondary::IsDrapedRibbon(extra.kawaii_root))
-        capsules.clear();
-      if (context.secondary_tuning.Load().native_limits)
+      const auto secondary_tuning = context.secondary_tuning.Load();
+      if (secondary_tuning.native_limits) {
+        if (extra.kawaii_component_space && !extra.kawaii_limits.empty() &&
+            better_pose::secondary::IsDrapedRibbon(extra.kawaii_root))
+          capsules.clear();
         AppendKawaiiLimits(extra, frame, capsules);
+      }
       const std::span<const AttachmentDrive> attachment_drives(
           extra.attachment_drives.data(), extra.attachment_drives.size());
       const auto& sampled = extra.accessory_dynamics.Sample(
@@ -7789,8 +7812,58 @@ bool FindGeneratedAnimNode(Context &context, const std::uintptr_t anim_class,
   return false;
 }
 
+bool FindKawaiiPropertyOffset(Context &context,
+                              const std::string_view property,
+                              std::uint32_t &offset) noexcept {
+  std::uintptr_t node_struct{};
+  std::string detail;
+  if (!FindObjectAddressByPath(
+          context, "/Script/KawaiiPhysics.AnimNode_KawaiiPhysics",
+          node_struct, &detail))
+    return false;
+  std::uint32_t size{};
+  return FindGeneratedAnimNode(context, node_struct, property, offset, size);
+}
+
+std::uint32_t ResolveKawaiiPropertyOffset(Context &context,
+                                          const std::string_view property,
+                                          const std::uint32_t fallback) noexcept {
+  std::uint32_t offset{};
+  return FindKawaiiPropertyOffset(context, property, offset) ? offset
+                                                              : fallback;
+}
+
+struct KawaiiCapsuleLimitSnapshot {
+  std::string driving_bone;
+  std::int32_t cached_bone_index = -1;
+  std::array<double, 3> offset_location{};
+  std::array<double, 3> offset_rotation{};
+  double radius = 0.0;
+  double length = 0.0;
+  double sphere_radius = 0.0;
+};
+
+void ReadKawaiiLimitGeometry(const std::uint8_t *entry,
+                             KawaiiCapsuleLimitSnapshot &limit) noexcept {
+  float radius{};
+  float length{};
+  float sphere_radius{};
+  std::memcpy(&radius, entry + kKawaiiLimitRadiusOffset, sizeof(radius));
+  std::memcpy(&length, entry + kKawaiiLimitLengthOffset, sizeof(length));
+  std::memcpy(&sphere_radius,
+              entry + kKawaiiLimitSphereRadiusOffset,
+              sizeof(sphere_radius));
+  limit.radius = radius;
+  limit.length = length;
+  limit.sphere_radius = sphere_radius;
+  if (std::isfinite(limit.radius) && limit.radius <= 0.0 &&
+      std::isfinite(limit.sphere_radius) && limit.sphere_radius > 0.0)
+    limit.radius = limit.sphere_radius;
+}
+
 struct KawaiiPhysicsSnapshot {
   std::uintptr_t node{};
+  std::uintptr_t anim_instance{};
   std::string root;
   better_pose::secondary::KawaiiPhysicsSettings base;
   std::array<double, 3> gravity{};
@@ -7803,12 +7876,13 @@ struct KawaiiPhysicsSnapshot {
   std::uint32_t box_limits{};
   std::uint32_t planar_limits{};
   std::vector<better_pose::mmd2bip::SecondaryBoneOverride> overrides;
-  std::vector<better_pose::mmd2bip::KawaiiCapsuleLimit> limits;
+  std::vector<KawaiiCapsuleLimitSnapshot> limits;
 };
 
 bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
                                KawaiiPhysicsSnapshot &snapshot,
-                               std::string &error) noexcept {
+                               std::string &error,
+                               const bool read_capsule_limits = false) noexcept {
   error.clear();
   snapshot = {};
   if (mesh == 0) {
@@ -7818,11 +7892,28 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
   std::uintptr_t anim_class{};
   std::uintptr_t anim_instance{};
   if (!ReadPointerAt(context, mesh, kMeshAnimClassOffset, anim_class) ||
-      !ReadPointerAt(context, mesh, kMeshAnimScriptInstanceOffset,
-                     anim_instance)) {
+      anim_class == 0) {
     error = "animation class or instance unreadable";
     return false;
   }
+  if (!ReadPointerAt(context, mesh, kMeshAnimScriptInstanceOffset,
+                     anim_instance) ||
+      anim_instance == 0) {
+    std::array<std::uint8_t, sizeof(std::uintptr_t)> reflected_output{};
+    std::string detail;
+    if (CallVirtualUFunction(context, mesh, kFunctionGetAnimInstancePath,
+                             reflected_output.data(),
+                             reflected_output.size(), detail,
+                             reflected_output.data())) {
+      std::memcpy(&anim_instance, reflected_output.data(),
+                  sizeof(anim_instance));
+    }
+    if (anim_instance == 0) {
+      error = "animation class or instance unreadable";
+      return false;
+    }
+  }
+  snapshot.anim_instance = anim_instance;
   std::uint32_t node_offset{};
   std::uint32_t node_size{};
   if (!FindGeneratedAnimNode(context, anim_class,
@@ -7874,149 +7965,229 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
       Read(context, snapshot.node + kKawaiiWindScaleOffset, wind_scale));
   snapshot.wind_scale = std::isfinite(wind_scale) ? wind_scale : 0.0;
   snapshot.wind_enabled = (wind_flags & 1U) != 0;
-  std::uint8_t simulation_space{};
-  if (!Read(context, snapshot.node + kKawaiiSimulationSpaceOffset,
-            simulation_space))
-    simulation_space = 0;
-  snapshot.component_space = simulation_space == 0;
-  const auto read_limit_count = [&](const std::uint32_t offset) {
-    std::uintptr_t data{};
-    std::uint32_t count{};
-    if (!ReadArrayHeader(context, snapshot.node + offset, data, count) ||
-        data == 0 || count > 256)
-      return 0U;
-    return count;
-  };
-  snapshot.spherical_limits =
-      read_limit_count(kKawaiiSphericalLimitsOffset);
-  snapshot.capsule_limits =
-      read_limit_count(kKawaiiCapsuleLimitsOffset);
-  snapshot.box_limits =
-      read_limit_count(kKawaiiBoxLimitsOffset);
-  snapshot.planar_limits =
-      read_limit_count(kKawaiiPlanarLimitsOffset);
-
+  if (read_capsule_limits) {
+    std::uint32_t simulation_space_offset{};
+    snapshot.component_space = true;
+    if (FindKawaiiPropertyOffset(context, "SimulationSpace",
+                                 simulation_space_offset)) {
+      std::uint8_t simulation_space{};
+      if (Read(context, snapshot.node + simulation_space_offset,
+               simulation_space))
+        snapshot.component_space = simulation_space == 0;
+    }
+    const auto read_limit_count = [&](const std::uint32_t offset) {
+      std::uintptr_t data{};
+      std::uint32_t count{};
+      if (!ReadArrayHeader(context, snapshot.node + offset, data, count) ||
+          data == 0 || count > 256)
+        return 0U;
+      return count;
+    };
+    snapshot.spherical_limits =
+        read_limit_count(kKawaiiSphericalLimitsOffset);
+    snapshot.capsule_limits =
+        read_limit_count(kKawaiiCapsuleLimitsOffset);
+    snapshot.box_limits = read_limit_count(kKawaiiBoxLimitsOffset);
+    snapshot.planar_limits = read_limit_count(kKawaiiPlanarLimitsOffset);
+  }
   std::uintptr_t bones_data{};
   std::uint32_t bone_count{};
-  if (!ReadArrayHeader(context, snapshot.node + kKawaiiModifyBonesOffset,
-                       bones_data, bone_count) ||
-      bones_data == 0 || bone_count == 0 || bone_count > kMaximumBoneIndex) {
-    error = "KawaiiPhysics ModifyBones unavailable";
-    return false;
-  }
-  snapshot.source_bones = bone_count;
-  std::vector<std::uint8_t> bones(
-      static_cast<std::size_t>(bone_count) * kKawaiiModifyBoneSize);
-  if (!ReadBytes(context, bones_data, bones.data(), bones.size())) {
-    error = "KawaiiPhysics ModifyBones unreadable";
-    return false;
-  }
-  snapshot.overrides.reserve(bone_count);
-  for (std::uint32_t bone{}; bone != bone_count; ++bone) {
-    const std::size_t start =
-        static_cast<std::size_t>(bone) * kKawaiiModifyBoneSize;
-    const auto *entry = bones.data() + start;
-    if (entry[kKawaiiModifyBoneDummyOffset] != 0 ||
-        entry[kKawaiiModifyBoneSkipOffset] != 0)
-      continue;
-    std::uint32_t name_id{};
-    std::memcpy(&name_id, entry + kKawaiiModifyBoneNameOffset,
-                sizeof(name_id));
-    std::string name;
-    if (!ResolveName(context, name_id, name))
-      continue;
-    std::array<float, 7> raw{};
-    std::memcpy(raw.data(), entry + kKawaiiModifyBoneSettingsOffset,
-                sizeof(raw));
-    if (!std::all_of(raw.begin(), raw.end(),
-                     [](const float value) { return std::isfinite(value); }))
-      continue;
-    better_pose::secondary::KawaiiPhysicsSettings native;
-    native.damping = raw[0];
-    native.stiffness = raw[1];
-    native.world_damping_location = raw[2];
-    native.world_damping_rotation = raw[3];
-    native.radius = raw[4];
-    native.limit_angle = raw[5];
-    native.forward_move_offset = raw[6];
-    const bool hair = better_pose::secondary::IsHair(name);
-    const bool draped_ribbon =
-        better_pose::secondary::IsDrapedRibbon(name);
-    snapshot.overrides.push_back(
-        {std::move(name),
-         better_pose::secondary::SpringFromKawaii(native, hair,
-                                                  draped_ribbon),
-         native.radius,
-         std::clamp(1.0 - 0.5 * (native.world_damping_location +
-                                 native.world_damping_rotation),
-                    0.05, 1.0),
-         snapshot.gravity,
-         native.forward_move_offset});
-  }
-  std::uintptr_t limits_data{};
-  std::uint32_t limit_count{};
-  if (ReadArrayHeader(context, snapshot.node + kKawaiiCapsuleLimitsOffset,
-                      limits_data, limit_count) &&
-      limits_data != 0 && limit_count != 0 && limit_count <= 256) {
-    std::vector<std::uint8_t> limits(
-        static_cast<std::size_t>(limit_count) * kKawaiiCapsuleLimitSize);
-    if (ReadBytes(context, limits_data, limits.data(), limits.size())) {
-      snapshot.limits.reserve(limit_count);
-      for (std::uint32_t index{}; index != limit_count; ++index) {
-        const auto *entry =
-            limits.data() +
-            static_cast<std::size_t>(index) * kKawaiiCapsuleLimitSize;
-        if (entry[kKawaiiLimitEnabledOffset] == 0)
+  const std::uint32_t modify_bones_offset =
+      ResolveKawaiiPropertyOffset(context, "ModifyBones",
+                                  kKawaiiModifyBonesOffset);
+  const bool bones_available =
+      ReadArrayHeader(context, snapshot.node + modify_bones_offset,
+                      bones_data, bone_count) &&
+      bones_data != 0 && bone_count != 0 &&
+      bone_count <= kMaximumBoneIndex;
+  if (bones_available) {
+    snapshot.source_bones = bone_count;
+    std::vector<std::uint8_t> bones(
+        static_cast<std::size_t>(bone_count) * kKawaiiModifyBoneSize);
+    if (ReadBytes(context, bones_data, bones.data(), bones.size())) {
+      snapshot.overrides.reserve(bone_count);
+      for (std::uint32_t bone{}; bone != bone_count; ++bone) {
+        const std::size_t start =
+            static_cast<std::size_t>(bone) * kKawaiiModifyBoneSize;
+        const auto *entry = bones.data() + start;
+        if (entry[kKawaiiModifyBoneDummyOffset] != 0 ||
+            entry[kKawaiiModifyBoneSkipOffset] != 0)
           continue;
-        std::uint32_t driving_id{};
-        std::memcpy(&driving_id, entry + kKawaiiLimitDrivingBoneOffset,
-                    sizeof(driving_id));
-        better_pose::mmd2bip::KawaiiCapsuleLimit limit;
-        if (!ResolveName(context, driving_id, limit.driving_bone))
+        std::uint32_t name_id{};
+        std::memcpy(&name_id, entry + kKawaiiModifyBoneNameOffset,
+                    sizeof(name_id));
+        std::string name;
+        if (!ResolveName(context, name_id, name))
           continue;
-        std::memcpy(limit.offset_location.data(),
-                    entry + kKawaiiLimitOffsetLocationOffset,
-                    sizeof(limit.offset_location));
-        std::memcpy(limit.offset_rotation.data(),
-                    entry + kKawaiiLimitOffsetRotationOffset,
-                    sizeof(limit.offset_rotation));
-        std::memcpy(&limit.radius, entry + kKawaiiLimitRadiusOffset,
-                    sizeof(limit.radius));
-        std::memcpy(&limit.length, entry + kKawaiiLimitLengthOffset,
-                    sizeof(limit.length));
-        std::memcpy(&limit.sphere_radius,
-                    entry + kKawaiiLimitSphereRadiusOffset,
-                    sizeof(limit.sphere_radius));
-        if (!std::all_of(limit.offset_location.begin(),
-                         limit.offset_location.end(),
-                         [](const double value) {
+        std::array<float, 7> raw{};
+        std::memcpy(raw.data(), entry + kKawaiiModifyBoneSettingsOffset,
+                    sizeof(raw));
+        if (!std::all_of(raw.begin(), raw.end(),
+                         [](const float value) {
                            return std::isfinite(value);
-                         }) ||
-            !std::all_of(limit.offset_rotation.begin(),
-                         limit.offset_rotation.end(),
-                         [](const double value) {
-                           return std::isfinite(value);
-                         }) ||
-            !std::isfinite(limit.radius) ||
-            !std::isfinite(limit.length) ||
-            !std::isfinite(limit.sphere_radius) || limit.radius <= 0.0 ||
-            limit.length < 0.0 || limit.sphere_radius < 0.0 ||
-            (limit.length <= 1e-4 && limit.sphere_radius <= 0.0))
+                         }))
           continue;
-        snapshot.limits.push_back(std::move(limit));
+        better_pose::secondary::KawaiiPhysicsSettings native;
+        native.damping = raw[0];
+        native.stiffness = raw[1];
+        native.world_damping_location = raw[2];
+        native.world_damping_rotation = raw[3];
+        native.radius = raw[4];
+        native.limit_angle = raw[5];
+        native.forward_move_offset = raw[6];
+        const bool hair = better_pose::secondary::IsHair(name);
+        const bool draped_ribbon =
+            better_pose::secondary::IsDrapedRibbon(name);
+        snapshot.overrides.push_back(
+            {std::move(name),
+             better_pose::secondary::SpringFromKawaii(native, hair,
+                                                      draped_ribbon),
+             native.radius,
+             std::clamp(1.0 - 0.5 * (native.world_damping_location +
+                                     native.world_damping_rotation),
+                        0.05, 1.0),
+             snapshot.gravity,
+             native.forward_move_offset});
       }
     }
   }
-  if (snapshot.overrides.empty() && snapshot.limits.empty()) {
-    error = "KawaiiPhysics produced no usable springs or capsule limits";
+  if (read_capsule_limits) {
+    std::uintptr_t limits_data{};
+    std::uint32_t limit_count{};
+    if (ReadArrayHeader(context, snapshot.node + kKawaiiCapsuleLimitsOffset,
+                        limits_data, limit_count) &&
+        limits_data != 0 && limit_count != 0 && limit_count <= 256) {
+      std::vector<std::uint8_t> limits(
+          static_cast<std::size_t>(limit_count) * kKawaiiCapsuleLimitSize);
+      if (ReadBytes(context, limits_data, limits.data(), limits.size())) {
+        snapshot.limits.reserve(limit_count);
+        for (std::uint32_t index{}; index != limit_count; ++index) {
+          const auto *entry =
+              limits.data() +
+              static_cast<std::size_t>(index) * kKawaiiCapsuleLimitSize;
+          if (entry[kKawaiiLimitEnabledOffset] == 0)
+            continue;
+          std::uint32_t driving_id{};
+          std::memcpy(&driving_id, entry + kKawaiiLimitDrivingBoneOffset,
+                      sizeof(driving_id));
+          KawaiiCapsuleLimitSnapshot limit;
+          std::memcpy(&limit.cached_bone_index,
+                      entry + kKawaiiLimitCachedBoneIndexOffset,
+                      sizeof(limit.cached_bone_index));
+          const bool resolved =
+              ResolveName(context, driving_id, limit.driving_bone);
+          if (!resolved && limit.cached_bone_index < 0)
+            continue;
+          std::memcpy(limit.offset_location.data(),
+                      entry + kKawaiiLimitOffsetLocationOffset,
+                      sizeof(limit.offset_location));
+          std::memcpy(limit.offset_rotation.data(),
+                      entry + kKawaiiLimitOffsetRotationOffset,
+                      sizeof(limit.offset_rotation));
+          ReadKawaiiLimitGeometry(entry, limit);
+          if (!std::all_of(limit.offset_location.begin(),
+                           limit.offset_location.end(),
+                           [](const double value) {
+                             return std::isfinite(value);
+                           }) ||
+              !std::all_of(limit.offset_rotation.begin(),
+                           limit.offset_rotation.end(),
+                           [](const double value) {
+                             return std::isfinite(value);
+                           }) ||
+              !std::isfinite(limit.radius) ||
+              !std::isfinite(limit.length) ||
+              !std::isfinite(limit.sphere_radius) ||
+              limit.radius <= 0.0 || limit.radius > 1000.0 ||
+              limit.length < 0.0 || limit.length > 1000.0 ||
+              limit.sphere_radius < 0.0 || limit.sphere_radius > 1000.0 ||
+              (limit.length <= 1e-4 && limit.sphere_radius <= 0.0))
+            continue;
+          snapshot.limits.push_back(std::move(limit));
+        }
+      }
+    }
+  }
+  if (snapshot.overrides.empty() &&
+      (!read_capsule_limits || snapshot.limits.empty())) {
+    error = read_capsule_limits
+                ? "KawaiiPhysics produced no usable springs or capsule limits"
+                : "KawaiiPhysics produced no usable springs";
     return false;
   }
   return true;
 }
 
+void RestoreKawaiiInitialization(Context &context,
+                                 Context::ExtraMesh &extra) noexcept {
+  if (extra.kawaii_tick_option_overridden) {
+    static_cast<void>(Write(
+        context, extra.object + kMeshVisibilityBasedAnimTickOptionOffset,
+        extra.kawaii_original_anim_tick_option));
+    static_cast<void>(Write(context,
+                            extra.object + kMeshForcedLodModelOffset,
+                            extra.kawaii_original_forced_lod));
+    extra.kawaii_tick_option_overridden = false;
+  }
+  if (extra.kawaii_budget_disabled) {
+    const std::uint8_t enable_budget = 1;
+    std::string detail;
+    if (CallVirtualUFunction(
+            context, extra.object, kFunctionSetAutoRegisterBudgetPath,
+            &enable_budget, sizeof(enable_budget), detail))
+      extra.kawaii_budget_disabled = false;
+  }
+}
+
+void BeginKawaiiInitialization(Context &context,
+                               Context::ExtraMesh &extra) noexcept {
+  if (extra.kawaii_init_attempted)
+    return;
+  extra.kawaii_init_attempted = true;
+  const std::uint8_t disable_budget = 0;
+  std::string detail;
+  if (CallVirtualUFunction(
+          context, extra.object, kFunctionSetAutoRegisterBudgetPath,
+          &disable_budget, sizeof(disable_budget), detail))
+    extra.kawaii_budget_disabled = true;
+  const std::uint8_t enable_component_tick = 1;
+  static_cast<void>(CallVirtualUFunction(
+      context, extra.object, kFunctionSetComponentTickEnabledPath,
+      &enable_component_tick, sizeof(enable_component_tick), detail));
+  if (Read(context, extra.object + kMeshVisibilityBasedAnimTickOptionOffset,
+           extra.kawaii_original_anim_tick_option) &&
+      Read(context, extra.object + kMeshForcedLodModelOffset,
+           extra.kawaii_original_forced_lod)) {
+    const std::uint8_t always_tick = 0;
+    const std::int32_t lod_zero = 0;
+    extra.kawaii_tick_option_overridden =
+        Write(context,
+              extra.object + kMeshVisibilityBasedAnimTickOptionOffset,
+              always_tick) &&
+        Write(context, extra.object + kMeshForcedLodModelOffset, lod_zero);
+  }
+  std::uint8_t animation_mode{};
+  if (Read(context, extra.object + kMeshAnimationModeOffset,
+           animation_mode)) {
+    struct SetAnimationModeParameters {
+      std::uint8_t mode;
+      std::uint8_t force_init;
+    };
+    const SetAnimationModeParameters parameters{animation_mode, 1};
+    static_cast<void>(CallVirtualUFunction(
+        context, extra.object, kFunctionSetAnimationModePath,
+        &parameters, sizeof(parameters), detail));
+  }
+  if (context.runtime.character != 0)
+    static_cast<void>(CallVirtualUFunction(
+        context, context.runtime.character,
+        kFunctionRefreshAnimInstancePath, nullptr, 0, detail));
+  static_cast<void>(EnsurePoseTickHook(context));
+}
+
 bool ConfigureKawaiiPhysics(Context &context,
                             Context::ExtraMesh &extra) noexcept {
-  if (extra.kawaii_configured)
+  if (extra.kawaii_configured && !extra.kawaii_retry_pending)
     return extra.kawaii_configured;
   const std::uint64_t now = GetTickCount64();
   if (extra.kawaii_attempted &&
@@ -8026,11 +8197,26 @@ bool ConfigureKawaiiPhysics(Context &context,
   KawaiiPhysicsSnapshot snapshot;
   std::string snapshot_error;
   if (!ReadKawaiiPhysicsSnapshot(context, extra.object, snapshot,
-                                 snapshot_error)) {
+                                 snapshot_error, true)) {
     extra.kawaii_attempted = true;
-    extra.kawaii_retry_after_ms = now + 2000;
-    LogDiagnostic(context, "betterpose kawaii node " + Hex(extra.object) +
-                               " unavailable: " + snapshot_error);
+    if (!extra.kawaii_init_attempted) {
+      BeginKawaiiInitialization(context, extra);
+      extra.kawaii_retry_pending = true;
+      extra.kawaii_retry_after_ms = now + 250;
+      LogDiagnostic(context, "betterpose kawaii node " + Hex(extra.object) +
+                                 " awaiting initialization: " +
+                                 snapshot_error);
+    } else if (++extra.kawaii_limit_retry_count < 12) {
+      extra.kawaii_retry_pending = true;
+      extra.kawaii_retry_after_ms = now + 250;
+    } else {
+      extra.kawaii_retry_pending = false;
+      extra.kawaii_retry_after_ms = 0;
+      RestoreKawaiiInitialization(context, extra);
+      LogDiagnostic(context, "betterpose kawaii node " + Hex(extra.object) +
+                                 " unavailable after retries: " +
+                                 snapshot_error);
+    }
     return false;
   }
   const std::uintptr_t node = snapshot.node;
@@ -8066,14 +8252,23 @@ bool ConfigureKawaiiPhysics(Context &context,
   extra.kawaii_limits.clear();
   if (snapshot.component_space) {
     for (const auto &native : snapshot.limits) {
-      const auto found = std::find(extra.bone_names.begin(),
-                                   extra.bone_names.end(),
-                                   native.driving_bone);
-      if (found == extra.bone_names.end())
+      std::int32_t driving_bone = -1;
+      if (!native.driving_bone.empty()) {
+        const auto found = std::find(extra.bone_names.begin(),
+                                     extra.bone_names.end(),
+                                     native.driving_bone);
+        if (found != extra.bone_names.end())
+          driving_bone =
+              static_cast<std::int32_t>(found - extra.bone_names.begin());
+      }
+      if (driving_bone < 0 && native.cached_bone_index >= 0 &&
+          static_cast<std::size_t>(native.cached_bone_index) <
+              extra.bone_names.size())
+        driving_bone = native.cached_bone_index;
+      if (driving_bone < 0)
         continue;
       Context::ExtraMesh::KawaiiLimit limit;
-      limit.driving_bone =
-          static_cast<std::int32_t>(found - extra.bone_names.begin());
+      limit.driving_bone = driving_bone;
       limit.offset_location = native.offset_location;
       limit.offset_rotation = native.offset_rotation;
       limit.radius = static_cast<float>(native.radius);
@@ -8132,16 +8327,21 @@ bool ConfigureKawaiiPhysics(Context &context,
   char message[512]{};
   std::snprintf(
       message, sizeof(message),
-      "betterpose kawaii node %llX root=%s bones=%u/%u limits=%u/%u/%u/%u "
+      "betterpose kawaii node %llX instance=%llX root=%s bones=%u/%u "
+      "limits=%u/%u/%u/%u usable_limits=%u "
       "damping=%.3f stiffness=%.3f world_damp=%.2f/%.2f radius=%.2f "
       "limit=%.1f gravity=%.1f,%.1f,%.1f wind=%d/%.2f space=%u "
       "forward=%u/%g..%g",
-      static_cast<unsigned long long>(node), extra.kawaii_root.c_str(),
+      static_cast<unsigned long long>(node),
+      static_cast<unsigned long long>(snapshot.anim_instance),
+      extra.kawaii_root.c_str(),
       static_cast<unsigned>(matched),
       static_cast<unsigned>(snapshot.source_bones),
       snapshot.capsule_limits, snapshot.spherical_limits,
-      snapshot.box_limits, snapshot.planar_limits, snapshot.base.damping,
-      snapshot.base.stiffness, snapshot.base.world_damping_location,
+      snapshot.box_limits, snapshot.planar_limits,
+      capsule_count,
+      snapshot.base.damping, snapshot.base.stiffness,
+      snapshot.base.world_damping_location,
       snapshot.base.world_damping_rotation, snapshot.base.radius,
       snapshot.base.limit_angle, snapshot.gravity[0], snapshot.gravity[1],
       snapshot.gravity[2], extra.kawaii_wind_enabled ? 1 : 0,
@@ -8150,7 +8350,27 @@ bool ConfigureKawaiiPhysics(Context &context,
       static_cast<unsigned>(forward_move_count), forward_move_min,
       forward_move_max);
   LogDiagnostic(context, message);
+  if (extra.kawaii_capsule_limits != 0 && extra.kawaii_limits.empty() &&
+      extra.kawaii_limit_retry_count++ < 12) {
+    extra.kawaii_retry_pending = true;
+    extra.kawaii_retry_after_ms = now + 250;
+  } else {
+    extra.kawaii_retry_pending = false;
+    extra.kawaii_retry_after_ms = 0;
+    RestoreKawaiiInitialization(context, extra);
+  }
   return true;
+}
+
+void StepKawaiiRetry(Context &context) noexcept {
+  const std::uint64_t now = GetTickCount64();
+  for (auto &extra : context.extra_meshes) {
+    if (!extra.kawaii_retry_pending ||
+        extra.kawaii_retry_after_ms == 0 ||
+        now < extra.kawaii_retry_after_ms)
+      continue;
+    static_cast<void>(ConfigureKawaiiPhysics(context, extra));
+  }
 }
 
 void AppendKawaiiLimits(
@@ -9034,8 +9254,8 @@ void WriteExtraMeshes(Context &context,
     context.secondary_debug_kawaii_limits.store(0, std::memory_order_release);
     context.secondary_debug_kawaii_spherical_limits.store(
         0, std::memory_order_release);
-    context.secondary_debug_kawaii_box_limits.store(
-        0, std::memory_order_release);
+    context.secondary_debug_kawaii_box_limits.store(0,
+                                                    std::memory_order_release);
     context.secondary_debug_kawaii_planar_limits.store(
         0, std::memory_order_release);
     context.secondary_debug_distance_links.store(
@@ -9217,11 +9437,6 @@ void WriteExtraMeshes(Context &context,
           capsules = FallbackCollisionCapsules(
               context, collision_masks, packed.size(), body_points);
         }
-        if (extra.kawaii_component_space && !extra.kawaii_limits.empty() &&
-            better_pose::secondary::IsDrapedRibbon(extra.kawaii_root))
-          capsules.clear();
-        if (secondary_tuning.native_limits && have_accessory_world)
-          AppendKawaiiLimits(extra, frame, capsules);
         const std::span<const AttachmentDrive> attachment_drives(
             extra.attachment_drives.data(), extra.attachment_drives.size());
         const auto &sampled = extra.accessory_dynamics.Sample(
@@ -9394,6 +9609,8 @@ bool DropExtraMeshes(Context &context) noexcept {  // Put the original buffers b
   // relog.
   static_cast<void>(RestoreExtraMeshes(context));
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
+  for (auto &extra : context.extra_meshes)
+    RestoreKawaiiInitialization(context, extra);
   context.extra_meshes.clear();
   ClearCollisionDebugStats(context);
   ++context.extra_drop_count;
@@ -9406,7 +9623,8 @@ bool DropExtraMeshes(Context &context) noexcept {  // Put the original buffers b
   context.secondary_debug_kawaii_limits.store(0, std::memory_order_release);
   context.secondary_debug_kawaii_spherical_limits.store(
       0, std::memory_order_release);
-  context.secondary_debug_kawaii_box_limits.store(0, std::memory_order_release);
+  context.secondary_debug_kawaii_box_limits.store(0,
+                                                  std::memory_order_release);
   context.secondary_debug_kawaii_planar_limits.store(
       0, std::memory_order_release);
   context.secondary_debug_distance_links.store(0, std::memory_order_release);
@@ -10609,8 +10827,6 @@ struct PoseFileTaskData final {
       manual_arm_ik_controls;
   std::vector<better_pose::mmd2bip::SecondaryBoneOverride>
       secondary_bone_overrides;
-  std::vector<better_pose::mmd2bip::KawaiiCapsuleLimit>
-      kawaii_capsule_limits;
   std::set<std::string> ignored_tracks;
   int reference_mode{-1};
   std::string output_path;
@@ -10928,7 +11144,6 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
       input.manual_finger_controls = data->manual_finger_controls;
       input.manual_arm_ik_controls = data->manual_arm_ik_controls;
       input.secondary_bone_overrides = data->secondary_bone_overrides;
-      input.kawaii_capsule_limits = data->kawaii_capsule_limits;
       input.ignored_tracks = data->ignored_tracks;
       input.dynamics_tuning = context->secondary_tuning.Load();
       const int ik_mode =
@@ -11266,23 +11481,11 @@ void ExecutePoseFileAction(Context &context) noexcept {
       if (ReadKawaiiPhysicsSnapshot(context, context.runtime.mesh, snapshot,
                                     kawaii_error)) {
         data->secondary_bone_overrides = std::move(snapshot.overrides);
-        if (snapshot.component_space)
-          data->kawaii_capsule_limits = std::move(snapshot.limits);
         context.main_kawaii_state.store(1, std::memory_order_release);
         context.main_kawaii_springs.store(
             static_cast<std::uint32_t>(
                 data->secondary_bone_overrides.size()),
             std::memory_order_release);
-        context.main_kawaii_limits.store(
-            static_cast<std::uint32_t>(
-                data->kawaii_capsule_limits.size()),
-            std::memory_order_release);
-        context.main_kawaii_spherical_limits.store(
-            snapshot.spherical_limits, std::memory_order_release);
-        context.main_kawaii_box_limits.store(
-            snapshot.box_limits, std::memory_order_release);
-        context.main_kawaii_planar_limits.store(
-            snapshot.planar_limits, std::memory_order_release);
         {
           std::lock_guard<std::mutex> lock(context.main_kawaii_mutex);
           context.main_kawaii_detail = snapshot.root;
@@ -11291,27 +11494,19 @@ void ExecutePoseFileAction(Context &context) noexcept {
         std::snprintf(
             line, sizeof(line),
             "betterpose main kawaii root=%s bones=%u usable=%zu "
-            "limits=%zu/%u/%u/%u space=%u "
             "damping=%.3f stiffness=%.3f world_damp=%.2f/%.2f "
             "radius=%.2f limit=%.1f gravity=%.1f,%.1f,%.1f",
             snapshot.root.c_str(), static_cast<unsigned>(snapshot.source_bones),
             data->secondary_bone_overrides.size(),
-            data->kawaii_capsule_limits.size(), snapshot.spherical_limits,
-            snapshot.box_limits, snapshot.planar_limits,
-            snapshot.component_space ? 0U : 1U, snapshot.base.damping,
-            snapshot.base.stiffness, snapshot.base.world_damping_location,
+            snapshot.base.damping, snapshot.base.stiffness,
+            snapshot.base.world_damping_location,
             snapshot.base.world_damping_rotation, snapshot.base.radius,
-            snapshot.base.limit_angle, snapshot.gravity[0], snapshot.gravity[1],
-            snapshot.gravity[2]);
+            snapshot.base.limit_angle, snapshot.gravity[0],
+            snapshot.gravity[1], snapshot.gravity[2]);
         LogDiagnostic(context, line);
       } else {
         context.main_kawaii_state.store(2, std::memory_order_release);
         context.main_kawaii_springs.store(0, std::memory_order_release);
-        context.main_kawaii_limits.store(0, std::memory_order_release);
-        context.main_kawaii_spherical_limits.store(
-            0, std::memory_order_release);
-        context.main_kawaii_box_limits.store(0, std::memory_order_release);
-        context.main_kawaii_planar_limits.store(0, std::memory_order_release);
         {
           std::lock_guard<std::mutex> lock(context.main_kawaii_mutex);
           context.main_kawaii_detail = kawaii_error;
@@ -12848,6 +13043,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   ExecuteReflectionAction(context);
   ExecutePoseFileAction(context);
   StepMeshScan(context);
+  StepKawaiiRetry(context);
   StepAttachScan(context);
   if (context.motion_visibility_restore_requested.exchange(
           false, std::memory_order_acquire))
@@ -13241,10 +13437,6 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
     UnloadMotion(context);
   context.main_kawaii_state.store(0, std::memory_order_release);
   context.main_kawaii_springs.store(0, std::memory_order_release);
-  context.main_kawaii_limits.store(0, std::memory_order_release);
-  context.main_kawaii_spherical_limits.store(0, std::memory_order_release);
-  context.main_kawaii_box_limits.store(0, std::memory_order_release);
-  context.main_kawaii_planar_limits.store(0, std::memory_order_release);
   context.main_distance_links.store(0, std::memory_order_release);
   context.main_distance_corrections.store(0, std::memory_order_release);
   context.main_self_collision_contacts.store(0, std::memory_order_release);
@@ -15499,7 +15691,7 @@ std::uint8_t CollisionMasksForExtra(const Context &context,
   }
   const auto tuning = context.secondary_tuning.Load();
   return better_pose::secondary::EffectiveCollisionMask(
-      masks, tuning.extended_collision, tuning.native_limits);
+      masks, tuning.extended_collision);
 }
 
 std::vector<better_pose::accessory::Capsule> FallbackCollisionCapsules(
@@ -18657,14 +18849,15 @@ void DrawSecondaryPhysicsControls(Context &context,
   const std::string native_limits_label =
       context.localizer.Text(
           "pose.physics.native_kawaii_limits",
-          "Native Kawaii capsule limits") +
-      effect_suffix(has_modules, has_body);
+          "Modular accessory Kawaii capsule limits") +
+      effect_suffix(has_modules, false);
   if (ui->checkbox(ui->user,
                    anomaly::sdk::StringView(native_limits_label),
                    &native_limits) != 0) {
     tuning.native_limits = native_limits != 0;
     changed = true;
   }
+  ui->same_line(ui->user, 0.0F, 10.0F);
   int bone_constraints = tuning.bone_constraints ? 1 : 0;
   const std::string bone_constraints_label =
       context.localizer.Text(
@@ -18776,8 +18969,6 @@ void DrawSecondaryPhysicsControls(Context &context,
         context.main_kawaii_state.load(std::memory_order_acquire);
     const std::uint32_t main_springs =
         context.main_kawaii_springs.load(std::memory_order_acquire);
-    const std::uint32_t main_limits =
-        context.main_kawaii_limits.load(std::memory_order_acquire);
     std::string main_detail;
     {
       std::lock_guard<std::mutex> lock(context.main_kawaii_mutex);
@@ -18796,20 +18987,9 @@ void DrawSecondaryPhysicsControls(Context &context,
           main_status, sizeof(main_status),
           context.localizer
               .Text("pose.physics.kawaii_status_ready",
-                    "Main character Kawaii: found (%u springs; limits capsule "
-                    "%u / sphere %u / box %u / planar %u)")
+                    "Main character Kawaii: found (%u springs)")
               .c_str(),
-          static_cast<unsigned>(main_springs),
-          static_cast<unsigned>(main_limits),
-          static_cast<unsigned>(
-              context.main_kawaii_spherical_limits.load(
-                  std::memory_order_acquire)),
-          static_cast<unsigned>(
-              context.main_kawaii_box_limits.load(
-                  std::memory_order_acquire)),
-          static_cast<unsigned>(
-              context.main_kawaii_planar_limits.load(
-                  std::memory_order_acquire)));
+          static_cast<unsigned>(main_springs));
     } else {
       std::snprintf(
           main_status, sizeof(main_status),

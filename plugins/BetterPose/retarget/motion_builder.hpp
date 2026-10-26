@@ -87,16 +87,6 @@ struct SecondaryBoneOverride {
   double forward_move_offset = 0.0;
 };
 
-// FCapsuleLimit from KawaiiPhysics, kept in target component space.
-struct KawaiiCapsuleLimit {
-  std::string driving_bone;
-  std::array<double, 3> offset_location{};
-  std::array<double, 3> offset_rotation{};
-  double radius = 0.0;
-  double length = 0.0;
-  double sphere_radius = 0.0;
-};
-
 // Everything the converter needs, all of it already in memory: the plugin holds the
 // skeleton export as a document, and the VMD is read off disk by the caller.
 struct Input {
@@ -124,7 +114,6 @@ struct Input {
   std::vector<ManualFingerControl> manual_finger_controls;
   std::vector<ManualArmIkControl> manual_arm_ik_controls;
   std::vector<SecondaryBoneOverride> secondary_bone_overrides;
-  std::vector<KawaiiCapsuleLimit> kawaii_capsule_limits;
   // Source tracks the user explicitly chose not to consume. This overrides both automatic and
   // manual mappings for the same source.
   std::set<std::string> ignored_tracks;

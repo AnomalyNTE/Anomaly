@@ -165,6 +165,29 @@ void CheckNativeCapsuleRuntime() {
             std::abs(capsules[0].radius - 2.0) < 1e-6,
         "native capsule current-driver offset was not used");
 }
+void CheckKawaiiLimitDecode() {
+  std::array<std::uint8_t, kKawaiiCapsuleLimitSize> raw{};
+  const float radius = 15.209F;
+  const float length = 4.735F;
+  const float sphere_radius = 17.576F;
+  std::memcpy(raw.data() + kKawaiiLimitRadiusOffset, &radius, sizeof(radius));
+  std::memcpy(raw.data() + kKawaiiLimitLengthOffset, &length, sizeof(length));
+  std::memcpy(raw.data() + kKawaiiLimitSphereRadiusOffset, &sphere_radius,
+              sizeof(sphere_radius));
+  KawaiiCapsuleLimitSnapshot decoded;
+  ReadKawaiiLimitGeometry(raw.data(), decoded);
+  Check(std::abs(decoded.radius - 15.209) < 1e-5 &&
+            std::abs(decoded.length - 4.735) < 1e-5 &&
+            std::abs(decoded.sphere_radius - 17.576) < 1e-5,
+        "Kawaii capsule floats were not decoded with their native width");
+
+  const float no_radius = 0.0F;
+  std::memcpy(raw.data() + kKawaiiLimitRadiusOffset, &no_radius,
+              sizeof(no_radius));
+  ReadKawaiiLimitGeometry(raw.data(), decoded);
+  Check(std::abs(decoded.radius - 17.576) < 1e-5,
+        "Kawaii capsule sphere radius fallback was not applied");
+}
 }
 
 int main() {
@@ -696,5 +719,6 @@ int main() {
 
   CheckExtraAnimationMode();
   CheckNativeCapsuleRuntime();
-  std::cout << "PASS automatic unload, paused/playing switches, extra animation restore, native capsule geometry, transient gap, stale conversion rejection and explicit reload\n";
+  CheckKawaiiLimitDecode();
+  std::cout << "PASS automatic unload, paused/playing switches, extra animation restore, modular Kawaii capsule geometry and decoding, transient gap, stale conversion rejection and explicit reload\n";
 }
