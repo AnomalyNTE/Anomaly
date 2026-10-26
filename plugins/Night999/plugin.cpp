@@ -6,8 +6,7 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
 #include "plugins/common/localization.hpp"
-// 共享自动战斗状态机（静态库 anomaly_plugin_combat）。必须放在匿名命名空间之外包含，
-// 否则它的 anomaly::plugins::combat 会被套进匿名命名空间、与静态库里的定义对不上。
+// 共享自动战斗状态机（静态库 anomaly_plugin_combat）。必须放在匿名命名空间之外包含。
 #include "plugins/common/combat/auto_combat.hpp"
 
 #include <algorithm>
@@ -34,7 +33,7 @@ using anomaly::sdk::StringView;
 using anomaly::sdk::UiWindow;
 
 // ---------------------------------------------------------------------------
-// 脚本用的两个传送点与传送调参（全部只存在内存里，重载即恢复默认）
+// 三个传送点与传送调参（全部只存在内存里，重载即恢复默认）
 // ---------------------------------------------------------------------------
 // 营地（刷新怪物处）。
 constexpr double kDefaultCampX = -145902.874;
@@ -49,8 +48,7 @@ constexpr double kDefaultFight2X = -113694.644;
 constexpr double kDefaultFight2Y = -139085.057;
 constexpr double kDefaultFight2Z = 37174.609;
 
-// 传送桥默认走「预载模式」：宿主先把目标点所在的流送单元加载出来，再在同一次窗口内把角色
-// 交回地面，避免落进未加载地形。延迟为 0 时退化为立即传送，此时才需要 Z 抬升与沉底重试。
+// 默认走预载：宿主先装载目标点的流送单元再落位；延迟为 0 时退化为立即传送。
 constexpr double kPreloadDelayDefault = 2.0;
 constexpr double kPreloadDelayMaximum = 15.0;
 constexpr double kLandingLiftDefault = 250.0;
@@ -143,8 +141,7 @@ struct PendingTeleport {
     double position[3]{};
 };
 
-// 传送之后的沉降观察：宿主用 bSweep=false 把角色精确放到目标点，若目标点在地板下沿，
-// 角色会嵌进几何体。这里只用于立即传送路径，发现 Z 明显低于落点就抬高重传。
+// 立即传送后的沉降观察：落点在地板下沿时角色会嵌进几何体，发现 Z 偏低就抬高重传。
 struct LandingMonitor {
     bool active{};
     AnomalyGenerationHandleV1 world{};
@@ -161,10 +158,8 @@ struct Context {
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5WorldServiceV1* world{};
-    const AnomalyUe5ProcessEventServiceV1* events{};
     const AnomalyUe5FrameworkServiceV1* framework{};
-    // 自动战斗要用的服务（actors/entities/combat/skills/skill-invocation/pickup 随世界加载
-    // 才发布，空指针由 CombatRequireServices 惰性补查）。
+    // 这些服务随世界加载才发布，Load 时可能为空，由 CombatRequireServices 惰性补查。
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
@@ -490,9 +485,7 @@ double ParseNumber(const char* text) noexcept {
     return value;
 }
 
-// 输入框宽度由宿主固定为「窗口宽度的 65%」（ABI 没有 set_next_item_width，宿主自己的输入框
-// 都是显式 SetNextItemWidth 才窄的）。各内建插件也都是直接用这个默认宽度，所以这里不再塞进
-// 任何容器 —— 之前试过「单列定宽表格」，实测会塌成只有几像素宽的缝。
+// 输入框宽度由宿主固定为窗口宽度的 65%（ABI 没有 set_next_item_width），不要再塞进容器。
 // 行内统一为「标签(定宽列) → 输入框」，标签列 140 是几个数值标签里最长的那个。
 constexpr float kLabelColumn = 140.0F;
 
@@ -520,7 +513,7 @@ void LabeledField(
 }
 
 // ---------------------------------------------------------------------------
-// 子模块：UE 反射直调（含一键刷新）→ 自动战斗 → 脚本循环
+// 子模块：UE 反射直调（刷新怪物）→ 自动战斗 → 脚本循环
 // ---------------------------------------------------------------------------
 #include "ue_access.hpp"
 #include "ue_direct.hpp"
@@ -554,7 +547,7 @@ void SyncTextBuffers() {
     std::snprintf(g_preload_text.data(), g_preload_text.size(), "%.1f", settings.preload_delay);
 }
 
-// 把界面上的输入框搬回设置。只有确实变化才写，避免每帧来回覆盖。
+// 把界面上的输入框搬回设置；只有确实变化才写。
 void CommitInputs() noexcept {
     double parsed[kPointCount][3]{};
     for (int slot = 0; slot != kPointCount; ++slot) {
@@ -577,8 +570,7 @@ void CommitInputs() noexcept {
     }
 }
 
-// 「读取当前坐标为营地 / 1 号战斗点 / 2 号战斗点」：取一次玩家快照，同时写进设置与输入框
-// （当帧就能看到）。
+// 取一次玩家快照，写进设置与输入框（当帧可见）。
 void CaptureCurrentPosition(const AnomalyHostApiV1* host, const int slot) {
     if (slot < 0 || slot >= kPointCount) return;
     double position[3]{};
@@ -628,13 +620,19 @@ void PointFields(const AnomalyUiServiceV1* ui, const int slot) {
     }
 }
 
-void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
-    SyncTextBuffers();
+// 标签页入口在结构体末尾且按顺序追加，end_tab_bar 覆盖到就说明四个都在；缺任一个则退化成单页直排。
+bool TabsAvailable(const AnomalyUiServiceV1* ui) {
+    return HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_tab_bar)>(
+               ui, offsetof(AnomalyUiServiceV1, end_tab_bar)) &&
+        ui->begin_tab_bar != nullptr && ui->begin_tab_item != nullptr &&
+        ui->end_tab_item != nullptr && ui->end_tab_bar != nullptr;
+}
 
+// 「开始」页：地图提示、循环次数、开始/停止按钮与实时状态行。
+void ContentStart(const AnomalyUiServiceV1* ui) {
     DrawText(ui, g_context.localizer.Text("note.map", "此脚本适用于999夜赤龙古堡地图"));
     if (ui->separator != nullptr) ui->separator(ui->user);
 
-    // ── 脚本循环 ──
     DrawText(ui, g_context.localizer.Text("script.title", "脚本循环"));
     if (ui->input_uint32 != nullptr) {
         ui->text(ui->user, StringView("循环次数"));
@@ -658,10 +656,10 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
         if (stop != 0) g_script_stop_requested.store(true);
     }
     DrawText(ui, ScriptStatusText());
+}
 
-    if (ui->separator != nullptr) ui->separator(ui->user);
-
-    // ── 传送点 ──
+// 「设置」页：三个传送点、预载参数与自动战斗参数。
+void ContentSettings(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     DrawText(ui, g_context.localizer.Text("points.title", "传送点"));
     for (int slot = 0; slot != kPointCount; ++slot) {
         PointFields(ui, slot);
@@ -677,9 +675,33 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
 
     if (ui->separator != nullptr) ui->separator(ui->user);
 
-    // ── 自动战斗 ──
     CombatContent(ui);
+}
 
+void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
+    SyncTextBuffers();
+
+    if (!TabsAvailable(ui)) {
+        ContentStart(ui);
+        if (ui->separator != nullptr) ui->separator(ui->user);
+        ContentSettings(host, ui);
+        CommitInputs();
+        return;
+    }
+    const auto tab = [ui](const std::string& label, const auto& body) {
+        if (ui->begin_tab_item(ui->user, StringView(label), nullptr,
+                               ANOMALY_UI_TAB_ITEM_V1_NONE, 1) != 0) {
+            body();
+            ui->end_tab_item(ui->user);
+        }
+    };
+    if (ui->begin_tab_bar(ui->user, StringView("##night999-tabs"),
+                          ANOMALY_UI_TAB_BAR_V1_NONE) != 0) {
+        tab(g_context.localizer.Text("tab.start", "开始"), [ui] { ContentStart(ui); });
+        tab(g_context.localizer.Text("tab.settings", "设置"),
+            [host, ui] { ContentSettings(host, ui); });
+        ui->end_tab_bar(ui->user);
+    }
     CommitInputs();
 }
 
@@ -702,9 +724,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.world = QueryService<AnomalyUe5WorldServiceV1>(
         host, ANOMALY_UE5_WORLD_SERVICE_V1_ID,
         ANOMALY_UE5_WORLD_SERVICE_V1_VERSION).service;
-    g_context.events = QueryService<AnomalyUe5ProcessEventServiceV1>(
-        host, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
-        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION).service;
     g_context.framework = QueryService<AnomalyUe5FrameworkServiceV1>(
         host, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION).service;
@@ -843,7 +862,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.16.0"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.18.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

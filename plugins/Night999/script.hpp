@@ -1,15 +1,7 @@
 #pragma once
-// 脚本主循环：传送至营地 → 刷新怪物 → 传送至 1 号战斗点 → 自动战斗
-//              → 传送至 2 号战斗点 → 自动战斗 → 回到第一步。
-//
-// 每一步都复用已有的成熟模块，本身只做「排序 + 等待」：
-//   · 传送：TeleportToPosition（与界面按钮同一条已验证路径）；
-//   · 刷新：置 g_ue_refresh_requested，等 ue_direct 的 g_ue_refresh_done 置位；
-//   · 战斗：置 g_combat_start_requested，等 CombatTakeResult 返回非 none。
-//
-// 线程约束：整个状态机只在 Game 回调域（on_update）推进；界面线程只读写几个原子量。
-// 传送、刷新、战斗三者都是异步的，所以每一步都用「完成判据 + 超时兜底」两把尺子：
-// 超时不会卡死循环，只会在日志里留一条警告，然后进入下一步。
+// 脚本主循环：营地 → 刷新怪物 → 1 号战斗点 → 自动战斗 → 2 号战斗点 → 自动战斗 → 回到营地。
+// 只在 Game 回调域（on_update）推进；界面线程只读写几个原子量。
+// 传送、刷新、战斗都是异步的，每步配「完成判据 + 超时兜底」：超时记一条警告再进下一步。
 
 namespace {
 
@@ -27,21 +19,20 @@ constexpr int kScriptSlotCamp = 0;
 constexpr int kScriptSlotFight1 = 1;
 constexpr int kScriptSlotFight2 = 2;
 
-enum class ScriptStep : std::int32_t {
-    idle = 0,
-    teleport_camp = 1,
-    teleport_fight = 2,
-    teleport_fight2 = 3,
-    settle = 4,
-    refresh = 5,
-    combat = 6,
+enum class ScriptStep {
+    idle,
+    teleport_camp,
+    teleport_fight,
+    teleport_fight2,
+    settle,
+    refresh,
+    combat,
 };
 
 // 界面线程置位、Game 线程消费。
 std::atomic_bool g_script_start_requested{};
 std::atomic_bool g_script_stop_requested{};
 std::atomic_bool g_script_running{};
-std::atomic_int g_script_step{0};
 std::atomic_int g_script_round{0};
 // 循环次数，0 = 无限循环。
 std::atomic<std::uint32_t> g_script_loop_count{0};
@@ -90,7 +81,6 @@ std::string ScriptRoundPrefix() {
 
 void ScriptEnterStep(const ScriptStep step, const std::chrono::steady_clock::time_point now) {
     g_script_phase = step;
-    g_script_step.store(static_cast<int>(step));
     g_script_step_at = now;
     g_script_step_started = false;
     g_script_deadline = now + kScriptTeleportTimeout;
@@ -98,9 +88,8 @@ void ScriptEnterStep(const ScriptStep step, const std::chrono::steady_clock::tim
 
 // 读取某个槽位的传送点坐标（0 营地 / 1 一号战斗点 / 2 二号战斗点）。
 void ScriptReadTarget(const int slot, double target[3]) {
-    const int clamped = slot < 0 ? 0 : (slot > kScriptSlotFight2 ? kScriptSlotFight2 : slot);
     std::scoped_lock lock(g_context.mutex);
-    const double* source = g_context.settings.targets[clamped];
+    const double* source = g_context.settings.targets[slot];
     std::copy(source, source + 3, target);
 }
 
@@ -116,7 +105,6 @@ void ScriptShutdown() {
     g_script_start_requested.store(false);
     g_script_stop_requested.store(false);
     g_script_running.store(false);
-    g_script_step.store(0);
     g_script_round.store(0);
     g_script_phase = ScriptStep::idle;
     g_script_step_started = false;
@@ -126,7 +114,6 @@ void ScriptShutdown() {
 // 停脚本：连同正在跑的刷新与自动战斗一起收尾，避免留下后台流程。
 void ScriptStop(const std::string& reason) {
     g_script_running.store(false);
-    g_script_step.store(0);
     g_script_phase = ScriptStep::idle;
     g_script_step_started = false;
     g_script_stop_requested.store(false);
@@ -189,8 +176,7 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
             ? "已到营地"
             : (slot == kScriptSlotFight1 ? "已到1号战斗点" : "已到2号战斗点");
         if (!g_script_step_started) {
-            // 第一拍：已经在目标点就直接进下一步，否则发一次传送；发不出去（世界还没就绪）
-            // 就继续等，直到超时 —— 只发一次，避免每帧重发把流送打断。
+            // 只发一次传送；发不出去就等到超时。每帧重发会反复打断流送。
             if (ScriptArrived(host)) {
                 go_settle();
                 ScriptPublish(ScriptRoundPrefix() + " · " + arrived_text);

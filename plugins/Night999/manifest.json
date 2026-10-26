@@ -6,7 +6,7 @@
   "author": "WawMew",
   "license": "AGPL-3.0-only",
   "audience": "user",
-  "version": "0.16.0",
+  "version": "0.18.0",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -29,7 +29,6 @@
     {"id": "anomaly.ue5.objects", "minVersion": 1, "optional": true},
     {"id": "anomaly.ue5.world", "minVersion": 1, "optional": true},
     {"id": "anomaly.ue5.framework", "minVersion": 1, "optional": true},
-    {"id": "anomaly.ue5.process-event", "minVersion": 1, "optional": true},
     {"id": "anomaly.interop.signature", "minVersion": 1, "optional": true}
   ],
   "capabilities": ["ui", "memory-read", "game-events", "ue5-names", "ue5-objects", "ue5-world", "interop-signature", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "nte-navigation", "nte-combat-read", "nte-skills-read", "nte-skill-invocation", "nte-actor-snapshot", "nte-entity-snapshot", "nte-pickup"]

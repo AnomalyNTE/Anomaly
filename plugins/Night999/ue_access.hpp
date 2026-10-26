@@ -1,7 +1,6 @@
 #pragma once
 // UE 反射访问层：对象注册表定位、句柄→地址、按字段名查偏移、ProcessEvent 调用。
-// 与 plugins/AutoFish/access.hpp 同源（同一套注册表布局与 vtable 槽），按本插件需要裁剪并
-// 加了「按名字查对象」。只在 Game 回调域使用。
+// 只在 Game 回调域使用。
 
 namespace {
 
@@ -10,7 +9,7 @@ struct UeFName {
 };
 static_assert(sizeof(UeFName) == 8, "UE FName 必须是 8 字节");
 
-// AutoFish 验证过的对象注册表特征码：mov rax,[rip+disp] 之后按 index 查块。
+// 对象注册表特征码：mov rax,[rip+disp] 之后按 index 查块。
 constexpr std::string_view kUeObjectsPattern =
     "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
 
@@ -19,18 +18,14 @@ constexpr std::string_view kUeObjectsPattern =
 constexpr std::uint32_t kUeObjectClassOffset = 0x10;
 constexpr std::uint32_t kUeObjectNameOffset = 0x18;
 constexpr std::uint32_t kUeObjectOuterOffset = 0x20;
-// UStruct：SuperStruct@0x40，PropertyLink/Children 链头@0x70。
+// UStruct：SuperStruct@0x40，PropertyLink 链头@0x70。
 constexpr std::uint32_t kUeStructSuperOffset = 0x40;
 constexpr std::uint32_t kUeStructPropertyLinkOffset = 0x70;
-constexpr std::uint32_t kUeStructChildPropertiesOffset = 0x50;
-// FField：ClassPrivate@0x08，NamePrivate@0x20，Size@0x34，Offset@0x44，Next@0x48。
-constexpr std::uint32_t kUeFieldClassOffset = 0x08;
+// FField：NamePrivate@0x20，Offset@0x44，Next@0x48。
 constexpr std::uint32_t kUeFieldNextOffset = 0x48;
 constexpr std::uint32_t kUeFieldNameOffset = 0x20;
-constexpr std::uint32_t kUeFieldSizeOffset = 0x34;
 constexpr std::uint32_t kUeFieldOffsetOffset = 0x44;
-// UFunction：NumParms@0xB4，ParmsSize@0xB6。
-constexpr std::uint32_t kUeFunctionNumParmsOffset = 0xB4;
+// UFunction：ParmsSize@0xB6。
 constexpr std::uint32_t kUeFunctionParmsSizeOffset = 0xB6;
 // ProcessEvent 在 UObject vtable 里的槽位（76 * 8）。
 constexpr std::uint32_t kUeProcessEventVtableSlot = 0x4C;
@@ -70,23 +65,6 @@ struct UeReader {
         UeFName name{};
         return Read(address, name) ? Name(name) : std::string{};
     }
-
-    // 沿 SuperStruct 链判断对象是否派生自某个类名。
-    bool IsA(const std::uintptr_t object, const std::string_view type) const {
-        std::uintptr_t cls{};
-        if (!Read(object + kUeObjectClassOffset, cls)) return false;
-        for (int depth = 0; cls != 0 && depth < 64; ++depth) {
-            if (NameAt(cls + kUeObjectNameOffset) == type) return true;
-            std::uintptr_t parent{};
-            if (!Read(cls + kUeStructSuperOffset, parent) || parent == cls) break;
-            cls = parent;
-        }
-        return false;
-    }
-
-    bool IsClass(const std::uintptr_t object, const std::string_view type) const {
-        return object != 0 && NameAt(object + kUeObjectNameOffset) == type;
-    }
 };
 
 std::uintptr_t g_ue_registry{};
@@ -123,8 +101,7 @@ std::uintptr_t UeClassOf(const UeReader& reader, const std::uintptr_t object) {
     return reader.Read(object + kUeObjectClassOffset, cls) ? cls : 0;
 }
 
-// 类是否就是 base 或派生自 base。活的实例几乎都是蓝图子类（Xxx_C），
-// 所以判定「属于某个类」必须沿 SuperStruct 链走，不能用类指针相等。
+// 类是否就是 base 或派生自 base：活实例几乎都是蓝图子类，必须沿 SuperStruct 链走。
 bool UeClassDerivesFrom(
     const UeReader& reader, std::uintptr_t cls, const std::uintptr_t base) {
     for (int depth = 0; cls != 0 && depth < 32; ++depth) {
@@ -164,7 +141,7 @@ bool UeInvoke(const UeReader& reader, const std::uintptr_t object, const std::ui
     }
 }
 
-// 解析对象注册表基址（一次）。
+// 解析对象注册表基址（一次，失败后退避 5 秒）。
 bool UeEnsureRegistry() {
     if (g_ue_registry != 0) return true;
     const auto now = std::chrono::steady_clock::now();
