@@ -1,20 +1,14 @@
 #pragma once
 // 直接调用：按名称定位 UFunction，再用 ProcessEvent 调用。
-//
-// 枚举走宿主的 anomaly.ue5.objects（count + snapshot_at），不自己遍历注册表内存布局；命中后
-// 的少数对象才用 ue_access.hpp 的 UeResolve 取真实地址。实例判定一律用 UeClassDerivesFrom
-// （沿 SuperStruct 链），因为活的游戏对象几乎都是蓝图子类。
-//
-// 刷新函数的定位顺序：上次的定位缓存 → find_exact 对象路径 → 全表扫描（兜底）。
+// 枚举走宿主的 anomaly.ue5.objects，命中后才用 ue_access.hpp 的 UeResolve 取真实地址；
+// 实例判定沿 SuperStruct 链。刷新函数定位顺序：缓存 → find_exact 对象路径 → 全表扫描。
 // 扫描与调用只在 Game 回调域（on_update）执行。
 
 namespace {
 
-// 刷新本体挂在 AHTPlayerState 上：FinalTowerCampResetMonsterSpawners(InCampfireID) 会组出
-// ServerFinalTowerRPC(Type=21)。
+// 刷新本体挂在 AHTPlayerState 上：FinalTowerCampResetMonsterSpawners(InCampfireID)。
 constexpr std::string_view kUeRefreshFunction = "FinalTowerCampResetMonsterSpawners";
-// find_exact 用的完整对象路径（包.类.成员），与 /Script/HTGame.HTUtil.GetMainPlayerState
-// 是同一套写法。
+// find_exact 用的完整对象路径（包.类.成员）。
 constexpr std::string_view kUeRefreshFunctionPath =
     "/Script/HTGame.HTPlayerState.FinalTowerCampResetMonsterSpawners";
 // 营火名（FName）：读不到 ActivatedCampfireIDs 时按名字发一次。
@@ -78,7 +72,7 @@ bool g_ue_refresh_selected{};
 bool g_ue_refresh_fire_started{};
 std::chrono::steady_clock::time_point g_ue_refresh_deadline{};
 std::chrono::steady_clock::time_point g_ue_refresh_scan_start{};
-// 定位缓存：函数地址、它自己的 FName id、参数大小。后续点击只做几次廉价读校验，不再扫描。
+// 定位缓存：函数地址 / FName id / 参数大小。
 std::uintptr_t g_ue_refresh_fn_cache{};
 std::uint32_t g_ue_refresh_fn_name_id{};
 std::uint32_t g_ue_refresh_fn_parms_size{};
@@ -287,8 +281,7 @@ void UeResolveInstance(const UeReader& reader) {
             }
         }
     }
-    // 兜底全表扫描：这条路径可能没经过 UeBeginScan，必须自己把注册表和总数准备好，
-    // 否则 UeOwnerStep 会拿 g_ue_total==0 空转。
+    // 兜底全表扫描：这条路径没经过 UeBeginScan，要自己准备注册表与总数。
     static_cast<void>(UeEnsureRegistry());
     const auto* fallback = g_context.objects;
     if (fallback != nullptr && fallback->count != nullptr) {
@@ -418,8 +411,7 @@ void UeFinishOwnerScan(const UeReader& reader) {
     UeFinish(text, false);
 }
 
-// 缓存是否仍指向那个刷新函数：先比对象自己的 NamePrivate.id，再把该 id resolve 回名字。
-// 地址失效、对象被换、跨会话 id 漂移都会被这一步挡下。
+// 缓存是否仍指向刷新函数：比 NamePrivate.id，再 resolve 回名字。
 bool UeCachedRefreshFunctionValid(const UeReader& reader) {
     if (g_ue_refresh_fn_cache == 0 || g_ue_refresh_fn_name_id == 0) return false;
     std::uint32_t name_id{};

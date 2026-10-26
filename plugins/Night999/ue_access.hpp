@@ -101,8 +101,7 @@ std::uintptr_t UeClassOf(const UeReader& reader, const std::uintptr_t object) {
     return reader.Read(object + kUeObjectClassOffset, cls) ? cls : 0;
 }
 
-// 类是否就是 base 或派生自 base。活的实例几乎都是蓝图子类（Xxx_C），
-// 所以判定「属于某个类」必须沿 SuperStruct 链走，不能用类指针相等。
+// 类是否就是 base 或派生自 base：活实例几乎都是蓝图子类，必须沿 SuperStruct 链走。
 bool UeClassDerivesFrom(
     const UeReader& reader, std::uintptr_t cls, const std::uintptr_t base) {
     for (int depth = 0; cls != 0 && depth < 32; ++depth) {

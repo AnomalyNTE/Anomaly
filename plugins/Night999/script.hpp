@@ -1,15 +1,7 @@
 #pragma once
-// 脚本主循环：传送至营地 → 刷新怪物 → 传送至 1 号战斗点 → 自动战斗
-//              → 传送至 2 号战斗点 → 自动战斗 → 回到第一步。
-//
-// 每一步都复用已有模块，这里只做「排序 + 等待」：
-//   · 传送：TeleportToPosition；
-//   · 刷新：置 g_ue_refresh_requested，等 ue_direct 的 g_ue_refresh_done 置位；
-//   · 战斗：置 g_combat_start_requested，等 CombatTakeResult 返回非 none。
-//
-// 线程约束：整个状态机只在 Game 回调域（on_update）推进；界面线程只读写几个原子量。
-// 传送、刷新、战斗都是异步的，每一步都配「完成判据 + 超时兜底」：超时只记一条警告日志，
-// 然后进入下一步，不会卡死循环。
+// 脚本主循环：营地 → 刷新怪物 → 1 号战斗点 → 自动战斗 → 2 号战斗点 → 自动战斗 → 回到营地。
+// 只在 Game 回调域（on_update）推进；界面线程只读写几个原子量。
+// 传送、刷新、战斗都是异步的，每步配「完成判据 + 超时兜底」：超时记一条警告再进下一步。
 
 namespace {
 
@@ -184,8 +176,7 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
             ? "已到营地"
             : (slot == kScriptSlotFight1 ? "已到1号战斗点" : "已到2号战斗点");
         if (!g_script_step_started) {
-            // 第一拍：已在目标点就直接进下一步，否则只发一次传送；发不出去（世界还没就绪）
-            // 就等到超时。不能每帧重发，那会反复打断流送。
+            // 只发一次传送；发不出去就等到超时。每帧重发会反复打断流送。
             if (ScriptArrived(host)) {
                 go_settle();
                 ScriptPublish(ScriptRoundPrefix() + " · " + arrived_text);
