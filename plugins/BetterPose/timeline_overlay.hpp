@@ -14,7 +14,34 @@
 namespace better_pose::timeline {
 
 inline constexpr int kNone = -1;
-enum class Hit : std::uint8_t { None, Track, Playhead, Key, Play, Stop, Record, Delete, Fit };
+enum class SpaceAction : std::uint8_t {
+  None,
+  ToggleKeyframes,
+  ToggleMotion
+};
+enum class Hit : std::uint8_t {
+  None,
+  Track,
+  Playhead,
+  Key,
+  Play,
+  Stop,
+  Record,
+  Delete,
+  Export,
+  Fit
+};
+
+inline SpaceAction ResolveSpaceAction(
+    const bool menu_owns_keyboard, const bool space_down,
+    const bool space_was_down, const bool typing, const bool control,
+    const bool motion_loaded, const bool keyframes_available) noexcept {
+  if (!menu_owns_keyboard || !space_down || space_was_down || typing || control)
+    return SpaceAction::None;
+  if (motion_loaded)
+    return SpaceAction::ToggleMotion;
+  return keyframes_available ? SpaceAction::ToggleKeyframes : SpaceAction::None;
+}
 
 struct Rect {
   float left{};
@@ -101,11 +128,13 @@ struct Layout {
   Rect stop_button{};
   Rect record_button{};
   Rect delete_button{};
+  Rect export_button{};  // switches the same track between edit and VMD lanes
   Rect fit_button{};  // lower left: zoom back out to the whole timeline
   float frame_start{};  // the view window, in frames
   float frame_end{};
   float playhead_x{};
   bool playhead_visible{true};
+  bool export_tracks{};
   std::vector<KeyMark> keys;
 };
 
@@ -127,9 +156,19 @@ inline double XToFrame(const Layout &layout, const float x) noexcept {
   return layout.frame_start + t * (layout.frame_end - layout.frame_start);
 }
 
+// Export mode uses one lane per VMD channel family instead of stacking every
+// category on the editing row: bone keys, morph keys and camera keys.
+inline std::array<float, 3> TrackLaneY(const Layout &layout) noexcept {
+  constexpr float kInset = 6.0F;
+  return {layout.track.top + kInset,
+          (layout.track.top + layout.track.bottom) * 0.5F,
+          layout.track.bottom - kInset};
+}
+
 inline Layout MakeLayout(const float width, const float height, const std::uint32_t length,
                          const double frame, const std::vector<KeyMark> &marks,
-                         const View &requested_view = {}) {
+                         const View &requested_view = {},
+                         const bool export_tracks = false) {
   Layout out;
   constexpr float kBottomSafeArea = 78.0F;
   const float panel_height = 106.0F;
@@ -146,6 +185,10 @@ inline Layout MakeLayout(const float width, const float height, const std::uint3
                        out.panel.right - 115.0F, out.panel.top + 30.0F};
   out.record_button = {out.panel.right - 105.0F, out.panel.top + 10.0F,
                        out.panel.right - 10.0F, out.panel.top + 30.0F};
+  // Left of the track, level with its first lane. Small enough to stay in the
+  // gutter at narrow viewport widths.
+  out.export_button = {out.panel.left + 10.0F, out.panel.top + 34.0F,
+                       out.panel.left + 108.0F, out.panel.top + 58.0F};
   // Under the play buttons, left of the track: the corner nothing else uses.
   out.fit_button = {out.panel.left + 10.0F, out.panel.bottom - 30.0F,
                     out.panel.left + 100.0F, out.panel.bottom - 10.0F};
@@ -154,6 +197,7 @@ inline Layout MakeLayout(const float width, const float height, const std::uint3
   out.frame_end = static_cast<float>(view.end);
   out.playhead_x = FrameToX(out, frame);
   out.playhead_visible = frame >= view.start && frame <= view.end;
+  out.export_tracks = export_tracks;
   out.keys = marks;
   for (auto &key : out.keys) {
     key.x = FrameToX(out, key.frame);
@@ -163,12 +207,26 @@ inline Layout MakeLayout(const float width, const float height, const std::uint3
 }
 
 inline int HitKey(const Layout &layout, const float x, const float y, const float radius = 9.0F) noexcept {
+  const auto lanes = TrackLaneY(layout);
   for (std::size_t i{}; i != layout.keys.size(); ++i) {
     if (!layout.keys[i].visible)
       continue;  // off the zoomed view: drawn nowhere, so not grabbable
     const float dx = x - layout.keys[i].x;
-    const float dy = y - (layout.track.top + layout.track.bottom) * 0.5F;
-    if (dx * dx + dy * dy <= radius * radius) return static_cast<int>(i);
+    if (!layout.export_tracks) {
+      const float dy = y - lanes[1];
+      if (dx * dx + dy * dy <= radius * radius)
+        return static_cast<int>(i);
+      continue;
+    }
+    const std::array<bool, 3> present{
+        layout.keys[i].pose, layout.keys[i].expression, layout.keys[i].camera};
+    for (std::size_t lane{}; lane != lanes.size(); ++lane) {
+      if (!present[lane])
+        continue;
+      const float dy = y - lanes[lane];
+      if (dx * dx + dy * dy <= radius * radius)
+        return static_cast<int>(i);
+    }
   }
   return kNone;
 }
@@ -180,6 +238,7 @@ inline Hit HitTest(const Layout &layout, const float x, const float y, int &key_
   if (Contains(layout.stop_button, x, y)) return Hit::Stop;
   if (Contains(layout.record_button, x, y)) return Hit::Record;
   if (Contains(layout.delete_button, x, y)) return Hit::Delete;
+  if (Contains(layout.export_button, x, y)) return Hit::Export;
   if (Contains(layout.fit_button, x, y)) return Hit::Fit;
   if (Contains(layout.track, x, y)) {
     if (layout.playhead_visible && std::abs(x - layout.playhead_x) <= 7.0F) return Hit::Playhead;

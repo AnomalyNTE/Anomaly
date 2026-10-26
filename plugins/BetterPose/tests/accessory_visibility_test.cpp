@@ -146,5 +146,45 @@ int main() {
   RestoreExtraMeshes(context);
   Check(!source.visible && source.visibility_writes==writes,
         "failed creation forcibly revealed the source");
+
+  Component body{source.vtable};
+  body.visible=true;
+  replacement.visible=true;
+  source.visible=true; source.hidden_in_game=false;
+  extra.poseable_component=reinterpret_cast<std::uintptr_t>(&replacement);
+  extra.poseable_active=true;
+  context.runtime.mesh=reinterpret_cast<std::uintptr_t>(&body);
+  extra.poseable_source_visibility_changed=false;
+  ApplyMotionVisibility(context,false);
+  Check(!body.visible && !replacement.visible && !source.visible,
+        "VMD hide did not cover body and attached components");
+  ApplyMotionVisibility(context,true);
+  Check(body.visible && replacement.visible && source.visible,
+        "VMD show did not restore component visibility");
+  body.visible=false;
+  ApplyMotionVisibility(context,false);
+  Check(!body.visible && !replacement.visible && !source.visible,
+        "VMD hide did not preserve a pre-existing hidden body");
+  ApplyMotionVisibility(context,true);
+  Check(!body.visible && replacement.visible && source.visible,
+        "VMD restore revealed a body hidden before playback");
+  RestoreMotionVisibility(context);
+
+  Context visibility_context;
+  visibility_context.motion.bone_count=1;
+  visibility_context.motion.frame_count=11;
+  visibility_context.motion.indices_ready=true;
+  visibility_context.motion.bone_indices={0};
+  visibility_context.motion.visibility_keys={{0,true},{5,false},{9,true}};
+  visibility_context.motion.rotations.assign(44,0.0F);
+  for (std::size_t frame{};frame<11;++frame)
+    visibility_context.motion.rotations[frame*4+3]=1.0F;
+  MotionSample hidden_sample, shown_sample;
+  Check(SampleMotion(visibility_context,5.0/30.0,hidden_sample) &&
+        hidden_sample.has_visibility && !hidden_sample.visible,
+        "visibility step did not hide at its frame");
+  Check(SampleMotion(visibility_context,9.0/30.0,shown_sample) &&
+        shown_sample.has_visibility && shown_sample.visible,
+        "visibility step did not restore at its frame");
   std::cout << "PASS hidden hats, unavailable getter, visible handoff, hidden children, repeated restore and failure cleanup\n";
 }

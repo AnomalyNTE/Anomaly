@@ -1,4 +1,5 @@
 #include "motion_builder.hpp"
+#include "../bone_constraints.hpp"
 #include "../secondary_rules.hpp"
 
 #include <nlohmann/json.hpp>
@@ -70,6 +71,12 @@ Vec3 Rotate(const Quat &q, const Vec3 &v) {
 double Length(const Vec3 &v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
 
 Vec3 operator+(const Vec3 &a, const Vec3 &b) { return Vec3{a.x + b.x, a.y + b.y, a.z + b.z}; }
+Vec3 operator-(const Vec3 &a, const Vec3 &b) {
+  return Vec3{a.x - b.x, a.y - b.y, a.z - b.z};
+}
+Vec3 operator*(const Vec3 &value, const double scale) {
+  return Vec3{value.x * scale, value.y * scale, value.z * scale};
+}
 
 Vec3 Unit(const Vec3 &v) {
   const double length = Length(v);
@@ -117,22 +124,29 @@ const Quat kAxisChange{0.7071067811865476, 0.0, 0.0, 0.7071067811865476};
 using secondary::kSleeveGravityWeight;
 
 // Strand collision proxies. The converter has no mesh, so the volumes come from the rig's own
-// bones: capsules along the torso for hair, along the legs for anything hanging off the waist.
+// bones: torso, neck/head, shoulder/arm/hand, and thigh/calf capsules. A strand can belong to
+// several groups at once (for example long hair crossing the back and an arm).
 // The radii sit a couple of centimetres *inside* the visual surface (a torso's half-depth is about
 // ten centimetres), so hair lying on the back or a skirt brushing a thigh is not "collided" on
 // every frame, and penetration shallower than the slack is left alone so the cloth keeps its drape.
 // Measured on 浔's rig before this existed: hair came as close as 0.8 cm to the *spine axis* on the
 // worst frames, i.e. straight through the middle of the torso.
 using secondary::kTorsoCollisionRadiusCm;
-using secondary::kTorsoCollisionSlackCm;
+using secondary::kNeckCollisionRadiusCm;
+using secondary::kNeckTopCollisionRadiusCm;
+using secondary::kHeadCollisionRadiusCm;
+using secondary::kShoulderCollisionRadiusCm;
+using secondary::kArmCollisionRadiusCm;
+using secondary::kHandCollisionRadiusCm;
 // The leg volumes take their radius from the rig itself (see `leg_floors`): a guessed 7.0/5.5 cm
 // minus a 2.0 cm slack let a skirt bone sit 5.0/3.5 cm from the leg axis, which is 3-6 cm closer to
 // the leg than the model's own skirt hangs at rest -- so the correction was holding the cloth
 // *inside* the leg and the skirt still clipped. The slack is now only the solver's working room;
 // the radius carries the clearance.
-using secondary::kLegCollisionSlackCm;
 using secondary::kCollideTorso;
 using secondary::kCollideLegs;
+using secondary::kCollideHead;
+using secondary::kCollideArms;
 
 // ------------------------------------------------------------------- binary reading
 //
@@ -448,9 +462,13 @@ bool LoadReference(const std::string &document, std::vector<ReferenceBone> &out,
   return true;
 }
 
-// MMD full-width digits against the target's plain ones: without the normalisation every
-// finger joint silently fails to map (mmd2bip.py:203-208).
-std::string NormalizeDigits(const std::string &name) {
+// VMD exporters are inconsistent about full-width digits, Latin letters and the index-finger
+// spelling. The target's finger chains use plain digits while MMD writes 左人指１, the
+// StandardRig reference writes ASCII 左足IK while many VMDs write 左足ＩＫ, and some models
+// use 人差指 instead of 人指. Comparing the original spellings silently dropped either the
+// finger track or the leg-IK controller itself; a missing IK controller then left the feet at
+// rest while the body moved.
+std::string CanonicalBoneName(const std::string &name) {
   static const char *kFullWidth[] = {"０", "１", "２", "３", "４",
                                      "５", "６", "７", "８", "９"};
   std::string out = name;
@@ -462,6 +480,32 @@ std::string NormalizeDigits(const std::string &name) {
       out.replace(position, from.size(), to);
       position += to.size();
     }
+  }
+  const auto replace_full_width_latin = [&out](const std::uint8_t prefix,
+                                               const std::uint8_t first,
+                                               const char base) {
+    for (std::uint8_t i = 0; i < 26; ++i) {
+      std::string from;
+      from.push_back(static_cast<char>(0xEF));
+      from.push_back(static_cast<char>(prefix));
+      from.push_back(static_cast<char>(first + i));
+      const std::string to(1, static_cast<char>(base + i));
+      std::size_t position = 0;
+      while ((position = out.find(from, position)) != std::string::npos) {
+        out.replace(position, from.size(), to);
+        position += to.size();
+      }
+    }
+  };
+  replace_full_width_latin(0xBC, 0xA1, 'A');
+  replace_full_width_latin(0xBD, 0x81, 'a');
+  const std::string index_finger_alias = "人差指";
+  const std::string index_finger = "人指";
+  std::size_t alias_position = 0;
+  while ((alias_position = out.find(index_finger_alias, alias_position)) !=
+         std::string::npos) {
+    out.replace(alias_position, index_finger_alias.size(), index_finger);
+    alias_position += index_finger.size();
   }
   return out;
 }
@@ -481,6 +525,12 @@ struct MappingEntry {
   // rotations commute -- so a pelvis that turns the hips tilted the whole torso with it.
   // mmd2bip.py's optional 6th table field.
   std::vector<std::string> prefix_inverse;
+  // Explicit parent insertions for transform evaluation and diagnostics. Rotation-only
+  // parents also appear in `sources`; position-only parents must still be retained here.
+  std::vector<ManualParentMapping> parents;
+  // Procedural finger controls sampled from their own source tracks and composed after
+  // the ordinary retargeted rotation.
+  std::vector<ManualFingerControl> finger_controls;
 };
 
 // The explicit table, transcribed from mmd2bip.py:115-140.
@@ -511,17 +561,18 @@ struct LegBone {
   const char *target;
   const char *source;
   const char *direction;
+  const char *fallback;
 };
 
 const LegBone kLegMapping[] = {
-    {"Bip001-L-Thigh", "下半身", "左足"},
-    {"Bip001-L-Calf", "左ひざ", "左ひざ"},
-    {"Bip001-L-Foot", "左足首", "左足首"},
-    {"Bip001-L-Toe0", "左つま先", "左つま先"},
-    {"Bip001-R-Thigh", "下半身", "右足"},
-    {"Bip001-R-Calf", "右ひざ", "右ひざ"},
-    {"Bip001-R-Foot", "右足首", "右足首"},
-    {"Bip001-R-Toe0", "右つま先", "右つま先"},
+    {"Bip001-L-Thigh", "下半身", "左足", "左足D"},
+    {"Bip001-L-Calf", "左ひざ", "左ひざ", "左ひざD"},
+    {"Bip001-L-Foot", "左足首", "左足首", "左足首D"},
+    {"Bip001-L-Toe0", "左つま先", "左つま先", "左足先EX"},
+    {"Bip001-R-Thigh", "下半身", "右足", "右足D"},
+    {"Bip001-R-Calf", "右ひざ", "右ひざ", "右ひざD"},
+    {"Bip001-R-Foot", "右足首", "右足首", "右足首D"},
+    {"Bip001-R-Toe0", "右つま先", "右つま先", "右足先EX"},
 };
 
 // MMD finger group -> the target's finger bone family (mmd2bip.py:142-144).
@@ -607,6 +658,19 @@ VmdDocument ParseVmd(const std::vector<std::uint8_t> &bytes) {
       key.rotation[k] = rotation[k];
     for (int k = 0; k < 3; ++k)
       key.position[k] = position[k];
+    for (int channel = 0; channel < 4; ++channel) {
+      VmdCurve curve{
+          std::clamp(static_cast<double>(interpolation[channel]) / 127.0, 0.0, 1.0),
+          std::clamp(static_cast<double>(interpolation[channel + 4]) / 127.0, 0.0, 1.0),
+          std::clamp(static_cast<double>(interpolation[channel + 8]) / 127.0, 0.0, 1.0),
+          std::clamp(static_cast<double>(interpolation[channel + 12]) / 127.0, 0.0, 1.0)};
+      // Malformed/older exporters occasionally leave the whole block zeroed. Treat that
+      // as the linear wire default so existing files keep playing as before.
+      if (interpolation[channel] == 0 && interpolation[channel + 4] == 0 &&
+          interpolation[channel + 8] == 0 && interpolation[channel + 12] == 0)
+        curve = {};
+      key.curves[static_cast<std::size_t>(channel)] = curve;
+    }
     tracks[index].keys.push_back(key);
     lowest_frame = (std::min)(lowest_frame, frame);
     highest_frame = (std::max)(highest_frame, frame);
@@ -674,8 +738,18 @@ VmdDocument ParseVmd(const std::vector<std::uint8_t> &bytes) {
       key.position[axis] = static_cast<double>(position[axis]);
       key.rotation[axis] = static_cast<double>(rotation[axis]);
     }
-    for (int byte = 0; byte < 24; ++byte)
-      key.interpolation[byte] = interpolation[byte];
+    for (int channel = 0; channel < 6; ++channel) {
+      const int at = channel * 4;
+      VmdCurve curve{
+          std::clamp(static_cast<double>(interpolation[at]) / 127.0, 0.0, 1.0),
+          std::clamp(static_cast<double>(interpolation[at + 2]) / 127.0, 0.0, 1.0),
+          std::clamp(static_cast<double>(interpolation[at + 1]) / 127.0, 0.0, 1.0),
+          std::clamp(static_cast<double>(interpolation[at + 3]) / 127.0, 0.0, 1.0)};
+      if (interpolation[at] == 0 && interpolation[at + 1] == 0 &&
+          interpolation[at + 2] == 0 && interpolation[at + 3] == 0)
+        curve = {};
+      key.curves[static_cast<std::size_t>(channel)] = curve;
+    }
     key.view_angle = view_angle;
     key.perspective = perspective != 0;
     document.camera.push_back(key);
@@ -699,6 +773,15 @@ VmdDocument ParseVmd(const std::vector<std::uint8_t> &bytes) {
                          return left.frame < right.frame;
                        });
     }
+    std::stable_sort(document.camera.begin(), document.camera.end(),
+                     [](const VmdCameraKey &left, const VmdCameraKey &right) {
+                       return left.frame < right.frame;
+                     });
+    std::stable_sort(document.visibility.begin(), document.visibility.end(),
+                     [](const VmdVisibilityKey &left,
+                        const VmdVisibilityKey &right) {
+                       return left.frame < right.frame;
+                     });
     document.tracks.reserve(tracks.size());
     for (auto &track : tracks)
       document.tracks.push_back(VmdTrack{std::move(track.name), std::move(track.keys)});
@@ -755,6 +838,7 @@ VmdDocument ParseVmd(const std::vector<std::uint8_t> &bytes) {
           !ReadPod(data, size, offset, visible) ||
           !ReadPod(data, size, offset, ik_count))
         return finish();
+      document.visibility.push_back(VmdVisibilityKey{frame, visible != 0});
       for (std::uint32_t j = 0; j < ik_count; ++j) {
         // The record name is Shift-JIS like every other VMD name: reading it as raw bytes
         // never matches the UTF-8 names in the reference table, so the trail parsed but
@@ -774,6 +858,407 @@ VmdDocument ParseVmd(const std::vector<std::uint8_t> &bytes) {
   }
 
   return finish();
+}
+
+bool AnimatedVmdTrack(const VmdTrack &track, std::uint32_t &first_frame) {
+  for (const VmdBoneKey &frame : track.keys) {
+    if (std::fabs(frame.rotation[0]) > 1e-5 ||
+        std::fabs(frame.rotation[1]) > 1e-5 ||
+        std::fabs(frame.rotation[2]) > 1e-5 ||
+        std::fabs(frame.rotation[3] - 1.0) > 1e-5 ||
+        std::fabs(frame.position[0]) > 1e-5 ||
+        std::fabs(frame.position[1]) > 1e-5 ||
+        std::fabs(frame.position[2]) > 1e-5) {
+      first_frame = frame.frame;
+      return true;
+    }
+  }
+  return false;
+}
+
+VmdCompatibilityReport::TrackMotionSignature AnalyzeTrackMotion(
+    const VmdTrack &track) {
+  VmdCompatibilityReport::TrackMotionSignature signature;
+  if (track.keys.empty())
+    return signature;
+  std::array<double, 3> rotation_min{};
+  std::array<double, 3> rotation_max{};
+  std::array<double, 3> position_min{};
+  std::array<double, 3> position_max{};
+  std::array<double, 3> previous_rotation{};
+  for (std::size_t axis{}; axis != 3; ++axis) {
+    rotation_min[axis] = rotation_max[axis] =
+        track.keys.front().rotation[axis];
+    position_min[axis] = position_max[axis] =
+        track.keys.front().position[axis];
+    previous_rotation[axis] = track.keys.front().rotation[axis];
+  }
+  for (const VmdBoneKey &key : track.keys) {
+    std::array<double, 3> rotation{
+        key.rotation[0], key.rotation[1], key.rotation[2]};
+    const double dot =
+        rotation[0] * previous_rotation[0] +
+        rotation[1] * previous_rotation[1] +
+        rotation[2] * previous_rotation[2];
+    if (dot < 0.0)
+      for (double &value : rotation)
+        value = -value;
+    for (std::size_t axis{}; axis != 3; ++axis) {
+      rotation_min[axis] = (std::min)(rotation_min[axis], rotation[axis]);
+      rotation_max[axis] = (std::max)(rotation_max[axis], rotation[axis]);
+      position_min[axis] =
+          (std::min)(position_min[axis], key.position[axis]);
+      position_max[axis] =
+          (std::max)(position_max[axis], key.position[axis]);
+      previous_rotation[axis] = rotation[axis];
+    }
+  }
+  double total = 0.0;
+  for (std::size_t axis{}; axis != 3; ++axis) {
+    signature.rotation_span[axis] =
+        rotation_max[axis] - rotation_min[axis];
+    signature.position_span[axis] =
+        position_max[axis] - position_min[axis];
+    total += signature.rotation_span[axis];
+    if (signature.dominant_axis < 0 ||
+        signature.rotation_span[axis] >
+            signature.rotation_span[
+                static_cast<std::size_t>(signature.dominant_axis)])
+      signature.dominant_axis = static_cast<int>(axis);
+  }
+  if (signature.dominant_axis >= 0 && total > 1e-9)
+    signature.axis_dominance =
+        signature.rotation_span[
+            static_cast<std::size_t>(signature.dominant_axis)] /
+        total;
+  if (signature.dominant_axis < 0 ||
+      signature.rotation_span[
+          static_cast<std::size_t>(signature.dominant_axis)] < 1e-5)
+    return signature;
+  const std::size_t dominant =
+      static_cast<std::size_t>(signature.dominant_axis);
+  int previous_sign = 0;
+  std::array<double, 3> last_rotation{
+      track.keys.front().rotation[0], track.keys.front().rotation[1],
+      track.keys.front().rotation[2]};
+  double previous_value = track.keys.front().rotation[dominant];
+  const double threshold =
+      (std::max)(1e-4, signature.rotation_span[dominant] * 0.02);
+  for (const VmdBoneKey &key : track.keys) {
+    std::array<double, 3> current{
+        key.rotation[0], key.rotation[1], key.rotation[2]};
+    if (current[0] * last_rotation[0] +
+            current[1] * last_rotation[1] +
+            current[2] * last_rotation[2] <
+        0.0)
+      for (double &component : current)
+        component = -component;
+    const double value = current[dominant];
+    const double delta = value - previous_value;
+    if (std::fabs(delta) < threshold) {
+      last_rotation = current;
+      continue;
+    }
+    const int sign = delta > 0.0 ? 1 : -1;
+    if (previous_sign != 0 && sign != previous_sign)
+      ++signature.direction_changes;
+    previous_sign = sign;
+    previous_value = value;
+    last_rotation = current;
+  }
+  return signature;
+}
+
+VmdCompatibilityReport::UnmappedTrack DescribeVmdTrack(
+    const VmdTrack &track) {
+  VmdCompatibilityReport::UnmappedTrack item;
+  item.name = track.name;
+  item.key_count = static_cast<std::uint32_t>(track.keys.size());
+  item.animated = AnimatedVmdTrack(track, item.first_nonzero_frame);
+  item.signature = AnalyzeTrackMotion(track);
+  const auto contains_any = [](const std::string &name,
+                               std::initializer_list<const char *> needles) {
+    for (const char *needle : needles)
+      if (name.find(needle) != std::string::npos)
+        return true;
+    return false;
+  };
+  std::string lower = track.name;
+  for (char &c : lower)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (lower.rfind("bn_", 0) == 0 ||
+      contains_any(lower, {"hair", "hari", "kami", "skirt", "cloth",
+                           "ribbon", "piao", "qun", "tail", "belt", "ear"}) ||
+      contains_any(track.name, {"髪", "かみ", "裙", "衣", "袖", "飘", "髮"}))
+    item.kind = VmdCompatibilityReport::TrackKind::Accessory;
+  else if (contains_any(lower, {"dummy", "shadow", "ik"}) ||
+           contains_any(track.name, {"補助", "捩", "調整", "キャンセル",
+                                    "親", "錘", "回転"}))
+    item.kind = VmdCompatibilityReport::TrackKind::Control;
+  else if (contains_any(track.name, {"足", "ひざ", "足首", "つま先",
+                                    "首", "頭", "上半身", "下半身",
+                                    "肩", "腕", "ひじ", "手首", "指",
+                                    "腰", "目", "あご"}))
+    item.kind = VmdCompatibilityReport::TrackKind::Humanoid;
+  return item;
+}
+
+void SortUnmappedTracks(
+    std::vector<VmdCompatibilityReport::UnmappedTrack> &tracks) {
+  std::stable_sort(
+      tracks.begin(), tracks.end(), [](const auto &left, const auto &right) {
+        const auto rank = [](VmdCompatibilityReport::TrackKind kind) {
+          switch (kind) {
+            case VmdCompatibilityReport::TrackKind::Humanoid:
+              return 0;
+            case VmdCompatibilityReport::TrackKind::Control:
+              return 1;
+            case VmdCompatibilityReport::TrackKind::Accessory:
+              return 3;
+            case VmdCompatibilityReport::TrackKind::Other:
+              return 2;
+          }
+          return 4;
+        };
+        if (rank(left.kind) != rank(right.kind))
+          return rank(left.kind) < rank(right.kind);
+        if (left.animated != right.animated)
+          return left.animated;
+        if (left.key_count != right.key_count)
+          return left.key_count > right.key_count;
+        return left.name < right.name;
+      });
+}
+
+VmdCompatibilityReport AnalyzeParsedVmdCompatibility(
+    const VmdDocument &vmd) {
+  VmdCompatibilityReport report;
+  std::unordered_map<std::string, const VmdTrack *> tracks;
+  for (const auto &track : vmd.tracks)
+    tracks[CanonicalBoneName(track.name)] = &track;
+  std::unordered_map<std::string, bool> mapped_names;
+  for (const StaticBone &bone : kStaticMapping)
+    mapped_names[CanonicalBoneName(bone.source)] = true;
+  for (const LegBone &bone : kLegMapping) {
+    mapped_names[CanonicalBoneName(bone.source)] = true;
+    mapped_names[CanonicalBoneName(bone.direction)] = true;
+    mapped_names[CanonicalBoneName(bone.fallback)] = true;
+  }
+  for (const char *name :
+       {"全ての親", "センター", "グルーブ", "腰", "下半身",
+        "上半身1", "上半身3", "左肩P", "右肩P", "左肩C", "右肩C",
+        "左腕捩", "右腕捩", "左手捩", "右手捩",
+        "左足IK親", "右足IK親", "左足IK", "右足IK",
+        "左つま先IK", "右つま先IK"})
+    mapped_names[CanonicalBoneName(name)] = true;
+  for (const char *side : {"左", "右"}) {
+    for (const char *finger :
+         {"親指", "人指", "中指", "薬指", "小指"}) {
+      std::size_t count = 0;
+      for (const char *digit : {"０", "１", "２", "３", "４"}) {
+        const std::string name =
+            std::string(side) + finger + digit;
+        if (tracks.count(CanonicalBoneName(name)) != 0 && count < 4) {
+          mapped_names[CanonicalBoneName(name)] = true;
+          ++count;
+        }
+      }
+      const std::string prefix =
+          CanonicalBoneName(std::string(side) + finger);
+      for (const auto &[track_name, track] : tracks) {
+        static_cast<void>(track);
+        const std::string suffix = "先";
+        if (track_name.size() > prefix.size() &&
+            track_name.compare(0, prefix.size(), prefix) == 0 &&
+            track_name.size() >= suffix.size() &&
+            track_name.compare(track_name.size() - suffix.size(),
+                               suffix.size(), suffix) == 0) {
+          mapped_names[track_name] = true;
+        }
+      }
+    }
+  }
+  const auto has_track = [&tracks](const std::string &name) {
+    return tracks.count(CanonicalBoneName(name)) != 0;
+  };
+  const auto has_animated_track = [&tracks](const std::string &name) {
+    const auto found = tracks.find(CanonicalBoneName(name));
+    if (found == tracks.end())
+      return false;
+    for (const VmdBoneKey &key : found->second->keys) {
+      if (std::fabs(key.rotation[0]) > 1e-5 ||
+          std::fabs(key.rotation[1]) > 1e-5 ||
+          std::fabs(key.rotation[2]) > 1e-5 ||
+          std::fabs(key.rotation[3] - 1.0) > 1e-5 ||
+          std::fabs(key.position[0]) > 1e-5 ||
+          std::fabs(key.position[1]) > 1e-5 ||
+          std::fabs(key.position[2]) > 1e-5)
+        return true;
+    }
+    return false;
+  };
+  const auto any_side = [&has_track](const char *left, const char *right) {
+    return has_track(left) || has_track(right);
+  };
+  const auto any_animated_side =
+      [&has_animated_track](const char *left, const char *right) {
+        return has_animated_track(left) || has_animated_track(right);
+      };
+
+  report.track_count = static_cast<std::uint32_t>(vmd.tracks.size());
+  report.visibility_keys =
+      static_cast<std::uint32_t>(vmd.visibility.size());
+  for (const auto &track : vmd.tracks)
+    report.bone_key_count += static_cast<std::uint32_t>(track.keys.size());
+  if (!vmd.bone_frame_range.empty())
+    report.frame_count =
+        vmd.bone_frame_range[1] - vmd.bone_frame_range[0] + 1U;
+  const auto leg_fk = [&has_track](const char *side) {
+    const std::string prefix(side);
+    const bool primary =
+        has_track(prefix + "足") && has_track(prefix + "ひざ") &&
+        has_track(prefix + "足首");
+    const bool deform =
+        has_track(prefix + "足D") && has_track(prefix + "ひざD") &&
+        has_track(prefix + "足首D");
+    return primary || deform;
+  };
+  report.left_leg_fk = leg_fk("左");
+  report.right_leg_fk = leg_fk("右");
+  report.complete_leg_fk = report.left_leg_fk && report.right_leg_fk;
+  report.foot_ik = any_side("左足IK", "右足IK");
+  report.toe_ik = any_side("左つま先IK", "右つま先IK");
+  report.leg_d =
+      any_side("左足D", "右足D") || any_side("左足先EX", "右足先EX");
+  report.waist_cancel =
+      has_track("腰キャンセル左") || has_track("腰キャンセル右") ||
+      has_track("左腰キャンセル") || has_track("右腰キャンセル");
+  report.shoulder_cancel =
+      any_side("左肩P", "右肩P") && any_side("左肩C", "右肩C");
+  report.animated_shoulder =
+      any_animated_side("左肩P", "右肩P") ||
+      any_animated_side("左肩C", "右肩C");
+  report.twist_tracks =
+      any_side("左腕捩", "右腕捩") || any_side("左手捩", "右手捩");
+  report.animated_twist =
+      any_animated_side("左腕捩", "右腕捩") ||
+      any_animated_side("左手捩", "右手捩") ||
+      any_animated_side("左腕捩+", "右腕捩+") ||
+      any_animated_side("左手捩+", "右手捩+");
+  report.upper_body_1 = has_track("上半身1");
+  report.upper_body_2 = has_track("上半身2");
+  report.upper_body_3 = has_track("上半身3");
+
+  for (const VmdTrack &track : vmd.tracks) {
+    const std::string key = CanonicalBoneName(track.name);
+    if (mapped_names.count(key) != 0)
+      continue;
+    auto item = DescribeVmdTrack(track);
+    switch (item.kind) {
+      case VmdCompatibilityReport::TrackKind::Humanoid:
+        ++report.unmapped_humanoid;
+        break;
+      case VmdCompatibilityReport::TrackKind::Control:
+        ++report.unmapped_control;
+        break;
+      case VmdCompatibilityReport::TrackKind::Accessory:
+        ++report.unmapped_accessory;
+        break;
+      case VmdCompatibilityReport::TrackKind::Other:
+        ++report.unmapped_other;
+        break;
+    }
+    report.unmapped_tracks.push_back(std::move(item));
+  }
+  SortUnmappedTracks(report.unmapped_tracks);
+
+  const auto add_reason = [&report](const char *reason) {
+    if (std::find(report.reasons.begin(), report.reasons.end(), reason) ==
+        report.reasons.end())
+      report.reasons.emplace_back(reason);
+  };
+  int scores[3] = {};
+  if (report.upper_body_3) {
+    scores[2] += 6;
+    add_reason("three-section spine (上半身3)");
+  } else if (report.upper_body_2) {
+    scores[1] += 1;
+    scores[0] += 1;
+    add_reason("two-section spine (上半身2)");
+  } else {
+    scores[0] += 3;
+    add_reason("single-section spine");
+  }
+  if (report.waist_cancel) {
+    scores[1] += 5;
+    add_reason("waist-cancel controls");
+  }
+  if (report.leg_d) {
+    scores[1] += 4;
+    add_reason("deform/D-EX leg chain");
+  }
+  if (report.shoulder_cancel) {
+    scores[1] += 2;
+    scores[2] += 2;
+    add_reason("shoulder P/C controls");
+  }
+  if (report.upper_body_1)
+    scores[0] += 1;
+  if (report.animated_shoulder)
+    add_reason("animated shoulder controls");
+  if (report.animated_twist)
+    add_reason("animated arm/wrist twist");
+  if (report.foot_ik && !report.complete_leg_fk)
+    add_reason("IK without complete FK");
+  if (report.complete_leg_fk)
+    add_reason("complete leg FK");
+
+  const int best = *std::max_element(std::begin(scores), std::end(scores));
+  report.recommended_reference =
+      static_cast<int>(std::distance(std::begin(scores),
+                                     std::max_element(std::begin(scores),
+                                                      std::end(scores))));
+  int second = 0;
+  for (int score : scores)
+    if (score != best)
+      second = (std::max)(second, score);
+  report.confidence = best - second;
+  if (best < 4)
+    add_reason("mixed or unspecific rig signature");
+  report.ok = true;
+  return report;
+}
+
+double SampleVmdCurve(const VmdCurve &curve, const double x) {
+  const double input = std::clamp(x, 0.0, 1.0);
+  if (input <= 0.0)
+    return 0.0;
+  if (input >= 1.0)
+    return 1.0;
+  // Identity handles need no inversion and cover the vast majority of dense motions.
+  if (std::abs(curve.x1 - curve.y1) <= 1e-12 &&
+      std::abs(curve.x2 - curve.y2) <= 1e-12)
+    return input;
+
+  const auto cubic = [](const double t, const double a, const double b) {
+    const double inverse = 1.0 - t;
+    return 3.0 * inverse * inverse * t * a + 3.0 * inverse * t * t * b +
+           t * t * t;
+  };
+  double low = 0.0;
+  double high = 1.0;
+  double t = input;
+  for (int iteration = 0; iteration < 22; ++iteration) {
+    const double solved = cubic(t, curve.x1, curve.x2);
+    if (std::abs(solved - input) <= 1e-7)
+      break;
+    if (solved < input)
+      low = t;
+    else
+      high = t;
+    t = (low + high) * 0.5;
+  }
+  return std::clamp(cubic(t, curve.y1, curve.y2), 0.0, 1.0);
 }
 
 bool SampleTrack(const VmdTrack &track, double frame, double out_rotation[4],
@@ -820,10 +1305,71 @@ bool SampleTrack(const VmdTrack &track, double frame, double out_rotation[4],
                  second.rotation[3]};
   QuaternionNormalize(a);
   QuaternionNormalize(b);
-  QuaternionSlerp(a, b, blend, out_rotation);
+  QuaternionSlerp(a, b, SampleVmdCurve(second.curves[3], blend), out_rotation);
   for (int i = 0; i < 3; ++i)
-    out_position[i] = first.position[i] + (second.position[i] - first.position[i]) * blend;
+    out_position[i] = first.position[i] +
+                      (second.position[i] - first.position[i]) *
+                          SampleVmdCurve(second.curves[static_cast<std::size_t>(i)], blend);
   return true;
+}
+
+VmdCameraPose SampleCameraTrack(const std::vector<VmdCameraKey> &keys, const double frame) {
+  VmdCameraPose result;
+  if (keys.empty())
+    return result;
+  const auto copy = [&result](const VmdCameraKey &key) {
+    for (int axis = 0; axis < 3; ++axis) {
+      result.position[axis] = key.position[axis];
+      result.rotation[axis] = key.rotation[axis];
+    }
+    result.distance = key.distance;
+    result.view_angle = static_cast<double>(key.view_angle);
+    result.perspective = key.perspective;
+    result.valid = true;
+  };
+  if (frame <= static_cast<double>(keys.front().frame)) {
+    copy(keys.front());
+    return result;
+  }
+  if (frame >= static_cast<double>(keys.back().frame)) {
+    copy(keys.back());
+    return result;
+  }
+  std::size_t low = 0;
+  std::size_t high = keys.size() - 1;
+  while (high - low > 1) {
+    const std::size_t middle = (low + high) / 2;
+    if (static_cast<double>(keys[middle].frame) <= frame)
+      low = middle;
+    else
+      high = middle;
+  }
+  const VmdCameraKey &first = keys[low];
+  const VmdCameraKey &second = keys[high];
+  const double span = static_cast<double>(second.frame) - static_cast<double>(first.frame);
+  const double blend = span > 1e-9
+                           ? (frame - static_cast<double>(first.frame)) / span
+                           : 0.0;
+  for (int axis = 0; axis < 3; ++axis) {
+    result.position[axis] =
+        first.position[axis] +
+        (second.position[axis] - first.position[axis]) *
+            SampleVmdCurve(second.curves[static_cast<std::size_t>(axis)], blend);
+    result.rotation[axis] =
+        first.rotation[axis] +
+        (second.rotation[axis] - first.rotation[axis]) *
+            SampleVmdCurve(second.curves[3], blend);
+  }
+  result.distance =
+      first.distance +
+      (second.distance - first.distance) * SampleVmdCurve(second.curves[4], blend);
+  result.view_angle =
+      static_cast<double>(first.view_angle) +
+      (static_cast<double>(second.view_angle) - static_cast<double>(first.view_angle)) *
+          SampleVmdCurve(second.curves[5], blend);
+  result.perspective = first.perspective;
+  result.valid = true;
+  return result;
 }
 
 namespace {
@@ -1098,6 +1644,8 @@ struct IkReport {
   double before = 0.0;
   double after = 0.0;
   double applied = 0.0;  // degrees, the solver's own rotation of the chain
+  bool fk_available = false;
+  bool fallback_fk = false;
 };
 
 struct IkPose {
@@ -1262,14 +1810,21 @@ struct IkPose {
     }
   }
 
-  void Solve(std::vector<IkReport> &report, const std::vector<std::string> &disabled) {
+  void Solve(std::vector<IkReport> &report,
+             const std::vector<std::string> &disabled,
+             const std::unordered_map<std::string, bool> &fk_fallback_available) {
     for (const IkChain &chain : chains) {
-      if (std::find(disabled.begin(), disabled.end(), name[chain.bone]) !=
+      if (std::find(disabled.begin(), disabled.end(),
+                    CanonicalBoneName(name[chain.bone])) !=
           disabled.end())
         continue;
       IkReport entry;
       entry.name = name[chain.bone];
       entry.before = EffectorGap(chain);
+      const auto fallback =
+          fk_fallback_available.find(CanonicalBoneName(entry.name));
+      entry.fk_available = fallback != fk_fallback_available.end() &&
+                           fallback->second;
       std::vector<Quat> before;
       before.reserve(chain.links.size());
       for (std::uint32_t link : chain.links)
@@ -1278,6 +1833,23 @@ struct IkPose {
       entry.after = EffectorGap(chain);
       for (std::size_t i = 0; i < chain.links.size(); ++i)
         entry.applied = (std::max)(entry.applied, QuatAngle(before[i], rot[chain.links[i]]));
+      // A complete FK leg is the safer choice when the source IK cannot reach its controller:
+      // this is what happens when a VMD authored against one model is solved with a different
+      // reference leg length. Keep good IK results, but never pass a half-leg residual into
+      // the target-side solve. The 35% / 0.5-unit guard accepts the good Miku sample
+      // (~10%) and the repaired StandardRig sample (~15%), while rejecting the measured
+      // 35-85% failures.
+      const double residual_limit =
+          (std::max)(0.5, entry.before * 0.35);
+      if (entry.fk_available && entry.before > 0.5 &&
+          entry.after > residual_limit) {
+        for (std::size_t i = 0; i < chain.links.size(); ++i)
+          rot[chain.links[i]] = before[i];
+        for (std::uint32_t link : chain.links)
+          Refresh(subtrees[link]);
+        entry.after = EffectorGap(chain);
+        entry.fallback_fk = true;
+      }
       report.push_back(entry);
     }
   }
@@ -1296,13 +1868,73 @@ const ReferenceBone *FindReference(const std::vector<ReferenceBone> &reference,
 // anything the target skeleton or the MMD model does not carry (mmd2bip.py:186-254).
 std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &reference,
                                        const Skeleton &skeleton,
-                                       bool hip_on_pelvis) {
+                                       bool hip_on_pelvis,
+                                       const std::map<std::string, std::string>
+                                           &manual_mappings,
+                                       const std::set<std::string> &ignored_tracks,
+                                       const std::vector<VmdTrack> &vmd_tracks,
+                                       const std::vector<ManualParentMapping>
+                                           &manual_parent_mappings,
+                                       const std::vector<ManualFingerControl>
+                                           &manual_finger_controls,
+                                       const std::vector<ManualArmIkControl>
+                                           &manual_arm_ik_controls) {
   std::unordered_map<std::string, bool> has;
+  std::unordered_map<std::string, std::string> reference_name;
   for (const auto &bone : reference)
-    has[NormalizeDigits(bone.name)] = true;
+    if (!bone.name.empty()) {
+      const std::string canonical = CanonicalBoneName(bone.name);
+      has[canonical] = true;
+      reference_name[canonical] = bone.name;
+    }
   const auto present = [&has](const std::string &name) {
-    const auto found = has.find(NormalizeDigits(name));
+    const auto found = has.find(CanonicalBoneName(name));
     return found != has.end() && found->second;
+  };
+  const auto finger_tip_source = [&vmd_tracks](
+                                         const std::string &side,
+                                         const FingerGroup &finger) {
+    const std::string prefix =
+        CanonicalBoneName(side + finger.japanese) + "先";
+    const std::string numbered_prefix =
+        CanonicalBoneName(side + finger.japanese);
+    std::string fallback;
+    for (const VmdTrack &track : vmd_tracks) {
+      const std::string canonical = CanonicalBoneName(track.name);
+      if (canonical == prefix)
+        return track.name;
+      if (fallback.empty() && canonical.size() > numbered_prefix.size() &&
+          canonical.compare(0, numbered_prefix.size(), numbered_prefix) == 0 &&
+          canonical.compare(canonical.size() - 3, 3, "先") == 0)
+        fallback = track.name;
+    }
+    return fallback;
+  };
+  const auto finger_digit_sources = [&vmd_tracks](
+                                            const std::string &side,
+                                            const FingerGroup &finger) {
+    const std::string prefix =
+        CanonicalBoneName(side + finger.japanese);
+    std::vector<std::pair<int, std::string>> numbered;
+    for (const VmdTrack &track : vmd_tracks) {
+      const std::string canonical = CanonicalBoneName(track.name);
+      if (canonical.size() != prefix.size() + 1 ||
+          canonical.compare(0, prefix.size(), prefix) != 0)
+        continue;
+      const char digit = canonical.back();
+      if (digit >= '0' && digit <= '4')
+        numbered.emplace_back(digit - '0', track.name);
+    }
+    std::stable_sort(numbered.begin(), numbered.end(),
+                     [](const auto &left, const auto &right) {
+                       return left.first < right.first;
+                     });
+    std::vector<std::string> sources;
+    for (const auto &[digit, name] : numbered) {
+      static_cast<void>(digit);
+      sources.push_back(name);
+    }
+    return sources;
   };
 
   std::vector<MappingEntry> table;
@@ -1346,6 +1978,39 @@ std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &referen
         sources.push_back(entry.source);
       if (hip_on_pelvis && present("下半身"))
         prefix_inverse.push_back("下半身");
+    } else if (std::string(entry.target) == "Bip001-Spine1" &&
+               !present(entry.source) && present("上半身3") && present("上半身2")) {
+      // Three-segment StandardRig spine names the sections 上半身/上半身2/上半身3.
+      // The older two-segment naming used 上半身/上半身1/上半身2. Keep all three target
+      // sections driven instead of dropping the upper-chest 上半身3 track.
+      sources.push_back("上半身2");
+      direction = "上半身2";
+    } else if (std::string(entry.target) == "Bip001-Spine2" && present("上半身3")) {
+      sources.push_back("上半身3");
+      direction = "上半身3";
+    } else if (entry.target == std::string("Bip001-L-Clavicle") ||
+               entry.target == std::string("Bip001-R-Clavicle")) {
+      const std::string side =
+          entry.target == std::string("Bip001-L-Clavicle") ? "左" : "右";
+      if (present(side + "肩P"))
+        sources.push_back(side + "肩P");
+      if (present(entry.source))
+        sources.push_back(entry.source);
+      if (sources.empty())
+        continue;
+    } else if (entry.target == std::string("Bip001-L-UpperArm") ||
+               entry.target == std::string("Bip001-R-UpperArm")) {
+      const std::string side =
+          entry.target == std::string("Bip001-L-UpperArm") ? "左" : "右";
+      // MMD's shoulderC cancels shoulderP for the arm. The target's clavicle carries
+      // shoulderP*shoulder, so the upper arm must prefix-invert shoulderP to preserve
+      // that hierarchy instead of rotating the whole arm with the shoulder deform bone.
+      if (present(side + "肩P") && present(side + "肩C"))
+        prefix_inverse.push_back(side + "肩P");
+      if (present(entry.source))
+        sources.push_back(entry.source);
+      if (sources.empty())
+        continue;
     } else if (present(entry.source)) {
       sources.push_back(entry.source);
     } else {
@@ -1357,32 +2022,31 @@ std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &referen
         MappingEntry{entry.target, sources, direction, false, inverse, prefix_inverse});
   }
   for (const auto &entry : kLegMapping) {
-    if (!present(entry.source) || !present(entry.direction))
+    const std::string direction =
+        present(entry.direction) ? std::string(entry.direction)
+                                 : (present(entry.fallback) ? std::string(entry.fallback)
+                                                            : std::string());
+    if (direction.empty())
       continue;
     // MMD has one more joint in the leg than the target. 下半身 (the hip) now rides on the
     // pelvis, so the thigh is driven by 足 alone; keeping 下半身 here as well would apply the
     // hip rotation twice (mmd2bip.py:130-139).
-    const bool thigh = std::string(entry.direction) == "左足" ||
-                       std::string(entry.direction) == "右足";
+    const bool thigh = direction == "左足" || direction == "右足" ||
+                       direction == "左足D" || direction == "右足D";
+    const std::string source =
+        present(entry.source) ? std::string(entry.source) : direction;
     table.push_back(MappingEntry{
         entry.target,
-        thigh ? (hip_on_pelvis ? std::vector<std::string>{entry.direction}
-                                     : std::vector<std::string>{"下半身", entry.direction})
-              : std::vector<std::string>{entry.source},
-        entry.direction, false});
+        thigh ? (hip_on_pelvis ? std::vector<std::string>{direction}
+                                     : std::vector<std::string>{"下半身", direction})
+              : std::vector<std::string>{source},
+        direction, false});
   }
   for (const auto &[side, side_en] :
        {std::pair<const char *, const char *>{"左", "L"}, {"右", "R"}}) {
     for (const auto &finger : kFingers) {
-      std::vector<std::string> chain;
-      for (const char *digit : {"０", "１", "２", "３", "４"}) {
-        const std::string candidate = std::string(side) + finger.japanese + digit;
-        if (present(candidate) && chain.size() < 3)
-          chain.push_back(candidate);
-      }
-      if (chain.empty())
-        continue;
-      const std::string base = std::string("Bip001-") + side_en + "-" + finger.english;
+      const std::string base =
+          std::string("Bip001-") + side_en + "-" + finger.english;
       std::vector<std::string> targets;
       for (const char *suffix : {"", "1", "2", "3"}) {
         const std::string name = base + suffix;
@@ -1391,9 +2055,66 @@ std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &referen
       }
       if (targets.empty())
         continue;
-      // The target rig has four joints per finger and MMD has three, so the chains are
-      // aligned by cumulative length instead of by index: mapping by index left the
-      // fingertip undriven and bent the finger one joint too early (mmd2bip.py:194-201).
+      std::vector<std::string> chain;
+      for (const char *digit : {"０", "１", "２", "３", "４"}) {
+        const std::string candidate = std::string(side) + finger.japanese + digit;
+        if (present(candidate) && chain.size() < targets.size()) {
+          chain.push_back(reference_name.at(CanonicalBoneName(candidate)));
+        }
+      }
+      const std::string tip_source = finger_tip_source(side, finger);
+      if (chain.empty() && tip_source.empty())
+        continue;
+      const auto vmd_digits = finger_digit_sources(side, finger);
+      if (vmd_digits.size() == targets.size()) {
+        // Equal source/target cardinality is the standard four-segment case: preserve the
+        // authored joint order one-to-one, including a source `０` that the selected
+        // reference happens to omit.
+        for (std::size_t index{}; index != targets.size(); ++index) {
+          MappingEntry entry;
+          entry.target = targets[index];
+          entry.sources = {vmd_digits[index]};
+          entry.direction = vmd_digits[index];
+          table.push_back(std::move(entry));
+        }
+        if (!tip_source.empty())
+          table.back().sources.push_back(tip_source);
+        continue;
+      }
+      if (vmd_digits.size() > targets.size()) {
+        // Some costumes expose only two or three target joints for the ring/pinky while the
+        // source motion has four. Keep every authored source rotation by folding adjacent
+        // source joints into the nearest available target joint instead of dropping the two
+        // ends as unmapped.
+        std::vector<std::vector<std::string>> groups(targets.size());
+        for (std::size_t source{}; source != vmd_digits.size(); ++source) {
+          const std::size_t target = (std::min)(
+              source * targets.size() / vmd_digits.size(),
+              targets.size() - 1);
+          groups[target].push_back(vmd_digits[source]);
+        }
+        for (std::size_t index{}; index != targets.size(); ++index) {
+          MappingEntry entry;
+          entry.target = targets[index];
+          entry.sources = groups[index];
+          if (!entry.sources.empty())
+            entry.direction = entry.sources.front();
+          else
+            entry.direction = targets[index];
+          table.push_back(std::move(entry));
+        }
+        if (!tip_source.empty() && !table.empty() &&
+            table.back().target == targets.back()) {
+          table.back().sources.push_back(tip_source);
+          if (table.back().direction.empty())
+            table.back().direction = tip_source;
+        }
+        continue;
+      }
+      // Target finger chains commonly have three or four joints while VMD models can carry
+      // both the usual three and four-segment ring/pinky chains. Align up to the target's
+      // capacity by cumulative length instead of hard-coding three: the old cap left a
+      // four-segment `０/１/２/３` chain's last joint reported as unmapped.
       std::vector<double> target_lengths;
       for (const auto &name : targets)
         target_lengths.push_back(Length(skeleton.bones[skeleton.by_name.at(name)]
@@ -1402,7 +2123,8 @@ std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &referen
       // MMD measures the same chain from the wrist bone into the last joint.
       std::vector<double> source_lengths;
       const ReferenceBone *hand = FindReference(reference, std::string(side) + "手首");
-      const ReferenceBone *first = FindReference(reference, chain[0]);
+      const ReferenceBone *first =
+          chain.empty() ? nullptr : FindReference(reference, chain[0]);
       if (hand != nullptr && first != nullptr) {
         source_lengths.push_back(Length(Vec3{first->position.x - hand->position.x,
                                              first->position.y - hand->position.y,
@@ -1452,12 +2174,521 @@ std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &referen
         }
         table.push_back(std::move(entry));
       }
+      if (!tip_source.empty() && !table.empty() && table.back().target == targets.back()) {
+        if (table.back().sources.empty()) {
+          table.back().sources.push_back(tip_source);
+          table.back().direction = tip_source;
+        } else if (std::find(table.back().sources.begin(), table.back().sources.end(),
+                             tip_source) == table.back().sources.end()) {
+          table.back().sources.push_back(tip_source);
+        }
+      }
+    }
+  }
+  std::unordered_map<std::string, bool> mapped_source_names;
+  for (const MappingEntry &entry : table) {
+    for (const std::string &source : entry.sources)
+      mapped_source_names[CanonicalBoneName(source)] = true;
+  }
+  for (const ManualFingerControl &control : manual_finger_controls)
+    mapped_source_names[CanonicalBoneName(control.source)] = true;
+  for (const ManualArmIkControl &control : manual_arm_ik_controls)
+    mapped_source_names[CanonicalBoneName(control.source)] = true;
+  for (const auto &[side, side_en] :
+       {std::pair<const char *, const char *>{"左", "L"}, {"右", "R"}}) {
+    for (const auto &finger : kFingers) {
+      std::vector<std::string> targets;
+      const std::string base =
+          std::string("Bip001-") + side_en + "-" + finger.english;
+      for (const char *suffix : {"", "1", "2", "3"}) {
+        const std::string name = base + suffix;
+        if (skeleton.by_name.count(name) != 0)
+          targets.push_back(name);
+      }
+      if (targets.empty())
+        continue;
+      for (const std::string &source :
+           finger_digit_sources(side, finger)) {
+        const std::string canonical = CanonicalBoneName(source);
+        if (mapped_source_names[canonical])
+          continue;
+        const char digit = canonical.empty() ? '\0' : canonical.back();
+        const std::string &target =
+            digit == '0' ? targets.front() : targets.back();
+        auto entry = std::find_if(
+            table.begin(), table.end(),
+            [&target](const MappingEntry &candidate) {
+              return candidate.target == target;
+            });
+        if (entry == table.end()) {
+          table.push_back(
+              MappingEntry{target, {source}, source, false});
+          mapped_source_names[canonical] = true;
+          continue;
+        }
+        if (digit == '0') {
+          entry->sources.insert(entry->sources.begin(), source);
+        } else {
+          const std::string tip = finger_tip_source(side, finger);
+          const auto tip_position =
+              tip.empty()
+                  ? entry->sources.end()
+                  : std::find(entry->sources.begin(),
+                              entry->sources.end(), tip);
+          entry->sources.insert(tip_position, source);
+        }
+        mapped_source_names[canonical] = true;
+      }
+    }
+  }
+  for (const auto &[source, target] : manual_mappings) {
+    if (source.empty() || target.empty() ||
+        skeleton.by_name.count(target) == 0)
+      continue;
+    const bool target_already_mapped =
+        std::any_of(table.begin(), table.end(),
+                    [&target](const MappingEntry &entry) {
+                      return entry.target == target;
+                    });
+    if (target_already_mapped)
+      continue;
+    table.push_back(
+        MappingEntry{target, std::vector<std::string>{source}, source, false});
+  }
+  // Treat each entry as "insert source immediately above target". Inserting at the front
+  // makes later additions the outermost parent, matching the UI's "add another segment"
+  // flow. A source may target several bones, while exact duplicate pairs are no-ops.
+  for (const ManualParentMapping &mapping : manual_parent_mappings) {
+    if (mapping.source.empty() || mapping.target.empty() ||
+        skeleton.by_name.count(mapping.target) == 0 ||
+        (!mapping.inherit_rotation && !mapping.inherit_position))
+      continue;
+    auto entry = std::find_if(
+        table.begin(), table.end(), [&mapping](const MappingEntry &candidate) {
+          return candidate.target == mapping.target;
+        });
+    if (entry == table.end()) {
+      MappingEntry created;
+      created.target = mapping.target;
+      created.direction = mapping.target;
+      entry = table.insert(table.end(), std::move(created));
+    }
+    ManualParentMapping combined = mapping;
+    const auto existing_parent = std::find_if(
+        entry->parents.begin(), entry->parents.end(),
+        [&mapping](const ManualParentMapping &candidate) {
+          return candidate.source == mapping.source;
+        });
+    if (existing_parent != entry->parents.end()) {
+      combined.inherit_rotation =
+          existing_parent->inherit_rotation || mapping.inherit_rotation;
+      combined.inherit_position =
+          existing_parent->inherit_position || mapping.inherit_position;
+      if (combined.anchor.empty())
+        combined.anchor = existing_parent->anchor;
+      *existing_parent = combined;
+    } else {
+      entry->parents.push_back(combined);
+    }
+    const auto already_used = [&mapping](const std::vector<std::string> &sources) {
+      return std::find(sources.begin(), sources.end(), mapping.source) !=
+             sources.end();
+    };
+    if (!combined.inherit_rotation || already_used(entry->sources) ||
+        already_used(entry->inverse) || already_used(entry->prefix_inverse))
+      continue;
+    entry->sources.insert(entry->sources.begin(), mapping.source);
+  }
+  const auto is_controlled_finger =
+      [](const std::string &target, const ManualFingerControl &control) {
+        if (control.side < 0 || control.side > 1 ||
+            control.finger < -1 || control.finger > 4)
+          return false;
+        const bool target_left = target.rfind("Bip001-L-", 0) == 0;
+        const bool target_right = target.rfind("Bip001-R-", 0) == 0;
+        if (!target_left && !target_right)
+          return false;
+        if (!control.paired &&
+            (control.side == 0) != target_left)
+          return false;
+        const char side = target_left ? 'L' : 'R';
+        for (int finger = 0; finger != 5; ++finger) {
+          if (control.finger >= 0 && control.finger != finger)
+            continue;
+          const std::string base = std::string("Bip001-") + side + "-" +
+                                   kFingers[finger].english;
+          if (target == base || target == base + "1" ||
+              target == base + "2" || target == base + "3")
+            return true;
+        }
+        return false;
+      };
+  for (const ManualFingerControl &control : manual_finger_controls) {
+    if (control.source.empty() || control.input_axis < 0 ||
+        control.input_axis > 2 || !std::isfinite(control.gain) ||
+        std::fabs(control.gain) > 3.0F)
+      continue;
+    for (MappingEntry &entry : table) {
+      const bool side_match =
+          control.paired ||
+          (control.side == 0 ? entry.target.rfind("Bip001-L-", 0) == 0
+                             : entry.target.rfind("Bip001-R-", 0) == 0);
+      if (!side_match || !is_controlled_finger(entry.target, control))
+        continue;
+      entry.finger_controls.push_back(control);
+    }
+  }
+  std::unordered_map<std::string, bool> ignored_sources;
+  for (const std::string &source : ignored_tracks)
+    ignored_sources[CanonicalBoneName(source)] = true;
+  if (!ignored_sources.empty()) {
+    for (auto entry = table.begin(); entry != table.end();) {
+      const bool had_source =
+          !entry->sources.empty() || !entry->inverse.empty() ||
+          !entry->prefix_inverse.empty() || !entry->parents.empty() ||
+          !entry->finger_controls.empty();
+      const auto erase_source = [&ignored_sources](
+                                    std::vector<std::string> &sources) {
+        sources.erase(
+            std::remove_if(
+                sources.begin(), sources.end(),
+                [&ignored_sources](const std::string &source) {
+                  return ignored_sources.count(CanonicalBoneName(source)) != 0;
+                }),
+            sources.end());
+      };
+      erase_source(entry->sources);
+      erase_source(entry->inverse);
+      erase_source(entry->prefix_inverse);
+      entry->parents.erase(
+          std::remove_if(
+              entry->parents.begin(), entry->parents.end(),
+              [&ignored_sources](const ManualParentMapping &mapping) {
+                return ignored_sources.count(
+                           CanonicalBoneName(mapping.source)) != 0;
+              }),
+          entry->parents.end());
+      entry->finger_controls.erase(
+          std::remove_if(
+              entry->finger_controls.begin(), entry->finger_controls.end(),
+              [&ignored_sources](const ManualFingerControl &control) {
+                return ignored_sources.count(
+                           CanonicalBoneName(control.source)) != 0;
+              }),
+          entry->finger_controls.end());
+      if (ignored_sources.count(CanonicalBoneName(entry->direction)) != 0) {
+        if (!entry->sources.empty())
+          entry->direction = entry->sources.front();
+      }
+      if (had_source && entry->sources.empty() &&
+          entry->inverse.empty() && entry->prefix_inverse.empty() &&
+          entry->parents.empty() && entry->finger_controls.empty()) {
+        entry = table.erase(entry);
+      } else {
+        ++entry;
+      }
     }
   }
   return table;
 }
 
 }  // namespace
+
+VmdCompatibilityReport AnalyzeVmdCompatibility(
+    const std::vector<std::uint8_t> &vmd_bytes) {
+  const VmdDocument vmd = ParseVmd(vmd_bytes);
+  if (!vmd.ok) {
+    VmdCompatibilityReport report;
+    report.error = vmd.error;
+    return report;
+  }
+  return AnalyzeParsedVmdCompatibility(vmd);
+}
+
+VmdCompatibilityReport AnalyzeVmdCompatibilityForReference(
+    const std::vector<std::uint8_t> &vmd_bytes,
+    const std::string &reference_pmx_json,
+    const std::string &skeleton_json,
+    const std::map<std::string, std::string> &manual_mappings,
+    const std::set<std::string> &ignored_tracks,
+    const int reference_mode,
+    const std::vector<ManualParentMapping> &manual_parent_mappings,
+    const std::vector<ManualFingerControl> &manual_finger_controls,
+    const std::vector<ManualArmIkControl> &manual_arm_ik_controls) {
+  const VmdDocument vmd = ParseVmd(vmd_bytes);
+  if (!vmd.ok) {
+    VmdCompatibilityReport report;
+    report.error = vmd.error;
+    report.reference_mode = reference_mode;
+    return report;
+  }
+  VmdCompatibilityReport report = AnalyzeParsedVmdCompatibility(vmd);
+  report.reference_mode = reference_mode;
+
+  Skeleton skeleton;
+  if (!LoadSkeleton(skeleton_json, skeleton)) {
+    report.reference_mapping_error = skeleton.error;
+    return report;
+  }
+  std::vector<ReferenceBone> reference;
+  std::string reference_error;
+  if (!LoadReference(reference_pmx_json, reference, reference_error)) {
+    report.reference_mapping_error = reference_error;
+    return report;
+  }
+  const auto table =
+      BuildMapping(reference, skeleton, true, manual_mappings, ignored_tracks,
+                   vmd.tracks, manual_parent_mappings,
+                   manual_finger_controls, manual_arm_ik_controls);
+  std::unordered_map<std::string, std::vector<std::string>> mapped_targets;
+  std::unordered_map<std::string, std::vector<std::string>>
+      mapped_sources_by_target;
+  const auto add_target = [&mapped_targets](const std::string &source,
+                                            const std::string &target) {
+    auto &targets = mapped_targets[CanonicalBoneName(source)];
+    if (std::find(targets.begin(), targets.end(), target) == targets.end())
+      targets.push_back(target);
+  };
+  for (const MappingEntry &entry : table) {
+    for (const ManualParentMapping &parent : entry.parents)
+      add_target(parent.source, entry.target);
+    for (const ManualFingerControl &control : entry.finger_controls)
+      add_target(control.source, entry.target);
+    for (const std::string &source : entry.prefix_inverse)
+      add_target(source, entry.target);
+    for (const std::string &source : entry.sources)
+      add_target(source, entry.target);
+    for (const std::string &source : entry.inverse)
+      add_target(source, entry.target);
+    auto &target_sources = mapped_sources_by_target[entry.target];
+    const auto add_source = [&target_sources](const std::string &source) {
+      const std::string canonical = CanonicalBoneName(source);
+      if (std::find(target_sources.begin(), target_sources.end(), canonical) ==
+          target_sources.end())
+        target_sources.push_back(canonical);
+    };
+    for (const std::string &source : entry.prefix_inverse)
+      add_source(source);
+    for (const ManualParentMapping &parent : entry.parents)
+      add_source(parent.source);
+    for (const ManualFingerControl &control : entry.finger_controls)
+      add_source(control.source);
+    for (const std::string &source : entry.sources)
+      add_source(source);
+    for (const std::string &source : entry.inverse)
+      add_source(source);
+  }
+  for (const ManualArmIkControl &control : manual_arm_ik_controls)
+    add_target(control.source, "Arm IK");
+
+  // IK controllers position the source pose but do not produce a Biped bone track directly.
+  // Count them as consumed so the reference audit does not label a working IK chain as lost.
+  for (const ReferenceBone &bone : reference) {
+    if (!bone.has_ik || bone.name.empty())
+      continue;
+    if (std::any_of(vmd.tracks.begin(), vmd.tracks.end(),
+                    [&bone](const VmdTrack &track) {
+                      return CanonicalBoneName(track.name) ==
+                             CanonicalBoneName(bone.name);
+                    }))
+      add_target(bone.name, "IK");
+  }
+
+  std::unordered_map<std::string, bool> manual_sources;
+  std::unordered_map<std::string, std::string> manual_targets;
+  for (const auto &[source, target] : manual_mappings) {
+    const std::string canonical = CanonicalBoneName(source);
+    manual_sources[canonical] = true;
+    manual_targets[canonical] = target;
+  }
+  for (const ManualParentMapping &mapping : manual_parent_mappings)
+    manual_sources[CanonicalBoneName(mapping.source)] = true;
+  for (const ManualFingerControl &control : manual_finger_controls)
+    manual_sources[CanonicalBoneName(control.source)] = true;
+  for (const ManualArmIkControl &control : manual_arm_ik_controls)
+    manual_sources[CanonicalBoneName(control.source)] = true;
+  std::unordered_map<std::string, bool> ignored_source_set;
+  for (const std::string &source : ignored_tracks)
+    ignored_source_set[CanonicalBoneName(source)] = true;
+  std::unordered_map<std::string, bool> reference_names;
+  for (const ReferenceBone &bone : reference)
+    reference_names[CanonicalBoneName(bone.name)] = true;
+  std::unordered_map<std::string, bool> vmd_sources;
+  for (const VmdTrack &track : vmd.tracks)
+    vmd_sources[CanonicalBoneName(track.name)] = true;
+  for (const ManualParentMapping &mapping : manual_parent_mappings) {
+    if (!mapping.inherit_rotation && !mapping.inherit_position)
+      continue;
+    const std::string canonical = CanonicalBoneName(mapping.source);
+    const VmdCompatibilityReport::MappingIssueReason reason =
+        skeleton.by_name.count(mapping.target) == 0
+            ? VmdCompatibilityReport::MappingIssueReason::MissingTarget
+            : vmd_sources.count(canonical) == 0
+                  ? VmdCompatibilityReport::MappingIssueReason::SourceMissing
+                  : VmdCompatibilityReport::MappingIssueReason::None;
+    if (reason == VmdCompatibilityReport::MappingIssueReason::None)
+      continue;
+    const auto duplicate = std::find_if(
+        report.mapping_issues.begin(), report.mapping_issues.end(),
+        [&mapping, reason](const auto &issue) {
+          return issue.source == mapping.source &&
+                 issue.target == mapping.target && issue.reason == reason;
+        });
+    if (duplicate == report.mapping_issues.end())
+      report.mapping_issues.push_back({mapping.source, mapping.target, reason});
+  }
+  for (const ManualFingerControl &control : manual_finger_controls) {
+    const bool has_target = std::any_of(
+        table.begin(), table.end(), [&control](const MappingEntry &entry) {
+          return std::any_of(
+              entry.finger_controls.begin(), entry.finger_controls.end(),
+              [&control](const ManualFingerControl &candidate) {
+                return candidate.source == control.source &&
+                       candidate.kind == control.kind &&
+                       candidate.side == control.side &&
+                       candidate.finger == control.finger;
+              });
+        });
+    const std::string canonical = CanonicalBoneName(control.source);
+    const VmdCompatibilityReport::MappingIssueReason reason =
+        !has_target
+            ? VmdCompatibilityReport::MappingIssueReason::MissingTarget
+            : vmd_sources.count(canonical) == 0
+                  ? VmdCompatibilityReport::MappingIssueReason::SourceMissing
+                  : VmdCompatibilityReport::MappingIssueReason::None;
+    if (reason == VmdCompatibilityReport::MappingIssueReason::None)
+      continue;
+    const std::string target = "(hand finger chain)";
+    const auto duplicate = std::find_if(
+        report.mapping_issues.begin(), report.mapping_issues.end(),
+        [&control, &target, reason](const auto &issue) {
+          return issue.source == control.source && issue.target == target &&
+                 issue.reason == reason;
+        });
+    if (duplicate == report.mapping_issues.end())
+      report.mapping_issues.push_back({control.source, target, reason});
+  }
+  for (const ManualArmIkControl &control : manual_arm_ik_controls) {
+    const std::string canonical = CanonicalBoneName(control.source);
+    const auto upper = skeleton.by_name.find(
+        std::string("Bip001-") +
+        (control.side == 0 ? "L-UpperArm" : "R-UpperArm"));
+    if (vmd_sources.count(canonical) == 0)
+      report.mapping_issues.push_back(
+          {control.source, "Arm IK",
+           VmdCompatibilityReport::MappingIssueReason::SourceMissing});
+    else if (upper == skeleton.by_name.end())
+      report.mapping_issues.push_back(
+          {control.source, "Arm IK",
+           VmdCompatibilityReport::MappingIssueReason::MissingTarget});
+  }
+  std::unordered_map<std::string, bool> unique_targets;
+  for (const auto &[source, targets] : mapped_targets) {
+    static_cast<void>(source);
+    for (const std::string &target : targets)
+      unique_targets[target] = true;
+  }
+  report.reference_mapped_targets =
+      static_cast<std::uint32_t>(unique_targets.size());
+
+  for (const VmdTrack &track : vmd.tracks) {
+    const std::string canonical = CanonicalBoneName(track.name);
+    if (ignored_source_set.count(canonical) != 0) {
+      auto item = DescribeVmdTrack(track);
+      item.reason = VmdCompatibilityReport::MappingIssueReason::Ignored;
+      report.ignored_reference_tracks.push_back(std::move(item));
+      continue;
+    }
+    const auto mapped = mapped_targets.find(canonical);
+    if (mapped != mapped_targets.end()) {
+      VmdCompatibilityReport::MappedTrack item;
+      item.name = track.name;
+      item.key_count = static_cast<std::uint32_t>(track.keys.size());
+      item.animated =
+          AnimatedVmdTrack(track, item.first_nonzero_frame);
+      const auto description = DescribeVmdTrack(track);
+      item.kind = description.kind;
+      item.signature = description.signature;
+      item.manual = manual_sources.count(canonical) != 0;
+      for (const std::string &target : mapped->second) {
+        if (!item.target.empty())
+          item.target += ", ";
+        item.target += target;
+      }
+      report.mapped_reference_tracks.push_back(std::move(item));
+      continue;
+    }
+    auto item = DescribeVmdTrack(track);
+    const auto manual = manual_targets.find(canonical);
+    if (manual != manual_targets.end()) {
+      if (skeleton.by_name.count(manual->second) == 0) {
+        item.reason =
+            VmdCompatibilityReport::MappingIssueReason::MissingTarget;
+        report.mapping_issues.push_back(
+            {track.name, manual->second, item.reason});
+      } else {
+        const auto occupied = mapped_sources_by_target.find(manual->second);
+        if (occupied != mapped_sources_by_target.end() &&
+            !occupied->second.empty() &&
+            std::find(occupied->second.begin(), occupied->second.end(),
+                      canonical) == occupied->second.end()) {
+          item.reason =
+              VmdCompatibilityReport::MappingIssueReason::TargetOccupied;
+          report.mapping_issues.push_back(
+              {track.name, manual->second, item.reason});
+        } else if (reference_names.count(canonical) == 0) {
+          item.reason =
+              VmdCompatibilityReport::MappingIssueReason::MissingReference;
+        }
+      }
+    } else if (reference_names.count(canonical) == 0) {
+      item.reason =
+          VmdCompatibilityReport::MappingIssueReason::MissingReference;
+    }
+    switch (item.kind) {
+      case VmdCompatibilityReport::TrackKind::Humanoid:
+        ++report.reference_unmapped_humanoid;
+        break;
+      case VmdCompatibilityReport::TrackKind::Control:
+        ++report.reference_unmapped_control;
+        break;
+      case VmdCompatibilityReport::TrackKind::Accessory:
+        ++report.reference_unmapped_accessory;
+        break;
+      case VmdCompatibilityReport::TrackKind::Other:
+        ++report.reference_unmapped_other;
+        break;
+    }
+    report.reference_unmapped_tracks.push_back(std::move(item));
+  }
+  for (const auto &[source, target] : manual_mappings) {
+    const std::string canonical = CanonicalBoneName(source);
+    if (vmd_sources.count(canonical) != 0)
+      continue;
+    report.mapping_issues.push_back(
+        {source, target,
+         skeleton.by_name.count(target) == 0
+             ? VmdCompatibilityReport::MappingIssueReason::MissingTarget
+             : VmdCompatibilityReport::MappingIssueReason::SourceMissing});
+  }
+  SortUnmappedTracks(report.reference_unmapped_tracks);
+  SortUnmappedTracks(report.ignored_reference_tracks);
+  std::stable_sort(report.mapped_reference_tracks.begin(),
+                   report.mapped_reference_tracks.end(),
+                   [](const auto &left, const auto &right) {
+                     if (left.manual != right.manual)
+                       return left.manual;
+                     if (left.animated != right.animated)
+                       return left.animated;
+                     if (left.key_count != right.key_count)
+                       return left.key_count > right.key_count;
+                     return left.name < right.name;
+                   });
+  report.reference_mapped_tracks =
+      static_cast<std::uint32_t>(report.mapped_reference_tracks.size());
+  report.reference_mapping_ready = true;
+  return report;
+}
 
 Result BuildMotion(const Input &input) {
   Result result;
@@ -1497,7 +2728,12 @@ Result BuildMotion(const Input &input) {
       result.native_fps = 60;
   }
 
-  const auto table = BuildMapping(reference, skeleton, input.hip_on_pelvis);
+  const auto table = BuildMapping(reference, skeleton, input.hip_on_pelvis,
+                                  input.manual_mappings, input.ignored_tracks,
+                                  vmd.tracks,
+                                  input.manual_parent_mappings,
+                                  input.manual_finger_controls,
+                                  input.manual_arm_ik_controls);
   std::unordered_map<std::string, const MappingEntry *> mapped_targets;
   for (const auto &entry : table)
     mapped_targets[entry.target] = &entry;
@@ -1518,8 +2754,18 @@ Result BuildMotion(const Input &input) {
     frames.resize(input.max_frames);
 
   std::unordered_map<std::string, const VmdTrack *> tracks;
-  for (const auto &track : vmd.tracks)
+  std::unordered_map<std::string, const VmdTrack *> tracks_by_canonical_name;
+  for (const auto &track : vmd.tracks) {
     tracks[track.name] = &track;
+    tracks_by_canonical_name[CanonicalBoneName(track.name)] = &track;
+  }
+  const auto find_track = [&](const std::string &name) -> const VmdTrack * {
+    const auto exact = tracks.find(name);
+    if (exact != tracks.end())
+      return exact->second;
+    const auto canonical = tracks_by_canonical_name.find(CanonicalBoneName(name));
+    return canonical == tracks_by_canonical_name.end() ? nullptr : canonical->second;
+  };
 
   // ---- source-model IK ---------------------------------------------------------------
   // The model's own skeleton is posed first and its IK chains solved, then the mapped
@@ -1537,21 +2783,43 @@ Result BuildMotion(const Input &input) {
   std::unordered_map<std::string, std::size_t> ik_index_by_name;
   std::unordered_map<std::string, std::vector<VmdIkState>> ik_states;
   std::vector<IkReport> ik_reports;
+  std::unordered_map<std::string, bool> fk_fallback_available;
   const bool pose_ready = !reference.empty();
-  const bool solve_ik = input.ik && pose_ready;
+  const bool solve_ik =
+      input.ik && input.ik_mode != IkMode::ForceOff && pose_ready;
   if (pose_ready) {
     ik_pose.Build(reference);
     ik_tracks.assign(reference.size(), nullptr);
     for (const ReferenceBone &bone : reference) {
-      const auto found = tracks.find(bone.name);
-      if (found != tracks.end())
-        ik_tracks[bone.index] = found->second;
-      ik_index_by_name[bone.name] = bone.index;  // a duplicate name keeps the last one
+      ik_tracks[bone.index] = find_track(bone.name);
+      ik_index_by_name[CanonicalBoneName(bone.name)] =
+          bone.index;  // a duplicate name keeps the last one
+    }
+    const auto leg_source = [&](const std::string &primary,
+                                const std::string &fallback) {
+      if (FindReference(reference, primary) != nullptr)
+        return primary;
+      if (!fallback.empty() && FindReference(reference, fallback) != nullptr)
+        return fallback;
+      return std::string();
+    };
+    for (const std::string &side : {"左", "右"}) {
+      const std::string hip = leg_source(side + "足", side + "足D");
+      const std::string knee = leg_source(side + "ひざ", side + "ひざD");
+      const std::string ankle = leg_source(side + "足首", side + "足首D");
+      const std::string toe = leg_source(side + "つま先", side + "足先EX");
+      const bool foot_fk =
+          !hip.empty() && !knee.empty() && !ankle.empty() &&
+          find_track(hip) != nullptr && find_track(knee) != nullptr &&
+          find_track(ankle) != nullptr;
+      const bool toe_fk = !toe.empty() && find_track(toe) != nullptr;
+      fk_fallback_available[CanonicalBoneName(side + "足IK")] = foot_fk;
+      fk_fallback_available[CanonicalBoneName(side + "つま先IK")] = toe_fk;
     }
     // MMD's IK is on unless a record says otherwise, and the records are state *changes*
     // in file order rather than sorted ones (mmd2bip.py sorts them the same way).
     for (const VmdIkState &state : vmd.ik_states)
-      ik_states[state.name].push_back(state);
+      ik_states[CanonicalBoneName(state.name)].push_back(state);
     for (auto &[name, records] : ik_states) {
       std::stable_sort(records.begin(), records.end(),
                        [](const VmdIkState &left, const VmdIkState &right) {
@@ -1595,6 +2863,10 @@ Result BuildMotion(const Input &input) {
     for (const auto &source : entry.sources)
       mapped_source_names[source] = true;
   }
+  for (const ManualFingerControl &control : input.manual_finger_controls)
+    mapped_source_names[CanonicalBoneName(control.source)] = true;
+  for (const ManualArmIkControl &control : input.manual_arm_ik_controls)
+    mapped_source_names[CanonicalBoneName(control.source)] = true;
   const auto reference_first_child = ReferenceFirstChildren(reference);
   const auto reference_directions = ReferenceDirections(
       reference, [&reference] {
@@ -1809,15 +3081,24 @@ Result BuildMotion(const Input &input) {
     Vec3 axis;      // child offset direction, in the bone's own local frame
     double length = 0.0;
     Quat local;     // rigid (rest) local rotation
-    std::uint8_t collide = 0;  // kCollideTorso / kCollideLegs
+    std::uint8_t collide = 0;  // torso / legs / head / arms bit mask
     Vec3 translation;
+    secondary::MotionMaterial material = secondary::MotionMaterial::General;
+    secondary::MotionResponse response =
+        secondary::ResponseFor(secondary::MotionMaterial::General);
+    secondary::SpringSettings spring = secondary::SpringFor(false);
+    double collision_radius = 0.0;
+    double motion_follow = 1.0;
+    Vec3 native_gravity{};
+    double forward_move_offset = 0.0;
   };
   // Rebuilt once per frame from the rig's bones (see the frame loop).
   struct StrandCapsule {
     Vec3 a;
     Vec3 b;
     double radius = 0.0;
-    bool torso = true;
+    double end_radius = 0.0;
+    std::uint8_t mask = 0;
   };
   std::vector<StrandCapsule> strand_capsules;
   std::vector<SecondaryBone> secondary;
@@ -1832,11 +3113,35 @@ Result BuildMotion(const Input &input) {
   std::vector<std::uint32_t> sim_frames(skeleton.bones.size(), 0);
   std::uint32_t rigid_accessories = 0;
   std::uint32_t sleeve_bones = 0;
+  std::uint32_t native_secondary_overrides = 0;
+  std::uint32_t native_limit_capsules = 0;
   std::uint32_t strand_collisions = 0;
   // The deepest a strand still sits inside its proxy after the correction, per proxy set, over the
   // whole conversion -- in the converter's own geometry (see the note at the collision pass).
   double worst_strand_torso_cm = 0.0;
   double worst_strand_legs_cm = 0.0;
+  double worst_strand_head_cm = 0.0;
+  double worst_strand_arms_cm = 0.0;
+  const auto valid_secondary_override = [](const SecondaryBoneOverride &value) {
+    return !value.name.empty() && std::isfinite(value.spring.stiffness) &&
+           std::isfinite(value.spring.damping) &&
+           std::isfinite(value.spring.lag_degrees) &&
+           value.spring.stiffness >= 0.0 && value.spring.damping >= 0.0 &&
+           value.spring.stiffness <= 1000000.0 &&
+           value.spring.damping <= 1000.0 &&
+           value.spring.lag_degrees >= 0.0 &&
+           value.spring.lag_degrees <= 180.0 &&
+           std::isfinite(value.motion_follow) &&
+           std::isfinite(value.forward_move_offset) &&
+           std::all_of(value.native_gravity.begin(), value.native_gravity.end(),
+                       [](const double component) {
+                         return std::isfinite(component);
+                       });
+  };
+  std::map<std::string, const SecondaryBoneOverride *> secondary_overrides;
+  for (const SecondaryBoneOverride &value : input.secondary_bone_overrides)
+    if (valid_secondary_override(value))
+      secondary_overrides[value.name] = &value;
   for (const auto &bone : skeleton.bones) {
     if (bone.name.empty() || mapped_targets.count(bone.name) != 0)
       continue;
@@ -1875,12 +3180,35 @@ Result BuildMotion(const Input &input) {
     entry.length = best_length;
     entry.local = rest_local[bone.index];
     entry.translation = bone.base_translation;
+    entry.material = secondary::ClassifyMotionMaterial(bone.name);
+    entry.response = secondary::ResponseFor(entry.material);
+    const bool swing_only = is_swing_only(bone.name);
+    entry.spring = secondary::SpringFor(swing_only);
+    const auto native = secondary_overrides.find(bone.name);
+    if (native != secondary_overrides.end()) {
+      const SecondaryBoneOverride &value = *native->second;
+      entry.spring = {std::clamp(value.spring.stiffness, 0.0, 1000000.0),
+                      std::clamp(value.spring.damping, 0.0, 1000.0),
+                      std::clamp(value.spring.lag_degrees, 0.0, 180.0)};
+      entry.collision_radius =
+          std::clamp(value.collision_radius, 0.0, 100.0);
+      entry.motion_follow = std::clamp(value.motion_follow, 0.0, 1.0);
+      entry.native_gravity = {value.native_gravity[0],
+                              value.native_gravity[1],
+                              value.native_gravity[2]};
+      entry.forward_move_offset =
+          std::clamp(value.forward_move_offset, -1.0, 1.0);
+      ++native_secondary_overrides;
+    }
     // Which volume this strand has to stay out of. Hair is named; everything else that hangs
     // directly off the pelvis is structural -- a skirt, or the waist streamers 浔 has instead of
     // one (残虹: 110 `qun` bones; 浔: 0). Writing the rule on the hang point rather than the name
     // is what makes it work on both rigs.
-    if (is_hair(bone.name))
+    if (is_hair(bone.name)) {
       entry.collide |= kCollideTorso;
+      if (input.dynamics_tuning.extended_collision)
+        entry.collide |= kCollideHead | kCollideArms;
+    }
     {
       std::string ancestor;
       for (int up = bone.parent; up >= 0; up = skeleton.bones[static_cast<std::size_t>(up)].parent) {
@@ -1892,7 +3220,19 @@ Result BuildMotion(const Input &input) {
       }
       if (secondary::IsLegAttachment(ancestor))
         entry.collide |= kCollideLegs;
+      if (input.dynamics_tuning.extended_collision &&
+          secondary::IsHeadAttachment(ancestor))
+        entry.collide |= kCollideHead;
+      if (input.dynamics_tuning.extended_collision &&
+          secondary::IsArmAttachment(ancestor) && !is_sleeve(bone.name))
+        entry.collide |= kCollideArms;
     }
+    if (input.dynamics_tuning.native_limits &&
+        !input.kawaii_capsule_limits.empty())
+      entry.collide |= secondary::kKawaiiLimit;
+    entry.collide = secondary::EffectiveCollisionMask(
+        entry.collide, input.dynamics_tuning.extended_collision,
+        input.dynamics_tuning.native_limits);
     secondary.push_back(entry);
     ++rigid_accessories;
     if (is_sleeve(bone.name))
@@ -1901,6 +3241,165 @@ Result BuildMotion(const Input &input) {
   std::vector<const SecondaryBone *> secondary_by_index(skeleton.bones.size(), nullptr);
   for (const auto &entry : secondary)
     secondary_by_index[entry.index] = &entry;
+  std::vector<bone_constraints::Candidate> distance_candidates;
+  std::vector<bone_constraints::Link> distance_links;
+  std::vector<bone_constraints::Link> self_links;
+  std::size_t self_candidate_pairs = 0;
+  std::uint32_t distance_corrections = 0;
+  std::vector<std::uint8_t> self_contact_state;
+  std::uint32_t self_collision_corrections = 0;
+  const std::uint32_t ribbon_bones = static_cast<std::uint32_t>(
+      std::count_if(secondary.begin(), secondary.end(),
+                    [](const SecondaryBone &entry) {
+                      return entry.material ==
+                             secondary::MotionMaterial::Ribbon;
+                    }));
+  std::vector<Vec3> ribbon_previous_direction(skeleton.bones.size());
+  std::vector<Vec3> ribbon_previous_motion(skeleton.bones.size());
+  std::vector<bool> ribbon_motion_ready(skeleton.bones.size(), false);
+  std::vector<std::uint32_t> ribbon_chain_length(skeleton.bones.size(), 1);
+  std::vector<std::uint32_t> ribbon_chain_size(skeleton.bones.size(), 0);
+  for (const SecondaryBone &spring : secondary) {
+    if (spring.material != secondary::MotionMaterial::Ribbon)
+      continue;
+    std::size_t root = spring.index;
+    for (int parent = spring.parent;
+         parent >= 0 &&
+         secondary_by_index[static_cast<std::size_t>(parent)] != nullptr;
+         parent =
+             secondary_by_index[static_cast<std::size_t>(parent)]->parent)
+      root = static_cast<std::size_t>(parent);
+    ++ribbon_chain_size[root];
+  }
+  for (const SecondaryBone &spring : secondary) {
+    if (spring.material != secondary::MotionMaterial::Ribbon)
+      continue;
+    std::size_t root = spring.index;
+    for (int parent = spring.parent;
+         parent >= 0 &&
+         secondary_by_index[static_cast<std::size_t>(parent)] != nullptr;
+         parent =
+             secondary_by_index[static_cast<std::size_t>(parent)]->parent)
+      root = static_cast<std::size_t>(parent);
+    ribbon_chain_length[spring.index] =
+        (std::max)(1U, ribbon_chain_size[root]);
+  }
+  std::uint64_t ribbon_reversals = 0;
+  double ribbon_max_frame_degrees = 0.0;
+  double ribbon_max_frame = 0.0;
+  std::string ribbon_max_bone;
+  if (input.dynamics_tuning.bone_constraints ||
+      input.dynamics_tuning.self_collision) {
+    std::vector<Quat> distance_rest_rot(skeleton.bones.size());
+    std::vector<Vec3> distance_rest_pos(skeleton.bones.size());
+    for (const auto &bone : skeleton.bones) {
+      const Quat parent_rotation =
+          bone.parent >= 0
+              ? distance_rest_rot[static_cast<std::size_t>(bone.parent)]
+              : Quat{};
+      distance_rest_rot[bone.index] =
+          Multiply(parent_rotation, rest_local[bone.index]);
+      const Vec3 offset =
+          Rotate(parent_rotation, bone.base_translation);
+      distance_rest_pos[bone.index] =
+          bone.parent >= 0
+              ? distance_rest_pos[static_cast<std::size_t>(bone.parent)] +
+                    offset
+              : offset;
+    }
+    distance_candidates.assign(skeleton.bones.size(), {});
+    std::vector<Vec3> body_references;
+    body_references.reserve(8);
+    for (const auto &bone : skeleton.bones) {
+      if (bone.name.find("Pelvis") != std::string::npos ||
+          bone.name.find("Spine") != std::string::npos ||
+          bone.name.find("Neck") != std::string::npos ||
+          bone.name.find("Head") != std::string::npos)
+        body_references.push_back(distance_rest_pos[bone.index]);
+    }
+    for (const SecondaryBone &spring : secondary) {
+      std::size_t root = spring.index;
+      std::uint32_t depth{};
+      for (int parent = spring.parent;
+           parent >= 0 &&
+           secondary_by_index[static_cast<std::size_t>(parent)] != nullptr;
+           parent =
+               secondary_by_index[static_cast<std::size_t>(parent)]->parent) {
+        root = static_cast<std::size_t>(parent);
+        ++depth;
+      }
+      const Vec3 head = distance_rest_pos[spring.index];
+      const Vec3 tip =
+          head + Rotate(distance_rest_rot[spring.index], spring.axis) *
+                     spring.length;
+      auto &candidate = distance_candidates[spring.index];
+      candidate.head = {head.x, head.y, head.z};
+      candidate.tip = {tip.x, tip.y, tip.z};
+      candidate.length = spring.length;
+      candidate.anchor =
+          skeleton.bones[root].parent;
+      candidate.chain = static_cast<std::uint32_t>(root);
+      candidate.depth = depth;
+      candidate.material =
+          static_cast<std::uint32_t>(spring.material);
+      candidate.collision_mask =
+          secondary::SelfCollisionMask(
+              spring.material, input.dynamics_tuning.self_collision_pairs);
+      candidate.radius =
+          spring.collision_radius *
+          input.dynamics_tuning.self_collision_radius[
+              secondary::MotionMaterialIndex(spring.material)];
+      const Vec3 midpoint{
+          (candidate.head.x + candidate.tip.x) * 0.5,
+          (candidate.head.y + candidate.tip.y) * 0.5,
+          (candidate.head.z + candidate.tip.z) * 0.5};
+      double layer_depth = std::numeric_limits<double>::infinity();
+      for (const Vec3 core_reference : body_references)
+        layer_depth =
+            (std::min)(layer_depth, Length(midpoint - core_reference));
+      if (!std::isfinite(layer_depth)) {
+        const Vec3 anchor =
+            skeleton.bones[root].parent >= 0
+                ? distance_rest_pos[static_cast<std::size_t>(
+                      skeleton.bones[root].parent)]
+                : Vec3{};
+        layer_depth = Length(midpoint - anchor);
+      }
+      candidate.layer_depth = layer_depth;
+      candidate.eligible = true;
+    }
+    distance_links = bone_constraints::Discover(distance_candidates);
+    self_links =
+        bone_constraints::DiscoverSelfCollision(
+            distance_candidates, 4, &self_candidate_pairs);
+    for (auto &link : self_links) {
+      const auto material_a =
+          static_cast<secondary::MotionMaterial>(
+              distance_candidates[link.a].material);
+      const auto material_b =
+          static_cast<secondary::MotionMaterial>(
+              distance_candidates[link.b].material);
+      const auto index_a = secondary::MotionMaterialIndex(material_a);
+      const auto index_b = secondary::MotionMaterialIndex(material_b);
+      link.correction_gain =
+          std::clamp(
+              0.22 * std::sqrt(
+                         input.dynamics_tuning.self_collision_strength[index_a] *
+                         input.dynamics_tuning.self_collision_strength[index_b]),
+              0.02, 0.7);
+      link.velocity_keep =
+          std::clamp(
+              0.5 / std::sqrt(
+                        input.dynamics_tuning.self_collision_damping[index_a] *
+                        input.dynamics_tuning.self_collision_damping[index_b]),
+              0.03, 0.95);
+      if (!input.dynamics_tuning.self_collision_outer_priority) {
+        link.correction_share_a = 0.5;
+        link.correction_share_b = 0.5;
+      }
+    }
+    self_contact_state.assign(self_links.size(), 0);
+  }
 
   // ---- leg volume clearance, measured from the rig's own rest pose -------------------
   //
@@ -2002,6 +3501,8 @@ Result BuildMotion(const Input &input) {
     std::uint32_t arm_index = 0;
     Vec3 axis;      // the limb bone's own child offset direction, in its local frame
     double weight = 0.5;
+    std::string source_twist;
+    Vec3 source_axis;
   };
   std::vector<TwistBone> twist_bones;
   for (const auto &bone : skeleton.bones) {
@@ -2068,13 +3569,58 @@ Result BuildMotion(const Input &input) {
     // Twist takes half of the limb twist, Twist1 a quarter, so the two of them spread
     // three quarters along the limb (mmd2bip.py:374-376).
     item.weight = second ? 0.25 : 0.5;
+    if (std::string(limb_mmd) == "腕")
+      item.source_twist = std::string(side == 'L' ? "左" : "右") + "腕捩";
+    else if (std::string(limb_mmd) == "ひじ")
+      item.source_twist = std::string(side == 'L' ? "左" : "右") + "手捩";
+    if (!item.source_twist.empty()) {
+      const auto mapped = reference_mapped_directions.find(item.source_twist);
+      const auto fallback = reference_directions.find(item.source_twist);
+      if (mapped != reference_mapped_directions.end())
+        item.source_axis = mapped->second;
+      else if (fallback != reference_directions.end())
+        item.source_axis = fallback->second;
+    }
     twist_bones.push_back(item);
   }
   const double dt = input.fps > 0.0 ? 1.0 / input.fps : 1.0 / 30.0;
+  const auto dynamics_tuning =
+      secondary::SafeDynamicsTuning(input.dynamics_tuning);
 
   std::map<std::string, std::vector<json>> output;
   std::vector<json> output_positions;
   output_positions.reserve(frames.size());
+  struct ArmIkOutput {
+    int side = 0;
+    std::string hand;
+    std::vector<Vec3> offsets;
+    std::vector<Quat> rotations;
+    float max_bend_degrees = 150.0F;
+    bool follow_wrist = false;
+  };
+  std::map<int, ArmIkOutput> arm_ik_outputs;
+  for (const ManualArmIkControl &control : input.manual_arm_ik_controls) {
+    if (control.source.empty() || control.side < 0 || control.side > 1 ||
+        !std::isfinite(control.gain) || control.gain < 0.1F ||
+        control.gain > 3.0F || !std::isfinite(control.max_bend_degrees) ||
+        control.max_bend_degrees < 20.0F ||
+        control.max_bend_degrees > 170.0F)
+      continue;
+    for (int side = control.side; side <= (control.paired ? 1 : control.side);
+         ++side) {
+      const std::string hand =
+          std::string("Bip001-") + (side == 0 ? "L-Hand" : "R-Hand");
+      if (skeleton.by_name.count(hand) == 0)
+        continue;
+      auto &target = arm_ik_outputs[side];
+      target.side = side;
+      target.hand = hand;
+      target.max_bend_degrees =
+          (std::min)(target.max_bend_degrees,
+                     std::clamp(control.max_bend_degrees, 20.0F, 170.0F));
+      target.follow_wrist = target.follow_wrist || control.follow_wrist;
+    }
+  }
   // The target's one pelvis bone plays *both* MMD 腰 (torso) and 下半身 (hips), so one of the
   // two offsets that hang off it is wrong unless corrected per frame. Keeping 下半身 on the
   // pelvis keeps the hips and the butt right; the spine's base then has to be counter-rotated
@@ -2100,6 +3646,13 @@ Result BuildMotion(const Input &input) {
     }
   }
   std::map<std::string, std::vector<json>> output_offsets;
+  for (const auto &[target_name, entry] : mapped_targets) {
+    if (std::any_of(entry->parents.begin(), entry->parents.end(),
+                    [](const ManualParentMapping &mapping) {
+                      return mapping.inherit_position;
+                    }))
+      output_offsets[target_name];
+  }
   const std::size_t pelvis_index = skeleton.by_name.count("Bip001-Pelvis") != 0
                                        ? skeleton.by_name.at("Bip001-Pelvis")
                                        : skeleton.bones.size();
@@ -2145,15 +3698,15 @@ Result BuildMotion(const Input &input) {
     return span;
   };
   const auto position_span_of = [&](const std::string &name) {
-    const auto found = tracks.find(name);
-    return found == tracks.end() ? 0.0 : position_span(*found->second);
+    const VmdTrack *track = find_track(name);
+    return track == nullptr ? 0.0 : position_span(*track);
   };
   std::size_t root_end = centre_slot;
   const auto deepest_with_travel = [&](std::initializer_list<const char *> names) {
     std::size_t slot = named_chain.size();
     for (const char *name : names) {
-      const auto found = tracks.find(name);
-      if (found == tracks.end() || position_span(*found->second) <= 1e-6)
+      const VmdTrack *track = find_track(name);
+      if (track == nullptr || position_span(*track) <= 1e-6)
         continue;
       for (std::size_t i = 0; i < named_chain.size(); ++i) {
         if (named_chain[i].first == name)
@@ -2189,10 +3742,10 @@ Result BuildMotion(const Input &input) {
     for (const char *name : {"全ての親", "センター", "グルーブ"}) {
       if (position_span_of(name) > 1e-6)
         upper_moves = true;
-      const auto found = tracks.find(name);
-      if (found == tracks.end())
+      const VmdTrack *track = find_track(name);
+      if (track == nullptr)
         continue;
-      for (const auto &key : found->second->keys) {
+      for (const auto &key : track->keys) {
         if (std::fabs(key.rotation[0]) > 1e-6 || std::fabs(key.rotation[1]) > 1e-6 ||
             std::fabs(key.rotation[2]) > 1e-6)
           upper_moves = true;
@@ -2220,12 +3773,12 @@ Result BuildMotion(const Input &input) {
   {
     std::unordered_map<std::string, bool> present_in_vmd;
     for (const auto &track : vmd.tracks)
-      present_in_vmd[track.name] = true;
+      present_in_vmd[CanonicalBoneName(track.name)] = true;
     for (const char *required : {"センター", "グルーブ", "腰", "下半身", "上半身",
                                  "上半身2", "首", "頭", "左肩", "左腕", "左ひじ",
                                  "左手首", "左足", "左ひざ", "左足首", "左つま先",
                                  "右足", "右ひざ", "右足首"}) {
-      if (present_in_vmd.count(required) == 0) {
+      if (present_in_vmd.count(CanonicalBoneName(required)) == 0) {
         if (!missing_bones.empty())
           missing_bones += ",";
         missing_bones += required;
@@ -2263,15 +3816,21 @@ Result BuildMotion(const Input &input) {
   double mmd_leg_length = 0.0;
   double unit_scale = 0.0;
   if (root_mapped) {
-    const auto distance = [&reference](const char *from, const char *to) {
+    const auto distance = [&reference](const char *from, const char *from_fallback,
+                                       const char *to, const char *to_fallback) {
       const ReferenceBone *a = FindReference(reference, from);
+      if (a == nullptr && from_fallback != nullptr)
+        a = FindReference(reference, from_fallback);
       const ReferenceBone *b = FindReference(reference, to);
+      if (b == nullptr && to_fallback != nullptr)
+        b = FindReference(reference, to_fallback);
       if (a == nullptr || b == nullptr)
         return 0.0;
       return Length(Vec3{b->position.x - a->position.x, b->position.y - a->position.y,
                          b->position.z - a->position.z});
     };
-    mmd_leg_length = distance("左足", "左ひざ") + distance("左ひざ", "左足首");
+    mmd_leg_length = distance("左足", "左足D", "左ひざ", "左ひざD") +
+                     distance("左ひざ", "左ひざD", "左足首", "左足首D");
     double target_leg = 0.0;
     // The thigh bone's own translation is the hip's *lateral* offset on this rig
     // (Bip001-L-Thigh rest is ~7.7 cm sideways, not a leg segment), so it must not count
@@ -2296,6 +3855,125 @@ Result BuildMotion(const Input &input) {
   const Vec3 root_rest_translation =
       root_index < skeleton.bones.size() ? skeleton.bones[root_index].base_translation
                                          : Vec3{};
+  std::vector<Vec3> rest_component_position(skeleton.bones.size());
+  for (const auto &bone : skeleton.bones) {
+    if (bone.parent < 0) {
+      rest_component_position[bone.index] = bone.base_translation;
+      continue;
+    }
+    const std::size_t parent = static_cast<std::size_t>(bone.parent);
+    const Vec3 offset = Rotate(rest_crot[parent], bone.base_translation);
+    const Vec3 &parent_position = rest_component_position[parent];
+    rest_component_position[bone.index] =
+        Vec3{parent_position.x + offset.x, parent_position.y + offset.y,
+             parent_position.z + offset.z};
+  }
+  std::array<Vec3, 2> palm_normals{Vec3{0.0, 1.0, 0.0},
+                                   Vec3{0.0, 1.0, 0.0}};
+  for (int side{}; side != 2; ++side) {
+    const std::string prefix =
+        std::string("Bip001-") + (side == 0 ? "L-" : "R-");
+    const auto position_of = [&](const std::string &suffix)
+        -> std::optional<Vec3> {
+      const auto found = skeleton.by_name.find(prefix + suffix);
+      return found == skeleton.by_name.end()
+                 ? std::nullopt
+                 : std::optional<Vec3>(
+                       rest_component_position[found->second]);
+    };
+    const auto hand = position_of("Hand");
+    const auto middle = position_of("Finger2");
+    const auto index = position_of("Finger1");
+    const auto pinky = position_of("Finger4");
+    if (!hand || (!middle && !index))
+      continue;
+    const auto subtract = [](const Vec3 &a, const Vec3 &b) {
+      return Vec3{a.x - b.x, a.y - b.y, a.z - b.z};
+    };
+    const auto cross = [](const Vec3 &a, const Vec3 &b) {
+      return Vec3{a.y * b.z - a.z * b.y,
+                  a.z * b.x - a.x * b.z,
+                  a.x * b.y - a.y * b.x};
+    };
+    const Vec3 forward =
+        Unit(subtract(middle ? *middle : *index, *hand));
+    Vec3 across{0.0, 0.0, -1.0};
+    if (index && pinky)
+      across = Unit(subtract(*index, *pinky));
+    Vec3 normal = Unit(cross(forward, across));
+    if (Length(normal) < 1e-6)
+      normal = Vec3{0.0, 1.0, 0.0};
+    if (Dot(normal, Vec3{0.0, 1.0, 0.0}) < 0.0) {
+      normal.x = -normal.x;
+      normal.y = -normal.y;
+      normal.z = -normal.z;
+    }
+    palm_normals[static_cast<std::size_t>(side)] = normal;
+  }
+  struct FingerControlAxis {
+    Vec3 axis;
+    double weight = 1.0;
+  };
+  const auto finger_control_axis =
+      [&](const std::string &target,
+          const ManualFingerControl &control)
+      -> std::optional<FingerControlAxis> {
+    int side = -1;
+    if (target.rfind("Bip001-L-", 0) == 0)
+      side = 0;
+    else if (target.rfind("Bip001-R-", 0) == 0)
+      side = 1;
+    if (side < 0)
+      return std::nullopt;
+    static constexpr double kSpreadWeights[5] = {
+        -0.65, -0.35, 0.0, 0.25, 0.50};
+    for (int finger{}; finger != 5; ++finger) {
+      if (control.finger >= 0 && control.finger != finger)
+        continue;
+      const std::string base =
+          std::string("Bip001-") + (side == 0 ? "L-" : "R-") +
+          kFingers[finger].english;
+      for (int joint{}; joint != 4; ++joint) {
+        const std::string name =
+            joint == 0 ? base : base + std::to_string(joint);
+        if (target != name)
+          continue;
+        if (control.kind == FingerControlKind::Spread) {
+          if (joint != 0)
+            return std::nullopt;
+          return FingerControlAxis{
+              palm_normals[static_cast<std::size_t>(side)],
+              kSpreadWeights[finger] * (side == 0 ? 1.0 : -1.0)};
+        }
+        double weight = finger == 0 ? 0.55 : (joint == 0 ? 0.75 : 1.0);
+        const Vec3 current =
+            rest_component_position[skeleton.by_name.at(name)];
+        Vec3 direction;
+        if (joint < 3 && skeleton.by_name.count(base + std::to_string(joint + 1)) != 0) {
+          const Vec3 next = rest_component_position[
+              skeleton.by_name.at(base + std::to_string(joint + 1))];
+          direction = Vec3{next.x - current.x, next.y - current.y,
+                           next.z - current.z};
+        } else if (joint > 0) {
+          const std::string previous_name =
+              joint == 1 ? base : base + std::to_string(joint - 1);
+          const Vec3 previous =
+              rest_component_position[skeleton.by_name.at(previous_name)];
+          direction = Vec3{current.x - previous.x, current.y - previous.y,
+                           current.z - previous.z};
+        }
+        const Vec3 normal = palm_normals[static_cast<std::size_t>(side)];
+        const Vec3 axis = Unit(Vec3{
+            direction.y * normal.z - direction.z * normal.y,
+            direction.z * normal.x - direction.x * normal.z,
+            direction.x * normal.y - direction.y * normal.x});
+        if (Length(axis) < 1e-6)
+          return std::nullopt;
+        return FingerControlAxis{axis, weight};
+      }
+    }
+    return std::nullopt;
+  };
   std::vector<Vec3> frame_translation(skeleton.bones.size());
   for (const auto &bone : skeleton.bones)
     frame_translation[bone.index] = bone.base_translation;
@@ -2342,8 +4020,14 @@ Result BuildMotion(const Input &input) {
       const auto foot_it = skeleton.by_name.find(foot_name);
       const ReferenceBone *src_ankle =
           FindReference(reference, std::string(side.second) + "足首");
+      if (src_ankle == nullptr)
+        src_ankle = FindReference(reference, std::string(side.second) + "足首D");
       const ReferenceBone *src_knee = FindReference(reference, std::string(side.second) + "ひざ");
+      if (src_knee == nullptr)
+        src_knee = FindReference(reference, std::string(side.second) + "ひざD");
       const ReferenceBone *src_hip = FindReference(reference, std::string(side.second) + "足");
+      if (src_hip == nullptr)
+        src_hip = FindReference(reference, std::string(side.second) + "足D");
       // No waist bone is needed: the solve is taken in the source's own hip frame, so a PMD
       // skeleton (下半身 straight under センター, no 腰) solves exactly like a PMX one.
       if (thigh_it == skeleton.by_name.end() || calf_it == skeleton.by_name.end() ||
@@ -2386,50 +4070,85 @@ Result BuildMotion(const Input &input) {
       ik_pose.SetFrame(ik_tracks, frame);
       if (solve_ik) {
         std::vector<std::string> disabled;
-        for (const auto &[name, records] : ik_states) {
-          bool state = true;
-          bool seen = false;
-          for (const VmdIkState &record : records) {
-            if (record.frame > frame)
-              break;
-            state = record.on;
-            seen = true;
+        if (input.ik_mode == IkMode::FollowMotion) {
+          for (const auto &[name, records] : ik_states) {
+            bool state = true;
+            bool seen = false;
+            for (const VmdIkState &record : records) {
+              if (record.frame > frame)
+                break;
+              state = record.on;
+              seen = true;
+            }
+            if (seen && !state)
+              disabled.push_back(name);
           }
-          if (seen && !state)
-            disabled.push_back(name);
         }
-        ik_pose.Solve(ik_reports, disabled);
+        ik_pose.Solve(ik_reports, disabled, fk_fallback_available);
       }
+    }
+    const auto sample_source =
+        [&](const std::string &source, Quat &rotation,
+            Vec3 &translation) -> bool {
+        const VmdTrack *track = find_track(source);
+        if (solve_ik) {
+          const auto ik = ik_index_by_name.find(CanonicalBoneName(source));
+          if (ik != ik_index_by_name.end()) {
+            rotation = ik_pose.rot[ik->second];
+            translation = ik_pose.pos[ik->second];
+            return true;
+          }
+        }
+        if (track == nullptr)
+          return false;
+        double sampled_rotation[4] = {};
+        double sampled_position[3] = {};
+        if (!SampleTrack(*track, frame, sampled_rotation, sampled_position))
+          return false;
+        rotation = Normalize(Quat{sampled_rotation[0], sampled_rotation[1],
+                                  sampled_rotation[2], sampled_rotation[3]});
+        translation =
+            Vec3{sampled_position[0], sampled_position[1], sampled_position[2]};
+        return true;
+      };
+    for (auto &[side, target] : arm_ik_outputs) {
+      Vec3 offset{};
+      Quat wrist_rotation{};
+      const double arm_scale = unit_scale > 1e-9 ? unit_scale : 8.0;
+      for (const ManualArmIkControl &control : input.manual_arm_ik_controls) {
+        if (!control.paired && control.side != side)
+          continue;
+        Quat sampled_rotation{};
+        Vec3 sampled_position{};
+        if (!sample_source(control.source, sampled_rotation,
+                           sampled_position))
+          continue;
+        const Vec3 delta = Rotate(
+            kAxisChange,
+            Vec3{sampled_position.x * arm_scale * control.gain,
+                 sampled_position.y * arm_scale * control.gain,
+                 sampled_position.z * arm_scale * control.gain});
+        offset.x += delta.x;
+        offset.y += delta.y;
+        offset.z += delta.z;
+        if (control.follow_wrist) {
+          wrist_rotation = Multiply(
+              wrist_rotation,
+              Multiply(Multiply(kAxisChange, sampled_rotation),
+                       Conjugate(kAxisChange)));
+        }
+      }
+      target.offsets.push_back(offset);
+      target.rotations.push_back(Normalize(wrist_rotation));
     }
     for (const auto &entry : table) {
       Quat motion{};
       bool any = false;
       const auto compose = [&](const std::string &source, const bool conjugate) {
         Quat value{};
-        if (solve_ik) {
-          const auto ik = ik_index_by_name.find(source);
-          if (ik != ik_index_by_name.end()) {
-            value = ik_pose.rot[ik->second];
-          } else {
-            const auto found = tracks.find(source);
-            if (found == tracks.end())
-              return;
-            double rotation[4] = {};
-            double position[3] = {};
-            if (!SampleTrack(*found->second, frame, rotation, position))
-              return;
-            value = Normalize(Quat{rotation[0], rotation[1], rotation[2], rotation[3]});
-          }
-        } else {
-          const auto found = tracks.find(source);
-          if (found == tracks.end())
-            return;
-          double rotation[4] = {};
-          double position[3] = {};
-          if (!SampleTrack(*found->second, frame, rotation, position))
-            return;
-          value = Normalize(Quat{rotation[0], rotation[1], rotation[2], rotation[3]});
-        }
+        Vec3 translation{};
+        if (!sample_source(source, value, translation))
+          return;
         motion = Multiply(motion, conjugate ? Conjugate(value) : value);
         any = true;
       };
@@ -2455,7 +4174,35 @@ Result BuildMotion(const Input &input) {
       // and back into this bone's local frame by its own rest *component* rotation. At
       // Q=identity the result collapses to the rest local rotation, which is why a
       // rest-pose check cannot catch a mix-up here.
-      const Quat delta = Multiply(Multiply(kAxisChange, motion), Conjugate(kAxisChange));
+      Quat delta =
+          Multiply(Multiply(kAxisChange, motion), Conjugate(kAxisChange));
+      for (const ManualFingerControl &control : entry.finger_controls) {
+        Quat control_rotation{};
+        Vec3 unused_translation{};
+        if (!sample_source(control.source, control_rotation,
+                           unused_translation))
+          continue;
+        if (control_rotation.w < 0.0) {
+          control_rotation.x = -control_rotation.x;
+          control_rotation.y = -control_rotation.y;
+          control_rotation.z = -control_rotation.z;
+          control_rotation.w = -control_rotation.w;
+        }
+        const double component =
+            control.input_axis == 0
+                ? control_rotation.x
+                : control.input_axis == 1 ? control_rotation.y
+                                          : control_rotation.z;
+        const double angle =
+            2.0 * std::atan2(component, control_rotation.w);
+        const auto axis = finger_control_axis(entry.target, control);
+        if (!axis)
+          continue;
+        const double weighted = std::clamp(
+            angle * static_cast<double>(control.gain) * axis->weight,
+            -2.6, 2.6);
+        delta = Multiply(delta, FromAxisAngle(axis->axis, weighted));
+      }
       const Quat value = Normalize(
           Multiply(Multiply(Conjugate(parent_rest), delta), rest_crot[bone.index]));
       output[entry.target].push_back(ToArray4(value));
@@ -2498,6 +4245,83 @@ Result BuildMotion(const Input &input) {
                          Round6(frame_translation[slot.index].y),
                          Round6(frame_translation[slot.index].z)}));
       }
+    }
+
+    // Explicit rotation parents can also carry the target's placement. This is applied in
+    // the target parent's rest frame and emitted through boneOffsets, so the target head and
+    // every descendant move together. Rotation-only parents stay as ordinary local rotation
+    // on the target and deliberately do not alter its head position.
+    for (const auto &[target_name, entry] : mapped_targets) {
+      if (!std::any_of(entry->parents.begin(), entry->parents.end(),
+                       [](const ManualParentMapping &mapping) {
+                         return mapping.inherit_position;
+                       }))
+        continue;
+      const auto target = skeleton.by_name.find(target_name);
+      if (target == skeleton.by_name.end())
+        continue;
+      const Bone &bone = skeleton.bones[target->second];
+      const Quat parent_rest =
+          bone.parent >= 0
+              ? rest_crot[static_cast<std::size_t>(bone.parent)]
+              : Quat{};
+      Vec3 local_delta{};
+      for (const ManualParentMapping &mapping : entry->parents) {
+        Quat rotation{};
+        Vec3 translation{};
+        if (!sample_source(mapping.source, rotation, translation))
+          continue;
+        if (mapping.inherit_position) {
+          const Vec3 moved_world = Rotate(
+              kAxisChange,
+              Vec3{translation.x * unit_scale, translation.y * unit_scale,
+                   translation.z * unit_scale});
+          const Vec3 moved_parent = Rotate(Conjugate(parent_rest), moved_world);
+          local_delta.x += moved_parent.x;
+          local_delta.y += moved_parent.y;
+          local_delta.z += moved_parent.z;
+
+          std::size_t anchor_index =
+              bone.parent >= 0 ? static_cast<std::size_t>(bone.parent)
+                               : target->second;
+          if (!mapping.anchor.empty()) {
+            const auto configured_anchor =
+                skeleton.by_name.find(mapping.anchor);
+            if (configured_anchor != skeleton.by_name.end())
+              anchor_index = configured_anchor->second;
+          }
+          const Vec3 &anchor_position =
+              rest_component_position[anchor_index];
+          const Vec3 &target_position =
+              rest_component_position[target->second];
+          const Vec3 anchor_to_child_world{
+              target_position.x - anchor_position.x,
+              target_position.y - anchor_position.y,
+              target_position.z - anchor_position.z};
+          const Vec3 anchor_to_child =
+              Rotate(Conjugate(parent_rest), anchor_to_child_world);
+          if (mapping.inherit_rotation) {
+            const Quat parent_rotation =
+                Multiply(Multiply(kAxisChange, rotation),
+                         Conjugate(kAxisChange));
+            const Vec3 rotated = Rotate(parent_rotation, anchor_to_child);
+            local_delta.x += rotated.x - anchor_to_child.x;
+            local_delta.y += rotated.y - anchor_to_child.y;
+            local_delta.z += rotated.z - anchor_to_child.z;
+          }
+        }
+      }
+      Vec3 &stored = frame_translation[target->second];
+      stored.x += local_delta.x;
+      stored.y += local_delta.y;
+      stored.z += local_delta.z;
+      auto &track = output_offsets[target_name];
+      const json value =
+          json::array({Round6(stored.x), Round6(stored.y), Round6(stored.z)});
+      if (track.size() > frame_index)
+        track[frame_index] = value;
+      else
+        track.push_back(value);
     }
 
     // The root chain moves the root bone *and* is emitted as the root translation: the
@@ -2708,6 +4532,28 @@ Result BuildMotion(const Input &input) {
         frame_pos[bone.index] = head;
         const Quat rigid_rotation = Multiply(component_parent, spring->local);
         const Vec3 axis_world = Rotate(rigid_rotation, spring->axis);
+        const bool breast = secondary::IsBreast(bone.name);
+        const double inertia_gain =
+            dynamics_tuning.inertia *
+            dynamics_tuning.material_inertia[
+                secondary::MotionMaterialIndex(spring->material)] *
+            (breast ? dynamics_tuning.breast_inertia : 1.0);
+        if (inertia_gain <= 1e-6) {
+          // Zero inertia means the authored material is stationary relative to
+          // its parent. The spring may only add acceleration to a non-zero
+          // baseline; running stiffness and gravity at zero still made ribbons
+          // sway from a standing character.
+          frame_local[bone.index] = spring->local;
+          frame_rot[bone.index] = rigid_rotation;
+          output[spring->name].push_back(ToArray4(spring->local));
+          sim_direction[bone.index] = axis_world;
+          sim_velocity[bone.index] = Vec3{};
+          sim_position[bone.index] = head;
+          sim_position_older[bone.index] = head;
+          sim_seeded[bone.index] = true;
+          sim_frames[bone.index] = 1;
+          continue;
+        }
         Vec3 direction = sim_seeded[bone.index] ? sim_direction[bone.index] : axis_world;
         Vec3 velocity = sim_velocity[bone.index];
         Vec3 target = axis_world;
@@ -2719,7 +4565,10 @@ Result BuildMotion(const Input &input) {
           sim_position[bone.index] = head;
           // Gravity is always part of the hanging target; only the acceleration term needs
           // two earlier samples (mmd2bip.py:1229-1250).
-          Vec3 gravity_down{0.0, 0.0, -secondary::kGravity};
+          Vec3 gravity_down =
+              Length(spring->native_gravity) > 1e-6
+                  ? spring->native_gravity
+                  : Vec3{0.0, 0.0, -secondary::kGravity};
           if (sim_frames[bone.index] >= 2 && dt > 1e-9) {
             Vec3 accel{(head.x - 2.0 * previous.x + older.x) / (dt * dt),
                        (head.y - 2.0 * previous.y + older.y) / (dt * dt),
@@ -2733,15 +4582,56 @@ Result BuildMotion(const Input &input) {
               accel.y *= limit / magnitude;
               accel.z *= limit / magnitude;
             }
-            gravity_down = Vec3{-0.5 * accel.x, -0.5 * accel.y, -secondary::kGravity - 0.5 * accel.z};
+            const double response_gain = inertia_gain * spring->motion_follow;
+            accel.x *= response_gain;
+            accel.y *= response_gain;
+            accel.z *= response_gain;
+            gravity_down = Vec3{
+                gravity_down.x - 0.5 * accel.x,
+                gravity_down.y - 0.5 * accel.y,
+                gravity_down.z - 0.5 * accel.z};
+            Vec3 air_flow{
+                (head.x - previous.x) / dt * -0.55 *
+                    secondary::kMovingAirResponse * dynamics_tuning.air *
+                    spring->response.air,
+                (head.y - previous.y) / dt * -0.55 *
+                    secondary::kMovingAirResponse * dynamics_tuning.air *
+                    spring->response.air,
+                (head.z - previous.z) / dt * -0.55 *
+                    secondary::kMovingAirResponse * dynamics_tuning.air *
+                    spring->response.air};
+            const double air_length = Length(air_flow);
+            if (air_length > 1.5 * secondary::kGravity) {
+              const double scale = 1.5 * secondary::kGravity / air_length;
+              air_flow.x *= scale;
+              air_flow.y *= scale;
+              air_flow.z *= scale;
+            }
+            gravity_down.x += air_flow.x;
+            gravity_down.y += air_flow.y;
+            gravity_down.z += air_flow.z;
+            if (std::abs(spring->forward_move_offset) > 1e-6) {
+              const Vec3 head_velocity{(head.x - previous.x) / dt,
+                                       (head.y - previous.y) / dt,
+                                       (head.z - previous.z) / dt};
+              const double moving =
+                  std::clamp(Length(head_velocity) / 300.0, 0.0, 1.0);
+              gravity_down.x +=
+                  spring->forward_move_offset * moving *
+                  secondary::kGravity * 0.45 * spring->response.air;
+            }
           }
           const Vec3 hang = Unit(gravity_down);
           if (Length(hang) > 0.5) {
             // How much of the strand's own hang direction (gravity plus the body's acceleration)
             // replaces "follow the bone it hangs on". Hair and skirts want to stay close to the
             // body; a sleeve wants its hem down.
-            const double gravity_share =
-                is_sleeve(spring->name) ? kSleeveGravityWeight : secondary::kGravityWeight;
+            const double gravity_share = std::clamp(
+                (is_sleeve(spring->name) ? kSleeveGravityWeight
+                                         : secondary::kGravityWeight) *
+                    dynamics_tuning.gravity *
+                    (breast ? dynamics_tuning.breast_gravity : 1.0),
+                0.0, 1.0);
             const Vec3 blended{axis_world.x * (1.0 - gravity_share) + hang.x * gravity_share,
                                axis_world.y * (1.0 - gravity_share) + hang.y * gravity_share,
                                axis_world.z * (1.0 - gravity_share) + hang.z * gravity_share};
@@ -2750,36 +4640,112 @@ Result BuildMotion(const Input &input) {
           }
         }
         const bool hair_swing = is_swing_only(bone.name);
-        const auto spring_settings = secondary::SpringFor(hair_swing);
-        // Four substeps: one explicit step at 30 fps with stiffness 200 is only marginally
-        // stable (mmd2bip.py:1253-1271).
-        const int substeps = 4;
+        auto spring_settings = spring->spring;
+        spring_settings.damping *= dynamics_tuning.damping;
+        if (breast) {
+          spring_settings.stiffness *= dynamics_tuning.breast_stiffness;
+          spring_settings.damping *= dynamics_tuning.breast_damping;
+        }
+        const Vec3 previous_ribbon_direction = direction;
+        double ribbon_raw_response = 0.0;
+        if (spring->material == secondary::MotionMaterial::Ribbon) {
+          ribbon_raw_response = std::clamp(
+              inertia_gain *
+                  std::clamp(spring_settings.stiffness / 200.0, 0.0, 1.0),
+              0.0, 1.0);
+          const double response = secondary::NormalizedChainResponse(
+              ribbon_raw_response, ribbon_chain_length[spring->index]);
+          spring_settings.stiffness *= response;
+          spring_settings.damping *= dynamics_tuning.ribbon_damping;
+        }
+        // High rebound settings need more integration steps; otherwise the
+        // explicit damper can reverse velocity and make the motion unstable.
+        const double step_rate =
+            (std::max)(120.0, spring_settings.damping * 2.0);
+        const int substeps = std::clamp(
+            static_cast<int>(std::ceil(dt * step_rate - 1e-8)), 4, 128);
         const double h = dt / substeps;
         for (int substep = 0; substep < substeps; ++substep) {
           const Vec3 cross{direction.y * target.z - direction.z * target.y,
                            direction.z * target.x - direction.x * target.z,
                            direction.x * target.y - direction.y * target.x};
-          velocity.x += (spring_settings.stiffness * cross.x - spring_settings.damping * velocity.x) * h;
-          velocity.y += (spring_settings.stiffness * cross.y - spring_settings.damping * velocity.y) * h;
-          velocity.z += (spring_settings.stiffness * cross.z - spring_settings.damping * velocity.z) * h;
-          const Vec3 movement{velocity.x * h, velocity.y * h, velocity.z * h};
+          velocity.x +=
+              (spring_settings.stiffness * cross.x -
+               spring_settings.damping * velocity.x) * h;
+          velocity.y +=
+              (spring_settings.stiffness * cross.y -
+               spring_settings.damping * velocity.y) * h;
+          velocity.z +=
+              (spring_settings.stiffness * cross.z -
+               spring_settings.damping * velocity.z) * h;
+          const Vec3 movement{velocity.x * h, velocity.y * h,
+                              velocity.z * h};
           direction = Unit(Vec3{
-              direction.x + movement.y * direction.z - movement.z * direction.y,
-              direction.y + movement.z * direction.x - movement.x * direction.z,
-              direction.z + movement.x * direction.y - movement.y * direction.x});
+              direction.x + movement.y * direction.z -
+                  movement.z * direction.y,
+              direction.y + movement.z * direction.x -
+                  movement.x * direction.z,
+              direction.z + movement.x * direction.y -
+                  movement.y * direction.x});
           if (Length(direction) < 0.5)
             direction = target;
         }
-        const double alignment = (std::max)(-1.0, (std::min)(1.0, Dot(direction, target)));
-        const double lag = std::acos(alignment) * 180.0 / 3.14159265358979323846;
-        if (lag > spring_settings.lag_degrees) {
-          const double t = spring_settings.lag_degrees / lag;
-          direction = Unit(Vec3{direction.x + (target.x - direction.x) * t,
-                                direction.y + (target.y - direction.y) * t,
-                                direction.z + (target.z - direction.z) * t});
+        const double breast_amplitude =
+            breast ? dynamics_tuning.breast_amplitude : 1.0;
+        if (breast && breast_amplitude <= 1e-6) {
+          direction = axis_world;
+          target = axis_world;
+          velocity = Vec3{};
+        } else if (breast &&
+                   std::abs(breast_amplitude - 1.0) > 1e-6) {
+          direction = Unit(Vec3{
+              axis_world.x +
+                  (direction.x - axis_world.x) * breast_amplitude,
+              axis_world.y +
+                  (direction.y - axis_world.y) * breast_amplitude,
+              axis_world.z +
+                  (direction.z - axis_world.z) * breast_amplitude});
+        }
+        const double alignment =
+            (std::max)(-1.0, (std::min)(1.0, Dot(direction, target)));
+        const double lag =
+            std::acos(alignment) * 180.0 / 3.14159265358979323846;
+        const double maximum_lag = breast
+            ? std::clamp(spring_settings.lag_degrees * breast_amplitude,
+                         0.0, 120.0)
+            : spring_settings.lag_degrees;
+        if (lag > maximum_lag) {
+          const double t = maximum_lag / lag;
+          direction = Unit(Vec3{
+              direction.x + (target.x - direction.x) * t,
+              direction.y + (target.y - direction.y) * t,
+              direction.z + (target.z - direction.z) * t});
           velocity.x *= 0.5;
           velocity.y *= 0.5;
           velocity.z *= 0.5;
+        }
+        if (spring->material == secondary::MotionMaterial::Ribbon) {
+          const double angle_degrees =
+              std::acos(std::clamp(
+                            Dot(previous_ribbon_direction, direction), -1.0,
+                            1.0)) *
+              180.0 / 3.14159265358979323846;
+          const double maximum_step_degrees =
+              0.75 + 7.25 * ribbon_raw_response;
+          if (angle_degrees > maximum_step_degrees) {
+            direction = Unit(Vec3{
+                previous_ribbon_direction.x +
+                    (direction.x - previous_ribbon_direction.x) *
+                        (maximum_step_degrees / angle_degrees),
+                previous_ribbon_direction.y +
+                    (direction.y - previous_ribbon_direction.y) *
+                        (maximum_step_degrees / angle_degrees),
+                previous_ribbon_direction.z +
+                    (direction.z - previous_ribbon_direction.z) *
+                        (maximum_step_degrees / angle_degrees)});
+          }
+          if (Length(velocity) < 0.015)
+            velocity = Vec3{};
         }
         sim_direction[bone.index] = direction;
         sim_velocity[bone.index] = velocity;
@@ -2788,7 +4754,8 @@ Result BuildMotion(const Input &input) {
         const Vec3 local_axis = Unit(Rotate(Conjugate(component_parent), direction));
         Quat local = Multiply(Swing(spring->axis, local_axis),
                               twist_about(spring->local, spring->axis));
-        if (hair_swing) {
+        if (hair_swing ||
+            spring->material == secondary::MotionMaterial::Ribbon) {
           // Keep where the strand points, hold its roll at the rigid pose (spec 5.1).
           const Quat deviation = Multiply(local, Conjugate(spring->local));
           const Quat roll = twist_about(deviation, Rotate(spring->local, spring->axis));
@@ -2809,15 +4776,41 @@ Result BuildMotion(const Input &input) {
       const Quat base = rest_crot[item.arm_index];
       const Quat delta_world = Multiply(frame_rot[item.arm_index], Conjugate(base));
       const Quat delta_local = Multiply(Multiply(Conjugate(base), delta_world), base);
-      const double projected = delta_local.x * item.axis.x +
-                               delta_local.y * item.axis.y +
-                               delta_local.z * item.axis.z;
-      // Clamped hard on purpose: an unclamped share measured up to 164 degrees, which
-      // would spin the forearm. A twist helper only ever needs a small correction
-      // (mmd2bip.py:1390-1393).
-      const double angle = (std::max)(
-          -0.35, (std::min)(0.35, 2.0 * std::atan2(projected, delta_local.w) *
-                                       item.weight));
+      double angle = 0.0;
+      bool authored = false;
+      if (!item.source_twist.empty() && Length(item.source_axis) > 1e-9) {
+        const VmdTrack *track = find_track(item.source_twist);
+        double rotation[4] = {};
+        double position[3] = {};
+        if (track != nullptr && SampleTrack(*track, frame, rotation, position)) {
+          const Quat source = Normalize(
+              Quat{rotation[0], rotation[1], rotation[2], rotation[3]});
+          const Quat axial = twist_about(source, item.source_axis);
+          double source_angle =
+              2.0 * std::atan2(axial.x * item.source_axis.x +
+                                   axial.y * item.source_axis.y +
+                                   axial.z * item.source_axis.z,
+                               axial.w);
+          constexpr double kPi = 3.14159265358979323846;
+          while (source_angle > kPi)
+            source_angle -= 2.0 * kPi;
+          while (source_angle < -kPi)
+            source_angle += 2.0 * kPi;
+          angle = source_angle * item.weight;
+          authored = true;
+        }
+      }
+      if (!authored) {
+        const double projected = delta_local.x * item.axis.x +
+                                 delta_local.y * item.axis.y +
+                                 delta_local.z * item.axis.z;
+        // Derived twist stays bounded: an unclamped share measured up to 164 degrees,
+        // which would spin the forearm. Explicit 腕捩/手捩 is author data and keeps its
+        // authored angle, shared over the target's two helper bones.
+        angle = (std::max)(
+            -0.35, (std::min)(0.35, 2.0 * std::atan2(projected, delta_local.w) *
+                                         item.weight));
+      }
       const double half = angle * 0.5;
       const double sine = std::sin(half);
       const Quat share{item.axis.x * sine, item.axis.y * sine, item.axis.z * sine,
@@ -2829,7 +4822,110 @@ Result BuildMotion(const Input &input) {
                                     : Quat{},
                    local);
     }
-
+    // ---- horizontal distance constraints
+    if (!distance_links.empty()) {
+      const auto rebuild = [&]() {
+        for (const auto &bone : skeleton.bones) {
+          const Quat parent_rotation =
+              bone.parent >= 0
+                  ? frame_rot[static_cast<std::size_t>(bone.parent)]
+                  : Quat{};
+          frame_rot[bone.index] =
+              Multiply(parent_rotation, frame_local[bone.index]);
+          const Vec3 offset =
+              Rotate(parent_rotation, frame_translation[bone.index]);
+          frame_pos[bone.index] =
+              bone.parent >= 0
+                  ? frame_pos[static_cast<std::size_t>(bone.parent)] +
+                        offset
+                  : offset;
+        }
+      };
+      const auto head_at = [&](const std::uint32_t index) {
+        return bone_constraints::Vec{
+            frame_pos[index].x, frame_pos[index].y, frame_pos[index].z};
+      };
+      const auto tip_at = [&](const std::uint32_t index) {
+        const SecondaryBone &spring = *secondary_by_index[index];
+        const Vec3 tip =
+            frame_pos[index] +
+            Rotate(frame_rot[index], spring.axis) * spring.length;
+        return bone_constraints::Vec{tip.x, tip.y, tip.z};
+      };
+      const auto apply_direction =
+          [&](const std::uint32_t index,
+              const bone_constraints::Vec wanted,
+              const double velocity_keep = 0.5) {
+            const SecondaryBone &spring = *secondary_by_index[index];
+            const Quat parent_rotation =
+                spring.parent >= 0
+                    ? frame_rot[static_cast<std::size_t>(spring.parent)]
+                    : Quat{};
+            const Vec3 direction =
+                Unit(Vec3{wanted.x, wanted.y, wanted.z});
+            const Vec3 local_axis =
+                Unit(Rotate(Conjugate(parent_rotation), direction));
+            Quat local =
+                Multiply(Swing(spring.axis, local_axis),
+                         twist_about(spring.local, spring.axis));
+            if (is_swing_only(spring.name) ||
+                spring.material == secondary::MotionMaterial::Ribbon) {
+              const Quat deviation =
+                  Multiply(local, Conjugate(spring.local));
+              const Quat roll =
+                  twist_about(deviation,
+                              Rotate(spring.local, spring.axis));
+              local = Multiply(Multiply(deviation, Conjugate(roll)),
+                               spring.local);
+            }
+            frame_local[index] = Normalize(local);
+            frame_rot[index] =
+                Multiply(parent_rotation, frame_local[index]);
+            sim_direction[index] =
+                Rotate(frame_rot[index], spring.axis);
+            Vec3 &velocity = sim_velocity[index];
+            velocity = Vec3{velocity.x * velocity_keep,
+                            velocity.y * velocity_keep,
+                            velocity.z * velocity_keep};
+            auto track = output.find(spring.name);
+            if (track != output.end() &&
+                frame_index < track->second.size())
+              track->second[frame_index] =
+                  ToArray4(frame_local[index]);
+          };
+      const auto relative_speed_at =
+          [&](const bone_constraints::Link &link) {
+            const SecondaryBone &a = *secondary_by_index[link.a];
+            const SecondaryBone &b = *secondary_by_index[link.b];
+            const Vec3 velocity_a{
+                sim_velocity[link.a].y * sim_direction[link.a].z -
+                    sim_velocity[link.a].z * sim_direction[link.a].y,
+                sim_velocity[link.a].z * sim_direction[link.a].x -
+                    sim_velocity[link.a].x * sim_direction[link.a].z,
+                sim_velocity[link.a].x * sim_direction[link.a].y -
+                    sim_velocity[link.a].y * sim_direction[link.a].x};
+            const Vec3 velocity_b{
+                sim_velocity[link.b].y * sim_direction[link.b].z -
+                    sim_velocity[link.b].z * sim_direction[link.b].y,
+                sim_velocity[link.b].z * sim_direction[link.b].x -
+                    sim_velocity[link.b].x * sim_direction[link.b].z,
+                sim_velocity[link.b].x * sim_direction[link.b].y -
+                    sim_velocity[link.b].y * sim_direction[link.b].x};
+            return Length(velocity_a * a.length - velocity_b * b.length);
+          };
+      rebuild();
+      if (input.dynamics_tuning.bone_constraints)
+        distance_corrections +=
+            bone_constraints::Relax(distance_links, 2, head_at, tip_at,
+                                    apply_direction, rebuild);
+      if (input.dynamics_tuning.self_collision) {
+        rebuild();
+        self_collision_corrections +=
+            bone_constraints::RelaxSelfCollision(
+                self_links, self_contact_state, 2, head_at, tip_at,
+                apply_direction, rebuild, relative_speed_at);
+      }
+    }
     // ------------------------------------------------------------------ strand collision
     //
     // Done here, at the end of the frame, for one reason: the volumes have to come from the pose
@@ -2847,9 +4943,11 @@ Result BuildMotion(const Input &input) {
     // enough there, because the body is already in the source's f0 pose and a rigid strand can sit
     // inside it (measured: 浔's 3.8 cm, 残虹's 4.7 cm, both at f0 and nowhere else).
     strand_capsules.clear();
+    native_limit_capsules = 0;
     {
       const auto add_capsule = [&](const char *first, const char *second, const double radius,
-                                   const bool torso) {
+                                   const std::uint8_t mask,
+                                   const double end_radius = 0.0) {
         const auto a = skeleton.by_name.find(first);
         const auto b = skeleton.by_name.find(second);
         if (a == skeleton.by_name.end() || b == skeleton.by_name.end())
@@ -2858,11 +4956,93 @@ Result BuildMotion(const Input &input) {
         const Vec3 &end = frame_pos[b->second];
         if (Length(start) < 1.0 || Length(end) < 1.0)
           return;
-        strand_capsules.push_back(StrandCapsule{start, end, radius, torso});
+        strand_capsules.push_back(StrandCapsule{start, end, radius, end_radius, mask});
       };
-      add_capsule("Bip001-Pelvis", "Bip001-Spine", kTorsoCollisionRadiusCm, true);
-      add_capsule("Bip001-Spine", "Bip001-Spine1", kTorsoCollisionRadiusCm, true);
-      add_capsule("Bip001-Spine1", "Bip001-Spine2", kTorsoCollisionRadiusCm, true);
+      add_capsule("Bip001-Pelvis", "Bip001-Spine", kTorsoCollisionRadiusCm, kCollideTorso);
+      add_capsule("Bip001-Spine", "Bip001-Spine1", kTorsoCollisionRadiusCm, kCollideTorso);
+      add_capsule("Bip001-Spine1", "Bip001-Spine2", kTorsoCollisionRadiusCm, kCollideTorso);
+      if (input.dynamics_tuning.extended_collision) {
+        add_capsule("Bip001-Neck", "Bip001-Head", kNeckCollisionRadiusCm,
+                    kCollideHead, kNeckTopCollisionRadiusCm);
+        const auto head = skeleton.by_name.find("Bip001-Head");
+        if (head != skeleton.by_name.end() &&
+            Length(frame_pos[head->second]) >= 1.0) {
+          const Vec3 center = frame_pos[head->second];
+          strand_capsules.push_back(StrandCapsule{
+              center, center, kHeadCollisionRadiusCm, 0.0, kCollideHead});
+        }
+        for (const char *side : {"L", "R"}) {
+          const std::string clavicle =
+              std::string("Bip001-") + side + "-Clavicle";
+          const std::string upper =
+              std::string("Bip001-") + side + "-UpperArm";
+          const std::string forearm =
+              std::string("Bip001-") + side + "-Forearm";
+          const std::string hand =
+              std::string("Bip001-") + side + "-Hand";
+          add_capsule(clavicle.c_str(), upper.c_str(),
+                      kShoulderCollisionRadiusCm, kCollideArms);
+          add_capsule(upper.c_str(), forearm.c_str(), kArmCollisionRadiusCm,
+                      kCollideArms);
+          add_capsule(forearm.c_str(), hand.c_str(), kHandCollisionRadiusCm,
+                      kCollideArms);
+        }
+      }
+      if (input.dynamics_tuning.native_limits &&
+          !input.kawaii_capsule_limits.empty()) {
+        const auto kawaii_rotation = [](const double *rotation) {
+          constexpr double kPi = 3.14159265358979323846;
+          const double half_pitch = rotation[0] * kPi / 360.0;
+          const double half_yaw = rotation[1] * kPi / 360.0;
+          const double half_roll = rotation[2] * kPi / 360.0;
+          const double sp = std::sin(half_pitch);
+          const double cp = std::cos(half_pitch);
+          const double sy = std::sin(half_yaw);
+          const double cy = std::cos(half_yaw);
+          const double sr = std::sin(half_roll);
+          const double cr = std::cos(half_roll);
+          return Normalize(Quat{
+              cr * sp * sy - sr * cp * cy,
+              -cr * sp * cy - sr * cp * sy,
+              cr * cp * sy - sr * sp * cy,
+              cr * cp * cy + sr * sp * sy});
+        };
+        for (const KawaiiCapsuleLimit &limit : input.kawaii_capsule_limits) {
+          const auto driver = skeleton.by_name.find(limit.driving_bone);
+          if (driver == skeleton.by_name.end())
+            continue;
+          const std::size_t driver_index = driver->second;
+          const Quat driver_rotation =
+              Normalize(frame_rot[driver_index]);
+          const Vec3 driver_position = frame_pos[driver_index];
+          const Vec3 local_offset = Rotate(
+              driver_rotation,
+              Vec3{limit.offset_location[0], limit.offset_location[1],
+                   limit.offset_location[2]});
+          const Vec3 center{
+              driver_position.x + local_offset.x,
+              driver_position.y + local_offset.y,
+              driver_position.z + local_offset.z};
+          if (limit.length <= 1e-4) {
+            strand_capsules.push_back(StrandCapsule{
+                center, center, limit.sphere_radius, 0.0,
+                secondary::kKawaiiLimit});
+          } else {
+            const Quat rotation = Normalize(Multiply(
+                driver_rotation,
+                kawaii_rotation(limit.offset_rotation.data())));
+            const Vec3 half_axis =
+                Rotate(rotation, Vec3{0.0, 0.0, limit.length * 0.5});
+            strand_capsules.push_back(StrandCapsule{
+                Vec3{center.x - half_axis.x, center.y - half_axis.y,
+                     center.z - half_axis.z},
+                Vec3{center.x + half_axis.x, center.y + half_axis.y,
+                     center.z + half_axis.z},
+                limit.radius, 0.0, secondary::kKawaiiLimit});
+          }
+          ++native_limit_capsules;
+        }
+      }
       // The thigh capsule starts a third of the way down the bone: a strand's *root* sits on the
       // pelvis and is legitimately inside the hip, and a strand whose head cannot move can never be
       // pushed out of a capsule containing it -- only its direction is free. Measured with the
@@ -2891,7 +5071,7 @@ Result BuildMotion(const Input &input) {
         const Vec3 start = midway(first, second, fraction);
         if (Length(start) < 1.0)
           return;
-        strand_capsules.push_back(StrandCapsule{start, end, radius, false});
+        strand_capsules.push_back(StrandCapsule{start, end, radius, 0.0, kCollideLegs});
       };
       for (std::size_t volume = 0; volume < 4; ++volume) {
         if (leg_radius_cm[volume] > 0.0)
@@ -2916,14 +5096,20 @@ Result BuildMotion(const Input &input) {
       // Re-deriving it here also means the correction is chosen against the direction the file
       // really plays, not against a stale one.
       frame_rot[spring.index] = Multiply(parent_rotation, frame_local[spring.index]);
-      if (spring.collide == 0 || strand_capsules.empty())
+      const double collision_gain =
+          dynamics_tuning.collision *
+          dynamics_tuning.material_collision[
+              secondary::MotionMaterialIndex(spring.material)];
+      if (spring.collide == 0 || strand_capsules.empty() ||
+          collision_gain <= 1e-6)
         continue;
       const Vec3 direction = Rotate(frame_rot[spring.index], spring.axis);
-      const bool wants_torso = (spring.collide & kCollideTorso) != 0;
-      // Torso volumes carry their tolerance in the radius (a guessed one, sitting inside the visual
-      // surface); a leg volume's radius is the rig's own rest clearance, so the only tolerance left
-      // there is the solver's working room.
-      const double slack = wants_torso ? kTorsoCollisionSlackCm : kLegCollisionSlackCm;
+      double slack = (std::numeric_limits<double>::infinity)();
+      for (const StrandCapsule &capsule : strand_capsules)
+        if ((capsule.mask & spring.collide) != 0)
+          slack = (std::min)(slack, secondary::CollisionSlackCm(capsule.mask));
+      if (!std::isfinite(slack))
+        continue;
       // A strand mid-correction is driven further out than a fresh one, so the pass cannot flicker on
       // and off around the boundary while the spring keeps pulling the cloth back in.
       const bool was_held = collision_held[spring.index];
@@ -2938,7 +5124,7 @@ Result BuildMotion(const Input &input) {
                            head.y + candidate.y * spring.length * slot,
                            head.z + candidate.z * spring.length * slot};
           for (const StrandCapsule &capsule : strand_capsules) {
-            if (capsule.torso != wants_torso)
+            if ((capsule.mask & spring.collide) == 0)
               continue;
             const Vec3 axis{capsule.b.x - capsule.a.x, capsule.b.y - capsule.a.y,
                             capsule.b.z - capsule.a.z};
@@ -2953,15 +5139,21 @@ Result BuildMotion(const Input &input) {
                                capsule.a.z + axis.z * t};
             const Vec3 out{point.x - closest.x, point.y - closest.y, point.z - closest.z};
             const double distance = Length(out);
-            const double depth = capsule.radius - distance;
+            const double radius =
+                (capsule.end_radius > 0.0
+                     ? capsule.radius +
+                           (capsule.end_radius - capsule.radius) * t
+                     : capsule.radius) +
+                spring.collision_radius;
+            const double depth = radius - distance;
             // A point sitting *on* the capsule axis has no direction to be pushed along; leave it
             // for the next frame rather than inventing one.
             if (depth > deepest && distance > 0.5) {
               deepest = depth;
               if (slide_to != nullptr)
-                *slide_to = Vec3{closest.x + out.x * (capsule.radius / distance),
-                                 closest.y + out.y * (capsule.radius / distance),
-                                 closest.z + out.z * (capsule.radius / distance)};
+                *slide_to = Vec3{closest.x + out.x * (radius / distance),
+                                 closest.y + out.y * (radius / distance),
+                                 closest.z + out.z * (radius / distance)};
             }
           }
         }
@@ -2991,7 +5183,8 @@ Result BuildMotion(const Input &input) {
           break;
         // Damped: pulling the whole way onto one surface point satisfies that point and pushes the
         // other sample out of the capsule, so a full step oscillates between them.
-        const double blend = 0.6;
+        const double blend =
+            std::clamp(0.6 * collision_gain, 0.0, 0.95);
         slid = Unit(Vec3{slid.x + (aim.x - slid.x) * blend, slid.y + (aim.y - slid.y) * blend,
                          slid.z + (aim.z - slid.z) * blend});
         collided = true;
@@ -3005,10 +5198,14 @@ Result BuildMotion(const Input &input) {
       // measured 3.8 on the same rig), which is exactly the number a probe has to be able to check.
       {
         const double remaining = measure(slid, nullptr);
-        if (wants_torso)
+        if ((spring.collide & kCollideTorso) != 0)
           worst_strand_torso_cm = (std::max)(worst_strand_torso_cm, remaining);
-        else
+        if ((spring.collide & kCollideLegs) != 0)
           worst_strand_legs_cm = (std::max)(worst_strand_legs_cm, remaining);
+        if ((spring.collide & kCollideHead) != 0)
+          worst_strand_head_cm = (std::max)(worst_strand_head_cm, remaining);
+        if ((spring.collide & kCollideArms) != 0)
+          worst_strand_arms_cm = (std::max)(worst_strand_arms_cm, remaining);
       }
       if (!applied)
         continue;
@@ -3044,6 +5241,32 @@ Result BuildMotion(const Input &input) {
         }
       }
       ++strand_collisions;
+    }
+    for (const SecondaryBone &spring : secondary) {
+      if (spring.material != secondary::MotionMaterial::Ribbon)
+        continue;
+      const Vec3 current = sim_direction[spring.index];
+      if (ribbon_motion_ready[spring.index]) {
+        const Vec3 motion = current - ribbon_previous_direction[spring.index];
+        if (Length(ribbon_previous_motion[spring.index]) > 1e-6 &&
+            Length(motion) > 1e-6 &&
+            Dot(ribbon_previous_motion[spring.index], motion) < 0.0)
+          ++ribbon_reversals;
+        ribbon_previous_motion[spring.index] = motion;
+        const double angle =
+            std::acos(std::clamp(
+                          Dot(current,
+                              ribbon_previous_direction[spring.index]),
+                          -1.0, 1.0)) *
+            180.0 / 3.14159265358979323846;
+        if (angle > ribbon_max_frame_degrees) {
+          ribbon_max_frame_degrees = angle;
+          ribbon_max_frame = frame;
+          ribbon_max_bone = spring.name;
+        }
+      }
+      ribbon_previous_direction[spring.index] = current;
+      ribbon_motion_ready[spring.index] = true;
     }
 
     // Root translation: a delta in MMD units relative to the first frame, converted out
@@ -3104,11 +5327,39 @@ Result BuildMotion(const Input &input) {
   for (auto &[name, track] : output)
     document["bones"][name] = track;
   document["rootTranslation"] = output_positions;
+  if (!vmd.visibility.empty()) {
+    json visibility = json::array();
+    for (const VmdVisibilityKey &key : vmd.visibility)
+      visibility.push_back(json::array({key.frame, key.visible}));
+    document["visibility"] = std::move(visibility);
+  }
   if (!output_offsets.empty()) {
     json offsets = json::object();
     for (auto &[name, track] : output_offsets)
       offsets[name] = std::move(track);
     document["boneOffsets"] = std::move(offsets);
+  }
+  if (!arm_ik_outputs.empty()) {
+    json targets = json::array();
+    for (auto &[side, target] : arm_ik_outputs) {
+      json offsets = json::array();
+      json rotations = json::array();
+      for (const Vec3 &offset : target.offsets)
+        offsets.push_back(json::array({Round6(offset.x), Round6(offset.y),
+                                       Round6(offset.z)}));
+      for (const Quat &rotation : target.rotations)
+        rotations.push_back(json::array(
+            {Round6(rotation.x), Round6(rotation.y), Round6(rotation.z),
+             Round6(rotation.w)}));
+      targets.push_back(
+          json{{"side", side == 0 ? "L" : "R"},
+               {"hand", target.hand},
+               {"offsets", std::move(offsets)},
+               {"rotations", std::move(rotations)},
+               {"maxBendDegrees", target.max_bend_degrees},
+               {"followWrist", target.follow_wrist}});
+    }
+    document["armIkTargets"] = std::move(targets);
   }
   // Facial keys, sparse and by MMD name: which NTE morphs they drive depends
   // on the character, so the runtime maps them (mmd_morph_map.hpp). Frames are
@@ -3136,24 +5387,98 @@ Result BuildMotion(const Input &input) {
     double before = 0.0;
     double after = 0.0;
     double applied = 0.0;
+    std::uint32_t fk_frames = 0;
+    std::uint32_t fallback_frames = 0;
   };
   std::map<std::string, IkSummary> ik_summary;
+  std::uint32_t total_ik_fallbacks = 0;
   for (const IkReport &entry : ik_reports) {
     IkSummary &summary = ik_summary[entry.name];
     summary.before = (std::max)(summary.before, entry.before);
     summary.after = (std::max)(summary.after, entry.after);
     summary.applied = (std::max)(summary.applied, entry.applied);
+    summary.fk_frames += entry.fk_available ? 1U : 0U;
+    summary.fallback_frames += entry.fallback_fk ? 1U : 0U;
+    total_ik_fallbacks += entry.fallback_fk ? 1U : 0U;
   }
   json ik_json = json::object();
   for (const auto &[name, summary] : ik_summary) {
     ik_json[name] = json{{"gapBefore", Round6(summary.before)},
                          {"gapAfter", Round6(summary.after)},
-                         {"solverDegrees", Round6(summary.applied)}};
+                         {"solverDegrees", Round6(summary.applied)},
+                         {"fkFrames", summary.fk_frames},
+                         {"fallbackFrames", summary.fallback_frames}};
   }
   json leg_json = json::object();
   for (std::size_t volume = 0; volume < 4; ++volume) {
     if (leg_radius_cm[volume] > 0.0)
       leg_json[kLegVolumes[volume].key] = Round6(leg_radius_cm[volume]);
+  }
+  json parent_mappings_json = json::array();
+  for (const ManualParentMapping &mapping : input.manual_parent_mappings)
+    parent_mappings_json.push_back(
+        json{{"source", mapping.source},
+             {"target", mapping.target},
+             {"anchor", mapping.anchor},
+             {"inheritRotation", mapping.inherit_rotation},
+             {"inheritPosition", mapping.inherit_position}});
+  json finger_controls_json = json::array();
+  for (const ManualFingerControl &control : input.manual_finger_controls)
+    finger_controls_json.push_back(
+        json{{"source", control.source},
+             {"kind",
+              control.kind == FingerControlKind::Grip ? "grip" : "spread"},
+             {"side", control.side},
+             {"finger", control.finger},
+             {"inputAxis", control.input_axis},
+             {"gain", Round6(control.gain)},
+             {"paired", control.paired}});
+  json arm_ik_controls_json = json::array();
+  for (const ManualArmIkControl &control : input.manual_arm_ik_controls)
+    arm_ik_controls_json.push_back(
+        json{{"source", control.source},
+             {"side", control.side},
+             {"paired", control.paired},
+             {"gain", Round6(control.gain)},
+             {"maxBendDegrees", Round6(control.max_bend_degrees)},
+             {"followWrist", control.follow_wrist}});
+  const auto capsule_count = [&](const std::uint8_t mask) {
+    return static_cast<std::size_t>(std::count_if(
+        strand_capsules.begin(), strand_capsules.end(),
+        [mask](const StrandCapsule &capsule) { return (capsule.mask & mask) != 0; }));
+  };
+  const std::uint32_t self_contact_count =
+      static_cast<std::uint32_t>(std::count_if(
+          self_contact_state.begin(), self_contact_state.end(),
+          [](const std::uint8_t value) { return value != 0; }));
+  std::array<std::uint32_t, secondary::kMotionMaterialCount>
+      self_candidates_by_material{};
+  std::array<std::uint32_t, secondary::kMotionMaterialCount>
+      self_contacts_by_material{};
+  for (std::size_t link_index{}; link_index < self_links.size();
+       ++link_index) {
+    const auto &link = self_links[link_index];
+    const auto material_a = static_cast<std::size_t>(
+        distance_candidates[link.a].material);
+    const auto material_b = static_cast<std::size_t>(
+        distance_candidates[link.b].material);
+    ++self_candidates_by_material[material_a];
+    if (material_b != material_a)
+      ++self_candidates_by_material[material_b];
+    if (link_index < self_contact_state.size() &&
+        self_contact_state[link_index] != 0) {
+      ++self_contacts_by_material[material_a];
+      if (material_b != material_a)
+        ++self_contacts_by_material[material_b];
+    }
+  }
+  json self_candidates_json = json::object();
+  json self_contacts_json = json::object();
+  for (std::size_t index{}; index != secondary::kMotionMaterialCount;
+       ++index) {
+    const std::string key(secondary::kMotionMaterialKeys[index]);
+    self_candidates_json[key] = self_candidates_by_material[index];
+    self_contacts_json[key] = self_contacts_by_material[index];
   }
   document["diagnostics"] =
       json{{"mappedBones", table.size()},
@@ -3163,15 +5488,38 @@ Result BuildMotion(const Input &input) {
            {"nativeFps", result.native_fps},
            {"rigidTracks", rigid_tracks},
            {"secondaryBones", secondary.size()},
+           {"nativeSecondaryOverrides", native_secondary_overrides},
+           {"distanceConstraintLinks", distance_links.size()},
+           {"distanceConstraintCorrections", distance_corrections},
+           {"selfCollisionLinks", self_links.size()},
+           {"selfCollisionCandidatePairs", self_candidate_pairs},
+           {"selfCollisionContacts", self_contact_count},
+           {"selfCollisionCandidatesByMaterial",
+            std::move(self_candidates_json)},
+           {"selfCollisionContactsByMaterial",
+            std::move(self_contacts_json)},
+           {"selfCollisionCorrections", self_collision_corrections},
            {"sleeveBones", sleeve_bones},
            {"strandCollisions", strand_collisions},
            {"strandWorstTorsoCm", Round6(worst_strand_torso_cm)},
            {"strandWorstLegsCm", Round6(worst_strand_legs_cm)},
+            {"strandWorstHeadCm", Round6(worst_strand_head_cm)},
+            {"strandWorstArmsCm", Round6(worst_strand_arms_cm)},
+            {"strandCapsulesTorso", capsule_count(kCollideTorso)},
+            {"strandCapsulesHead", capsule_count(kCollideHead)},
+            {"strandCapsulesArms", capsule_count(kCollideArms)},
+            {"strandCapsulesLegs", capsule_count(kCollideLegs)},
+           {"strandCapsulesKawaii", native_limit_capsules},
            // The leg volumes' radii, measured from the rig's rest pose: a probe replaying this
            // document needs them to measure the same geometry the correction used.
            {"strandLegRadiusCm", leg_json},
            {"twistBones", twist_bones.size()},
            {"ikChains", ik_json},
+           {"ikFkFallbackFrames", total_ik_fallbacks},
+           {"manualParentMappings", parent_mappings_json},
+           {"manualFingerControls", finger_controls_json},
+           {"manualArmIkControls", arm_ik_controls_json},
+           {"armIkTargets", arm_ik_outputs.size()},
            {"phase", 2},
            {"rootTrack", root_track_name},
            {"rootFromData", root_from_data},
@@ -3186,15 +5534,39 @@ Result BuildMotion(const Input &input) {
   result.frame_count = static_cast<std::uint32_t>(frames.size());
   result.first_frame = frames.empty() ? 0 : static_cast<std::uint32_t>(frames.front());
   result.bone_tracks = static_cast<std::uint32_t>(output.size());
-  char strand_worst_note[72]{};
+  result.distance_constraint_links =
+      static_cast<std::uint32_t>(distance_links.size());
+  result.distance_constraint_corrections =
+      distance_corrections;
+  result.self_collision_links =
+      static_cast<std::uint32_t>(self_links.size());
+  result.self_collision_corrections =
+      self_collision_corrections;
+  result.self_collision_contacts =
+      self_contact_count;
+  result.self_collision_candidates_by_material =
+      self_candidates_by_material;
+  result.self_collision_contacts_by_material =
+      self_contacts_by_material;
+  char strand_worst_note[160]{};
   std::snprintf(strand_worst_note, sizeof(strand_worst_note),
-                "torso %.1f / legs %.1f cm (leg radius %.1f from rest)",
-                worst_strand_torso_cm, worst_strand_legs_cm, leg_clearance_cm);
+                "torso %.1f / head %.1f / arms %.1f / legs %.1f cm "
+                "(leg radius %.1f from rest)",
+                worst_strand_torso_cm, worst_strand_head_cm, worst_strand_arms_cm,
+                worst_strand_legs_cm, leg_clearance_cm);
   result.report = "mmd2bip(c++): nativeFps " + std::to_string(result.native_fps) + ", root " + (root_track_name.empty() ? std::string("(none)") : root_track_name + (root_from_data ? std::string("(data)") : std::string())) + ", missing[" + (missing_bones.empty() ? std::string("-") : missing_bones) + "], tracks " + std::to_string(output.size()) + ", mapped " +
                   std::to_string(table.size()) + ", frames " +
                   std::to_string(frames.size()) + ", rigid " +
                   std::to_string(rigid_tracks) + ", secondary " +
-                  std::to_string(secondary.size()) + ", sleeves " +
+                  std::to_string(secondary.size()) + ", native springs " +
+                  std::to_string(native_secondary_overrides) +
+                  ", distance links " +
+                  std::to_string(distance_links.size()) +
+                  " (" + std::to_string(distance_corrections) +
+                  " corrections), self links " +
+                  std::to_string(self_links.size()) + " (" +
+                  std::to_string(self_collision_corrections) +
+                  " corrections), sleeves " +
                   std::to_string(sleeve_bones) + ", collisions " +
                   std::to_string(strand_collisions) + ", worst strand " + strand_worst_note +
                   ", twist " +
@@ -3202,10 +5574,24 @@ Result BuildMotion(const Input &input) {
                   std::to_string(ik_summary.size()) + ", legIK " +
                   std::to_string(leg_solves.size()) + ", vmd walk " +
                   (vmd.walk_exact ? "exact" : "MISMATCH") + "\n";
+  if (ribbon_bones != 0) {
+    char ribbon_note[224]{};
+    std::snprintf(
+        ribbon_note, sizeof(ribbon_note),
+        "  ribbon motion: bones %u, max %.2f deg at frame %.0f (%s), "
+        "reversals %llu\n",
+        static_cast<unsigned>(ribbon_bones), ribbon_max_frame_degrees,
+        ribbon_max_frame,
+        ribbon_max_bone.empty() ? "n/a" : ribbon_max_bone.c_str(),
+        static_cast<unsigned long long>(ribbon_reversals));
+    result.report += ribbon_note;
+  }
   for (const auto &[name, summary] : ik_summary) {
     result.report += "  ik " + name + ": gap " + std::to_string(summary.before) + " -> " +
                      std::to_string(summary.after) + " (solver " +
-                     std::to_string(summary.applied) + " deg)\n";
+                     std::to_string(summary.applied) + " deg; FK fallback " +
+                     std::to_string(summary.fallback_frames) + "/" +
+                     std::to_string(summary.fk_frames) + " frames)\n";
   }
   return result;
 }

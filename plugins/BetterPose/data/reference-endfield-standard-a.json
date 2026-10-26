@@ -1,0 +1,810 @@
+{
+  "kind": "better-pose-reference-pmx",
+  "modelName": "Endfield Standard MMD / A-pose",
+  "source": "Endfield-Poser StandardRig",
+  "license": "AGPL-3.0-only",
+  "boneCount": 73,
+  "bones": [
+    {
+      "name": "全ての親",
+      "index": 0,
+      "parent": -1,
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "センター",
+      "index": 1,
+      "parent": 0,
+      "position": [
+        0.0,
+        10.0,
+        0.0
+      ]
+    },
+    {
+      "name": "グルーブ",
+      "index": 2,
+      "parent": 1,
+      "position": [
+        0.0,
+        10.0,
+        0.0
+      ]
+    },
+    {
+      "name": "腰",
+      "index": 3,
+      "parent": 2,
+      "position": [
+        0.0,
+        10.0,
+        0.0
+      ]
+    },
+    {
+      "name": "下半身",
+      "index": 4,
+      "parent": 3,
+      "position": [
+        0.0,
+        10.0,
+        0.0
+      ]
+    },
+    {
+      "name": "上半身",
+      "index": 5,
+      "parent": 3,
+      "position": [
+        0.0,
+        11.3,
+        0.0
+      ]
+    },
+    {
+      "name": "上半身2",
+      "index": 6,
+      "parent": 5,
+      "position": [
+        0.0,
+        13.0,
+        0.0
+      ]
+    },
+    {
+      "name": "上半身3",
+      "index": 7,
+      "parent": 6,
+      "position": [
+        0.0,
+        14.0,
+        0.0
+      ]
+    },
+    {
+      "name": "首",
+      "index": 8,
+      "parent": 7,
+      "position": [
+        0.0,
+        15.6,
+        0.0
+      ]
+    },
+    {
+      "name": "頭",
+      "index": 9,
+      "parent": 8,
+      "position": [
+        0.0,
+        16.6,
+        0.0
+      ],
+      "tailOffset": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "両目",
+      "index": 10,
+      "parent": 9,
+      "position": [
+        0.0,
+        17.1,
+        -0.5
+      ]
+    },
+    {
+      "name": "左目",
+      "index": 11,
+      "parent": 10,
+      "position": [
+        0.35,
+        17.1,
+        -0.6
+      ]
+    },
+    {
+      "name": "左肩P",
+      "index": 12,
+      "parent": 7,
+      "position": [
+        0.7,
+        14.9,
+        0.0
+      ]
+    },
+    {
+      "name": "左肩",
+      "index": 13,
+      "parent": 12,
+      "position": [
+        0.9,
+        14.9,
+        0.0
+      ]
+    },
+    {
+      "name": "左肩C",
+      "index": 14,
+      "parent": 13,
+      "position": [
+        1.7,
+        14.8,
+        0.0
+      ]
+    },
+    {
+      "name": "左腕",
+      "index": 15,
+      "parent": 14,
+      "position": [
+        1.7,
+        14.8,
+        0.0
+      ]
+    },
+    {
+      "name": "左腕捩",
+      "index": 16,
+      "parent": 15,
+      "position": [
+        2.5,
+        14.0,
+        0.0
+      ]
+    },
+    {
+      "name": "左ひじ",
+      "index": 17,
+      "parent": 16,
+      "position": [
+        3.7,
+        12.8,
+        0.0
+      ]
+    },
+    {
+      "name": "左手捩",
+      "index": 18,
+      "parent": 17,
+      "position": [
+        4.6,
+        11.9,
+        0.0
+      ]
+    },
+    {
+      "name": "左手首",
+      "index": 19,
+      "parent": 18,
+      "position": [
+        5.6,
+        10.9,
+        0.0
+      ]
+    },
+    {
+      "name": "左親指0",
+      "index": 20,
+      "parent": 19,
+      "position": [
+        5.595999999999999,
+        10.84,
+        -0.05656854249492398
+      ]
+    },
+    {
+      "name": "左親指1",
+      "index": 21,
+      "parent": 20,
+      "position": [
+        5.6339999999999995,
+        10.746,
+        -0.11313708498984797
+      ]
+    },
+    {
+      "name": "左親指2",
+      "index": 22,
+      "parent": 21,
+      "position": [
+        5.672,
+        10.652,
+        -0.17253405460951812
+      ]
+    },
+    {
+      "name": "左人指1",
+      "index": 23,
+      "parent": 19,
+      "position": [
+        5.8,
+        10.7,
+        -0.17
+      ]
+    },
+    {
+      "name": "左人指2",
+      "index": 24,
+      "parent": 23,
+      "position": [
+        6.1,
+        10.399999999999999,
+        -0.17
+      ]
+    },
+    {
+      "name": "左人指3",
+      "index": 25,
+      "parent": 24,
+      "position": [
+        6.3999999999999995,
+        10.1,
+        -0.17
+      ]
+    },
+    {
+      "name": "左中指1",
+      "index": 26,
+      "parent": 19,
+      "position": [
+        5.8,
+        10.7,
+        0.0
+      ]
+    },
+    {
+      "name": "左中指2",
+      "index": 27,
+      "parent": 26,
+      "position": [
+        6.1,
+        10.399999999999999,
+        0.0
+      ]
+    },
+    {
+      "name": "左中指3",
+      "index": 28,
+      "parent": 27,
+      "position": [
+        6.3999999999999995,
+        10.1,
+        0.0
+      ]
+    },
+    {
+      "name": "左薬指1",
+      "index": 29,
+      "parent": 19,
+      "position": [
+        5.8,
+        10.7,
+        0.17
+      ]
+    },
+    {
+      "name": "左薬指2",
+      "index": 30,
+      "parent": 29,
+      "position": [
+        6.1,
+        10.399999999999999,
+        0.17
+      ]
+    },
+    {
+      "name": "左薬指3",
+      "index": 31,
+      "parent": 30,
+      "position": [
+        6.3999999999999995,
+        10.1,
+        0.17
+      ]
+    },
+    {
+      "name": "左小指1",
+      "index": 32,
+      "parent": 19,
+      "position": [
+        5.8,
+        10.7,
+        0.34
+      ]
+    },
+    {
+      "name": "左小指2",
+      "index": 33,
+      "parent": 32,
+      "position": [
+        6.1,
+        10.399999999999999,
+        0.34
+      ]
+    },
+    {
+      "name": "左小指3",
+      "index": 34,
+      "parent": 33,
+      "position": [
+        6.3999999999999995,
+        10.1,
+        0.34
+      ]
+    },
+    {
+      "name": "左足",
+      "index": 35,
+      "parent": 4,
+      "position": [
+        0.85,
+        9.5,
+        0.0
+      ]
+    },
+    {
+      "name": "左ひざ",
+      "index": 36,
+      "parent": 35,
+      "position": [
+        0.85,
+        5.0,
+        -0.15
+      ]
+    },
+    {
+      "name": "左足首",
+      "index": 37,
+      "parent": 36,
+      "position": [
+        0.85,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "左つま先",
+      "index": 38,
+      "parent": 37,
+      "position": [
+        0.85,
+        0.25,
+        -1.2
+      ]
+    },
+    {
+      "name": "左足IK親",
+      "index": 39,
+      "parent": 0,
+      "position": [
+        0.85,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "左足IK",
+      "index": 40,
+      "parent": 39,
+      "position": [
+        0.85,
+        1.0,
+        0.0
+      ],
+      "ik": {
+        "target": 37,
+        "loop": 64,
+        "limitRadian": 0.6,
+        "links": [
+          {
+            "bone": 36,
+            "limitMin": [
+              -3.13,
+              0.0,
+              0.0
+            ],
+            "limitMax": [
+              -0.001,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "bone": 35
+          }
+        ]
+      }
+    },
+    {
+      "name": "左つま先IK",
+      "index": 41,
+      "parent": 40,
+      "position": [
+        0.85,
+        0.25,
+        -1.2
+      ],
+      "ik": {
+        "target": 38,
+        "loop": 8,
+        "limitRadian": 0.5,
+        "links": [
+          {
+            "bone": 37
+          }
+        ]
+      }
+    },
+    {
+      "name": "右目",
+      "index": 42,
+      "parent": 10,
+      "position": [
+        -0.35,
+        17.1,
+        -0.6
+      ]
+    },
+    {
+      "name": "右肩P",
+      "index": 43,
+      "parent": 7,
+      "position": [
+        -0.7,
+        14.9,
+        0.0
+      ]
+    },
+    {
+      "name": "右肩",
+      "index": 44,
+      "parent": 43,
+      "position": [
+        -0.9,
+        14.9,
+        0.0
+      ]
+    },
+    {
+      "name": "右肩C",
+      "index": 45,
+      "parent": 44,
+      "position": [
+        -1.7,
+        14.8,
+        0.0
+      ]
+    },
+    {
+      "name": "右腕",
+      "index": 46,
+      "parent": 45,
+      "position": [
+        -1.7,
+        14.8,
+        0.0
+      ]
+    },
+    {
+      "name": "右腕捩",
+      "index": 47,
+      "parent": 46,
+      "position": [
+        -2.5,
+        14.0,
+        0.0
+      ]
+    },
+    {
+      "name": "右ひじ",
+      "index": 48,
+      "parent": 47,
+      "position": [
+        -3.7,
+        12.8,
+        0.0
+      ]
+    },
+    {
+      "name": "右手捩",
+      "index": 49,
+      "parent": 48,
+      "position": [
+        -4.6,
+        11.9,
+        0.0
+      ]
+    },
+    {
+      "name": "右手首",
+      "index": 50,
+      "parent": 49,
+      "position": [
+        -5.6,
+        10.9,
+        0.0
+      ]
+    },
+    {
+      "name": "右親指0",
+      "index": 51,
+      "parent": 50,
+      "position": [
+        -5.595999999999999,
+        10.84,
+        -0.05656854249492398
+      ]
+    },
+    {
+      "name": "右親指1",
+      "index": 52,
+      "parent": 51,
+      "position": [
+        -5.6339999999999995,
+        10.746,
+        -0.11313708498984797
+      ]
+    },
+    {
+      "name": "右親指2",
+      "index": 53,
+      "parent": 52,
+      "position": [
+        -5.672,
+        10.652,
+        -0.17253405460951812
+      ]
+    },
+    {
+      "name": "右人指1",
+      "index": 54,
+      "parent": 50,
+      "position": [
+        -5.8,
+        10.7,
+        -0.17
+      ]
+    },
+    {
+      "name": "右人指2",
+      "index": 55,
+      "parent": 54,
+      "position": [
+        -6.1,
+        10.399999999999999,
+        -0.17
+      ]
+    },
+    {
+      "name": "右人指3",
+      "index": 56,
+      "parent": 55,
+      "position": [
+        -6.3999999999999995,
+        10.1,
+        -0.17
+      ]
+    },
+    {
+      "name": "右中指1",
+      "index": 57,
+      "parent": 50,
+      "position": [
+        -5.8,
+        10.7,
+        0.0
+      ]
+    },
+    {
+      "name": "右中指2",
+      "index": 58,
+      "parent": 57,
+      "position": [
+        -6.1,
+        10.399999999999999,
+        0.0
+      ]
+    },
+    {
+      "name": "右中指3",
+      "index": 59,
+      "parent": 58,
+      "position": [
+        -6.3999999999999995,
+        10.1,
+        0.0
+      ]
+    },
+    {
+      "name": "右薬指1",
+      "index": 60,
+      "parent": 50,
+      "position": [
+        -5.8,
+        10.7,
+        0.17
+      ]
+    },
+    {
+      "name": "右薬指2",
+      "index": 61,
+      "parent": 60,
+      "position": [
+        -6.1,
+        10.399999999999999,
+        0.17
+      ]
+    },
+    {
+      "name": "右薬指3",
+      "index": 62,
+      "parent": 61,
+      "position": [
+        -6.3999999999999995,
+        10.1,
+        0.17
+      ]
+    },
+    {
+      "name": "右小指1",
+      "index": 63,
+      "parent": 50,
+      "position": [
+        -5.8,
+        10.7,
+        0.34
+      ]
+    },
+    {
+      "name": "右小指2",
+      "index": 64,
+      "parent": 63,
+      "position": [
+        -6.1,
+        10.399999999999999,
+        0.34
+      ]
+    },
+    {
+      "name": "右小指3",
+      "index": 65,
+      "parent": 64,
+      "position": [
+        -6.3999999999999995,
+        10.1,
+        0.34
+      ]
+    },
+    {
+      "name": "右足",
+      "index": 66,
+      "parent": 4,
+      "position": [
+        -0.85,
+        9.5,
+        0.0
+      ]
+    },
+    {
+      "name": "右ひざ",
+      "index": 67,
+      "parent": 66,
+      "position": [
+        -0.85,
+        5.0,
+        -0.15
+      ]
+    },
+    {
+      "name": "右足首",
+      "index": 68,
+      "parent": 67,
+      "position": [
+        -0.85,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "右つま先",
+      "index": 69,
+      "parent": 68,
+      "position": [
+        -0.85,
+        0.25,
+        -1.2
+      ]
+    },
+    {
+      "name": "右足IK親",
+      "index": 70,
+      "parent": 0,
+      "position": [
+        -0.85,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "右足IK",
+      "index": 71,
+      "parent": 70,
+      "position": [
+        -0.85,
+        1.0,
+        0.0
+      ],
+      "ik": {
+        "target": 68,
+        "loop": 64,
+        "limitRadian": 0.6,
+        "links": [
+          {
+            "bone": 67,
+            "limitMin": [
+              -3.13,
+              0.0,
+              0.0
+            ],
+            "limitMax": [
+              -0.001,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "bone": 66
+          }
+        ]
+      }
+    },
+    {
+      "name": "右つま先IK",
+      "index": 72,
+      "parent": 71,
+      "position": [
+        -0.85,
+        0.25,
+        -1.2
+      ],
+      "ik": {
+        "target": 69,
+        "loop": 8,
+        "limitRadian": 0.5,
+        "links": [
+          {
+            "bone": 68
+          }
+        ]
+      }
+    }
+  ]
+}

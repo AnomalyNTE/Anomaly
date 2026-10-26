@@ -1411,6 +1411,18 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_executable(anomaly_better_pose_pose_document_fixture
             plugins/BetterPose/tests/pose_document_test.cpp)
         target_compile_options(anomaly_better_pose_pose_document_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_edit_history_fixture
+            plugins/BetterPose/tests/edit_history_test.cpp)
+        target_compile_options(anomaly_better_pose_edit_history_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_keyframe_fixture
+            plugins/BetterPose/tests/keyframe_track_test.cpp)
+        target_compile_options(anomaly_better_pose_keyframe_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_gizmo_fixture
+            plugins/BetterPose/tests/rotation_gizmo_test.cpp)
+        target_compile_options(anomaly_better_pose_gizmo_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_timeline_fixture
+            plugins/BetterPose/tests/timeline_overlay_test.cpp)
+        target_compile_options(anomaly_better_pose_timeline_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
         add_executable(anomaly_better_pose_limits_fixture
             plugins/BetterPose/tests/joint_limits_test.cpp)
         target_compile_options(anomaly_better_pose_limits_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
@@ -1429,6 +1441,50 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_include_directories(anomaly_better_pose_joint_drag_fixture PRIVATE include)
         target_link_libraries(anomaly_better_pose_joint_drag_fixture PRIVATE
             anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+        add_executable(anomaly_better_pose_mmd_interpolation_fixture
+            plugins/BetterPose/tests/mmd_interpolation_test.cpp)
+        target_compile_options(anomaly_better_pose_mmd_interpolation_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        target_link_libraries(anomaly_better_pose_mmd_interpolation_fixture PRIVATE
+            anomaly_mmd2bip_converter)
+        add_executable(anomaly_better_pose_standard_bone_fixture
+            plugins/BetterPose/tests/standard_bone_retarget_test.cpp)
+        target_compile_options(anomaly_better_pose_standard_bone_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        target_link_libraries(anomaly_better_pose_standard_bone_fixture PRIVATE
+            anomaly_mmd2bip_converter)
+        add_executable(anomaly_better_pose_motion_amplitude_fixture
+            plugins/BetterPose/tests/motion_amplitude_test.cpp)
+        target_compile_options(anomaly_better_pose_motion_amplitude_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_motion_joint_fixture
+            plugins/BetterPose/tests/motion_joint_calibration_test.cpp)
+        target_compile_options(anomaly_better_pose_motion_joint_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_motion_travel_fixture
+            plugins/BetterPose/tests/motion_travel_test.cpp)
+        target_compile_options(anomaly_better_pose_motion_travel_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        add_executable(anomaly_better_pose_endfield_reference_fixture
+            plugins/BetterPose/tests/endfield_standard_reference_test.cpp)
+        target_compile_options(anomaly_better_pose_endfield_reference_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        target_link_libraries(anomaly_better_pose_endfield_reference_fixture PRIVATE
+            nlohmann_json::nlohmann_json)
+        add_executable(anomaly_better_pose_limb_calibration_fixture
+            plugins/BetterPose/tests/limb_calibration_test.cpp)
+        target_compile_options(anomaly_better_pose_limb_calibration_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        target_include_directories(anomaly_better_pose_limb_calibration_fixture PRIVATE include)
+        target_link_libraries(anomaly_better_pose_limb_calibration_fixture PRIVATE
+            anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
+        add_executable(anomaly_better_pose_t_pose_calibration_fixture
+            plugins/BetterPose/tests/t_pose_calibration_test.cpp)
+        target_compile_options(anomaly_better_pose_t_pose_calibration_fixture PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        target_include_directories(anomaly_better_pose_t_pose_calibration_fixture PRIVATE include)
+        target_link_libraries(anomaly_better_pose_t_pose_calibration_fixture PRIVATE
+            anomaly_mmd2bip_converter winmm user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
     endif()
     # The in-game conversion needs the reference MMD bone table next to the plugin.
     add_custom_command(TARGET anomaly_builtin_better_pose POST_BUILD
@@ -1438,7 +1494,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         VERBATIM)
     add_executable(anomaly_mmd2bip apps/mmd2bip/main.cpp)
     set_target_properties(anomaly_mmd2bip PROPERTIES OUTPUT_NAME "anomaly-mmd2bip")
-    target_compile_options(anomaly_mmd2bip PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(anomaly_mmd2bip PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_link_libraries(anomaly_mmd2bip PRIVATE anomaly_mmd2bip_converter)
     anomaly_add_plugin(anomaly_builtin_teleport_landmarks_probe TEST_PLUGIN
         SOURCES plugins/TeleportLandmarksProbe/plugin.cpp

@@ -83,11 +83,111 @@ void CheckOriginal(const Character& c,std::uint8_t mode,std::uint8_t flags,float
   Check(c.mesh.Get<std::int32_t>(kMeshForcedLodModelOffset)==lod,"LOD restored to wrong mesh");
   Check(c.anim.Get<std::uint8_t>(kAnimInstanceUseMultiThreadedUpdateOffset)==0xff,"old anim instance not restored");
 }
+void CheckExtraAnimationMode() {
+  Block accessory;
+  Register(accessory);
+  constexpr std::uint8_t kOriginalMode = 0;
+  constexpr std::uint8_t kOriginalFlags = 0xff;
+  accessory.Set(kMeshAnimationModeOffset, kOriginalMode);
+  accessory.Set(kMeshAnimationFlagsOffset, kOriginalFlags);
+  Context context;
+  AnomalyCoreServiceV1 core{};
+  core.struct_size = sizeof(core);
+  core.read_memory = ReadMemory;
+  core.write_memory = WriteMemory;
+  context.core = &core;
+  Context::ExtraMesh extra;
+  extra.object = accessory.Address();
+  Check(EnsureExtraPoseAnimationMode(context, extra, true),
+        "accessory animation did not pause");
+  Check(accessory.Get<std::uint8_t>(kMeshAnimationModeOffset) ==
+            kAnimationModeCustom &&
+            extra.animation_mode_paused,
+        "accessory animation mode was not switched to custom");
+  const std::uint8_t paused_flags =
+      accessory.Get<std::uint8_t>(kMeshAnimationFlagsOffset);
+  Check((paused_flags & (1U << kAnimationFlagPauseAnimsBit)) != 0 &&
+            (paused_flags & (1U << kAnimationFlagEnableAnimationBit)) == 0,
+        "accessory animation flags were not paused");
+  Check(EnsureExtraPoseAnimationMode(context, extra, true),
+        "accessory animation pause was not idempotent");
+  accessory.Set(kMeshAnimationModeOffset, kOriginalMode);
+  accessory.Set(kMeshAnimationFlagsOffset, kOriginalFlags);
+  Check(EnsureExtraPoseAnimationMode(context, extra, true) &&
+            accessory.Get<std::uint8_t>(kMeshAnimationModeOffset) ==
+                kAnimationModeCustom &&
+            (accessory.Get<std::uint8_t>(kMeshAnimationFlagsOffset) &
+             (1U << kAnimationFlagPauseAnimsBit)) != 0,
+        "accessory animation pause was not reasserted");
+  Check(EnsureExtraPoseAnimationMode(context, extra, false),
+        "accessory animation did not resume");
+  Check(accessory.Get<std::uint8_t>(kMeshAnimationModeOffset) ==
+            kOriginalMode &&
+            accessory.Get<std::uint8_t>(kMeshAnimationFlagsOffset) ==
+                kOriginalFlags &&
+            !extra.animation_mode_paused &&
+            !extra.original_animation_mode_saved,
+        "accessory animation mode was not restored");
+}
+void CheckNativeCapsuleRuntime() {
+  Context::ExtraMesh extra;
+  extra.kawaii_component_space = true;
+  extra.bone_names = {"Root", "Tip"};
+  better_pose::accessory::Bone root{};
+  root[3] = 1.0;
+  root[8] = root[9] = root[10] = 1.0;
+  better_pose::accessory::Bone tip = root;
+  tip[5] = -10.0;
+  Check(extra.accessory_dynamics.Configure({root, tip}, {-1, 0},
+                                           {"ribbonRoot", "tip"}),
+        "native capsule rig failed");
+  PackedTransform identity{};
+  identity.rotation[3] = 1.0;
+  identity.scale[0] = identity.scale[1] = identity.scale[2] = 1.0;
+  extra.bind_world.resize(2);
+  std::memcpy(extra.bind_world[0].data(), &identity, sizeof(identity));
+  PackedTransform tip_transform = identity;
+  tip_transform.translation[1] = -10.0;
+  std::memcpy(extra.bind_world[1].data(), &tip_transform,
+              sizeof(tip_transform));
+  Context::ExtraMesh::KawaiiLimit limit;
+  limit.driving_bone = 0;
+  limit.offset_location = {0.0, 0.0, -10.0};
+  limit.radius = 2.0F;
+  limit.length = 4.0F;
+  limit.sphere_radius = 4.0F;
+  extra.kawaii_limits.push_back(limit);
+  std::vector<better_pose::accessory::Capsule> capsules;
+  AppendKawaiiLimits(extra, {}, capsules);
+  Check(capsules.size() == 1 &&
+            std::abs(capsules[0].a.z + 12.0) < 1e-6 &&
+            std::abs(capsules[0].b.z + 8.0) < 1e-6 &&
+            std::abs(capsules[0].radius - 2.0) < 1e-6,
+        "native capsule current-driver offset was not used");
+}
 }
 
 int main() {
   using namespace fixture;
+  Check(ControlTrackPriority("左手握り")==100 &&
+            ControlTrackPriority("HandSpread")==95 &&
+            ControlTrackPriority("HandControl")==70 &&
+            ControlTrackPriority("右手捩")==0 &&
+            IsStructuralControlTrack("右手捩") &&
+            !IsStructuralControlTrack("D1") &&
+            ControlTrackPriority("HairA_01")==0,
+        "hand-control source suggestion ordering is wrong");
   Context context;
+  bool joint_calibration_default = false;
+  {
+    std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+    joint_calibration_default = context.motion_joint_calibration.enabled;
+  }
+  Check(!context.motion_travel_enabled.load() &&
+            !context.motion_amplitude_enabled.load() &&
+            !context.motion_limb_enabled.load() &&
+            !joint_calibration_default,
+        "motion calibration masters do not default off");
   AnomalyCoreServiceV1 core{}; core.struct_size=sizeof(core); core.read_memory=ReadMemory; core.write_memory=WriteMemory;
   context.core=&core;
   AnomalyUe5ObjectsServiceV1 objects{}; objects.struct_size=sizeof(objects); objects.find_exact=Find; context.objects=&objects;
@@ -181,6 +281,281 @@ int main() {
   ApplyMotionPoseDirect(context);
   Check(std::abs(b.buffer0[0].rotation[2]-.70710678)<1e-6 && std::abs(b.buffer1[0].translation[2]-17)<1e-6,
         "new main skeleton did not receive rotation and root/offset tracks");
+  amp::Settings amplitude;
+  amplitude.master = 0.5F;
+  context.motion_amplitude.Store(amplitude);
+  context.motion_amplitude_enabled.store(true);
+  context.motion_height_cm.store(10.0F);
+  ApplyMotionPoseDirect(context);
+  Check(std::abs(b.buffer0[0].rotation[2]-.38268343)<1e-6 &&
+            std::abs(b.buffer1[0].translation[2]-27)<1e-6,
+        "runtime amplitude/height were not applied to the final pose");
+  context.motion_amplitude_enabled.store(false);
+  ApplyMotionPoseDirect(context);
+  Check(std::abs(b.buffer0[0].rotation[2]-.70710678)<1e-6 &&
+            std::abs(b.buffer1[0].translation[2]-27)<1e-6,
+        "disabled amplitude still changed the pose");
+  context.motion_amplitude_enabled.store(true);
+  context.motion_amplitude.Store(amp::Settings{});
+  context.motion_height_cm.store(0.0F);
+  ApplyMotionPoseDirect(context);
+  Check(std::abs(b.buffer0[0].rotation[2]-.70710678)<1e-6 &&
+            std::abs(b.buffer1[0].translation[2]-17)<1e-6,
+        "runtime amplitude/height did not restore the converted motion");
+  joint_cal::Settings joint_settings;
+  joint_settings.enabled = true;
+  joint_settings.joints["Bip001-Head"].ratio = 0.5F;
+  {
+    std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+    context.motion_joint_calibration = joint_settings;
+  }
+  ApplyMotionPoseDirect(context);
+  Check(std::abs(b.buffer0[0].rotation[2]-.38268343)<1e-6,
+        "runtime joint ratio was not applied");
+  joint_settings.enabled = false;
+  {
+    std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+    context.motion_joint_calibration = joint_settings;
+  }
+  ApplyMotionPoseDirect(context);
+  Check(std::abs(b.buffer0[0].rotation[2]-.70710678)<1e-6,
+        "disabled joint calibration still changed the pose");
+  {
+    std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+    context.motion_joint_calibration = joint_cal::Settings{};
+  }
+
+  const nlohmann::json legacy_defaults = nlohmann::json::parse(R"json({
+    "bones":[],
+    "motionTravelEnabled":true,
+    "motionAmplitude":{"enabled":true,"master":0.8,"parts":{}},
+    "motionJointCalibration":{"enabled":true,"linked":true,"joints":{}},
+    "motionLimbCalibrationEnabled":true
+  })json");
+  Check(ApplyPoseDocument(context,legacy_defaults),
+        "legacy calibration defaults did not load");
+  Check(!context.motion_travel_enabled.load() &&
+            !context.motion_amplitude_enabled.load() &&
+            !context.motion_limb_enabled.load() &&
+            !JointCalibrationEnabled(context),
+        "legacy profiles did not migrate calibration masters to off");
+  const auto migrated_settings=nlohmann::json::parse(BuildPoseDocument(context));
+  Check(migrated_settings.value("motionCalibrationDefaultsVersion",0U)==2U,
+        "migrated settings did not record the all-off default version");
+  const nlohmann::json legacy_tuning = nlohmann::json::parse(R"json({
+    "bones":[],
+    "dynamicPhysicsTuning":{"air":1.0,
+      "materialInertia":{"hair":1.2}}
+  })json");
+  Check(ApplyPoseDocument(context,legacy_tuning),
+        "legacy dynamic tuning did not load");
+  const auto migrated_tuning=context.secondary_tuning.Load();
+  Check(std::abs(migrated_tuning.air)<1e-6F &&
+            !migrated_tuning.extended_collision &&
+            std::abs(migrated_tuning.material_inertia[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Hair)]-
+                     1.2F)<1e-6F,
+        "legacy default air response was not migrated off");
+
+  const nlohmann::json saved_settings = nlohmann::json::parse(R"json({
+    "motionCalibrationDefaultsVersion":2,
+    "bones":[],"motionSpeed":1.5,"motionHeightCm":12,
+    "motionIkMode":2,
+    "dynamicPhysicsTuning":{"inertia":1.25,"air":0.5,"damping":1.1,
+      "ribbonDamping":1.4,"gravity":0.8,"collision":1.3,
+      "extendedCollision":true,"nativeKawaiiLimits":true,
+      "boneConstraints":true,"selfCollision":true,
+      "selfCollisionOuterPriority":true,
+      "selfCollisionPairs":{"hairRibbon":false},
+      "materialInertia":{"hair":1.2,"ribbon":0.7},
+      "materialCollision":{"hair":0.8,"ribbon":0.25},
+      "materialSelfRadius":{"hair":1.2,"ribbon":0.8},
+      "materialSelfStrength":{"hair":1.1,"ribbon":0.9},
+      "materialSelfDamping":{"hair":1.3,"ribbon":0.7}},
+    "manualMotionMappings":{"左ひじ補助":"Bip001-Prop1"},
+    "manualMotionParents":[{"source":"多段親","target":"Bip001-L-UpperArm",
+      "anchor":"Bip001-Neck","inheritRotation":true,"inheritPosition":true}],
+    "manualMotionControls":[{"source":"GripControl","kind":"grip","side":1,
+      "finger":1,"inputAxis":2,"gain":-0.75,"paired":false}],
+    "manualArmIkControls":[{"source":"ArmTarget","side":0,"paired":true,
+      "gain":1.5,"maxBendDegrees":125,"followWrist":true}],
+    "ignoredMotionTracks":["SpareTrack","SecondSpare"],
+    "motionAmplitude":{"enabled":false,"master":1.25,"parts":{"head":0.5,"left_arm":1.75}},
+    "motionJointCalibration":{"enabled":true,"linked":true,
+      "joints":{"Bip001-Head":{"ratio":0.75,"offset":[1,2,3],"mirror":[false,true,false]}}}
+  })json");
+  Check(ApplyPoseDocument(context,saved_settings),"motion settings did not load");
+  Check(std::abs(context.motion_speed.load()-1.5F)<1e-6 &&
+            std::abs(context.motion_height_cm.load()-12.0F)<1e-6 &&
+            context.motion_ik_mode.load()==2,
+        "motion speed/height did not persist");
+  const auto loaded_tuning=context.secondary_tuning.Load();
+  std::cout << "loaded_tuning inertia=" << loaded_tuning.inertia
+            << " air=" << loaded_tuning.air
+            << " damping=" << loaded_tuning.damping
+            << " ribbon_damping=" << loaded_tuning.ribbon_damping
+            << " gravity=" << loaded_tuning.gravity
+            << " collision=" << loaded_tuning.collision
+            << " extended=" << loaded_tuning.extended_collision << '\n';
+  Check(std::abs(loaded_tuning.inertia-1.25F)<1e-6F &&
+            std::abs(loaded_tuning.air-.5F)<1e-6F &&
+            std::abs(loaded_tuning.damping-1.1F)<1e-6F &&
+            std::abs(loaded_tuning.ribbon_damping-1.4F)<1e-6F &&
+            std::abs(loaded_tuning.gravity-.8F)<1e-6F &&
+            std::abs(loaded_tuning.collision-1.3F)<1e-6F &&
+            loaded_tuning.extended_collision && loaded_tuning.native_limits &&
+            loaded_tuning.bone_constraints && loaded_tuning.self_collision &&
+            loaded_tuning.self_collision_outer_priority &&
+            !better_pose::secondary::SelfCollisionPairEnabled(
+                loaded_tuning.self_collision_pairs,
+                better_pose::secondary::MotionMaterial::Hair,
+                better_pose::secondary::MotionMaterial::Ribbon) &&
+            std::abs(loaded_tuning.self_collision_radius[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Hair)]-
+                     1.2F)<1e-6F &&
+            std::abs(loaded_tuning.self_collision_strength[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Hair)]-
+                     1.1F)<1e-6F &&
+            std::abs(loaded_tuning.self_collision_damping[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Ribbon)]-
+                     .7F)<1e-6F &&
+            std::abs(loaded_tuning.material_inertia[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Hair)]-
+                     1.2F)<1e-6F &&
+            std::abs(loaded_tuning.material_inertia[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Ribbon)]-
+                     .7F)<1e-6F &&
+            std::abs(loaded_tuning.material_collision[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Hair)]-
+                     .8F)<1e-6F &&
+            std::abs(loaded_tuning.material_collision[
+                         better_pose::secondary::MotionMaterialIndex(
+                             better_pose::secondary::MotionMaterial::Ribbon)]-
+                     .25F)<1e-6F,
+        "dynamic-bone tuning did not persist");
+  {
+    std::lock_guard<std::mutex> lock(context.motion_mapping_mutex);
+    Check(context.manual_motion_mappings.at("左ひじ補助")=="Bip001-Prop1",
+          "manual motion mapping did not persist");
+    Check(context.manual_motion_parents.size()==1 &&
+              context.manual_motion_parents.front().source=="多段親" &&
+              context.manual_motion_parents.front().target=="Bip001-L-UpperArm" &&
+              context.manual_motion_parents.front().anchor=="Bip001-Neck" &&
+              context.manual_motion_parents.front().inherit_rotation &&
+              context.manual_motion_parents.front().inherit_position,
+          "manual motion parent did not persist");
+    Check(context.manual_motion_finger_controls.size()==1 &&
+              context.manual_motion_finger_controls.front().source=="GripControl" &&
+              context.manual_motion_finger_controls.front().kind==
+                  better_pose::mmd2bip::FingerControlKind::Grip &&
+              context.manual_motion_finger_controls.front().side==1 &&
+              context.manual_motion_finger_controls.front().finger==1 &&
+              context.manual_motion_finger_controls.front().input_axis==2 &&
+              std::abs(context.manual_motion_finger_controls.front().gain+.75F)<1e-6F &&
+              !context.manual_motion_finger_controls.front().paired,
+          "manual hand control did not persist");
+    Check(context.manual_motion_arm_ik_controls.size()==1 &&
+              context.manual_motion_arm_ik_controls.front().source=="ArmTarget" &&
+              context.manual_motion_arm_ik_controls.front().paired &&
+              std::abs(context.manual_motion_arm_ik_controls.front().gain-1.5F)<1e-6F &&
+              std::abs(context.manual_motion_arm_ik_controls.front().max_bend_degrees-125.0F)<1e-6F &&
+              context.manual_motion_arm_ik_controls.front().follow_wrist,
+          "manual arm IK control did not persist");
+    Check(context.ignored_motion_tracks.count("SpareTrack")==1 &&
+              context.ignored_motion_tracks.count("SecondSpare")==1,
+          "ignored motion tracks did not persist");
+  }
+  const auto loaded_amplitude=context.motion_amplitude.Load();
+  Check(!context.motion_amplitude_enabled.load() &&
+            std::abs(loaded_amplitude.master-1.25F)<1e-6 &&
+            std::abs(loaded_amplitude.parts[static_cast<std::size_t>(amp::Part::Head)]-.5F)<1e-6 &&
+            std::abs(loaded_amplitude.parts[static_cast<std::size_t>(amp::Part::LeftArm)]-1.75F)<1e-6,
+        "motion amplitude did not persist");
+  Check(JointCalibrationEnabled(context) &&
+            !context.skeleton_overlay_enabled.load(std::memory_order_acquire),
+        "joint calibration incorrectly forced the skeleton overlay");
+  const auto rebuilt_settings=nlohmann::json::parse(BuildPoseDocument(context));
+  joint_cal::Settings loaded_joints;
+  {
+    std::lock_guard<std::mutex> lock(context.motion_joint_mutex);
+    loaded_joints = context.motion_joint_calibration;
+  }
+  const auto loaded_joint=loaded_joints.joints.find("Bip001-Head");
+  Check(std::abs(rebuilt_settings["motionSpeed"].get<float>()-1.5F)<1e-6 &&
+            std::abs(rebuilt_settings["motionHeightCm"].get<float>()-12.0F)<1e-6 &&
+            rebuilt_settings["motionAmplitude"]["enabled"].get<bool>()==false &&
+            rebuilt_settings["motionIkMode"].get<int>()==2 &&
+            rebuilt_settings["dynamicPhysicsTuning"]["extendedCollision"]
+                    .get<bool>() &&
+            rebuilt_settings["dynamicPhysicsTuning"]["nativeKawaiiLimits"]
+                    .get<bool>() &&
+            rebuilt_settings["dynamicPhysicsTuning"]["boneConstraints"]
+                    .get<bool>() &&
+            rebuilt_settings["dynamicPhysicsTuning"]["selfCollision"]
+                    .get<bool>() &&
+            rebuilt_settings["dynamicPhysicsTuning"]
+                    ["selfCollisionOuterPriority"]
+                        .get<bool>() &&
+            rebuilt_settings["dynamicPhysicsTuning"]["selfCollisionPairs"]
+                    ["hairRibbon"]
+                    .get<bool>() == false &&
+            std::abs(rebuilt_settings["dynamicPhysicsTuning"]
+                         ["materialSelfRadius"]["hair"]
+                             .get<float>() -
+                     1.2F) <
+                1e-6F &&
+            std::abs(rebuilt_settings["dynamicPhysicsTuning"]
+                         ["materialSelfDamping"]["ribbon"]
+                             .get<float>() -
+                     .7F) <
+                1e-6F &&
+            std::abs(rebuilt_settings["dynamicPhysicsTuning"]["inertia"]
+                         .get<float>()-1.25F)<1e-6F &&
+            std::abs(rebuilt_settings["dynamicPhysicsTuning"]
+                         ["materialInertia"]["hair"].get<float>()-1.2F)<1e-6F &&
+            std::abs(rebuilt_settings["dynamicPhysicsTuning"]
+                         ["materialCollision"]["ribbon"].get<float>()-.25F)<
+                1e-6F &&
+            rebuilt_settings["manualMotionMappings"].at("左ひじ補助")=="Bip001-Prop1" &&
+            rebuilt_settings["manualMotionParents"].size()==1 &&
+            rebuilt_settings["manualMotionParents"][0]["source"]=="多段親" &&
+            rebuilt_settings["manualMotionParents"][0]["target"]=="Bip001-L-UpperArm" &&
+            rebuilt_settings["manualMotionParents"][0]["anchor"]=="Bip001-Neck" &&
+            rebuilt_settings["manualMotionParents"][0]["inheritRotation"]==true &&
+            rebuilt_settings["manualMotionParents"][0]["inheritPosition"]==true &&
+            rebuilt_settings["manualMotionControls"].size()==1 &&
+            rebuilt_settings["manualMotionControls"][0]["source"]=="GripControl" &&
+            rebuilt_settings["manualMotionControls"][0]["kind"]=="grip" &&
+            rebuilt_settings["manualMotionControls"][0]["inputAxis"]==2 &&
+            rebuilt_settings["manualArmIkControls"].size()==1 &&
+            rebuilt_settings["manualArmIkControls"][0]["source"]=="ArmTarget" &&
+            rebuilt_settings["manualArmIkControls"][0]["paired"]==true &&
+            std::abs(rebuilt_settings["manualArmIkControls"][0]["gain"].get<float>()-1.5F)<1e-6F &&
+            rebuilt_settings["ignoredMotionTracks"].size()==2 &&
+            std::abs(rebuilt_settings["motionAmplitude"]["parts"]["head"].get<float>()-.5F)<1e-6 &&
+            loaded_joints.enabled && loaded_joints.linked &&
+            loaded_joint!=loaded_joints.joints.end() &&
+            std::abs(loaded_joint->second.ratio-.75F)<1e-6 &&
+            loaded_joint->second.offset_degrees==std::array<float,3>{1,2,3},
+        "motion settings were not written back");
+  const auto speed_before_invalid=context.motion_speed.load();
+  const auto tuning_before_invalid=context.secondary_tuning.Load();
+  const nlohmann::json invalid_settings = nlohmann::json::parse(R"json({
+    "bones":[],"motionSpeed":1.75,"motionHeightCm":101,
+    "dynamicPhysicsTuning":{"collision":9}
+  })json");
+  Check(!ApplyPoseDocument(context,invalid_settings),"invalid motion settings were accepted");
+  Check(context.motion_speed.load()==speed_before_invalid,
+        "invalid settings changed the validated speed");
+  Check(context.secondary_tuning.Load().collision==tuning_before_invalid.collision,
+        "invalid tuning changed the published values");
 
   // Resolving the same character must not repeatedly capture an already-frozen state.
   Check(ResolveLocalCharacter(context) && context.motion.indices_ready,"same-character resolve discarded binding");
@@ -200,5 +575,126 @@ int main() {
   UnloadMotion(context);
   Check(!LoadMotionDocument(context,document,"late.betterpose.json",before_unload) && !context.motion_loaded,
         "manual unload accepted an older pending load");
-  std::cout << "PASS automatic unload, paused/playing switches, transient gap, stale conversion rejection and explicit reload\n";
+
+  // Live hand-control preview must change only the displayed finger chain and disappear
+  // immediately when the control editor is cancelled.
+  controller.Set(kControllerPawnOffset,a.actor.Address());
+  Check(ResolveLocalCharacter(context),"preview fixture character resolve failed");
+  TakeOver(context);
+  std::array<PackedTransform,8> preview_local{},preview_components{},preview_back{};
+  Register(preview_local); Register(preview_components); Register(preview_back);
+  for(auto& bone:preview_local) bone.rotation[3]=1;
+  const auto set_translation=[](PackedTransform& bone,float x,float y,float z) {
+    bone.translation[0]=x; bone.translation[1]=y; bone.translation[2]=z;
+  };
+  set_translation(preview_local[1],0,0,0);
+  set_translation(preview_local[2],2,0,0);
+  set_translation(preview_local[3],1,0,0);
+  set_translation(preview_local[4],2,1,0);
+  set_translation(preview_local[5],1,0,0);
+  set_translation(preview_local[6],2,-1,0);
+  set_translation(preview_local[7],1,0,0);
+  const std::array<std::uint32_t,3> preview_offsets{
+      kMeshLocalSpaceTransformsOffset,kMeshComponentSpaceBuffer0Offset,
+      kMeshComponentSpaceBuffer1Offset};
+  const std::array<std::uintptr_t,3> preview_arrays{
+      reinterpret_cast<std::uintptr_t>(preview_local.data()),
+      reinterpret_cast<std::uintptr_t>(preview_components.data()),
+      reinterpret_cast<std::uintptr_t>(preview_back.data())};
+  for(std::size_t i=0;i<3;++i) {
+    a.mesh.Set(preview_offsets[i],preview_arrays[i]);
+    a.mesh.Set(preview_offsets[i]+8,std::int32_t{8});
+  }
+  Check(ReadAnimationState(context) && ReadPoseArrays(context),"preview pose arrays unavailable");
+  context.bone_names={"Root","Bip001-L-Hand","Bip001-L-Finger1",
+                      "Bip001-L-Finger11","Bip001-L-Finger2",
+                      "Bip001-L-Finger21","Bip001-L-Finger4",
+                      "Bip001-L-Finger41"};
+  context.bone_parents={-1,0,1,2,1,4,1,6};
+  context.bone_names_mesh=a.mesh.Address(); context.bone_parents_ready=true;
+  context.pose_base_ready=true; context.pose_base_mesh=a.mesh.Address();
+  context.pose_base_locals.resize(8); context.ref_locals.resize(8);
+  for(std::size_t i=0;i<8;++i) {
+    std::memcpy(context.pose_base_locals[i].data(),&preview_local[i],
+                sizeof(PackedTransform));
+    std::memcpy(context.ref_locals[i].data(),&preview_local[i],
+                sizeof(PackedTransform));
+  }
+  context.ref_pose_character=a.actor.Address();
+  context.motion.bone_names={"Root"}; context.motion.bone_indices={0};
+  context.motion.indices_ready=true; context.motion.bone_count=1;
+  context.motion.frame_count=1; context.motion.first_frame=0;
+  context.motion.rotations={0,0,0,1}; context.motion.has_root=false;
+  context.motion.offset_names.clear(); context.motion.offset_indices.clear();
+  context.motion.offsets.clear(); context.motion.offsets_ready=false;
+  context.motion_loaded=true; context.motion_playing=false;
+  context.motion_seconds=0; context.motion_display_seconds=0;
+  context.motion_finger_preview_enabled.store(false,std::memory_order_release);
+  ApplyMotionPoseDirect(context);
+  const auto finger_rest=preview_components[2];
+  context.motion_mapping_control_kind.store(0,std::memory_order_release);
+  context.motion_mapping_control_side.store(0,std::memory_order_release);
+  context.motion_mapping_control_finger.store(-1,std::memory_order_release);
+  context.motion_mapping_control_gain.store(1.0F,std::memory_order_release);
+  context.motion_mapping_control_paired.store(false,std::memory_order_release);
+  context.motion_finger_preview_amount.store(.65F,std::memory_order_release);
+  context.motion_finger_preview_enabled.store(true,std::memory_order_release);
+  ApplyMotionPoseDirect(context);
+  double preview_delta=0.0;
+  for(std::size_t i=0;i<4;++i)
+    preview_delta+=std::abs(preview_components[2].rotation[i]-finger_rest.rotation[i]);
+  Check(preview_delta>.01,"live hand-control preview did not bend the finger");
+  context.motion_finger_preview_enabled.store(false,std::memory_order_release);
+  ApplyMotionPoseDirect(context);
+  preview_delta=0.0;
+  for(std::size_t i=0;i<4;++i)
+    preview_delta+=std::abs(preview_components[2].rotation[i]-finger_rest.rotation[i]);
+  Check(preview_delta<1e-6,"cancelling live preview did not restore the finger");
+
+  std::array<PackedTransform,4> arm_local{},arm_components{},arm_back{};
+  Register(arm_local); Register(arm_components); Register(arm_back);
+  for(auto& bone:arm_local) bone.rotation[3]=1;
+  set_translation(arm_local[1],0,0,10);
+  set_translation(arm_local[2],5,0,0);
+  set_translation(arm_local[3],5,0,0);
+  const std::array<std::uintptr_t,3> arm_arrays{
+      reinterpret_cast<std::uintptr_t>(arm_local.data()),
+      reinterpret_cast<std::uintptr_t>(arm_components.data()),
+      reinterpret_cast<std::uintptr_t>(arm_back.data())};
+  for(std::size_t i=0;i<3;++i) {
+    a.mesh.Set(preview_offsets[i],arm_arrays[i]);
+    a.mesh.Set(preview_offsets[i]+8,std::int32_t{4});
+  }
+  Check(ReadAnimationState(context) && ReadPoseArrays(context),"arm IK pose arrays unavailable");
+  context.bone_names={"Root","Bip001-L-UpperArm","Bip001-L-Forearm","Bip001-L-Hand"};
+  context.bone_parents={-1,0,1,2}; context.bone_names_mesh=a.mesh.Address();
+  context.pose_base_ready=true; context.pose_base_mesh=a.mesh.Address();
+  context.pose_base_locals.resize(4); context.ref_locals.resize(4);
+  for(std::size_t i=0;i<4;++i) {
+    std::memcpy(context.pose_base_locals[i].data(),&arm_local[i],sizeof(PackedTransform));
+    std::memcpy(context.ref_locals[i].data(),&arm_local[i],sizeof(PackedTransform));
+  }
+  context.motion=Context::MotionTrack{};
+  context.motion.bone_names={"Root"}; context.motion.bone_indices={0};
+  context.motion.indices_ready=false; context.motion.bone_count=1;
+  context.motion.frame_count=1; context.motion.first_frame=0;
+  context.motion.rotations={0,0,0,1};
+  Context::MotionTrack::ArmIkTarget arm_target;
+  arm_target.side="L"; arm_target.hand_name="Bip001-L-Hand";
+  arm_target.follow_wrist=false; arm_target.max_bend_degrees=150;
+  arm_target.offsets={0,3,0}; arm_target.rotations={0,0,0,1};
+  context.motion.arm_ik_targets.push_back(std::move(arm_target));
+  context.motion_loaded=true; Check(ResolveMotionIndices(context),"arm IK indices did not resolve");
+  context.motion_arm_preview_enabled.store(false,std::memory_order_release);
+  ApplyMotionPoseDirect(context);
+  double arm_delta=0.0;
+  for(std::size_t i=0;i<4;++i) {
+    arm_delta+=std::abs(arm_components[1].rotation[i]-(i==3?1.0:0.0));
+    arm_delta+=std::abs(arm_components[2].rotation[i]-(i==3?1.0:0.0));
+  }
+  Check(arm_delta>.02,"arm IK wrist target did not bend the target arm");
+
+  CheckExtraAnimationMode();
+  CheckNativeCapsuleRuntime();
+  std::cout << "PASS automatic unload, paused/playing switches, extra animation restore, native capsule geometry, transient gap, stale conversion rejection and explicit reload\n";
 }
