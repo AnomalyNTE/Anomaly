@@ -22,6 +22,10 @@ struct UiTextureDrawRequest final {
     float uv1_x{1.0f};
     float uv1_y{1.0f};
     std::uint32_t tint_rgba{0xffffffffU};
+    // Radius of the corners cut from the rectangle. The shell's wallpaper is the
+    // body's own paint, so it has to carry the body's continuous corners; zero
+    // leaves the rectangle square. Ignored while the rectangle is rotated.
+    float rounding{};
     // Draw above every ImGui window instead of into the current one. The caller
     // is responsible for clipping the overlay to its own region.
     bool on_top{};

@@ -234,8 +234,47 @@ if(MSVC)
     target_compile_options(anomaly_monkeys_audio PRIVATE /w)
 endif()
 
+# Liquid glass shaders live in src/ui/shaders and are compiled at build time into
+# bytecode headers, so the renderer never compiles HLSL at run time.
+file(GLOB ANOMALY_GLASS_FXC_CANDIDATES
+    "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64/fxc.exe")
+list(SORT ANOMALY_GLASS_FXC_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+set(ANOMALY_GLASS_FXC_HINTS "")
+foreach(candidate IN LISTS ANOMALY_GLASS_FXC_CANDIDATES)
+    get_filename_component(candidate_directory "${candidate}" DIRECTORY)
+    list(APPEND ANOMALY_GLASS_FXC_HINTS "${candidate_directory}")
+endforeach()
+find_program(ANOMALY_GLASS_FXC fxc
+    HINTS
+        "${CMAKE_WINDOWS_KITS_10_DIR}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+        ${ANOMALY_GLASS_FXC_HINTS}
+    REQUIRED)
+set(ANOMALY_GLASS_SHADER_DIR "${GENERATED_DIR}/anomaly/shaders")
+file(MAKE_DIRECTORY "${ANOMALY_GLASS_SHADER_DIR}")
+set(ANOMALY_GLASS_SHADER_HEADERS "")
+function(anomaly_compile_glass_shader source entry profile variable)
+    set(output "${ANOMALY_GLASS_SHADER_DIR}/${variable}.h")
+    add_custom_command(
+        OUTPUT "${output}"
+        COMMAND "${ANOMALY_GLASS_FXC}" /nologo /O3 /Ges /T ${profile} /E ${entry}
+                /Vn ${variable} /Fh "${output}" "${CMAKE_SOURCE_DIR}/${source}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/${source}"
+        COMMENT "Compiling ${source} (${entry})"
+        VERBATIM)
+    set(ANOMALY_GLASS_SHADER_HEADERS ${ANOMALY_GLASS_SHADER_HEADERS} "${output}" PARENT_SCOPE)
+endfunction()
+anomaly_compile_glass_shader(src/ui/shaders/glass_pass.hlsl vs_full vs_4_0 kGlassFullScreenVs)
+anomaly_compile_glass_shader(src/ui/shaders/glass_pass.hlsl ps_down ps_4_0 kGlassDownsamplePs)
+anomaly_compile_glass_shader(src/ui/shaders/glass_pass.hlsl ps_blur ps_4_0 kGlassBlurPs)
+anomaly_compile_glass_shader(src/ui/shaders/glass_surface.hlsl vs_quad vs_4_0 kGlassSurfaceVs)
+anomaly_compile_glass_shader(src/ui/shaders/glass_surface.hlsl ps_glass ps_4_0 kGlassSurfacePs)
+
 add_library(anomaly_imgui STATIC
+    ${ANOMALY_GLASS_SHADER_HEADERS}
+    src/ui/shaders/glass_pass.hlsl
+    src/ui/shaders/glass_surface.hlsl
     src/ui/host_ui_service.cpp
+    src/ui/liquid_glass.cpp
     src/ui/platform_ui_theme.cpp
     "${imgui_SOURCE_DIR}/imgui.cpp"
     "${imgui_SOURCE_DIR}/imgui_draw.cpp"
@@ -245,10 +284,15 @@ add_library(anomaly_imgui STATIC
     "${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp"
     "${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp"
 )
-target_include_directories(anomaly_imgui PUBLIC "${imgui_SOURCE_DIR}" PRIVATE include)
+target_include_directories(anomaly_imgui PUBLIC "${imgui_SOURCE_DIR}"
+    PRIVATE include "${GENERATED_DIR}")
 target_compile_definitions(anomaly_imgui PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_imgui PRIVATE /W3 /EHsc)
 target_link_libraries(anomaly_imgui PUBLIC d3d11 d3d12 dxgi dxguid)
+# The .hlsl files are listed for the IDE only; fxc builds them above.
+set_source_files_properties(
+    src/ui/shaders/glass_pass.hlsl src/ui/shaders/glass_surface.hlsl
+    PROPERTIES HEADER_FILE_ONLY TRUE)
 
 add_executable(proxy_generator tools/proxy_generator.cpp)
 target_compile_definitions(proxy_generator PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1056,6 +1100,17 @@ target_link_libraries(anomaly_test_host PRIVATE
     anomaly_i18n nlohmann_json::nlohmann_json Psapi)
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
+    # Headless probe for the liquid glass material on a D3D12 device: it renders
+    # one surface off screen and reads it back, so the in-game material can be
+    # checked without the game.
+    add_executable(anomaly_glass_probe apps/glass_probe/main.cpp)
+    set_target_properties(anomaly_glass_probe PROPERTIES OUTPUT_NAME "anomaly-glass-probe")
+    target_include_directories(anomaly_glass_probe PRIVATE include "${GENERATED_DIR}")
+    target_compile_definitions(anomaly_glass_probe PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_glass_probe PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_glass_probe PRIVATE anomaly_imgui d3d12 dxgi dxguid)
+
     add_executable(anomaly-platform-preview WIN32
         apps/render_fixture/platform_preview.cpp
         src/ui/platform_host.cpp

@@ -245,11 +245,21 @@ public:
                 static_cast<float>((request.tint_rgba >> 8U) & 0xffU) / 255.0F,
                 static_cast<float>((request.tint_rgba >> 16U) & 0xffU) / 255.0F,
                 static_cast<float>((request.tint_rgba >> 24U) & 0xffU) / 255.0F);
+            const ImU32 color = ImGui::ColorConvertFloat4ToU32(tint);
             if (request.rotation_degrees == 0.0F) {
-                draw_list->AddImage(texture_id, ImVec2(request.x, request.y),
-                    ImVec2(request.x + size.x, request.y + size.y),
-                    ImVec2(request.uv0_x, request.uv0_y), ImVec2(request.uv1_x, request.uv1_y),
-                    ImGui::ColorConvertFloat4ToU32(tint));
+                const ImVec2 minimum(request.x, request.y);
+                const ImVec2 maximum(request.x + size.x, request.y + size.y);
+                const ImVec2 uv_min(request.uv0_x, request.uv0_y);
+                const ImVec2 uv_max(request.uv1_x, request.uv1_y);
+                if (request.rounding > 0.0F) {
+                    // A wallpaper is the shell body's own paint, so it carries the
+                    // same continuous corners the veil is drawn with; sampling it
+                    // square left the shell looking rectangular in game.
+                    draw_list->AddImageRounded(
+                        texture_id, minimum, maximum, uv_min, uv_max, color, request.rounding);
+                    return true;
+                }
+                draw_list->AddImage(texture_id, minimum, maximum, uv_min, uv_max, color);
                 return true;
             }
             const anomaly::PlatformUiStickerPlacement placement{
@@ -261,8 +271,7 @@ public:
                 ImVec2(quad.x[0], quad.y[0]), ImVec2(quad.x[1], quad.y[1]),
                 ImVec2(quad.x[2], quad.y[2]), ImVec2(quad.x[3], quad.y[3]),
                 ImVec2(quad.u[0], quad.v[0]), ImVec2(quad.u[1], quad.v[1]),
-                ImVec2(quad.u[2], quad.v[2]), ImVec2(quad.u[3], quad.v[3]),
-                ImGui::ColorConvertFloat4ToU32(tint));
+                ImVec2(quad.u[2], quad.v[2]), ImVec2(quad.u[3], quad.v[3]), color);
             return true;
         } catch (...) {
             return false;

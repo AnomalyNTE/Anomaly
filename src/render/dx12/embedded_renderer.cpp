@@ -1,6 +1,7 @@
 #include "embedded_host_internal.hpp"
 #include "anomaly/host_ui_service.hpp"
 #include "anomaly/platform_ui_input_policy.hpp"
+#include "anomaly/liquid_glass.hpp"
 #include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/structured_logger.hpp"
 
@@ -952,6 +953,10 @@ bool InitializeGraphicsD3D12(EmbeddedState& state, IDXGISwapChain* swap_chain) {
     state.render_target_format = description.BufferDesc.Format;
     state.dx12_initialized = true;
     state.render_api = EmbeddedRenderApi::D3D12;
+    // Same material, recorded into this frame's command list. Optional: a
+    // failure leaves every surface on its neutral fallback fill.
+    static_cast<void>(anomaly::glass::InitializeRendererD3D12(
+        state.device, state.render_target_format, true));
     return CompleteGraphicsInitialization(state);
 }
 
@@ -1172,6 +1177,11 @@ bool InitializeGraphicsD3D11(EmbeddedState& state, IDXGISwapChain* swap_chain) {
     }
     state.dx11_initialized = true;
     state.render_api = EmbeddedRenderApi::D3D11;
+    // The material needs the device that owns the back buffer the overlay draws
+    // into. It is optional: without it every surface still draws its neutral
+    // fallback fill, so a failure here must not take the overlay down.
+    static_cast<void>(anomaly::glass::InitializeRenderer(
+        state.d3d11_device, state.d3d11_context));
     return CompleteGraphicsInitialization(state);
 }
 
@@ -1269,6 +1279,7 @@ bool ReleaseGraphics(
         }
     }
     RestoreEmbeddedInput(state);
+    anomaly::glass::ShutdownRenderer();
     if (state.dx12_initialized) {
         state.shader_descriptors.ReleaseReserved();
         ImGui_ImplDX12_Shutdown();
@@ -1504,6 +1515,9 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
             IM_COL32(0, 255, 255, 255));
     }
     ImGui::Render();
+    // Window surfaces are inserted before the draw data is submitted, so they
+    // land under each window's own content.
+    anomaly::glass::PrepareDrawData(ImGui::GetDrawData());
     NotifyRenderThread(*state, capture_generation);
     if (sampled) {
         state->performance.Record(
@@ -1563,6 +1577,8 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     state->command_list->OMSetRenderTargets(1, &frame.render_target, FALSE, nullptr);
     ID3D12DescriptorHeap* heaps[]{state->shader_heap};
     state->command_list->SetDescriptorHeaps(1, heaps);
+    anomaly::glass::BeginD3D12Frame(state->command_list, frame.back_buffer,
+        frame.render_target, state->shader_heap);
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), state->command_list);
     if (probing) {
         auto to_copy = Transition(

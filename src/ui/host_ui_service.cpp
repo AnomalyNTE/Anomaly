@@ -1,4 +1,5 @@
-#include "anomaly/host_ui_service.hpp"
+﻿#include "anomaly/host_ui_service.hpp"
+#include "anomaly/liquid_glass.hpp"
 #include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/thread_local_value.hpp"
 
@@ -220,16 +221,19 @@ bool DrawPluginWindowChromeButton(
     }
 
     const auto& theme = PlatformUiTheme();
-    const ImVec4 raised = ThemeColor(theme.button_hovered);
-    const ImVec4 active = ThemeColor(theme.button_active);
+    const ImVec4 raised = ThemeColorWithAlpha(theme.text, 0.09F);
+    const ImVec4 active = ThemeColorWithAlpha(theme.text, 0.15F);
     const ImVec4 accent = ThemeColor(theme.accent);
     const ImVec4 transparent(0.0F, 0.0F, 0.0F, 0.0F);
-    const ImVec4 background = held ? active : hovered ? raised
-        : selected ? ThemeColorWithAlpha(theme.accent, 0.16F) : transparent;
-    const ImVec4 text = !enabled ? ThemeColor(theme.text_muted)
-        : selected ? accent : ThemeColor(theme.text_muted);
+    static_cast<void>(raised);
+    static_cast<void>(active);
+    const ImVec4 background = selected ? ThemeColorWithAlpha(theme.accent, 0.16F) : transparent;
+    // Hover only brightens the glyph; the glass under it never changes.
+    const ImVec4 text = !enabled ? ThemeColorWithAlpha(theme.text_muted, 0.55F)
+        : selected ? accent
+        : hovered || held ? ThemeColor(theme.text) : ThemeColor(theme.text_muted);
     ImDrawList* const draw_list = window.DrawList;
-    draw_list->AddRectFilled(bounds.Min, bounds.Max, ToU32(background), 3.0F);
+    draw_list->AddRectFilled(bounds.Min, bounds.Max, ToU32(background), bounds.GetHeight() * 0.36F);
     const char* const glyph_text = PluginWindowChromeGlyphText(glyph);
     // Plugin content can select a CJK font, but these are host-owned icon glyphs.
     ImFont* const glyph_font = ImGui::GetIO().FontDefault;
@@ -265,11 +269,12 @@ bool DrawPluginWindowChrome(
     ImDrawList* const draw_list = window.DrawList;
     const ImRect header(origin, Offset(origin, size.x, kPluginWindowHeaderHeight));
     const auto& theme = PlatformUiTheme();
-    draw_list->AddRectFilled(header.Min, header.Max, ToU32(ThemeColor(theme.header_background)));
+    // The window body is glass, so the header is only a hairline under the
+    // title rather than a band of its own.
     draw_list->AddLine(
-        Offset(origin, 0.0F, kPluginWindowHeaderHeight - 1.0F),
-        Offset(origin, size.x, kPluginWindowHeaderHeight - 1.0F),
-        ToU32(ThemeColor(theme.border)));
+        Offset(origin, 14.0F, kPluginWindowHeaderHeight - 1.0F),
+        Offset(origin, size.x - 14.0F, kPluginWindowHeaderHeight - 1.0F),
+        ToU32(ThemeColorWithAlpha(theme.text, 0.10F)));
 
     const float close_x = size.x - kPluginWindowActionRightInset - kPluginWindowActionSize;
     const float pin_x = close_x - kPluginWindowActionGap - kPluginWindowActionSize;
@@ -452,8 +457,12 @@ int ANOMALY_CALL BeginWindow(
         // surface. The themed surface tokens are transparent while a background
         // image is active -- the shell paints its own veil instead -- and using
         // one here would leave the window with no background at all.
-        ImGui::PushStyleColor(
-            ImGuiCol_WindowBg, ThemeColor(anomaly::PlatformUiSurfaceColor()));
+        // With the glass renderer installed the body is drawn by the renderer
+        // under the window, so the fill stays empty.
+        const PlatformUiColor surface = anomaly::PlatformUiSurfaceColor();
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, glass::Active()
+            ? ImVec4(surface.red, surface.green, surface.blue, 0.0F)
+            : ThemeColor(surface));
         ImGui::PushStyleVar(
             ImGuiStyleVar_WindowPadding, ImVec2(kPluginWindowBodyPadding, kPluginWindowBodyPadding));
     }
@@ -461,6 +470,12 @@ int ANOMALY_CALL BeginWindow(
     if (!management_shell) {
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
+        glass::SurfaceOptions body;
+        body.variant = glass::Variant::Regular;
+        body.rounding = ImGui::GetStyle().WindowRounding;
+        body.clip = false;
+        body.tint_strength = glass::DarkAppearance() ? 0.58F : 0.48F;
+        glass::RegisterWindowSurface(body);
     }
     g_host_ui_window_scopes.Get().emplace_back();
     if (open != nullptr) *open = visible ? 1 : 0;
@@ -630,7 +645,7 @@ ImGuiTabItemFlags ToImGuiTabItemFlags(const std::uint32_t flags) noexcept {
 int ANOMALY_CALL BeginTabBar(
     void*, AnomalyStringViewV1 id, const std::uint32_t flags) {
     const std::string text = Copy(id);
-    return ImGui::BeginTabBar(text.c_str(), ToImGuiTabBarFlags(flags)) ? 1 : 0;
+    return glass::BeginTabBar(text.c_str(), ToImGuiTabBarFlags(flags)) ? 1 : 0;
 }
 
 int ANOMALY_CALL BeginTabItem(
@@ -653,13 +668,15 @@ int ANOMALY_CALL BeginTabItem(
 
 void ANOMALY_CALL EndTabItem(void*) { ImGui::EndTabItem(); }
 
-void ANOMALY_CALL EndTabBar(void*) { ImGui::EndTabBar(); }
+void ANOMALY_CALL EndTabBar(void*) { glass::EndTabBar(); }
 
 int ANOMALY_CALL Checkbox(void*, AnomalyStringViewV1 label, int* value) {
     if (value == nullptr) return 0;
     const std::string text = Copy(label);
     bool checked = *value != 0;
-    const bool changed = ImGui::Checkbox(text.c_str(), &checked);
+    // Every boolean the plugin ABI exposes is a switch, so plugin pages match
+    // the shell without a new entry point.
+    const bool changed = glass::Switch(text.c_str(), &checked);
     *value = checked ? 1 : 0;
     return changed ? 1 : 0;
 }
@@ -669,7 +686,7 @@ int ANOMALY_CALL SliderFloat(
     if (value == nullptr || !std::isfinite(minimum) || !std::isfinite(maximum) ||
         minimum >= maximum) return 0;
     const std::string text = Copy(label);
-    return ImGui::SliderFloat(text.c_str(), value, minimum, maximum) ? 1 : 0;
+    return glass::SliderFloat(text.c_str(), value, minimum, maximum) ? 1 : 0;
 }
 
 int ANOMALY_CALL SliderFloatEnabled(
@@ -679,7 +696,7 @@ int ANOMALY_CALL SliderFloatEnabled(
         minimum >= maximum) return 0;
     const std::string text = Copy(label);
     ImGui::BeginDisabled(enabled == 0);
-    const bool changed = ImGui::SliderFloat(text.c_str(), value, minimum, maximum);
+    const bool changed = glass::SliderFloat(text.c_str(), value, minimum, maximum);
     ImGui::EndDisabled();
     return enabled != 0 && changed ? 1 : 0;
 }

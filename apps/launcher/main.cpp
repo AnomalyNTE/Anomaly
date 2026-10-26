@@ -1,3 +1,4 @@
+#include "anomaly/liquid_glass.hpp"
 #include "anomaly/launcher/manual_map.hpp"
 #include "anomaly/launcher/configuration.hpp"
 #include "anomaly/launcher/proxy_installation.hpp"
@@ -1267,6 +1268,7 @@ void DrawLauncherThemeImages(
     // bands beside it are transparent margin, and painting either of them there would
     // fill those bands in.
     list->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+    const float body_rounding = ImGui::GetStyle().WindowRounding;
     if (!front) {
         // The window contributes no body of its own: it has no redirection bitmap, and
         // every panel fill is empty while a theme is active. The shell therefore paints
@@ -1275,7 +1277,7 @@ void DrawLauncherThemeImages(
         // instead of against the surface colour, and whatever sits behind the launcher
         // would show through the window.
         list->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
-            tint(ue5mem::PlatformUiSurfaceColor(), 1.0f));
+            tint(ue5mem::PlatformUiSurfaceColor(), 1.0f), body_rounding);
     }
     if (!front && graphics.theme_background != nullptr &&
         graphics.theme_background_width != 0 && graphics.theme_background_height != 0) {
@@ -1285,14 +1287,19 @@ void DrawLauncherThemeImages(
             static_cast<float>(graphics.theme_background_height),
             origin.x, origin.y, size.x, size.y);
         if (placement.Visible()) {
-            list->AddImage(
+            const bool covers_body = placement.x <= origin.x + 0.5f &&
+                placement.y <= origin.y + 0.5f &&
+                placement.x + placement.width >= origin.x + size.x - 0.5f &&
+                placement.y + placement.height >= origin.y + size.y - 0.5f;
+            list->AddImageRounded(
                 static_cast<ImTextureID>(
                     reinterpret_cast<std::uintptr_t>(graphics.theme_background.Get())),
                 ImVec2(placement.x, placement.y),
                 ImVec2(placement.x + placement.width, placement.y + placement.height),
                 ImVec2(placement.uv0_x, placement.uv0_y),
                 ImVec2(placement.uv1_x, placement.uv1_y),
-                tint(layout.background.tint, layout.background.opacity));
+                tint(layout.background.tint, layout.background.opacity),
+                covers_body ? body_rounding : 0.0f);
         }
     }
     // The shell paints one translucent veil between its wallpaper and its
@@ -1306,7 +1313,7 @@ void DrawLauncherThemeImages(
             wallpaper ? ue5mem::GetPlatformUiSurfaceAlpha() : 1.0f;
         if (veil_alpha > 0.0f) {
             list->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
-                tint(ue5mem::PlatformUiSurfaceColor(), veil_alpha));
+                tint(ue5mem::PlatformUiSurfaceColor(), veil_alpha), body_rounding);
         }
     }
     list->PopClipRect();
@@ -1504,7 +1511,9 @@ bool IconButton(const char* id, char32_t glyph, const char* tooltip, bool enable
     ImGui::PushID(id);
     ImGui::BeginDisabled(!enabled);
     const float extent = ButtonHeight(38.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, extent * 0.36f);
     const bool pressed = ImGui::Button("##icon", ImVec2(extent, extent));
+    ImGui::PopStyleVar();
     // The mark is centred by hand. These are private-use icon glyphs whose bearing
     // and advance are not symmetric, so leaving the centring to the text layout
     // puts them visibly off centre inside the frame.
@@ -1536,44 +1545,25 @@ bool CommandButton(
     const auto& theme = ue5mem::PlatformUiTheme();
     ImGui::PushID(id);
     ImGui::PushStyleColor(ImGuiCol_Button,
-        ThemeColor(primary ? theme.accent : theme.button));
+        primary ? ThemeColor(theme.accent) : ImVec4(0.0f, 0.0f, 0.0f, 0.07f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-        ThemeColor(primary ? theme.accent_hovered : theme.button_hovered));
+        primary ? ThemeColor(theme.accent_hovered) : ImVec4(0.0f, 0.0f, 0.0f, 0.11f));
     ImGui::PushStyleColor(
         ImGuiCol_ButtonActive,
-        ThemeColor(primary ? theme.accent_active : theme.button_active));
+        primary ? ThemeColor(theme.accent_active) : ImVec4(0.0f, 0.0f, 0.0f, 0.16f));
     // Plain black on the light themed surface. The palette's muted ink is tuned
     // for the shell's own panels; over a wallpaper and its veil it reads as washed
     // out to the point of being unreadable.
     ImGui::PushStyleColor(ImGuiCol_Text, primary
         ? ThemeColor(theme.inverse_text) : ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
     ImGui::BeginDisabled(!enabled);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, scaled_size.y * 0.36f);
     const bool pressed = ImGui::Button(text.c_str(), scaled_size);
+    ImGui::PopStyleVar();
     ImGui::EndDisabled();
     ImGui::PopStyleColor(4);
     ImGui::PopID();
     return pressed && enabled;
-}
-
-bool ModeButton(const char* id, const char* label, bool selected, float width) {
-    const auto& theme = ue5mem::PlatformUiTheme();
-    const ImVec2 size(Scale(width), ButtonHeight(38.0f));
-    const std::string text = Ellipsize(label,
-        (std::max)(0.0f, size.x - ImGui::GetStyle().FramePadding.x * 2.0f));
-    ImGui::PushID(id);
-    ImGui::PushStyleColor(
-        ImGuiCol_Button,
-        selected ? ThemeColorWithAlpha(theme.accent, 0.16f) : ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-        selected ? ThemeColorWithAlpha(theme.accent, 0.26f)
-                 : ThemeColor(theme.button_hovered));
-    // Selection is carried by the accent tint behind the label, so the label
-    // itself stays black and readable in both states.
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
-    const bool pressed = ImGui::Button(text.c_str(), size);
-    ImGui::PopStyleColor(3);
-    ImGui::PopID();
-    return pressed;
 }
 
 const char* Text(const anomaly::Translator& translator, anomaly::MessageId id) noexcept {
@@ -1625,14 +1615,13 @@ ImVec4 ProxyStateColor(anomaly::launcher::ProxyInstallationState state) {
 void DrawModes(
     LauncherController& controller, const LauncherSnapshot& snapshot,
     LauncherMode& mode, const anomaly::Translator& translator) {
-    const auto& theme = ue5mem::PlatformUiTheme();
     const bool proxy_enabled = snapshot.proxy.state ==
         anomaly::launcher::ProxyInstallationState::Enabled;
     if (proxy_enabled && mode == LauncherMode::Attach) {
         mode = LauncherMode::Proxy;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 9.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.toolbar_background));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::BeginChild(
         "LauncherModes", ImVec2(0.0f, Scale(kModeHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
@@ -1641,19 +1630,18 @@ void DrawModes(
         ImGui::TableSetupColumn("Client", ImGuiTableColumnFlags_WidthFixed, Scale(190.0f));
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        if (ModeButton("proxy-install", Text(translator,
-                anomaly::MessageId::LauncherModeProxyInstall),
-                mode == LauncherMode::Proxy, 126.0f)) {
-            mode = LauncherMode::Proxy;
+        const std::array<const char*, 2> labels{
+            Text(translator, anomaly::MessageId::LauncherModeProxyInstall),
+            Text(translator, anomaly::MessageId::LauncherModeLiveAttach)};
+        anomaly::glass::SegmentedOptions options;
+        options.height = 46.0f;
+        options.padding_x = 30.0f;
+        options.scale = g_launcher_dpi_scale;
+        options.disabled_mask = snapshot.busy || proxy_enabled ? 0b10U : 0U;
+        int selected = mode == LauncherMode::Attach ? 1 : 0;
+        if (anomaly::glass::SegmentedControl("launcher-modes", labels, selected, options)) {
+            mode = selected == 1 ? LauncherMode::Attach : LauncherMode::Proxy;
         }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(snapshot.busy || proxy_enabled);
-        if (ModeButton("live-attach", Text(translator,
-                anomaly::MessageId::LauncherModeLiveAttach),
-                mode == LauncherMode::Attach, 126.0f)) {
-            mode = LauncherMode::Attach;
-        }
-        ImGui::EndDisabled();
         // The client is always the mainland one. The switch that used to live in
         // the second column only ever had one useful setting, and NteClient's
         // default already is MainlandChina, so the column is simply gone.
@@ -2136,7 +2124,6 @@ void DrawLauncherTitleBar(
 void DrawLauncher(
     HWND window, Graphics& graphics, LauncherController& controller, LauncherMode& mode,
     const anomaly::Translator& translator) {
-    const auto& theme = ue5mem::PlatformUiTheme();
     const LauncherSnapshot snapshot = controller.Snapshot();
     ApplyLauncherTheme(snapshot.theme);
     UploadLauncherTheme(graphics, snapshot.theme);
@@ -2159,12 +2146,26 @@ void DrawLauncher(
     const ImVec2 root_origin = ImGui::GetWindowPos();
     const ImVec2 root_size = ImGui::GetWindowSize();
     DrawLauncherThemeImages(graphics, snapshot.theme, root_origin, root_size, false);
+    anomaly::glass::CaptureBackdrop(ImGui::GetWindowDrawList());
     DrawLauncherTitleBar(graphics, translator);
     DrawModes(controller, snapshot, mode, translator);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(16.0f, 16.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ThemeColor(theme.window_background));
+    // The body is one frosted card inset from the canvas edge, so the wallpaper
+    // and the stickers stay visible around it and refract through it.
+    {
+        const ImVec2 card_min(root_origin.x + Scale(14.0f), ImGui::GetCursorScreenPos().y);
+        const ImVec2 card_max(root_origin.x + root_size.x - Scale(14.0f),
+            root_origin.y + root_size.y - Scale(14.0f));
+        anomaly::glass::SurfaceOptions card;
+        card.variant = anomaly::glass::Variant::Regular;
+        card.rounding = Scale(20.0f);
+        card.scale = g_launcher_dpi_scale;
+        anomaly::glass::DrawSurface(ImGui::GetWindowDrawList(), card_min, card_max, card);
+        ImGui::SetCursorScreenPos(card_min);
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Scale(20.0f, 18.0f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::BeginChild(
-        "LauncherBody", ImVec2(0.0f, 0.0f),
+        "LauncherBody", ImVec2(root_size.x - Scale(28.0f), -Scale(14.0f)),
         ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
     if (mode == LauncherMode::Proxy) {
         DrawProxyMode(window, controller, snapshot, translator);
@@ -2272,6 +2273,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         g_graphics = nullptr;
         return 4;
     }
+    // Losing the glass renderer only costs the effect; every surface keeps a
+    // solid fallback.
+    // The launcher is a desktop window, not an overlay: its composition carries
+    // real alpha, and its material stays neutral rather than palette-tinted.
+    static_cast<void>(anomaly::glass::InitializeRenderer(
+        graphics.device.Get(), graphics.context.Get(), false));
+    ApplyLauncherDpiScale();
     LoadLogo(graphics);
     LauncherController controller(ExecutableDirectory());
     LauncherMode mode = LauncherMode::Proxy;
@@ -2302,6 +2310,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         graphics.context->OMSetRenderTargets(1, graphics.render_target.GetAddressOf(), nullptr);
         const float transparent_clear[4]{0.0f, 0.0f, 0.0f, 0.0f};
         graphics.context->ClearRenderTargetView(graphics.render_target.Get(), transparent_clear);
+        anomaly::glass::PrepareDrawData(ImGui::GetDrawData());
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         graphics.swap_chain->Present(1, 0);
         if (!window_shown) {
@@ -2320,6 +2329,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         }
     }
 
+    anomaly::glass::ShutdownRenderer();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();

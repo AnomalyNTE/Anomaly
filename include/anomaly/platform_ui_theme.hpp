@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <string_view>
 
+struct ImFont;
+
 namespace ue5mem {
 
 enum class PlatformUiPalette : std::uint8_t {
@@ -98,6 +100,11 @@ void ApplyPlatformUiStyle() noexcept;
 [[nodiscard]] bool ConfigurePlatformUiFontAtlas(
     const std::filesystem::path& runtime_root = {}) noexcept;
 [[nodiscard]] bool ApplyPlatformUiFontScale(float scale) noexcept;
+// The smallest baked host font whose pixel size is at least `scale` times the
+// base size, so large titles and icons are drawn from a crisp bake instead of
+// a magnified one. Draw with ImDrawList::AddText(font, size, ...).
+[[nodiscard]] ImFont* PlatformUiFontForScale(float scale) noexcept;
+[[nodiscard]] float PlatformUiBaseFontSize() noexcept;
 
 }  // namespace ue5mem
 
