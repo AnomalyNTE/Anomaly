@@ -494,35 +494,53 @@ enum class ShellGlyph : std::size_t {
     Info,
     Copy,
     Activity,
+    Star,
+    StarFilled,
     Count,
 };
+
+// The one codepoint table behind ShellGlyphText, so glyph drawing can also ask
+// for the font metrics of a specific icon.
+[[nodiscard]] const std::array<char32_t, static_cast<std::size_t>(ShellGlyph::Count)> &
+ShellGlyphCodepoints() {
+    static const std::array<char32_t, static_cast<std::size_t>(ShellGlyph::Count)> codepoints = [] {
+        std::array<char32_t, static_cast<std::size_t>(ShellGlyph::Count)> values{};
+        values[static_cast<std::size_t>(ShellGlyph::Package)] = 0xe7b8;
+        values[static_cast<std::size_t>(ShellGlyph::Layers)] = 0xe81e;
+        values[static_cast<std::size_t>(ShellGlyph::Shield)] = 0xea18;
+        values[static_cast<std::size_t>(ShellGlyph::Terminal)] = 0xe756;
+        values[static_cast<std::size_t>(ShellGlyph::Settings)] = 0xe713;
+        values[static_cast<std::size_t>(ShellGlyph::Refresh)] = 0xe72c;
+        values[static_cast<std::size_t>(ShellGlyph::More)] = 0xe712;
+        values[static_cast<std::size_t>(ShellGlyph::ChevronDown)] = 0xe70d;
+        values[static_cast<std::size_t>(ShellGlyph::ChevronUp)] = 0xe70e;
+        values[static_cast<std::size_t>(ShellGlyph::ChevronLeft)] = 0xe76b;
+        values[static_cast<std::size_t>(ShellGlyph::ChevronRight)] = 0xe76c;
+        values[static_cast<std::size_t>(ShellGlyph::Pin)] = 0xe718;
+        values[static_cast<std::size_t>(ShellGlyph::Search)] = 0xe721;
+        values[static_cast<std::size_t>(ShellGlyph::Close)] = 0xe711;
+        values[static_cast<std::size_t>(ShellGlyph::Play)] = 0xe768;
+        values[static_cast<std::size_t>(ShellGlyph::Stop)] = 0xe71a;
+        values[static_cast<std::size_t>(ShellGlyph::Eye)] = 0xe890;
+        values[static_cast<std::size_t>(ShellGlyph::EyeOff)] = 0xe8a9;
+        values[static_cast<std::size_t>(ShellGlyph::Check)] = 0xe73e;
+        values[static_cast<std::size_t>(ShellGlyph::Warning)] = 0xe7ba;
+        values[static_cast<std::size_t>(ShellGlyph::Info)] = 0xe946;
+        values[static_cast<std::size_t>(ShellGlyph::Copy)] = 0xe8c8;
+        values[static_cast<std::size_t>(ShellGlyph::Activity)] = 0xe9d9;
+        values[static_cast<std::size_t>(ShellGlyph::Star)] = 0xe734;
+        values[static_cast<std::size_t>(ShellGlyph::StarFilled)] = 0xe735;
+        return values;
+    }();
+    return codepoints;
+}
 
 [[nodiscard]] const char* ShellGlyphText(const ShellGlyph glyph) {
     static const std::array<std::string, static_cast<std::size_t>(ShellGlyph::Count)> glyphs = [] {
         std::array<std::string, static_cast<std::size_t>(ShellGlyph::Count)> values;
-        values[static_cast<std::size_t>(ShellGlyph::Package)] = EncodeUtf8(0xe7b8);
-        values[static_cast<std::size_t>(ShellGlyph::Layers)] = EncodeUtf8(0xe81e);
-        values[static_cast<std::size_t>(ShellGlyph::Shield)] = EncodeUtf8(0xea18);
-        values[static_cast<std::size_t>(ShellGlyph::Terminal)] = EncodeUtf8(0xe756);
-        values[static_cast<std::size_t>(ShellGlyph::Settings)] = EncodeUtf8(0xe713);
-        values[static_cast<std::size_t>(ShellGlyph::Refresh)] = EncodeUtf8(0xe72c);
-        values[static_cast<std::size_t>(ShellGlyph::More)] = EncodeUtf8(0xe712);
-        values[static_cast<std::size_t>(ShellGlyph::ChevronDown)] = EncodeUtf8(0xe70d);
-        values[static_cast<std::size_t>(ShellGlyph::ChevronUp)] = EncodeUtf8(0xe70e);
-        values[static_cast<std::size_t>(ShellGlyph::ChevronLeft)] = EncodeUtf8(0xe76b);
-        values[static_cast<std::size_t>(ShellGlyph::ChevronRight)] = EncodeUtf8(0xe76c);
-        values[static_cast<std::size_t>(ShellGlyph::Pin)] = EncodeUtf8(0xe718);
-        values[static_cast<std::size_t>(ShellGlyph::Search)] = EncodeUtf8(0xe721);
-        values[static_cast<std::size_t>(ShellGlyph::Close)] = EncodeUtf8(0xe711);
-        values[static_cast<std::size_t>(ShellGlyph::Play)] = EncodeUtf8(0xe768);
-        values[static_cast<std::size_t>(ShellGlyph::Stop)] = EncodeUtf8(0xe71a);
-        values[static_cast<std::size_t>(ShellGlyph::Eye)] = EncodeUtf8(0xe890);
-        values[static_cast<std::size_t>(ShellGlyph::EyeOff)] = EncodeUtf8(0xe8a9);
-        values[static_cast<std::size_t>(ShellGlyph::Check)] = EncodeUtf8(0xe73e);
-        values[static_cast<std::size_t>(ShellGlyph::Warning)] = EncodeUtf8(0xe7ba);
-        values[static_cast<std::size_t>(ShellGlyph::Info)] = EncodeUtf8(0xe946);
-        values[static_cast<std::size_t>(ShellGlyph::Copy)] = EncodeUtf8(0xe8c8);
-        values[static_cast<std::size_t>(ShellGlyph::Activity)] = EncodeUtf8(0xe9d9);
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            values[index] = EncodeUtf8(ShellGlyphCodepoints()[index]);
+        }
         return values;
     }();
     return glyphs[static_cast<std::size_t>(glyph)].c_str();
@@ -531,6 +549,14 @@ enum class ShellGlyph : std::size_t {
 constexpr std::string_view kPlatformUiWindowOwner = "anomaly.host.platform-ui";
 constexpr std::string_view kPlatformUiWindowId = "management-shell";
 constexpr std::uint64_t kPlatformUiWindowGeneration = 1;
+constexpr float kPluginFavoriteButtonWidth = 30.0f;
+constexpr float kPluginActionGap = 6.0f;
+// The favorite marker next to a plugin name is a fraction of the base font so
+// it reads as a badge on the label rather than a second title.
+constexpr float kFavoriteStarScale = 0.85f;
+// The detail toggle keeps the 30x30 hit box but draws a noticeably larger star,
+// because the icon font's ink is smaller than its advance.
+constexpr float kFavoriteStarButtonScale = 1.45f;
 constexpr int kPlatformLogoResourceId = 101;
 constexpr float kPlatformHeaderHeight = 52.0f;
 constexpr float kPlatformHeaderLogoSize = 30.0f;
@@ -1054,6 +1080,9 @@ public:
         // Keep route, tab and selection outside the renderer-owned ImGui
         // context so a device rebuild does not reset the management surface.
         model_.State() = std::move(state);
+        // The manager owns the persisted favorites, so a shell that is created
+        // after a restart starts from what the user marked earlier.
+        model_.State().favorite_plugin_ids = plugins_.FavoritePlugins();
         SyncInputBuffers();
         anomaly::UiTextureRequest logo_request;
         logo_request.encoded_bytes = LoadEmbeddedLogoBytes();
@@ -2210,6 +2239,7 @@ private:
         case Filter::Running: return Text(anomaly::MessageId::PluginsFilterRunning);
         case Filter::Disabled: return Text(anomaly::MessageId::PluginsFilterDisabled);
         case Filter::Issues: return Text(anomaly::MessageId::PluginsFilterIssues);
+        case Filter::Favorites: return Text(anomaly::MessageId::PluginsFilterFavorites);
         }
         return Text(anomaly::MessageId::CommonUnknown);
     }
@@ -3089,6 +3119,26 @@ private:
         return pressed;
     }
 
+    // Icon glyphs are baked with a forced advance so they line up inside text,
+    // which leaves a plain button label off-centre. Centre the glyph ink box
+    // itself inside `min`..`max` instead.
+    static void DrawGlyphCentred(const ShellGlyph glyph, const ImVec2 min, const ImVec2 max,
+        const ImU32 color, const float size = 0.0f) {
+        ImFont* const font = ImGui::GetFont();
+        if (font == nullptr) return;
+        const ImFontGlyph* const metrics = font->FindGlyph(static_cast<ImWchar>(
+            ShellGlyphCodepoints()[static_cast<std::size_t>(glyph)]));
+        const float glyph_size = size > 0.0f ? size : ImGui::GetFontSize();
+        if (metrics == nullptr || font->FontSize <= 0.0f || glyph_size <= 0.0f) return;
+        const float scale = glyph_size / font->FontSize;
+        const float ink_width = (metrics->X1 - metrics->X0) * scale;
+        const float ink_height = (metrics->Y1 - metrics->Y0) * scale;
+        ImGui::GetWindowDrawList()->AddText(font, glyph_size,
+            ImVec2(min.x + (max.x - min.x - ink_width) * 0.5f - metrics->X0 * scale,
+                min.y + (max.y - min.y - ink_height) * 0.5f - metrics->Y0 * scale),
+            color, ShellGlyphText(glyph));
+    }
+
     [[nodiscard]] bool DrawShellIconButton(const char* id, const ShellGlyph glyph,
         const char* tooltip, const bool enabled = true, const bool selected = false) const {
         const auto& theme = anomaly::PlatformUiTheme();
@@ -3097,18 +3147,24 @@ private:
         const bool pointer_over = enabled && ImGui::IsWindowHovered() &&
             ImGui::IsMouseHoveringRect(cursor, Offset(cursor, Scaled(30.0f), Scaled(30.0f)));
         const ImVec4 fill = selected ? ThemeColorWithAlpha(theme.accent, 0.24f) : kClear;
+        ImVec4 text_color = selected || pointer_over
+            ? ThemeColor(theme.text) : ThemeColor(theme.text_muted);
+        if (!enabled) text_color.w *= ImGui::GetStyle().DisabledAlpha;
         ImGui::PushStyleColor(ImGuiCol_Button, fill);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fill);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, fill);
-        ImGui::PushStyleColor(ImGuiCol_Text, selected || pointer_over
-            ? ThemeColor(theme.text) : ThemeColor(theme.text_muted));
+        ImGui::PushStyleColor(ImGuiCol_Text, kClear);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(10.0f));
         ImGui::BeginDisabled(!enabled);
-        const bool pressed = ImGui::Button(ShellGlyphText(glyph), Scaled(30.0f, 30.0f));
+        const bool pressed = ImGui::Button("##icon", Scaled(30.0f, 30.0f));
         ImGui::EndDisabled();
         const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        const ImVec2 item_min = ImGui::GetItemRectMin();
+        const ImVec2 item_max = ImGui::GetItemRectMax();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(4);
+        DrawGlyphCentred(glyph, item_min, item_max,
+            ImGui::ColorConvertFloat4ToU32(text_color));
         ImGui::PopID();
         if (hovered && tooltip != nullptr) ImGui::SetTooltip("%s", tooltip);
         return pressed && enabled;
@@ -3235,13 +3291,17 @@ private:
             ImGui::CalcTextSize(label).x + Scaled(14.0f);
     }
 
+    [[nodiscard]] static float PluginStateBadgeHeight() noexcept {
+        return Scaled(20.0f);
+    }
+
     void DrawPluginStateBadge(const ImVec2 position,
         const anomaly::PlatformUiPluginState state) const {
         const char* const glyph = ShellGlyphText(StateGlyph(state));
         const char* const label = DisplayPluginState(state);
         const float glyph_width = ImGui::CalcTextSize(glyph).x;
         const float width = PluginStateBadgeWidth(state);
-        const float height = Scaled(20.0f);
+        const float height = PluginStateBadgeHeight();
         const ImVec4 color = PluginStateColor(state);
         ImDrawList* const draw_list = ImGui::GetWindowDrawList();
         draw_list->AddRectFilled(position, Offset(position, width, height),
@@ -3913,9 +3973,9 @@ private:
         tab_options.scale = PlatformUiScale();
         tab_options.padding_x = IsCompact() ? 10.0f : 16.0f;
         const float tabs_width = anomaly::glass::SegmentedControlWidth(tab_labels, tab_options);
-        const std::array<const char*, 4> filter_labels{FilterLabel(Filter::All),
-            FilterLabel(Filter::Running), FilterLabel(Filter::Disabled),
-            FilterLabel(Filter::Issues)};
+        const std::array<const char*, 5> filter_labels{FilterLabel(Filter::All),
+            FilterLabel(Filter::Favorites), FilterLabel(Filter::Running),
+            FilterLabel(Filter::Disabled), FilterLabel(Filter::Issues)};
         const float filter_width = IsCompact() ? Scaled(100.0f)
             : anomaly::glass::SegmentedControlWidth(filter_labels, FilterSegmentOptions());
         const float sort_width = Scaled(IsCompact() ? 86.0f : 112.0f);
@@ -4041,8 +4101,9 @@ private:
 
     void DrawPluginFilterControl(const bool compact_control) {
         auto& state = model_.State();
-        constexpr std::array<Filter, 4> filters{
-            Filter::All, Filter::Running, Filter::Disabled, Filter::Issues};
+        constexpr std::array<Filter, 5> filters{
+            Filter::All, Filter::Favorites, Filter::Running, Filter::Disabled,
+            Filter::Issues};
         if (compact_control) {
             ImGui::SetNextItemWidth(Scaled(100.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Scaled(11.0f));
@@ -4064,12 +4125,23 @@ private:
             DrawTooltip(Text(anomaly::MessageId::PluginsFilterAll));
             return;
         }
-        const std::array<const char*, 4> labels{FilterLabel(filters[0]),
-            FilterLabel(filters[1]), FilterLabel(filters[2]), FilterLabel(filters[3])};
-        int selected = static_cast<int>(state.plugin_filter);
+        const std::array<const char*, 5> labels{FilterLabel(filters[0]),
+            FilterLabel(filters[1]), FilterLabel(filters[2]), FilterLabel(filters[3]),
+            FilterLabel(filters[4])};
+        // The segmented control reports the displayed slot, and the slots no
+        // longer follow the enum order, so both directions go through `filters`.
+        int selected = 0;
+        for (std::size_t index = 0; index < filters.size(); ++index) {
+            if (filters[index] == state.plugin_filter) {
+                selected = static_cast<int>(index);
+                break;
+            }
+        }
         if (anomaly::glass::SegmentedControl(
                 "plugin-filter", labels, selected, FilterSegmentOptions())) {
-            state.plugin_filter = static_cast<Filter>(selected);
+            if (selected >= 0 && static_cast<std::size_t>(selected) < filters.size()) {
+                state.plugin_filter = filters[static_cast<std::size_t>(selected)];
+            }
             anomaly::ReconcileUiStateSelection(model_.Snapshot(), state, developer_mode_);
         }
     }
@@ -4077,7 +4149,7 @@ private:
     [[nodiscard]] static anomaly::glass::SegmentedOptions FilterSegmentOptions() noexcept {
         anomaly::glass::SegmentedOptions options;
         options.height = 36.0f;
-        options.padding_x = 13.0f;
+        options.padding_x = 11.0f;
         options.scale = PlatformUiScale();
         options.glass_track = false;
         return options;
@@ -4231,6 +4303,47 @@ private:
         SubmitIntent(std::move(intent));
     }
 
+    [[nodiscard]] bool IsPluginFavorite(
+        const anomaly::InstalledPluginView& plugin) const {
+        return model_.State().favorite_plugin_ids.contains(plugin.id);
+    }
+
+    // The favorite toggle is a bare star: no tile, no fill. Only the star's own
+    // colour tells the two states apart, so it never changes the action row's
+    // weight the way a filled button would.
+    [[nodiscard]] bool DrawFavoriteToggle(const char* id, const bool favorite) const {
+        const auto& theme = anomaly::PlatformUiTheme();
+        ImGui::PushID(id);
+        const bool pressed = ImGui::InvisibleButton(
+            "##favorite", Scaled(kPluginFavoriteButtonWidth, 30.0f));
+        const bool hovered = ImGui::IsItemHovered();
+        const ImVec4 color = favorite
+            ? ThemeColor(hovered ? theme.accent_hovered : theme.accent)
+            : ThemeColor(hovered ? theme.text : theme.text_muted);
+        DrawGlyphCentred(favorite ? ShellGlyph::StarFilled : ShellGlyph::Star,
+            ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+            ImGui::ColorConvertFloat4ToU32(color),
+            ImGui::GetFontSize() * kFavoriteStarButtonScale);
+        ImGui::PopID();
+        if (hovered) {
+            ImGui::SetTooltip("%s", Text(favorite
+                ? anomaly::MessageId::PluginsRemoveFavorite
+                : anomaly::MessageId::PluginsAddFavorite));
+        }
+        return pressed;
+    }
+
+    // Favorites are view state the shell owns: the set decides the favorites
+    // filter immediately, and the manager persists it with the other UI state.
+    void TogglePluginFavorite(const anomaly::InstalledPluginView& plugin) {
+        auto& favorites = model_.State().favorite_plugin_ids;
+        const bool favorite = !favorites.contains(plugin.id);
+        if (favorite) favorites.insert(plugin.id);
+        else favorites.erase(plugin.id);
+        plugins_.SetPluginFavorite(plugin.id, favorite);
+        anomaly::ReconcileUiStateSelection(model_.Snapshot(), model_.State(), developer_mode_);
+    }
+
     void DrawShellPluginRow(const anomaly::InstalledPluginView& plugin,
         const std::string_view previous_plugin_id, const std::string_view next_plugin_id) {
         const float height = Scaled(IsCompact() ? 60.0f : 64.0f);
@@ -4319,9 +4432,26 @@ private:
         const float status_x = toggle_x - Scaled(27.0f);
         const float text_width = std::max(
             Scaled(20.0f), origin.x + status_x - text_x - Scaled(8.0f));
-        const std::string name = Ellipsize(plugin.name.empty() ? plugin.id : plugin.name, text_width);
-        draw_list->AddText(ImVec2(text_x, origin.y + Scaled(12.0f)),
+        // A favorited plugin carries a small star after its name; the marker
+        // takes its room out of the name so the two can never overlap.
+        const bool favorite = IsPluginFavorite(plugin);
+        const float star_size = ImGui::GetFontSize() * kFavoriteStarScale;
+        const ImVec2 star_extent = ImGui::GetFont()->CalcTextSizeA(
+            star_size, FLT_MAX, 0.0f, ShellGlyphText(ShellGlyph::StarFilled));
+        const float star_room = favorite ? star_extent.x + Scaled(4.0f) : 0.0f;
+        const std::string name = Ellipsize(plugin.name.empty() ? plugin.id : plugin.name,
+            std::max(Scaled(20.0f), text_width - star_room));
+        const ImVec2 name_position(text_x, origin.y + Scaled(12.0f));
+        draw_list->AddText(name_position,
             ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)), name.c_str());
+        if (favorite) {
+            const ImVec2 star_min(
+                name_position.x + ImGui::CalcTextSize(name.c_str()).x + Scaled(4.0f),
+                name_position.y);
+            DrawGlyphCentred(ShellGlyph::StarFilled, star_min,
+                Offset(star_min, star_extent.x, ImGui::GetTextLineHeight()),
+                ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.accent)), star_size);
+        }
         if (!plugin.author.empty() || !plugin.version.empty()) {
             std::string metadata;
             if (!plugin.author.empty()) metadata = plugin.author;
@@ -4422,6 +4552,13 @@ private:
             if (frozen) DrawTooltip(Text(anomaly::MessageId::OperationInProgress));
         }
 
+        ImGui::Separator();
+        const bool favorite = IsPluginFavorite(plugin);
+        if (ImGui::MenuItem(Text(favorite ? anomaly::MessageId::PluginsRemoveFavorite
+                                         : anomaly::MessageId::PluginsAddFavorite))) {
+            TogglePluginFavorite(plugin);
+        }
+
         if (repository_plugin != nullptr && !repository_removed) {
             ImGui::Separator();
             if (ImGui::MenuItem(Text(anomaly::MessageId::CommonUninstall),
@@ -4478,8 +4615,10 @@ private:
             : state == anomaly::PlatformUiPluginState::DependencyBlocked
                 ? Text(anomaly::MessageId::PluginsViewStatus)
                 : Text(anomaly::MessageId::CommonDisable);
-        float width = std::max(
-            Scaled(74.0f), ImGui::CalcTextSize(primary_label).x + Scaled(38.0f));
+        // The favorite toggle leads the action row, immediately left of the
+        // primary start/enable action.
+        float width = Scaled(kPluginFavoriteButtonWidth) + Scaled(kPluginActionGap) +
+            std::max(Scaled(74.0f), ImGui::CalcTextSize(primary_label).x + Scaled(38.0f));
         const bool show_reload = ShowPluginReloadAction(plugin);
         if (show_reload) width += Scaled(compact_secondary ? 36.0f : 82.0f);
         const auto* repository_plugin = RepositoryPlugin(plugin.id);
@@ -4533,8 +4672,14 @@ private:
         ImGui::SetWindowFontScale(1.15f);
         ImGui::TextUnformatted(name.c_str());
         ImGui::SetWindowFontScale(1.0f);
-        DrawPluginStateBadge(ScaledOffset(
-            ImGui::GetItemRectMax(), 8.0f, -20.0f), plugin.UiState());
+        // Centring the pill on the name line box keeps its text on the same
+        // baseline as the label; hanging it from the bottom edge left it high.
+        const ImVec2 name_rect_min = ImGui::GetItemRectMin();
+        const ImVec2 name_rect_max = ImGui::GetItemRectMax();
+        DrawPluginStateBadge(ImVec2(name_rect_max.x + Scaled(8.0f),
+            (name_rect_min.y + name_rect_max.y) * 0.5f -
+                PluginStateBadgeHeight() * 0.5f),
+            plugin.UiState());
         if (!plugin.author.empty() || !plugin.version.empty()) {
             std::string metadata = plugin.author;
             if (!plugin.version.empty()) {
@@ -4626,7 +4771,15 @@ private:
                 : PluginToggleAllowed(plugin);
         const float primary_width = std::max(
             Scaled(74.0f), ImGui::CalcTextSize(primary_label).x + Scaled(38.0f));
+        const float favorite_width = Scaled(kPluginFavoriteButtonWidth);
+        const float favorite_gap = Scaled(kPluginActionGap);
+        const float favorite_block = favorite_width + favorite_gap;
         ImGui::SetCursorScreenPos(origin);
+        const bool favorite = IsPluginFavorite(plugin);
+        if (DrawFavoriteToggle("detail-favorite", favorite)) {
+            TogglePluginFavorite(plugin);
+        }
+        ImGui::SetCursorScreenPos(Offset(origin, favorite_block, 0.0f));
         if (DrawShellCommandButton("detail-primary", primary_label, primary_glyph, true,
                 primary_allowed, ImVec2(primary_width, Scaled(30.0f)))) {
             if (can_open) submit_visibility();
@@ -4642,7 +4795,8 @@ private:
         const bool show_reload = ShowPluginReloadAction(plugin);
         const bool reload_allowed = !frozen && plugin.has_runtime_view;
         const float reload_width = Scaled(compact_secondary ? 30.0f : 76.0f);
-        if (show_reload && primary_width + Scaled(6.0f) + reload_width <= available) {
+        if (show_reload &&
+            favorite_block + primary_width + Scaled(6.0f) + reload_width <= available) {
             ImGui::SameLine(0.0f, Scaled(6.0f));
             const bool reload_pressed = compact_secondary
                 ? DrawShellIconButton("detail-reload", ShellGlyph::Refresh,
@@ -4656,7 +4810,7 @@ private:
         }
         const bool show_uninstall = repository_plugin != nullptr && !repository_removed;
         const bool show_more = developer_mode_ || show_uninstall;
-        const float used_width = primary_width +
+        const float used_width = favorite_block + primary_width +
             (show_reload ? Scaled(6.0f) + reload_width : 0.0f);
         if (show_more && used_width + Scaled(34.0f) <= available) {
             ImGui::SameLine(0.0f, Scaled(4.0f));

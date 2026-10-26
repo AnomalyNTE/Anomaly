@@ -429,12 +429,14 @@ bool MatchesPluginSearch(const InstalledPluginView& plugin, std::string_view sea
 }
 
 bool MatchesPluginFilter(
-    const InstalledPluginView& plugin, PlatformUiPluginFilter filter) noexcept {
+    const InstalledPluginView& plugin, PlatformUiPluginFilter filter,
+    const std::unordered_set<std::string>& favorites) noexcept {
     switch (filter) {
     case PlatformUiPluginFilter::All: return true;
     case PlatformUiPluginFilter::Running: return plugin.IsRunning();
     case PlatformUiPluginFilter::Disabled: return plugin.IsDisabled();
     case PlatformUiPluginFilter::Issues: return plugin.HasIssue();
+    case PlatformUiPluginFilter::Favorites: return favorites.contains(plugin.id);
     }
     return false;
 }
@@ -444,12 +446,14 @@ std::vector<InstalledPluginView> FilterAndSortPlugins(
     std::string_view search,
     PlatformUiPluginFilter filter,
     PlatformUiPluginSort sort,
-    bool include_developer) {
+    bool include_developer,
+    const std::unordered_set<std::string>& favorites) {
     std::vector<InstalledPluginView> result;
     result.reserve(plugins.size());
     for (const auto& plugin : plugins) {
         if (!include_developer && plugin.audience == PluginAudience::Developer) continue;
-        if (MatchesPluginSearch(plugin, search) && MatchesPluginFilter(plugin, filter)) {
+        if (MatchesPluginSearch(plugin, search) &&
+            MatchesPluginFilter(plugin, filter, favorites)) {
             result.push_back(plugin);
         }
     }
@@ -467,9 +471,10 @@ std::vector<std::string> FilteredPluginIds(
     std::string_view search,
     PlatformUiPluginFilter filter,
     PlatformUiPluginSort sort,
-    bool include_developer) {
+    bool include_developer,
+    const std::unordered_set<std::string>& favorites) {
     const auto filtered = FilterAndSortPlugins(
-        plugins, search, filter, sort, include_developer);
+        plugins, search, filter, sort, include_developer, favorites);
     std::vector<std::string> result;
     result.reserve(filtered.size());
     for (const auto& plugin : filtered) result.push_back(plugin.id);
@@ -482,13 +487,14 @@ std::size_t PlatformUiPluginFilterCounts::For(PlatformUiPluginFilter filter) con
     case PlatformUiPluginFilter::Running: return running;
     case PlatformUiPluginFilter::Disabled: return disabled;
     case PlatformUiPluginFilter::Issues: return issues;
+    case PlatformUiPluginFilter::Favorites: return favorites;
     }
     return 0;
 }
 
 PlatformUiPluginFilterCounts CountFilteredPlugins(
     const std::vector<InstalledPluginView>& plugins, std::string_view search,
-    bool include_developer) {
+    bool include_developer, const std::unordered_set<std::string>& favorites) {
     PlatformUiPluginFilterCounts result;
     for (const auto& plugin : plugins) {
         if (!include_developer && plugin.audience == PluginAudience::Developer) continue;
@@ -497,6 +503,7 @@ PlatformUiPluginFilterCounts CountFilteredPlugins(
         if (plugin.IsRunning()) ++result.running;
         if (plugin.IsDisabled()) ++result.disabled;
         if (plugin.HasIssue()) ++result.issues;
+        if (favorites.contains(plugin.id)) ++result.favorites;
     }
     return result;
 }
@@ -517,7 +524,7 @@ void ReconcileUiStateSelection(
     bool include_developer) {
     const auto sorted = FilterAndSortPlugins(
         snapshot.installed_plugins, state.search, state.plugin_filter, state.plugin_sort,
-        include_developer);
+        include_developer, state.favorite_plugin_ids);
     state.selected_plugin_id = ReconcilePluginSelection(sorted, state.selected_plugin_id);
 }
 
@@ -953,13 +960,15 @@ void PlatformUiModel::Publish(PlatformUiSnapshot snapshot) {
 std::vector<InstalledPluginView> PlatformUiModel::VisiblePlugins(
     bool include_developer) const {
     return FilterAndSortPlugins(snapshot_.installed_plugins, state_.search,
-        state_.plugin_filter, state_.plugin_sort, include_developer);
+        state_.plugin_filter, state_.plugin_sort, include_developer,
+        state_.favorite_plugin_ids);
 }
 
 PlatformUiPluginFilterCounts PlatformUiModel::FilterCounts(
     bool include_developer) const {
     return CountFilteredPlugins(
-        snapshot_.installed_plugins, state_.search, include_developer);
+        snapshot_.installed_plugins, state_.search, include_developer,
+        state_.favorite_plugin_ids);
 }
 
 PlatformUiIntent PlatformUiModel::NewIntent(

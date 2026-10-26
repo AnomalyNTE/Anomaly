@@ -297,19 +297,22 @@ std::string Utf8(const std::filesystem::path& path) {
 constexpr std::uintmax_t kMaximumUiWindowStateFileBytes = 2U * 1024U * 1024U;
 constexpr std::size_t kMaximumUiPersistentWindows = 10000U;
 constexpr std::size_t kMaximumPersistentPluginWindows = 10000U;
+constexpr std::size_t kMaximumPersistentPluginFavorites = 10000U;
 constexpr std::size_t kMaximumPluginIdBytes = 255U;
 constexpr auto kUiWindowStateSaveInterval = std::chrono::milliseconds(500);
 
 struct PersistentUiState final {
     std::vector<anomaly::UiWindowPersistentState> windows;
     std::unordered_map<std::string, bool> plugin_windows;
+    std::unordered_set<std::string> favorites;
 };
 
 std::string SerializeUiWindowState(
     const std::vector<anomaly::UiWindowPersistentState>& windows,
-    const std::unordered_map<std::string, bool>& plugin_windows) {
+    const std::unordered_map<std::string, bool>& plugin_windows,
+    const std::unordered_set<std::string>& favorites) {
     nlohmann::json document{{"schemaVersion", 1}, {"windows", nlohmann::json::array()},
-        {"pluginWindows", nlohmann::json::array()}};
+        {"pluginWindows", nlohmann::json::array()}, {"favorites", nlohmann::json::array()}};
     for (const anomaly::UiWindowPersistentState& window : windows) {
         document["windows"].push_back({
             {"stableId", window.stable_id},
@@ -329,6 +332,11 @@ std::string SerializeUiWindowState(
         document["pluginWindows"].push_back({
             {"pluginId", plugin_id},
             {"visible", visible}});
+    }
+    std::vector<std::string> sorted_favorites(favorites.begin(), favorites.end());
+    std::ranges::sort(sorted_favorites);
+    for (const std::string& plugin_id : sorted_favorites) {
+        document["favorites"].push_back(plugin_id);
     }
     return document.dump(2) + '\n';
 }
@@ -378,6 +386,20 @@ PersistentUiState ParseUiWindowState(
         if (plugin_id.empty() || plugin_id.size() > kMaximumPluginIdBytes ||
             !result.plugin_windows.emplace(std::move(plugin_id), visible).second) {
             throw std::runtime_error("plugin window state value is invalid");
+        }
+    }
+    if (!document.contains("favorites")) return result;
+    const nlohmann::json& favorites = document["favorites"];
+    if (!favorites.is_array() || favorites.size() > kMaximumPersistentPluginFavorites) {
+        throw std::runtime_error("plugin favorites collection is invalid");
+    }
+    result.favorites.reserve(favorites.size());
+    for (const nlohmann::json& item : favorites) {
+        if (!item.is_string()) throw std::runtime_error("plugin favorite record is invalid");
+        std::string plugin_id = item.get<std::string>();
+        if (plugin_id.empty() || plugin_id.size() > kMaximumPluginIdBytes ||
+            !result.favorites.insert(std::move(plugin_id)).second) {
+            throw std::runtime_error("plugin favorite value is invalid");
         }
     }
     return result;
@@ -5111,10 +5133,14 @@ void PluginManager::LoadPersistentUiWindowState() {
             throw std::runtime_error("UI window state values are invalid");
         }
         ui_window_state_last_document_ = SerializeUiWindowState(
-            state.windows, state.plugin_windows);
+            state.windows, state.plugin_windows, state.favorites);
         {
             std::scoped_lock lock(plugin_window_visibility_mutex_);
             plugin_window_visibility_ = std::move(state.plugin_windows);
+        }
+        {
+            std::scoped_lock lock(favorite_plugins_mutex_);
+            favorite_plugins_ = std::move(state.favorites);
         }
     } catch (const std::exception& exception) {
         Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "UI window state load failed: " + std::string(exception.what()));
@@ -5136,8 +5162,13 @@ void PluginManager::SavePersistentUiWindowState(const bool force) noexcept {
             std::scoped_lock visibility_lock(plugin_window_visibility_mutex_);
             plugin_windows = plugin_window_visibility_;
         }
+        std::unordered_set<std::string> favorites;
+        {
+            std::scoped_lock favorites_lock(favorite_plugins_mutex_);
+            favorites = favorite_plugins_;
+        }
         const std::string document = SerializeUiWindowState(
-            ui_resources_->ExportPersistentWindowState(), plugin_windows);
+            ui_resources_->ExportPersistentWindowState(), plugin_windows, favorites);
         if (document == ui_window_state_last_document_) {
             ui_window_state_last_save_ = now;
             return;
@@ -5255,6 +5286,25 @@ void PluginManager::SetPersistentPluginWindowVisibility(
         plugin_window_visibility_.insert_or_assign(std::string(plugin_id), visible);
     } catch (...) {
     }
+}
+
+void PluginManager::SetPluginFavorite(
+    const std::string_view plugin_id, const bool favorite) noexcept {
+    try {
+        if (plugin_id.empty() || plugin_id.size() > kMaximumPluginIdBytes) return;
+        std::scoped_lock lock(favorite_plugins_mutex_);
+        if (favorite) {
+            favorite_plugins_.insert(std::string(plugin_id));
+        } else {
+            favorite_plugins_.erase(std::string(plugin_id));
+        }
+    } catch (...) {
+    }
+}
+
+std::unordered_set<std::string> PluginManager::FavoritePlugins() const {
+    std::scoped_lock lock(favorite_plugins_mutex_);
+    return favorite_plugins_;
 }
 
 void PluginManager::GameUpdate(double delta_seconds) {

@@ -40,6 +40,7 @@ enum class PlatformUiPluginFilter : std::uint8_t {
     Running,
     Disabled,
     Issues,
+    Favorites,
 };
 
 enum class PlatformUiPluginSort : std::uint8_t {
@@ -189,6 +190,9 @@ struct PlatformUiState final {
     std::string selected_plugin_id;
     std::string diagnostics_plugin_id;
     std::string diagnostics_log_filter;
+    // The favorites filter is evaluated against this set, so the shell keeps it
+    // beside the other view state instead of inside every plugin view.
+    std::unordered_set<std::string> favorite_plugin_ids;
 };
 
 struct PlatformUiIntent final {
@@ -357,32 +361,37 @@ struct PlatformUiIntentSubmission final {
 [[nodiscard]] bool MatchesPluginSearch(
     const InstalledPluginView& plugin, std::string_view search) noexcept;
 [[nodiscard]] bool MatchesPluginFilter(
-    const InstalledPluginView& plugin, PlatformUiPluginFilter filter) noexcept;
+    const InstalledPluginView& plugin, PlatformUiPluginFilter filter,
+    const std::unordered_set<std::string>& favorites = {}) noexcept;
 [[nodiscard]] std::vector<InstalledPluginView> FilterAndSortPlugins(
     const std::vector<InstalledPluginView>& plugins,
     std::string_view search,
     PlatformUiPluginFilter filter,
     PlatformUiPluginSort sort,
-    bool include_developer = true);
+    bool include_developer = true,
+    const std::unordered_set<std::string>& favorites = {});
 [[nodiscard]] std::vector<std::string> FilteredPluginIds(
     const std::vector<InstalledPluginView>& plugins,
     std::string_view search,
     PlatformUiPluginFilter filter,
     PlatformUiPluginSort sort,
-    bool include_developer = true);
+    bool include_developer = true,
+    const std::unordered_set<std::string>& favorites = {});
 
 struct PlatformUiPluginFilterCounts final {
     std::size_t all{};
     std::size_t running{};
     std::size_t disabled{};
     std::size_t issues{};
+    std::size_t favorites{};
 
     [[nodiscard]] std::size_t For(PlatformUiPluginFilter filter) const noexcept;
 };
 
 [[nodiscard]] PlatformUiPluginFilterCounts CountFilteredPlugins(
     const std::vector<InstalledPluginView>& plugins, std::string_view search,
-    bool include_developer = true);
+    bool include_developer = true,
+    const std::unordered_set<std::string>& favorites = {});
 [[nodiscard]] std::string ReconcilePluginSelection(
     const std::vector<InstalledPluginView>& sorted_plugins,
     std::string_view previous_selection);

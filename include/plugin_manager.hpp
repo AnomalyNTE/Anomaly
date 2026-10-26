@@ -23,6 +23,7 @@
 #include <mutex>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -204,6 +205,10 @@ public:
     // synchronization, but callers must not hold a renderer/plugin gate: it
     // can perform filesystem I/O.
     void PersistUiWindowState();
+    // Favorites are a shell preference that travels with the persisted UI
+    // state. They never influence catalog validity, enablement, or loading.
+    void SetPluginFavorite(std::string_view plugin_id, bool favorite) noexcept;
+    [[nodiscard]] std::unordered_set<std::string> FavoritePlugins() const;
     // Must be called only from the validated game-thread anchor.
     void GameUpdate(double delta_seconds);
     void Draw(void* imgui_context);
@@ -366,6 +371,8 @@ private:
     std::chrono::steady_clock::time_point ui_window_state_last_save_{};
     mutable std::mutex plugin_window_visibility_mutex_;
     std::unordered_map<std::string, bool> plugin_window_visibility_;
+    mutable std::mutex favorite_plugins_mutex_;
+    std::unordered_set<std::string> favorite_plugins_;
     std::shared_ptr<anomaly::UiResourceRegistry> ui_resources_ =
         std::make_shared<anomaly::UiResourceRegistry>();
     anomaly::InputService input_service_;
