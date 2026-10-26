@@ -626,13 +626,25 @@ void PointFields(const AnomalyUiServiceV1* ui, const int slot) {
     }
 }
 
-void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
-    SyncTextBuffers();
+// 标签页需要宿主提供这四个入口；缺一个就退化成原来的单页直排。
+bool TabsAvailable(const AnomalyUiServiceV1* ui) {
+    return HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_tab_bar)>(
+               ui, offsetof(AnomalyUiServiceV1, begin_tab_bar)) &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::begin_tab_item)>(
+            ui, offsetof(AnomalyUiServiceV1, begin_tab_item)) &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_tab_item)>(
+            ui, offsetof(AnomalyUiServiceV1, end_tab_item)) &&
+        HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::end_tab_bar)>(
+            ui, offsetof(AnomalyUiServiceV1, end_tab_bar)) &&
+        ui->begin_tab_bar != nullptr && ui->begin_tab_item != nullptr &&
+        ui->end_tab_item != nullptr && ui->end_tab_bar != nullptr;
+}
 
+// 「开始」页：地图提示、循环次数、开始/停止按钮与实时状态行。
+void ContentStart(const AnomalyUiServiceV1* ui) {
     DrawText(ui, g_context.localizer.Text("note.map", "此脚本适用于999夜赤龙古堡地图"));
     if (ui->separator != nullptr) ui->separator(ui->user);
 
-    // ── 脚本循环 ──
     DrawText(ui, g_context.localizer.Text("script.title", "脚本循环"));
     if (ui->input_uint32 != nullptr) {
         ui->text(ui->user, StringView("循环次数"));
@@ -656,10 +668,10 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
         if (stop != 0) g_script_stop_requested.store(true);
     }
     DrawText(ui, ScriptStatusText());
+}
 
-    if (ui->separator != nullptr) ui->separator(ui->user);
-
-    // ── 传送点 ──
+// 「设置」页：三个传送点、预载参数与自动战斗参数。
+void ContentSettings(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     DrawText(ui, g_context.localizer.Text("points.title", "传送点"));
     for (int slot = 0; slot != kPointCount; ++slot) {
         PointFields(ui, slot);
@@ -675,9 +687,35 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
 
     if (ui->separator != nullptr) ui->separator(ui->user);
 
-    // ── 自动战斗 ──
     CombatContent(ui);
+}
 
+void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
+    SyncTextBuffers();
+
+    if (!TabsAvailable(ui)) {
+        ContentStart(ui);
+        if (ui->separator != nullptr) ui->separator(ui->user);
+        ContentSettings(host, ui);
+        CommitInputs();
+        return;
+    }
+    const std::string start_label = g_context.localizer.Text("tab.start", "开始");
+    const std::string settings_label = g_context.localizer.Text("tab.settings", "设置");
+    if (ui->begin_tab_bar(ui->user, StringView("##night999-tabs"),
+                          ANOMALY_UI_TAB_BAR_V1_NONE) != 0) {
+        if (ui->begin_tab_item(ui->user, StringView(start_label), nullptr,
+                               ANOMALY_UI_TAB_ITEM_V1_NONE, 1) != 0) {
+            ContentStart(ui);
+            ui->end_tab_item(ui->user);
+        }
+        if (ui->begin_tab_item(ui->user, StringView(settings_label), nullptr,
+                               ANOMALY_UI_TAB_ITEM_V1_NONE, 1) != 0) {
+            ContentSettings(host, ui);
+            ui->end_tab_item(ui->user);
+        }
+        ui->end_tab_bar(ui->user);
+    }
     CommitInputs();
 }
 
@@ -838,7 +876,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.17.1"),
+        StringView("999夜脚本"), StringView("WawMew"), StringView("0.18.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }
