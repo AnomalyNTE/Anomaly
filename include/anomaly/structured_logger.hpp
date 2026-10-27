@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anomaly/log_retention.hpp"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -81,6 +83,15 @@ struct StructuredLoggerOptions {
     // kMaximumRetainedLogArchives. Zero retains no archives, so a size-triggered
     // roll truncates PATH in place and removes existing numeric archives.
     std::size_t retained_archive_count{};
+    // Rotation bounds only what this session writes, so the files earlier
+    // sessions left behind are pruned from these directories instead: everything
+    // older than retention.max_age, then the oldest survivors until
+    // retention.max_total_bytes fits. The pass runs when the worker opens PATH and
+    // again once per retention_interval. An empty list disables it. retention's
+    // active_path is filled in with PATH by the logger.
+    std::vector<std::filesystem::path> retention_directories;
+    LogRetentionPolicy retention{};
+    std::chrono::minutes retention_interval{60};
     LogLevel minimum_level{LogLevel::Trace};
 };
 
@@ -90,6 +101,7 @@ enum class LoggerErrorOperation : std::uint8_t {
     Flush,
     Worker,
     Rotate,
+    Retention,
 };
 
 struct LoggerError {
