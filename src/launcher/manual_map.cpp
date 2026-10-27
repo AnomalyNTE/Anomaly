@@ -986,12 +986,32 @@ bool RelocateImage(
     return true;
 }
 
+// Which copy of a dependency to use, in the order that keeps a manual map out of the target's loader: the
+// copy the target itself ships and loads (its own loader has already accepted that file), then a copy
+// beside the core, then the system one. Resolving locally from that same file is what makes the RVA it
+// contributes correct.
+std::filesystem::path DependencyCopy(
+    const std::filesystem::path& target_directory, const std::filesystem::path& image_directory,
+    std::wstring_view name) {
+    std::error_code error;
+    for (const auto& directory : {target_directory, image_directory}) {
+        if (directory.empty()) continue;
+        const auto candidate = directory / std::filesystem::path(name);
+        if (std::filesystem::is_regular_file(candidate, error) && !error) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
 LocalModule LoadLocalDependency(
-    const std::filesystem::path& image_directory, std::wstring_view name) {
-    const auto adjacent = image_directory / std::filesystem::path(name);
+    const std::filesystem::path& image_directory, std::wstring_view name,
+    const std::filesystem::path& target_directory) {
+    const auto adjacent =
+        DependencyCopy(target_directory, image_directory, name);
     std::error_code error;
     HMODULE module{};
-    if (std::filesystem::is_regular_file(adjacent, error) && !error) {
+    if (!adjacent.empty()) {
         module = LoadLibraryExW(
             adjacent.c_str(), nullptr,
             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -1190,8 +1210,8 @@ bool ResolveThunkTable(
 
 bool ResolveImports(
     HANDLE process, ParsedImage& parsed,
-    RemoteModuleMap& modules, ManualMapDelivery delivery, std::string& failure,
-    ImportOverride* import_override = nullptr) {
+    RemoteModuleMap& modules, ManualMapDelivery delivery, const std::filesystem::path& target_directory,
+    std::string& failure, ImportOverride* import_override = nullptr) {
     auto* headers = Headers(parsed.mapped);
     if (headers == nullptr) return false;
     const auto image_directory = parsed.source_path.parent_path();
@@ -1219,15 +1239,15 @@ bool ResolveImports(
                 return false;
             }
             const std::wstring wide_name(name, name + std::strlen(name));
-            const auto adjacent = image_directory / wide_name;
+            const auto preferred = DependencyCopy(target_directory, image_directory, wide_name);
             std::error_code error;
-            LocalModule local = LoadLocalDependency(image_directory, wide_name);
+            LocalModule local = LoadLocalDependency(image_directory, wide_name, target_directory);
             if (local.Get() == nullptr) {
                 failure = "local dependency could not be loaded for import resolution";
                 return false;
             }
-            const auto remote_request = std::filesystem::is_regular_file(adjacent, error) && !error
-                ? std::filesystem::absolute(adjacent) : LocalModulePath(local.Get());
+            const auto remote_request = !preferred.empty()
+                ? std::filesystem::absolute(preferred) : LocalModulePath(local.Get());
             if (remote_request.empty() || !EnsureRemoteModule(
                     process, remote_request, modules, delivery, failure)) {
                 return false;
@@ -1278,7 +1298,7 @@ bool ResolveImports(
         const std::wstring wide_name(name, name + std::strlen(name));
         const auto adjacent = image_directory / wide_name;
         std::error_code error;
-        LocalModule local = LoadLocalDependency(image_directory, wide_name);
+        LocalModule local = LoadLocalDependency(image_directory, wide_name, target_directory);
         if (local.Get() == nullptr) {
             failure = "delay import dependency could not be loaded";
             return false;
@@ -1378,52 +1398,21 @@ bool ReadRemote(HANDLE process, std::uintptr_t address, void* output, std::size_
         read == size;
 }
 
-bool RemoteImageExportsAnomalyStart(
-    HANDLE process, std::uintptr_t base, std::size_t region_size) {
-    IMAGE_DOS_HEADER dos{};
-    if (region_size < sizeof(IMAGE_DOS_HEADER) ||
-        !ReadRemote(process, base, &dos, sizeof(dos)) ||
-        dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0 ||
-        region_size < sizeof(IMAGE_NT_HEADERS64) ||
-        static_cast<std::size_t>(dos.e_lfanew) > region_size - sizeof(IMAGE_NT_HEADERS64)) {
-        return false;
-    }
-    IMAGE_NT_HEADERS64 headers{};
-    if (!ReadRemote(process, base + dos.e_lfanew, &headers, sizeof(headers)) ||
-        headers.Signature != IMAGE_NT_SIGNATURE ||
-        headers.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        (headers.FileHeader.Characteristics & IMAGE_FILE_DLL) == 0 ||
-        headers.OptionalHeader.SizeOfImage < headers.OptionalHeader.SizeOfHeaders) {
-        return false;
-    }
-    const auto& data = headers.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (data.VirtualAddress == 0 || data.Size < sizeof(IMAGE_EXPORT_DIRECTORY) ||
-        data.VirtualAddress > headers.OptionalHeader.SizeOfImage - sizeof(IMAGE_EXPORT_DIRECTORY)) {
-        return false;
-    }
-    IMAGE_EXPORT_DIRECTORY exports{};
-    if (!ReadRemote(process, base + data.VirtualAddress, &exports, sizeof(exports)) ||
-        exports.NumberOfNames == 0 || exports.NumberOfNames > 65536) {
-        return false;
-    }
-    std::vector<DWORD> names(exports.NumberOfNames);
-    if (!ReadRemote(
-            process, base + exports.AddressOfNames, names.data(),
-            names.size() * sizeof(DWORD))) {
-        return false;
-    }
-    for (DWORD rva : names) {
-        std::array<char, 64> name{};
-        SIZE_T read{};
-        if (ReadProcessMemory(
-                process, reinterpret_cast<const void*>(base + rva), name.data(),
-                name.size() - 1, &read) != FALSE && read != 0 &&
-            std::string_view(name.data()) == ANOMALY_CORE_START_ENTRY) {
-            return true;
-        }
-    }
-    return false;
-}
+// A mapped image is recognised by its headers: an MZ at the base and a PE signature a few bytes further on
+// is what tells every scanner -- a game's anti-cheat, the compatibility database, a forensic tool -- that
+// the private region is a module. The headers and the export table are therefore erased once the image is
+// written, because everything that needed them (relocations, imports, TLS, entry point and AnomalyStart)
+// has been resolved by then.
+//
+// What is left in their place is a marker: one page, no PE structure, that says where the image is. This
+// process uses it to answer "is a core already mapped here" without a header to look at.
+constexpr std::uint64_t kAttachmentMagic = 0xA90A1E5EC0DE1A01ull;
+
+struct AttachmentMarker final {
+    std::uint64_t magic{};
+    std::uint64_t image_base{};
+    std::uint64_t image_size{};
+};
 
 bool HasPrivateMappedCore(HANDLE process) {
     SYSTEM_INFO system{};
@@ -1438,10 +1427,14 @@ bool HasPrivateMappedCore(HANDLE process) {
             break;
         }
         const auto base = reinterpret_cast<std::uintptr_t>(region.AllocationBase);
-        if (region.State == MEM_COMMIT && region.Type == MEM_PRIVATE &&
-            base != 0 && base != inspected_allocation &&
-            RemoteImageExportsAnomalyStart(process, base, region.RegionSize)) {
-            return true;
+        if (region.State == MEM_COMMIT && region.Type == MEM_PRIVATE && base != 0 &&
+            base != inspected_allocation) {
+            AttachmentMarker marker{};
+            if (region.RegionSize >= sizeof(marker) &&
+                ReadRemote(process, base, &marker, sizeof(marker)) &&
+                marker.magic == kAttachmentMagic) {
+                return true;
+            }
         }
         inspected_allocation = base;
         const auto next = reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
@@ -1451,6 +1444,47 @@ bool HasPrivateMappedCore(HANDLE process) {
     return false;
 }
 
+// Erases what makes the mapped image look like an image, in the target's copy only: the local buffer is
+// still needed for the section protections that are applied right after this.
+bool ScrubMappedImage(HANDLE process, void* remote, std::vector<std::byte>& image) {
+    const auto* headers = Headers(image);
+    if (headers == nullptr) return false;
+    const std::size_t header_bytes = headers->OptionalHeader.SizeOfHeaders;
+    if (header_bytes == 0 || header_bytes > image.size()) return false;
+    const std::vector<std::byte> zeros(header_bytes, std::byte{0});
+    if (WriteProcessMemory(process, remote, zeros.data(), zeros.size(), nullptr) == FALSE) {
+        return false;
+    }
+    // The export table names this image ("AnomalyStart" among others); it is a second signature, and the
+    // table itself is no longer reachable once the headers are gone.
+    const auto& exports = headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (exports.VirtualAddress != 0 && exports.Size != 0 &&
+        exports.VirtualAddress <= image.size() && exports.Size <= image.size() - exports.VirtualAddress) {
+        const std::vector<std::byte> blank(exports.Size, std::byte{0});
+        if (WriteProcessMemory(
+                process, static_cast<std::byte*>(remote) + exports.VirtualAddress,
+                blank.data(), blank.size(), nullptr) == FALSE) {
+            return false;
+        }
+    }
+    return FlushInstructionCache(process, remote, image.size()) != FALSE;
+}
+
+// Writes the marker a later attach looks for, so the erased image can still be recognised as ours.
+bool WriteAttachmentMarker(
+    HANDLE process, void* remote_base, std::size_t image_size, RemoteAllocation& allocation) {
+    const AttachmentMarker marker{
+        .magic = kAttachmentMagic,
+        .image_base = reinterpret_cast<std::uintptr_t>(remote_base),
+        .image_size = image_size,
+    };
+    allocation = RemoteAllocation(
+        process, VirtualAllocEx(
+            process, nullptr, sizeof(marker), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE),
+        sizeof(marker));
+    return allocation.address != nullptr && WriteProcessMemory(
+        process, allocation.address, &marker, sizeof(marker), nullptr) != FALSE;
+}
 RemoteAllocation WriteRemoteWideString(HANDLE process, const std::filesystem::path& path) {
     const std::wstring value = path.wstring();
     const std::size_t bytes = (value.size() + 1) * sizeof(wchar_t);
@@ -2077,7 +2111,8 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             .address = remote_image_address + *cxx_throw_rva,
         };
         if (!ResolveImports(
-                process.Get(), *parsed, modules, options.delivery, image_failure,
+                process.Get(), *parsed, modules, options.delivery,
+                inspected.executable_path.parent_path(), image_failure,
                 &cxx_throw_override)) {
             return Failure(
                 ManualMapError::DependencyFailure, ERROR_MOD_NOT_FOUND,
@@ -2095,6 +2130,16 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             return Failure(
                 ManualMapError::WriteFailure, GetLastError(),
                 "remote core image could not be written");
+        }
+        // After the write and before the protections: the image is complete at this point, so nothing that
+        // is erased here is still needed, and a scanner that looks at this page from now on sees no image.
+        RemoteAllocation attachment_marker;
+        if (!ScrubMappedImage(process.Get(), remote_image.address, parsed->mapped) ||
+            !WriteAttachmentMarker(
+                process.Get(), remote_image.address, parsed->mapped.size(), attachment_marker)) {
+            return Failure(
+                ManualMapError::WriteFailure, GetLastError(),
+                "the mapped image could not be hidden from module scanners");
         }
         if (!ProtectImage(process.Get(), remote_image.address, parsed->mapped)) {
             return Failure(
@@ -2346,6 +2391,7 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
                 thread_exit_code, remote_image_address);
         }
         remote_image.retained = true;
+        attachment_marker.retained = true;
         return {ManualMapError::None, ERROR_SUCCESS, ERROR_SUCCESS,
                 remote_image_address, "Anomaly core attached"};
     } catch (...) {
@@ -2408,6 +2454,15 @@ ManualMapResult AttachToRunningProcess(const ManualMapOptions& options) noexcept
         // A process that has been running for a while always has its loader list, so this wait normally
         // ends on the first read. It is here because the caller decides when the target is running, and a
         // game that was attached to within milliseconds of starting has not published one yet.
+        // A live attach never creates a thread in the target. A remote thread is the part of an injection a
+        // protected game refuses outright, and the refusal is worse than a failure: it is what the game's
+        // own protection reacts to later. The game's parked threads are the only way in, so an automatic
+        // choice stops being automatic here.
+        ManualMapOptions attach_options = options;
+        if (attach_options.delivery == ManualMapDelivery::Automatic) {
+            attach_options.delivery = ManualMapDelivery::ThreadHijack;
+        }
+
         DWORD module_error = ERROR_NOT_READY;
         RemoteModuleMap modules;
         if (!WaitForLoaderReady(
@@ -2418,7 +2473,7 @@ ManualMapResult AttachToRunningProcess(const ManualMapOptions& options) noexcept
                 module_error == ERROR_SUCCESS ? ERROR_TIMEOUT : module_error,
                 "the running target's loader list did not become readable");
         }
-        return ManualMapRuntimeCoreWithHandle(options, inspected, process);
+        return ManualMapRuntimeCoreWithHandle(attach_options, inspected, process);
     } catch (...) {
         return Failure(
             ManualMapError::ProcessUnavailable, ERROR_UNHANDLED_EXCEPTION,
