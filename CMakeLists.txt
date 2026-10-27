@@ -510,13 +510,23 @@ target_compile_options(anomaly_ue5_network_deserializer PRIVATE /W4 /permissive-
 target_link_libraries(anomaly_ue5_network_deserializer PUBLIC anomaly_ue5_bit_reader)
 target_link_libraries(anomaly_build_profile PUBLIC anomaly_ue5_network_deserializer)
 
+add_library(anomaly_signature_updater STATIC src/services/signature_updater.cpp)
+target_include_directories(anomaly_signature_updater PUBLIC include
+    PRIVATE "${minhook_SOURCE_DIR}/src/hde")
+target_compile_definitions(anomaly_signature_updater PUBLIC
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_signature_updater PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_signature_updater PUBLIC ue5mem_memory
+    PRIVATE anomaly_reliable_storage minhook nlohmann_json::nlohmann_json)
+
 add_library(anomaly_symbol_resolver STATIC src/game/ue5/symbol_resolver.cpp)
 target_include_directories(anomaly_symbol_resolver PUBLIC include)
 target_compile_definitions(
     anomaly_symbol_resolver PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_symbol_resolver PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
-    anomaly_symbol_resolver PUBLIC anomaly_build_profile anomaly_internal_memory_services)
+    anomaly_symbol_resolver PUBLIC anomaly_build_profile anomaly_internal_memory_services
+    anomaly_signature_updater)
 
 add_library(anomaly_ue5_ftext STATIC src/game/ue5/ue5_ftext.cpp)
 target_include_directories(anomaly_ue5_ftext PUBLIC include)
@@ -936,6 +946,7 @@ target_compile_options(anomaly_scoped_platform PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
     anomaly_scoped_platform
     PUBLIC anomaly_internal_memory_services anomaly_reliable_storage anomaly_minhook_backend
+    anomaly_signature_updater
     PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator::validator)
 
 add_library(anomaly_service_graph STATIC src/runtime/service_graph.cpp)

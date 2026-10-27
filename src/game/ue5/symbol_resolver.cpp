@@ -1,4 +1,5 @@
 #include "anomaly/symbol_resolver.hpp"
+#include "anomaly/signature_updater.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1614,7 +1615,8 @@ SymbolResolver::SymbolResolver(
 
 ProfileResolutionSnapshot SymbolResolver::Resolve(
     const BuildFingerprint& fingerprint,
-    const BuildProfile* profile) const {
+    const BuildProfile* profile,
+    const std::stop_token stop) const {
     const auto started = std::chrono::steady_clock::now();
     ProfileResolutionSnapshot snapshot;
     snapshot.build_id = fingerprint.id;
@@ -1625,11 +1627,12 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
     }
     snapshot.state = ProfileResolutionState::ProfileLoaded;
     snapshot.profile_hash = profile->source_hash;
-
     for (const auto& [id, definition] : profile->symbols) {
+        if (stop.stop_requested()) break;
         ResolvedSymbol symbol;
         symbol.id = id;
         symbol.module = definition.module;
+        symbol.active_pattern = definition.pattern;
         const auto module = memory_->FindModule(definition.module);
         if (!module) {
             symbol.state = SymbolResolutionState::ModuleMissing;
@@ -1638,14 +1641,43 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
             continue;
         }
         const auto sections = memory_->Sections(*module);
-        if (std::ranges::none_of(sections, [&](const auto& section) {
-                return section.name == definition.section;
-            })) {
+        const auto section = std::ranges::find_if(sections, [&](const auto& candidate) {
+            return candidate.name == definition.section;
+        });
+        if (section == sections.end()) {
             symbol.state = SymbolResolutionState::SectionMissing;
             symbol.diagnostics.push_back("section is unavailable");
             snapshot.symbols.emplace(id, std::move(symbol));
             continue;
         }
+
+        SignatureScanContext scan_context{
+            *module, *section,
+            [&](auto address, auto destination, auto size) {
+                return memory_->Read(address, destination, size);
+            },
+            [&](auto pattern, auto limit) {
+                return memory_->Scan(*module, definition.section, pattern, limit);
+            }};
+        const std::string contract = profile->source_hash + ":" + id;
+        bool recovery_attempted{};
+        bool using_recovery{};
+        std::string recovery_pattern;
+        const auto recover = [&]() -> std::optional<std::uintptr_t> {
+            if (!options_.signature_updater || stop.stop_requested()) return std::nullopt;
+            recovery_attempted = true;
+            try {
+                const auto recovery = options_.signature_updater->Recover(
+                    scan_context, contract, definition.pattern, stop);
+                if (!recovery.diagnostic.empty()) symbol.diagnostics.push_back(recovery.diagnostic);
+                if (recovery.instruction == 0) return std::nullopt;
+                recovery_pattern = recovery.pattern;
+                return recovery.instruction;
+            } catch (const std::exception& exception) {
+                symbol.diagnostics.push_back("signature recovery: " + std::string(exception.what()));
+                return std::nullopt;
+            }
+        };
 
         std::vector<std::uintptr_t> matches;
         try {
@@ -1662,6 +1694,13 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
             symbol.diagnostics.push_back(exception.what());
             snapshot.symbols.emplace(id, std::move(symbol));
             continue;
+        }
+        if (matches.empty()) {
+            if (const auto recovered = recover()) {
+                matches.push_back(*recovered);
+                symbol.active_pattern = recovery_pattern;
+                using_recovery = true;
+            }
         }
         symbol.candidate_count = matches.size();
         if (matches.empty()) {
@@ -1706,6 +1745,20 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
             }
             valid.push_back({instruction, *address});
         }
+        if (valid.empty() && !recovery_attempted) {
+            if (const auto recovered = recover()) {
+                const auto address = std::ranges::find(matches, *recovered) == matches.end()
+                    ? ResolveAddress(definition, *recovered, *memory_) : std::nullopt;
+                if (address && Contains(module->base, module->size, *address) &&
+                    ValidateAll(*profile, definition, *module, *address, *memory_,
+                        validators_, &symbol.diagnostics).valid) {
+                    valid.push_back({*recovered, *address});
+                    symbol.candidate_count = 1;
+                    symbol.active_pattern = recovery_pattern;
+                    using_recovery = true;
+                }
+            }
+        }
         if (valid.size() != 1) {
             symbol.state = valid.size() > 1
                 ? SymbolResolutionState::Ambiguous
@@ -1732,6 +1785,17 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
             continue;
         }
         symbol.rva = symbol.address - module->base;
+        symbol.recovered = using_recovery;
+        if (symbol.recovered) symbol.diagnostics.push_back("signature recovered from instruction structure");
+        if (options_.signature_updater && !stop.stop_requested()) {
+            try {
+                const auto diagnostic = options_.signature_updater->Learn(
+                    scan_context, contract, definition.pattern, symbol.instruction, stop);
+                if (!diagnostic.empty()) symbol.diagnostics.push_back(diagnostic);
+            } catch (const std::exception& exception) {
+                symbol.diagnostics.push_back("signature learning: " + std::string(exception.what()));
+            }
+        }
         snapshot.symbols.emplace(id, std::move(symbol));
     }
 
@@ -1786,8 +1850,10 @@ bool SymbolResolver::RevalidateDeferredCandidates(
 
         symbol.state = SymbolResolutionState::Resolved;
         symbol.rva = symbol.address - module->base;
+        symbol.recovered = !symbol.active_pattern.empty() && symbol.active_pattern != definition.pattern;
         symbol.diagnostics.clear();
         symbol.diagnostics.push_back("deferred candidate revalidated");
+        if (symbol.recovered) symbol.diagnostics.push_back("signature recovered from instruction structure");
         changed = true;
     }
     if (profile.features.empty()) {

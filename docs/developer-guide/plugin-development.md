@@ -238,6 +238,55 @@ if (sequence != 0 && sequence != cached_sequence) {
 
 ## 7. 资源与所有权
 
+`anomaly.interop.signature` v1 在允许同步状态 I/O 的调用域中，会自动学习成功命中的指令并在原签名
+零匹配时尝试恢复。知识存放在插件 state 目录的 `signature-knowledge/signatures.json`，
+插件原有签名定义、源码、manifest 与 C ABI 无需改动。Game/Render 回调跳过这条学习和恢复路径；
+插件应在启动阶段解析签名。
+原签名多匹配仍返回 `CONFLICT`，证据不足或无法唯一恢复仍返回 `NOT_FOUND`。
+
+原始签名接口只提供地址，没有布局 validator 或字段更新合同，因此只通配 RIP 相对地址和
+相对分支操作数，保留对象成员与栈位移字节；原 pattern 已有的通配符仍遵循原声明。
+学习窗口零匹配时，框架还会尝试从原 pattern 的完整指令重新推导，无需手写备用 pattern。
+已有 DLL 的编译期字段偏移常量不能由签名恢复替换；窗口外或原签名未约束的布局变化也无法
+由地址解析接口验证。直接绕过该服务自行扫描的插件不经过这条恢复路径。
+
+需要自动学习字段偏移的插件可选择 signature v2，并包含 `anomaly/sdk/signature.hpp`。
+manifest 中将该服务的 `minVersion` 设为 `2`。签名和语义种子仍放在插件自己的头文件；
+启动阶段调用一次框架 API，后续回调只读取本地快照。例如已有 `kPausePattern` / `kResumePattern`：
+
+```cpp
+inline constexpr AnomalySignatureFieldV2 fields[]{
+    anomaly::sdk::FieldSeed("PlayingID", 0x420, 4),
+    anomaly::sdk::FieldSeed("Paused", 0x424),
+};
+inline constexpr AnomalySignatureMemberV2 members[]{
+    anomaly::sdk::MemberUse(0, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
+    anomaly::sdk::MemberUse(1, 1, ANOMALY_SIGNATURE_MEMBER_WRITE_V2),
+};
+inline constexpr AnomalySignatureWitnessV2 witnesses[]{
+    anomaly::sdk::Witness("pause", kPausePattern, members),
+    anomaly::sdk::Witness("resume", kResumePattern, members),
+};
+inline constexpr anomaly::sdk::LayoutSchema schema{
+    "HTGame.exe", ".text", fields, witnesses};
+
+// Lifecycle / Worker；signature 是已查询的 AnomalySignatureServiceV2。
+auto resolved = anomaly::sdk::ResolveLayout(signature, schema);
+if (resolved) {
+    const auto& layout = resolved.value();
+    const auto pause_address = layout.address("pause");
+    const auto paused_offset = layout.offset("Paused");
+    // 将地址和偏移保存到插件 Context，后续字段访问使用 paused_offset。
+}
+// 失败时使用 resolved.error() 报告原因，并停用依赖该组布局的功能。
+```
+
+框架验证对象来源、访问宽度、对齐、唯一匹配及多个提取点的一致性，整组成功后才发布和学习。
+种子不是失败兜底值。完整限制、C ABI 输出所有权和错误码见
+[Interop 与内存](../api-reference/interop-and-memory.md#版本-2同时解析地址与字段布局)。
+HiFi 已接入 PlayingID、Paused、PlayerType、CurrentID、OwnedIDs；核心播放和可选专辑分组解析，
+专辑组失败保留原有专辑降级行为。其他字段仍遵循原有兼容约束。
+
 所有由 Platform / Interop / IPC 创建的 handle 都**绑定 plugin generation**：
 
 - Scheduler / IPC 的未开始工作在 stop / reload 时取消。

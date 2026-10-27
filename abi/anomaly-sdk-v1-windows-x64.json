@@ -29,6 +29,9 @@
     "ANOMALY_COMMANDS_SERVICE_V1_VERSION": 1,
     "ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION": 1,
     "ANOMALY_SIGNATURE_SERVICE_V1_VERSION": 1,
+    "ANOMALY_SIGNATURE_SERVICE_V2_VERSION": 2,
+    "ANOMALY_SIGNATURE_LAYOUT_MAX_FIELDS_V2": 32,
+    "ANOMALY_SIGNATURE_LAYOUT_MAX_WITNESSES_V2": 32,
     "ANOMALY_HOOK_SERVICE_V1_VERSION": 1,
     "ANOMALY_PATCH_SERVICE_V1_VERSION": 1,
     "ANOMALY_UI_SERVICE_V1_VERSION": 1,
@@ -320,6 +323,15 @@
         "ANOMALY_NOTIFICATION_V1_INFO": 0,
         "ANOMALY_NOTIFICATION_V1_WARNING": 1,
         "ANOMALY_NOTIFICATION_V1_ERROR": 2
+      }
+    },
+    "AnomalySignatureMemberAccessV2": {
+      "size": 4,
+      "alignment": 4,
+      "values": {
+        "ANOMALY_SIGNATURE_MEMBER_READ_V2": 1,
+        "ANOMALY_SIGNATURE_MEMBER_WRITE_V2": 2,
+        "ANOMALY_SIGNATURE_MEMBER_ADDRESS_V2": 4
       }
     },
     "AnomalyHookKindV1": {
@@ -872,6 +884,62 @@
         "service_version": 4,
         "user": 8,
         "resolve": 16
+      }
+    },
+    "AnomalySignatureFieldV2": {
+      "size": 32,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "id": 8,
+        "seed_offset": 24,
+        "alignment": 28
+      }
+    },
+    "AnomalySignatureMemberV2": {
+      "size": 20,
+      "alignment": 4,
+      "offsets": {
+        "struct_size": 0,
+        "field_index": 4,
+        "addend": 8,
+        "width": 12,
+        "access": 16
+      }
+    },
+    "AnomalySignatureWitnessV2": {
+      "size": 56,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "id": 8,
+        "pattern": 24,
+        "members": 40,
+        "member_count": 48
+      }
+    },
+    "AnomalySignatureLayoutRequestV2": {
+      "size": 72,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "module_name": 8,
+        "section_name": 24,
+        "fields": 40,
+        "field_count": 48,
+        "witnesses": 56,
+        "witness_count": 64
+      }
+    },
+    "AnomalySignatureServiceV2": {
+      "size": 32,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "resolve": 16,
+        "resolve_layout": 24
       }
     },
     "AnomalyHookServiceV1": {
@@ -2165,6 +2233,11 @@
       "id": "anomaly.interop.signature",
       "version": 1,
       "table": "AnomalySignatureServiceV1"
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "version": 2,
+      "table": "AnomalySignatureServiceV2"
     },
     {
       "id": "anomaly.interop.hook",

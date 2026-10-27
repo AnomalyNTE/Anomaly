@@ -184,6 +184,12 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_SIGNATURE_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_SIGNATURE_SERVICE_V2_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_SIGNATURE_SERVICE_V2_VERSION);
+    output.append(",\n    \"ANOMALY_SIGNATURE_LAYOUT_MAX_FIELDS_V2\": ");
+    AppendUnsigned(output, ANOMALY_SIGNATURE_LAYOUT_MAX_FIELDS_V2);
+    output.append(",\n    \"ANOMALY_SIGNATURE_LAYOUT_MAX_WITNESSES_V2\": ");
+    AppendUnsigned(output, ANOMALY_SIGNATURE_LAYOUT_MAX_WITNESSES_V2);
     output.append(",\n    \"ANOMALY_HOOK_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_HOOK_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_PATCH_SERVICE_V1_VERSION\": ");
@@ -591,6 +597,15 @@ std::string BuildSnapshot() {
         {{"ANOMALY_NOTIFICATION_V1_INFO", ANOMALY_NOTIFICATION_V1_INFO},
          {"ANOMALY_NOTIFICATION_V1_WARNING", ANOMALY_NOTIFICATION_V1_WARNING},
          {"ANOMALY_NOTIFICATION_V1_ERROR", ANOMALY_NOTIFICATION_V1_ERROR}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalySignatureMemberAccessV2",
+        sizeof(AnomalySignatureMemberAccessV2),
+        alignof(AnomalySignatureMemberAccessV2),
+        {{"ANOMALY_SIGNATURE_MEMBER_READ_V2", ANOMALY_SIGNATURE_MEMBER_READ_V2},
+         {"ANOMALY_SIGNATURE_MEMBER_WRITE_V2", ANOMALY_SIGNATURE_MEMBER_WRITE_V2},
+         {"ANOMALY_SIGNATURE_MEMBER_ADDRESS_V2", ANOMALY_SIGNATURE_MEMBER_ADDRESS_V2}},
         false);
     AppendEnum(
         output,
@@ -1160,6 +1175,62 @@ std::string BuildSnapshot() {
          {"service_version", offsetof(AnomalySignatureServiceV1, service_version)},
          {"user", offsetof(AnomalySignatureServiceV1, user)},
          {"resolve", offsetof(AnomalySignatureServiceV1, resolve)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalySignatureFieldV2",
+        sizeof(AnomalySignatureFieldV2),
+        alignof(AnomalySignatureFieldV2),
+        {{"struct_size", offsetof(AnomalySignatureFieldV2, struct_size)},
+         {"id", offsetof(AnomalySignatureFieldV2, id)},
+         {"seed_offset", offsetof(AnomalySignatureFieldV2, seed_offset)},
+         {"alignment", offsetof(AnomalySignatureFieldV2, alignment)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalySignatureMemberV2",
+        sizeof(AnomalySignatureMemberV2),
+        alignof(AnomalySignatureMemberV2),
+        {{"struct_size", offsetof(AnomalySignatureMemberV2, struct_size)},
+         {"field_index", offsetof(AnomalySignatureMemberV2, field_index)},
+         {"addend", offsetof(AnomalySignatureMemberV2, addend)},
+         {"width", offsetof(AnomalySignatureMemberV2, width)},
+         {"access", offsetof(AnomalySignatureMemberV2, access)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalySignatureWitnessV2",
+        sizeof(AnomalySignatureWitnessV2),
+        alignof(AnomalySignatureWitnessV2),
+        {{"struct_size", offsetof(AnomalySignatureWitnessV2, struct_size)},
+         {"id", offsetof(AnomalySignatureWitnessV2, id)},
+         {"pattern", offsetof(AnomalySignatureWitnessV2, pattern)},
+         {"members", offsetof(AnomalySignatureWitnessV2, members)},
+         {"member_count", offsetof(AnomalySignatureWitnessV2, member_count)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalySignatureLayoutRequestV2",
+        sizeof(AnomalySignatureLayoutRequestV2),
+        alignof(AnomalySignatureLayoutRequestV2),
+        {{"struct_size", offsetof(AnomalySignatureLayoutRequestV2, struct_size)},
+         {"module_name", offsetof(AnomalySignatureLayoutRequestV2, module_name)},
+         {"section_name", offsetof(AnomalySignatureLayoutRequestV2, section_name)},
+         {"fields", offsetof(AnomalySignatureLayoutRequestV2, fields)},
+         {"field_count", offsetof(AnomalySignatureLayoutRequestV2, field_count)},
+         {"witnesses", offsetof(AnomalySignatureLayoutRequestV2, witnesses)},
+         {"witness_count", offsetof(AnomalySignatureLayoutRequestV2, witness_count)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalySignatureServiceV2",
+        sizeof(AnomalySignatureServiceV2),
+        alignof(AnomalySignatureServiceV2),
+        {{"struct_size", offsetof(AnomalySignatureServiceV2, struct_size)},
+         {"service_version", offsetof(AnomalySignatureServiceV2, service_version)},
+         {"user", offsetof(AnomalySignatureServiceV2, user)},
+         {"resolve", offsetof(AnomalySignatureServiceV2, resolve)},
+         {"resolve_layout", offsetof(AnomalySignatureServiceV2, resolve_layout)}},
         false);
     AppendStruct(
         output,
@@ -2428,6 +2499,8 @@ std::string BuildSnapshot() {
         ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION, "AnomalyNotificationsServiceV1", false);
     AppendService(output, ANOMALY_SIGNATURE_SERVICE_V1_ID,
         ANOMALY_SIGNATURE_SERVICE_V1_VERSION, "AnomalySignatureServiceV1", false);
+    AppendService(output, ANOMALY_SIGNATURE_SERVICE_V2_ID,
+        ANOMALY_SIGNATURE_SERVICE_V2_VERSION, "AnomalySignatureServiceV2", false);
     AppendService(output, ANOMALY_HOOK_SERVICE_V1_ID,
         ANOMALY_HOOK_SERVICE_V1_VERSION, "AnomalyHookServiceV1", false);
     AppendService(output, ANOMALY_PATCH_SERVICE_V1_ID,

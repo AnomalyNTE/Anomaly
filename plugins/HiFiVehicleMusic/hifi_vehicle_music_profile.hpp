@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anomaly/sdk/signature.hpp"
+
 #include <cstdint>
 #include <string_view>
 
@@ -194,6 +196,7 @@ inline constexpr std::string_view kDurationCallback2Pattern =
 inline constexpr std::uint32_t kSubsystemPlayingIdOffset = 0x420;
 // UHTSoundSubsystem::bPaused (uint8; Pause writes 1, Resume 0).
 inline constexpr std::uint32_t kSubsystemPausedOffset = 0x424;
+
 // Never issued by Wwise in practice (IDs count up from 1); Wwise ignores it.
 inline constexpr std::uint32_t kPlayingId = 0x7FFFFF00;
 // void UHTSoundSubsystem::ChangePlayerMusicSound(this, float position): the
@@ -329,5 +332,59 @@ inline constexpr std::uint32_t kAlbumNumber = 0x4846FFFF;
 inline constexpr std::uint32_t kMetingSongNumberBase = 0x48470000;
 inline constexpr std::uint32_t kMetingAlbumNumber = 0x4847FFFF;
 inline constexpr std::int32_t kSortIndexBase = 0x7FFF0000;      // after every game entry
+
+// One-time semantic seeds. The framework learns instruction sites and resolves
+// current offsets before hooks are installed; these are never runtime fallbacks.
+inline constexpr AnomalySignatureFieldV2 kPlaybackFields[]{
+    anomaly::sdk::FieldSeed("PlayingID", kSubsystemPlayingIdOffset, 4),
+    anomaly::sdk::FieldSeed("Paused", kSubsystemPausedOffset),
+    anomaly::sdk::FieldSeed("PlayerType", kSubsystemPlayerTypeOffset, 4),
+};
+inline constexpr AnomalySignatureMemberV2 kPauseMembers[]{
+    anomaly::sdk::MemberUse(0, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
+    anomaly::sdk::MemberUse(1, 1, ANOMALY_SIGNATURE_MEMBER_WRITE_V2),
+};
+inline constexpr AnomalySignatureMemberV2 kPlayerTypeMembers[]{
+    anomaly::sdk::MemberUse(2, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2 | ANOMALY_SIGNATURE_MEMBER_ADDRESS_V2),
+};
+inline constexpr AnomalySignatureWitnessV2 kPlaybackWitnesses[]{
+    anomaly::sdk::Witness("pause", kPausePattern, kPauseMembers),
+    anomaly::sdk::Witness("resume", kResumePattern, kPauseMembers),
+    anomaly::sdk::Witness("player-type", kSetPlayerTypePattern, kPlayerTypeMembers),
+};
+inline constexpr anomaly::sdk::LayoutSchema kPlaybackSchema{
+    kModule, kSection, kPlaybackFields, kPlaybackWitnesses};
+
+inline constexpr AnomalySignatureFieldV2 kAlbumFields[]{
+    anomaly::sdk::FieldSeed("CurrentID", kSubsystemCurrentIdOffset, 8),
+    anomaly::sdk::FieldSeed("OwnedIDs", kSubsystemOwnedIdsOffset, 8),
+    anomaly::sdk::FieldSeed("PlayerType", kSubsystemPlayerTypeOffset, 4),
+};
+inline constexpr AnomalySignatureMemberV2 kCurrentIdMembers[]{
+    anomaly::sdk::MemberUse(0, 8, ANOMALY_SIGNATURE_MEMBER_READ_V2 | ANOMALY_SIGNATURE_MEMBER_WRITE_V2),
+};
+inline constexpr AnomalySignatureMemberV2 kSyncCurrentMembers[]{
+    anomaly::sdk::MemberUse(0, 8, ANOMALY_SIGNATURE_MEMBER_READ_V2),
+};
+inline constexpr AnomalySignatureMemberV2 kOwnedMembers[]{
+    // TArray::Num is eight bytes after the array base.
+    anomaly::sdk::MemberUse(1, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2, 8),
+};
+inline constexpr AnomalySignatureMemberV2 kCurrentLowMembers[]{
+    anomaly::sdk::MemberUse(0, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
+};
+inline constexpr AnomalySignatureMemberV2 kResolveTypeMembers[]{
+    anomaly::sdk::MemberUse(2, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
+};
+inline constexpr AnomalySignatureWitnessV2 kAlbumWitnesses[]{
+    anomaly::sdk::Witness("current-id", kSetCurrentIdPattern, kCurrentIdMembers),
+    anomaly::sdk::Witness("sync-current", kSyncCurrentPattern, kSyncCurrentMembers),
+    anomaly::sdk::Witness("owned-copy", kOwnedCopyPattern, kOwnedMembers),
+    anomaly::sdk::Witness("change-sound", kChangeSoundPattern, kCurrentLowMembers),
+    anomaly::sdk::Witness("player-type", kSetPlayerTypePattern, kPlayerTypeMembers),
+    anomaly::sdk::Witness("resolve-current", kResolveCurrentPattern, kResolveTypeMembers),
+};
+inline constexpr anomaly::sdk::LayoutSchema kAlbumSchema{
+    kModule, kSection, kAlbumFields, kAlbumWitnesses};
 
 } // namespace hifi_vehicle_music_profile

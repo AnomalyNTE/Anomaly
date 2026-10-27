@@ -21,6 +21,7 @@ public:
         std::span<const std::uint8_t> bytes,
         std::size_t limit = 256) const;
     [[nodiscard]] std::size_t Size() const noexcept { return bytes_.size(); }
+    [[nodiscard]] std::span<const PatternByte> Bytes() const noexcept { return bytes_; }
 
 private:
     std::vector<PatternByte> bytes_;
