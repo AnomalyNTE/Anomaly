@@ -24,6 +24,23 @@ struct AttachableProcess final {
     }
 };
 
+// How the mapped core is made to run inside the target. A process that was just created can be entered
+// from a thread this process is allowed to create; a game that has been running for a while is better
+// entered through threads it already owns, because a new thread in the target is the part of an
+// injection that is easiest to observe from inside it.
+enum class ManualMapDelivery : std::uint8_t {
+    // CreateRemoteThread. Deterministic: the payload runs on a thread whose whole life this process
+    // owns, and its exit code reports the outcome. Needs PROCESS_CREATE_THREAD.
+    RemoteThread,
+    // Redirect the instruction pointer of a thread that is parked in one of ntdll's system call stubs.
+    // No thread is created so there is nothing to notice, but the thread is briefly suspended and its
+    // context is rewritten, and the redirect is only safe on threads waiting inside a stub.
+    ThreadHijack,
+    // ThreadHijack, then RemoteThread, sharing the timeout between them. This is what a live attach uses:
+    // a game that refuses a new thread can still be entered through its own.
+    Automatic,
+};
+
 enum class ManualMapError : std::uint8_t {
     None,
     ProcessLaunchFailure,
@@ -49,6 +66,7 @@ struct ManualMapOptions final {
     std::filesystem::path runtime_root;
     std::filesystem::path log_directory;
     std::chrono::milliseconds timeout{std::chrono::seconds(30)};
+    ManualMapDelivery delivery{ManualMapDelivery::RemoteThread};
 };
 
 struct ManualMapResult final {
@@ -92,5 +110,9 @@ struct ManualMapLaunchResult final {
     std::wstring_view executable_name = L"HTGame.exe") noexcept;
 [[nodiscard]] ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
     const ManualMapLaunchOptions& options) noexcept;
+// Manual-maps the runtime core into a process that is already running, so the game does not have to be
+// started by this launcher. The target is attached to as it is: nothing is relaunched, nothing is
+// terminated on failure, and the caller decides whether a failed attach leaves the game running.
+[[nodiscard]] ManualMapResult AttachToRunningProcess(const ManualMapOptions& options) noexcept;
 
 }  // namespace anomaly::launcher

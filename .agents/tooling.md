@@ -52,6 +52,7 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 | `anomaly-profile` | 离线诊断 fingerprint 和 Profile 校验 | fingerprint 只用于诊断/证据/cache，不作为 Profile 激活条件 |
 | `anomaly-plugin` | 校验或打包本地插件包 | 只处理受控目录；真实热重载前必须先校验 |
 | `anomaly-test-host` | 无游戏进程的插件生命周期测试 | 真实游戏进程之前的首选验证方式 |
+| `anomaly-inject` | 把 Runtime Core 手工映射进已经在运行的目标（`--list`、`--pid`、`--delivery`） | 目标只能是自有进程或玩家自己启动的本机游戏；失败不重启、不结束目标进程 |
 | `anomaly-cli` 只读命令 | `status`、`modules`、`sections`、`regions`、`scan`、`ue`、`read`、`chain`、`snapshot` | 目标只能是自有进程；snapshot 和日志可能含敏感路径/数据 |
 | `anomaly-cli` 修改命令 | `write`、`patch`、`protect`、`alloc`、`free` | 需要用户明确授权和自有测试目标；不得作为常规诊断手段 |
 | `diagnose_nte_profile.ps1`、`rescan_profile_signatures.ps1`、`scan_nte_entities.ps1` | 检查实时 NTE 目标和活动 Profile | 必须有明确请求、正确 PID/Profile；生成数据分享前需审查 |

@@ -527,6 +527,11 @@
     "launcher.status.launching_attach": "Launching NTE and waiting for HTGame.exe",
     "launcher.status.launch_attached": "HTGame.exe launched with Anomaly Core attached to PID {0}",
     "launcher.status.launch_attach_failed": "Launch and attach failed with error {0}",
+    "launcher.action.inject_running": "Inject into running process",
+    "launcher.status.injecting_process": "Mapping Anomaly Core into the running game",
+    "launcher.status.injected": "Anomaly Core injected into PID {0}",
+    "launcher.status.inject_failed": "Injection failed with error {0}",
+
     "launcher.status.unexpected_failure": "Launcher operation failed unexpectedly",
     "launcher.status.select_game_directory": "Select the directory containing HTGame.exe",
     "launcher.status.proxy_operation_failed": "Proxy operation failed",

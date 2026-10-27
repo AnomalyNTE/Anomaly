@@ -691,7 +691,9 @@ target_link_libraries(anomaly_launcher_configuration
 
 add_library(anomaly_manual_map STATIC
     src/launcher/manual_map.cpp
-    src/launcher/manual_map_remote.asm)
+    src/launcher/manual_map_remote.asm
+    src/launcher/manual_map_hijack.asm
+    src/launcher/manual_map_load_library.asm)
 target_include_directories(anomaly_manual_map PUBLIC include)
 target_compile_definitions(
     anomaly_manual_map PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1098,6 +1100,15 @@ add_executable(anomaly_abi_snapshot apps/abi_snapshot/main.cpp)
 set_target_properties(anomaly_abi_snapshot PROPERTIES OUTPUT_NAME "anomaly-abi-snapshot")
 target_link_libraries(anomaly_abi_snapshot PRIVATE Anomaly::sdk)
 target_compile_options(anomaly_abi_snapshot PRIVATE /W4 /permissive- /EHsc)
+
+# Attaches the runtime core to a game that is already running. It shares the mapper the launcher uses,
+# so the attach it performs is the same one the launcher's live-attach mode performs.
+add_executable(anomaly_injector apps/injector/main.cpp)
+set_target_properties(anomaly_injector PROPERTIES OUTPUT_NAME "anomaly-inject")
+target_include_directories(anomaly_injector PRIVATE include)
+target_compile_definitions(anomaly_injector PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_injector PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_injector PRIVATE anomaly_manual_map)
 
 add_executable(anomaly_test_host apps/test_host/main.cpp src/plugin/plugin_manager.cpp)
 set_target_properties(anomaly_test_host PROPERTIES OUTPUT_NAME "anomaly-test-host")
@@ -1951,7 +1962,7 @@ endif()
 set(ANOMALY_RELEASE_PE_TARGETS
     dwmapi anomaly_core anomaly_launcher anomaly_crash_coordinator anomaly_nte_game_hook
     anomaly-plugin anomaly_abi_snapshot anomaly_test_host
-    anomaly-profile anomaly_cli anomaly_inspect)
+    anomaly-profile anomaly_cli anomaly_inspect anomaly_injector)
 get_property(ANOMALY_RELEASE_PLUGIN_TARGETS GLOBAL PROPERTY ANOMALY_RELEASE_PLUGIN_TARGETS)
 list(REMOVE_DUPLICATES ANOMALY_RELEASE_PLUGIN_TARGETS)
 foreach(runtime_plugin_target IN LISTS ANOMALY_RELEASE_PLUGIN_TARGETS)
@@ -2016,6 +2027,7 @@ install(CODE [[
 install(DIRECTORY profiles/
     DESTINATION Anomaly/profiles COMPONENT GameRuntime)
 install(TARGETS anomaly_cli anomaly_inspect anomaly-profile anomaly-plugin anomaly_abi_snapshot anomaly_test_host
+    anomaly_injector
     RUNTIME DESTINATION . COMPONENT Tools)
 # The layout editor is one offline HTML file: it needs no runtime, no network and
 # no build step, so it ships as data next to the command line tools.

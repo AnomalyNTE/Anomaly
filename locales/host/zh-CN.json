@@ -527,6 +527,11 @@
     "launcher.status.launching_attach": "正在启动 NTELauncher 并等待 HTGame.exe",
     "launcher.status.launch_attached": "HTGame.exe 已启动，Anomaly Core 已附加到 PID {0}",
     "launcher.status.launch_attach_failed": "启动并附加失败，错误码 {0}",
+    "launcher.action.inject_running": "注入到运行中的进程",
+    "launcher.status.injecting_process": "正在将 Anomaly Core 映射到运行中的游戏",
+    "launcher.status.injected": "Anomaly Core 已注入 PID {0}",
+    "launcher.status.inject_failed": "注入失败，错误码 {0}",
+
     "launcher.status.unexpected_failure": "启动器操作意外失败",
     "launcher.status.select_game_directory": "请选择包含 HTGame.exe 的目录",
     "launcher.status.proxy_operation_failed": "代理操作失败",

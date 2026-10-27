@@ -27,6 +27,13 @@
 
 extern "C" void AnomalyRemoteBootstrapBegin();
 extern "C" void AnomalyRemoteBootstrapEnd();
+extern "C" void AnomalyRemoteHijackBegin();
+extern "C" void AnomalyRemoteHijackEnd();
+extern "C" void AnomalyRemoteLoadLibraryBegin();
+extern "C" void AnomalyRemoteLoadLibraryEnd();
+// Data slots inside the hijack trampoline, patched before the block is written into the target.
+extern "C" std::uint64_t AnomalyRemoteHijackStateSlot;
+extern "C" std::uint64_t AnomalyRemoteHijackResumeSlot;
 
 namespace anomaly::launcher {
 namespace {
@@ -258,7 +265,11 @@ struct RemoteBootstrapContext final {
     std::uint32_t bootstrap_error{};
     std::uint32_t runtime_start_error{};
     std::uint32_t unwind_registered{};
-    std::uint32_t reserved2{};
+    // Written by the remote bootstrap as it finishes. Deliveries that own no thread in the target have
+    // nothing to wait on, so this stamp is what reports that the bootstrap ran and returned.
+    std::uint32_t completion_stamp{};
+    // Taken by whichever thread enters the bootstrap first. The value is one; zero means unclaimed.
+    std::uint32_t claim{};
 };
 
 static_assert(offsetof(RemoteBootstrapContext, image_base) == 0);
@@ -273,6 +284,45 @@ static_assert(offsetof(RemoteBootstrapContext, start_info) == 64);
 static_assert(offsetof(RemoteBootstrapContext, bootstrap_error) == 72);
 static_assert(offsetof(RemoteBootstrapContext, runtime_start_error) == 76);
 static_assert(offsetof(RemoteBootstrapContext, unwind_registered) == 80);
+static_assert(offsetof(RemoteBootstrapContext, completion_stamp) == 84);
+static_assert(offsetof(RemoteBootstrapContext, claim) == 88);
+
+// The stamp a remote payload writes when it returns, in both payload contexts. It is the only
+// completion signal a delivery that owns no thread in the target can wait on.
+constexpr DWORD kCompletionStamp = 0x444F4E45;  // "DONE"
+
+// The state block the hijack trampoline saves into (src/launcher/manual_map_hijack.asm).
+struct RemoteHijackState final {
+    std::uint64_t payload{};
+    std::uint64_t payload_context{};
+    std::uint64_t saved_stack_pointer{};
+    std::byte caller_vectors[6 * 16]{};
+};
+
+static_assert(offsetof(RemoteHijackState, payload) == 0);
+static_assert(offsetof(RemoteHijackState, payload_context) == 8);
+static_assert(offsetof(RemoteHijackState, saved_stack_pointer) == 16);
+static_assert(offsetof(RemoteHijackState, caller_vectors) == 24);
+
+// The context the remote dependency loader is called with (src/launcher/manual_map_load_library.asm).
+struct RemoteLoadLibraryContext final {
+    std::uint64_t path{};
+    std::uint64_t load_library{};
+    std::uint64_t get_last_error{};
+    std::uint64_t module{};
+    std::uint32_t completion_stamp{};
+    std::uint32_t claim{};
+    std::uint32_t last_error{};
+    std::uint32_t reserved{};
+};
+
+static_assert(offsetof(RemoteLoadLibraryContext, path) == 0);
+static_assert(offsetof(RemoteLoadLibraryContext, load_library) == 8);
+static_assert(offsetof(RemoteLoadLibraryContext, get_last_error) == 16);
+static_assert(offsetof(RemoteLoadLibraryContext, module) == 24);
+static_assert(offsetof(RemoteLoadLibraryContext, completion_stamp) == 32);
+static_assert(offsetof(RemoteLoadLibraryContext, claim) == 36);
+static_assert(offsetof(RemoteLoadLibraryContext, last_error) == 40);
 
 struct DelayImportDescriptor final {
     DWORD attributes{};
@@ -982,12 +1032,6 @@ std::string NarrowPath(const std::filesystem::path& path) {
 
 // A remote loader thread exits with the module handle it produced, so its exit code is reported in
 // hex where the surrounding diagnostics are read.
-std::string Hex32(std::uint32_t value) {
-    constexpr char digits[] = "0123456789ABCDEF";
-    std::string text = "0x";
-    for (int shift = 28; shift >= 0; shift -= 4) text.push_back(digits[(value >> shift) & 0xF]);
-    return text;
-}
 
 std::filesystem::path LocalModulePath(HMODULE module) {
     if (module == nullptr) return {};
@@ -1049,64 +1093,17 @@ std::optional<std::uintptr_t> RemoteAddressForLocalProcedure(
          reinterpret_cast<std::uintptr_t>(owner->first));
 }
 
+// Defined below the delivery machinery: loading a dependency into the target runs remote code, and which
+// way in that code is entered is the caller's choice, exactly as it is for the bootstrap.
 bool RemoteLoadLibrary(
-    HANDLE process, const std::filesystem::path& path,
-    RemoteModuleMap& modules, std::string& failure) {
-    const FARPROC local_load_library = GetProcAddress(
-        GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
-    const auto remote_load_library =
-        RemoteAddressForLocalProcedure(local_load_library, modules);
-    if (!remote_load_library) {
-        failure = "remote LoadLibraryW address could not be resolved";
-        return false;
-    }
-    const std::wstring value = path.wstring();
-    const std::size_t bytes = (value.size() + 1) * sizeof(wchar_t);
-    RemoteAllocation argument(
-        process, VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE),
-        bytes);
-    if (argument.address == nullptr || WriteProcessMemory(
-            process, argument.address, value.c_str(), bytes, nullptr) == FALSE) {
-        failure = "remote dependency path could not be written";
-        return false;
-    }
-    Handle thread(CreateRemoteThread(
-        process, nullptr, 0,
-        reinterpret_cast<LPTHREAD_START_ROUTINE>(*remote_load_library),
-        argument.address, 0, nullptr));
-    if (!thread) {
-        failure = "remote dependency loader thread could not be created";
-        return false;
-    }
-    const DWORD wait = WaitForSingleObject(thread.Get(), 15000);
-    if (wait != WAIT_OBJECT_0) {
-        argument.retained = true;
-        failure = "remote dependency loader did not complete";
-        return false;
-    }
-    DWORD loaded{};
-    static_cast<void>(GetExitCodeThread(thread.Get(), &loaded));
-    DWORD snapshot_error{};
-    modules = SnapshotModules(process, snapshot_error);
-    if (snapshot_error != ERROR_SUCCESS) {
-        failure = "remote modules could not be refreshed";
-        return false;
-    }
-    // The loader thread exits with the module handle it produced, so a null result means nothing was
-    // loaded. Reporting success there would hide the failure behind whatever symptom it causes next.
-    if (FindRemoteModule(modules, path) == modules.end()) {
-        failure = "remote loader returned 0x" + Hex32(loaded) + " for " + NarrowPath(path);
-        return false;
-    }
-    return true;
-}
-
+    HANDLE process, const std::filesystem::path& path, RemoteModuleMap& modules,
+    ManualMapDelivery delivery, std::string& failure);
 bool EnsureRemoteModule(
     HANDLE process, const std::filesystem::path& requested,
-    RemoteModuleMap& modules, std::string& failure) {
+    RemoteModuleMap& modules, ManualMapDelivery delivery, std::string& failure) {
     const std::wstring name = Fold(requested.filename().wstring());
     if (FindRemoteModule(modules, requested) != modules.end()) return true;
-    if (!RemoteLoadLibrary(process, requested, modules, failure)) return false;
+    if (!RemoteLoadLibrary(process, requested, modules, delivery, failure)) return false;
     if (FindRemoteModule(modules, requested) != modules.end()) return true;
     const bool api_set = name.starts_with(L"api-ms-") || name.starts_with(L"ext-ms-");
     if (api_set) return true;
@@ -1119,7 +1116,7 @@ bool EnsureRemoteModule(
 bool ResolveOneImport(
     HANDLE process, HMODULE local_module,
     const IMAGE_THUNK_DATA64& source, IMAGE_THUNK_DATA64& destination,
-    RemoteModuleMap& modules, std::string& failure,
+    RemoteModuleMap& modules, ManualMapDelivery delivery, std::string& failure,
     const std::vector<std::byte>& image, ImportOverride* import_override) {
     FARPROC procedure{};
     if (IMAGE_SNAP_BY_ORDINAL64(source.u1.Ordinal)) {
@@ -1152,7 +1149,7 @@ bool ResolveOneImport(
         failure = "imported procedure could not be resolved";
         return false;
     }
-    if (!EnsureRemoteModule(process, owner->second, modules, failure)) {
+    if (!EnsureRemoteModule(process, owner->second, modules, delivery, failure)) {
         return false;
     }
     const auto remote = RemoteAddressForLocalProcedure(procedure, modules);
@@ -1167,7 +1164,7 @@ bool ResolveOneImport(
 bool ResolveThunkTable(
     HANDLE process, std::vector<std::byte>& image, HMODULE local_module,
     DWORD source_rva, DWORD destination_rva,
-    RemoteModuleMap& modules, std::string& failure,
+    RemoteModuleMap& modules, ManualMapDelivery delivery, std::string& failure,
     ImportOverride* import_override) {
     const std::size_t maximum = image.size() / sizeof(IMAGE_THUNK_DATA64);
     for (std::size_t index = 0; index < maximum; ++index) {
@@ -1183,7 +1180,7 @@ bool ResolveThunkTable(
         const IMAGE_THUNK_DATA64 source_value = *source;
         if (!ResolveOneImport(
                 process, local_module, source_value, *destination,
-                modules, failure, image, import_override)) {
+                modules, delivery, failure, image, import_override)) {
             return false;
         }
     }
@@ -1193,7 +1190,7 @@ bool ResolveThunkTable(
 
 bool ResolveImports(
     HANDLE process, ParsedImage& parsed,
-    RemoteModuleMap& modules, std::string& failure,
+    RemoteModuleMap& modules, ManualMapDelivery delivery, std::string& failure,
     ImportOverride* import_override = nullptr) {
     auto* headers = Headers(parsed.mapped);
     if (headers == nullptr) return false;
@@ -1232,14 +1229,14 @@ bool ResolveImports(
             const auto remote_request = std::filesystem::is_regular_file(adjacent, error) && !error
                 ? std::filesystem::absolute(adjacent) : LocalModulePath(local.Get());
             if (remote_request.empty() || !EnsureRemoteModule(
-                    process, remote_request, modules, failure)) {
+                    process, remote_request, modules, delivery, failure)) {
                 return false;
             }
             const DWORD source = descriptor->OriginalFirstThunk != 0
                 ? descriptor->OriginalFirstThunk : descriptor->FirstThunk;
             if (!ResolveThunkTable(
                     process, parsed.mapped, local.Get(),
-                    source, descriptor->FirstThunk, modules, failure,
+                    source, descriptor->FirstThunk, modules, delivery, failure,
                     import_override)) {
                 return false;
             }
@@ -1289,11 +1286,11 @@ bool ResolveImports(
         const auto remote_request = std::filesystem::is_regular_file(adjacent, error) && !error
             ? std::filesystem::absolute(adjacent) : LocalModulePath(local.Get());
         if (remote_request.empty() || !EnsureRemoteModule(
-                process, remote_request, modules, failure) ||
+                process, remote_request, modules, delivery, failure) ||
             !ResolveThunkTable(
                 process, parsed.mapped, local.Get(),
                 descriptor->import_name_table, descriptor->import_address_table,
-                modules, failure, import_override)) {
+                modules, delivery, failure, import_override)) {
             if (failure.empty()) failure = "delay import dependency could not be resolved";
             return false;
         }
@@ -1467,6 +1464,472 @@ RemoteAllocation WriteRemoteWideString(HANDLE process, const std::filesystem::pa
     return result;
 }
 
+// ---------------------------------------------------------------- remote delivery
+//
+// Getting a payload to run is separate from building it. A freshly created process can be entered
+// from a thread this process is allowed to create; a game that has been running for a while is entered
+// through threads it already owns, because a new thread is the part of an injection that is easiest for
+// the target to notice. All three deliveries run the same bootstrap and the same claim discipline, so
+// only the way in differs.
+
+enum class DeliveryOutcome : std::uint8_t { Completed, TimedOut, Failed };
+
+struct DeliveryResult final {
+    DeliveryOutcome outcome{DeliveryOutcome::Failed};
+    DWORD win32_error{ERROR_SUCCESS};
+    std::string failure;
+    DWORD thread_exit_code{STILL_ACTIVE};
+    bool thread_exit_available{};
+};
+
+// One run of remote code: where to enter, the block it is called with, and where that block reports that
+// it finished and that someone owns it. The bootstrap and the dependency loader are both described this
+// way, so a delivery only has to know how to enter a target.
+struct RemoteExecution final {
+    HANDLE process{};
+    std::uintptr_t code{};
+    std::uintptr_t context{};
+    std::size_t completion_offset{};
+    std::size_t claim_offset{};
+    std::chrono::milliseconds timeout{};
+};
+
+const char* DeliveryName(ManualMapDelivery delivery) noexcept {
+    switch (delivery) {
+        case ManualMapDelivery::ThreadHijack: return "thread hijack";
+        case ManualMapDelivery::Automatic: return "automatic";
+        case ManualMapDelivery::RemoteThread:
+        default: return "remote thread";
+    }
+}
+
+std::vector<DWORD> SnapshotThreads(HANDLE process) {
+    std::vector<DWORD> result;
+    const DWORD process_id = GetProcessId(process);
+    if (process_id == 0) return result;
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+    if (!snapshot) return result;
+    THREADENTRY32 entry{.dwSize = sizeof(entry)};
+    if (Thread32First(snapshot.Get(), &entry) == FALSE) return result;
+    do {
+        if (entry.th32OwnerProcessID == process_id) result.push_back(entry.th32ThreadID);
+        entry.dwSize = sizeof(entry);
+    } while (Thread32Next(snapshot.Get(), &entry) != FALSE);
+    return result;
+}
+
+// The image an address belongs to, asked of the kernel instead of the target's loader list:
+// VirtualQueryEx reports the backing file of any address, including one in a process whose module list
+// was never walked. This is what makes the hijack candidate check independent of PEB access.
+std::wstring MappedImageName(HANDLE process, std::uintptr_t address) {
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQueryEx(
+            process, reinterpret_cast<const void*>(address), &region, sizeof(region)) == 0 ||
+        region.Type != MEM_IMAGE) {
+        return {};
+    }
+    std::wstring path(32768, L'\0');
+    const DWORD length = GetMappedFileNameW(
+        process, reinterpret_cast<void*>(address), path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) return {};
+    path.resize(length);
+    return Fold(std::filesystem::path(path).filename().wstring());
+}
+
+// A thread waiting inside one of ntdll's system call stubs is at an ABI boundary: the stub has issued, or
+// is about to issue, a system call, and its argument registers are the only live state. That is the one
+// place in a running game where the instruction pointer can be redirected and put back without corrupting
+// the thread that was using it.
+//
+// A thread that is already blocked has its user-mode return address immediately after the `syscall`
+// instruction, so what identifies it is the pair of bytes just before the instruction pointer. A thread
+// that has not issued the call yet is identified by the bytes at it.
+bool IsSystemCallStub(HANDLE process, std::uintptr_t instruction_pointer) {
+    const std::wstring image = MappedImageName(process, instruction_pointer);
+    if (image != L"ntdll.dll" && image != L"win32u.dll") return false;
+    constexpr std::size_t kLookbehind = 8;
+    if (instruction_pointer < kLookbehind) return false;
+    std::array<std::byte, kLookbehind + 16> code{};
+    SIZE_T read{};
+    if (ReadProcessMemory(
+            process, reinterpret_cast<const void*>(instruction_pointer - kLookbehind),
+            code.data(), code.size(), &read) == FALSE || read < kLookbehind + 4) {
+        // Inside an image but not at a boundary that could be read: not a candidate. A ntdll code page is
+        // readable, so this is a thread somewhere else entirely.
+        return false;
+    }
+    const auto byte_at = [&code](std::size_t index) {
+        return static_cast<std::uint8_t>(code[index]);
+    };
+    const auto at = [&byte_at](std::size_t index) {
+        return byte_at(kLookbehind + index);
+    };
+    if (byte_at(kLookbehind - 2) == 0x0F && byte_at(kLookbehind - 1) == 0x05) return true;
+    return (at(0) == 0x4C && at(1) == 0x8B && at(2) == 0xD1) ||  // mov r10, rcx
+        at(0) == 0xB8 ||                                         // mov eax, ssn
+        at(0) == 0xE9 ||                                         // jmp rel32
+        (at(0) == 0x48 && at(1) == 0xFF && at(2) == 0x25) ||     // jmp [rip + d]
+        (at(0) == 0x0F && at(1) == 0x05);                        // syscall
+}
+
+bool ExecutionCompleted(const RemoteExecution& execution) {
+    DWORD stamp{};
+    return ReadRemote(
+        execution.process, execution.context + execution.completion_offset,
+        &stamp, sizeof(stamp)) && stamp == kCompletionStamp;
+}
+
+bool ExecutionClaimed(const RemoteExecution& execution) {
+    std::uint32_t claim{};
+    return ReadRemote(
+        execution.process, execution.context + execution.claim_offset,
+        &claim, sizeof(claim)) && claim != 0;
+}
+
+bool WaitForCompletion(const RemoteExecution& execution, std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        if (ExecutionCompleted(execution)) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        Sleep(5);
+    }
+}
+
+DeliveryResult DeliverWithRemoteThread(const RemoteExecution& execution) {
+    Handle thread(CreateRemoteThread(
+        execution.process, nullptr, 0,
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(execution.code),
+        reinterpret_cast<void*>(execution.context), 0, nullptr));
+    if (!thread) {
+        return {DeliveryOutcome::Failed, GetLastError(),
+            "a thread could not be created in the target"};
+    }
+    const DWORD bounded_timeout = static_cast<DWORD>(std::clamp<std::int64_t>(
+        execution.timeout.count(), 1, static_cast<std::int64_t>(INFINITE - 1)));
+    if (WaitForSingleObject(thread.Get(), bounded_timeout) != WAIT_OBJECT_0) {
+        return {DeliveryOutcome::TimedOut, ERROR_TIMEOUT,
+            "the thread created in the target did not complete before the timeout"};
+    }
+    DeliveryResult result;
+    result.outcome = DeliveryOutcome::Completed;
+    result.thread_exit_available = GetExitCodeThread(thread.Get(), &result.thread_exit_code) != FALSE;
+    if (!result.thread_exit_available) {
+        result.outcome = DeliveryOutcome::Failed;
+        result.win32_error = GetLastError();
+        result.failure = "the thread created in the target reported no exit code";
+    }
+    return result;
+}
+
+// A thread that was redirected out of a stub returns through a single `ret`, so it is out of the
+// trampoline once its instruction pointer is outside the trampoline's code page. Until then the page
+// cannot be freed.
+bool WaitForTrampolineExit(
+    HANDLE thread, std::uintptr_t code_address, std::uintptr_t code_limit,
+    std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        if (SuspendThread(thread) == static_cast<DWORD>(-1)) return false;
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_CONTROL;
+        const bool read = GetThreadContext(thread, &context) != FALSE;
+        ResumeThread(thread);
+        if (read && (context.Rip < code_address || context.Rip >= code_limit)) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        Sleep(1);
+    }
+}
+
+DeliveryResult DeliverWithThreadHijack(const RemoteExecution& execution) {
+    const auto begin = reinterpret_cast<std::uintptr_t>(
+        reinterpret_cast<const void*>(&AnomalyRemoteHijackBegin));
+    const auto end = reinterpret_cast<std::uintptr_t>(
+        reinterpret_cast<const void*>(&AnomalyRemoteHijackEnd));
+    const auto state_slot = reinterpret_cast<std::uintptr_t>(&AnomalyRemoteHijackStateSlot);
+    const auto resume_slot = reinterpret_cast<std::uintptr_t>(&AnomalyRemoteHijackResumeSlot);
+    constexpr std::size_t kTrampolineReservation = 0x2000;
+    constexpr std::size_t kStatePageOffset = 0x1000;
+    if (end <= begin || end - begin > kStatePageOffset / 2 ||
+        state_slot < begin || state_slot + sizeof(std::uint64_t) > end ||
+        resume_slot < begin || resume_slot + sizeof(std::uint64_t) > end) {
+        return {DeliveryOutcome::Failed, ERROR_INVALID_ADDRESS,
+            "hijack trampoline code range is invalid"};
+    }
+    std::vector<std::byte> code(end - begin);
+    std::memcpy(code.data(), reinterpret_cast<const void*>(begin), code.size());
+
+    // A thread parked in a stub only reaches the trampoline when the wait it is in ends, and how long that
+    // takes cannot be known: a thread in a short timed wait returns within a millisecond, one waiting for
+    // something that never happens never returns at all. So candidates are taken in turn, each with a slice
+    // of the budget, and whichever returns to user mode first runs the payload for all of them.
+    constexpr std::size_t kMaximumCandidates = 8;
+    const auto deadline = std::chrono::steady_clock::now() + execution.timeout;
+    const auto candidate_slice = (std::max)(
+        std::chrono::milliseconds(execution.timeout.count() / 4),
+        std::chrono::milliseconds(500));
+
+    std::size_t inspected{};
+    std::size_t redirected{};
+    for (const DWORD thread_id : SnapshotThreads(execution.process)) {
+        if (redirected >= kMaximumCandidates || std::chrono::steady_clock::now() >= deadline) break;
+        ++inspected;
+        Handle thread(OpenThread(
+            THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
+                THREAD_QUERY_INFORMATION, FALSE, thread_id));
+        if (!thread) continue;
+        if (SuspendThread(thread.Get()) == static_cast<DWORD>(-1)) continue;
+        CONTEXT thread_context{};
+        thread_context.ContextFlags = CONTEXT_CONTROL;
+        if (GetThreadContext(thread.Get(), &thread_context) == FALSE ||
+            !IsSystemCallStub(execution.process, thread_context.Rip)) {
+            ResumeThread(thread.Get());
+            continue;
+        }
+
+        // Each candidate gets its own state block: the saved stack pointer and the caller's vector
+        // registers belong to the thread that was redirected.
+        RemoteAllocation trampoline(
+            execution.process, VirtualAllocEx(
+                execution.process, nullptr, kTrampolineReservation,
+                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), kTrampolineReservation);
+        if (trampoline.address == nullptr) {
+            ResumeThread(thread.Get());
+            break;
+        }
+        const auto code_address = reinterpret_cast<std::uintptr_t>(trampoline.address);
+        const auto state_address = code_address + kStatePageOffset;
+        const RemoteHijackState state{
+            .payload = execution.code,
+            .payload_context = execution.context,
+        };
+        const auto write_slot = [&code, begin](std::uintptr_t slot, std::uint64_t value) {
+            std::memcpy(code.data() + (slot - begin), &value, sizeof(value));
+        };
+        write_slot(state_slot, state_address);
+        write_slot(resume_slot, thread_context.Rip);
+        DWORD previous{};
+        if (WriteProcessMemory(
+                execution.process, trampoline.address, code.data(), code.size(),
+                nullptr) == FALSE ||
+            WriteProcessMemory(
+                execution.process, reinterpret_cast<void*>(state_address), &state,
+                sizeof(state), nullptr) == FALSE ||
+            VirtualProtectEx(
+                execution.process, trampoline.address, kStatePageOffset,
+                PAGE_EXECUTE_READ, &previous) == FALSE ||
+            FlushInstructionCache(
+                execution.process, trampoline.address, code.size()) == FALSE) {
+            const DWORD error = GetLastError();
+            ResumeThread(thread.Get());
+            return {DeliveryOutcome::Failed, error,
+                "the hijack trampoline could not be prepared in the target"};
+        }
+        CONTEXT redirected_context = thread_context;
+        redirected_context.Rip = code_address;
+        if (SetThreadContext(thread.Get(), &redirected_context) == FALSE) {
+            const DWORD error = GetLastError();
+            ResumeThread(thread.Get());
+            return {DeliveryOutcome::Failed, error,
+                "the target thread context could not be redirected"};
+        }
+        ResumeThread(thread.Get());
+        ++redirected;
+
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::milliseconds::zero()) {
+            remaining = std::chrono::milliseconds(1);
+        }
+        if (WaitForCompletion(execution, (std::min)(candidate_slice, remaining))) {
+            if (!WaitForTrampolineExit(
+                    thread.Get(), code_address, code_address + kStatePageOffset,
+                    std::chrono::seconds(5))) {
+                // The entry point finished, so the work itself succeeded; only this page has to stay where
+                // it is while the thread may still be standing in it.
+                trampoline.retained = true;
+            }
+            return {DeliveryOutcome::Completed, ERROR_SUCCESS, {}};
+        }
+        // This thread has not returned to user mode yet, so its trampoline stays: the payload claim makes
+        // it a no-op if it arrives after another candidate has already run it.
+        trampoline.retained = true;
+    }
+    if (redirected == 0) {
+        return {DeliveryOutcome::Failed, ERROR_NOT_FOUND,
+            "no target thread was parked in a system call stub (" +
+                std::to_string(inspected) + " inspected)"};
+    }
+    return {DeliveryOutcome::TimedOut, ERROR_TIMEOUT,
+        "none of the " + std::to_string(redirected) +
+            " redirected threads returned to user mode within the timeout"};
+}
+
+DeliveryResult DeliverExecution(const RemoteExecution& execution, ManualMapDelivery delivery) {
+    switch (delivery) {
+        case ManualMapDelivery::ThreadHijack:
+            return DeliverWithThreadHijack(execution);
+        case ManualMapDelivery::Automatic: {
+            // Which of these can work depends on what the running game is doing at this instant, so each
+            // one gets a share of the timeout and the failure of both is reported together.
+            //
+            // The order is the measured one: a game running with a kernel anti-cheat refuses the thread a
+            // remote thread delivery asks for, and its own parked threads are then the only way in.
+            const auto share = std::chrono::milliseconds((std::max)(
+                static_cast<std::int64_t>(execution.timeout.count()) / 2, std::int64_t{1000}));
+            std::string failures;
+            for (const auto candidate : {ManualMapDelivery::ThreadHijack,
+                     ManualMapDelivery::RemoteThread}) {
+                RemoteExecution attempt = execution;
+                attempt.timeout = share;
+                const auto result = DeliverExecution(attempt, candidate);
+                if (result.outcome == DeliveryOutcome::Completed) return result;
+                if (failures.empty()) failures = result.failure;
+                else failures += "; " + result.failure;
+                // A payload that a thread already claimed is running in the target: trying another
+                // delivery would only queue a second entry point behind it.
+                if (ExecutionClaimed(execution)) {
+                    return {result.outcome, result.win32_error, failures};
+                }
+            }
+            return {DeliveryOutcome::Failed, ERROR_TIMEOUT,
+                "no delivery method could run the entry point (" + failures + ")"};
+        }
+        case ManualMapDelivery::RemoteThread:
+        default:
+            return DeliverWithRemoteThread(execution);
+    }
+}
+
+std::string Hex64(std::uint64_t value) {
+    constexpr char digits[] = "0123456789ABCDEF";
+    std::string text = "0x";
+    for (int shift = 60; shift >= 0; shift -= 4) text.push_back(digits[(value >> shift) & 0xF]);
+    return text;
+}
+
+// Loading a dependency into the target is remote code execution like any other, so it goes through the same
+// deliveries: a target that refuses a thread from outside will refuse it here too, and that is the step a
+// manual map dies on when it cannot be finished. The stub records the module handle and the loader's own
+// error code, which is what makes a refusal reportable instead of guessable.
+bool RemoteLoadLibrary(
+    HANDLE process, const std::filesystem::path& path, RemoteModuleMap& modules,
+    ManualMapDelivery delivery, std::string& failure) {
+    const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+    const auto remote_load_library = RemoteAddressForLocalProcedure(
+        GetProcAddress(kernel32, "LoadLibraryW"), modules);
+    const auto remote_get_last_error = RemoteAddressForLocalProcedure(
+        GetProcAddress(kernel32, "GetLastError"), modules);
+    if (!remote_load_library || !remote_get_last_error) {
+        failure = "the target's LoadLibraryW address could not be resolved";
+        return false;
+    }
+
+    const std::wstring value = path.wstring();
+    const std::size_t bytes = (value.size() + 1) * sizeof(wchar_t);
+    RemoteAllocation argument(
+        process, VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE),
+        bytes);
+    if (argument.address == nullptr || WriteProcessMemory(
+            process, argument.address, value.c_str(), bytes, nullptr) == FALSE) {
+        failure = "the dependency path could not be written into the target";
+        return false;
+    }
+
+    const auto* stub_begin = reinterpret_cast<const std::byte*>(
+        reinterpret_cast<const void*>(&AnomalyRemoteLoadLibraryBegin));
+    const auto* stub_end = reinterpret_cast<const std::byte*>(
+        reinterpret_cast<const void*>(&AnomalyRemoteLoadLibraryEnd));
+    if (stub_end <= stub_begin || static_cast<std::size_t>(stub_end - stub_begin) > 4096) {
+        failure = "the dependency loader code range is invalid";
+        return false;
+    }
+    const std::size_t stub_size = static_cast<std::size_t>(stub_end - stub_begin);
+    RemoteAllocation stub(
+        process, VirtualAllocEx(
+            process, nullptr, stub_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), stub_size);
+    if (stub.address == nullptr || WriteProcessMemory(
+            process, stub.address, stub_begin, stub_size, nullptr) == FALSE) {
+        failure = "the dependency loader could not be written into the target";
+        return false;
+    }
+    DWORD previous{};
+    if (VirtualProtectEx(
+            process, stub.address, stub_size, PAGE_EXECUTE_READ, &previous) == FALSE ||
+        FlushInstructionCache(process, stub.address, stub_size) == FALSE) {
+        failure = "the dependency loader could not be made executable in the target";
+        return false;
+    }
+
+    RemoteLoadLibraryContext context{
+        .path = reinterpret_cast<std::uintptr_t>(argument.address),
+        .load_library = *remote_load_library,
+        .get_last_error = *remote_get_last_error,
+    };
+    RemoteAllocation remote_context(
+        process, VirtualAllocEx(
+            process, nullptr, sizeof(context), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE),
+        sizeof(context));
+    if (remote_context.address == nullptr || WriteProcessMemory(
+            process, remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
+        failure = "the dependency loader context could not be written into the target";
+        return false;
+    }
+
+    const auto result = DeliverExecution(
+        RemoteExecution{
+            .process = process,
+            .code = reinterpret_cast<std::uintptr_t>(stub.address),
+            .context = reinterpret_cast<std::uintptr_t>(remote_context.address),
+            .completion_offset = offsetof(RemoteLoadLibraryContext, completion_stamp),
+            .claim_offset = offsetof(RemoteLoadLibraryContext, claim),
+            .timeout = std::chrono::seconds(15),
+        },
+        delivery);
+    // A redirected thread can still be standing in these blocks, so nothing is released unless this
+    // process owned the only thread that could reach them.
+    const bool cancellable = delivery == ManualMapDelivery::RemoteThread;
+    if (result.outcome != DeliveryOutcome::Completed) {
+        argument.retained = true;
+        stub.retained = true;
+        remote_context.retained = true;
+        // How far the loader got is what makes the failure actionable: not entered, entered and stuck in
+        // LoadLibraryW, or finished with a result that was never reported.
+        RemoteLoadLibraryContext observed = context;
+        static_cast<void>(ReadProcessMemory(
+            process, remote_context.address, &observed, sizeof(observed), nullptr));
+        const char* stage = observed.claim == 0
+            ? "the loader was never entered"
+            : observed.module == 0 ? "LoadLibraryW did not return"
+                                   : "LoadLibraryW returned but the loader did not report back";
+        failure = "the target could not be made to load " + NarrowPath(path) + ": " +
+            result.failure + " (" + DeliveryName(delivery) + "; " + stage + ")";
+        return false;
+    }
+    if (!cancellable) {
+        argument.retained = true;
+        stub.retained = true;
+        remote_context.retained = true;
+    }
+    if (ReadProcessMemory(
+            process, remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
+        failure = "the dependency loader result could not be read";
+        return false;
+    }
+    DWORD snapshot_error{};
+    modules = SnapshotModules(process, snapshot_error);
+    if (snapshot_error != ERROR_SUCCESS) {
+        failure = "remote modules could not be refreshed";
+        return false;
+    }
+    if (FindRemoteModule(modules, path) == modules.end()) {
+        // The module handle plus the loader's own error is what says why the target refused the module.
+        failure = "the target did not load " + NarrowPath(path) + ": LoadLibraryW returned " +
+            Hex64(context.module) + ", error " + std::to_string(context.last_error);
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 AttachableProcess InspectAttachableProcess(DWORD process_id) noexcept {
@@ -1614,7 +2077,7 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             .address = remote_image_address + *cxx_throw_rva,
         };
         if (!ResolveImports(
-                process.Get(), *parsed, modules, image_failure,
+                process.Get(), *parsed, modules, options.delivery, image_failure,
                 &cxx_throw_override)) {
             return Failure(
                 ManualMapError::DependencyFailure, ERROR_MOD_NOT_FOUND,
@@ -1790,12 +2253,12 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         }
         const std::size_t bootstrap_size =
             static_cast<std::size_t>(bootstrap_end - bootstrap_begin);
-        RemoteAllocation remote_bootstrap(
+        RemoteAllocation remote_stub(
             process.Get(), VirtualAllocEx(
                 process.Get(), nullptr, bootstrap_size,
                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE), bootstrap_size);
-        if (remote_bootstrap.address == nullptr || WriteProcessMemory(
-                process.Get(), remote_bootstrap.address, bootstrap_begin,
+        if (remote_stub.address == nullptr || WriteProcessMemory(
+                process.Get(), remote_stub.address, bootstrap_begin,
                 bootstrap_size, nullptr) == FALSE) {
             return Failure(
                 ManualMapError::WriteFailure, GetLastError(),
@@ -1803,46 +2266,54 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         }
         DWORD previous{};
         if (VirtualProtectEx(
-                process.Get(), remote_bootstrap.address, bootstrap_size,
+                process.Get(), remote_stub.address, bootstrap_size,
                 PAGE_EXECUTE_READ, &previous) == FALSE ||
             FlushInstructionCache(
-                process.Get(), remote_bootstrap.address, bootstrap_size) == FALSE) {
+                process.Get(), remote_stub.address, bootstrap_size) == FALSE) {
             return Failure(
                 ManualMapError::ProtectionFailure, GetLastError(),
                 "remote bootstrap code could not be made executable");
         }
 
-        Handle thread(CreateRemoteThread(
-            process.Get(), nullptr, 0,
-            reinterpret_cast<LPTHREAD_START_ROUTINE>(remote_bootstrap.address),
-            remote_context.address, 0, nullptr));
-        if (!thread) {
-            return Failure(
-                ManualMapError::BootstrapFailure, GetLastError(),
-                "remote bootstrap thread could not be created");
-        }
         const auto bounded_timeout = std::clamp<std::int64_t>(
             options.timeout.count(), 1, static_cast<std::int64_t>(INFINITE - 1));
-        const DWORD wait = WaitForSingleObject(
-            thread.Get(), static_cast<DWORD>(bounded_timeout));
-        if (wait != WAIT_OBJECT_0) {
+        const auto delivery = DeliverExecution(
+            RemoteExecution{
+                .process = process.Get(),
+                .code = reinterpret_cast<std::uintptr_t>(remote_stub.address),
+                .context = reinterpret_cast<std::uintptr_t>(remote_context.address),
+                .completion_offset = offsetof(RemoteBootstrapContext, completion_stamp),
+                .claim_offset = offsetof(RemoteBootstrapContext, claim),
+                .timeout = std::chrono::milliseconds(bounded_timeout),
+            },
+            options.delivery);
+        // A redirected thread still points at the payload code and at the context, so both have to
+        // outlive this call whatever the outcome was.
+        const bool cancellable = options.delivery == ManualMapDelivery::RemoteThread;
+        if (delivery.outcome == DeliveryOutcome::TimedOut) {
             remote_image.retained = true;
             remote_context.retained = true;
-            remote_bootstrap.retained = true;
+            remote_stub.retained = true;
             remote_start_info.retained = true;
             remote_root.retained = true;
             remote_log.retained = true;
             return Failure(
-                ManualMapError::Timeout,
-                wait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT,
-                "remote bootstrap did not complete before the timeout",
-                ERROR_TIMEOUT, remote_image_address);
+                ManualMapError::Timeout, delivery.win32_error,
+                delivery.failure + " (" + DeliveryName(options.delivery) + ")", ERROR_TIMEOUT,
+                remote_image_address);
         }
-        DWORD thread_exit_code{STILL_ACTIVE};
-        const bool thread_exit_available =
-            GetExitCodeThread(thread.Get(), &thread_exit_code) != FALSE;
-        const DWORD thread_exit_error =
-            thread_exit_available ? ERROR_SUCCESS : GetLastError();
+        if (delivery.outcome == DeliveryOutcome::Failed) {
+            return Failure(
+                ManualMapError::BootstrapFailure, delivery.win32_error,
+                delivery.failure + " (" + DeliveryName(options.delivery) + ")",
+                ERROR_SUCCESS, remote_image_address);
+        }
+        if (!cancellable) {
+            remote_context.retained = true;
+            remote_stub.retained = true;
+        }
+        const DWORD thread_exit_code = delivery.thread_exit_code;
+        const bool thread_exit_available = delivery.thread_exit_available;
         if (ReadProcessMemory(
             process.Get(), remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
             if (thread_exit_available && thread_exit_code != ERROR_SUCCESS) {
@@ -1865,14 +2336,14 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
                 "Anomaly core initialization failed in the target process",
                 context.runtime_start_error, remote_image_address);
         }
-        if (!thread_exit_available || thread_exit_code != ERROR_SUCCESS) {
+        // Only the delivery that owns a thread has an exit code to judge. The others run the payload on
+        // a thread of the game's own, and the context they read back is the whole report.
+        if (thread_exit_available && thread_exit_code != ERROR_SUCCESS) {
             return Failure(
-                ManualMapError::BootstrapFailure,
-                thread_exit_available ? thread_exit_code : thread_exit_error,
+                ManualMapError::BootstrapFailure, thread_exit_code,
                 "remote bootstrap thread terminated unexpectedly (exit=" +
                     std::to_string(thread_exit_code) + ")",
-                thread_exit_available ? thread_exit_code : ERROR_UNHANDLED_EXCEPTION,
-                remote_image_address);
+                thread_exit_code, remote_image_address);
         }
         remote_image.retained = true;
         return {ManualMapError::None, ERROR_SUCCESS, ERROR_SUCCESS,
@@ -1881,6 +2352,77 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         return Failure(
             ManualMapError::ImageInvalid, ERROR_UNHANDLED_EXCEPTION,
             "manual-map attach raised an unexpected exception");
+    }
+}
+
+namespace {
+
+// Live attach asks the target for exactly what the chosen delivery needs: creating a thread is only
+// requested when a thread is actually going to be created in it.
+DWORD AttachAccessFor(ManualMapDelivery delivery) noexcept {
+    constexpr DWORD kMappingAccess = PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
+        PROCESS_VM_READ | PROCESS_VM_WRITE;
+    return delivery == ManualMapDelivery::RemoteThread ? kMappingAccess | PROCESS_CREATE_THREAD
+                                                       : kMappingAccess;
+}
+
+}  // namespace
+
+ManualMapResult AttachToRunningProcess(const ManualMapOptions& options) noexcept {
+    try {
+        if (options.process_id == 0 || options.core_path.empty()) {
+            return Failure(
+                ManualMapError::ProcessUnavailable, ERROR_INVALID_PARAMETER,
+                "live attach options are incomplete");
+        }
+        const auto inspected = InspectAttachableProcess(options.process_id);
+        if (inspected.inspection_error != ERROR_SUCCESS) {
+            return Failure(
+                inspected.inspection_error == ERROR_INVALID_PARAMETER ||
+                        inspected.inspection_error == ERROR_NOT_FOUND
+                    ? ManualMapError::ProcessUnavailable
+                    : ManualMapError::AccessDenied,
+                inspected.inspection_error,
+                "the running target could not be inspected for live attach");
+        }
+        if (!inspected.owned_by_current_user) {
+            return Failure(
+                ManualMapError::DifferentUser, ERROR_ACCESS_DENIED,
+                "the running target belongs to another user");
+        }
+        if (!inspected.x64) {
+            return Failure(
+                ManualMapError::IncompatibleArchitecture, ERROR_BAD_EXE_FORMAT,
+                "the running target is not an x64 process");
+        }
+
+        DWORD open_error{};
+        Handle process =
+            OpenProcessWithAccess(options.process_id, AttachAccessFor(options.delivery), open_error);
+        if (!process) {
+            return Failure(
+                ManualMapError::AccessDenied, open_error,
+                "the running target could not be opened for live attach");
+        }
+
+        // A process that has been running for a while always has its loader list, so this wait normally
+        // ends on the first read. It is here because the caller decides when the target is running, and a
+        // game that was attached to within milliseconds of starting has not published one yet.
+        DWORD module_error = ERROR_NOT_READY;
+        RemoteModuleMap modules;
+        if (!WaitForLoaderReady(
+                process.Get(), inspected.executable_name,
+                std::chrono::steady_clock::now() + options.timeout, modules, module_error)) {
+            return Failure(
+                ManualMapError::DependencyFailure,
+                module_error == ERROR_SUCCESS ? ERROR_TIMEOUT : module_error,
+                "the running target's loader list did not become readable");
+        }
+        return ManualMapRuntimeCoreWithHandle(options, inspected, process);
+    } catch (...) {
+        return Failure(
+            ManualMapError::ProcessUnavailable, ERROR_UNHANDLED_EXCEPTION,
+            "live attach raised an unexpected exception");
     }
 }
 
@@ -1982,8 +2524,9 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
                     "the launcher's loader did not initialize before the hook timeout");
                 return result;
             }
-            if (!RemoteLoadLibrary(launcher_process.Get(), options.hook_path, launcher_modules,
-                    hook_failure)) {
+            if (!RemoteLoadLibrary(
+                    launcher_process.Get(), options.hook_path, launcher_modules,
+                    ManualMapDelivery::RemoteThread, hook_failure)) {
                 result.mapping = Failure(ManualMapError::ProcessControlFailure,
                     ERROR_DLL_INIT_FAILED, "the game hook could not be injected");
                 return result;

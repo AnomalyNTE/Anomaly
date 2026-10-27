@@ -634,6 +634,48 @@ public:
         });
     }
 
+    // Live attach: map the core into a game the player started from its own shortcut, at whatever point
+    // they start the launcher. Nothing is relaunched and nothing is terminated, so a failed attach leaves
+    // the running game exactly as it was.
+    void InjectIntoRunningProcess(const DWORD process_id) {
+        if (process_id == 0) return;
+        Queue(anomaly::MessageId::LauncherStatusInjectingProcess, MessageScope::Attach,
+            [this, process_id] {
+            const auto selected = ResolveAttachRuntime();
+            if (!selected.Ok()) {
+                PublishRuntimeFailure(selected);
+                return;
+            }
+            anomaly::launcher::ManualMapOptions options;
+            options.process_id = process_id;
+            options.core_path = selected.core_path;
+            options.runtime_root = selected.runtime_root;
+            options.log_directory = options.runtime_root / L"logs";
+            // Which way into a game that is already running can work depends on what that game is doing
+            // at this moment: whether a thread reaches an alertable wait, whether one is parked in a
+            // system call. The mapper tries them in turn rather than making the user guess.
+            options.delivery = anomaly::launcher::ManualMapDelivery::Automatic;
+            const auto result = anomaly::launcher::AttachToRunningProcess(options);
+            // Announce is off: the rescan would report the attachment in the launched wording and
+            // replace the message this action is about to publish.
+            if (result.Ok()) RefreshProcessesImpl(false);
+
+            std::scoped_lock lock(state_mutex_);
+            if (result.Ok()) {
+                state_.attached_process = process_id;
+                const std::string target = std::to_string(process_id);
+                state_.message = MakeLauncherMessage(
+                    anomaly::MessageId::LauncherStatusInjected, {target});
+                state_.message_kind = MessageKind::Success;
+            } else {
+                const std::string error = std::to_string(result.win32_error);
+                state_.message = MakeLauncherMessage(
+                    anomaly::MessageId::LauncherStatusInjectFailed, {error}, result.message);
+                state_.message_kind = MessageKind::Error;
+            }
+        });
+    }
+
     void SetToggleKey(const std::uint32_t key) {
         Queue(anomaly::MessageId::LauncherStatusSavingSettings, MessageScope::Both, [this, key] {
             if (!SaveToggleKeyImpl(key)) {
@@ -1959,11 +2001,28 @@ void DrawAttachMode(
 
     const bool can_launch = !snapshot.busy && snapshot.core_available &&
         !snapshot.launcher_executable.empty() && snapshot.processes.empty();
+    // A game that is already running is the other half of the same choice: the launch action needs an
+    // empty process list, this one needs a target in it.
+    DWORD inject_target{};
+    for (const auto& process : snapshot.processes) {
+        if (process.Compatible()) {
+            inject_target = process.process_id;
+            break;
+        }
+    }
+    const bool can_inject = !snapshot.busy && snapshot.core_available && inject_target != 0;
     // The same bottom-right placement and size as the proxy mode's primary action,
     // so switching modes does not move the button under the cursor.
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - Scale(74.0f));
     ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(),
-        ImGui::GetWindowWidth() - Scale(240.0f) - Scale(16.0f)));
+        ImGui::GetWindowWidth() - Scale(452.0f) - Scale(16.0f)));
+    if (CommandButton(
+            "inject-running-process", 0xe8b7,
+            Text(translator, anomaly::MessageId::LauncherActionInjectRunning), false,
+            can_inject, ImVec2(200.0f, 62.0f))) {
+        controller.InjectIntoRunningProcess(inject_target);
+    }
+    ImGui::SameLine(0.0f, Scale(12.0f));
     if (CommandButton(
             "launch-attach-core", 0xe768,
             Text(translator, anomaly::MessageId::LauncherLaunchAttach), true, can_launch,

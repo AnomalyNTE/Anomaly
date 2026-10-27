@@ -13,7 +13,19 @@ AnomalyRemoteBootstrapBegin:
     mov dword ptr [rbx + 72], 0
     mov dword ptr [rbx + 76], 0
     mov dword ptr [rbx + 80], 0
+    mov dword ptr [rbx + 84], 0
 
+    ; One owner only. Several threads parked in stubs may be redirected at the same context, so this
+    ; code can be entered more than once at a time; a second run would register the unwind tables twice and
+    ; start the runtime twice. The claim is taken before anything else happens.
+    mov eax, 1
+    lock xchg dword ptr [rbx + 88], eax
+    test eax, eax
+    jz bootstrap_claim
+    xor eax, eax
+    jmp bootstrap_return
+
+bootstrap_claim:
     mov edx, dword ptr [rbx + 16]
     test edx, edx
     jz bootstrap_tls
@@ -97,7 +109,11 @@ bootstrap_unregister:
     mov dword ptr [rbx + 80], 0
 
 bootstrap_done:
+    ; The completion stamp is the only signal a delivery that owns no thread can wait on: the thread that
+    ; ran this code goes back to whatever it was doing.
+    mov dword ptr [rbx + 84], 444F4E45h
     mov eax, dword ptr [rbx + 72]
+bootstrap_return:
     add rsp, 28h
     pop rsi
     pop rbx
