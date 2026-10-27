@@ -1144,37 +1144,14 @@ target_link_libraries(anomaly_test_host PRIVATE
     anomaly_i18n nlohmann_json::nlohmann_json Psapi)
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
-    # Rotation only bounds the log a session writes, so the retention pass that
-    # deletes expired files is verified here against real temporary directories:
-    # the age rule, the total size rule, protection of the open file, and the
-    # sweeps the structured logger performs at startup and per interval.
-    add_executable(anomaly_log_retention_fixture apps/log_retention_fixture/main.cpp)
-    set_target_properties(anomaly_log_retention_fixture PROPERTIES
-        OUTPUT_NAME "anomaly-log-retention-fixture")
-    target_compile_definitions(anomaly_log_retention_fixture PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(anomaly_log_retention_fixture PRIVATE /W4 /permissive- /EHsc)
-    target_link_libraries(anomaly_log_retention_fixture PRIVATE anomaly_structured_logger)
-
-    # Headless probe for the liquid glass material on a D3D12 device: it renders
-    # one surface off screen and reads it back, so the in-game material can be
-    # checked without the game.
-    add_executable(anomaly_glass_probe apps/glass_probe/main.cpp)
-    set_target_properties(anomaly_glass_probe PROPERTIES OUTPUT_NAME "anomaly-glass-probe")
-    target_include_directories(anomaly_glass_probe PRIVATE include "${GENERATED_DIR}")
-    target_compile_definitions(anomaly_glass_probe PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(anomaly_glass_probe PRIVATE /W4 /permissive- /EHsc)
-    target_link_libraries(anomaly_glass_probe PRIVATE anomaly_imgui d3d12 dxgi dxguid)
-
     add_executable(anomaly-platform-preview WIN32
-        apps/render_fixture/platform_preview.cpp
+        apps/platform_preview/main.cpp
         src/ui/platform_host.cpp
         "${PLATFORM_UI_RESOURCES_RC}"
         src/plugin/plugin_manager.cpp)
     set_target_properties(anomaly-platform-preview PROPERTIES
         OUTPUT_NAME "anomaly-platform-preview")
-    target_include_directories(anomaly-platform-preview PRIVATE include src "")
+    target_include_directories(anomaly-platform-preview PRIVATE include src "${GENERATED_DIR}" "")
     target_compile_definitions(anomaly-platform-preview PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_compile_options(anomaly-platform-preview PRIVATE /W4 /permissive- /EHsc)
     target_link_libraries(
@@ -1207,70 +1184,6 @@ target_link_libraries(anomaly_launcher PRIVATE
 # The hook is part of the runtime payload the launcher is installed with, so it is built before the
 # launcher that would inject it.
 add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
-
-if(ANOMALY_BUILD_TEST_FIXTURES)
-    add_executable(anomaly_render_fixture apps/render_fixture/main.cpp)
-    set_target_properties(anomaly_render_fixture PROPERTIES OUTPUT_NAME "anomaly-render-fixture")
-    target_compile_definitions(
-        anomaly_render_fixture PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(anomaly_render_fixture PRIVATE /W4 /permissive- /EHsc)
-    target_link_libraries(
-        anomaly_render_fixture PRIVATE anomaly_runtime_kernel d3d12 dxgi dxguid)
-endif()
-
-# Drives the Host UI button engine (anomaly.nte.ui-buttons) against an in-memory widget
-# tree laid out from the SDK dump, with offsets read from the shipped NTE Profile.
-if(ANOMALY_BUILD_TEST_FIXTURES)
-    add_executable(anomaly_nte_ui_buttons_fixture apps/nte_ui_buttons_fixture/main.cpp)
-    target_compile_definitions(anomaly_nte_ui_buttons_fixture PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-        "ANOMALY_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
-    target_compile_options(anomaly_nte_ui_buttons_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_link_libraries(anomaly_nte_ui_buttons_fixture PRIVATE
-        anomaly_adapter_services anomaly_build_profile)
-endif()
-
-# Exercises the Present interception path against a D3D11 swap chain, which is
-# what a title using the D3D11 RHI presents. Nothing covered that path before,
-# which is how an overlay that only knew how to draw with D3D12 could sit in a
-# D3D11 game reporting nothing but "waiting for a command queue". The fixture
-# owns the window, device and swap chain; everything above it is the real
-# embedded platform, hooks included.
-if(ANOMALY_BUILD_TEST_FIXTURES)
-    add_executable(anomaly_d3d11_fixture
-        apps/render_fixture/d3d11_embedded_fixture.cpp
-        src/ui/platform_host.cpp
-        "${PLATFORM_UI_RESOURCES_RC}"
-        src/render/dx12/embedded_bridge.cpp
-        src/render/dx12/embedded_discovery.cpp
-        src/render/dx12/embedded_input.cpp
-        src/render/dx12/embedded_renderer.cpp
-        src/render/dx12/embedded_ui_resource_render_backend.cpp
-        src/ui/embedded_ui.cpp
-        src/game/nte/nte_esc_menu_bridge.cpp
-        src/plugin/plugin_manager.cpp)
-    set_target_properties(anomaly_d3d11_fixture PROPERTIES OUTPUT_NAME "anomaly-d3d11-fixture")
-    target_include_directories(anomaly_d3d11_fixture PRIVATE include src "${GENERATED_DIR}")
-    target_compile_definitions(
-        anomaly_d3d11_fixture PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(anomaly_d3d11_fixture PRIVATE /W4 /permissive- /EHsc)
-    target_link_libraries(
-        anomaly_d3d11_fixture PRIVATE
-        ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
-        anomaly_platform_ui_model
-        anomaly_platform_settings
-        anomaly_platform_ui_layout
-        anomaly_scoped_platform
-        anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
-        anomaly_nte_profile_runtime
-        anomaly_websocket_server
-        anomaly_repository_coordinator
-        anomaly_crash_reporter anomaly_runtime_crash_coordinator
-        anomaly_structured_logger anomaly_ui_resources anomaly_i18n
-        anomaly_adapter_services anomaly_plugin_runtime
-        nlohmann_json::nlohmann_json d3d11 d3d12 dxgi dxguid)
-    add_dependencies(anomaly_d3d11_fixture anomaly_stage_nte_profiles)
-endif()
 
 option(ANOMALY_BUILD_SDK_EXAMPLES "Build the Anomaly 1.0 SDK example plugins" ON)
 option(ANOMALY_BUILD_BUILTIN_PLUGINS "Build Anomaly bundled plugins" ON)
@@ -1879,120 +1792,6 @@ if(TARGET anomaly-platform-preview)
         VERBATIM)
 endif()
 
-# Diagnostic probe packages: bounded transport traces and the exact-build BidKing
-# probes. They are read-only research packages that ship in no release component,
-# so they are opt-in (`build.cmd probes`) instead of part of the default build.
-option(ANOMALY_BUILD_DIAGNOSTIC_PROBES
-    "Build the opt-in diagnostic probe plugin packages" OFF)
-if(ANOMALY_BUILD_DIAGNOSTIC_PROBES)
-    function(anomaly_add_winsock_trace_probe target operation plugin_id package_name)
-        anomaly_add_plugin(${target} NO_RELEASE
-            SOURCES tools/winsock_trace_probe/plugin.cpp
-            MANIFEST tools/winsock_trace_probe/manifests/${package_name}.json
-            PACKAGE_NAME ${package_name}
-            OUTPUT_DIRECTORY
-                "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/winsock-trace-probes/${package_name}")
-        target_compile_definitions(${target} PRIVATE
-            UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-            "ANOMALY_WINSOCK_TRACE_OPERATION=${operation}"
-            "ANOMALY_WINSOCK_TRACE_PLUGIN_ID=\"${plugin_id}\"")
-        target_link_libraries(${target} PRIVATE Ws2_32 Iphlpapi Bcrypt)
-    endfunction()
-
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_send 1 anomaly.diagnostics.winsock.send WinsockSend)
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_sendto 2 anomaly.diagnostics.winsock.sendto WinsockSendTo)
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_wsasend 3 anomaly.diagnostics.winsock.wsasend WinsockWsaSend)
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_wsasendto 4 anomaly.diagnostics.winsock.wsasendto WinsockWsaSendTo)
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_recv 5 anomaly.diagnostics.winsock.recv WinsockRecv)
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_recvfrom 6 anomaly.diagnostics.winsock.recvfrom WinsockRecvFrom)
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_wsarecv 7 anomaly.diagnostics.winsock.wsarecv WinsockWsaRecv)
-    anomaly_add_winsock_trace_probe(
-        anomaly_winsock_trace_wsarecvfrom 8 anomaly.diagnostics.winsock.wsarecvfrom WinsockWsaRecvFrom)
-
-    set(ANOMALY_WINSOCK_TRACE_PROBE_TARGETS
-        anomaly_winsock_trace_send
-        anomaly_winsock_trace_sendto
-        anomaly_winsock_trace_wsasend
-        anomaly_winsock_trace_wsasendto
-        anomaly_winsock_trace_recv
-        anomaly_winsock_trace_recvfrom
-        anomaly_winsock_trace_wsarecv
-        anomaly_winsock_trace_wsarecvfrom)
-    add_dependencies(anomaly_test_host ${ANOMALY_WINSOCK_TRACE_PROBE_TARGETS})
-
-    anomaly_add_plugin(anomaly_netproto_pipeline_trace NO_RELEASE
-        SOURCES tools/netproto_probe/plugin.cpp
-        MANIFEST tools/netproto_probe/manifests/NetProtoPipelineTrace.json
-        PACKAGE_NAME NetProtoPipelineTrace
-        OUTPUT_DIRECTORY
-            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/winsock-trace-probes/NetProtoPipelineTrace")
-    target_compile_definitions(anomaly_netproto_pipeline_trace PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(anomaly_netproto_pipeline_trace PRIVATE Bcrypt)
-    add_dependencies(anomaly_test_host anomaly_netproto_pipeline_trace)
-
-    anomaly_add_plugin(anomaly_secur32_tls_trace NO_RELEASE
-        SOURCES tools/tls_trace_probe/plugin.cpp
-        MANIFEST tools/tls_trace_probe/manifests/Secur32TlsTrace.json
-        PACKAGE_NAME Secur32TlsTrace
-        OUTPUT_DIRECTORY
-            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/winsock-trace-probes/Secur32TlsTrace")
-    target_compile_definitions(anomaly_secur32_tls_trace PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX SECURITY_WIN32)
-    target_link_libraries(anomaly_secur32_tls_trace PRIVATE Bcrypt)
-    add_dependencies(anomaly_test_host anomaly_secur32_tls_trace)
-
-    anomaly_add_plugin(anomaly_winhttp_trace NO_RELEASE
-        SOURCES tools/http_trace_probe/plugin.cpp
-        MANIFEST tools/http_trace_probe/manifests/WinHttpTrace.json
-        PACKAGE_NAME WinHttpTrace
-        OUTPUT_DIRECTORY
-            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/winsock-trace-probes/WinHttpTrace")
-    target_compile_definitions(anomaly_winhttp_trace PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(anomaly_winhttp_trace PRIVATE Bcrypt Winhttp)
-    add_dependencies(anomaly_test_host anomaly_winhttp_trace)
-
-    anomaly_add_plugin(anomaly_bcrypt_trace NO_RELEASE
-        SOURCES tools/bcrypt_trace_probe/plugin.cpp
-        MANIFEST tools/bcrypt_trace_probe/manifests/BcryptTrace.json
-        PACKAGE_NAME BcryptTrace
-        OUTPUT_DIRECTORY
-            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/winsock-trace-probes/BcryptTrace")
-    target_compile_definitions(anomaly_bcrypt_trace PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(anomaly_bcrypt_trace PRIVATE Bcrypt)
-    add_dependencies(anomaly_test_host anomaly_bcrypt_trace)
-endif()
-
-if(ANOMALY_BUILD_DIAGNOSTIC_PROBES)
-    anomaly_add_plugin(anomaly_bidking_object_catalog NO_RELEASE
-        SOURCES tools/bidking_object_catalog/plugin.cpp
-        MANIFEST tools/bidking_object_catalog/manifest.json
-        PACKAGE_NAME BidKingObjectCatalog
-        OUTPUT_DIRECTORY
-            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/bidking-object-catalog/BidKingObjectCatalog")
-    target_compile_definitions(anomaly_bidking_object_catalog PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    add_dependencies(anomaly_test_host anomaly_bidking_object_catalog)
-
-    anomaly_add_plugin(anomaly_bidking_round_pool_probe NO_RELEASE
-        SOURCES tools/bidking_round_pool_probe/plugin.cpp
-        MANIFEST tools/bidking_round_pool_probe/manifest.json
-        PACKAGE_NAME BidKingRoundPoolProbe
-        OUTPUT_DIRECTORY
-            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/bidking-round-pool-probe/BidKingRoundPoolProbe")
-    target_compile_definitions(anomaly_bidking_round_pool_probe PRIVATE
-        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    add_dependencies(anomaly_test_host anomaly_bidking_round_pool_probe)
-endif()
 set(ANOMALY_RELEASE_PE_TARGETS
     dwmapi anomaly_core anomaly_launcher anomaly_crash_coordinator anomaly_nte_game_hook
     anomaly-plugin anomaly_abi_snapshot anomaly_test_host

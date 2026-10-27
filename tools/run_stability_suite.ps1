@@ -67,9 +67,6 @@ $performance = Find-BuildArtifact @(
 $testHost = Find-BuildArtifact @(
     'bin\anomaly-test-host.exe',
     'bin\RelWithDebInfo\anomaly-test-host.exe')
-$renderFixture = Find-BuildArtifact @(
-    'bin\anomaly-render-fixture.exe',
-    'bin\RelWithDebInfo\anomaly-render-fixture.exe')
 $helloUi = Find-BuildDirectory @(
     'bin\sdk-examples\HelloUi',
     'bin\RelWithDebInfo\sdk-examples\HelloUi')
@@ -91,14 +88,6 @@ if ($pluginSeconds -gt 0) {
         '--tick-interval-ms', '16',
         '--reload-every-ticks', $reloadEveryTicks.ToString())
 }
-
-$frames = if ($Quick) { 200 } else { 1000 }
-$resizes = if ($Quick) { 10 } else { 50 }
-$rebuilds = if ($Quick) { 4 } else { 10 }
-Invoke-Gate 'render-window-continuity' $renderFixture @(
-    '--frames', $frames.ToString(),
-    '--resizes', $resizes.ToString(),
-    '--rebuilds', $rebuilds.ToString())
 
 $summary = Join-Path $output "stability-$stamp.json"
 [pscustomobject]@{

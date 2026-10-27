@@ -13,10 +13,10 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
   --prefix .build\windows-vs2022\game-package --component GameRuntime
 ```
 
-默认构建只产出 Runtime、Tools、SDK 三个发布组件所需的 target。开发夹具（`fixtures`）、诊断探针
-（`probes`）、开发者测试插件包（`testplugins`）与 PDB（`symbols`）都不属于任何发布组件，默认
-不构建，只在需要时显式开启：`build.cmd fixtures|probes|testplugins|symbols`，或在 configure
-阶段传入 `ANOMALY_BUILD_TEST_FIXTURES=ON`、`ANOMALY_BUILD_DIAGNOSTIC_PROBES=ON`、
+默认构建只产出 Runtime、Tools、SDK 三个发布组件所需的 target。开发夹具（`fixtures`）、
+开发者测试插件包（`testplugins`）与 PDB（`symbols`）都不属于任何发布组件，默认
+不构建，只在需要时显式开启：`build.cmd fixtures|testplugins|symbols`，或在 configure
+阶段传入 `ANOMALY_BUILD_TEST_FIXTURES=ON`、
 `ANOMALY_BUILD_TEST_PLUGINS=ON`、`ANOMALY_BUILD_SYMBOLS=ON`。测试插件包
 （`MapSpawnExporter`、`NteMovementHold`、`NteNavmeshDemo`、`NtePickupDemo`、
 `TeleportLandmarksProbe`）通过独立的 `TestPlugins` 组件安装，任何发布组件都不含该组件。
@@ -56,7 +56,6 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 | `anomaly-cli` 只读命令 | `status`、`modules`、`sections`、`regions`、`scan`、`ue`、`read`、`chain`、`snapshot` | 目标只能是自有进程；snapshot 和日志可能含敏感路径/数据 |
 | `anomaly-cli` 修改命令 | `write`、`patch`、`protect`、`alloc`、`free` | 需要用户明确授权和自有测试目标；不得作为常规诊断手段 |
 | `diagnose_nte_profile.ps1`、`rescan_profile_signatures.ps1`、`scan_nte_entities.ps1` | 检查实时 NTE 目标和活动 Profile | 必须有明确请求、正确 PID/Profile；生成数据分享前需审查 |
-| `start-coordinate-tracker.ps1` | 启动常驻后台 tracker | 仅在明确请求时使用；结束前必须运行 `stop-coordinate-tracker.ps1` |
 | `collect_diagnostics.ps1` | 生成脱敏诊断包 | 用 `pwsh -NoProfile -File` 启动；检查输入 Runtime 和输出路径，dump 必须人工审查 |
 | `package_release.ps1` | staging Runtime、Tools、SDK 三个组件，并覆盖发布输出 | 用 `pwsh -NoProfile -File` 启动；仅在干净标准构建后，且指定明确版本/输出目录时运行 |
 | `run_stability_suite.ps1` | 显式 opt-in 的 soak 证据；需要先 `build.cmd fixtures` | 用 `pwsh -NoProfile -File` 启动；`-Quick` 只用于脚本冒烟，不是发布证据 |
