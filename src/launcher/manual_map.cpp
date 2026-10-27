@@ -1696,11 +1696,16 @@ DeliveryResult DeliverWithThreadHijack(const RemoteExecution& execution) {
     // takes cannot be known: a thread in a short timed wait returns within a millisecond, one waiting for
     // something that never happens never returns at all. So candidates are taken in turn, each with a slice
     // of the budget, and whichever returns to user mode first runs the payload for all of them.
-    constexpr std::size_t kMaximumCandidates = 8;
+    // Every thread the process will let this one open: the payload runs as soon as any redirected thread
+    // comes back to user mode, so the budget is spent covering them all rather than waiting on a few.
+    constexpr std::size_t kMaximumCandidates = 64;
     const auto deadline = std::chrono::steady_clock::now() + execution.timeout;
-    const auto candidate_slice = (std::max)(
-        std::chrono::milliseconds(execution.timeout.count() / 4),
-        std::chrono::milliseconds(500));
+    // Short slices on purpose: most threads of a running game are parked in waits that never end, so the
+    // budget is spent looking for one that does return -- a render or worker thread with a frame-sized
+    // wait -- instead of sitting on the first thread for the whole timeout.
+    const auto candidate_slice = std::clamp(
+        std::chrono::milliseconds(execution.timeout.count() / 8),
+        std::chrono::milliseconds(250), std::chrono::milliseconds(2000));
 
     std::size_t inspected{};
     std::size_t redirected{};

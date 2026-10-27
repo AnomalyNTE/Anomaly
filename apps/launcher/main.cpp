@@ -142,6 +142,10 @@ struct LauncherMessage final {
 // owns: the initial scan, settings and hotkey writes.
 enum class MessageScope { Both, Proxy, Attach };
 
+// When a process rescan is allowed to write the status line: a background poll must not overwrite an
+// outcome, but it does have to correct a status that has become untrue.
+enum class ProcessAnnounce { Never, Always, OnChange };
+
 struct LauncherSnapshot final {
     anomaly::launcher::NteClient selected_client{
         anomaly::launcher::NteClient::MainlandChina};
@@ -408,6 +412,7 @@ const char* Glyph(char32_t codepoint) {
         Entry{0xe7ba, EncodeUtf8(0xe7ba)},
         Entry{0xe711, EncodeUtf8(0xe711)},
         Entry{0xe8b7, EncodeUtf8(0xe8b7)},
+        Entry{0xe8e5, EncodeUtf8(0xe8e5)},
     };
     const auto found = std::find_if(entries.begin(), entries.end(), [codepoint](const auto& entry) {
         return entry.codepoint == codepoint;
@@ -480,7 +485,7 @@ public:
             RefreshHotkeyImpl();
             RefreshProxyImpl();
             RefreshRecoveryImpl();
-            RefreshProcessesImpl(false);
+            RefreshProcessesImpl(ProcessAnnounce::Never);
             if (!saved.Ok()) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
                     MessageKind::Error, saved.message);
@@ -492,7 +497,7 @@ public:
         Queue(anomaly::MessageId::LauncherStatusInspectingProxy, MessageScope::Proxy, [this] {
             RefreshProxyImpl();
             RefreshRecoveryImpl();
-            RefreshProcessesImpl(false);
+            RefreshProcessesImpl(ProcessAnnounce::Never);
         });
     }
 
@@ -502,7 +507,7 @@ public:
             const auto result = anomaly::launcher::InstallProxyRuntime(game, source_);
             PublishProxy(result);
             RefreshRecoveryImpl();
-            RefreshProcessesImpl(false);
+            RefreshProcessesImpl(ProcessAnnounce::Never);
         });
     }
 
@@ -528,6 +533,29 @@ public:
     void RefreshProcesses() {
         Queue(anomaly::MessageId::LauncherStatusScanningProcesses,
             MessageScope::Attach, [this] { RefreshProcessesImpl(); });
+    }
+
+    // A game that starts after this window is up would otherwise leave the list empty until the user asks
+    // for a scan. Polling keeps it current: the work runs on the worker like every other operation, but it
+    // is silent -- it never takes the busy flag, so buttons do not flicker, and it never writes the status
+    // line, so an outcome stays readable while the list behind it catches up.
+    void PollProcesses() {
+        constexpr auto kInterval = std::chrono::seconds(2);
+        {
+            std::scoped_lock lock(state_mutex_);
+            if (state_.busy) return;
+            const auto now = std::chrono::steady_clock::now();
+            if (last_process_poll_ != std::chrono::steady_clock::time_point{} &&
+                now - last_process_poll_ < kInterval) {
+                return;
+            }
+            last_process_poll_ = now;
+        }
+        {
+            std::scoped_lock lock(queue_mutex_);
+            queue_.push_back([this] { RefreshProcessesImpl(ProcessAnnounce::OnChange); });
+        }
+        queue_changed_.notify_one();
     }
 
     void SelectLauncherExecutable(std::filesystem::path executable) {
@@ -658,7 +686,7 @@ public:
             const auto result = anomaly::launcher::AttachToRunningProcess(options);
             // Announce is off: the rescan would report the attachment in the launched wording and
             // replace the message this action is about to publish.
-            if (result.Ok()) RefreshProcessesImpl(false);
+            if (result.Ok()) RefreshProcessesImpl(ProcessAnnounce::Never);
 
             std::scoped_lock lock(state_mutex_);
             if (result.Ok()) {
@@ -965,7 +993,7 @@ private:
         state_.theme = std::move(theme);
     }
 
-    void RefreshProcessesImpl(bool announce = true) {
+    void RefreshProcessesImpl(ProcessAnnounce announce = ProcessAnnounce::Always) {
         auto processes = anomaly::launcher::EnumerateAttachableProcesses();
         const auto game_directory = GameDirectory();
         if (!game_directory.empty()) {
@@ -977,6 +1005,7 @@ private:
         const auto runtime = ResolveAttachRuntime();
         const bool core_available = runtime.Ok();
         std::scoped_lock lock(state_mutex_);
+        const bool had_processes = !state_.processes.empty();
         state_.processes = std::move(processes);
         state_.core_available = core_available;
         state_.runtime_version = runtime.version;
@@ -988,7 +1017,12 @@ private:
                 })) {
             state_.attached_process = 0;
         }
-        if (!announce) {
+        if (announce == ProcessAnnounce::Never) {
+            return;
+        }
+        // The background poll only speaks when the answer changed, so a list that fills in does not keep
+        // claiming that nothing is running.
+        if (announce == ProcessAnnounce::OnChange && had_processes == !state_.processes.empty()) {
             return;
         }
         if (!core_available) {
@@ -1032,6 +1066,8 @@ private:
     std::mutex queue_mutex_;
     std::condition_variable_any queue_changed_;
     std::deque<Work> queue_;
+    // Throttles PollProcesses: a per-frame caller must not turn into a per-frame process scan.
+    std::chrono::steady_clock::time_point last_process_poll_{};
     std::jthread worker_;
 };
 
@@ -2017,7 +2053,7 @@ void DrawAttachMode(
     ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(),
         ImGui::GetWindowWidth() - Scale(452.0f) - Scale(16.0f)));
     if (CommandButton(
-            "inject-running-process", 0xe8b7,
+            "inject-running-process", 0xe8e5,
             Text(translator, anomaly::MessageId::LauncherActionInjectRunning), false,
             can_inject, ImVec2(200.0f, 62.0f))) {
         controller.InjectIntoRunningProcess(inject_target);
@@ -2183,6 +2219,10 @@ void DrawLauncherTitleBar(
 void DrawLauncher(
     HWND window, Graphics& graphics, LauncherController& controller, LauncherMode& mode,
     const anomaly::Translator& translator) {
+    // Runs every frame whatever page is showing: a game that starts after this window is up has to appear
+    // in the list without the user pressing anything, and the poll throttles itself to one scan every couple
+    // of seconds on the worker thread.
+    controller.PollProcesses();
     const LauncherSnapshot snapshot = controller.Snapshot();
     ApplyLauncherTheme(snapshot.theme);
     UploadLauncherTheme(graphics, snapshot.theme);
