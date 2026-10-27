@@ -3263,6 +3263,38 @@ private:
         return std::string(suffix);
     }
 
+    // Draws the glossy top sheen of a plugin tile. AddRectFilledMultiColor cannot be used
+    // here: that fill is an axis-aligned rectangle, so it squares off the rounded top
+    // corners. The silhouette is emitted once as a convex fan with a per-vertex alpha
+    // ramp instead: the corners follow the tile's own path, and the ramp is interpolated
+    // by the rasterizer, so the fade is exactly the linear gradient the rectangle faked.
+    static void DrawIconTopSheen(ImDrawList* const draw_list, const ImVec2 minimum,
+        const ImVec2 maximum, const float rounding) {
+        const float height = maximum.y - minimum.y;
+        if (height <= 0.0f) return;
+        draw_list->PathRect(minimum, maximum, rounding, ImDrawFlags_RoundCornersTop);
+        const int point_count = draw_list->_Path.Size;
+        if (point_count < 3) {
+            draw_list->PathClear();
+            return;
+        }
+        const ImVec2 white_uv = draw_list->_Data->TexUvWhitePixel;
+        draw_list->PrimReserve((point_count - 2) * 3, point_count);
+        const auto index_base = static_cast<ImDrawIdx>(draw_list->_VtxCurrentIdx);
+        for (int i = 0; i < point_count; ++i) {
+            const ImVec2 point = draw_list->_Path[i];
+            const float fade = ImClamp(1.0f - (point.y - minimum.y) / height, 0.0f, 1.0f);
+            draw_list->PrimWriteVtx(point, white_uv,
+                IM_COL32(255, 255, 255, static_cast<int>(40.0f * fade + 0.5f)));
+        }
+        for (int i = 2; i < point_count; ++i) {
+            draw_list->PrimWriteIdx(index_base);
+            draw_list->PrimWriteIdx(static_cast<ImDrawIdx>(index_base + i - 1));
+            draw_list->PrimWriteIdx(static_cast<ImDrawIdx>(index_base + i));
+        }
+        draw_list->PathClear();
+    }
+
     static void DrawGenericPluginIcon(const ImVec2 position, const float size) {
         const auto& theme = anomaly::PlatformUiTheme();
         ImDrawList* const draw_list = ImGui::GetWindowDrawList();
@@ -3272,9 +3304,7 @@ private:
         // A continuous-corner tile in the proportion Apple uses for app icons.
         const float rounding = size * 0.26f;
         draw_list->AddRectFilled(position, Offset(position, size, size), fill, rounding);
-        draw_list->AddRectFilledMultiColor(position, Offset(position, size, size * 0.5f),
-            IM_COL32(255, 255, 255, 40), IM_COL32(255, 255, 255, 40),
-            IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
+        DrawIconTopSheen(draw_list, position, Offset(position, size, size * 0.5f), rounding);
         draw_list->AddRect(position, Offset(position, size, size), border, rounding);
         const ImVec2 glyph_size = ImGui::CalcTextSize(ShellGlyphText(ShellGlyph::Package));
         draw_list->AddText(Offset(position, (size - glyph_size.x) * 0.5f,
