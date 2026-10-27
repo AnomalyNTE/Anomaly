@@ -4,6 +4,7 @@
 #include "anomaly/reliable_storage.hpp"
 #include "anomaly/signature_updater.hpp"
 #include "anomaly/sdk/version.h"
+#include "anomaly/thread_local_value.hpp"
 
 #include <Windows.h>
 
@@ -37,6 +38,11 @@ constexpr std::size_t kMaximumConfigBytes = 1024U * 1024U;
 constexpr std::size_t kMaximumConfigEnvelopeBytes = kMaximumConfigBytes + 256U;
 constexpr std::size_t kMaximumSchemaBytes = 256U * 1024U;
 constexpr std::size_t kMaximumCallbackOutputBytes = 1024U * 1024U;
+
+// The core is manually mapped and cannot carry loader-managed static TLS, so the
+// per-thread status message for resolve_layout uses FLS storage instead of thread_local.
+// The SDK copies the message before the next call on the same thread.
+ThreadLocalObject<std::string> g_layout_diagnostic;
 
 AnomalyStatusV1 Status(const std::uint32_t code, const char* message = nullptr) noexcept {
     return {code, 0, {message, message == nullptr ? 0U : std::strlen(message)}};
@@ -1385,7 +1391,7 @@ AnomalyStatusV1 ScopedPlatformServices::ResolveSignatureLayout(
             }};
         const auto resolved = impl_->SignatureKnowledge(owner.state_directory)->ResolveLayout(scan_context, definition);
         // The SDK copies this message before the next call on this thread.
-        thread_local std::string diagnostic;
+        auto& diagnostic = g_layout_diagnostic.Get();
         diagnostic = resolved.diagnostic;
         if (!resolved.Ok()) return Status(resolved.conflict ? ANOMALY_STATUS_V1_CONFLICT : ANOMALY_STATUS_V1_NOT_FOUND,
             diagnostic.c_str());

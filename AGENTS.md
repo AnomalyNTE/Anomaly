@@ -76,6 +76,11 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
   包、加载 DLL、等待生命周期任务或同步执行文件/网络 I/O。
 - `include/anomaly/sdk/` 是公开 DLL 边界：仅纯 C ABI、定宽类型、opaque handle、清晰所有权以及
   version/`struct_size` 检查。不得暴露 STL、异常、RTTI 对象、裸 UE 对象、`ImGuiContext*` 或内部头文件。
+- Core 以手工映射方式运行，映像不能携带 loader-managed 静态 TLS。链接进 `anomaly_core` 的代码禁止
+  `thread_local`，也禁止会拉入 `_Init_thread_epoch` 的函数级动态初始化局部静态；线程本地状态一律改用
+  `include/anomaly/thread_local_value.hpp` 的 FLS 封装，新链接进 Core 的 target 必须登记到
+  `CMakeLists.txt` 的 `ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS`，并确认构建出的核心映像没有 `.tls` 段、
+  TLS 目录为空。
 
 完整的模块、线程和变更影响图见 `.agents/architecture.md`。
 
