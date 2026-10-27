@@ -1,0 +1,17 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+
+namespace anomaly::artwork {
+
+// The platform UI artwork, compiled into this image's read-only data rather than kept in its resource
+// directory. A core that is mapped without a loader has headers that can be hidden from module scanners,
+// and that is also what makes FindResourceW fail on it; plain data stays readable however the image was
+// mapped, and reading it costs a pointer and a copy instead of a file open.
+inline constexpr std::array<std::uint8_t, @ANOMALY_PLATFORM_LOGO_COUNT@> kPlatformLogo{
+    @ANOMALY_PLATFORM_LOGO_BYTES@};
+inline constexpr std::array<std::uint8_t, @ANOMALY_ESC_MENU_LOGO_COUNT@> kEscMenuLogo{
+    @ANOMALY_ESC_MENU_LOGO_BYTES@};
+
+}  // namespace anomaly::artwork

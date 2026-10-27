@@ -308,6 +308,25 @@ file(TO_CMAKE_PATH
     "${CMAKE_SOURCE_DIR}/apps/launcher/AnomalyLauncher.ico"
     ANOMALY_LAUNCHER_ICON_PATH)
 set(PLATFORM_UI_RESOURCES_RC "${GENERATED_DIR}/platform_ui_resources.rc")
+# The same artwork is compiled into the image's read-only data, because a core that is mapped without a
+# loader cannot read its own resource directory once its headers are hidden. Generating it here keeps one
+# source of truth: the PNGs above.
+file(READ "${ANOMALY_PLATFORM_LOGO_PATH}" ANOMALY_PLATFORM_LOGO_HEX HEX)
+file(READ "${ANOMALY_ESC_MENU_LOGO_PATH}" ANOMALY_ESC_MENU_LOGO_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
+    ANOMALY_PLATFORM_LOGO_BYTES "${ANOMALY_PLATFORM_LOGO_HEX}")
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
+    ANOMALY_ESC_MENU_LOGO_BYTES "${ANOMALY_ESC_MENU_LOGO_HEX}")
+string(LENGTH "${ANOMALY_PLATFORM_LOGO_HEX}" ANOMALY_PLATFORM_LOGO_HEX_LENGTH)
+string(LENGTH "${ANOMALY_ESC_MENU_LOGO_HEX}" ANOMALY_ESC_MENU_LOGO_HEX_LENGTH)
+math(EXPR ANOMALY_PLATFORM_LOGO_COUNT "${ANOMALY_PLATFORM_LOGO_HEX_LENGTH} / 2")
+math(EXPR ANOMALY_ESC_MENU_LOGO_COUNT "${ANOMALY_ESC_MENU_LOGO_HEX_LENGTH} / 2")
+file(MAKE_DIRECTORY "${GENERATED_DIR}/anomaly")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/embedded_artwork.hpp.in"
+    "${GENERATED_DIR}/anomaly/embedded_artwork.hpp" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${ANOMALY_PLATFORM_LOGO_PATH}" "${ANOMALY_ESC_MENU_LOGO_PATH}")
 set(LAUNCHER_RESOURCES_RC "${GENERATED_DIR}/AnomalyLauncher.rc")
 
 file(MAKE_DIRECTORY "${GENERATED_DIR}")
@@ -972,6 +991,7 @@ add_custom_target(anomaly_stage_nte_profiles ALL
 
 add_library(anomaly_core SHARED
     src/runtime/core_main.cpp
+    src/hook/ace_unhook.cpp
     src/runtime/manual_map_exception.cpp
     src/ui/platform_host.cpp
     "${PLATFORM_UI_RESOURCES_RC}"
@@ -1140,7 +1160,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         src/plugin/plugin_manager.cpp)
     set_target_properties(anomaly-platform-preview PROPERTIES
         OUTPUT_NAME "anomaly-platform-preview")
-    target_include_directories(anomaly-platform-preview PRIVATE include src)
+    target_include_directories(anomaly-platform-preview PRIVATE include src "")
     target_compile_definitions(anomaly-platform-preview PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_compile_options(anomaly-platform-preview PRIVATE /W4 /permissive- /EHsc)
     target_link_libraries(

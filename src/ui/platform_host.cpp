@@ -1,6 +1,7 @@
 #include "platform_host.hpp"
 
 #include "anomaly/host_ui_service.hpp"
+#include "anomaly/embedded_artwork.hpp"
 #include "anomaly/liquid_glass.hpp"
 #include "anomaly/adapter_service_registry.hpp"
 #include "anomaly/platform_ui_layout.hpp"
@@ -557,7 +558,6 @@ constexpr float kFavoriteStarScale = 0.85f;
 // The detail toggle keeps the 30x30 hit box but draws a noticeably larger star,
 // because the icon font's ink is smaller than its advance.
 constexpr float kFavoriteStarButtonScale = 1.45f;
-constexpr int kPlatformLogoResourceId = 101;
 constexpr float kPlatformHeaderHeight = 52.0f;
 constexpr float kPlatformHeaderLogoSize = 30.0f;
 constexpr float kPlatformHeaderActionColumnWidth = 110.0f;
@@ -608,21 +608,15 @@ struct ContactInformation final {
 
 [[nodiscard]] std::vector<std::uint8_t> LoadEmbeddedLogoBytes() noexcept {
     try {
-        const auto module = reinterpret_cast<HMODULE>(&__ImageBase);
-        const HRSRC resource = FindResourceW(
-            module, MAKEINTRESOURCEW(kPlatformLogoResourceId), RT_RCDATA);
-        if (resource == nullptr) return {};
-        const HGLOBAL loaded = LoadResource(module, resource);
-        const DWORD size = SizeofResource(module, resource);
-        const void* const bytes = loaded == nullptr ? nullptr : LockResource(loaded);
-        if (bytes == nullptr || size == 0) return {};
-        const auto* const first = static_cast<const std::uint8_t*>(bytes);
-        return {first, first + size};
+        const auto& bytes = anomaly::artwork::kPlatformLogo;
+        return {bytes.begin(), bytes.end()};
     } catch (...) {
         return {};
     }
 }
 
+// The game path uploads this host-owned image through the D3D12 resource backend. The standalone D3D11 host
+// has no generic resource backend, so keep an equivalent local shader-resource view for the same bytes.
 [[nodiscard]] bool StartsWith(
     const std::string_view value, const std::string_view prefix) noexcept {
     return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
@@ -643,10 +637,6 @@ struct ContactInformation final {
     return reinterpret_cast<INT_PTR>(ShellExecuteW(
                nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
 }
-
-// The game path uploads this host-owned image through the D3D12 resource
-// backend. The standalone D3D11 host has no generic resource backend, so keep
-// an equivalent local shader-resource view for the same embedded bytes.
 [[nodiscard]] bool CreateStandaloneHeaderLogo(HostWindow& host) noexcept {
     try {
         if (host.device == nullptr) return false;
