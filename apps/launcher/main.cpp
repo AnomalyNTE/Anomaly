@@ -106,12 +106,16 @@ enum class MessageKind : std::uint8_t { Neutral, Success, Error };
 // One decoded theme image. The worker decodes and the render thread only
 // uploads, so a large background never stalls on WIC during a frame.
 struct LauncherThemeImage final {
-    std::vector<std::uint8_t> pixels;
+    // Only the upload reads these; they are dropped as soon as the texture owns the
+    // picture, which is why the field is mutable behind a shared const theme.
+    mutable std::vector<std::uint8_t> pixels;
     std::uint32_t width{};
     std::uint32_t height{};
 
     [[nodiscard]] bool Ok() const noexcept {
-        return width != 0 && height != 0 && !pixels.empty();
+        // Dimensions are set together with a successful decode, so this keeps saying
+        // yes after the pixels are gone.
+        return width != 0 && height != 0;
     }
 };
 
@@ -402,18 +406,26 @@ std::string Ellipsize(std::string_view value, float width) {
     return std::string(suffix);
 }
 
+// Every icon the launcher draws, and therefore the whole icon font it bakes. A glyph
+// that is not in this list cannot be drawn, so adding one here is what makes it
+// available as well as visible.
+constexpr std::array<char32_t, 8> kLauncherIcons{
+    0xe838, 0xe72c, 0xe768, 0xe73e, 0xe7ba, 0xe711, 0xe8b7, 0xe8e5};
+
+// The launcher draws its body text at this multiple of the platform base size and its
+// title with an explicit size from the same font, so one bake serves every string on
+// screen. Another bake would only be a second copy of a 15.7 MB font.
+constexpr std::array kLauncherFontScales{2.00f};
+
 const char* Glyph(char32_t codepoint) {
     struct Entry final { char32_t codepoint; std::string text; };
-    static const std::array entries{
-        Entry{0xe838, EncodeUtf8(0xe838)},
-        Entry{0xe72c, EncodeUtf8(0xe72c)},
-        Entry{0xe768, EncodeUtf8(0xe768)},
-        Entry{0xe73e, EncodeUtf8(0xe73e)},
-        Entry{0xe7ba, EncodeUtf8(0xe7ba)},
-        Entry{0xe711, EncodeUtf8(0xe711)},
-        Entry{0xe8b7, EncodeUtf8(0xe8b7)},
-        Entry{0xe8e5, EncodeUtf8(0xe8e5)},
-    };
+    static const std::array<Entry, kLauncherIcons.size()> entries = [] {
+        std::array<Entry, kLauncherIcons.size()> built{};
+        for (std::size_t index = 0; index < built.size(); ++index) {
+            built[index] = Entry{kLauncherIcons[index], EncodeUtf8(kLauncherIcons[index])};
+        }
+        return built;
+    }();
     const auto found = std::find_if(entries.begin(), entries.end(), [codepoint](const auto& entry) {
         return entry.codepoint == codepoint;
     });
@@ -1317,6 +1329,14 @@ void UploadLauncherTheme(
         graphics.theme_sticker_sizes.emplace_back(
             static_cast<float>(width), static_cast<float>(height));
     }
+    // The textures are the picture now. Keeping the decoded RGBA8 copies would hold
+    // the wallpaper and both stickers resident -- 15 MB -- for a frame that draws
+    // from the textures, so nothing reads them again.
+    const auto release_pixels = [](const LauncherThemeImage& image) {
+        std::vector<std::uint8_t>().swap(image.pixels);
+    };
+    release_pixels(theme->background);
+    for (const LauncherThemeImage& image : theme->stickers) release_pixels(image);
 }
 
 // The launcher shares the palette and layout the in-game shell uses, so a theme
@@ -2355,7 +2375,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     }
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    static_cast<void>(ue5mem::ConfigurePlatformUiFontAtlas(runtime_root));
+    // The launcher owns its whole surface, so it bakes only what it draws: one type
+    // scale, its eight icons, and an atlas no taller than the glyphs need. The host
+    // keeps its own ladder of sizes and the whole icon range for the in-game windows.
+    static_cast<void>(ue5mem::ConfigurePlatformUiFontAtlas(runtime_root,
+        ue5mem::PlatformUiFontBake{
+            .scales = kLauncherFontScales, .icons = kLauncherIcons, .tight_atlas = true}));
     g_launcher_dpi_scale = DpiScale(GetDpiForWindow(window));
     ApplyLauncherDpiScale();
     ImGuiIO& io = ImGui::GetIO();
@@ -2378,6 +2403,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     // real alpha, and its material stays neutral rather than palette-tinted.
     static_cast<void>(anomaly::glass::InitializeRenderer(
         graphics.device.Get(), graphics.context.Get(), false));
+    // Upload the font atlas now rather than on the first frame, so what it costs
+    // besides its texture can be released before the window is shown. The launcher
+    // owns its device for its lifetime and never adds another font, so it keeps
+    // neither the texture pixels nor the font files.
+    static_cast<void>(ImGui_ImplDX11_CreateDeviceObjects());
+    ue5mem::ReleasePlatformUiFontAtlas(ue5mem::PlatformUiFontRetention::Minimal);
     ApplyLauncherDpiScale();
     LoadLogo(graphics);
     LauncherController controller(ExecutableDirectory());

@@ -14,9 +14,6 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
-#include <map>
-#include <memory>
-#include <mutex>
 #include <string_view>
 #include <vector>
 #include <atomic>
@@ -246,48 +243,50 @@ void RefreshSurfaceTheme() noexcept {
 }
 
 constexpr float kPlatformFontSizePixels = 13.0f;
+// The host's bake ladder. In-game windows draw plugin text and localized documents at
+// whatever interface scale the user picked, so the host bakes every size it can select
+// and this set is not a memory knob for it. A surface with a fixed type scale passes
+// its own PlatformUiFontBake instead (the launcher bakes one size), which is where the
+// launcher's font memory was spent: each baked size keeps its own copy of the CJK
+// source file and its own slice of the atlas.
 constexpr std::array kPlatformFontBakeScales{
     1.00f, 1.25f, 1.50f, 1.75f, 2.00f};
 constexpr std::string_view kPlatformFontNamePrefix{"Anomaly host "};
 
-const std::vector<unsigned char>* CachedFontBytes(
-    const std::filesystem::path& path) noexcept {
+// The sizes actually baked by the last ConfigurePlatformUiFontAtlas call: a surface
+// that bakes one size must still be able to select it by name.
+std::vector<float> g_platform_font_bake_scales{
+    kPlatformFontBakeScales.begin(), kPlatformFontBakeScales.end()};
+
+std::vector<unsigned char> LoadFontBytes(const std::filesystem::path& path) noexcept {
     try {
-        static std::mutex mutex;
-        static std::map<std::filesystem::path,
-            std::unique_ptr<std::vector<unsigned char>>> cache;
-        std::scoped_lock lock(mutex);
-        if (const auto found = cache.find(path); found != cache.end()) {
-            return found->second.get();
-        }
         std::ifstream input(path, std::ios::binary);
-        if (!input) return nullptr;
-        auto bytes = std::make_unique<std::vector<unsigned char>>(
-            std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-        if (bytes->empty() ||
-            bytes->size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
-            return nullptr;
+        if (!input) return {};
+        const std::istreambuf_iterator<char> first(input);
+        const std::istreambuf_iterator<char> last;
+        std::vector<unsigned char> bytes(first, last);
+        if (bytes.empty() ||
+            bytes.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
+            return {};
         }
-        const auto* result = bytes.get();
-        cache.emplace(path, std::move(bytes));
-        return result;
+        return bytes;
     } catch (...) {
-        return nullptr;
+        return {};
     }
 }
 
-ImFont* AddCachedFontFromPath(
+// ImGui copies any source it does not own into an atlas-owned block, so the bytes
+// on the caller's side are only borrowed for the duration of the call.
+ImFont* AddBorrowedFontFromMemory(
     ImFontAtlas& atlas,
-    const std::filesystem::path& path,
+    const std::vector<unsigned char>& bytes,
     const float size_pixels,
     ImFontConfig configuration,
     const ImWchar* glyph_ranges) noexcept {
     try {
-        const auto* bytes = CachedFontBytes(path);
-        if (bytes == nullptr) return nullptr;
         configuration.FontDataOwnedByAtlas = false;
-        return atlas.AddFontFromMemoryTTF(const_cast<unsigned char*>(bytes->data()),
-            static_cast<int>(bytes->size()), size_pixels, &configuration, glyph_ranges);
+        return atlas.AddFontFromMemoryTTF(const_cast<unsigned char*>(bytes.data()),
+            static_cast<int>(bytes.size()), size_pixels, &configuration, glyph_ranges);
     } catch (...) {
         return nullptr;
     }
@@ -322,6 +321,29 @@ const ImWchar* PlatformChineseGlyphRanges(ImFontAtlas& atlas) noexcept {
         }
         builder.BuildRanges(&ranges);
     }
+    return ranges.Data;
+}
+
+// ImGui reads a source's glyph ranges when it builds the atlas, not when the font is
+// added, so the list has to outlive this call. Only the next configure replaces it, and
+// that clears the atlas sources pointing at it first.
+const ImWchar* PlatformIconGlyphRanges(const std::span<const char32_t> icons) noexcept {
+    static constexpr ImWchar kFullRange[] = {0xE700, 0xF8FF, 0};
+    if (icons.empty()) return kFullRange;
+    static ImVector<ImWchar> ranges;
+    std::vector<ImWchar> glyphs;
+    glyphs.reserve(icons.size());
+    for (const char32_t glyph : icons) {
+        if (glyph > 0 && glyph <= 0xFFFF) glyphs.push_back(static_cast<ImWchar>(glyph));
+    }
+    std::sort(glyphs.begin(), glyphs.end());
+    glyphs.erase(std::unique(glyphs.begin(), glyphs.end()), glyphs.end());
+    ranges.clear();
+    for (const ImWchar glyph : glyphs) {
+        ranges.push_back(glyph);
+        ranges.push_back(glyph);
+    }
+    ranges.push_back(0);
     return ranges.Data;
 }
 
@@ -503,14 +525,31 @@ void ApplyPlatformUiStyle() noexcept {
 }
 
 bool ConfigurePlatformUiFontAtlas(const std::filesystem::path& runtime_root) noexcept {
+    return ConfigurePlatformUiFontAtlas(runtime_root, PlatformUiFontBake{});
+}
+
+bool ConfigurePlatformUiFontAtlas(
+    const std::filesystem::path& runtime_root, const PlatformUiFontBake& bake) noexcept {
     ImGuiIO& io = ImGui::GetIO();
     if (io.Fonts == nullptr) return false;
+    const std::span<const float> scales = bake.scales.empty()
+        ? std::span<const float>(kPlatformFontBakeScales)
+        : bake.scales;
     io.FontDefault = nullptr;
     io.Fonts->Clear();
+    // Drop the band of empty texture the power-of-two height adds. The host keeps it so
+    // its atlas stays the texture it always was; a surface that names its own bake can
+    // have the height the glyphs actually need.
+    if (bake.tight_atlas) io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+    else io.Fonts->Flags &= ~ImFontAtlasFlags_NoPowerOfTwoHeight;
+    // Read once for all baked sizes: the atlas makes its own copy per source anyway.
+    const std::vector<unsigned char> cjk_bytes = LoadFontBytes(
+        runtime_root / L"assets" / L"fonts" / L"NotoSansCJKsc-Regular.ttf");
     ImFontConfig cjk_configuration;
-    static constexpr ImWchar icon_range[] = {0xE700, 0xF8FF, 0};
+    const ImWchar* const icon_range = PlatformIconGlyphRanges(bake.icons);
+    g_platform_font_bake_scales.assign(scales.begin(), scales.end());
     bool complete = true;
-    for (const float scale : kPlatformFontBakeScales) {
+    for (const float scale : scales) {
         ImFontConfig configuration;
         configuration.OversampleH = 2;
         configuration.OversampleV = 1;
@@ -527,8 +566,8 @@ bool ConfigurePlatformUiFontAtlas(const std::filesystem::path& runtime_root) noe
         cjk_configuration = {};
         cjk_configuration.MergeMode = true;
         cjk_configuration.PixelSnapH = true;
-        if (AddCachedFontFromPath(*io.Fonts,
-                runtime_root / L"assets" / L"fonts" / L"NotoSansCJKsc-Regular.ttf",
+        if (cjk_bytes.empty() ||
+            AddBorrowedFontFromMemory(*io.Fonts, cjk_bytes,
                 kPlatformFontSizePixels * scale, cjk_configuration,
                 PlatformChineseGlyphRanges(*io.Fonts)) == nullptr) {
             complete = false;
@@ -556,8 +595,8 @@ bool ApplyPlatformUiFontScale(const float scale) noexcept {
     if (!std::isfinite(scale) || scale <= 0.0f) return false;
     ImGuiIO& io = ImGui::GetIO();
     if (io.Fonts == nullptr) return false;
-    float selected_scale = kPlatformFontBakeScales.back();
-    for (const float baked_scale : kPlatformFontBakeScales) {
+    float selected_scale = g_platform_font_bake_scales.back();
+    for (const float baked_scale : g_platform_font_bake_scales) {
         if (baked_scale >= scale) {
             selected_scale = baked_scale;
             break;
@@ -591,7 +630,7 @@ ImFont* PlatformUiFontForScale(const float scale) noexcept {
     if (io.Fonts == nullptr) return nullptr;
     ImFont* best = nullptr;
     ImFont* largest = nullptr;
-    for (const float baked : kPlatformFontBakeScales) {
+    for (const float baked : g_platform_font_bake_scales) {
         ImFont* found = nullptr;
         for (ImFont* const font : io.Fonts->Fonts) {
             if (font != nullptr && IsPlatformFont(*font, baked)) {
@@ -608,5 +647,20 @@ ImFont* PlatformUiFontForScale(const float scale) noexcept {
 }
 
 float PlatformUiBaseFontSize() noexcept { return kPlatformFontSizePixels; }
+
+void ReleasePlatformUiFontAtlas(const PlatformUiFontRetention retention) noexcept {
+    if (ImGui::GetCurrentContext() == nullptr) return;
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.Fonts == nullptr) return;
+    // Drops the alpha map and the RGBA32 copy the D3D backends ask ImGui for, which
+    // together are five times the atlas area. The sources stay behind, so a backend
+    // that re-creates the texture after a lost device rebuilds them on demand.
+    io.Fonts->ClearTexData();
+    if (retention != PlatformUiFontRetention::Minimal) return;
+    // Also drops the font files, which are already rasterized into the uploaded
+    // texture: nothing reads them again unless the atlas is rebuilt, so a caller that
+    // asks for this must not rebuild it.
+    io.Fonts->ClearInputData();
+}
 
 }  // namespace ue5mem

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string_view>
 
 struct ImFont;
@@ -95,16 +96,46 @@ void SetPlatformUiSurfaceAlpha(float alpha) noexcept;
 [[nodiscard]] PlatformUiPalette ParsePlatformUiPalette(std::string_view value) noexcept;
 [[nodiscard]] std::string_view ToString(PlatformUiPalette palette) noexcept;
 
+// A font bake narrower than the host's. The host bakes a ladder of sizes and the
+// whole MDL2 icon range because in-game windows draw plugin text, localized
+// documents and icons that are not known ahead of time. A surface whose type scale
+// and icons are fixed -- a standalone window that draws its own chrome -- passes
+// exactly what it draws instead, and pays for one baked size and a handful of icons
+// rather than for all of them. Glyph coverage is the same either way, so text the
+// surface does not author (paths, process names, localized messages) still renders.
+struct PlatformUiFontBake final {
+    // Sizes as multiples of PlatformUiBaseFontSize(). Empty bakes the host ladder.
+    std::span<const float> scales{};
+    // Icon glyphs from the icon font. Empty bakes the whole icon range.
+    std::span<const char32_t> icons{};
+    // Lets the atlas keep a height that is not rounded up to a power of two, which is
+    // the empty band under the last row of glyphs. The glyph pixels and the texture
+    // coordinates derived from them are the same either way.
+    bool tight_atlas{false};
+};
+
 // Requires an active ImGui context.
 void ApplyPlatformUiStyle() noexcept;
 [[nodiscard]] bool ConfigurePlatformUiFontAtlas(
     const std::filesystem::path& runtime_root = {}) noexcept;
+[[nodiscard]] bool ConfigurePlatformUiFontAtlas(
+    const std::filesystem::path& runtime_root, const PlatformUiFontBake& bake) noexcept;
 [[nodiscard]] bool ApplyPlatformUiFontScale(float scale) noexcept;
 // The smallest baked host font whose pixel size is at least `scale` times the
 // base size, so large titles and icons are drawn from a crisp bake instead of
 // a magnified one. Draw with ImDrawList::AddText(font, size, ...).
 [[nodiscard]] ImFont* PlatformUiFontForScale(float scale) noexcept;
 [[nodiscard]] float PlatformUiBaseFontSize() noexcept;
+// What the atlas still needs after its texture is uploaded. The CPU-side pixels are
+// five times the atlas area and nothing draws from them again either way.
+//   Rebuildable  keeps the sources, so a lost device can upload the texture again.
+//   Minimal      drops them too: the glyphs are already rasterized into the texture,
+//                and the font files are what the atlas costs besides it. Only for a
+//                surface that never rebuilds its atlas -- its device lives as long as
+//                it does, and no font is added after this call.
+enum class PlatformUiFontRetention : std::uint8_t { Rebuildable, Minimal };
+
+void ReleasePlatformUiFontAtlas(PlatformUiFontRetention retention) noexcept;
 
 }  // namespace ue5mem
 
