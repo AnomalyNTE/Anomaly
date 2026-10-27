@@ -38,6 +38,12 @@ std::chrono::milliseconds NormalizeFlushInterval(
         : interval;
 }
 
+std::chrono::milliseconds NormalizeRetentionInterval(
+    std::chrono::minutes interval) noexcept {
+    if (interval <= std::chrono::minutes::zero()) return std::chrono::milliseconds{1};
+    return std::chrono::duration_cast<std::chrono::milliseconds>(interval);
+}
+
 std::error_code CurrentIoError() noexcept {
     if (errno != 0) return {errno, std::generic_category()};
     return std::make_error_code(std::errc::io_error);
@@ -279,6 +285,9 @@ public:
           max_file_size_bytes_(options.max_file_size_bytes),
           retained_archive_count_((std::min)(
               options.retained_archive_count, kMaximumRetainedLogArchives)),
+          retention_directories_(std::move(options.retention_directories)),
+          retention_(options.retention),
+          retention_interval_(NormalizeRetentionInterval(options.retention_interval)),
           queue_(std::make_unique<QueueCell[]>(queue_capacity_)),
           ring_(ring_capacity_ == 0 ? nullptr : std::make_unique<RingCell[]>(ring_capacity_)),
           wake_event_(CreateWakeEvent()) {
@@ -982,6 +991,26 @@ private:
         return record_bytes > max_file_size_bytes_ - current_bytes;
     }
 
+    bool RetentionEnabled() const noexcept {
+        return !retention_directories_.empty() &&
+            (retention_.max_age > std::chrono::hours::zero() ||
+             retention_.max_total_bytes != 0);
+    }
+
+    void RunRetention() noexcept {
+        if (!RetentionEnabled()) return;
+        LogRetentionPolicy policy = retention_;
+        policy.active_path = path_;
+        for (const auto& directory : retention_directories_) {
+            const LogRetentionResult result = PruneLogFiles(directory, policy);
+            if (result.error) {
+                SetErrorAtPath(
+                    LoggerErrorOperation::Retention, directory, result.error,
+                    "failed to remove expired structured log files");
+            }
+        }
+    }
+
     void ProcessRecord(
         std::ofstream& stream,
         LogRecord record,
@@ -1055,6 +1084,8 @@ private:
                 return;
             }
 
+            RunRetention();
+
             const RotationOutcome cleanup = RemoveArchivesBeyondRetention();
             if (cleanup == RotationOutcome::Fatal) {
                 state_.store(LoggerState::Stopped, std::memory_order_release);
@@ -1084,6 +1115,8 @@ private:
             startup_reported = true;
 
             auto next_periodic_flush = std::chrono::steady_clock::now() + flush_interval_;
+            const bool retain_files = RetentionEnabled();
+            auto next_retention = std::chrono::steady_clock::now() + retention_interval_;
             for (;;) {
                 LogRecord record;
                 while (TryDequeue(record)) {
@@ -1119,10 +1152,17 @@ private:
                     (stopping && queue_drained)) {
                     next_periodic_flush = std::chrono::steady_clock::now() + flush_interval_;
                 }
+                if (retain_files && now >= next_retention) {
+                    RunRetention();
+                    next_retention = std::chrono::steady_clock::now() + retention_interval_;
+                }
                 if (stopping && queue_drained) break;
 
+                const auto wake_deadline = retain_files && next_retention < next_periodic_flush
+                    ? next_retention
+                    : next_periodic_flush;
                 const DWORD wait_result =
-                    WaitForSingleObject(wake_event_, WaitTimeoutUntil(next_periodic_flush));
+                    WaitForSingleObject(wake_event_, WaitTimeoutUntil(wake_deadline));
                 worker_wakeups_.fetch_add(1, std::memory_order_relaxed);
                 if (wait_result == WAIT_FAILED) {
                     SetError(LoggerErrorOperation::Worker,
@@ -1156,6 +1196,9 @@ private:
     const std::string session_id_;
     const std::uintmax_t max_file_size_bytes_;
     const std::size_t retained_archive_count_;
+    const std::vector<std::filesystem::path> retention_directories_;
+    const LogRetentionPolicy retention_;
+    const std::chrono::milliseconds retention_interval_;
     std::unique_ptr<QueueCell[]> queue_;
     std::unique_ptr<RingCell[]> ring_;
 

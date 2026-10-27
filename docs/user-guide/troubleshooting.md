@@ -3,7 +3,13 @@
 按现象查找。日志是最重要的排查入口：
 
 - `Anomaly\logs\anomaly-runtime.log` — Runtime 与管道服务日志（PID、状态、管道名）。
+- `Anomaly\logs\anomaly-runtime.jsonl` — 结构化日志，按体积滚动，`anomaly-runtime.jsonl.1`…`.3` 是历史文件。
+- `Anomaly\logs\nte_game_hook.log` — 启动注入与钩子安装记录。
 - `Anomaly\anomaly-platform.log` — 平台与插件日志。
+
+日志不需要手动清理：最后写入超过 3 天的日志、以及让所在目录超出 48 MiB 的最旧日志会被自动
+删除（Runtime 启动时执行一次，运行期间每小时再执行一次）。遇到问题要留证据时请尽早把日志复制
+出来，不要指望它们一直留在原处。
 
 ## 安装 / 启动器
 

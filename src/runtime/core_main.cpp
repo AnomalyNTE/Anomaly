@@ -260,8 +260,14 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
             logger_options.minimum_level = static_cast<anomaly::LogLevel>(
                 platform_settings.values.diagnostics_log_level);
         }
-        logger_options.max_file_size_bytes = 16U * 1024U * 1024U;
-        logger_options.retained_archive_count = 4;
+        // Rotation bounds the files this session writes; retention deletes what
+        // earlier sessions left behind, so the log directory cannot grow forever.
+        logger_options.max_file_size_bytes = 8U * 1024U * 1024U;
+        logger_options.retained_archive_count = 3;
+        logger_options.retention_directories = {
+            context->log_directory, context->runtime_root};
+        logger_options.retention.max_age = std::chrono::hours{24 * 3};
+        logger_options.retention.max_total_bytes = 48U * 1024U * 1024U;
         auto logger = std::make_shared<anomaly::StructuredLogger>(std::move(logger_options));
         if (logger->Start(context->log_directory / L"anomaly-runtime.jsonl")) {
             context->logger = std::move(logger);
