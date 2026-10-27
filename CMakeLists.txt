@@ -638,7 +638,9 @@ target_compile_definitions(
 target_compile_options(anomaly_runtime_dispatchers PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_runtime_dispatchers PUBLIC anomaly_dispatcher)
 
-add_library(anomaly_structured_logger STATIC src/services/structured_logger.cpp)
+add_library(anomaly_structured_logger STATIC
+    src/services/log_retention.cpp
+    src/services/structured_logger.cpp)
 target_include_directories(anomaly_structured_logger PUBLIC include)
 target_compile_definitions(
     anomaly_structured_logger PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1142,6 +1144,18 @@ target_link_libraries(anomaly_test_host PRIVATE
     anomaly_i18n nlohmann_json::nlohmann_json Psapi)
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
+    # Rotation only bounds the log a session writes, so the retention pass that
+    # deletes expired files is verified here against real temporary directories:
+    # the age rule, the total size rule, protection of the open file, and the
+    # sweeps the structured logger performs at startup and per interval.
+    add_executable(anomaly_log_retention_fixture apps/log_retention_fixture/main.cpp)
+    set_target_properties(anomaly_log_retention_fixture PROPERTIES
+        OUTPUT_NAME "anomaly-log-retention-fixture")
+    target_compile_definitions(anomaly_log_retention_fixture PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_log_retention_fixture PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_log_retention_fixture PRIVATE anomaly_structured_logger)
+
     # Headless probe for the liquid glass material on a D3D12 device: it renders
     # one surface off screen and reads it back, so the in-game material can be
     # checked without the game.

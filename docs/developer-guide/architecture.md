@@ -122,6 +122,12 @@ Game\Binaries\Win64\
     anomaly-imgui.ini            浮动窗口布局
 ```
 
+日志目录不会无限增长：`logs\anomaly-runtime.jsonl` 按体积滚动（8 MiB 一轮，保留 3 个历史
+文件），`StructuredLogger` 在启动时以及每小时的维护周期里还会按 `PruneLogFiles` 的策略删除
+旧日志——先删最后写入时间超过 3 天的文件，再从最旧的开始删到目录内 `.log` / `.jsonl` 总量
+不超过 48 MiB。当前正在写入的 jsonl 永远不参与删除。新增的日志文件只要用这两个扩展名，就会被
+自动纳入清理范围；其他文件不会被触碰。
+
 ## 架构检查
 
 - 一次干净的 `configure → build → install` 是集成门禁。

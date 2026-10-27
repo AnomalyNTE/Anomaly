@@ -68,6 +68,9 @@ Win64\
 - `Anomaly\logs\anomaly-runtime.log`：Core 是否启动、游戏 PID 和诊断管道信息。
 - `Anomaly\anomaly-platform.log`：界面、插件和平台服务日志。
 
+`Anomaly\logs\` 下的结构化日志会按体积滚动，旧的日志文件也会被自动删除（最后写入超过 3 天，
+或让目录超出 48 MiB），所以不需要手动清理。顺带一提：需要保留的日志请及时复制走。
+
 如果按 `Insert` 没反应，先看这两个文件有没有生成，再按[故障排查](troubleshooting.md)继续检查。
 
 ## 更新版本
