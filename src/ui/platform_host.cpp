@@ -1118,9 +1118,11 @@ public:
                     // Keep the last good catalog visible when a package is being
                     // replaced or a manifest is temporarily unreadable.
                 }
-                for (int tick = 0; tick != 10 && !stop_token.stop_requested(); ++tick) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
+                // Waits for a directory notification or a stop request. The old fixed ten-tick wait rescanned
+                // every package on a clock; a quiet plugin directory now costs nothing.
+                std::unique_lock wait_lock(catalog_wait_mutex_);
+                catalog_wait_condition_.wait(wait_lock, stop_token, [this] { return catalog_reload_; });
+                catalog_reload_ = false;
             }
         });
         // The theme layout lives outside the plugin packages and is re-read on
@@ -1133,11 +1135,9 @@ public:
                 std::shared_ptr<ThemeBackgroundPick> dialog_request;
                 {
                     std::unique_lock lock(theme_layout_write_mutex_);
-                    theme_wait_condition_.wait_for(lock, std::chrono::seconds(1),
-                        [this, &stop_token] {
-                            return stop_token.stop_requested() ||
-                                theme_picker_dialog_request_ != nullptr;
-                        });
+                    theme_wait_condition_.wait(lock, stop_token, [this] {
+                        return theme_picker_dialog_request_ != nullptr;
+                    });
                     if (stop_token.stop_requested()) return;
                     dialog_request =
                         std::exchange(theme_picker_dialog_request_, nullptr);
@@ -1159,7 +1159,10 @@ public:
                 }
                 theme_wait_condition_.notify_all();
             }
-        });        theme_worker_ = std::jthread(
+        });
+        StartThemeWatcher(diagnostics_.runtime_root / std::filesystem::path(anomaly::kPlatformUiLayoutDirectory));
+        StartCatalogWatcher(directory);
+        theme_worker_ = std::jthread(
             [this, root = diagnostics_.runtime_root](std::stop_token stop_token) {
                 std::uint64_t version = 0;
                 ThemeLayoutFileStamp previous;
@@ -1335,8 +1338,9 @@ public:
                         theme_background_pick_result_->message = "cannot apply the background image";
                     }
                     std::unique_lock wait_lock(theme_wait_mutex_);
-                    theme_wait_condition_.wait_for(
-                        wait_lock, stop_token, std::chrono::seconds(1), [] { return false; });
+                    // Waits for a reload request or a directory change notification; there is no interval and no
+                    // wake-up while nothing happens.
+                    theme_wait_condition_.wait(wait_lock, stop_token, [] { return false; });
                 }
             });
         management_window_ = plugins_.UiResources().RegisterWindow(
@@ -1361,14 +1365,82 @@ public:
         catalog_worker_.request_stop();
         StopThemeWorker();
         theme_worker_.join();
+        theme_watcher_.request_stop();
+        catalog_watcher_.request_stop();
+        if (catalog_watch_stop_ != nullptr) {
+            SetEvent(catalog_watch_stop_);
+            catalog_watcher_.join();
+            CloseHandle(catalog_watch_stop_);
+            catalog_watch_stop_ = nullptr;
+        }
+        if (theme_watch_stop_ != nullptr) {
+            SetEvent(theme_watch_stop_);
+            theme_watcher_.join();
+            CloseHandle(theme_watch_stop_);
+            theme_watch_stop_ = nullptr;
+        }
         ReleaseThemeTextures();
         RevokeManagementWindow();
     }
 
     void StopThemeWorker() noexcept {
+        if (theme_watch_stop_ != nullptr) SetEvent(theme_watch_stop_);
+        if (catalog_watch_stop_ != nullptr) SetEvent(catalog_watch_stop_);
         theme_picker_worker_.request_stop();
         theme_worker_.request_stop();
         theme_wait_condition_.notify_all();
+    }
+
+
+    // Blocks on the directory change notification: a theme edited outside the UI reloads at once, and an
+    // idle one costs nothing because there is no interval to wake up on.
+    // Watches a directory until the UI stops. `on_change` runs on this thread and must not block.
+    void WatchDirectory(const std::filesystem::path& directory, const HANDLE stop_event,
+        const std::function<void()>& on_change) noexcept {
+        const HANDLE change = FindFirstChangeNotificationW(
+            directory.c_str(), FALSE,
+            FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_FILE_NAME |
+                FILE_NOTIFY_CHANGE_DIR_NAME);
+        if (change == INVALID_HANDLE_VALUE) return;
+        for (;;) {
+            const HANDLE handles[] = {change, stop_event};
+            if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) != WAIT_OBJECT_0) break;
+            on_change();
+            if (FindNextChangeNotification(change) == FALSE) break;
+        }
+        FindCloseChangeNotification(change);
+    }
+
+    void WatchThemeDirectory() noexcept {
+        WatchDirectory(theme_watch_directory_, theme_watch_stop_, [this] {
+            theme_layout_reload_.store(true, std::memory_order_relaxed);
+            theme_wait_condition_.notify_all();
+        });
+    }
+
+    void StartThemeWatcher(const std::filesystem::path& themes_directory) noexcept {
+        std::error_code error;
+        if (!std::filesystem::is_directory(themes_directory, error) || error) return;
+        theme_watch_directory_ = themes_directory;
+        theme_watch_stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (theme_watch_stop_ == nullptr) return;
+        theme_watcher_ = std::jthread([this](std::stop_token) { WatchThemeDirectory(); });
+    }
+
+    // The plugin directory is watched instead of rescanned: a package appearing, vanishing or being
+    // rewritten wakes the catalog worker, and nothing wakes it in between.
+    void StartCatalogWatcher(const std::filesystem::path& plugins_directory) noexcept {
+        std::error_code error;
+        if (!std::filesystem::is_directory(plugins_directory, error) || error) return;
+        catalog_watch_stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (catalog_watch_stop_ == nullptr) return;
+        catalog_watcher_ = std::jthread([this, plugins_directory](std::stop_token) {
+            WatchDirectory(plugins_directory, catalog_watch_stop_, [this] {
+                std::scoped_lock lock(catalog_wait_mutex_);
+                catalog_reload_ = true;
+                catalog_wait_condition_.notify_all();
+            });
+        });
     }
 
     [[nodiscard]] bool Ready() const noexcept { return static_cast<bool>(management_window_); }
@@ -8142,6 +8214,19 @@ private:
     std::mutex theme_wait_mutex_;
     std::condition_variable_any theme_wait_condition_;
     std::jthread theme_worker_;
+    // Watches config/themes so an edit made outside the UI is noticed by a notification instead of a
+    // timer: the wait blocks until the directory changes or the UI stops.
+    std::jthread theme_watcher_;
+    HANDLE theme_watch_stop_{};
+    std::filesystem::path theme_watch_directory_;
+    // The plugin directory is watched the same way: a package appearing or vanishing wakes the catalog
+    // worker, and nothing wakes it in between.
+    std::jthread catalog_watcher_;
+    HANDLE catalog_watch_stop_{};
+    std::mutex catalog_wait_mutex_;
+    // _any: the wait takes the worker's stop token, so a stop wakes it without an extra event.
+    std::condition_variable_any catalog_wait_condition_;
+    bool catalog_reload_{true};
     // The picker thread services dialog requests so the render loop never waits.
     // Declared after the layout worker so it stops first at teardown.
     std::shared_ptr<ThemeBackgroundPick> theme_picker_dialog_request_;
