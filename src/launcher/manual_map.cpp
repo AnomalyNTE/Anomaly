@@ -1,6 +1,7 @@
 #include "anomaly/launcher/manual_map.hpp"
 
 #include "anomaly/core_api.h"
+#include "import_procedure.hpp"
 
 #include <TlHelp32.h>
 #include <Psapi.h>
@@ -1141,9 +1142,10 @@ bool ResolveOneImport(
     const IMAGE_THUNK_DATA64& source, IMAGE_THUNK_DATA64& destination,
     RemoteModuleMap& modules, ManualMapDelivery delivery, std::string& failure,
     const std::vector<std::byte>& image, ImportOverride* import_override) {
+    ImportProcedureResolver resolver;
     FARPROC procedure{};
     if (IMAGE_SNAP_BY_ORDINAL64(source.u1.Ordinal)) {
-        procedure = GetProcAddress(
+        procedure = resolver.Resolve(
             local_module,
             reinterpret_cast<const char*>(IMAGE_ORDINAL64(source.u1.Ordinal)));
     } else {
@@ -1165,7 +1167,8 @@ bool ResolveOneImport(
             import_override->applied = true;
             return true;
         }
-        procedure = GetProcAddress(local_module, reinterpret_cast<const char*>(import->Name));
+        procedure = resolver.Resolve(
+            local_module, reinterpret_cast<const char*>(import->Name));
     }
     const auto owner = OwningModule(procedure);
     if (!owner) {
@@ -1857,10 +1860,11 @@ bool RemoteLoadLibrary(
     HANDLE process, const std::filesystem::path& path, RemoteModuleMap& modules,
     ManualMapDelivery delivery, std::string& failure) {
     const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+    ImportProcedureResolver resolver;
     const auto remote_load_library = RemoteAddressForLocalProcedure(
-        GetProcAddress(kernel32, "LoadLibraryW"), modules);
+        resolver.Resolve(kernel32, "LoadLibraryW"), modules);
     const auto remote_get_last_error = RemoteAddressForLocalProcedure(
-        GetProcAddress(kernel32, "GetLastError"), modules);
+        resolver.Resolve(kernel32, "GetLastError"), modules);
     if (!remote_load_library || !remote_get_last_error) {
         failure = "the target's LoadLibraryW address could not be resolved";
         return false;
@@ -2155,8 +2159,10 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
                 "remote core section protections could not be applied");
         }
 
-        const auto rtl_add = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlAddFunctionTable");
-        const auto rtl_delete = GetProcAddress(
+        ImportProcedureResolver resolver;
+        const auto rtl_add = resolver.Resolve(
+            GetModuleHandleW(L"ntdll.dll"), "RtlAddFunctionTable");
+        const auto rtl_delete = resolver.Resolve(
             GetModuleHandleW(L"ntdll.dll"), "RtlDeleteFunctionTable");
         const auto remote_rtl_add = RemoteAddressForLocalProcedure(rtl_add, modules);
         const auto remote_rtl_delete = RemoteAddressForLocalProcedure(rtl_delete, modules);

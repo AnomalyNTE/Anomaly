@@ -1,7 +1,6 @@
 #include "analyzer.hpp"
 #include "anomaly/core_api.hpp"
 #include "anomaly/adapter_service_registry.hpp"
-#include "anomaly/apphelp_fault_guard.hpp"
 #include "anomaly/crash_reporter.hpp"
 #include "anomaly/embedded_artwork.hpp"
 #include "anomaly/diagnostic_pipe_service.hpp"
@@ -1380,16 +1379,6 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
         auto session = std::make_shared<anomaly::RuntimeSession>(
             start_context, BuildSessionOptions(core_context));
         core_context->session = session;
-        // An injected core is the one that needs this: the anti-cheat inline-hooks the loader entry, and its
-        // hook is what asks the compatibility database about an image the loader cannot identify. The restore
-        // runs before the first service loads anything and returns once the hooks are back.
-        anomaly::ApphelpFaultGuardReport guard;
-        if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) {
-            // The anti-cheat compatibility query faults inside apphelp for an image this process mapped
-            // itself; the guard answers it the way a missing entry would, so the query cannot take the game
-            // down. It has to be in place before the first game call reaches that path.
-            guard = anomaly::InstallApphelpFaultGuard();
-        }
         auto& control = *g_runtime_control;
         std::scoped_lock lock(control.mutex);
         ArchiveStoppedSessionLocked(control);
@@ -1397,11 +1386,6 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
 
         const DWORD result = session->Start();
         control.session = session;
-        if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) {
-            RuntimeLog(
-                core_context, anomaly::LogLevel::Info, "apphelp.guard",
-                "apphelp_guard=" + std::string(guard.installed ? "installed" : "unavailable"));
-        }
         if (result != ERROR_SUCCESS) ArchiveStoppedSessionLocked(control);
         return result;
     } catch (...) {

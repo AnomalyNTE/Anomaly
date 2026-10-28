@@ -711,6 +711,7 @@ target_link_libraries(anomaly_launcher_configuration
     PRIVATE nlohmann_json::nlohmann_json Advapi32)
 
 add_library(anomaly_manual_map STATIC
+    src/launcher/import_procedure.cpp
     src/launcher/manual_map.cpp
     src/launcher/manual_map_remote.asm
     src/launcher/manual_map_hijack.asm
@@ -993,7 +994,6 @@ add_custom_target(anomaly_stage_nte_profiles ALL
 
 add_library(anomaly_core SHARED
     src/runtime/core_main.cpp
-    src/runtime/apphelp_fault_guard.cpp
     src/runtime/manual_map_exception.cpp
     src/ui/platform_host.cpp
     "${PLATFORM_UI_RESOURCES_RC}"

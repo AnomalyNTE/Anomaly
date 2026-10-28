@@ -215,6 +215,10 @@ UiImageDecodeResult DecodeUiImageRgba8(
         CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
         IID_PPV_ARGS(factory.GetAddressOf()));
     if (FAILED(status)) return ImageFailure(ErrorForWicFailure(status), NativeStatus(status));
+    // A broken activation wrapper can report success without creating an object.
+    if (factory == nullptr) {
+        return ImageFailure(UiResourceDecodeError::DecodeFailure, NativeStatus(E_UNEXPECTED));
+    }
 
     Microsoft::WRL::ComPtr<IWICStream> stream;
     status = factory->CreateStream(stream.GetAddressOf());
