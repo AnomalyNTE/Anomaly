@@ -52,11 +52,10 @@ struct FreezeRule final {
 };
 
 constexpr FreezeRule kFreezeRules[] = {
-    {"HTGameBase.dll", 0x250D80},
+    // The only thread that re-applied the hooks in this build, found by releasing the other candidates one at a
+    // time and watching whether the hooks came back. Its module is the game itself, so nothing in the runtime
+    // libraries that a graphics feature depends on is frozen.
     {"HTGameBase.dll", 0x253820},
-    {"HTGameBase.dll", 0x4AFB40},
-    {"combase.dll", 0x135530},
-    {"ucrtbase.dll", 0x95050},
 };
 
 
@@ -66,12 +65,6 @@ constexpr int kThreadQuerySetWin32StartAddress = 9;
 // `mov rax, imm64; jmp rax`.
 constexpr std::size_t kRestoreBytes = 16;
 // The cadence a re-applied hook is noticed at.
-constexpr DWORD kPassIntervalMs = 250;
-// Freeze threads that start in generated code as well as the ones inside the anti-cheat image. The probe this
-// is modelled on leaves that off by default: it also matches any other just-in-time code in the process, and
-// freezing a thread the game needs stalls it. Turn it on when a watchdog survives the image-scoped freeze and
-// the game still reacts to the restore.
-constexpr bool kFreezeGeneratedCode = true;
 constexpr std::size_t kMaximumDiskImageBytes = 16u * 1024u * 1024u;
 
 using NtQueryInformationThreadFn = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
@@ -289,6 +282,8 @@ struct ImageRange final {
 struct FrozenThread final {
     DWORD id{};
     HANDLE handle{};
+    // The rule this thread was frozen for, empty for the anti-cheat image and its generated code.
+    std::string rule;
 };
 
 // Threads this code suspended (and may therefore release), and threads it deliberately left running or found
@@ -391,11 +386,110 @@ void ForEachThread(const NtGetNextThreadFn next, const std::function<void(HANDLE
     if (current != nullptr) CloseHandle(current);
 }
 
+// A rule as it is in force at runtime, with its own copy of the module name so the list can be replaced when
+// the config file changes.
+struct RuleEntry final {
+    std::string module;
+    std::uintptr_t offset{};
+};
+
+// The rule a thread start address matches, rendered as "module+0xoffset", or empty when it matches none.
+[[nodiscard]] std::string MatchingRuleName(
+    const std::uintptr_t start, const std::vector<RuleEntry>& rules) {
+    char module[MAX_PATH]{};
+    std::uintptr_t offset{};
+    if (!SolveStart(start, module, sizeof(module), offset)) return {};
+    for (const auto& rule : rules) {
+        if (rule.offset == offset && _stricmp(rule.module.c_str(), module) == 0) {
+            char text[64]{};
+            std::snprintf(text, sizeof(text), "%s+0x%llX", rule.module.c_str(),
+                static_cast<unsigned long long>(rule.offset));
+            return text;
+        }
+    }
+    return {};
+}
+
+// ace-unhook.ini beside the runtime: "freeze_rules=module+0xoffset,...". Written once with every rule in force
+// so the file can then be narrowed by deleting one entry at a time while the game runs.
+void WriteRuleTemplate(const std::wstring& path) {
+    if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return;
+    std::string text;
+    text += "# ACE inline-hook restore. Each entry is one thread frozen because it re-applies the hooks,";
+    text += " written as module+offset.\r\n";
+    text += "# Delete an entry to release that thread (from the next reload, within two seconds) and watch the";
+    text += " trace for re-hooks:\r\n";
+    text += "#   re-hooks continuing  -> that thread was not the writer, move on to the next entry\r\n";
+    text += "#   re-hooks stopping    -> that thread is the writer, keep the rest deleted\r\n";
+    text += "freeze_rules=";
+    for (std::size_t index = 0; index < std::size(kFreezeRules); ++index) {
+        char entry[96]{};
+        std::snprintf(entry, sizeof(entry), "%s%s+0x%llX", index == 0 ? "" : ",", kFreezeRules[index].module,
+            static_cast<unsigned long long>(kFreezeRules[index].offset));
+        text += entry;
+    }
+    text += "\r\n";
+    const HANDLE file = CreateFileW(
+        path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    DWORD written{};
+    static_cast<void>(WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr));
+    CloseHandle(file);
+}
+
+// Reads the rule list. A missing file or a missing key means no rule freezes at all.
+[[nodiscard]] std::vector<RuleEntry> ReadRules(const std::wstring& path, std::string& signature) {
+    std::vector<RuleEntry> rules;
+    signature.clear();
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, path.c_str(), L"rb") != 0 || file == nullptr) return rules;
+    char line[4096]{};
+    while (std::fgets(line, sizeof(line), file) != nullptr) {
+        if (std::strncmp(line, "freeze_rules=", 13) != 0) continue;
+        std::string value(line + 13);
+        while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) value.pop_back();
+        signature = value;
+        std::size_t start = 0;
+        while (start <= value.size()) {
+            const std::size_t comma = value.find(',', start);
+            const std::string item =
+                value.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+            const std::size_t plus = item.rfind("+0x");
+            if (!item.empty() && plus != std::string::npos) {
+                RuleEntry rule;
+                rule.module = item.substr(0, plus);
+                rule.offset = static_cast<std::uintptr_t>(std::strtoull(item.c_str() + plus + 3, nullptr, 16));
+                rules.push_back(std::move(rule));
+            }
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+    }
+    std::fclose(file);
+    return rules;
+}
+// The address a thread is about to execute, or zero when it cannot be read.
+[[nodiscard]] std::uintptr_t CurrentInstruction(const HANDLE thread) noexcept {
+    CONTEXT context{};
+    context.ContextFlags = CONTEXT_CONTROL;
+    if (GetThreadContext(thread, &context) == FALSE) return 0;
+    return static_cast<std::uintptr_t>(context.Rip);
+}
+
+// A candidate is only the rewriter while it is running the anti-cheat's own code: its image, or the code it
+// generated for itself.
+[[nodiscard]] bool RunningAntiCheatCode(const HANDLE thread, const ImageRange& anti_cheat) noexcept {
+    const std::uintptr_t rip = CurrentInstruction(thread);
+    if (rip == 0) return false;
+    if (anti_cheat.Valid() && rip >= anti_cheat.begin && rip < anti_cheat.end) return true;
+    return IsGeneratedCode(rip);
+}
 // One freeze pass. A thread stays frozen once suspended: the point is that the anti-cheat's writers and
 // watchdogs are not running while prologues are put back and verified, and a watchdog released between passes
 // sees the restored state and treats it as tampering.
 void FreezeWriters(
-    ThreadLedger& ledger, const ImageRange& anti_cheat, const NtQueryInformationThreadFn query,
+    ThreadLedger& ledger, const std::vector<RuleEntry>& rules, const ImageRange& anti_cheat,
+    const NtQueryInformationThreadFn query,
     const NtGetNextThreadFn next) {
     if (query == nullptr || next == nullptr) return;
     const DWORD self = GetCurrentThreadId();
@@ -423,13 +517,11 @@ void FreezeWriters(
         }
         const bool in_anti_cheat =
             anti_cheat.Valid() && start >= anti_cheat.begin && start < anti_cheat.end;
-        char module[MAX_PATH]{};
-        std::uintptr_t module_offset{};
-        const bool ruled = SolveStart(start, module, sizeof(module), module_offset) &&
-            MatchesFreezeRule(module, module_offset);
-        const bool generated = kFreezeGeneratedCode && IsGeneratedCode(start);
-        if (!in_anti_cheat && !ruled && !generated) return;
-
+        std::string rule;
+        if (!in_anti_cheat && !IsGeneratedCode(start)) {
+            rule = MatchingRuleName(start, rules);
+            if (rule.empty()) return;
+        }
         // A count above zero means somebody else already stopped it: undo this suspension and remember it, so a
         // suspension this code did not take is never released here.
         if (SuspendThread(thread) > 0) {
@@ -446,17 +538,43 @@ void FreezeWriters(
             ResumeThread(thread);
             return;
         }
-        ledger.frozen.push_back(FrozenThread{id, owned});
-        if (ruled) {
-            Trace("frozen: thread %lu (start %s+0x%llX) [rule]", id, module,
-                static_cast<unsigned long long>(module_offset));
+        ledger.frozen.push_back(FrozenThread{id, owned, rule});
+        if (rule.empty()) {
+            Trace("frozen: thread %lu (start 0x%llX) [image]", id, static_cast<unsigned long long>(start));
         } else {
-            Trace("frozen: thread %lu (start 0x%llX) %s", id, static_cast<unsigned long long>(start),
-                in_anti_cheat ? "[image]" : "[generated code]");
+            Trace("frozen: thread %lu (rule %s)", id, rule.c_str());
         }
     });
 }
 
+// Freezes one thread by id, for the calibration pass. Returns false when it cannot be opened or was already
+// suspended by somebody else.
+[[nodiscard]] bool FreezeThreadById(ThreadLedger& ledger, const DWORD id) {
+    for (const auto& entry : ledger.frozen) {
+        if (entry.id == id) return true;
+    }
+    HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, id);
+    if (thread == nullptr) return false;
+    if (SuspendThread(thread) > 0) {
+        ResumeThread(thread);
+        CloseHandle(thread);
+        ledger.borrowed.push_back(id);
+        return false;
+    }
+    ledger.frozen.push_back(FrozenThread{id, thread, std::string{}});
+    return true;
+}
+
+// Releases one thread this code suspended, leaving the rest of the set alone.
+void ReleaseThreadById(ThreadLedger& ledger, const DWORD id) {
+    for (auto entry = ledger.frozen.begin(); entry != ledger.frozen.end(); ++entry) {
+        if (entry->id != id) continue;
+        ResumeThread(entry->handle);
+        CloseHandle(entry->handle);
+        ledger.frozen.erase(entry);
+        return;
+    }
+}
 void ReleaseWriters(ThreadLedger& ledger) {
     for (auto& entry : ledger.frozen) {
         ResumeThread(entry.handle);
@@ -476,6 +594,13 @@ struct TargetState final {
 
 struct Watch final {
     ThreadLedger threads;
+    // Rule-matching threads, and the ones proven to be the writer by freezing them one at a time: only the
+    // proven one stays frozen, so a thread a graphics feature needs is never held for the session.
+    // The rules currently in force, reloaded from the ini beside the runtime so they can be narrowed while the
+    // game runs: one line removed, one thread released, and the result visible in the trace.
+    std::vector<RuleEntry> rules;
+    std::wstring rule_path;
+    std::string rules_signature;
     std::vector<std::pair<std::string, DiskImage>> images;
     std::vector<TargetState> states;
     std::uint64_t passes{};
@@ -589,7 +714,10 @@ void RestoreTarget(Watch& watch, const std::size_t index, const bool first_pass)
     }
 }
 
-void Pass(Watch& watch, const bool first_pass) {
+// Freezes candidates one at a time and watches the hook sites: the one whose freeze stops the re-applying is
+// the writer, and everything else is released immediately. A graphics feature that owns threads in the same
+// modules therefore loses at most three passes of its own time, not the session.
+void Pass(Watch& watch, const bool first_pass, const bool scan_threads) {
     const ImageRange anti_cheat = AntiCheatRange();
     if (!anti_cheat.Valid()) return;
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
@@ -597,7 +725,7 @@ void Pass(Watch& watch, const bool first_pass) {
         reinterpret_cast<NtQueryInformationThreadFn>(GetProcAddress(ntdll, "NtQueryInformationThread"));
     const auto next = reinterpret_cast<NtGetNextThreadFn>(GetProcAddress(ntdll, "NtGetNextThread"));
     // Freeze first: a restore done with the writers running is reverted, or noticed, in seconds.
-    FreezeWriters(watch.threads, anti_cheat, query, next);
+    if (scan_threads) FreezeWriters(watch.threads, watch.rules, anti_cheat, query, next);
     for (std::size_t index = 0; index < std::size(kTargets); ++index) {
         RestoreTarget(watch, index, first_pass);
     }
@@ -607,7 +735,7 @@ void Pass(Watch& watch, const bool first_pass) {
 }  // namespace
 
 AceUnhookReport StartAntiCheatHookRestore(
-    const std::filesystem::path& trace_directory, const std::chrono::milliseconds watch_window) noexcept {
+    const std::filesystem::path& trace_directory) noexcept {
     AceUnhookReport report;
     if (!AntiCheatRange().Valid()) return report;
     if (!trace_directory.empty()) {
@@ -615,31 +743,29 @@ AceUnhookReport StartAntiCheatHookRestore(
     }
     auto watch = std::make_shared<Watch>();
     watch->states.resize(std::size(kTargets));
-    Trace("restore started (pid %lu, window %s)", GetCurrentProcessId(),
-        watch_window.count() > 0 ? "bounded" : "whole session");
+    // The rule list lives beside the runtime: written once with every measured rule in force, then narrowed by
+    // editing the file while the game runs.
+    watch->rule_path = (trace_directory.parent_path() / L"ace-unhook.ini").wstring();
+    WriteRuleTemplate(watch->rule_path);
+    watch->rules = ReadRules(watch->rule_path, watch->rules_signature);
+    Trace("rules in force: %zu (file %ls)", watch->rules.size(), watch->rule_path.c_str());
+    Trace("restore started (pid %lu)", GetCurrentProcessId());
 
     // The first pass runs here, so the loader entry is the real one before the first service loads anything.
-    Pass(*watch, true);
+    Pass(*watch, true, true);
     report.available = true;
     report.passes = static_cast<unsigned long>(watch->passes);
     report.restored = static_cast<unsigned long>(watch->restored);
     report.rehooks = static_cast<unsigned long>(watch->rehooks);
 
-    // The watch runs off the calling thread, and the threads it froze stay frozen for its whole life: that is
-    // what keeps a watchdog from re-checking the prologues between passes.
-    const ULONGLONG started = GetTickCount64();
-    const auto window = watch_window.count();
-    std::thread([watch, started, window] {
-        for (;;) {
-            Sleep(kPassIntervalMs);
-            Pass(*watch, false);
-            if (window > 0 && GetTickCount64() - started >= static_cast<ULONGLONG>(window)) break;
-        }
-        Trace("watch finished: passes=%llu restored=%llu rehooks=%llu",
-            static_cast<unsigned long long>(watch->passes),
-            static_cast<unsigned long long>(watch->restored),
-            static_cast<unsigned long long>(watch->rehooks));
-    }).detach();
+    // The frozen threads stay frozen: that is what keeps the writer from re-applying the hooks. Their handles are
+    // closed here because a suspension is thread state, not a handle reference, and the ledger would otherwise
+    // leak one handle per frozen thread for the life of the process.
+    for (auto& entry : watch->threads.frozen) {
+        CloseHandle(entry.handle);
+    }
+    watch->threads.frozen.clear();
+    Trace("restore complete: %lu prologue write(s), no periodic verification", report.restored);
     return report;
 }
 

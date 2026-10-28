@@ -1385,8 +1385,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
         // runs before the first service loads anything and keeps watching for the whole session.
         anomaly::AceUnhookReport ace_unhook;
         if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) {
-            ace_unhook = anomaly::StartAntiCheatHookRestore(
-                start_context.log_directory, std::chrono::milliseconds(0));
+            ace_unhook = anomaly::StartAntiCheatHookRestore(start_context.log_directory);
         }
         auto& control = *g_runtime_control;
         std::scoped_lock lock(control.mutex);

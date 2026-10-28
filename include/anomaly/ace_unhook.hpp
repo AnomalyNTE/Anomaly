@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 
@@ -23,7 +22,6 @@ struct AceUnhookReport final {
 // This is the implementation the ACE unhook probe plugin runs, moved into the core so it starts before any
 // service or plugin loads anything. A watch window of zero means the whole session.
 [[nodiscard]] AceUnhookReport StartAntiCheatHookRestore(
-    const std::filesystem::path& trace_directory,
-    std::chrono::milliseconds watch_window) noexcept;
+    const std::filesystem::path& trace_directory) noexcept;
 
 }  // namespace anomaly
