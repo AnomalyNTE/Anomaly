@@ -1144,8 +1144,16 @@ target_link_libraries(anomaly_test_host PRIVATE
     anomaly_i18n nlohmann_json::nlohmann_json Psapi)
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
-    add_executable(anomaly-platform-preview WIN32
-        apps/platform_preview/main.cpp
+    enable_testing()
+    add_executable(anomaly_d3d12_interop_fixture
+        apps/render_fixture/d3d12_interop_fixture.cpp)
+    target_include_directories(anomaly_d3d12_interop_fixture PRIVATE include src)
+    target_compile_definitions(anomaly_d3d12_interop_fixture PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_d3d12_interop_fixture PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_d3d12_interop_fixture PRIVATE d3d12 dxgi user32)
+    add_test(NAME d3d12_interop COMMAND anomaly_d3d12_interop_fixture)
+    add_executable(anomaly-platform-preview WIN32        apps/platform_preview/main.cpp
         src/ui/platform_host.cpp
         "${PLATFORM_UI_RESOURCES_RC}"
         src/plugin/plugin_manager.cpp)

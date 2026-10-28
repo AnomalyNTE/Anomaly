@@ -1,4 +1,6 @@
 #include "embedded_host_internal.hpp"
+#include "embedded_d3d12_interop.hpp"
+#include "embedded_present_scope.hpp"
 
 #include "anomaly/host_ui_service.hpp"
 #include "anomaly/nte_esc_menu_bridge.hpp"
@@ -48,6 +50,10 @@ Present1Fn g_present1{};
 ResizeBuffersFn g_resize_buffers{};
 ResizeBuffers1Fn g_resize_buffers1{};
 ExecuteCommandListsFn g_execute_command_lists{};
+static CreateSwapChainFn g_create_swap_chain{};
+static CreateSwapChainForHwndFn g_create_swap_chain_for_hwnd{};
+static CreateSwapChainForCoreWindowFn g_create_swap_chain_for_core_window{};
+static anomaly::ThreadLocalScalar<bool> g_present_active;
 // Kept so a stalled start-up can report whether the detour installed here is
 // still the one in place. Internal linkage: nothing outside this file reads it.
 static void* g_execute_command_lists_target{};
@@ -294,23 +300,20 @@ std::uint64_t CaptureGeneration(const EmbeddedState* state) noexcept {
 }
 
 HRESULT STDMETHODCALLTYPE HookPresent(IDXGISwapChain* swap_chain, UINT interval, UINT flags) {
+    const EmbeddedPresentScope present_scope(g_present_active);
     const bool requested = g_performance_diagnostics_enabled.load(std::memory_order_relaxed);
     const auto lease_started = requested ? std::chrono::steady_clock::now()
                                          : std::chrono::steady_clock::time_point{};
     auto callback = g_hooks != nullptr
         ? g_hooks->AcquireCallback(kRendererHookOwner, kRendererHookGeneration)
         : anomaly::PluginScope::CallbackLease{};
+    if (!present_scope.Outermost()) return g_present(swap_chain, interval, flags);
     auto* const state = callback ? g_state.load(std::memory_order_acquire) : nullptr;
     const bool sampled = requested && state != nullptr && state->performance.Enabled();
     if (sampled) state->performance.ObservePresent();
     const auto render_started = sampled ? std::chrono::steady_clock::now()
                                         : std::chrono::steady_clock::time_point{};
-    static anomaly::ThreadLocalScalar<bool> rendering;
-    if (callback && !rendering.Get()) {
-        rendering.Set(true);
-        RenderEmbedded(swap_chain, flags);
-        rendering.Set(false);
-    }
+    if (callback) RenderEmbedded(swap_chain, flags);
     const auto original_started = sampled ? std::chrono::steady_clock::now()
                                           : std::chrono::steady_clock::time_point{};
     const HRESULT result = g_present(swap_chain, interval, flags);
@@ -334,23 +337,20 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDXGISwapChain* swap_chain, UINT interval,
 HRESULT STDMETHODCALLTYPE HookPresent1(
     IDXGISwapChain1* swap_chain, UINT interval, UINT flags,
     const DXGI_PRESENT_PARAMETERS* parameters) {
+    const EmbeddedPresentScope present_scope(g_present_active);
     const bool requested = g_performance_diagnostics_enabled.load(std::memory_order_relaxed);
     const auto lease_started = requested ? std::chrono::steady_clock::now()
                                          : std::chrono::steady_clock::time_point{};
     auto callback = g_hooks != nullptr
         ? g_hooks->AcquireCallback(kRendererHookOwner, kRendererHookGeneration)
         : anomaly::PluginScope::CallbackLease{};
+    if (!present_scope.Outermost()) return g_present1(swap_chain, interval, flags, parameters);
     auto* const state = callback ? g_state.load(std::memory_order_acquire) : nullptr;
     const bool sampled = requested && state != nullptr && state->performance.Enabled();
     if (sampled) state->performance.ObservePresent();
     const auto render_started = sampled ? std::chrono::steady_clock::now()
                                         : std::chrono::steady_clock::time_point{};
-    static anomaly::ThreadLocalScalar<bool> rendering;
-    if (callback && !rendering.Get()) {
-        rendering.Set(true);
-        RenderEmbedded(swap_chain, flags);
-        rendering.Set(false);
-    }
+    if (callback) RenderEmbedded(swap_chain, flags);
     const auto original_started = sampled ? std::chrono::steady_clock::now()
                                           : std::chrono::steady_clock::time_point{};
     const HRESULT result = g_present1(swap_chain, interval, flags, parameters);
@@ -459,6 +459,50 @@ void STDMETHODCALLTYPE HookExecuteCommandLists(
     }
 }
 
+HRESULT STDMETHODCALLTYPE HookCreateSwapChain(
+    IDXGIFactory* factory, IUnknown* device, DXGI_SWAP_CHAIN_DESC* description,
+    IDXGISwapChain** swap_chain) {
+    auto callback = g_hooks != nullptr
+        ? g_hooks->AcquireCallback(kRendererHookOwner, kRendererHookGeneration)
+        : anomaly::PluginScope::CallbackLease{};
+    const HRESULT result = g_create_swap_chain(factory, device, description, swap_chain);
+    if (callback && SUCCEEDED(result) && swap_chain != nullptr) {
+        BindPresentationQueue(*swap_chain, device);
+    }
+    return result;
+}
+
+HRESULT STDMETHODCALLTYPE HookCreateSwapChainForHwnd(
+    IDXGIFactory2* factory, IUnknown* device, HWND window,
+    const DXGI_SWAP_CHAIN_DESC1* description,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen, IDXGIOutput* output,
+    IDXGISwapChain1** swap_chain) {
+    auto callback = g_hooks != nullptr
+        ? g_hooks->AcquireCallback(kRendererHookOwner, kRendererHookGeneration)
+        : anomaly::PluginScope::CallbackLease{};
+    const HRESULT result = g_create_swap_chain_for_hwnd(
+        factory, device, window, description, fullscreen, output, swap_chain);
+    if (callback && SUCCEEDED(result) && swap_chain != nullptr) {
+        BindPresentationQueue(*swap_chain, device);
+    }
+    return result;
+}
+
+HRESULT STDMETHODCALLTYPE HookCreateSwapChainForCoreWindow(
+    IDXGIFactory2* factory, IUnknown* device, IUnknown* window,
+    const DXGI_SWAP_CHAIN_DESC1* description, IDXGIOutput* output,
+    IDXGISwapChain1** swap_chain) {
+    auto callback = g_hooks != nullptr
+        ? g_hooks->AcquireCallback(kRendererHookOwner, kRendererHookGeneration)
+        : anomaly::PluginScope::CallbackLease{};
+    const HRESULT result = g_create_swap_chain_for_core_window(
+        factory, device, window, description, output, swap_chain);
+    if (callback && SUCCEEDED(result) && swap_chain != nullptr) {
+        BindPresentationQueue(*swap_chain, device);
+    }
+    return result;
+}
+
 bool InstallHooks() {
     if (g_hooks != nullptr) return false;
     const HookTargets targets = DiscoverD3D12HookTargets();
@@ -466,6 +510,19 @@ bool InstallHooks() {
     g_execute_command_lists_target = targets.execute_command_lists;
     g_hooks = std::make_unique<anomaly::HookManager>(anomaly::CreateMinHookBackend());
     return g_hooks->Create(
+               std::string(kRendererHookOwner), kRendererHookGeneration, "create-swap-chain",
+               targets.create_swap_chain, reinterpret_cast<void*>(HookCreateSwapChain),
+               reinterpret_cast<void**>(&g_create_swap_chain)) &&
+        g_hooks->Create(
+            std::string(kRendererHookOwner), kRendererHookGeneration, "create-swap-chain-hwnd",
+            targets.create_swap_chain_for_hwnd, reinterpret_cast<void*>(HookCreateSwapChainForHwnd),
+            reinterpret_cast<void**>(&g_create_swap_chain_for_hwnd)) &&
+        g_hooks->Create(
+            std::string(kRendererHookOwner), kRendererHookGeneration, "create-swap-chain-core-window",
+            targets.create_swap_chain_for_core_window,
+            reinterpret_cast<void*>(HookCreateSwapChainForCoreWindow),
+            reinterpret_cast<void**>(&g_create_swap_chain_for_core_window)) &&
+        g_hooks->Create(
                std::string(kRendererHookOwner), kRendererHookGeneration, "execute-command-lists",
                targets.execute_command_lists, reinterpret_cast<void*>(HookExecuteCommandLists),
                reinterpret_cast<void**>(&g_execute_command_lists)) &&
@@ -521,6 +578,9 @@ bool InstallHooks() {
     g_resize_buffers = nullptr;
     g_resize_buffers1 = nullptr;
     g_execute_command_lists = nullptr;
+    g_create_swap_chain = nullptr;
+    g_create_swap_chain_for_hwnd = nullptr;
+    g_create_swap_chain_for_core_window = nullptr;
     g_execute_command_lists_target = nullptr;
     return true;
 }
@@ -724,7 +784,7 @@ void RunEmbeddedPlatform(
             }
             {
                 std::scoped_lock queue_lock(state.queue_mutex);
-                Release(state.captured_queue);
+                state.queue_capture.Clear();
             }
             state.renderer = RendererLifecycle::Stopped;
             auto* expected = &state;

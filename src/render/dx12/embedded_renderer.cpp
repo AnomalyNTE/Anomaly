@@ -1,4 +1,5 @@
 #include "embedded_host_internal.hpp"
+#include "embedded_d3d12_interop.hpp"
 #include "anomaly/host_ui_service.hpp"
 #include "anomaly/platform_ui_input_policy.hpp"
 #include "anomaly/liquid_glass.hpp"
@@ -467,7 +468,12 @@ bool QueueUsesDevice(ID3D12CommandQueue* queue, ID3D12Device* device) noexcept {
     }
     ID3D12Device* queue_device{};
     const bool queried = SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&queue_device)));
-    const bool same = queried && SameComObject(queue_device, device);
+    auto* native_queue_device = AcquireNativeD3D12Interface<ID3D12Device>(queue_device);
+    auto* native_device = AcquireNativeD3D12Interface<ID3D12Device>(device);
+    const bool same = queried && native_queue_device != nullptr && native_device != nullptr &&
+        SameComObject(native_queue_device, native_device);
+    Release(native_queue_device);
+    Release(native_device);
     Release(queue_device);
     return same;
 }
@@ -495,8 +501,8 @@ void SelectPendingResizeQueue(
     ID3D12CommandQueue* selected{};
     for (UINT index = 0; index < queue_count; ++index) {
         ID3D12CommandQueue* candidate{};
-        if (present_queues[index] == nullptr ||
-            FAILED(present_queues[index]->QueryInterface(IID_PPV_ARGS(&candidate))) ||
+        candidate = AcquireNativeD3D12Interface<ID3D12CommandQueue>(present_queues[index]);
+        if (candidate == nullptr ||
             !QueueUsesDevice(candidate, state.device) ||
             (selected != nullptr && !SameComObject(selected, candidate))) {
             Release(candidate);
@@ -770,11 +776,10 @@ bool InitializeGraphicsD3D12(EmbeddedState& state, IDXGISwapChain* swap_chain) {
         return false;
     }
     state.renderer = RendererLifecycle::Discovering;
-    ID3D12CommandQueue* queue{};
-    {
+    ID3D12CommandQueue* queue = AcquirePresentationQueue(swap_chain);
+    if (queue == nullptr) {
         std::scoped_lock lock(state.queue_mutex);
-        queue = state.captured_queue;
-        if (queue != nullptr) queue->AddRef();
+        queue = state.queue_capture.Acquire(GetCurrentThreadId());
     }
     if (queue == nullptr) {
         // Normal for the first frames, permanent if the submission hook never
@@ -806,14 +811,19 @@ bool InitializeGraphicsD3D12(EmbeddedState& state, IDXGISwapChain* swap_chain) {
 
     IDXGISwapChain3* swap_chain3{};
     ID3D12Device* device{};
+    ID3D12Device* source_device{};
+    if (SUCCEEDED(swap_chain->GetDevice(IID_PPV_ARGS(&source_device)))) {
+        device = AcquireNativeD3D12Interface<ID3D12Device>(source_device);
+    }
+    Release(source_device);
     DXGI_SWAP_CHAIN_DESC description{};
     if (FAILED(swap_chain->QueryInterface(IID_PPV_ARGS(&swap_chain3))) ||
-        FAILED(swap_chain->GetDevice(IID_PPV_ARGS(&device))) ||
+        device == nullptr || !QueueUsesDevice(queue, device) ||
         FAILED(swap_chain->GetDesc(&description)) || description.BufferCount == 0 ||
         description.OutputWindow == nullptr) {
         ReportEmbeddedGate(
             state, "swap chain is not a usable D3D12 target "
-            "(no IDXGISwapChain3, no ID3D12Device, or no output window)");
+            "(no IDXGISwapChain3, matching native device/queue, or output window)");
         Release(queue);
         Release(device);
         Release(swap_chain3);
@@ -1678,6 +1688,7 @@ bool AfterResize(bool affected, HRESULT result) {
             return false;
         }
         queue_changed = queue == ResizeQueueAdoption::Changed;
+        if (queue_changed) BindPresentationQueue(state->source_swap_chain, state->render_queue);
     } else {
         ClearPendingResizeQueue(*state);
     }
@@ -1723,10 +1734,7 @@ void CaptureCommandQueue(ID3D12CommandQueue* queue) {
     if (type != D3D12_COMMAND_LIST_TYPE_DIRECT) return;
     state->execute_direct_queues.fetch_add(1, std::memory_order_relaxed);
     std::scoped_lock lock(state->queue_mutex);
-    if (state->captured_queue == queue) return;
-    queue->AddRef();
-    Release(state->captured_queue);
-    state->captured_queue = queue;
+    state->queue_capture.Observe(GetCurrentThreadId(), queue);
 }
 
 void HandlePresentResult(IDXGISwapChain* swap_chain, HRESULT result) {

@@ -49,6 +49,7 @@ HookTargets DiscoverD3D12HookTargets() {
         ready = SUCCEEDED(swap_chain->QueryInterface(IID_PPV_ARGS(&swap_chain3)));
     }
     if (ready) {
+        auto** factory_table = *reinterpret_cast<void***>(factory);
         auto** queue_table = *reinterpret_cast<void***>(queue);
         auto** swap_table = *reinterpret_cast<void***>(swap_chain);
         auto** swap3_table = *reinterpret_cast<void***>(swap_chain3);
@@ -57,6 +58,9 @@ HookTargets DiscoverD3D12HookTargets() {
         targets.resize_buffers = swap_table[13];
         targets.present1 = swap_table[22];
         targets.resize_buffers1 = swap3_table[39];
+        targets.create_swap_chain = factory_table[10];
+        targets.create_swap_chain_for_hwnd = factory_table[15];
+        targets.create_swap_chain_for_core_window = factory_table[16];
     }
     Release(swap_chain3);
     Release(swap_chain);

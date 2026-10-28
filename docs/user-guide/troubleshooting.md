@@ -45,6 +45,21 @@
 4. 确认 `dwmapi.dll` 放在**游戏主 EXE 所在目录**，且没有被重命名为 `dwmapi.dll.disabled`。
 5. 检查是否与 RE-UE4SS 冲突（见下）。
 
+### 开启 DLSS / 帧生成后出现 D3D12 Present 错误
+
+内嵌后端将 Streamline 代理设备、命令队列转换为原生 D3D12 接口后再提交自己的命令，
+并保留交换链自身的缓冲区访问。交换链创建时可观察到的提交队列优先于全局队列捕获；
+实时附加到已创建的交换链时，优先使用当前 Present 线程观察到的直接队列，避免后台帧生成
+线程覆盖它。嵌套的 `Present` / `Present1` 只绘制一次平台界面。
+
+这些处理不代表所有 DLSS / 驱动组合都已实测。排查时分别验证 DLSS 超分辨率、帧生成，
+以及运行期间切换功能、分辨率后的行为。`E_ABORT` 仅表示呈现链返回操作中止，不能单凭它
+确定具体失败组件；请结合 `Anomaly\\logs`、`Anomaly\\crashes` 和游戏崩溃报告。
+
+需要临时绕过内嵌呈现链时，可将 `Anomaly\\anomaly.ini` 的 `[Platform] Embedded` 设为 `0`，
+保留 `AttachToProcessWindow=1`，退出游戏后重新启动。这会使用独立窗口叠加后端；
+它与交换链内嵌模式的输入、全屏覆盖行为不同。
+
 ### 日志没有生成 / Runtime 没注入
 
 - 确认使用的是 Anomaly 的 `dwmapi.dll`（不是系统的）。

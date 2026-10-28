@@ -1,6 +1,7 @@
 #pragma once
 
 #include "platform_host.hpp"
+#include "embedded_d3d12_interop.hpp"
 #include "shader_resource_descriptor_allocator.hpp"
 #include "smoke_probe_policy.hpp"
 
@@ -183,6 +184,14 @@ using ResizeBuffers1Fn = HRESULT(STDMETHODCALLTYPE*)(
     const UINT*, IUnknown* const*);
 using ExecuteCommandListsFn = void(STDMETHODCALLTYPE*)(
     ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+using CreateSwapChainFn = HRESULT(STDMETHODCALLTYPE*)(
+    IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+using CreateSwapChainForHwndFn = HRESULT(STDMETHODCALLTYPE*)(
+    IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
+using CreateSwapChainForCoreWindowFn = HRESULT(STDMETHODCALLTYPE*)(
+    IDXGIFactory2*, IUnknown*, IUnknown*, const DXGI_SWAP_CHAIN_DESC1*,
+    IDXGIOutput*, IDXGISwapChain1**);
 
 enum class RendererLifecycle : std::uint8_t {
     Cold,
@@ -202,6 +211,9 @@ enum class RendererLifecycle : std::uint8_t {
 enum class EmbeddedRenderApi : std::uint8_t { None, D3D12, D3D11 };
 
 struct HookTargets {
+    void* create_swap_chain{};
+    void* create_swap_chain_for_hwnd{};
+    void* create_swap_chain_for_core_window{};
     void* execute_command_lists{};
     void* present{};
     void* present1{};
@@ -209,7 +221,9 @@ struct HookTargets {
     void* resize_buffers1{};
 
     [[nodiscard]] explicit operator bool() const noexcept {
-        return execute_command_lists != nullptr && present != nullptr &&
+        return create_swap_chain != nullptr && create_swap_chain_for_hwnd != nullptr &&
+            create_swap_chain_for_core_window != nullptr &&
+            execute_command_lists != nullptr && present != nullptr &&
             present1 != nullptr && resize_buffers != nullptr && resize_buffers1 != nullptr;
     }
 };
@@ -237,7 +251,7 @@ struct EmbeddedState {
     std::mutex render_mutex;
     std::shared_ptr<std::mutex> plugin_mutex{std::make_shared<std::mutex>()};
     std::mutex queue_mutex;
-    ID3D12CommandQueue* captured_queue{};
+    EmbeddedQueueCapture queue_capture;
     ID3D12CommandQueue* render_queue{};
     ID3D12CommandQueue* pending_resize_queue{};
     bool pending_resize_queue_valid{true};
