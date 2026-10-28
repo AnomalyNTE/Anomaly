@@ -38,7 +38,6 @@ constexpr std::uint32_t kObjectsPerUpdate = 16384U;
 constexpr auto kScanBudget = std::chrono::milliseconds(1);
 constexpr std::uint32_t kStableContainerUpdates = 12U;
 constexpr auto kMenuPageQuiescence = std::chrono::milliseconds(250);
-constexpr auto kRegistryPollInterval = std::chrono::milliseconds(250);
 constexpr auto kAppendRetryInterval = std::chrono::seconds(1);
 constexpr std::uint32_t kIconImportAttemptsBeforeFallback = 3U;
 constexpr std::size_t kMaximumNameBytes = 1024U;
@@ -179,6 +178,10 @@ struct Context final {
     std::uint64_t observed_menu_page_event_ms{};
     bool menu_rebuild_active{};
     bool reconciliation_complete{};
+    // Set when something asked for a rebind -- a click, or a menu that was rebuilt without a page change.
+    bool reconcile_requested{};
+    // The page the last completed reconcile ran for, so a page switch is noticed without polling.
+    int reconciled_menu_page_index{-1};
     std::chrono::steady_clock::time_point next_registry_poll{};
     std::uint32_t reconcile_stage{kMissingPropertyOffset};
     std::uint32_t append_failure_stage{};
@@ -1399,6 +1402,7 @@ bool QueueClick(Context& context, const std::uintptr_t object) noexcept {
                 return SameHandle(handle, binding->handle);
             })) {
         context.pending_clicks.push_back(binding->handle);
+            context.reconcile_requested = true;
     }
     return true;
 }
@@ -1538,26 +1542,22 @@ void Update(Context& context) noexcept {
     if (!NamesReady(context.names) || !ObjectsReady(context.objects)) RefreshServices(context);
     ObserveMenuRebuild(context);
     ScanObjects(context);
-    const auto now = std::chrono::steady_clock::now();
-    const bool fast_reconcile = context.menu_rebuild_active ||
+    // Nothing polls on a clock: a reconcile runs only when something asked for one -- an observed menu rebuild, a
+    // page change, a click, or a previous pass that did not finish. A menu standing still costs nothing.
+    const bool page_changed = context.menu_page_index != context.reconciled_menu_page_index;
+    const bool wanted = context.menu_rebuild_active || page_changed ||
+        context.reconcile_requested ||
         (!context.reconciliation_complete && !context.menu_candidates.empty());
-    const bool retry_ready = context.append_failure_stage == 0U ||
-        now >= context.next_registry_poll;
-    if (fast_reconcile && retry_ready) {
-        ReconcileButtons(context);
-        context.next_registry_poll = context.append_failure_stage == 0U
-            ? (context.reconciliation_complete
-                    ? now + kRegistryPollInterval
-                    : std::chrono::steady_clock::time_point{})
-            : now + kAppendRetryInterval;
-        return;
-    }
-    if (now >= context.next_registry_poll) {
-        ReconcileButtons(context);
-        context.next_registry_poll = now +
-            (context.append_failure_stage == 0U
-                ? kRegistryPollInterval : kAppendRetryInterval);
-    }
+    if (!wanted) return;
+    // The only wait left is the backoff after a failed append, so it exists only once something failed.
+    const auto now = std::chrono::steady_clock::now();
+    if (context.append_failure_stage != 0U && now < context.next_registry_poll) return;
+    context.reconcile_requested = false;
+    ReconcileButtons(context);
+    context.reconciled_menu_page_index = context.menu_page_index;
+    context.next_registry_poll = context.append_failure_stage == 0U
+        ? std::chrono::steady_clock::time_point{}
+        : now + kAppendRetryInterval;
 }
 
 void Reset(Context& context) noexcept {
@@ -1598,6 +1598,8 @@ void Reset(Context& context) noexcept {
     context.observed_menu_page_event_ms = 0U;
     context.menu_rebuild_active = false;
     context.reconciliation_complete = false;
+    context.reconcile_requested = false;
+    context.reconciled_menu_page_index = -1;
     context.next_registry_poll = {};
     context.reconcile_stage = kMissingPropertyOffset;
     context.append_failure_stage = 0U;
