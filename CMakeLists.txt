@@ -993,6 +993,7 @@ add_custom_target(anomaly_stage_nte_profiles ALL
 
 add_library(anomaly_core SHARED
     src/runtime/core_main.cpp
+    src/runtime/apphelp_fault_guard.cpp
     src/hook/ace_unhook.cpp
     src/runtime/manual_map_exception.cpp
     src/ui/platform_host.cpp

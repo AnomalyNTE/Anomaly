@@ -1776,6 +1776,17 @@ private:
                 return target;
             };
             state->background = resolve(background);
+            // Textures are requested through the render side, which may not have a device or descriptor heap yet
+            // on the frame the layout arrives. Recording the version as applied in that state left the artwork
+            // missing for the rest of the session, so an incomplete resolve leaves it un-applied and asks again a
+            // frame later instead.
+            const auto missing = [](const ThemeImage& image) {
+                return image.width > 0.0f && image.height > 0.0f && !image.Valid();
+            };
+            bool textures_incomplete = missing(state->background);
+            for (const ThemeImage& sticker : state->stickers) {
+                textures_incomplete = textures_incomplete || missing(sticker);
+            }
             state->stickers.reserve(stickers.size());
             for (const anomaly::UiRgba8Image& image : stickers) {
                 state->stickers.push_back(resolve(image));
@@ -1795,6 +1806,20 @@ private:
             state->layout = std::move(published->layout);
             state->message = published->message;
             theme_layout_applied_ = std::move(state);
+            if (textures_incomplete) {
+                // The pixels this pass resolved were consumed by the move above, so retrying means asking the
+                // worker to decode and publish again, not reading the same cache. The version stays un-applied
+                // until that happens, and the ask is throttled so a render side that is never ready does not
+                // spin the worker.
+                theme_layout_applied_version_ = 0;
+                if (++theme_texture_retry_ >= 300) {
+                    theme_texture_retry_ = 0;
+                    theme_layout_reload_.store(true, std::memory_order_relaxed);
+                    theme_wait_condition_.notify_all();
+                }
+                return;
+            }
+            theme_texture_retry_ = 0;
             theme_style_dirty_ = true;
             // Keep the page's fill-mode control on what was just applied, unless
             // the user is mid-change on it. A pending change stops being pending
@@ -8109,6 +8134,8 @@ private:
     // They live as long as the layout that produced them.
     std::vector<ID3D11ShaderResourceView*> standalone_theme_views_;
     std::uint64_t theme_layout_applied_version_{};
+    // Frames to wait before asking for the theme textures again after a device that was not ready refused them.
+    std::uint32_t theme_texture_retry_{};
     bool theme_style_dirty_{};
     std::atomic<bool> theme_layout_reload_{true};
     mutable std::mutex theme_layout_mutex_;

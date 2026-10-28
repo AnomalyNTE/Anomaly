@@ -1123,9 +1123,12 @@ bool EnsureRemoteModule(
     RemoteModuleMap& modules, ManualMapDelivery delivery, std::string& failure) {
     const std::wstring name = Fold(requested.filename().wstring());
     if (FindRemoteModule(modules, requested) != modules.end()) return true;
-    if (!RemoteLoadLibrary(process, requested, modules, delivery, failure)) return false;
-    if (FindRemoteModule(modules, requested) != modules.end()) return true;
+    // An API set is not a module: the loader answers it through the schema, and there is nothing to stage. Asking
+    // the target to load one anyway sends a thread into the anti-cheat loader hook for an answer that was never
+    // going to change, and that call can fail to come back at all.
     const bool api_set = name.starts_with(L"api-ms-") || name.starts_with(L"ext-ms-");
+    if (!RemoteLoadLibrary(process, requested, modules, delivery, failure)) return api_set;
+    if (FindRemoteModule(modules, requested) != modules.end()) return true;
     if (api_set) return true;
     // Naming the module matters: a manual map loads a whole import table, and "a dependency is
     // missing" without saying which one leaves nothing to act on.

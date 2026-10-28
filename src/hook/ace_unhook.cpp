@@ -12,7 +12,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace anomaly {
@@ -66,7 +65,6 @@ constexpr int kThreadQuerySetWin32StartAddress = 9;
 // `mov rax, imm64; jmp rax`.
 constexpr std::size_t kRestoreBytes = 16;
 // The cadence a re-applied hook is noticed at.
-constexpr DWORD kPassIntervalMs = 250;
 // Freeze threads that start in generated code as well as the ones inside the anti-cheat image. The probe this
 // is modelled on leaves that off by default: it also matches any other just-in-time code in the process, and
 // freezing a thread the game needs stalls it. Turn it on when a watchdog survives the image-scoped freeze and
@@ -474,7 +472,19 @@ struct TargetState final {
     std::uintptr_t address{};
 };
 
+// One export of a system module: where it lives and the prologue the file says it should have. Both are
+// resolved once -- the file does not change and the module does not move -- so a later pass is a comparison
+// instead of six thousand VirtualQuery calls.
+struct ExportCheck final {
+    std::uintptr_t address{};
+    std::uint8_t expected[kRestoreBytes]{};
+    const char* module{};
+    std::uint32_t rva{};
+};
 struct Watch final {
+    // Built on the first pass: every export of the three system modules with the prologue its file describes.
+    std::vector<ExportCheck> export_checks;
+    bool export_checks_ready{};
     ThreadLedger threads;
     std::vector<std::pair<std::string, DiskImage>> images;
     std::vector<TargetState> states;
@@ -589,6 +599,91 @@ void RestoreTarget(Watch& watch, const std::size_t index, const bool first_pass)
     }
 }
 
+// The prologues of every export in the three system modules, checked against the image on disk. The list is built
+// once: the file does not change and the modules do not move, so a pass after that is a comparison of memory
+// against bytes already in hand. The anti-cheat does not only hook the entries anyone would think to list -- it
+// also sits in front of ordinary kernel32 APIs, and a game thread calling one of those is what runs its code.
+void RestoreExportPrologues(Watch& watch) {
+    struct Module final {
+        const wchar_t* name;
+        const char* label;
+    };
+    constexpr Module modules[] = {
+        {L"ntdll.dll", "ntdll.dll"},
+        {L"kernel32.dll", "kernel32.dll"},
+        {L"kernelbase.dll", "kernelbase.dll"},
+    };
+    if (!watch.export_checks_ready) {
+        for (const Module& module : modules) {
+            const HMODULE local = GetModuleHandleW(module.name);
+            if (local == nullptr) continue;
+            DiskImage& image = CachedImage(watch, module.label, local);
+            if (!image.Valid()) continue;
+            const auto& directory =
+                image.headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            if (directory.VirtualAddress == 0 || directory.Size < sizeof(IMAGE_EXPORT_DIRECTORY)) continue;
+            const std::size_t export_offset = image.FileOffset(directory.VirtualAddress);
+            if (export_offset + sizeof(IMAGE_EXPORT_DIRECTORY) > image.bytes.size()) continue;
+            const auto* exports =
+                reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(image.bytes.data() + export_offset);
+            const std::size_t functions_offset = image.FileOffset(exports->AddressOfFunctions);
+            const std::size_t count = exports->NumberOfFunctions;
+            if (functions_offset + count * sizeof(std::uint32_t) > image.bytes.size()) continue;
+            const auto* functions =
+                reinterpret_cast<const std::uint32_t*>(image.bytes.data() + functions_offset);
+            const auto base = reinterpret_cast<std::uintptr_t>(local);
+            for (std::size_t index = 0; index < count; ++index) {
+                const std::uint32_t rva = functions[index];
+                if (rva == 0) continue;
+                // A forwarded export carries an RVA into the export directory itself, not code.
+                if (rva >= directory.VirtualAddress &&
+                    rva < directory.VirtualAddress + directory.Size) {
+                    continue;
+                }
+                ExportCheck check;
+                if (!ExpectedBytes(image, base, rva, kRestoreBytes, check.expected)) continue;
+                // A function the file itself starts with a jump is a thunk of that module, not a hook.
+                if (check.expected[0] == 0xE9 ||
+                    (check.expected[0] == 0xFF && check.expected[1] == 0x25)) {
+                    continue;
+                }
+                check.address = base + rva;
+                check.module = module.label;
+                check.rva = rva;
+                watch.export_checks.push_back(check);
+            }
+        }
+        watch.export_checks_ready = true;
+        Trace("export scan armed: %zu prologue(s) under watch", watch.export_checks.size());
+    }
+    std::size_t restored{};
+    for (const ExportCheck& check : watch.export_checks) {
+        std::uint8_t current[kRestoreBytes]{};
+        std::memcpy(current, reinterpret_cast<const void*>(check.address), kRestoreBytes);
+        if (std::memcmp(current, check.expected, kRestoreBytes) == 0) continue;
+        // Only an inline hook is rewritten: a five-byte jump, a jump through a pointer, or a move/jump pair.
+        // Anything else that differs is the loader own work -- hotpatch padding, an aligned thunk -- and putting
+        // the file bytes back over it is what hung the process once already.
+        const std::uintptr_t jump = HookTarget(current);
+        if (jump == 0) continue;
+        const auto base = check.address - check.rva;
+        const HMODULE local = GetModuleHandleA(check.module);
+        const auto size = local != nullptr
+            ? reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<const std::uint8_t*>(local) +
+                  reinterpret_cast<const IMAGE_DOS_HEADER*>(local)->e_lfanew)->OptionalHeader.SizeOfImage
+            : 0u;
+        if (size != 0 && jump >= base && jump < base + size) continue;
+        WritePrologue(check.address, check.expected, kRestoreBytes);
+        ++restored;
+        if (restored <= 8) {
+            Trace("export %s+0x%X: HOOKED jump=0x%llX -- restored", check.module, check.rva,
+                static_cast<unsigned long long>(jump));
+        }
+    }
+    if (restored > 8) Trace("export scan: %zu prologue(s) restored", restored);
+}
+
+
 void Pass(Watch& watch, const bool first_pass) {
     const ImageRange anti_cheat = AntiCheatRange();
     if (!anti_cheat.Valid()) return;
@@ -601,13 +696,15 @@ void Pass(Watch& watch, const bool first_pass) {
     for (std::size_t index = 0; index < std::size(kTargets); ++index) {
         RestoreTarget(watch, index, first_pass);
     }
+    RestoreExportPrologues(watch);
+
     ++watch.passes;
 }
 
 }  // namespace
 
 AceUnhookReport StartAntiCheatHookRestore(
-    const std::filesystem::path& trace_directory, const std::chrono::milliseconds watch_window) noexcept {
+    const std::filesystem::path& trace_directory) noexcept {
     AceUnhookReport report;
     if (!AntiCheatRange().Valid()) return report;
     if (!trace_directory.empty()) {
@@ -615,8 +712,7 @@ AceUnhookReport StartAntiCheatHookRestore(
     }
     auto watch = std::make_shared<Watch>();
     watch->states.resize(std::size(kTargets));
-    Trace("restore started (pid %lu, window %s)", GetCurrentProcessId(),
-        watch_window.count() > 0 ? "bounded" : "whole session");
+    Trace("restore started (pid %lu)", GetCurrentProcessId());
 
     // The first pass runs here, so the loader entry is the real one before the first service loads anything.
     Pass(*watch, true);
@@ -625,21 +721,12 @@ AceUnhookReport StartAntiCheatHookRestore(
     report.restored = static_cast<unsigned long>(watch->restored);
     report.rehooks = static_cast<unsigned long>(watch->rehooks);
 
-    // The watch runs off the calling thread, and the threads it froze stay frozen for its whole life: that is
-    // what keeps a watchdog from re-checking the prologues between passes.
-    const ULONGLONG started = GetTickCount64();
-    const auto window = watch_window.count();
-    std::thread([watch, started, window] {
-        for (;;) {
-            Sleep(kPassIntervalMs);
-            Pass(*watch, false);
-            if (window > 0 && GetTickCount64() - started >= static_cast<ULONGLONG>(window)) break;
-        }
-        Trace("watch finished: passes=%llu restored=%llu rehooks=%llu",
-            static_cast<unsigned long long>(watch->passes),
-            static_cast<unsigned long long>(watch->restored),
-            static_cast<unsigned long long>(watch->rehooks));
-    }).detach();
+    // The writers are frozen before the pass above, so they cannot put their hooks back: one pass is the whole
+    // job. Nothing keeps running after this returns -- no thread, no timer, no periodic re-check.
+    Trace("restore finished: passes=%llu restored=%llu rehooks=%llu",
+        static_cast<unsigned long long>(watch->passes),
+        static_cast<unsigned long long>(watch->restored),
+        static_cast<unsigned long long>(watch->rehooks));
     return report;
 }
 
