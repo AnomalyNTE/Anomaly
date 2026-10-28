@@ -1,7 +1,6 @@
 #include "analyzer.hpp"
 #include "anomaly/core_api.hpp"
 #include "anomaly/adapter_service_registry.hpp"
-#include "anomaly/ace_unhook.hpp"
 #include "anomaly/apphelp_fault_guard.hpp"
 #include "anomaly/crash_reporter.hpp"
 #include "anomaly/embedded_artwork.hpp"
@@ -1384,10 +1383,8 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
         // An injected core is the one that needs this: the anti-cheat inline-hooks the loader entry, and its
         // hook is what asks the compatibility database about an image the loader cannot identify. The restore
         // runs before the first service loads anything and returns once the hooks are back.
-        anomaly::AceUnhookReport ace_unhook;
         anomaly::ApphelpFaultGuardReport guard;
         if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) {
-            ace_unhook = anomaly::StartAntiCheatHookRestore(start_context.log_directory);
             // The anti-cheat compatibility query faults inside apphelp for an image this process mapped
             // itself; the guard answers it the way a missing entry would, so the query cannot take the game
             // down. It has to be in place before the first game call reaches that path.
@@ -1400,12 +1397,10 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
 
         const DWORD result = session->Start();
         control.session = session;
-        if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL && ace_unhook.available) {
+        if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) {
             RuntimeLog(
-                core_context, anomaly::LogLevel::Info, "ace.unhook.restored",
-                "apphelp_guard=" + std::string(guard.installed ? "installed" : "unavailable") + " ace_unhook=restored count=" + std::to_string(ace_unhook.restored) +
-                    " rehooks=" + std::to_string(ace_unhook.rehooks) +
-                    " passes=" + std::to_string(ace_unhook.passes));
+                core_context, anomaly::LogLevel::Info, "apphelp.guard",
+                "apphelp_guard=" + std::string(guard.installed ? "installed" : "unavailable"));
         }
         if (result != ERROR_SUCCESS) ArchiveStoppedSessionLocked(control);
         return result;
