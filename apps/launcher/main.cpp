@@ -1502,6 +1502,20 @@ std::optional<std::filesystem::path> ChooseGameDirectory(
     return result;
 }
 
+// The file name the selected client's official launcher ships under. The two installs are separate programs
+// with separate launchers, so a label that names one of them has to name the one this client actually starts.
+const char* ClientLauncherFileName(const anomaly::launcher::NteClient client) noexcept {
+    return client == anomaly::launcher::NteClient::Global
+        ? "NTEGlobalLauncher.exe" : "NTELauncher.exe";
+}
+
+std::string Format(
+    const anomaly::Translator& translator, anomaly::MessageId id,
+    std::initializer_list<std::string_view> arguments) {
+    return translator.Format(id, std::span<const std::string_view>(
+        arguments.begin(), arguments.size()));
+}
+
 std::optional<std::filesystem::path> ChooseLauncherExecutable(
     HWND owner, const std::filesystem::path& current,
     const anomaly::launcher::NteClient client, const anomaly::Translator& translator) {
@@ -1528,8 +1542,9 @@ std::optional<std::filesystem::path> ChooseLauncherExecutable(
     };
     static_cast<void>(dialog->SetFileTypes(
         static_cast<UINT>(std::size(filters)), filters));
-    const std::wstring title = Utf8Wide(
-        translator.Text(anomaly::MessageId::LauncherDialogNteLauncher));
+    const std::wstring title = Utf8Wide(Format(
+        translator, anomaly::MessageId::LauncherDialogNteLauncher,
+        {ClientLauncherFileName(client)}));
     dialog->SetTitle(title.c_str());
     if (!current.empty()) {
         ComPtr<IShellItem> folder;
@@ -1615,6 +1630,16 @@ bool CommandButton(
     return pressed && enabled;
 }
 
+// The width a command button needs for its own label, in the same unscaled units CommandButton takes. A
+// translation is as long as it is: a fixed width ellipsizes the ones that grew.
+float CommandButtonWidth(char32_t glyph, const char* label) {
+    const std::string text = std::string(Glyph(glyph)) + "  " + label;
+    const float pixels = ImGui::CalcTextSize(text.c_str()).x +
+        ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float scale = g_launcher_dpi_scale > 0.0f ? g_launcher_dpi_scale : 1.0f;
+    return std::ceil(pixels / scale) + 6.0f;
+}
+
 const char* Text(const anomaly::Translator& translator, anomaly::MessageId id) noexcept {
     return translator.Text(id).data();
 }
@@ -1623,13 +1648,6 @@ std::string StableLabel(
     const anomaly::Translator& translator, anomaly::MessageId id,
     std::string_view stable_id) {
     return anomaly::StableDisplayLabel(translator.Text(id), stable_id);
-}
-
-std::string Format(
-    const anomaly::Translator& translator, anomaly::MessageId id,
-    std::initializer_list<std::string_view> arguments) {
-    return translator.Format(id, std::span<const std::string_view>(
-        arguments.begin(), arguments.size()));
 }
 
 std::string RenderMessage(
@@ -1890,9 +1908,11 @@ void DrawAttachMode(
     DrawReadOnlyPath(
         "##NteLauncherExecutable", snapshot.launcher_executable, 38.0f, translator);
     ImGui::SameLine();
+    const std::string choose_label = Format(
+        translator, anomaly::MessageId::LauncherChooseNteLauncher,
+        {ClientLauncherFileName(snapshot.selected_client)});
     if (IconButton(
-            "choose-nte-launcher", 0xe838,
-            Text(translator, anomaly::MessageId::LauncherChooseNteLauncher),
+            "choose-nte-launcher", 0xe838, choose_label.c_str(),
             !snapshot.busy)) {
         if (const auto selected = ChooseLauncherExecutable(
                 window, snapshot.launcher_executable, snapshot.selected_client, translator)) {
@@ -1946,22 +1966,25 @@ void DrawAttachMode(
         }
     }
     const bool can_inject = !snapshot.busy && snapshot.core_available && inject_target != 0;
-    // The same bottom-right placement and size as the proxy mode's primary action,
-    // so switching modes does not move the button under the cursor.
+    // The same bottom-right placement and size as the proxy mode's primary action, so switching modes does not
+    // move the button under the cursor -- but the widths are measured from the labels, because a fixed width
+    // ellipsized the English "Inject into running process" down to "Inject into running ...".
+    const char* inject_label = Text(translator, anomaly::MessageId::LauncherActionInjectRunning);
+    const char* launch_label = Text(translator, anomaly::MessageId::LauncherLaunchAttach);
+    const float inject_width = (std::max)(200.0f, CommandButtonWidth(0xe8e5, inject_label));
+    const float launch_width = (std::max)(240.0f, CommandButtonWidth(0xe768, launch_label));
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - Scale(74.0f));
     ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(),
-        ImGui::GetWindowWidth() - Scale(452.0f) - Scale(16.0f)));
+        ImGui::GetWindowWidth() - Scale(inject_width + 12.0f + launch_width) - Scale(16.0f)));
     if (CommandButton(
-            "inject-running-process", 0xe8e5,
-            Text(translator, anomaly::MessageId::LauncherActionInjectRunning), false,
-            can_inject, ImVec2(200.0f, 62.0f))) {
+            "inject-running-process", 0xe8e5, inject_label, false,
+            can_inject, ImVec2(inject_width, 62.0f))) {
         controller.InjectIntoRunningProcess(inject_target);
     }
     ImGui::SameLine(0.0f, Scale(12.0f));
     if (CommandButton(
-            "launch-attach-core", 0xe768,
-            Text(translator, anomaly::MessageId::LauncherLaunchAttach), true, can_launch,
-            ImVec2(240.0f, 62.0f))) {
+            "launch-attach-core", 0xe768, launch_label, true, can_launch,
+            ImVec2(launch_width, 62.0f))) {
         controller.LaunchAndAttach();
     }
 }
