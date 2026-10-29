@@ -150,10 +150,6 @@ struct PluginStopDiagnostic {
 // indefinitely queued.
 using UiResourceWorkerDispatcher = std::function<bool(
     std::string owner, std::uint64_t generation, std::function<void()> callback)>;
-using PluginLoadPredicate = std::function<bool(const anomaly::PluginManifest& manifest)>;
-using PluginActivationObserver = std::function<void(
-    std::string_view plugin_id, std::uint64_t generation, bool entering)>;
-
 class PluginManager {
 public:
     PluginManager(
@@ -164,9 +160,7 @@ public:
         std::shared_ptr<anomaly::StructuredLogger> logger = {},
         anomaly::HotkeyDispatcher input_dispatcher = {},
         UiResourceWorkerDispatcher ui_resource_worker_dispatcher = {},
-        anomaly::IpcPost ipc_post = {},
-        PluginLoadPredicate load_predicate = {},
-        PluginActivationObserver activation_observer = {});
+        anomaly::IpcPost ipc_post = {});
     ~PluginManager();
 
     PluginManager(const PluginManager&) = delete;
@@ -298,8 +292,6 @@ public:
 
 private:
     struct LoadedPlugin;
-    [[nodiscard]] bool LoadAllowed(const anomaly::PluginCatalogEntry& entry) const;
-    void PublishSuspended(const anomaly::PluginCatalogEntry& entry);
     bool LoadCatalogEntry(const anomaly::PluginCatalogEntry& entry);
     void LogImpl(
         AnomalyCoreLogLevelV1 level,
@@ -382,8 +374,6 @@ private:
     std::shared_ptr<anomaly::UiResourceRenderBackend> ui_resource_render_backend_;
     std::function<void(std::string_view, std::uint64_t)> queued_callback_canceller_;
     std::function<void(const PluginCallbackEvidence&)> callback_evidence_observer_;
-    PluginLoadPredicate load_predicate_;
-    PluginActivationObserver activation_observer_;
     mutable std::mutex stop_diagnostics_mutex_;
     std::vector<PluginStopDiagnostic> stop_diagnostics_;
 };

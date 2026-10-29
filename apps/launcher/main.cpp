@@ -6,7 +6,6 @@
 #include "anomaly/platform_ui_layout.hpp"
 #include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/runtime_launch.hpp"
-#include "anomaly/runtime_recovery.hpp"
 #include "anomaly/ui_resource_decoder.hpp"
 #include "config.hpp"
 
@@ -156,8 +155,6 @@ struct LauncherSnapshot final {
     std::filesystem::path game_directory;
     std::filesystem::path launcher_executable;
     anomaly::launcher::ProxyInstallationStatus proxy;
-    std::optional<anomaly::RuntimeRecoveryState> recovery;
-    std::string recovery_message;
     std::vector<anomaly::launcher::AttachableProcess> processes;
     DWORD attached_process{};
     bool core_available{};
@@ -496,7 +493,6 @@ public:
             const auto saved = PersistConfigurationImpl();
             RefreshHotkeyImpl();
             RefreshProxyImpl();
-            RefreshRecoveryImpl();
             RefreshProcessesImpl(ProcessAnnounce::Never);
             if (!saved.Ok()) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
@@ -508,7 +504,6 @@ public:
     void RefreshProxy() {
         Queue(anomaly::MessageId::LauncherStatusInspectingProxy, MessageScope::Proxy, [this] {
             RefreshProxyImpl();
-            RefreshRecoveryImpl();
             RefreshProcessesImpl(ProcessAnnounce::Never);
         });
     }
@@ -518,7 +513,6 @@ public:
             const auto game = GameDirectory();
             const auto result = anomaly::launcher::InstallProxyRuntime(game, source_);
             PublishProxy(result);
-            RefreshRecoveryImpl();
             RefreshProcessesImpl(ProcessAnnounce::Never);
         });
     }
@@ -531,14 +525,6 @@ public:
             const auto result = anomaly::launcher::SetProxyEnabled(
                 game, source_, enabled);
             PublishProxy(result);
-        });
-    }
-
-    void RestoreRecovery(anomaly::RuntimeRecoveryAxis axis) {
-        Queue(anomaly::MessageId::LauncherStatusRestoringRecovery, MessageScope::Proxy, [this, axis] {
-            const auto runtime_root = GameDirectory() / L"Anomaly";
-            anomaly::RuntimeRecoveryStore store(runtime_root);
-            PublishRecovery(store.Restore(axis), true);
         });
     }
 
@@ -598,8 +584,6 @@ public:
             state_.game_directory = selected.game_directory;
             state_.launcher_executable = selected.launcher_executable;
             state_.proxy = {};
-            state_.recovery.reset();
-            state_.recovery_message.clear();
             state_.attached_process = 0;
         }
         Queue(anomaly::MessageId::LauncherStatusScanningLocal, MessageScope::Both, [this] {
@@ -607,7 +591,6 @@ public:
             const auto saved = PersistConfigurationImpl();
             RefreshHotkeyImpl();
             RefreshProxyImpl();
-            RefreshRecoveryImpl();
             RefreshProcessesImpl();
             if (!saved.Ok()) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
@@ -866,45 +849,6 @@ private:
             : MessageKind::Error;
     }
 
-    void RefreshRecoveryImpl() {
-        const auto runtime_root = GameDirectory() / L"Anomaly";
-        std::error_code error;
-        if (!std::filesystem::is_directory(runtime_root, error) || error) {
-            std::scoped_lock lock(state_mutex_);
-            state_.recovery.reset();
-            state_.recovery_message.clear();
-            return;
-        }
-        anomaly::RuntimeRecoveryStore store(runtime_root);
-        PublishRecovery(store.Load(), false);
-    }
-
-    void PublishRecovery(anomaly::RuntimeRecoveryResult result, bool announce) {
-        std::scoped_lock lock(state_mutex_);
-        if (result.Ok()) {
-            state_.recovery = std::move(result.state);
-            state_.recovery_message.clear();
-            if (announce) {
-                state_.message = MakeLauncherMessage(
-                    anomaly::MessageId::LauncherStatusRecoveryRestored);
-                state_.message_kind = MessageKind::Success;
-            }
-            return;
-        }
-        state_.recovery.reset();
-        if (result.error == anomaly::RuntimeRecoveryError::StateUnavailable) {
-            state_.recovery_message.clear();
-            return;
-        }
-        state_.recovery_message = std::move(result.message);
-        if (announce) {
-            state_.message = MakeLauncherMessage(
-                anomaly::MessageId::LauncherStatusRecoveryRestoreFailed, {},
-                state_.recovery_message);
-            state_.message_kind = MessageKind::Error;
-        }
-    }
-
     void InitializePathsImpl() {
         const auto loaded = anomaly::launcher::LoadLauncherConfiguration(configuration_path_);
         const auto game_processes = anomaly::launcher::EnumerateAttachableProcesses();
@@ -953,7 +897,6 @@ private:
         const auto saved = PersistConfigurationImpl();
         RefreshHotkeyImpl();
         RefreshProxyImpl();
-        RefreshRecoveryImpl();
         RefreshProcessesImpl();
         RefreshThemeImpl();
         if (!saved.Ok()) {
@@ -1763,83 +1706,6 @@ void DrawReadOnlyPath(
         ImGuiInputTextFlags_ReadOnly);
 }
 
-void DrawRecoveryAxis(
-    LauncherController& controller, const LauncherSnapshot& snapshot,
-    const anomaly::Translator& translator, const char* stable_id,
-    anomaly::MessageId label, anomaly::MessageId action,
-    anomaly::RuntimeRecoveryAxis axis) {
-    ImGui::TableNextRow(ImGuiTableRowFlags_None, Scale(28.0f));
-    ImGui::TableSetColumnIndex(0);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(Text(translator, label));
-    ImGui::TableSetColumnIndex(1);
-    ImGui::BeginDisabled(snapshot.busy);
-    ImGui::PushID(stable_id);
-    if (ImGui::SmallButton(Text(translator, action))) controller.RestoreRecovery(axis);
-    ImGui::PopID();
-    ImGui::EndDisabled();
-}
-
-void DrawRecoveryState(
-    LauncherController& controller, const LauncherSnapshot& snapshot,
-    const anomaly::Translator& translator) {
-    const auto& theme = ue5mem::PlatformUiTheme();
-    const bool active = snapshot.recovery && snapshot.recovery->safe_mode.Active();
-    if (!active && snapshot.recovery_message.empty()) return;
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionRecovery));
-    if (!snapshot.recovery_message.empty()) {
-        ImGui::PushTextWrapPos();
-        ImGui::TextColored(ThemeColor(theme.danger), "%s", snapshot.recovery_message.c_str());
-        ImGui::PopTextWrapPos();
-        return;
-    }
-
-    const auto& safe_mode = snapshot.recovery->safe_mode;
-    ImGui::TextColored(ThemeColor(theme.warning), "%s",
-        Text(translator, anomaly::MessageId::LauncherRecoverySafeModeActive));
-    if (!safe_mode.reason.empty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(kLauncherMutedInk, "%s", safe_mode.reason.c_str());
-    }
-    if (ImGui::BeginTable(
-            "RecoveryAxes", 2, ImGuiTableFlags_SizingStretchProp,
-            ImVec2(0.0f, 0.0f))) {
-        const std::string axis_column = StableLabel(translator,
-            anomaly::MessageId::LauncherRecoveryAxis, "recovery-axis");
-        const std::string action_column = StableLabel(translator,
-            anomaly::MessageId::LauncherRecoveryAction, "recovery-action");
-        ImGui::TableSetupColumn(axis_column.c_str(), ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn(
-            action_column.c_str(), ImGuiTableColumnFlags_WidthFixed, Scale(72.0f));
-        if (safe_mode.minimal_core) {
-            DrawRecoveryAxis(
-                controller, snapshot, translator, "minimal-core",
-                anomaly::MessageId::LauncherRecoveryMinimalCore,
-                anomaly::MessageId::LauncherRecoveryRestore,
-                anomaly::RuntimeRecoveryAxis::MinimalCore);
-        }
-        if (safe_mode.third_party_plugins_suspended) {
-            DrawRecoveryAxis(
-                controller, snapshot, translator, "third-party-plugins",
-                anomaly::MessageId::LauncherRecoveryThirdPartyPlugins,
-                anomaly::MessageId::LauncherRecoveryRestore,
-                anomaly::RuntimeRecoveryAxis::ThirdPartyPlugins);
-        }
-        if (safe_mode.profile_overrides_suspended) {
-            DrawRecoveryAxis(
-                controller, snapshot, translator, "profile-overrides",
-                anomaly::MessageId::LauncherRecoveryProfileOverrides,
-                anomaly::MessageId::LauncherRecoveryRestore,
-                anomaly::RuntimeRecoveryAxis::ProfileOverrides);
-        }
-        ImGui::EndTable();
-    }
-}
-
 void DrawStartupSettings(
     LauncherController& controller, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
@@ -1944,8 +1810,6 @@ void DrawProxyMode(
         ImGui::TextColored(proxy_ink, "%s", proxy_status.c_str());
         ImGui::PopTextWrapPos();
     }
-
-    DrawRecoveryState(controller, snapshot, translator);
 
     // Pinned to a fixed band rather than derived from the cursor: taking the
     // larger of the two made each mode's button land at a different height,

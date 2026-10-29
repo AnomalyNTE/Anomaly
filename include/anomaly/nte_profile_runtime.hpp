@@ -23,7 +23,6 @@ struct NteProfileRuntimeOptions {
     std::filesystem::path profile_directory{L"profiles"};
     std::filesystem::path local_profile_directory{L"profiles-local"};
     std::filesystem::path managed_profile_directory{L"state/profiles/managed"};
-    bool profile_overrides_enabled{true};
     std::string game_id{"nte"};
     HMODULE game_module{};
     CoreMemoryServices memory_services;

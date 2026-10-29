@@ -659,35 +659,6 @@ target_compile_definitions(
     anomaly_reliable_storage PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_reliable_storage PRIVATE /W4 /permissive- /EHsc)
 
-add_library(anomaly_runtime_recovery STATIC src/diagnostics/runtime_recovery.cpp)
-target_include_directories(anomaly_runtime_recovery PUBLIC include)
-target_compile_definitions(
-    anomaly_runtime_recovery PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_runtime_recovery PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(anomaly_runtime_recovery
-    PUBLIC anomaly_reliable_storage anomaly_semver
-    PRIVATE nlohmann_json::nlohmann_json)
-
-add_library(anomaly_runtime_crash_coordinator STATIC
-    src/diagnostics/runtime_crash_coordinator.cpp)
-target_include_directories(anomaly_runtime_crash_coordinator PUBLIC include)
-target_compile_definitions(
-    anomaly_runtime_crash_coordinator PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_runtime_crash_coordinator PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(anomaly_runtime_crash_coordinator
-    PUBLIC anomaly_runtime_recovery anomaly_reliable_storage
-    PRIVATE nlohmann_json::nlohmann_json)
-
-add_executable(anomaly_crash_coordinator apps/crash_coordinator/main.cpp)
-set_target_properties(anomaly_crash_coordinator PROPERTIES
-    OUTPUT_NAME "AnomalyCrashCoordinator"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Anomaly")
-target_include_directories(anomaly_crash_coordinator PRIVATE include)
-target_compile_definitions(
-    anomaly_crash_coordinator PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_crash_coordinator PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(anomaly_crash_coordinator PRIVATE anomaly_runtime_crash_coordinator)
-
 add_library(anomaly_artifact_crypto STATIC src/repository/artifact_crypto.cpp)
 target_include_directories(anomaly_artifact_crypto PUBLIC include)
 target_compile_definitions(
@@ -1045,10 +1016,10 @@ target_link_libraries(
     anomaly_nte_profile_runtime
     anomaly_websocket_server
     anomaly_repository_coordinator
-    anomaly_crash_reporter anomaly_runtime_crash_coordinator
+    anomaly_crash_reporter
     anomaly_structured_logger anomaly_ui_resources anomaly_i18n
     nlohmann_json::nlohmann_json)
-add_dependencies(anomaly_core anomaly_stage_nte_profiles anomaly_crash_coordinator)
+add_dependencies(anomaly_core anomaly_stage_nte_profiles)
 add_custom_command(TARGET anomaly_core POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_SOURCE_DIR}/CONTACT"
@@ -1185,7 +1156,7 @@ target_compile_options(anomaly_launcher PRIVATE /W4 /permissive- /EHsc)
 target_link_options(anomaly_launcher PRIVATE /MANIFESTUAC:NO /DELAYLOAD:dwmapi.dll)
 target_link_libraries(anomaly_launcher PRIVATE
     anomaly_config anomaly_imgui anomaly_launcher_configuration anomaly_launcher_proxy
-    anomaly_manual_map anomaly_runtime_recovery
+    anomaly_manual_map
     anomaly_platform_settings anomaly_platform_ui_layout
     anomaly_runtime_launch anomaly_ui_resources
     ole32 shell32 delayimp dcomp)
@@ -1801,7 +1772,7 @@ if(TARGET anomaly-platform-preview)
 endif()
 
 set(ANOMALY_RELEASE_PE_TARGETS
-    dwmapi anomaly_core anomaly_launcher anomaly_crash_coordinator anomaly_nte_game_hook
+    dwmapi anomaly_core anomaly_launcher anomaly_nte_game_hook
     anomaly-plugin anomaly_abi_snapshot anomaly_test_host
     anomaly-profile anomaly_cli anomaly_inspect anomaly_injector)
 get_property(ANOMALY_RELEASE_PLUGIN_TARGETS GLOBAL PROPERTY ANOMALY_RELEASE_PLUGIN_TARGETS)
@@ -1828,11 +1799,6 @@ install(TARGETS anomaly_launcher
 install(TARGETS anomaly_core
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
-install(TARGETS anomaly_crash_coordinator
-    RUNTIME DESTINATION Anomaly COMPONENT GameRuntime)
-# The launcher resolves this by absolute path under its own directory, so it stays part of the runtime
-# payload: a package that turned auto-starting back on without it would launch and then fail to start
-# the game.
 install(TARGETS anomaly_nte_game_hook
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)

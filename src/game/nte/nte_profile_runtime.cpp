@@ -1208,16 +1208,12 @@ public:
         quarantined_ = false;
         module_path_ = ModulePath(options_.game_module);
         std::vector<BuildProfileCatalogLayer> layers;
-        if (options_.profile_overrides_enabled) {
-            layers.push_back({
-                options_.local_profile_directory / options_.game_id,
-                "local-override", 300, true});
-            layers.push_back({
-                options_.managed_profile_directory / options_.game_id,
-                "repository", 200, true});
-        } else {
-            diagnostics_.push_back("Profile overrides suspended by Runtime recovery policy");
-        }
+        layers.push_back({
+            options_.local_profile_directory / options_.game_id,
+            "local-override", 300, true});
+        layers.push_back({
+            options_.managed_profile_directory / options_.game_id,
+            "repository", 200, true});
         layers.push_back({
             options_.profile_directory / options_.game_id, "bundled", 100, false});
         BuildProfileCatalog catalog;
@@ -1247,10 +1243,8 @@ public:
         }
 
         SymbolResolverOptions resolver_options;
-        if (options_.profile_overrides_enabled) {
-            resolver_options.signature_updater = std::make_shared<SignatureUpdater>(
-                options_.runtime_root / L"state/signatures" / options_.game_id);
-        }
+        resolver_options.signature_updater = std::make_shared<SignatureUpdater>(
+            options_.runtime_root / L"state/signatures" / options_.game_id);
         SymbolResolver resolver(
             memory_, {}, resolver_options, NteFeatureLayoutValidators(false, false));
         ProfileResolutionSnapshot resolved =
