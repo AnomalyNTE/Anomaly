@@ -47,6 +47,12 @@ constexpr float kPluginWindowBodyPadding = 12.0F;
 constexpr float kPluginWindowActionSize = 30.0F;
 constexpr float kPluginWindowActionGap = 4.0F;
 constexpr float kPluginWindowActionRightInset = 12.0F;
+// The icon face carries its weight above the middle of the box it is baked in: a
+// chevron is a roof, a pin is a head over a needle, so their mass sits high even
+// when the ink box is centred, and the pane's drop shadow pulls the middle of the
+// pill down as well. The actions therefore ride slightly below the middle of the
+// header. The hit plate stays centred, so the click target is unchanged.
+constexpr float kPluginWindowActionOpticalDrop = 1.5F;
 
 struct PluginWindowChromeState {
     bool manually_collapsed{};
@@ -241,9 +247,25 @@ bool DrawPluginWindowChromeButton(
     const ImVec2 glyph_size = glyph_font != nullptr
         ? glyph_font->CalcTextSizeA(glyph_font_size, FLT_MAX, 0.0F, glyph_text)
         : ImGui::CalcTextSize(glyph_text);
+    // The icon face reserves a descent band underneath every glyph it carries, so
+    // a line box centred on the action leaves the ink riding above the middle of
+    // the header. Centre the glyph's own ink box instead: it is the only part of
+    // the glyph that is drawn, and it holds at any baked font size.
+    float glyph_top = (bounds.GetHeight() - glyph_size.y) * 0.5F;
+    if (glyph_font != nullptr) {
+        unsigned int code_point = 0;
+        static_cast<void>(ImTextCharFromUtf8(&code_point, glyph_text, nullptr));
+        const ImFontGlyph* const ink =
+            glyph_font->FindGlyph(static_cast<ImWchar>(code_point));
+        const float scale = glyph_font_size / glyph_font->FontSize;
+        if (ink != nullptr && ink->Visible && ink->Y1 > ink->Y0) {
+            glyph_top = (bounds.GetHeight() - (ink->Y1 - ink->Y0) * scale) * 0.5F -
+                ink->Y0 * scale;
+        }
+    }
+    glyph_top += kPluginWindowActionOpticalDrop;
     draw_list->AddText(glyph_font, glyph_font_size,
-        Offset(bounds.Min, (bounds.GetWidth() - glyph_size.x) * 0.5F,
-            (bounds.GetHeight() - glyph_size.y) * 0.5F - 1.0F),
+        Offset(bounds.Min, (bounds.GetWidth() - glyph_size.x) * 0.5F, glyph_top),
         ToU32(text), glyph_text);
     if (hovered && tooltip != nullptr) ImGui::SetTooltip("%s", tooltip);
     return pressed;
@@ -269,12 +291,17 @@ bool DrawPluginWindowChrome(
     ImDrawList* const draw_list = window.DrawList;
     const ImRect header(origin, Offset(origin, size.x, kPluginWindowHeaderHeight));
     const auto& theme = PlatformUiTheme();
+    const bool collapsed = IsPluginWindowCollapsed(state);
     // The window body is glass, so the header is only a hairline under the
-    // title rather than a band of its own.
-    draw_list->AddLine(
-        Offset(origin, 14.0F, kPluginWindowHeaderHeight - 1.0F),
-        Offset(origin, size.x - 14.0F, kPluginWindowHeaderHeight - 1.0F),
-        ToU32(ThemeColorWithAlpha(theme.text, 0.10F)));
+    // title rather than a band of its own. A collapsed window has no body to
+    // separate from: its whole height is the header, so the hairline would land
+    // on the rounded bottom edge of the pill and read as a stray line.
+    if (!collapsed) {
+        draw_list->AddLine(
+            Offset(origin, 14.0F, kPluginWindowHeaderHeight - 1.0F),
+            Offset(origin, size.x - 14.0F, kPluginWindowHeaderHeight - 1.0F),
+            ToU32(ThemeColorWithAlpha(theme.text, 0.10F)));
+    }
 
     const float close_x = size.x - kPluginWindowActionRightInset - kPluginWindowActionSize;
     const float pin_x = close_x - kPluginWindowActionGap - kPluginWindowActionSize;
