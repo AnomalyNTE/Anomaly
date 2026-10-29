@@ -9,6 +9,10 @@
 qq交流群: 1037114140
 
 <p align="center">
+  <strong>简体中文</strong> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <a href="docs/user-guide/README.md">用户文档</a> ·
   <a href="docs/user-guide/third-party-plugins.md">第三方插件</a> ·
   <a href="docs/developer-guide/README.md">开发者文档</a> ·

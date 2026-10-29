@@ -91,7 +91,7 @@ bundled 的 `nte-current.json` 保存当前活动声明。
 - **Profile 或 Feature 校验失败**时，Core、UI、Diagnostics 和不依赖 NTE 的插件仍可使用。
 
 > [!NOTE]
-> 迁移说明与当前 NTE 坐标布局见仓库内的 [`profiles/nte/README.md`](../../profiles/nte/README.md)。Profile 与签名的具体格式见 [`schemas/build-profile.schema.json`](../../schemas/build-profile.schema.json)。
+> 当前 NTE 布局（相机、玩家与传送点位等偏移）见随包提供的 [`profiles/nte/nte-current.json`](../../profiles/nte/nte-current.json)；新建 Profile 可从 [`profiles/nte/nte-build-profile.json.example`](../../profiles/nte/nte-build-profile.json.example) 复制。Profile 与签名的具体格式见 [`schemas/build-profile.schema.json`](../../schemas/build-profile.schema.json)。
 
 ## 相关
 

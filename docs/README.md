@@ -1,5 +1,7 @@
 # Anomaly 文档
 
+> 🌐 [English](en/README.md) · 简体中文
+
 Anomaly 的文档分为三个文档集，按你的角色选择入口。
 
 ## 📘 [用户文档](user-guide/README.md)
@@ -40,3 +42,5 @@ Anomaly 的文档分为三个文档集，按你的角色选择入口。
 ---
 
 > 发布清单这类会经常变化的信息，以当前代码和构建输出为准。公开 ABI 和数据格式则以 `include/anomaly/sdk/` 和 `schemas/` 为准。
+>
+> 英文文档位于 [`docs/en/`](en/README.md)，与中文文档逐页对应。改动页面时请同时更新两种语言。
