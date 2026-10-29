@@ -170,10 +170,18 @@ constexpr double kExtraMeshBindCm = 1.0;
 constexpr std::size_t kMaximumMotionBytes = 256U << 20;
 constexpr std::string_view kPoseExportPath = "pose-export.json";
 constexpr std::string_view kPoseProfileDirectory = "character-pose/profiles/";
+// The host validates every write against this schema, so it has to accept exactly what
+// BuildPoseDocument emits. It did not: the document grew motion, calibration, physics and
+// per-bone name fields while the schema still listed three properties, and
+// `additionalProperties: false` turned every save into a failure. Around a fresh install
+// that was fatal -- load finds no settings, writes the defaults, the write is rejected and
+// the plugin refuses to activate ("character pose settings are invalid"). The list is left
+// open instead of transcribed, because a transposed list has drifted twice now; the field
+// types are still checked one by one in ApplyPoseDocument when the document is read back.
 constexpr std::string_view kPoseSettingsSchema = R"json(
 {
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": ["bones"],
   "properties": {
     "rootOffset": {
@@ -191,13 +199,14 @@ constexpr std::string_view kPoseSettingsSchema = R"json(
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "required": ["index", "pitch", "yaw", "roll"],
         "properties": {
           "index": {"type": "integer", "minimum": 0},
           "pitch": {"type": "number", "minimum": -180.0, "maximum": 180.0},
           "yaw": {"type": "number", "minimum": -180.0, "maximum": 180.0},
-          "roll": {"type": "number", "minimum": -180.0, "maximum": 180.0}
+          "roll": {"type": "number", "minimum": -180.0, "maximum": 180.0},
+          "name": {"type": "string"}
         }
       }
     }
@@ -2936,8 +2945,17 @@ bool PersistPoseSettings(Context &context) noexcept {
     const auto config_status = context.config->write_atomic(
         context.config->user, anomaly::sdk::StringView(kPoseSettingsSchemaId),
         kPoseSettingsSchemaVersion, Bytes(document));
+    // The settings document itself is what this function is for: a rejected write is a
+    // failure even when the per-character profile below happens to land.
+    if (config_status.code != ANOMALY_STATUS_V1_OK) {
+      return fail("config write code=" + std::to_string(config_status.code) +
+                  " id=" + context.active_character_id);
+    }
+    // Only a known character has a per-character profile to write, and at load time there
+    // is none yet. Counting that as a failed save made every fresh install refuse to
+    // activate the plugin, so an empty id means "nothing to write", not "write failed".
     bool profile_attempted = false;
-    bool profile_ok = false;
+    bool profile_ok = context.active_character_id.empty();
     AnomalyStatusV1 profile_status = anomaly::sdk::Ok();
     std::string direct_error;
     if (!context.active_character_id.empty() && StorageReady(context.storage)) {
@@ -2955,12 +2973,10 @@ bool PersistPoseSettings(Context &context) noexcept {
                                           BuildPoseDocument(context),
                                           direct_error);
     if (!profile_ok) {
-      std::string reason = "config write code=" +
-                           std::to_string(config_status.code);
-      reason += profile_attempted
-                    ? "; character profile write code=" +
-                          std::to_string(profile_status.code)
-                    : "; storage unavailable";
+      std::string reason = profile_attempted
+                               ? "character profile write code=" +
+                                     std::to_string(profile_status.code)
+                               : "character profile storage unavailable";
       reason += direct_error.empty() ? std::string()
                                      : "; direct=" + direct_error;
       reason += " id=" + context.active_character_id;
