@@ -82,8 +82,6 @@ constexpr double kAutoCombatDeadPosTolerance = 150.0;
 constexpr double kAutoCombatAttackRangeCm = 600.0;
 // 离开这个距离才算「不再打它」（迟滞，避免在攻击距离边界抖动时反复清零计时）。
 constexpr double kAutoCombatLeaveRangeCm = 1200.0;
-// 见过怪之后连续这么多秒无怪，本点就算打完（CloneEnter/plugin.cpp:6875 的同一个 5）。
-constexpr std::uint32_t kAutoCombatNoMonsterSeconds = 5;
 
 struct FNamePair {
     std::uint32_t cmp{};
@@ -1007,14 +1005,14 @@ Result Tick(Host& host, State& state) noexcept {
     if (state.target_valid) {
         state.met_monster = true;
         state.no_monster_seconds = 0;
-        // 丢目标后要过满一秒才 +1：置 {} 会让第一帧立刻计数，「连续 5 秒」实际只剩约 4 秒。
+        // 丢目标后要过满一秒才 +1：置 {} 会让第一帧立刻计数，「连续 N 秒」实际只剩约 N-1 秒。
         state.no_monster_tick_at = now + std::chrono::seconds(1);
     } else if (state.met_monster) {
         if (now >= state.no_monster_tick_at) {
             ++state.no_monster_seconds;
             state.no_monster_tick_at = now + std::chrono::seconds(1);
         }
-        if (state.no_monster_seconds >= kAutoCombatNoMonsterSeconds) {
+        if (state.no_monster_seconds >= host.no_monster_seconds) {
             // cleared 只在进入该状态的那一帧报一次；清空后的掉落拾取（原实现每秒都发一次，
             // CloneEnter/plugin.cpp:4571–4576）挂在这同一次跳变上，因此也只会发一次。
             if (!state.cleared_reported) {
