@@ -918,6 +918,14 @@ private:
         options.client = client;
         options.payload_root = payload_root_;
         options.allow_unpaired_game_discovery = true;
+        // A game that is already running is the surest pairing there is: its own directory is where the client
+        // the user is switching to is installed, and it is the directory the process list filters on next. It
+        // only fills a directory that is not known yet -- a stored one always wins in the discovery below.
+        for (const auto& process : anomaly::launcher::EnumerateAttachableProcesses()) {
+            if (!process.executable_path.empty()) {
+                options.running_game_executables.push_back(process.executable_path);
+            }
+        }
         const auto discovered = anomaly::launcher::DiscoverLauncherConfiguration(
             preferred, options);
         std::scoped_lock lock(state_mutex_);
@@ -1666,27 +1674,34 @@ void DrawModes(
     ImGui::BeginChild(
         "LauncherModes", ImVec2(0.0f, Scale(kModeHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
-    if (ImGui::BeginTable("LauncherToolbar", 2, ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Modes", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Client", ImGuiTableColumnFlags_WidthFixed, Scale(190.0f));
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        const std::array<const char*, 2> labels{
-            Text(translator, anomaly::MessageId::LauncherModeProxyInstall),
-            Text(translator, anomaly::MessageId::LauncherModeLiveAttach)};
-        anomaly::glass::SegmentedOptions options;
-        options.height = 46.0f;
-        options.padding_x = 30.0f;
-        options.scale = g_launcher_dpi_scale;
-        options.disabled_mask = snapshot.busy || proxy_enabled ? 0b10U : 0U;
-        int selected = mode == LauncherMode::Attach ? 1 : 0;
-        if (anomaly::glass::SegmentedControl("launcher-modes", labels, selected, options)) {
-            mode = selected == 1 ? LauncherMode::Attach : LauncherMode::Proxy;
-        }
-        // The client is always the mainland one. The switch that used to live in
-        // the second column only ever had one useful setting, and NteClient's
-        // default already is MainlandChina, so the column is simply gone.
-        ImGui::EndTable();
+    const std::array<const char*, 2> labels{
+        Text(translator, anomaly::MessageId::LauncherModeProxyInstall),
+        Text(translator, anomaly::MessageId::LauncherModeLiveAttach)};
+    anomaly::glass::SegmentedOptions options;
+    options.height = 46.0f;
+    options.padding_x = 30.0f;
+    options.scale = g_launcher_dpi_scale;
+    options.disabled_mask = snapshot.busy || proxy_enabled ? 0b10U : 0U;
+    int selected = mode == LauncherMode::Attach ? 1 : 0;
+    if (anomaly::glass::SegmentedControl("launcher-modes", labels, selected, options)) {
+        mode = selected == 1 ? LauncherMode::Attach : LauncherMode::Proxy;
+    }
+    // The client sits right beside the mode, on the same band: it decides which game directory the process
+    // list, the proxy install and the launch all read from, and the two installs live in different
+    // directories -- a game under the client that is not selected is not in the list at all. The labels are
+    // the clients' own names in both locales, so they are not translated.
+    ImGui::SameLine(0.0f, Scale(12.0f));
+    const std::array<const char*, 2> clients{"CN", "Global"};
+    anomaly::glass::SegmentedOptions client_options;
+    client_options.height = 46.0f;
+    client_options.padding_x = 20.0f;
+    client_options.scale = g_launcher_dpi_scale;
+    client_options.disabled_mask = snapshot.busy ? 0b11U : 0U;
+    int client = snapshot.selected_client == anomaly::launcher::NteClient::Global ? 1 : 0;
+    if (anomaly::glass::SegmentedControl("launcher-client", clients, client, client_options)) {
+        controller.SelectClient(client == 1
+            ? anomaly::launcher::NteClient::Global
+            : anomaly::launcher::NteClient::MainlandChina);
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
