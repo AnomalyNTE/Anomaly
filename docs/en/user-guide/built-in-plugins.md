@@ -168,7 +168,7 @@ The extra draw distance defaults to `0`, which means the game default draw dista
 | --- | --- |
 | **ID** | `local.nte.free-fly` |
 | **Purpose** | Let the character move freely through the air and through walls: hold WASD to fly horizontally, Space to rise and Ctrl to descend; the toggle hotkey can be captured and saved in the panel. |
-| **Required services** | `anomaly.ui`, `anomaly.input`; `anomaly.config`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport`, `anomaly.nte.player-hold` (all V1, optional) |
+| **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.input`; `anomaly.config`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport`, `anomaly.nte.player-hold` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
 
 While flying, the plugin has exclusive control of the character: regular movement that is suppressed by the freeze is instead driven by the plugin with the same key set. Movement is placed through `anomaly.nte.player-teleport`, which the host executes with `bSweep=false` and without collision checks, so you can pass straight through walls; gravity freeze prefers the hold entry at the end of the `player` service table, with the standalone service as a fallback. When the camera direction is unavailable, `WASD` degrades to movement along the world axes. The toggle hotkey defaults to F6 and can be re-captured and persisted in the plugin window.

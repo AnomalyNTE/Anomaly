@@ -212,7 +212,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 | --- | --- |
 | **ID** | `local.nte.free-fly` |
 | **作用** | 按住 WASD 水平飞行、空格上升、Ctrl 下降，让角色在空中自由移动并穿过墙体；开关快捷键可在面板里捕获并保存。 |
-| **依赖服务** | `anomaly.ui`、`anomaly.input`；`anomaly.config`、`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport`、`anomaly.nte.player-hold`（均为 V1，可选） |
+| **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.input`；`anomaly.config`、`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport`、`anomaly.nte.player-hold`（均为 V1，可选） |
 | **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
 
 飞行期间角色由插件独占控制：被冻结抑制的常规移动改由插件按同一套按键驱动。位移通过
