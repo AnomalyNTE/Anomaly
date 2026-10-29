@@ -601,17 +601,33 @@ void ANOMALY_CALL TextWrapped(void*, AnomalyStringViewV1 value) {
     ImGui::TextWrapped("%s", text.c_str());
 }
 
+// A plugin names its button widths in fixed pixels while the host scales the
+// font and the frame padding with the interface scale. Once the label stops
+// fitting inside the requested width, ImGui gives up on centring it: it pins the
+// text to the left padding and clips the overhang against the frame, so a reset
+// chip that reads centred at 100% reads left-aligned and cut off at 150%. A
+// width is therefore a floor for plugin buttons -- never less than the label it
+// has to show. A non-positive width already means auto-size or fill-the-row.
+ImVec2 PluginButtonSize(
+    const std::string& text, const float width, const float height) {
+    if (!(width > 0.0F)) return ImVec2(width, height);
+    const ImVec2 label_size = ImGui::CalcTextSize(text.c_str(), nullptr, true);
+    const float required = label_size.x + ImGui::GetStyle().FramePadding.x * 2.0F;
+    return ImVec2(width > required ? width : required, height);
+}
+
 int ANOMALY_CALL Button(
     void*, AnomalyStringViewV1 label, float width, float height) {
     const std::string text = Copy(label);
-    return ImGui::Button(text.c_str(), ImVec2(width, height)) ? 1 : 0;
+    return ImGui::Button(text.c_str(), PluginButtonSize(text, width, height)) ? 1 : 0;
 }
 
 int ANOMALY_CALL ButtonEnabled(
     void*, AnomalyStringViewV1 label, float width, float height, int enabled) {
     const std::string text = Copy(label);
     ImGui::BeginDisabled(enabled == 0);
-    const bool pressed = ImGui::Button(text.c_str(), ImVec2(width, height));
+    const bool pressed =
+        ImGui::Button(text.c_str(), PluginButtonSize(text, width, height));
     ImGui::EndDisabled();
     return enabled != 0 && pressed ? 1 : 0;
 }
