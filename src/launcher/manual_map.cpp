@@ -62,6 +62,20 @@ constexpr DWORD kLoaderReadyTimeoutMilliseconds = 15000;
 // the loader lock rather than slow, and the thread it is running on is not this process' to cancel.
 constexpr DWORD kDependencyLoadTimeoutMilliseconds = 15000;
 
+// How often the target's module list is re-read while waiting for it to stop growing, and how long a count has
+// to stay the same before the list is taken as final. The loader adds modules in steps, so a single repeat
+// proves nothing: the run has to be long enough to outlast one step.
+constexpr DWORD kImportSettleProbeMilliseconds = 150;
+constexpr DWORD kImportSettlePollMilliseconds = 200;
+constexpr std::size_t kImportSettleStableSamples = 6;
+
+// How many times the import table is walked before a dependency failure is reported, and how long the passes are
+// spaced. A module the target is still loading is refused on one pass and present on the next, and a target that
+// is quiet because it is waiting on a login is indistinguishable from one that has finished starting up -- so the
+// pause is what gives the loader list time to show a module that is a moment away.
+constexpr int kDependencyResolveAttempts = 3;
+constexpr DWORD kDependencyRetryPauseMilliseconds = 700;
+
 std::mutex g_debug_privilege_mutex;
 
 class Handle final {
@@ -1141,6 +1155,91 @@ bool EnsureRemoteModule(
     return false;
 }
 
+// Every module the image imports, by name, straight from the import directory. This is the cheap half of the
+// resolution below, and it exists separately because it is what the settle wait needs: the wait has to know
+// which modules it is waiting for before anything is resolved or staged.
+std::vector<std::wstring> ImportModuleNames(const std::vector<std::byte>& image) {
+    std::vector<std::wstring> names;
+    const auto* headers = Headers(image);
+    if (headers == nullptr) return names;
+    const auto& directory = headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (directory.VirtualAddress == 0) return names;
+    const std::size_t maximum = directory.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+    for (std::size_t index = 0; index < maximum; ++index) {
+        const auto* descriptor = Rva<IMAGE_IMPORT_DESCRIPTOR>(
+            image, directory.VirtualAddress + static_cast<DWORD>(
+                index * sizeof(IMAGE_IMPORT_DESCRIPTOR)));
+        if (descriptor == nullptr || descriptor->Name == 0) break;
+        const char* name = Rva<char>(image, descriptor->Name);
+        if (name == nullptr ||
+            std::memchr(name, '\0', image.size() - descriptor->Name) == nullptr) {
+            break;
+        }
+        names.emplace_back(name, name + std::strlen(name));
+    }
+    return names;
+}
+
+// A target that is still coming up has not loaded everything it will load: a game that has not reached its
+// render device yet has no d3d11 and no dxgi in its module list, and every module missing from that list is one
+// this mapper would have to load through the target's own -- and hooked -- loader, which is the step that
+// refuses with a bare null handle. Waiting for the list to stop growing costs a fraction of the timeout and
+// turns most of that work back into a lookup.
+void WaitForImportsToSettle(
+    HANDLE process, const std::vector<std::wstring>& names, RemoteModuleMap& modules,
+    std::chrono::milliseconds budget) {
+    const auto missing = [&modules, &names]() {
+        return std::count_if(names.begin(), names.end(), [&modules](const std::wstring& name) {
+            return FindRemoteModule(modules, std::filesystem::path(name)) == modules.end();
+        });
+    };
+    std::size_t previous = missing();
+    if (previous == 0) return;
+
+    // A process that has finished starting up stops adding modules, and nothing it has not loaded by then is
+    // going to arrive on its own. Two samples a short distance apart answer that question, and an idle target
+    // answers it for free: no wait at all, and the mapping goes ahead with what it already has.
+    const std::size_t count_before = modules.size();
+    Sleep(kImportSettleProbeMilliseconds);
+    {
+        DWORD error{};
+        auto probe = SnapshotModules(process, error);
+        if (error != ERROR_SUCCESS) return;
+        modules = std::move(probe);
+        const std::size_t current = missing();
+        if (current == 0) return;
+        if (modules.size() == count_before && current == previous) return;
+        previous = current;
+    }
+
+    // The target is still growing. Its loader adds modules in steps, so a count that repeats is not proof that
+    // nothing is on its way -- only a run of samples that repeat is, and the run has to outlast the steps.
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    std::size_t stable{};
+    while (std::chrono::steady_clock::now() < deadline) {
+        Sleep(kImportSettlePollMilliseconds);
+        DWORD error{};
+        auto snapshot = SnapshotModules(process, error);
+        if (error != ERROR_SUCCESS) return;
+        modules = std::move(snapshot);
+        const std::size_t current = missing();
+        if (current == 0) return;
+        if (current == previous) {
+            if (++stable >= kImportSettleStableSamples) return;
+        } else {
+            stable = 0;
+        }
+        previous = current;
+    }
+}
+
+// How long the settle wait may take, out of the budget the whole mapping already has: a quarter of it, and never
+// more than a few seconds -- a target that keeps loading modules must not delay the attach indefinitely.
+std::chrono::milliseconds ImportSettleBudget(std::chrono::milliseconds timeout) noexcept {
+    return std::clamp(
+        timeout / 4, std::chrono::milliseconds::zero(), std::chrono::milliseconds(5000));
+}
+
 bool ResolveOneImport(
     HANDLE process, HMODULE local_module,
     const IMAGE_THUNK_DATA64& source, IMAGE_THUNK_DATA64& destination,
@@ -1221,10 +1320,17 @@ bool ResolveThunkTable(
 bool ResolveImports(
     HANDLE process, ParsedImage& parsed,
     RemoteModuleMap& modules, ManualMapDelivery delivery, const std::filesystem::path& target_directory,
-    std::string& failure, ImportOverride* import_override = nullptr) {
+    std::chrono::milliseconds settle_budget, std::string& failure,
+    ImportOverride* import_override = nullptr) {
     auto* headers = Headers(parsed.mapped);
     if (headers == nullptr) return false;
     const auto image_directory = parsed.source_path.parent_path();
+    // Before anything is resolved: a target that is still coming up will load more of these itself, and every
+    // module it loads is one this process does not have to stage through the target's loader.
+    const auto imported = ImportModuleNames(parsed.mapped);
+    if (settle_budget > std::chrono::milliseconds::zero()) {
+        WaitForImportsToSettle(process, imported, modules, settle_budget);
+    }
     const auto& directory = headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (directory.VirtualAddress != 0) {
         const std::size_t maximum = directory.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
@@ -2169,7 +2275,8 @@ std::vector<AttachableProcess> EnumerateAttachableProcesses(
 
 static ManualMapResult ManualMapRuntimeCoreWithHandle(
     const ManualMapOptions& options, const AttachableProcess& inspected,
-    const Handle& process) noexcept {
+    const Handle& process, std::chrono::milliseconds settle_budget,
+    int resolve_attempts) noexcept {
     try {
         if (HasPrivateMappedCore(process.Get())) {
             return Failure(
@@ -2253,10 +2360,28 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             .name = "_CxxThrowException",
             .address = remote_image_address + *cxx_throw_rva,
         };
-        if (!ResolveImports(
+        // A dependency the target is still on its way to loading is refused on the first pass and is a lookup on
+        // the next one, so the import table can be walked more than once, with a pause in between. Everything a
+        // pass did manage to stage stays staged, so a later pass costs only what is still missing.
+        //
+        // Both are the caller's decision, and a launch decides against them: a process this launcher just created
+        // is mapped in the seconds before the game's own protection has finished arming itself, and waiting for
+        // the module list to settle spends exactly that window -- which is the one thing a launch attach cannot
+        // afford, because the loader it would then have to ask is the armed one.
+        bool resolved{};
+        for (int attempt = 0; attempt < resolve_attempts && !resolved; ++attempt) {
+            image_failure.clear();
+            resolved = ResolveImports(
                 process.Get(), *parsed, modules, options.delivery,
-                inspected.executable_path.parent_path(), image_failure,
-                &cxx_throw_override)) {
+                inspected.executable_path.parent_path(),
+                // Only the first walk waits: the passes after it exist to look again at a list that has already
+                // been given its settling time.
+                attempt == 0 ? settle_budget : std::chrono::milliseconds::zero(),
+                image_failure, &cxx_throw_override);
+            if (resolved || attempt + 1 == resolve_attempts) break;
+            Sleep(kDependencyRetryPauseMilliseconds);
+        }
+        if (!resolved) {
             return Failure(
                 ManualMapError::DependencyFailure, ERROR_MOD_NOT_FOUND,
                 std::move(image_failure));
@@ -2618,7 +2743,9 @@ ManualMapResult AttachToRunningProcess(const ManualMapOptions& options) noexcept
                 module_error == ERROR_SUCCESS ? ERROR_TIMEOUT : module_error,
                 "the running target's loader list did not become readable");
         }
-        return ManualMapRuntimeCoreWithHandle(attach_options, inspected, process);
+        return ManualMapRuntimeCoreWithHandle(
+            attach_options, inspected, process, ImportSettleBudget(options.timeout),
+            kDependencyResolveAttempts);
     } catch (...) {
         return Failure(
             ManualMapError::ProcessUnavailable, ERROR_UNHANDLED_EXCEPTION,
@@ -2816,9 +2943,15 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             } else {
                 ManualMapOptions mapping_options = options.manual_map;
                 mapping_options.process_id = target.process_id;
+                // A launch enters a process this parent just created, and it does so the way 2.4 did: with a
+                // thread of its own, in the seconds before the game's own protection is armed. Borrowing one of
+                // the game's threads, waiting for its imports and retrying a refused load are what a live attach
+                // does, and none of them belongs here.
+                mapping_options.delivery = ManualMapDelivery::RemoteThread;
                 mapping_started = true;
                 result.mapping = ManualMapRuntimeCoreWithHandle(
-                    mapping_options, target, target_process);
+                    mapping_options, target, target_process,
+                    std::chrono::milliseconds::zero(), 1);
             }
         }
 
