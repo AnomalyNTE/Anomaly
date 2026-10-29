@@ -58,6 +58,10 @@ constexpr DWORD kHookArmedTimeoutMilliseconds = 90000;
 // milliseconds of creation, so a process still without them is one that never started.
 constexpr DWORD kLoaderReadyTimeoutMilliseconds = 15000;
 
+// How long a dependency load is given in the target. A loader still inside it after this long is stuck on
+// the loader lock rather than slow, and the thread it is running on is not this process' to cancel.
+constexpr DWORD kDependencyLoadTimeoutMilliseconds = 15000;
+
 std::mutex g_debug_privilege_mutex;
 
 class Handle final {
@@ -1852,10 +1856,12 @@ std::string Hex64(std::uint64_t value) {
     return text;
 }
 
-// Loading a dependency into the target is remote code execution like any other, so it goes through the same
-// deliveries: a target that refuses a thread from outside will refuse it here too, and that is the step a
-// manual map dies on when it cannot be finished. The stub records the module handle and the loader's own
-// error code, which is what makes a refusal reportable instead of guessable.
+// Loading a dependency into the target is remote code execution like any other. Who calls the loader is part
+// of what that loader -- and the anti-cheat inline hook inside it -- sees, so the delivery that is allowed to
+// create a thread keeps the pre-stub shape: a thread of this process' making enters kernel32!LoadLibraryW
+// itself, and no page of ours is ever in the call. The stub is kept for the deliveries that cannot create a
+// thread, where an entry point the target already owns is the only way in; it is also what records the module
+// handle and the loader's own error, so a refusal there stays reportable instead of guessable.
 bool RemoteLoadLibrary(
     HANDLE process, const std::filesystem::path& path, RemoteModuleMap& modules,
     ManualMapDelivery delivery, std::string& failure) {
@@ -1863,9 +1869,7 @@ bool RemoteLoadLibrary(
     ImportProcedureResolver resolver;
     const auto remote_load_library = RemoteAddressForLocalProcedure(
         resolver.Resolve(kernel32, "LoadLibraryW"), modules);
-    const auto remote_get_last_error = RemoteAddressForLocalProcedure(
-        resolver.Resolve(kernel32, "GetLastError"), modules);
-    if (!remote_load_library || !remote_get_last_error) {
+    if (!remote_load_library) {
         failure = "the target's LoadLibraryW address could not be resolved";
         return false;
     }
@@ -1878,6 +1882,50 @@ bool RemoteLoadLibrary(
     if (argument.address == nullptr || WriteProcessMemory(
             process, argument.address, value.c_str(), bytes, nullptr) == FALSE) {
         failure = "the dependency path could not be written into the target";
+        return false;
+    }
+
+    // A thread this process creates is given LoadLibraryW as its start routine and the path as its argument,
+    // which is everything the loader needs. What the loader accepted is then read from the target itself: the
+    // module handle is the thread's exit code and the module list is the record of the load.
+    if (delivery == ManualMapDelivery::RemoteThread) {
+        Handle thread(CreateRemoteThread(
+            process, nullptr, 0,
+            reinterpret_cast<LPTHREAD_START_ROUTINE>(*remote_load_library),
+            argument.address, 0, nullptr));
+        if (!thread) {
+            const DWORD error = GetLastError();
+            failure = "a thread could not be created in the target for the dependency (error " +
+                std::to_string(error) + ")";
+            return false;
+        }
+        if (WaitForSingleObject(thread.Get(), kDependencyLoadTimeoutMilliseconds) != WAIT_OBJECT_0) {
+            // The loader may still be reading the path, so the block it was given stays.
+            argument.retained = true;
+            failure = "the dependency loader thread did not complete before the timeout";
+            return false;
+        }
+        DWORD loaded{};
+        const bool exit_available = GetExitCodeThread(thread.Get(), &loaded) != FALSE;
+        DWORD snapshot_error{};
+        modules = SnapshotModules(process, snapshot_error);
+        if (snapshot_error != ERROR_SUCCESS) {
+            failure = "remote modules could not be refreshed";
+            return false;
+        }
+        if (FindRemoteModule(modules, path) == modules.end()) {
+            failure = "the target did not load " + NarrowPath(path) + ": LoadLibraryW returned " +
+                (exit_available ? Hex64(loaded) : std::string{"no exit code"}) +
+                " on the thread created for it (" + DeliveryName(delivery) + ")";
+            return false;
+        }
+        return true;
+    }
+
+    const auto remote_get_last_error = RemoteAddressForLocalProcedure(
+        resolver.Resolve(kernel32, "GetLastError"), modules);
+    if (!remote_get_last_error) {
+        failure = "the target's GetLastError address could not be resolved";
         return false;
     }
 
@@ -1928,16 +1976,15 @@ bool RemoteLoadLibrary(
             .context = reinterpret_cast<std::uintptr_t>(remote_context.address),
             .completion_offset = offsetof(RemoteLoadLibraryContext, completion_stamp),
             .claim_offset = offsetof(RemoteLoadLibraryContext, claim),
-            .timeout = std::chrono::seconds(15),
+            .timeout = std::chrono::milliseconds(kDependencyLoadTimeoutMilliseconds),
         },
         delivery);
-    // A redirected thread can still be standing in these blocks, so nothing is released unless this
-    // process owned the only thread that could reach them.
-    const bool cancellable = delivery == ManualMapDelivery::RemoteThread;
+    // Only a delivery that cannot create a thread reaches this point, and the thread it redirected can still
+    // be standing in these blocks, so nothing is released.
+    argument.retained = true;
+    stub.retained = true;
+    remote_context.retained = true;
     if (result.outcome != DeliveryOutcome::Completed) {
-        argument.retained = true;
-        stub.retained = true;
-        remote_context.retained = true;
         // How far the loader got is what makes the failure actionable: not entered, entered and stuck in
         // LoadLibraryW, or finished with a result that was never reported.
         RemoteLoadLibraryContext observed = context;
@@ -1950,11 +1997,6 @@ bool RemoteLoadLibrary(
         failure = "the target could not be made to load " + NarrowPath(path) + ": " +
             result.failure + " (" + DeliveryName(delivery) + "; " + stage + ")";
         return false;
-    }
-    if (!cancellable) {
-        argument.retained = true;
-        stub.retained = true;
-        remote_context.retained = true;
     }
     if (ReadProcessMemory(
             process, remote_context.address, &context, sizeof(context), nullptr) == FALSE) {
