@@ -1,9 +1,9 @@
 #pragma once
 // 自动战斗：复用 plugins/common/combat 的共享状态机（静态库 anomaly_plugin_combat）。
 // 策略：技能优先（大招 → 小技能 → 平A），三项各由一个勾选框控制。
-// 结束判据（命中任一即结束本点）：模块报 cleared（半径内连续 3 秒无怪）、进入战斗点后 10 秒
-// 读不到伤害读数、开打 15 秒一次怪都没遇到；脚本侧另有 5 分钟兜底。伤害判据以伤害流为准——
-// 流断掉时它会在怪还活着时就成立，日志里的 `[damage never observed]` 就是这种情况。
+// 结束判据（命中任一即结束本点）：模块报 cleared（半径内连续 3 秒无怪）、开打 15 秒一次怪都
+// 没遇到；脚本侧另有 5 分钟兜底。判定不看伤害读数——伤害流读不到时（偏移失效或参与者句柄对
+// 不上），「多久没伤害」会在怪还活着时成立，脚本就会在没打完的点上传送走。
 
 namespace {
 
@@ -22,8 +22,6 @@ constexpr double kCombatRadiusMaximumMeters = 300.0;
 constexpr double kCombatFirstContactDefaultSeconds = 15.0;
 constexpr double kCombatFirstContactMinimumSeconds = 1.0;
 constexpr double kCombatFirstContactMaximumSeconds = 120.0;
-// 无伤害判据（秒）：进入战斗点后持续这么久读不到任何伤害读数 ⇒ 判定本点打完。
-constexpr double kCombatNoDamageSeconds = 10.0;
 // 无怪判据（秒）：半径内见过怪之后连续这么久无怪 ⇒ 本点打完（模块侧计数）。
 constexpr std::uint32_t kCombatNoMonsterSeconds = 3;
 constexpr std::size_t kCombatSecondsTextCapacity = 16;
@@ -242,15 +240,6 @@ void AdvanceCombat() {
 
     if (result == Result::cleared) {
         CombatFinish(CombatResult::cleared, "自动战斗：已清空（半径内连续 3 秒无怪）");
-        return;
-    }
-    // 无伤害判据：进入战斗点后 10 秒读不到任何伤害读数 ⇒ 判定本点打完。基准取「开打时刻」与
-    // 「本次战斗内最近一次玩家命中」中较晚的那个，所以有伤害就重新计秒。
-    const auto last_hit = g_combat_state.last_player_hit_at;
-    const auto no_damage_from = last_hit > g_combat_started_at ? last_hit : g_combat_started_at;
-    if (now - no_damage_from >
-        std::chrono::milliseconds(static_cast<long long>(kCombatNoDamageSeconds * 1000.0))) {
-        CombatFinish(CombatResult::cleared, "自动战斗：已清空（10 秒没有伤害读数）");
         return;
     }
     // 首次接敌超时：开打至今没遇到过怪 ⇒ 判定这个点没怪。
