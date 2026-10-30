@@ -1169,9 +1169,24 @@ public:
                 std::filesystem::path previous_path;
                 bool primed = false;
                 while (!stop_token.stop_requested()) {
+                    // Blocks until there is work. The predicate names every slot
+                    // this loop consumes, because a wait that returned on any
+                    // notification and then slept again would swallow the request
+                    // and leave the previous palette's artwork on screen for the
+                    // rest of the session.
+                    bool requested = false;
+                    {
+                        std::unique_lock wait_lock(theme_layout_write_mutex_);
+                        theme_wait_condition_.wait(wait_lock, stop_token,
+                            [this] { return ThemeWorkerPending(); });
+                        if (stop_token.stop_requested()) break;
+                        // Cleared while the posters' mutex is still held, so a
+                        // request arriving from here on leaves the flag set and
+                        // the next pass picks it up instead of losing it.
+                        requested = theme_layout_reload_.exchange(
+                            false, std::memory_order_relaxed);
+                    }
                     try {
-                        const bool requested =
-                            theme_layout_reload_.exchange(false, std::memory_order_relaxed);
                         // The palette picks the file: a per-palette layout under
                         // config/themes wins over the shared one, so switching
                         // palettes switches artwork instead of layering it.
@@ -1337,10 +1352,6 @@ public:
                         theme_background_pick_result_ = std::make_shared<ThemeBackgroundPick>();
                         theme_background_pick_result_->message = "cannot apply the background image";
                     }
-                    std::unique_lock wait_lock(theme_wait_mutex_);
-                    // Waits for a reload request or a directory change notification; there is no interval and no
-                    // wake-up while nothing happens.
-                    theme_wait_condition_.wait(wait_lock, stop_token, [] { return false; });
                 }
             });
         management_window_ = plugins_.UiResources().RegisterWindow(
@@ -1411,10 +1422,30 @@ public:
         FindCloseChangeNotification(change);
     }
 
+    // Everything the theme worker has to look at. Read under the mutex the
+    // settings page and the picker post their intents with, so the wait cannot
+    // miss a request: a slot that is already filled keeps the predicate true and
+    // the worker runs instead of going back to sleep.
+    [[nodiscard]] bool ThemeWorkerPending() const noexcept {
+        return theme_layout_reload_.load(std::memory_order_relaxed) ||
+            theme_background_mode_request_ >= 0 || theme_surface_opacity_request_ >= 0.0f ||
+            theme_background_pick_request_ != nullptr;
+    }
+
+    // Posts a reload request. The flag is set while the mutex the worker waits on
+    // is held, because a request that lands between the worker's predicate and its
+    // block would otherwise be lost and the worker would sleep through it.
+    void RequestThemeReload() noexcept {
+        {
+            std::scoped_lock lock(theme_layout_write_mutex_);
+            theme_layout_reload_.store(true, std::memory_order_relaxed);
+        }
+        theme_wait_condition_.notify_all();
+    }
+
     void WatchThemeDirectory() noexcept {
         WatchDirectory(theme_watch_directory_, theme_watch_stop_, [this] {
-            theme_layout_reload_.store(true, std::memory_order_relaxed);
-            theme_wait_condition_.notify_all();
+            RequestThemeReload();
         });
     }
 
@@ -1801,8 +1832,7 @@ private:
                 theme_layout_palette_ = active_palette;
             } else if (*theme_layout_palette_ != active_palette) {
                 theme_layout_palette_ = active_palette;
-                theme_layout_reload_.store(true, std::memory_order_relaxed);
-                theme_wait_condition_.notify_all();
+                RequestThemeReload();
                 return;
             }
             std::shared_ptr<ThemeLayoutCache> published;
@@ -1886,8 +1916,7 @@ private:
                 theme_layout_applied_version_ = 0;
                 if (++theme_texture_retry_ >= 300) {
                     theme_texture_retry_ = 0;
-                    theme_layout_reload_.store(true, std::memory_order_relaxed);
-                    theme_wait_condition_.notify_all();
+                    RequestThemeReload();
                 }
                 return;
             }
@@ -8211,7 +8240,9 @@ private:
     bool theme_style_dirty_{};
     std::atomic<bool> theme_layout_reload_{true};
     mutable std::mutex theme_layout_mutex_;
-    std::mutex theme_wait_mutex_;
+    // _any, and waited on with the mutex the intents above are posted under: the
+    // predicate has to see those slots, and the wait takes the worker's stop token
+    // so a stop wakes it without an extra event.
     std::condition_variable_any theme_wait_condition_;
     std::jthread theme_worker_;
     // Watches config/themes so an edit made outside the UI is noticed by a notification instead of a
