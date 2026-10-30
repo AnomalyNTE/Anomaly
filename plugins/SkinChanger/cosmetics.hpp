@@ -1,5 +1,7 @@
 #pragma once
 #include <anomaly/sdk/cpp.hpp>
+#include <cstdint>
+std::uintptr_t CosmeticsNameArrayCopyAddress() noexcept;
 
 AnomalyStatusV1 CosmeticsLoad(const AnomalyHostApiV1* host, void** context) noexcept;
 AnomalyStatusV1 CosmeticsStart(void* context) noexcept;

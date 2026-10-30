@@ -21,6 +21,11 @@ int main() {
     authoritative[2] = {1,{0,0,0},{99,0}};
     auto expected = original; expected[2] = authoritative[2];
     check(Restore(authoritative,*unlocked,original) == expected,"server-updated node is preserved on restore");
+    auto replicated=*unlocked;replicated[2]=original[2];
+    check(Rebase(replicated,*unlocked,original)==original,"replication reset keeps original restore values");
+    replicated[2]={1,{0,0,0},names[2]};
+    auto rebased=Rebase(replicated,*unlocked,original);
+    check(rebased[2]==replicated[2] && rebased[0]==original[0],"authoritative changes replace backup without saving other preview nodes");
     auto bad = original; bad[1].name = bad[0].name;
     check(!Unlock(bad,names),"duplicate selected effects rejected");
     bad = original; bad[1].name = {999,0};
