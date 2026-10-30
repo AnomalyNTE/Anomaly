@@ -241,6 +241,7 @@ public:
     struct ConfigState final : ResourceState {
         std::string id;
         std::uint32_t version{};
+        std::string schema_document;
         std::unique_ptr<nlohmann::json_schema::json_validator> validator;
     };
 
@@ -717,25 +718,45 @@ AnomalyStatusV1 ScopedPlatformServices::RegisterConfigSchema(
         state->owner = owner;
         state->id = std::string(schema_id);
         state->version = schema_version;
+        state->schema_document = schema;
         state->validator = std::make_unique<nlohmann::json_schema::json_validator>(parsed);
         bool inserted{};
+        bool conflict{};
+        AnomalyGenerationHandleV1 existing{};
         {
             std::scoped_lock lock(impl_->mutex_);
-            const bool duplicate = std::any_of(
+            const auto found = std::find_if(
                 impl_->configs_.begin(), impl_->configs_.end(), [&](const auto& entry) {
                     return entry.second && entry.second->active.load(std::memory_order_acquire) &&
                         SameOwner(entry.second->owner, owner) && entry.second->id == schema_id;
                 });
-            if (duplicate) {
-                return Status(ANOMALY_STATUS_V1_CONFLICT, "configuration schema is already registered");
+            if (found != impl_->configs_.end()) {
+                // A generation that failed after registering keeps its schema, and the host
+                // retries that same generation through on_load. Handing back the live handle
+                // makes the retry idempotent instead of parking the plugin in a permanent
+                // conflict; another document or version under the same id stays a conflict.
+                if (found->second->version == schema_version &&
+                    found->second->schema_document == schema) {
+                    existing = {found->first, owner.scope->Generation()};
+                } else {
+                    conflict = true;
+                }
+            } else {
+                state->token = owner.scope->Register(
+                    PluginResourceKind::Config, "config.schema:" + state->id,
+                    [this, state] { RemoveConfig(*impl_, state); });
+                if (state->token == 0) {
+                    return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "plugin scope is stopping");
+                }
+                inserted = impl_->configs_.emplace(state->token, state).second;
             }
-            state->token = owner.scope->Register(
-                PluginResourceKind::Config, "config.schema:" + state->id,
-                [this, state] { RemoveConfig(*impl_, state); });
-            if (state->token == 0) {
-                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "plugin scope is stopping");
-            }
-            inserted = impl_->configs_.emplace(state->token, state).second;
+        }
+        if (conflict) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "configuration schema is already registered");
+        }
+        if (existing.id != 0) {
+            *handle = existing;
+            return Status(ANOMALY_STATUS_V1_OK);
         }
         if (!inserted) {
             static_cast<void>(owner.scope->Release(state->token));
