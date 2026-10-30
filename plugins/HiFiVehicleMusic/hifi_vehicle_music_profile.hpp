@@ -7,8 +7,16 @@
 
 namespace hifi_vehicle_music_profile {
 
-// Player-music entry points in HTGame 1.4a (UE 5.6.1). All are resolved in
-// HTGame.exe .text; any miss disables the takeover.
+// Player-music entry points in HTGame 1.4b (UE 5.6.1), verified against the live CN
+// client. The global 1.4b SDK dump differs only in the FFmpeg-adjacent fields, so
+// one declaration is meant to serve both. Everything is resolved in HTGame.exe
+// .text; a miss of a required signal disables the takeover.
+//
+// 1.4b inserted UHTSoundSubsystem::SingleFFmpegMusicNode (0x18 bytes) at 0x3D8, so
+// the native music block below it moved by +0x18. The patterns carry the new
+// displacements; a later build that moves a bound member displacement is re-derived
+// from the learned recipe, an unbound one (the 0x4A8 lease pointer) needs a new
+// pattern.
 inline constexpr std::string_view kModule = "HTGame.exe";
 inline constexpr std::string_view kSection = ".text";
 
@@ -21,16 +29,16 @@ inline constexpr std::string_view kStopPattern = "48 83 EC 28 0F B6 C2 48 89 5C 
 // void PausePlayerMusicSound(this) / ResumePlayerMusicSound(this): identical
 // bodies except for the value written to the Paused flag.
 inline constexpr std::string_view kPausePattern =
-    "40 53 48 83 EC 20 8B 91 20 04 00 00 48 8B D9 85 D2 7E ?? 33 C9 41 B1 04 44 8D 41 64 "
-    "E8 ?? ?? ?? ?? 48 8D 8B 80 03 00 00 C6 83 24 04 00 00 01";
+    "40 53 48 83 EC 20 8B 91 38 04 00 00 48 8B D9 85 D2 7E ?? 33 C9 41 B1 04 44 8D 41 64 "
+    "E8 ?? ?? ?? ?? 48 8D 8B 80 03 00 00 C6 83 3C 04 00 00 01";
 inline constexpr std::string_view kResumePattern =
-    "40 53 48 83 EC 20 8B 91 20 04 00 00 48 8B D9 85 D2 7E ?? 33 C9 41 B1 04 44 8D 41 64 "
-    "E8 ?? ?? ?? ?? 48 8D 8B 80 03 00 00 C6 83 24 04 00 00 00";
+    "40 53 48 83 EC 20 8B 91 38 04 00 00 48 8B D9 85 D2 7E ?? 33 C9 41 B1 04 44 8D 41 64 "
+    "E8 ?? ?? ?? ?? 48 8D 8B 80 03 00 00 C6 83 3C 04 00 00 00";
 // void SetMusicPlayerType(this, EHTPlayerMusicType type). On a type change it
 // stops the current Wwise music by playing ID, bypassing StopPlayerMusicSound.
 inline constexpr std::string_view kSetPlayerTypePattern =
-    "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8D 99 90 04 00 00 "
-    "4C 89 74 24 30 48 8D B1 28 04 00 00 8B EA 48 8B F9 39 91 28 04 00 00";
+    "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8D 99 A8 04 00 00 "
+    "4C 89 74 24 30 48 8D B1 40 04 00 00 8B EA 48 8B F9 39 91 40 04 00 00";
 
 // void AHTPlayerCharacter::EndGetOffVehicle(this, bool set_location_and_rotation)
 // (vtable +0x15A0): runs when the character has left its seat. Resolved with
@@ -45,7 +53,7 @@ inline constexpr std::uint32_t kPlayerControllerPlayerOffset = 0x368;
 inline constexpr std::uint32_t kPlayerPlayerControllerOffset = 0x30;
 
 // UHTSoundSubsystem::PlayerType (EHTPlayerMusicType); Vehicle == 1.
-inline constexpr std::uint32_t kSubsystemPlayerTypeOffset = 0x428;
+inline constexpr std::uint32_t kSubsystemPlayerTypeOffset = 0x440;
 inline constexpr std::uint8_t kPlayerTypeVehicle = 1;
 // UObject::NamePrivate.ComparisonIndex of the UAkAudioEvent.
 inline constexpr std::uint32_t kObjectNameOffset = 0x18;
@@ -78,19 +86,19 @@ inline constexpr std::string_view kAddUniquePattern =
 // TArray<FName>* UHTSoundSubsystem::GetOwnedMusicListIDs(this, TArray<FName>* out)
 inline constexpr std::string_view kOwnedCopyPattern =
     "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 40 48 8B DA 33 D2 48 89 13 48 8D 43 0C "
-    "48 63 B9 E8 03 00 00";
+    "48 63 B9 00 04 00 00";
 // void UHTSoundSubsystem::ReGenerateNewMusicListIDs(this): builds the play queue
 // from the owned IDs (album mode filters FindRow(id)->AlbumID).
 inline constexpr std::string_view kReGeneratePattern = "4C 8B DC 53 55 56 57 41 55 48 81 EC 90 00 00 00";
 // void UHTSoundSubsystem::SetCurrentMusicListID(this, FName id): prunes the
 // play queue against the owned IDs before inserting `id`.
 inline constexpr std::string_view kSetCurrentPattern =
-    "48 89 54 24 10 48 89 4C 24 08 53 55 41 56 48 81 EC 80 00 00 00 83 B9 10 04 00 00 00 "
-    "4C 8D B1 08 04 00 00";
+    "48 89 54 24 10 48 89 4C 24 08 53 55 41 56 48 81 EC 80 00 00 00 83 B9 28 04 00 00 00 "
+    "4C 8D B1 20 04 00 00";
 // UHTSoundSubsystem owned music list IDs, TArray<FName>.
-inline constexpr std::uint32_t kSubsystemOwnedIdsOffset = 0x3E0;
+inline constexpr std::uint32_t kSubsystemOwnedIdsOffset = 0x3F8;
 // UHTSoundSubsystem::CurrentPlayerMusicListID (FName).
-inline constexpr std::uint32_t kSubsystemCurrentIdOffset = 0x400;
+inline constexpr std::uint32_t kSubsystemCurrentIdOffset = 0x418;
 // Further readers of the owned IDs that bypass GetOwnedMusicListIDs; without
 // the song ids they show the album songs as locked (state 3) or move the
 // current song back to a game song.
@@ -104,11 +112,11 @@ inline constexpr std::string_view kVehiclePanelPattern =
 // void UHTSoundSubsystem::ResolveCurrentMusicListID(this): falls back to the
 // first owned ID when the current one is not owned.
 inline constexpr std::string_view kResolveCurrentPattern =
-    "40 56 48 83 EC 70 48 8B F1 E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 8B 8E 28 04 00 00";
+    "40 56 48 83 EC 70 48 8B F1 E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 8B 8E 40 04 00 00";
 // void UHTSoundSubsystem::SyncCurrentMusicListID(this): same fallback.
 inline constexpr std::string_view kSyncCurrentPattern =
     "40 53 57 48 83 EC 28 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 0F 84 ?? ?? ?? ?? "
-    "48 8B 93 00 04 00 00";
+    "48 8B 93 18 04 00 00";
 // char UHTUI_MusicListPanel::RefreshPageList(this): builds the album page
 // entries and their lock state from the owned IDs.
 inline constexpr std::string_view kPageListPattern =
@@ -125,7 +133,7 @@ inline constexpr std::string_view kMusicEndPattern =
 // stores the id and broadcasts OnCurrentMusicIDChanged (the UI title follows).
 // Optional: a miss leaves the game's title on the song it last picked.
 inline constexpr std::string_view kSetCurrentIdPattern =
-    "48 8B 02 48 39 81 00 04 00 00 74 13 48 89 81 00 04 00 00 48 81 C1 F0 02 00 00 E9";
+    "48 8B 02 48 39 81 18 04 00 00 74 13 48 89 81 18 04 00 00 48 81 C1 F0 02 00 00 E9";
 // In-game player progress. The UI reads the position of PlayingID through
 // these Wwise wrappers and skips it while PlayingID is 0; a taken-over library
 // song therefore gets kPlayingId, which these detours answer from the engine.
@@ -193,9 +201,9 @@ inline constexpr std::uint32_t kUiStripDurationCacheOffset = 0xFA4;
 inline constexpr std::string_view kDurationCallback2Pattern =
     "40 57 48 83 EC 30 48 8B 02 48 8B 11 8B 40 58 89 82 DC 10 00 00 48 8B 09 48 8B B9 18 10 00 00";
 // UHTSoundSubsystem::PlayingID (int32; the Pause/Resume/Stop paths test > 0).
-inline constexpr std::uint32_t kSubsystemPlayingIdOffset = 0x420;
+inline constexpr std::uint32_t kSubsystemPlayingIdOffset = 0x438;
 // UHTSoundSubsystem::bPaused (uint8; Pause writes 1, Resume 0).
-inline constexpr std::uint32_t kSubsystemPausedOffset = 0x424;
+inline constexpr std::uint32_t kSubsystemPausedOffset = 0x43C;
 
 // Never issued by Wwise in practice (IDs count up from 1); Wwise ignores it.
 inline constexpr std::uint32_t kPlayingId = 0x7FFFFF00;
@@ -203,7 +211,7 @@ inline constexpr std::uint32_t kPlayingId = 0x7FFFFF00;
 // progress slider's seek. It reloads the row's event asynchronously and posts
 // it again, which for a library song never reaches the engine as a seek.
 inline constexpr std::string_view kChangeSoundPattern =
-    "48 89 5C 24 18 57 48 81 EC C0 00 00 00 48 8B F9 0F 29 BC 24 A0 00 00 00 8B 89 00 04 00 00 "
+    "48 89 5C 24 18 57 48 81 EC C0 00 00 00 48 8B F9 0F 29 BC 24 A0 00 00 00 8B 89 18 04 00 00 "
     "0F 28 F9 E8";
 // void UHTUI_MusicListPanel::OnMusicDetailedViewEntryClicked(this, const FName* id):
 // a song clicked in the album view. It only plays songs it finds among the
@@ -347,10 +355,18 @@ inline constexpr AnomalySignatureMemberV2 kPauseMembers[]{
 inline constexpr AnomalySignatureMemberV2 kPlayerTypeMembers[]{
     anomaly::sdk::MemberUse(2, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2 | ANOMALY_SIGNATURE_MEMBER_ADDRESS_V2),
 };
+// PlayerType read alone: `mov ecx, [rsi+0x440]` in ResolveCurrentMusicListID. It is
+// the second witness for the field, so a changed SetMusicPlayerType prologue
+// (whose hook then degrades to "type switch is not detected") no longer takes the
+// whole playback layout -- and with it every hook -- down.
+inline constexpr AnomalySignatureMemberV2 kPlayerTypeReadMembers[]{
+    anomaly::sdk::MemberUse(2, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
+};
 inline constexpr AnomalySignatureWitnessV2 kPlaybackWitnesses[]{
     anomaly::sdk::Witness("pause", kPausePattern, kPauseMembers),
     anomaly::sdk::Witness("resume", kResumePattern, kPauseMembers),
     anomaly::sdk::Witness("player-type", kSetPlayerTypePattern, kPlayerTypeMembers),
+    anomaly::sdk::Witness("player-type-read", kResolveCurrentPattern, kPlayerTypeReadMembers),
 };
 inline constexpr anomaly::sdk::LayoutSchema kPlaybackSchema{
     kModule, kSection, kPlaybackFields, kPlaybackWitnesses};
