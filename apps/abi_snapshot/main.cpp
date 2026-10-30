@@ -1934,6 +1934,12 @@ std::string BuildSnapshot() {
           offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)},
          {"revoke_fine_speed_authorization",
           offsetof(AnomalyNteVehicleServiceV1, revoke_fine_speed_authorization)},
+         {"customization_catalog_snapshot",
+          offsetof(AnomalyNteVehicleServiceV1, customization_catalog_snapshot)},
+         {"customization_option_at",
+          offsetof(AnomalyNteVehicleServiceV1, customization_option_at)},
+         {"repair_current_vehicle",
+          offsetof(AnomalyNteVehicleServiceV1, repair_current_vehicle)},
          {"set_speed_target", offsetof(AnomalyNteVehicleServiceV1, set_speed_target)}},
         false);
     AppendStruct(
