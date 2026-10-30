@@ -1,9 +1,9 @@
 #pragma once
 // 自动战斗：复用 plugins/common/combat 的共享状态机（静态库 anomaly_plugin_combat）。
 // 策略：技能优先（大招 → 小技能 → 平A），三项各由一个勾选框控制。
-// 结束判据（命中任一即结束本点）：模块报 cleared（半径内连续 3 秒无怪）、开打 15 秒一次怪都
-// 没遇到；脚本侧另有 5 分钟兜底。判定不看伤害读数——伤害流读不到时（偏移失效或参与者句柄对
-// 不上），「多久没伤害」会在怪还活着时成立，脚本就会在没打完的点上传送走。
+// 结束判据（命中任一即结束本点）：模块报 cleared（半径内连续 3 秒无怪，不要求先见过怪）、
+// 开打 15 秒一次怪都没遇到（面板值设到 3 秒以下才会先生效）；脚本侧另有 5 分钟兜底。判定不看
+// 伤害读数——伤害流读不到时（偏移失效或参与者句柄对不上），「多久没伤害」会在怪还活着时成立。
 
 namespace {
 
@@ -22,7 +22,7 @@ constexpr double kCombatRadiusMaximumMeters = 300.0;
 constexpr double kCombatFirstContactDefaultSeconds = 15.0;
 constexpr double kCombatFirstContactMinimumSeconds = 1.0;
 constexpr double kCombatFirstContactMaximumSeconds = 120.0;
-// 无怪判据（秒）：半径内见过怪之后连续这么久无怪 ⇒ 本点打完（模块侧计数）。
+// 无怪判据（秒）：半径内连续这么久无怪 ⇒ 本点打完（模块侧计数，不要求先见过怪）。
 constexpr std::uint32_t kCombatNoMonsterSeconds = 3;
 constexpr std::size_t kCombatSecondsTextCapacity = 16;
 constexpr std::size_t kCombatRadiusTextCapacity = 8;
@@ -155,6 +155,8 @@ Host CombatMakeHost() {
     host.pickup = g_context.pickup;
     host.search_radius_m = g_combat_radius_meters.load();
     host.no_monster_seconds = kCombatNoMonsterSeconds;
+    // 半径内连续 3 秒无怪就收工，不要求先见过怪：空点也照这个时间走。
+    host.require_seen_monster = false;
     host.developer_mode = false;
     // 清空那一刻由模块发一次范围拾取。
     host.loot_after_kill = true;
@@ -215,9 +217,11 @@ const char* CombatResultName(const CombatResult result) {
 void AdvanceCombat() {
     if (g_combat_start_requested.exchange(false)) {
         g_combat_result.store(static_cast<std::int32_t>(CombatResult::none));
+        // 先重置再打时间戳：`CombatResetState` 会把 `g_combat_started_at` 清零，顺序反了它就在
+        // 同一帧里变成「开打于 epoch」，首次接敌超时立刻成立、怪还没动就去下一个点。
+        CombatResetState();
         g_combat_started_at = std::chrono::steady_clock::now();
         g_combat_hit_baseline = g_combat_state.last_player_hit_at;
-        CombatResetState();
         g_combat_active.store(true);
         CombatPublish("自动战斗：开始（技能优先，平A 兜底）");
         // 伤害流入口是否随服务发布：缺失是能力问题，齐全却收不到事件才是偏移或句柄问题。

@@ -116,8 +116,11 @@ struct Host final {
     // 为空则不拾取。
     const AnomalyNtePickupServiceV1* pickup{};
     std::uint32_t search_radius_m{50};
-    // 完成判据的「无怪秒数」：半径内见过怪之后连续这么多秒无怪即报 `cleared`。
+    // 完成判据的「无怪秒数」：半径内连续这么多秒无怪即报 `cleared`。
     std::uint32_t no_monster_seconds{5};
+    // 为真（默认）时计秒必须先见过怪——「本来就没怪的点」由调用方自己的超时收场；
+    // 为假时从进入战斗就开始计，没怪的点也直接按 `cleared` 结束。
+    bool require_seen_monster{true};
     // 攻击目标多久没有造成伤害就当作「打不动」（尸体/道具）：模块据此拉黑并换靶。
     // 注意这条判定不要求伤害流可用——伤害流不可用时它退化成「打了这么久就换靶」。
     double no_damage_grace_seconds{3.0};
@@ -141,9 +144,9 @@ struct Host final {
 };
 
 enum class Result : std::uint8_t {
-    // 仍在选靶/接近/交战，或见过怪但无怪时长还没满 `host.no_monster_seconds`。
+    // 仍在选靶/接近/交战，或连续无怪时长还没满 `host.no_monster_seconds`。
     working,
-    // 见过怪，且连续 `host.no_monster_seconds` 秒无怪：本点完成（拾取已在内部发出）。
+    // 连续 `host.no_monster_seconds` 秒无怪：本点完成（拾取已在内部发出）。
     cleared,
     // 战斗流或导航不可用，或本帧拿不到目标数据 / 出不了手：调用方决定等待还是放弃
     // （本模块不做超时）。

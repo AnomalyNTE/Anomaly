@@ -999,16 +999,20 @@ Result Tick(Host& host, State& state) noexcept {
             SetStatus(host, std::to_string(host.search_radius_m) + "米内无怪");
         }
     }
-    // 完成判据（原来在副本流程里，CloneEnter/plugin.cpp:6868–6887）：必须先见过怪才开始
-    // 计秒，所以「本来就没怪的点」不会被误判为完成——那种点由调用方自己的首次接敌超时收场。
+    // 完成判据（原来在副本流程里，CloneEnter/plugin.cpp:6868–6887）：`host.require_seen_monster`
+    // 为真时必须先见过怪才开始计秒，所以「本来就没怪的点」不会被误判为完成——那种点由调用方
+    // 自己的超时收场；为假时进战斗就计，空点按同一时长结束。
     // 计数是秒级的：no_monster_tick_at 是下一次允许 +1 的时刻。
     if (state.target_valid) {
         state.met_monster = true;
         state.no_monster_seconds = 0;
         // 丢目标后要过满一秒才 +1：置 {} 会让第一帧立刻计数，「连续 N 秒」实际只剩约 N-1 秒。
         state.no_monster_tick_at = now + std::chrono::seconds(1);
-    } else if (state.met_monster) {
-        if (now >= state.no_monster_tick_at) {
+    } else if (state.met_monster || !host.require_seen_monster) {
+        // 首次无怪（还没见过怪、也没排过计秒）同样要先等满一秒，否则开打那一帧就算掉一秒。
+        if (state.no_monster_tick_at == std::chrono::steady_clock::time_point{}) {
+            state.no_monster_tick_at = now + std::chrono::seconds(1);
+        } else if (now >= state.no_monster_tick_at) {
             ++state.no_monster_seconds;
             state.no_monster_tick_at = now + std::chrono::seconds(1);
         }
