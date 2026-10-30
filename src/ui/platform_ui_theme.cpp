@@ -308,6 +308,13 @@ const ImWchar* PlatformChineseGlyphRanges(ImFontAtlas& atlas) noexcept {
     // Host and plugin windows draw localized text with the default font. Bake
     // every GB2312 ideograph plus general punctuation so characters outside
     // ImGui's common 2500 glyphs do not render as the missing-glyph '?'.
+    //
+    // GB2312 carries the simplified orthography only, so text spelled the
+    // traditional way falls outside the table: a game directory named with
+    // U+7570 U+74B0 bakes neither character and the launcher draws its path as
+    // '??'. Name both spellings explicitly so either one renders; the simplified
+    // pair (U+5F02 U+73AF) is already in the table and costs nothing to repeat.
+    static constexpr ImWchar kAdditionalIdeographs[] = {0x5F02, 0x73AF, 0x7570, 0x74B0};
     static constexpr ImWchar kGeneralPunctuation[] = {0x2000, 0x206F, 0};
     static ImVector<ImWchar> ranges;
     if (ranges.empty()) {
@@ -318,6 +325,9 @@ const ImWchar* PlatformChineseGlyphRanges(ImFontAtlas& atlas) noexcept {
         for (const ImWchar offset : kGb2312IdeographOffsets) {
             codepoint = static_cast<ImWchar>(codepoint + offset);
             builder.AddChar(codepoint);
+        }
+        for (const ImWchar ideograph : kAdditionalIdeographs) {
+            builder.AddChar(ideograph);
         }
         builder.BuildRanges(&ranges);
     }
