@@ -6,6 +6,8 @@
 
 **A stable, flexible, and open plugin platform for Neverness to Everness (NTE)**
 
+<a href="https://discord.gg/tfeh8QQ9Vy"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Anomaly Discord" /></a>
+
 <p align="center">
   <a href="README.md">简体中文</a> · <strong>English</strong>
 </p>
@@ -151,6 +153,15 @@ Project-level references: [architecture overview](docs/en/developer-guide/archit
 - **Plugin failed to load?** Confirm that it is a directory package containing `manifest.json`; root-level DLLs and directories without a Manifest are not loaded.
 - **Coordinates, entities, or another feature shows as unavailable?** This usually means the active Profile lacks the required signature, or symbol or layout validation did not pass. See [NTE Build Profile](docs/en/user-guide/nte-profiles.md).
 - **Does it conflict with RE-UE4SS?** The proxy file name is also `dwmapi.dll`, so the two cannot share one directory; Anomaly is a separate entry point and does not load `UE4SS.dll`.
+
+## 💬 Community
+
+**Discord:** [https://discord.gg/tfeh8QQ9Vy](https://discord.gg/tfeh8QQ9Vy)
+
+The Discord server is where releases land first and where install problems actually get solved, usually faster than a GitHub issue because someone can read your log in real time.
+
+> [!TIP]
+> When you ask for help, post the runtime version, the plugin (or "built-in"), your NTE Build Profile, and the relevant log lines. A report with the log attached usually gets an answer in one round instead of five.
 
 ## 💡 Notes
 
