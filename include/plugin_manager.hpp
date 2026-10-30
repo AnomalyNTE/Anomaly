@@ -348,6 +348,10 @@ private:
     void* imgui_context_{};
     const AnomalyUiServiceV1* ui_service_{};
     std::uint64_t observed_adapter_service_revision_{};
+    // Services can publish late without changing the adapter revision again (a Profile that
+    // becomes ready, or a game tick hook that only starts on a later frame). Waiting plugins
+    // therefore also retry on a slow timer instead of only on a revision change.
+    std::chrono::steady_clock::time_point last_waiting_service_retry_{};
     anomaly::PluginShadowStore shadow_store_;
     anomaly::PluginFileWatcher file_watcher_;
     anomaly::PluginConfigFileWatcher enablement_file_watcher_;

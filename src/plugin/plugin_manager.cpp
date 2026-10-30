@@ -3535,6 +3535,10 @@ struct PluginManager::LoadedPlugin {
     bool faulted{};
     bool capability_audit_logged{};
     bool localization_catalog_loaded{};
+    // Reason the host last parked this generation in the waiting-for-service state. The
+    // periodic retry keeps hitting the same reason, so only a changed reason is logged again
+    // instead of writing one line every five seconds for the rest of the session.
+    std::string waiting_detail;
     PluginView view;
     std::filesystem::path shadow;
     anomaly::PluginShadowGeneration shadow_generation;
@@ -4321,7 +4325,12 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
         plugin.plugin_context = nullptr;
         plugin.waiting_for_service = true;
         plugin.started = false;
-        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "ABI v1 plugin waiting for service: " + plugin.view.id);
+        const std::string detail = StatusMessage("on_load", load_status);
+        if (plugin.waiting_detail != detail) {
+            plugin.waiting_detail = detail;
+            Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "ABI v1 plugin waiting for service: " + plugin.view.id);
+        }
         return true;
     }
     if (load_status.code != ANOMALY_STATUS_V1_OK) {
@@ -4357,8 +4366,12 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
             if (start_status.code == ANOMALY_STATUS_V1_UNAVAILABLE) {
                 plugin.waiting_for_service = true;
                 plugin.started = false;
-                Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-                    "ABI v1 plugin waiting for service: " + plugin.view.id);
+                const std::string detail = StatusMessage("on_start", start_status);
+                if (plugin.waiting_detail != detail) {
+                    plugin.waiting_detail = detail;
+                    Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                        "ABI v1 plugin waiting for service: " + plugin.view.id);
+                }
                 return true;
             }
             plugin.waiting_for_service = false;
@@ -4369,6 +4382,7 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
         }
     }
     plugin.waiting_for_service = false;
+    plugin.waiting_detail.clear();
     plugin.started = true;
     ReconcileWindowVisibility(plugin);
     Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "ABI v1 plugin started: " + plugin.view.id);
@@ -5204,10 +5218,25 @@ PluginMaintenanceTiming PluginManager::MaintenancePluginState() {
 
 void PluginManager::RetryWaitingForAdapterServices() {
     const std::uint64_t revision = anomaly::ProcessAdapterServices().Revision();
-    if (revision == observed_adapter_service_revision_) return;
+    const bool revision_changed = revision != observed_adapter_service_revision_;
     observed_adapter_service_revision_ = revision;
     if (ui_service_ == nullptr) return;
 
+    // The caller drives this from a 10 ms maintenance loop, so the common case has to stay
+    // cheap: one atomic read plus one clock read. Built-in service readiness (UI,
+    // plugin-provided services) never changes the adapter revision, which is why this timer
+    // exists at all; the plugin scan only runs when the slow period is actually due.
+    const auto now = std::chrono::steady_clock::now();
+    constexpr std::chrono::seconds kWaitingRetryPeriod{5};
+    if (!revision_changed && last_waiting_service_retry_ != std::chrono::steady_clock::time_point{} &&
+        now - last_waiting_service_retry_ < kWaitingRetryPeriod) {
+        return;
+    }
+    last_waiting_service_retry_ = now;
+
+    const bool waiting = std::ranges::any_of(
+        plugins_, [](const auto& plugin) { return plugin->waiting_for_service; });
+    if (!waiting) return;
     RetryWaitingPlugins();
 }
 
