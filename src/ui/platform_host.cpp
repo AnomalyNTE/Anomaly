@@ -6495,15 +6495,27 @@ private:
                 Text(anomaly::MessageId::SettingsBackgroundVisibility),
                 Text(anomaly::MessageId::SettingsBackgroundVisibilityHint),
                 "veil opacity dim wallpaper readability", [&] {
-                    int value = static_cast<int>(std::lround(
-                        std::clamp(theme_surface_opacity_, 0.0f, 1.0f) * 100.0f));
+                    int value = static_cast<int>(std::lround(std::clamp(
+                        theme_surface_opacity_edit_.value_or(theme_surface_opacity_),
+                        anomaly::kPlatformUiLayoutSurfaceOpacityMinimum, 1.0f) * 100.0f));
                     if (anomaly::glass::SliderInt("##value", &value,
                             static_cast<int>(
                                 anomaly::kPlatformUiLayoutSurfaceOpacityMinimum * 100.0f),
                             100, "%d%%")) {
-                        const float chosen = static_cast<float>(value) / 100.0f;
+                        // Dragging only holds a pending value, exactly like the
+                        // scale slider: committing the veil writes the shared
+                        // layout and reloads the theme, so it waits for the
+                        // release instead of running once per frame.
+                        theme_surface_opacity_edit_ = static_cast<float>(value) / 100.0f;
+                    }
+                    if (theme_surface_opacity_edit_ && !ImGui::IsItemActive() &&
+                        !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const float chosen = *theme_surface_opacity_edit_;
+                        theme_surface_opacity_edit_.reset();
                         std::scoped_lock lock(theme_layout_write_mutex_);
                         theme_surface_opacity_request_ = chosen;
+                        // Hold the control on the value just committed until the
+                        // worker has written and applied it.
                         theme_surface_opacity_ = chosen;
                         theme_surface_opacity_dirty_ = true;
                         theme_wait_condition_.notify_all();
@@ -8231,6 +8243,9 @@ private:
     float theme_surface_opacity_request_{-1.0f};
     float theme_surface_opacity_{1.0f};
     bool theme_surface_opacity_dirty_{};
+    // A veil the user is still dragging. Held until the slider is released,
+    // because every commit costs a layout write plus a theme reload.
+    std::optional<float> theme_surface_opacity_edit_;
     // D3D11 views the standalone surface created for the current theme layout.
     // They live as long as the layout that produced them.
     std::vector<ID3D11ShaderResourceView*> standalone_theme_views_;
