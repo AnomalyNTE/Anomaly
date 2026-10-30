@@ -223,8 +223,8 @@ Plugins that need automatic field offset learning can opt into signature v2 and 
 
 ```cpp
 inline constexpr AnomalySignatureFieldV2 fields[]{
-    anomaly::sdk::FieldSeed("PlayingID", 0x420, 4),
-    anomaly::sdk::FieldSeed("Paused", 0x424),
+    anomaly::sdk::FieldSeed("PlayingID", 0x438, 4),
+    anomaly::sdk::FieldSeed("Paused", 0x43C),
 };
 inline constexpr AnomalySignatureMemberV2 members[]{
     anomaly::sdk::MemberUse(0, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
@@ -248,7 +248,8 @@ if (resolved) {
 // On failure, report the reason with resolved.error() and disable the features that depend on this group of layouts.
 ```
 
-The framework validates the object source, access width, alignment, unique match and consistency across multiple extraction points, and only publishes and learns once the whole group succeeds.
+The framework validates the object source, access width, alignment, unique match and consistency across multiple extraction points, and only publishes and learns the fields once the whole group agrees.
+A function a game update rewrote so that neither its signature nor a learning record locates it is published as address zero while the remaining fields and addresses still resolve: declaring a second, independent function for the same field (another read site beside `pause`) keeps that field valid when one function is lost, and a hook that needs the missing site resolves it again itself and skips only if that also fails.
 Seeds are not failure fallback values. See
 [Interop and memory](../api-reference/interop-and-memory.md#version-2-resolve-addresses-and-field-layouts-together) for the complete restrictions, C ABI output ownership and error codes.
 HiFi already integrates PlayingID, Paused, PlayerType, CurrentID and OwnedIDs; core playback and the optional album grouping are resolved, and an album group failure keeps the existing album degraded behavior. Other fields still follow the existing compatibility constraints.

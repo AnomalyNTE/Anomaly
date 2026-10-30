@@ -71,14 +71,16 @@ text at most 1024 bytes. A function signature starts at a Windows x64 function e
 RCX as the object. The framework tracks object provenance through supported MOV / LEA instructions,
 unlocks only the bound member displacements, and preserves other members, stack locations, plain
 immediates, and instruction structure. The scan window is at most 128 bytes, with at least 4
-complete instructions and 16 fixed bytes; for functions with fewer than 24 fixed bytes, every field
-must have another distinct function address that produces a consistent result. All extraction points
-and function evidence for a field must agree and satisfy `alignment`; ambiguity or conflicting
-evidence returns `CONFLICT`, and insufficient evidence or zero matches returns `NOT_FOUND`.
+complete instructions and 16 fixed bytes. A function the original signature still matches is accepted
+on that signature's own uniqueness; a function recovered from a learning record with fewer than 24
+fixed bytes must have another distinct function address producing a consistent result for every
+field. All extraction points and function evidence for a field must agree and satisfy `alignment`;
+ambiguity returns `CONFLICT`, and a field without any verified evidence returns `NOT_FOUND`.
 
 The call runs synchronously and is allowed only from Lifecycle / Worker; Game / Render returns `UNAVAILABLE`.
 The caller allocates the output arrays, whose counts must equal `witness_count` and `field_count` respectively, and results return in declaration order.
-Once the plugin context is valid and the request prefix, output pointers, and counts are valid, any failure zeroes both output groups; on success the whole group is published.
+Once the plugin context is valid and the request prefix, output pointers, and counts are valid, any failure zeroes both output groups; on success the whole group is published: one offset per field and one address per function.
+A function the module no longer contains (for example one whose prologue a game update rewrote) is published as address zero and contributes no field evidence, so one lost function cannot take the remaining fields and addresses with it; a caller that needs that site resolves it again itself.
 No handle or host object is allocated across the DLL boundary. Status messages must be copied before the next layout call on the current thread.
 
 Learning records are stored alongside v1 in `signature-knowledge/signatures.json` under each plugin's

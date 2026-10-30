@@ -577,7 +577,12 @@ SignatureLayoutResolution SignatureUpdater::ResolveLayout(
         std::vector<ue5mem::PatternByte> source;
         std::vector<std::optional<std::uint32_t>> fields;
         bool original{};
+        [[nodiscard]] bool Present() const noexcept { return address != 0; }
     };
+    // One entry per declared witness, in declaration order. A witness the binary
+    // no longer contains publishes a null address and no evidence: the
+    // declaration survives as long as every field is still verified by another
+    // witness, so one changed prologue cannot take every consumer down with it.
     std::vector<Winner> winners;
     std::vector<Key> keys;
     for (const auto& witness : definition.witnesses) {
@@ -593,6 +598,8 @@ SignatureLayoutResolution SignatureUpdater::ResolveLayout(
         Winner winner;
         const auto originals = context.scan(witness.pattern, 2);
         if (stop.stop_requested()) return fail("signature layout resolution cancelled");
+        // Two candidate sites cannot be told apart; the declaration is refused
+        // rather than one of them being picked.
         if (originals.size() > 1) return fail(witness.id + ": original signature is ambiguous", true);
         if (originals.size() == 1) {
             winner.source = ReadInstructions(context, originals.front());
@@ -602,30 +609,36 @@ SignatureLayoutResolution SignatureUpdater::ResolveLayout(
                 winner.original = true;
             }
         }
-        if (winner.address == 0) {
+        if (!winner.Present()) {
             auto recipe = std::move(cached);
             std::vector<std::uintptr_t> matches;
             if (!recipe.pattern.empty()) matches = context.scan(recipe.pattern, 2);
             if (stop.stop_requested()) return fail("signature layout resolution cancelled");
+            if (matches.size() > 1) return fail(witness.id + ": learned member signature is ambiguous", true);
             if (matches.empty()) {
                 const auto parsed = ue5mem::Pattern::Parse(witness.pattern);
                 auto derived = MakeMemberRecipe(parsed.Bytes(), witness, seeds);
-                if (derived.pattern.empty()) return fail(witness.id + ": insufficient member instruction evidence");
-                if (derived.pattern != recipe.pattern) {
+                if (!derived.pattern.empty() && derived.pattern != recipe.pattern) {
                     recipe = std::move(derived);
                     matches = context.scan(recipe.pattern, 2);
                 }
             }
             if (stop.stop_requested()) return fail("signature layout resolution cancelled");
-            if (matches.size() != 1) return fail(witness.id + (matches.empty()
-                ? ": member signature not found" : ": member signature is ambiguous"), !matches.empty());
-            winner.address = matches.front();
-            winner.recipe = std::move(recipe);
-            winner.source = ReadInstructions(context, winner.address);
+            if (matches.size() > 1) return fail(witness.id + ": member signature is ambiguous", true);
+            if (matches.size() == 1) {
+                winner.address = matches.front();
+                winner.recipe = std::move(recipe);
+                winner.source = ReadInstructions(context, winner.address);
+            }
         }
-        const auto values = ExtractMembers(winner.recipe, winner.source, witness, definition);
-        if (!values) return fail(witness.id + ": member access evidence is inconsistent", true);
-        winner.fields = *values;
+        if (winner.Present()) {
+            const auto values = ExtractMembers(winner.recipe, winner.source, witness, definition);
+            // A site that matches but contradicts the declared members is not
+            // evidence for anything: drop this witness instead of refusing the
+            // fields the other witnesses still verify.
+            if (values) winner.fields = *values;
+            else winner.address = 0;
+        }
         keys.push_back(std::move(key));
         winners.push_back(std::move(winner));
     }
@@ -644,6 +657,11 @@ SignatureLayoutResolution SignatureUpdater::ResolveLayout(
         }
     }
     for (const auto& winner : winners) {
+        if (!winner.Present() || winner.original) continue;
+        // A declaration that still matches is looked up by its own exact pattern,
+        // which the scan above already required to be unique. A learned
+        // generalization is weaker evidence, so a short one needs a second,
+        // independently agreeing witness for every field it names.
         const auto parsed = ue5mem::Pattern::Parse(winner.recipe.pattern);
         const auto fixed = std::ranges::count_if(parsed.Bytes(), [](auto byte) { return byte.mask == 0xFF; });
         if (fixed >= kMinimumFixedBytes) continue;
@@ -665,6 +683,11 @@ SignatureLayoutResolution SignatureUpdater::ResolveLayout(
     std::vector<MemberRecipe> recipes;
     for (std::size_t i{}; i < winners.size(); ++i) {
         if (stop.stop_requested()) return fail("signature layout resolution cancelled");
+        if (!winners[i].Present()) {
+            // Nothing was located, so there is nothing to remember for it.
+            recipes.emplace_back();
+            continue;
+        }
         auto learned = MakeMemberRecipe(winners[i].source, definition.witnesses[i], result.offsets);
         if (!learned.pattern.empty() && (winners[i].original || learned.pattern != winners[i].recipe.pattern)) {
             const auto matches = context.scan(learned.pattern, 2);

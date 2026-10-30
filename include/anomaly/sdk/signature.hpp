@@ -40,6 +40,8 @@ class LayoutResult;
 // Owned entirely by the plugin. Lookups never call the host, scan or perform I/O.
 class ResolvedLayout final {
 public:
+    // The witness site, or 0 when the module no longer contains that witness. A
+    // caller that needs the site must then resolve the pattern itself.
     [[nodiscard]] std::uintptr_t address(std::string_view id) const {
         for (std::size_t i{}; i < witnesses_.size(); ++i)
             if (witnesses_[i] == id) return addresses_[i];

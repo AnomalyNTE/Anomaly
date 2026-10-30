@@ -95,7 +95,10 @@ typedef struct AnomalySignatureServiceV2 {
     /* Lifecycle/Worker only. Caller owns the arrays, in declaration order.
        Counts must equal request counts. For a live plugin context, once the request prefix and output
        counts/pointers are valid, failure clears both arrays. Success publishes
-       a complete, validated layout. No handle or host object escapes. */
+       a complete, validated layout: one offset for every declared field and one address per declared
+       witness, where a witness the module no longer contains is published as zero and contributes no
+       field evidence. An ambiguous witness fails the call with ANOMALY_STATUS_V1_CONFLICT.
+       No handle or host object escapes. */
     AnomalyStatusV1 (ANOMALY_CALL *resolve_layout)(
         void* user, const AnomalySignatureLayoutRequestV2* request,
         uintptr_t* addresses, uint32_t address_count,

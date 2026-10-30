@@ -51,6 +51,9 @@ struct SignatureLayoutDefinition {
 };
 
 struct SignatureLayoutResolution {
+    // One address per declared witness, in declaration order. Zero means the
+    // binary no longer contains that witness: its field evidence is unused, but
+    // the resolution itself succeeds while every field is verified elsewhere.
     std::vector<std::uintptr_t> addresses;
     std::vector<std::uint32_t> offsets;
     std::string diagnostic;
@@ -81,6 +84,9 @@ public:
 
     // Opt-in member learning. Resolves the entire declaration before publishing
     // any field; unlike the address-only API, declared member operands may move.
+    // A witness that cannot be located is reported as a null address instead of
+    // failing the resolution, and an ambiguous one is refused as a conflict:
+    // every field must still carry verified, agreeing evidence.
     [[nodiscard]] SignatureLayoutResolution ResolveLayout(
         const SignatureScanContext& context, const SignatureLayoutDefinition& definition,
         std::stop_token stop = {});
