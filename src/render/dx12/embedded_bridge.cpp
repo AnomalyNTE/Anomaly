@@ -901,6 +901,10 @@ void RunEmbeddedPlatform(
         return;
     }
 
+    auto last_profile_hook_retry = std::chrono::steady_clock::time_point{};
+    // Kept local on purpose: the diagnostics struct is also read from other threads, so the
+    // worker must not assign into it while the session runs.
+    bool profile_hook_retry_active = true;
     while (!stop_token.stop_requested()) {
         const bool sampled = state.performance.Enabled();
         const auto maintenance_started = sampled ? std::chrono::steady_clock::now()
@@ -930,6 +934,18 @@ void RunEmbeddedPlatform(
                 state.performance.Record(
                     EmbeddedPerformanceStage::WorkerPluginMaintenance,
                     std::chrono::steady_clock::now() - maintenance_work_started);
+            }
+        }
+        // A game tick hook that failed during runtime startup is retried here, off the game
+        // thread and off the plugin lock. The profile runtime republishes the framework
+        // services when it succeeds, which wakes every plugin waiting for them. Once the retry
+        // reports settled this worker stops even looking at it.
+        if (profile_hook_retry_active && state.diagnostics.retry_profile_hooks) {
+            const auto now = std::chrono::steady_clock::now();
+            if (last_profile_hook_retry == std::chrono::steady_clock::time_point{} ||
+                now - last_profile_hook_retry >= std::chrono::seconds(1)) {
+                last_profile_hook_retry = now;
+                if (state.diagnostics.retry_profile_hooks()) profile_hook_retry_active = false;
             }
         }
         if (sampled) {

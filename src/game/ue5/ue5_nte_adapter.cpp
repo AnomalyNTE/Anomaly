@@ -17563,6 +17563,33 @@ bool Ue5NteAdapter::Start(
     return false;
 }
 
+bool Ue5NteAdapter::AttachHooks(
+    const bool framework_hook_ready,
+    const bool process_event_hook_ready,
+    const bool actor_process_event_ready) {
+    const auto state = state_;
+    // Called from a maintenance worker, so neither lock may block it for long: Stop holds the
+    // lifecycle lock while it drains callbacks, and the game thread holds the state lock for
+    // the whole tick. Failing here just means the retry tries again on its next pass.
+    std::unique_lock<std::timed_mutex> lifecycle_lock(state->lifecycle_mutex, std::defer_lock);
+    if (!lifecycle_lock.try_lock()) return false;
+    if (state->stopping.load(std::memory_order_acquire) ||
+        !state->started.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::unique_lock<std::timed_mutex> lock(state->mutex, std::defer_lock);
+    if (!lock.try_lock_for(std::chrono::milliseconds(50))) return false;
+    if (framework_hook_ready && !state->framework_hook_ready) {
+        state->framework_hook_ready = true;
+        static_cast<void>(state->EnsureNavigationInputPolicyLocked());
+    }
+    if (process_event_hook_ready) state->process_event_hook_ready = true;
+    if (actor_process_event_ready) state->ahud_hook_ready = true;
+    // PublishIfMissing keeps already published tables untouched, so the services that were
+    // available before the hooks came up stay exactly as they were.
+    return state->PublishAvailableServices(state);
+}
+
 bool Ue5NteAdapter::Stop(std::chrono::milliseconds timeout) noexcept {
     const auto state = state_;
     const auto bounded_timeout =

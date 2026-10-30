@@ -701,6 +701,12 @@ DWORD RunPlatform(const std::shared_ptr<CoreContext>& context, std::stop_token s
         const auto runtime = weak.lock();
         return runtime ? runtime->Hooks() : std::vector<anomaly::HookRecordView>{};
     };
+    diagnostics.retry_profile_hooks =
+        [weak = std::weak_ptr<anomaly::NteProfileRuntime>(context->profile_runtime)] {
+            const auto runtime = weak.lock();
+            // A settled retry (or a runtime that is already gone) stops the worker polling.
+            return runtime == nullptr || runtime->RetryPendingHooks();
+        };
     diagnostics.repository_snapshot =
         [weak = std::weak_ptr<anomaly::RepositoryCoordinator>(context->repository)] {
             const auto repository = weak.lock();

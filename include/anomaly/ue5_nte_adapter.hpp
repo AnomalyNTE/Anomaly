@@ -107,6 +107,14 @@ public:
         bool framework_hook_ready,
         bool ahud_hook_ready = false,
         bool process_event_hook_ready = false);
+    // Republishes services after framework hooks only came up later than Start. Every flag
+    // may only turn from false to true, and already published tables stay untouched, so this
+    // is safe to call repeatedly instead of restarting the adapter (which would revoke and
+    // republish every service table and disturb loaded plugins).
+    [[nodiscard]] bool AttachHooks(
+        bool framework_hook_ready,
+        bool process_event_hook_ready,
+        bool actor_process_event_ready);
     // Closes cached service tables, detaches callbacks, and revokes registry
     // entries before draining state/callback work. Callback target destruction
     // is deferred off the lifecycle caller. A false result keeps the generation

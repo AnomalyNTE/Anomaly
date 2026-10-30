@@ -1189,6 +1189,238 @@ public:
         }
     }
 
+    GameTickHook::Callback MakeTickCallback(
+        Ue5DamageFunctionHook* damage_hook, const void* event_target) {
+        return [weak = std::weak_ptr<Ue5NteAdapter>(adapter_),
+                evidence = tick_evidence_gate_, damage_hook,
+                event_target](double delta) {
+            const auto started_at = std::chrono::steady_clock::now();
+            // Keep the adapter generation alive through evidence
+            // observation. This also protects the service tables if
+            // process-quarantine bookkeeping allocation ever fails.
+            const auto adapter = weak.lock();
+            if (adapter) {
+                adapter->OnGameTick(delta);
+                if (damage_hook != nullptr && !damage_hook->Attempted() &&
+                    event_target != nullptr && adapter->CombatFeatureAvailable()) {
+                    const auto exec_targets = adapter->CombatExecFunctionTargets();
+                    if (exec_targets.discovery_complete) {
+                        Ue5DamageFunctionTargets targets;
+                        targets.character_on_damaged = const_cast<void*>(event_target);
+                        targets.combat_exec_function_count = exec_targets.count;
+                        for (std::size_t index{}; index < exec_targets.count; ++index) {
+                            targets.combat_exec_functions[index] = {
+                                reinterpret_cast<void*>(
+                                    exec_targets.entries[index].function),
+                                reinterpret_cast<void*>(
+                                    exec_targets.entries[index].target)};
+                        }
+                        static_cast<void>(damage_hook->Start(targets));
+                    }
+                }
+            }
+            if (evidence) {
+                const double duration_micros =
+                    std::chrono::duration<double, std::micro>(
+                        std::chrono::steady_clock::now() - started_at).count();
+                evidence->Observe(GetCurrentThreadId(), duration_micros);
+            }
+        };
+    }
+
+    // GameTick drives every other framework hook: ProcessEvent and AActor ProcessEvent are
+    // only installed after it, so a failed tick hook leaves them untried as well. These two
+    // helpers are the same install steps Start performs, kept reusable for the retry path.
+    bool NeedsProcessEventHook() const {
+        return profile_.has_value() && resolution_ != nullptr &&
+            profile_->features.contains(std::string(kUe5ProcessEventFeature));
+    }
+
+    bool NeedsActorProcessEventHook() const {
+        return profile_.has_value() && resolution_ != nullptr &&
+            profile_->features.contains(std::string(kUe5ActorProcessEventFeature));
+    }
+
+    // report=false is used by the retry path: repeating a failure note every retry would grow
+    // the diagnostics list for the whole session.
+    bool InstallProcessEventHook(const bool report = true) {
+        const auto note = [this, report](const char* text) {
+            if (report) diagnostics_.push_back(text);
+        };
+        if (process_event_hook_ready_) return true;
+        if (!NeedsProcessEventHook()) return false;
+        const auto* const process_event = resolution_->FindSymbol(kUe5ProcessEventSymbol);
+        if (!resolution_->FeatureAvailable(kUe5ProcessEventFeature) ||
+            process_event == nullptr || !process_event->Available()) {
+            note("optional ProcessEvent capabilities unavailable: gate failed");
+            return false;
+        }
+        try {
+            process_event_hook_ = std::make_unique<Ue5ProcessEventHook>(
+                [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
+                    const std::uintptr_t object,
+                    const std::uintptr_t function,
+                    void* const parameters,
+                    const Ue5ProcessEventInvoker& original) {
+                    const auto adapter = weak.lock();
+                    if (adapter) {
+                        adapter->OnProcessEvent(object, function, parameters, original);
+                    }
+                },
+                [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
+                    const std::uintptr_t object,
+                    const std::uintptr_t function,
+                    void* const parameters) {
+                    const auto adapter = weak.lock();
+                    if (adapter) {
+                        adapter->OnProcessEventPre(object, function, parameters);
+                    }
+                });
+            process_event_hook_ready_ =
+                process_event_hook_->Start(reinterpret_cast<void*>(process_event->address));
+            if (!process_event_hook_ready_) {
+                note("ProcessEvent hook activation failed");
+            }
+        } catch (...) {
+            process_event_hook_.reset();
+            note("ProcessEvent hook allocation failed");
+        }
+        return process_event_hook_ready_;
+    }
+
+    bool InstallActorProcessEventHook(const bool report = true) {
+        const auto note = [this, report](const char* text) {
+            if (report) diagnostics_.push_back(text);
+        };
+        if (actor_process_event_ready_) return true;
+        if (!NeedsActorProcessEventHook()) return false;
+        const auto* const actor_process_event =
+            resolution_->FindSymbol(kUe5ActorProcessEventSymbol);
+        if (!resolution_->FeatureAvailable(kUe5ActorProcessEventFeature) ||
+            actor_process_event == nullptr || !actor_process_event->Available()) {
+            note("optional AActor ProcessEvent capabilities unavailable: gate failed");
+            return false;
+        }
+        try {
+            actor_process_event_hook_ = std::make_unique<Ue5ActorProcessEventHook>(
+                [weak = std::weak_ptr<Ue5NteAdapter>(adapter_),
+                  invoker = process_event_invoker_](
+                    const std::uintptr_t object,
+                    const std::uintptr_t function,
+                    void* const parameters) {
+                    const auto adapter = weak.lock();
+                    if (adapter) {
+                        adapter->OnProcessEvent(object, function, parameters, invoker);
+                    }
+                });
+            actor_process_event_ready_ =
+                actor_process_event_hook_->Start(
+                    reinterpret_cast<void*>(actor_process_event->address));
+            if (!actor_process_event_ready_) {
+                note("Actor ProcessEvent hook activation failed");
+            }
+        } catch (...) {
+            actor_process_event_hook_.reset();
+            note("Actor ProcessEvent hook allocation failed");
+        }
+        return actor_process_event_ready_;
+    }
+
+    // A failed game tick hook leaves the whole framework service set unpublished, and the
+    // adapter stores that verdict once at Start. Retrying the hooks here and then asking the
+    // adapter to publish again is the only path that recovers without a re-injection.
+    bool RetryPendingHooks() noexcept {
+        std::scoped_lock lock(mutex_);
+        if (!started_ || stopping_ || quarantined_) return true;
+        const bool tick_pending = !tick_hook_ready_ && tick_retry_target_ != 0;
+        // A gate that is permanently unavailable is not retryable: waiting on it would keep
+        // the platform worker polling for the whole session.
+        const bool process_event_pending = !process_event_hook_ready_ &&
+            NeedsProcessEventHook() &&
+            resolution_->FeatureAvailable(kUe5ProcessEventFeature);
+        const bool actor_pending = !actor_process_event_ready_ &&
+            NeedsActorProcessEventHook() &&
+            resolution_->FeatureAvailable(kUe5ActorProcessEventFeature);
+        if (!tick_pending && !process_event_pending && !actor_pending) return true;
+        // Backoff keeps a target that stays protected from costing anything measurable: the
+        // caller polls every second, but a real installation attempt only happens at 1, 2,
+        // 4, ... seconds and then at most every 30 seconds.
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_tick_retry_) return false;
+        try {
+            if (tick_pending) {
+                // Reusing the hook object keeps the successful path allocation-free. A backend
+                // that could not roll back a failed generation reports the target as owned and
+                // rejects every later attempt, so rebuild the object now and then.
+                if (!tick_hook_ || tick_retry_attempts_ % kTickRetryRebuildAfter == 0) {
+                    tick_hook_.reset();
+                    tick_hook_ = std::make_unique<GameTickHook>(MakeTickCallback(
+                        damage_function_hook_.get(),
+                        reinterpret_cast<const void*>(tick_retry_event_target_)));
+                }
+                ++tick_retry_attempts_;
+                if (!tick_hook_->Start(reinterpret_cast<void*>(tick_retry_target_))) {
+                    next_tick_retry_ = now + tick_retry_backoff_;
+                    tick_retry_backoff_ = (std::min)(
+                        tick_retry_backoff_ * 2, kTickRetryMaximumBackoff);
+                    return false;
+                }
+                tick_hook_ready_ = true;
+                tick_retry_target_ = 0;
+                tick_retry_attempts_ = 0;
+                diagnostics_.push_back("game tick hook retry succeeded");
+            }
+            // ProcessEvent only exists once the game tick runs, so these are installed after a
+            // successful tick retry in the same pass. Repeated failures stay out of the
+            // diagnostics list; the retry keeps running regardless.
+            static_cast<void>(InstallProcessEventHook(false));
+            static_cast<void>(InstallActorProcessEventHook(false));
+            // Evidence() and the diagnostics JSON report this flag, so it has to follow the
+            // adapter instead of staying at the value Start recorded.
+            ahud_hook_ready_ = actor_process_event_ready_;
+            // A hook that came up is useless until the adapter republishes its services, so a
+            // rejected republication keeps the retry alive instead of settling.
+            bool published = adapter_ != nullptr;
+            if (adapter_ &&
+                !adapter_->AttachHooks(
+                    tick_hook_ready_, process_event_hook_ready_,
+                    actor_process_event_ready_)) {
+                published = false;
+                if (!republication_failure_reported_) {
+                    republication_failure_reported_ = true;
+                    diagnostics_.push_back("framework services rejected republication");
+                }
+            }
+            // Settled means nothing retryable is left: a feature this Profile never enables,
+            // or a gate that stays unavailable, must not keep the worker polling.
+            const bool tick_pending_now = !tick_hook_ready_ && tick_retry_target_ != 0;
+            const bool process_pending_now = !process_event_hook_ready_ &&
+                NeedsProcessEventHook() &&
+                resolution_->FeatureAvailable(kUe5ProcessEventFeature);
+            const bool actor_pending_now = !actor_process_event_ready_ &&
+                NeedsActorProcessEventHook() &&
+                resolution_->FeatureAvailable(kUe5ActorProcessEventFeature);
+            const bool settled = published &&
+                !tick_pending_now && !process_pending_now && !actor_pending_now;
+            next_tick_retry_ = settled
+                ? std::chrono::steady_clock::time_point{}
+                : now + tick_retry_backoff_;
+            if (!settled) {
+                tick_retry_backoff_ = (std::min)(
+                    tick_retry_backoff_ * 2, kTickRetryMaximumBackoff);
+            } else {
+                tick_retry_backoff_ = kTickRetryInitialBackoff;
+            }
+            return settled;
+        } catch (...) {
+            // An allocating hook install can throw; without a backoff the caller would retry
+            // every second for as long as the condition lasts.
+            next_tick_retry_ = now + tick_retry_backoff_;
+            tick_retry_backoff_ = (std::min)(tick_retry_backoff_ * 2, kTickRetryMaximumBackoff);
+            return false;
+        }
+    }
+
     bool Start(std::stop_token stop_token) {
         std::scoped_lock lock(mutex_);
         if (started_ || stopping_) return false;
@@ -1205,6 +1437,11 @@ public:
         outgoing_transform_probe_.reset();
         tick_hook_ready_ = false;
         ahud_hook_ready_ = false;
+        process_event_hook_ready_ = false;
+        actor_process_event_ready_ = false;
+        tick_retry_target_ = 0;
+        tick_retry_event_target_ = 0;
+        republication_failure_reported_ = false;
         quarantined_ = false;
         module_path_ = ModulePath(options_.game_module);
         std::vector<BuildProfileCatalogLayer> layers;
@@ -1272,6 +1509,7 @@ public:
             process_event_invoker =
                 CreateUe5ProcessEventInvoker(*profile_, *resolution_, *memory_);
         }
+        process_event_invoker_ = process_event_invoker;
         adapter_ = std::make_shared<Ue5NteAdapter>(
             std::move(adapter_context), adapter_profile, *resolution_, memory_,
             ProcessAdapterServices(),
@@ -1325,132 +1563,36 @@ public:
                     options_.tick_evidence_observer);
             }
             tick_hook_ = std::make_unique<GameTickHook>(
-                [weak = std::weak_ptr<Ue5NteAdapter>(adapter_),
-                  evidence = tick_evidence_gate_, damage_hook,
-                  event_target](double delta) {
-                    const auto started_at = std::chrono::steady_clock::now();
-                    // Keep the adapter generation alive through evidence
-                    // observation. This also protects the service tables if
-                    // process-quarantine bookkeeping allocation ever fails.
-                    const auto adapter = weak.lock();
-                    if (adapter) {
-                        adapter->OnGameTick(delta);
-                        if (damage_hook != nullptr && !damage_hook->Attempted() &&
-                            event_target != nullptr && adapter->CombatFeatureAvailable()) {
-                            const auto exec_targets = adapter->CombatExecFunctionTargets();
-                            if (exec_targets.discovery_complete) {
-                                Ue5DamageFunctionTargets targets;
-                                targets.character_on_damaged = const_cast<void*>(event_target);
-                                targets.combat_exec_function_count = exec_targets.count;
-                                for (std::size_t index{}; index < exec_targets.count; ++index) {
-                                    targets.combat_exec_functions[index] = {
-                                        reinterpret_cast<void*>(
-                                            exec_targets.entries[index].function),
-                                        reinterpret_cast<void*>(
-                                            exec_targets.entries[index].target)};
-                                }
-                                static_cast<void>(damage_hook->Start(targets));
-                            }
-                        }
-                    }
-                    if (evidence) {
-                        const double duration_micros =
-                            std::chrono::duration<double, std::micro>(
-                                std::chrono::steady_clock::now() - started_at).count();
-                        evidence->Observe(GetCurrentThreadId(), duration_micros);
-                    }
-                });
+                MakeTickCallback(damage_hook, event_target));
             hook_ready = tick_hook_->Start(reinterpret_cast<void*>(tick->address));
-            if (!hook_ready) diagnostics_.push_back("game tick hook activation failed");
+            if (!hook_ready) {
+                // Keep the target so a later maintenance pass can install the hook without
+                // restarting the runtime; nothing else publishes the framework services.
+                tick_retry_target_ = tick->address;
+                tick_retry_event_target_ = reinterpret_cast<std::uintptr_t>(event_target);
+                diagnostics_.push_back("game tick hook activation failed");
+            }
         }
         bool ahud_hook_ready{};
         bool process_event_hook_ready{};
-        const auto* const process_event =
-            resolution_->FindSymbol(kUe5ProcessEventSymbol);
         // ProcessEvent is a shared framework ingress. It is activated once by
         // the runtime and fanned out to all SDK subscribers.
-        const bool needs_process_event = profile_ &&
-            profile_->features.contains(std::string(kUe5ProcessEventFeature));
+        const bool needs_process_event = NeedsProcessEventHook();
         if (needs_process_event) {
             if (!hook_ready) {
                 diagnostics_.push_back(
                     "optional ProcessEvent capabilities unavailable: game tick hook failed");
-            } else if (!resolution_->FeatureAvailable(kUe5ProcessEventFeature) ||
-                process_event == nullptr || !process_event->Available()) {
-                diagnostics_.push_back(
-                    "optional ProcessEvent capabilities unavailable: gate failed");
             } else {
-                try {
-                    process_event_hook_ = std::make_unique<Ue5ProcessEventHook>(
-                        [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
-                            const std::uintptr_t object,
-                            const std::uintptr_t function,
-                            void* const parameters,
-                            const Ue5ProcessEventInvoker& original) {
-                            const auto adapter = weak.lock();
-                            if (adapter) {
-                                adapter->OnProcessEvent(
-                                    object, function, parameters, original);
-                            }
-                        },
-                        [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
-                            const std::uintptr_t object,
-                            const std::uintptr_t function,
-                            void* const parameters) {
-                            const auto adapter = weak.lock();
-                            if (adapter) {
-                                adapter->OnProcessEventPre(object, function, parameters);
-                            }
-                        });
-                    process_event_hook_ready = process_event_hook_->Start(
-                        reinterpret_cast<void*>(process_event->address));
-                    if (!process_event_hook_ready) {
-                        diagnostics_.push_back(
-                            "ProcessEvent hook activation failed");
-                    }
-                } catch (...) {
-                    process_event_hook_.reset();
-                    diagnostics_.push_back("ProcessEvent hook allocation failed");
-                }
+                process_event_hook_ready = InstallProcessEventHook();
             }
         }
-        const auto* const actor_process_event =
-            resolution_->FindSymbol(kUe5ActorProcessEventSymbol);
-        const bool needs_actor_process_event = profile_ &&
-            profile_->features.contains(std::string(kUe5ActorProcessEventFeature));
+        const bool needs_actor_process_event = NeedsActorProcessEventHook();
         if (needs_actor_process_event) {
             if (!hook_ready) {
                 diagnostics_.push_back(
                     "optional AActor ProcessEvent capabilities unavailable: game tick hook failed");
-            } else if (!resolution_->FeatureAvailable(kUe5ActorProcessEventFeature) ||
-                actor_process_event == nullptr || !actor_process_event->Available()) {
-                diagnostics_.push_back(
-                    "optional AActor ProcessEvent capabilities unavailable: gate failed");
             } else {
-                try {
-                    actor_process_event_hook_ =
-                        std::make_unique<Ue5ActorProcessEventHook>(
-                            [weak = std::weak_ptr<Ue5NteAdapter>(adapter_),
-                              invoker = process_event_invoker](
-                                const std::uintptr_t object,
-                                const std::uintptr_t function,
-                                void* const parameters) {
-                                const auto adapter = weak.lock();
-                                if (adapter) {
-                                    adapter->OnProcessEvent(
-                                        object, function, parameters, invoker);
-                                }
-                            });
-                    ahud_hook_ready = actor_process_event_hook_->Start(
-                        reinterpret_cast<void*>(actor_process_event->address));
-                    if (!ahud_hook_ready) {
-                        diagnostics_.push_back(
-                            "Actor ProcessEvent hook activation failed");
-                    }
-                } catch (...) {
-                    actor_process_event_hook_.reset();
-                    diagnostics_.push_back("Actor ProcessEvent hook allocation failed");
-                }
+                ahud_hook_ready = InstallActorProcessEventHook();
             }
             if (ahud_hook_ready && !resolution_->FeatureAvailable(kAhudFeature)) {
                 diagnostics_.push_back(
@@ -1493,6 +1635,8 @@ public:
         } else {
             tick_hook_ready_ = hook_ready;
             ahud_hook_ready_ = ahud_hook_ready;
+            process_event_hook_ready_ = process_event_hook_ready;
+            actor_process_event_ready_ = ahud_hook_ready;
             if (damage_hook != nullptr && event_target == nullptr) {
                 diagnostics_.push_back(
                     "character damage event hook target unavailable");
@@ -2021,6 +2165,21 @@ private:
     bool quarantined_{};
     bool tick_hook_ready_{};
     bool ahud_hook_ready_{};
+    bool process_event_hook_ready_{};
+    bool actor_process_event_ready_{};
+    Ue5NteAdapter::ProcessEventInvoker process_event_invoker_{};
+    // Game tick hook target kept when installation failed, so a maintenance pass can retry.
+    std::uintptr_t tick_retry_target_{};
+    std::uintptr_t tick_retry_event_target_{};
+    static constexpr std::chrono::milliseconds kTickRetryInitialBackoff{1000};
+    static constexpr std::chrono::milliseconds kTickRetryMaximumBackoff{30000};
+    // A hook generation that cannot be rolled back blocks its own target, so the retry
+    // rebuilds the hook object every few attempts instead of once per attempt.
+    static constexpr std::uint32_t kTickRetryRebuildAfter{8};
+    std::chrono::steady_clock::time_point next_tick_retry_{};
+    std::chrono::milliseconds tick_retry_backoff_{kTickRetryInitialBackoff};
+    std::uint32_t tick_retry_attempts_{};
+    bool republication_failure_reported_{};
     std::filesystem::path module_path_;
     BuildProfileCatalogSnapshot catalog_;
     std::optional<BuildProfile> profile_;
@@ -2050,6 +2209,7 @@ bool NteProfileRuntime::Start(std::stop_token stop_token) noexcept {
 bool NteProfileRuntime::Stop(std::chrono::milliseconds timeout) noexcept {
     return impl_->Stop(timeout);
 }
+bool NteProfileRuntime::RetryPendingHooks() noexcept { return impl_->RetryPendingHooks(); }
 bool NteProfileRuntime::Started() const noexcept { return impl_->Started(); }
 std::optional<BuildFingerprint> NteProfileRuntime::Fingerprint() const { return impl_->Fingerprint(); }
 std::shared_ptr<const ProfileResolutionSnapshot> NteProfileRuntime::Resolution() const {

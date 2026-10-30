@@ -61,6 +61,11 @@ public:
     // is retained in process quarantine so Runtime shutdown can continue.
     bool Stop(
         std::chrono::milliseconds timeout = std::chrono::seconds(5)) noexcept;
+    // Retries a game tick hook that failed during Start. A caller on a worker thread drives
+    // this periodically; on success the framework-gated services are published immediately,
+    // so plugins waiting for them do not need a re-injection. Returns true when no retry is
+    // outstanding or the hook is now running.
+    bool RetryPendingHooks() noexcept;
 
     [[nodiscard]] bool Started() const noexcept;
     [[nodiscard]] std::optional<BuildFingerprint> Fingerprint() const;

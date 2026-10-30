@@ -58,6 +58,10 @@ struct PlatformDiagnostics {
     std::function<std::string()> profile_json;
     std::function<anomaly::NteCompatibilitySnapshot()> nte_compatibility;
     std::function<std::vector<anomaly::HookRecordView>()> hooks;
+    // Driven by the platform worker: retries a game tick hook that failed during runtime
+    // startup and republishes the framework services once it comes up. Returns true when the
+    // retry is settled, which lets the worker drop the callback and stop polling.
+    std::function<bool()> retry_profile_hooks;
     std::function<anomaly::RepositoryCoordinatorSnapshot()> repository_snapshot;
     std::function<anomaly::RepositoryOperationSubmission()> repository_refresh;
     std::function<anomaly::RepositoryOperationSubmission(
