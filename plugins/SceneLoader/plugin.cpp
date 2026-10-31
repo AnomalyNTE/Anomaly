@@ -12,9 +12,17 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "plugins/common/localization.hpp"
 #include "access.hpp"
 #include "model.hpp"
 namespace {
+// English fallbacks live in the code; the zh-CN catalog is plugins/SceneLoader/locales/zh-CN.json.
+anomaly::plugins::Localizer localizer;
+std::string T(const char* key,const char* fallback) {return localizer.Text(key,fallback);}
+std::string T(const scene::Text& text) {return text.key?localizer.Text(text.key,text.fallback):std::string{};}
+std::string F(const char* key,const char* fallback,std::initializer_list<std::string_view> arguments) {
+    return localizer.Format(key,fallback,std::span<const std::string_view>(arguments.begin(),arguments.size()));
+}
 const AnomalyUe5NamesServiceV1* names{};
 const AnomalyUe5ObjectsServiceV1* objects{};
 const AnomalyUe5FrameworkServiceV1* framework{};
@@ -52,7 +60,7 @@ std::atomic<std::shared_ptr<const Request>> pending;
 std::atomic_bool shown{},refresh{};
 scene::Transition transition;
 Clock::time_point next_tick{},next_catalog{};
-std::string message="正在读取游戏场景。",current_scene;
+std::string message,current_scene;
 int selected{},selected_route{},category{},fallback_open{1};
 bool only_available{true};
 std::array<char,128> filter{};
@@ -190,7 +198,7 @@ void BuildCatalog(const Reader& r,uintptr_t util) {
             if(entry.type==2 && r.Read(row.data+112,extension) && r.Read(row.data+120,data) && extension && data &&
                r.NameAt(extension+24)=="SingleLevelExtensionData" && r.Property(extension,"EnterTransformID",80,8)) {
                 FName entrance{};
-                if(r.Read(data+80,entrance) && entrance.id) entry.routes.push_back({row.key,scene::RouteKind::Single,0,1,"默认入口"});
+                if(r.Read(data+80,entrance) && entrance.id) entry.routes.push_back({row.key,scene::RouteKind::Single,0,1,T("route.default","Default entrance")});
                 if(r.Property(extension,"ExitMapName",0,16) && r.Property(extension,"Translation",40,24) &&
                    WideString(r,data)==big_world && r.Read(data+40,entry.exit_position)) entry.exit_to_world=true;
             }
@@ -224,7 +232,8 @@ void BuildCatalog(const Reader& r,uintptr_t util) {
                 r.Read(nodes.data+124,difficulty);
             if(difficulty<1) difficulty=1;
             auto label=Text(r,row.data+0x38);if(label.empty()) label=r.Name(id);
-            entry->routes.push_back({id,scene::RouteKind::Clone,type,difficulty,label+" / 难度 "+std::to_string(difficulty)});
+            entry->routes.push_back({id,scene::RouteKind::Clone,type,difficulty,
+                F("route.difficulty","{0} / Difficulty {1}",{label,std::to_string(difficulty)})});
         }
         return;
     }
@@ -235,9 +244,9 @@ void BuildCatalog(const Reader& r,uintptr_t util) {
     Log("scene-loader catalog scenes="+std::to_string(building->scenes.size())+" available="+std::to_string(available));
     std::string listed;
     for(const auto& entry:building->scenes) if(scene::CanEnter(entry.type,!entry.routes.empty()))
-        listed+=(listed.empty()?"":", ")+entry.key+"|"+scene::TypeName(entry.type)+"|"+entry.title;
+        listed+=(listed.empty()?"":", ")+entry.key+"|"+scene::TypeName(entry.type).fallback+"|"+entry.title;
     Log("scene-loader available scenes: "+listed);
-    message="选择场景与入口后点击切换。";catalog=building;building={};
+    message=T("status.ready","Select a scene and an entrance, then switch.");catalog=building;building={};
 }
 const Entry* CurrentEntry() {
     const auto data=catalog?catalog:building;
@@ -331,29 +340,29 @@ bool DismissSceneError(const Reader& r,uintptr_t pc) {
 bool ForceReturn(const Reader& r,uintptr_t ps,uintptr_t pc,uint64_t now) {
     const auto* entry=CurrentEntry();
     if(entry && (entry->type==1 || entry->type==4)) {
-        force_return=false;return_queued_at=0;message="已退到主界面，请先重新登录游戏。";return false;
+        force_return=false;return_queued_at=0;message=T("status.at_login","Back at the main menu; sign in to the game again first.");return false;
     }
     if(!r.IsA(pc,"HTPlayerController") || !r.IsA(ps,"HTPlayerState") || big_world.empty() || return_points.empty()) {
-        message="返回请求已保留，正在等待玩家控制器和大世界入口。";return false;
+        message=T("status.return_waiting","Return request kept; waiting for the player controller and a big-world entrance.");return false;
     }
     std::array<double,3> anchor=last_world_position;
     if(!have_world_position && entry && entry->exit_to_world) anchor=entry->exit_position;
     std::vector<std::array<double,3>> positions;for(const auto& point:return_points) positions.push_back(point.position);
     size_t pick=have_world_position || (entry && entry->exit_to_world)?scene::Nearest(positions,anchor):0;
-    if(pick>=return_points.size()) {force_return=false;message="未找到有效的大世界返回位置。";return false;}
+    if(pick>=return_points.size()) {force_return=false;message=T("status.return_no_point","No valid big-world return position was found.");return false;}
     // Use the game's ForceTransfer_FadeOut mode. Single-level exit also clears
     // its scene-specific state before invoking the configured destination transfer.
     struct Args {FName id;uint8_t loading;} args{return_points[pick].id,3};
     const bool single=entry && entry->type==2;
     const auto fn=Fn(r,"HTGame",single?"HTPlayerState":"HTPlayerController",
         single?"RequestExitSingleLevelScene":"K2_ServerRequestCustomTransfer",2,9);
-    if(!fn) {force_return=false;message="当前版本的返回接口不可用。";return false;}
+    if(!fn) {force_return=false;message=T("status.return_unavailable","The return function is not available in this game version.");return false;}
     pending.store({});return_ack=0;return_entrance=NameKey(args.id);
     transition.Recover(current_scene,big_world,now);force_return=false;return_queued_at=0;
     // The single-level exit goes through the very RPC that may be held; let it through.
     ReleaseExitHold();
-    if(!Invoke(r,single?ps:pc,fn,&args)) {transition.busy=false;return_entrance=0;message="返回请求未能发送。";return false;}
-    message="已发起强制返回大世界。";
+    if(!Invoke(r,single?ps:pc,fn,&args)) {transition.busy=false;return_entrance=0;message=T("status.return_send_failed","The return request could not be sent.");return false;}
+    message=T("status.return_sent","Force return to the big world requested.");
     Log("scene-loader force return from="+current_scene+" target="+big_world+" entrance="+r.Name(args.id));return true;
 }
 #pragma pack(push,1)
@@ -384,16 +393,16 @@ void ReadLayers(const Reader& r,uintptr_t world) {
     const auto manager=LayerManager(r,world);
     const auto list_fn=Fn(r,"Engine","DataLayerManager","GetDataLayerInstances",1,16);
     const auto state_fn=Fn(r,"Engine","DataLayerManager","GetDataLayerInstanceRuntimeState",2,9);
-    if(!manager || !list_fn || !state_fn) {SetLayerSnapshot({},"当前场景没有可用的数据层管理器。");return;}
+    if(!manager || !list_fn || !state_fn) {SetLayerSnapshot({},T("layers.no_manager","This scene has no usable data layer manager."));return;}
     // The returned TArray is a copy allocated by the game and is not freed here: one small
     // allocation per manual refresh. The zeroed buffer keeps the game's assignment from freeing garbage.
     RowArray list{};
     if(!Invoke(r,manager,list_fn,&list) || list.count<0 || list.count>1024 || (list.count && !list.data)) {
-        SetLayerSnapshot({},"读取数据层失败。");return;
+        SetLayerSnapshot({},T("layers.read_failed","Could not read the data layers."));return;
     }
     std::vector<uintptr_t> instances(static_cast<size_t>(list.count));
     if(list.count && core->read_memory(core->user,list.data,{reinterpret_cast<uint8_t*>(instances.data()),instances.size()*sizeof(uintptr_t)}).code!=0) {
-        SetLayerSnapshot({},"读取数据层失败。");return;
+        SetLayerSnapshot({},T("layers.read_failed","Could not read the data layers."));return;
     }
     std::vector<LayerRow> rows;
     for(const auto instance:instances) {
@@ -408,7 +417,7 @@ void ReadLayers(const Reader& r,uintptr_t world) {
     std::sort(rows.begin(),rows.end(),[](const auto& a,const auto& b) {return a.asset<b.asset;});
     size_t active{};for(const auto& row:rows) if(row.state==2) ++active;
     const auto total=rows.size();
-    SetLayerSnapshot(std::move(rows),"共 "+std::to_string(total)+" 个数据层，已激活 "+std::to_string(active)+" 个。");
+    SetLayerSnapshot(std::move(rows),F("layers.summary","{0} data layers, {1} activated.",{std::to_string(total),std::to_string(active)}));
 }
 // Neither HTPlayerState RPC is reachable through find_exact in this build, so walk the object
 // table for them by name, chunked across ticks. One pass resolves both. Returns true when done.
@@ -485,11 +494,11 @@ bool SendLayerMessage(const Reader& r,uintptr_t ps,uintptr_t rpc,const std::stri
 void StepLayers(const Reader& r,uintptr_t world,uintptr_t ps,uint64_t now) {
     if(layer_job==LayerJob::Read) {layer_job=LayerJob::None;ReadLayers(r,world);return;}
     if(layer_job!=LayerJob::Send) return;
-    if(!ps) {SetLayerMessage("正在等待玩家状态…",true);return;}
+    if(!ps) {SetLayerMessage(T("layers.waiting_player","Waiting for the player state…"),true);return;}
     bool scanning=false;const auto rpc=LayerRpc(r,scanning);
     if(!rpc) {
-        if(scanning) {SetLayerMessage("正在定位 ClientDataLayerRPC（首次约十秒）…",true);return;}
-        layer_job=LayerJob::None;layer_commands.clear();SetLayerMessage("当前版本找不到 ClientDataLayerRPC。",false);return;
+        if(scanning) {SetLayerMessage(T("layers.locating_rpc","Locating ClientDataLayerRPC (about ten seconds the first time)…"),true);return;}
+        layer_job=LayerJob::None;layer_commands.clear();SetLayerMessage(T("layers.rpc_missing","ClientDataLayerRPC is not available in this game version."),false);return;
     }
     size_t opened{},closed{};
     for(const auto& command:layer_commands) if(SendLayerMessage(r,ps,rpc,command.instance,command.type))
@@ -497,7 +506,7 @@ void StepLayers(const Reader& r,uintptr_t world,uintptr_t ps,uint64_t now) {
     Log("scene-loader layer messages scene="+current_scene+" open="+std::to_string(opened)+" close="+std::to_string(closed)+
         " of "+std::to_string(layer_commands.size()));
     layer_job=LayerJob::None;layer_commands.clear();layer_recheck_at=now+1000;
-    SetLayerMessage("已发送：打开 "+std::to_string(opened)+"、关闭 "+std::to_string(closed)+"，正在刷新状态…",true);
+    SetLayerMessage(F("layers.sent","Sent: {0} opened, {1} closed; refreshing…",{std::to_string(opened),std::to_string(closed)}),true);
 }
 void Publish(bool ready) {
     auto view=std::make_shared<View>();view->catalog=catalog;view->layers=layer_snapshot;view->current=current_scene;view->message=message;
@@ -506,12 +515,13 @@ void Publish(bool ready) {
 bool EnsureWindow() {
     if(window.id) return true;
     if(!windows || !windows->register_window || !windows->begin || !windows->end || !windows->state) return false;
-    AnomalyWindowSpecV1 spec{};spec.struct_size=sizeof(spec);spec.id=StringView("scene-loader-main");spec.title=StringView("场景加载器");
+    const auto title=T("window.title","Scene Loader");
+    AnomalyWindowSpecV1 spec{};spec.struct_size=sizeof(spec);spec.id=StringView("scene-loader-main");spec.title=StringView(title);
     spec.initial_width=560;spec.initial_height=570;spec.minimum_width=360;spec.minimum_height=350;spec.maximum_width=950;spec.maximum_height=950;spec.default_open=1;
     return windows->register_window(windows->user,&spec,&window).code==0 && window.id;
 }
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host,void** context) noexcept {
-    api=host;core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
+    api=host;localizer=anomaly::plugins::Localizer(host);core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
     names=Host(host).Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID,2).get();
     objects=Host(host).Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get();
     framework=Host(host).Query<AnomalyUe5FrameworkServiceV1>(ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID).get();
@@ -529,7 +539,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) noexcept {
     layer_snapshot={};layer_generation=layer_recheck_at=0;layer_refresh=false;layer_request.store({});layer_job=LayerJob::None;
     layer_commands.clear();layer_rpc={};rpc_scan_cursor=0;
     exit_rpc={};exit_hold_unavailable=false;exit_swallowed=0;exit_reported=0;
-    fallback_open=1;filter={};only_available=true;message="正在读取游戏场景。";Publish(false);EnsureWindow();return Ok();
+    fallback_open=1;filter={};only_available=true;message=T("status.reading","Reading the game's scenes.");Publish(false);EnsureWindow();return Ok();
 }
 AnomalyStatusV1 ANOMALY_CALL Stop(void*,uint32_t) noexcept {
     ReleaseExitHold();
@@ -547,12 +557,12 @@ void ANOMALY_CALL Update(void*,double) noexcept {
            layer_job==LayerJob::None && !layer_recheck_at && !layer_refresh.load() && !layer_request.load() && !exit_held) return;
         if(Clock::now()<next_tick) return;next_tick=Clock::now()+std::chrono::milliseconds(100);
         if(!core || !names || !objects || !framework || !framework->is_game_thread || !framework->is_game_thread(framework->user)) return;
-        const Reader r{names};if(!Initialize(r,objects)) {message="正在等待游戏接口。";Publish(false);return;}
+        const Reader r{names};if(!Initialize(r,objects)) {message=T("status.waiting_game","Waiting for the game interfaces.");Publish(false);return;}
         const auto world=World(r),util=Find(r,"/Script/HTGame.Default__HTUtil");
         const auto now=static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
         if(force_return.load()) {
             if(!return_queued_at) {pending.store({});transition.busy=false;return_queued_at=now;}
-            if(now-return_queued_at>=5000) {force_return=false;return_queued_at=0;message="返回入口未就绪，已取消等待；普通场景切换可以继续使用。";}
+            if(now-return_queued_at>=5000) {force_return=false;return_queued_at=0;message=T("status.return_timeout","The return entrance is not ready, so the wait was cancelled; normal scene switching still works.");}
             if(force_return.load() && ForceReturn(r,Resolve(r,objects,cached_ps),Resolve(r,objects,cached_pc),now)) {Publish(false);return;}
         } else return_queued_at=0;
         if(!world || !util) {Publish(false);return;}
@@ -578,9 +588,9 @@ void ANOMALY_CALL Update(void*,double) noexcept {
         if(dismiss_error.exchange(false)) {
             if(ready && DismissSceneError(r,pc[1])) {
                 pending.store({});force_return=false;return_queued_at=0;transition.busy=false;return_entrance=return_ack=0;
-                message="已关闭场景错误提示，请检查角色能否正常操作。";Publish(ready);return;
+                message=T("status.error_dismissed","Closed the scene error dialog; check that the character can move.");Publish(ready);return;
             }
-            message="未找到可关闭的场景连接错误提示。";Publish(ready);return;
+            message=T("status.error_not_found","There is no scene connection error dialog to close.");Publish(ready);return;
         }
         const auto* current=CurrentEntry();
         if(current && (current->type==1 || current->type==4)) {cached_ps=cached_pc={};observed_ps=0;}
@@ -589,9 +599,9 @@ void ANOMALY_CALL Update(void*,double) noexcept {
         }
         if(transition.busy) {
             const auto state=transition.Check(current_scene,now,return_ack.load()!=0);
-            if(state==scene::Transition::Result::Arrived) {message="已切换到："+current_scene;Log("scene-loader arrived "+current_scene);}
-            else if(state==scene::Transition::Result::Different) message="当前场景已变为："+current_scene;
-            else if(state==scene::Transition::Result::Timeout) message="未确认切换，请检查该入口是否需要任务或解锁条件。";
+            if(state==scene::Transition::Result::Arrived) {message=F("status.arrived","Switched to: {0}",{current_scene});Log("scene-loader arrived "+current_scene);}
+            else if(state==scene::Transition::Result::Different) message=F("status.changed","The current scene changed to: {0}",{current_scene});
+            else if(state==scene::Transition::Result::Timeout) message=T("status.timeout","Switch not confirmed; check whether this entrance needs a quest or an unlock.");
             if(!transition.busy) return_entrance=return_ack=0;
         }
         const auto send_route=[&](const Request& request)->bool {
@@ -605,18 +615,18 @@ void ANOMALY_CALL Update(void*,double) noexcept {
             return fn && Invoke(r,single?ps[1]:pc[1],fn,&args);
         };
         if(const auto request=pending.exchange({})) {
-            if(!ready || request->from!=current_scene || transition.busy) message="当前场景已变化或正在加载，请重新选择。";
+            if(!ready || request->from!=current_scene || transition.busy) message=T("status.stale_request","The scene changed or is loading; select again.");
             else if(request->target==current_scene) {
                 // Same scene: another entrance is an in-scene teleport, so no transition is
                 // tracked (Begin would refuse current==next anyway).
                 if(send_route(*request)) {
-                    message="已发送场景内入口切换："+request->route.label;
+                    message=F("status.in_scene_sent","In-scene entrance switch sent: {0}",{request->route.label});
                     Log("scene-loader in-scene entrance="+r.Name(request->route.id)+" scene="+current_scene);
-                } else message="该入口切换接口暂不可用。";
+                } else message=T("status.entrance_unavailable","This entrance's switch function is not available.");
             }
             else if(transition.Begin(current_scene,request->target,now)) {
-                if(send_route(*request)) {message="正在请求切换到："+request->target;Log("scene-loader request target="+request->target+" entrance="+r.Name(request->route.id));}
-                else {transition.busy=false;message="该场景切换接口暂不可用。";}
+                if(send_route(*request)) {message=F("status.requesting","Requesting a switch to: {0}",{request->target});Log("scene-loader request target="+request->target+" entrance="+r.Name(request->route.id));}
+                else {transition.busy=false;message=T("status.scene_unavailable","This scene's switch function is not available.");}
             }
         }
         // Hold the exit request while heading to or staying in a scene that sends the player back
@@ -626,17 +636,18 @@ void ANOMALY_CALL Update(void*,double) noexcept {
         else if(!want_hold && exit_held) ReleaseExitHold();
         if(const int swallowed=exit_swallowed.load(); swallowed!=exit_reported) {
             exit_reported=swallowed;
-            message="已拦住场景的自动送回（第 "+std::to_string(swallowed)+" 次）。离开请用「强制返回大世界」。";
+            message=F("status.exit_held","Held the scene's automatic send-back (time {0}). Use \"Force return to big world\" to leave.",
+                {std::to_string(swallowed)});
             Log("scene-loader held exit request count="+std::to_string(swallowed)+" scene="+current_scene);
         }
         if(layer_refresh.exchange(false) && layer_job==LayerJob::None) layer_job=LayerJob::Read;
         if(const auto request=layer_request.exchange({}); request && layer_job==LayerJob::None && !request->empty()) {
-            layer_commands=*request;layer_job=LayerJob::Send;SetLayerMessage("正在发送…",true);
+            layer_commands=*request;layer_job=LayerJob::Send;SetLayerMessage(T("layers.sending","Sending…"),true);
         }
         if(layer_recheck_at && now>=layer_recheck_at) {layer_recheck_at=0;if(layer_job==LayerJob::None) layer_job=LayerJob::Read;}
         if(layer_job!=LayerJob::None) StepLayers(r,world,ready?ps[1]:0,now);
         Publish(ready);
-    } catch(...) {message="场景数据刷新中，请稍后重试。";transition.busy=false;layer_job=LayerJob::None;layer_commands.clear();Publish(false);}
+    } catch(...) {message=T("status.refreshing","Scene data is refreshing; try again shortly.");transition.busy=false;layer_job=LayerJob::None;layer_commands.clear();Publish(false);}
 }
 void LayerContent(const AnomalyUiServiceV1* ui,const View& view) {
     const auto button=[&](const std::string& label,bool enabled) {
@@ -644,12 +655,12 @@ void LayerContent(const AnomalyUiServiceV1* ui,const View& view) {
         return clicked && enabled;
     };
     if(ui->separator) ui->separator(ui->user);
-    ui->text(ui->user,StringView("场景数据层（实验）"));
+    ui->text(ui->user,StringView(T("layers.title","Scene data layers (experimental)")));
     const auto layers=view.layers;
     const bool here=layers && layers->scene==view.current;
     const bool idle=!here || !layers->working;
     if(here && !layers->message.empty()) ui->text(ui->user,StringView(layers->message));
-    if(button("读取当前场景的数据层",view.ready && idle)) layer_refresh=true;
+    if(button(localizer.Label("layers.read","Read this scene's data layers","layers-read"),view.ready && idle)) layer_refresh=true;
     if(!here || layers->rows.empty()) return;
     // Each checkbox mirrors the layer's real state (checked = activated). Ticking sends the open
     // message, unticking the close message; the list is re-read right after, so a change the game
@@ -663,7 +674,7 @@ void LayerContent(const AnomalyUiServiceV1* ui,const View& view) {
     if(!child || ui->begin_child(ui->user,StringView("layer-list"),0,180,0)) {
         for(const auto& row:layers->rows) {
             const bool active=row.state==2;int value=active?1:0;
-            const auto label=row.asset+"  ["+scene::LayerStateName(row.state)+"]##layer-"+row.instance;
+            const auto label=row.asset+"  ["+T(scene::LayerStateName(row.state))+"]##layer-"+row.instance;
             if(!ui->checkbox) {ui->text(ui->user,StringView(label));continue;}
             if(ui->checkbox(ui->user,StringView(label),&value) && can_send && (value!=0)!=active)
                 commands->push_back({row.instance,value?scene::kActivateLayerMessage:scene::kDeactivateLayerMessage});
@@ -671,37 +682,41 @@ void LayerContent(const AnomalyUiServiceV1* ui,const View& view) {
     }
     if(child) ui->end_child(ui->user);
     size_t inactive{},active{};for(const auto& row:layers->rows) ++(row.state==2?active:inactive);
-    if(button("全部打开（"+std::to_string(inactive)+"）",can_bulk && inactive>0))
+    if(button(F("layers.open_all","Open all ({0})",{std::to_string(inactive)})+"###layers-open-all",can_bulk && inactive>0))
         for(const auto& row:layers->rows) if(row.state!=2) commands->push_back({row.instance,scene::kActivateLayerMessage});
-    if(button("全部关闭（"+std::to_string(active)+"）",can_bulk && active>0))
+    if(button(F("layers.close_all","Close all ({0})",{std::to_string(active)})+"###layers-close-all",can_bulk && active>0))
         for(const auto& row:layers->rows) if(row.state==2) commands->push_back({row.instance,scene::kDeactivateLayerMessage});
     if(!commands->empty()) layer_request.store(commands);
-    if(view.in_big_world) ui->text(ui->user,StringView("大世界：可以单个勾选开关，批量按钮不开放；离开区域或传送后服务端会重新下发。"));
-    ui->text(ui->user,StringView("只改本地：服务端不知道这些层的开关，部分交互可能无效；离开场景后需重新打开。"));
+    if(view.in_big_world) ui->text(ui->user,StringView(T("layers.big_world",
+        "Big world: single layers can be toggled, the bulk buttons are off; the server resends the layers after you leave the area or teleport.")));
+    ui->text(ui->user,StringView(T("layers.local_only",
+        "Local only: the server does not know about these layer changes, so some interactions may not work; reopen them after leaving the scene.")));
 }
 void Content(const AnomalyUiServiceV1* ui) {
     const auto view=published.load();if(!view) return;
-    ui->text(ui->user,StringView("当前场景："+(view->current.empty()?std::string("等待游戏"):view->current)));
-    if(ui->button(ui->user,StringView("强制返回大世界"),0,0)) {pending.store({});force_return=true;}
-    if(ui->button(ui->user,StringView("关闭场景错误提示"),0,0)) dismiss_error=true;
-    if(ui->input_text) ui->input_text(ui->user,StringView("搜索场景"),filter.data(),filter.size(),0);
-    int available=only_available;if(ui->checkbox && ui->checkbox(ui->user,StringView("仅显示可切换场景"),&available)) only_available=available!=0;
-    int verified=only_verified;if(ui->checkbox && ui->checkbox(ui->user,StringView("仅显示已验证场景"),&verified)) only_verified=verified!=0;
-    if(ui->button(ui->user,StringView("刷新列表"),0,0)) refresh=true;
+    ui->text(ui->user,StringView(F("ui.current","Current scene: {0}",{view->current.empty()?T("ui.waiting_game","waiting for the game"):view->current})));
+    if(ui->button(ui->user,StringView(localizer.Label("ui.force_return","Force return to big world","force-return")),0,0)) {pending.store({});force_return=true;}
+    if(ui->button(ui->user,StringView(localizer.Label("ui.dismiss_error","Close scene error dialog","dismiss-error")),0,0)) dismiss_error=true;
+    if(ui->input_text) ui->input_text(ui->user,StringView(localizer.Label("ui.search","Search scenes","search")),filter.data(),filter.size(),0);
+    int available=only_available;
+    if(ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Label("ui.only_available","Only switchable scenes","only-available")),&available)) only_available=available!=0;
+    int verified=only_verified;
+    if(ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Label("ui.only_verified","Only verified scenes","only-verified")),&verified)) only_verified=verified!=0;
+    if(ui->button(ui->user,StringView(localizer.Label("ui.refresh","Refresh list","refresh")),0,0)) refresh=true;
     if(ui->separator) ui->separator(ui->user);
     const auto data=view->catalog;
     if(data) {
         if(only_verified && (selected<0 || static_cast<size_t>(selected)>=data->scenes.size() || !scene::Verified(data->scenes[selected].key))) {
             for(size_t i=0;i<data->scenes.size();++i) if(scene::Verified(data->scenes[i].key)) {selected=static_cast<int>(i);selected_route=0;break;}
         }
-        ui->text(ui->user,StringView("场景总数："+std::to_string(data->scenes.size())));
+        ui->text(ui->user,StringView(F("ui.total","Scenes: {0}",{std::to_string(data->scenes.size())})));
         const bool child=ui->begin_child && ui->end_child;
         const bool display=!child || ui->begin_child(ui->user,StringView("scene-list"),0,270,0);
         if(display) for(size_t i=0;i<data->scenes.size();++i) {
             const auto& entry=data->scenes[i];const bool can=scene::CanEnter(entry.type,!entry.routes.empty());
             if(only_available && !can) continue;
             if(only_verified && !scene::Verified(entry.key)) continue;
-            const auto label=entry.title+" / "+scene::TypeName(entry.type)+" / "+scene::StatusLabel(entry.key);
+            const auto label=entry.title+" / "+T(scene::TypeName(entry.type))+" / "+T(scene::StatusLabel(entry.key));
             const std::string_view query(filter.data());
             if(!query.empty() && label.find(query)==std::string::npos && entry.key.find(query)==std::string::npos) continue;
             if(ui->button(ui->user,StringView((selected==static_cast<int>(i)?"● ":"")+label+"##scene-"+entry.key),0,0)) {selected=static_cast<int>(i);selected_route=0;}
@@ -710,22 +725,26 @@ void Content(const AnomalyUiServiceV1* ui) {
         if(selected>=0 && static_cast<size_t>(selected)<data->scenes.size()) {
             const auto& entry=data->scenes[selected];
             if(ui->separator) ui->separator(ui->user);
-            ui->text(ui->user,StringView("已选："+entry.title));ui->text(ui->user,StringView(entry.key));
-            if(scene::HoldsExit(entry.key)) ui->text(ui->user,StringView("进入后会自动拦住场景的送回请求；离开请用「强制返回大世界」。"));
-            if(scene::Unusable(entry.key)) ui->text(ui->user,StringView(std::string("此场景不可用：")+scene::UnusableReason(entry.key)));
-            else if(!scene::Verified(entry.key)) ui->text(ui->user,StringView("此场景尚未验证，可能连接失败并退回主界面。"));
+            ui->text(ui->user,StringView(F("ui.selected","Selected: {0}",{entry.title})));ui->text(ui->user,StringView(entry.key));
+            if(scene::HoldsExit(entry.key)) ui->text(ui->user,StringView(T("ui.holds_exit",
+                "Entering holds the scene's own send-back request; use \"Force return to big world\" to leave.")));
+            if(scene::Unusable(entry.key)) ui->text(ui->user,StringView(F("ui.unusable","This scene is unusable: {0}",{T(scene::UnusableReason(entry.key))})));
+            else if(!scene::Verified(entry.key)) ui->text(ui->user,StringView(T("ui.unverified",
+                "This scene is not verified; the connection may fail and return you to the main menu.")));
             if(!entry.routes.empty()) {
                 if(selected_route<0 || static_cast<size_t>(selected_route)>=entry.routes.size()) selected_route=0;
-                if(ui->begin_menu && ui->end_menu && ui->begin_menu(ui->user,StringView("入口："+entry.routes[selected_route].label),1)) {
+                if(ui->begin_menu && ui->end_menu && ui->begin_menu(ui->user,StringView(F("ui.entrance","Entrance: {0}",{entry.routes[selected_route].label})),1)) {
                     for(size_t i=0;i<entry.routes.size();++i) if(ui->button(ui->user,StringView(entry.routes[i].label+"##route-"+std::to_string(i)),0,0)) selected_route=static_cast<int>(i);
                     ui->end_menu(ui->user);
                 }
-            } else ui->text(ui->user,StringView("暂无可用的游戏入口。"));
+            } else ui->text(ui->user,StringView(T("ui.no_entrance","No usable game entrance.")));
             const bool same=entry.key==view->current;
             const bool can=view->ready && !view->busy && !pending.load() && !scene::Unusable(entry.key) &&
                 (!only_verified || scene::Verified(entry.key)) && scene::CanEnter(entry.type,!entry.routes.empty()) &&
                 (!same || scene::SameSceneSwitch(view->current,entry.key,!entry.routes.empty()));
-            const auto action=StringView(same?"场景内切换入口":"切换到所选场景");
+            const auto action_label=same?localizer.Label("ui.switch_in_scene","Switch entrance in this scene","switch")
+                                       :localizer.Label("ui.switch","Switch to the selected scene","switch");
+            const auto action=StringView(action_label);
             const bool clicked=ui->button_enabled?ui->button_enabled(ui->user,action,0,0,can):ui->button(ui->user,action,0,0);
             if(clicked && can) {force_return=false;pending.store(std::make_shared<const Request>(Request{view->current,entry.key,entry.routes[selected_route]}));}
         }
@@ -741,12 +760,13 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui) noexcept {
             int32_t open{};if(windows->begin(windows->user,window,0,&open).code!=0) return;
             if(open) {shown=true;Content(ui);}windows->end(windows->user,window);return;
         }
-        UiWindow panel(ui,"场景加载器",&fallback_open);if(panel) {shown=true;Content(ui);}
+        const auto title=localizer.Label("window.title","Scene Loader","scene-loader-main");
+        UiWindow panel(ui,title,&fallback_open);if(panel) {shown=true;Content(ui);}
     } catch(...) {}
 }
 }
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* descriptor) {
     if(!descriptor || descriptor->struct_size<sizeof(*descriptor)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT,0,{}};
     *descriptor={sizeof(*descriptor),ANOMALY_PLUGIN_API_V1_MAJOR,ANOMALY_PLUGIN_API_V1_MINOR,
-        StringView("b1ank.scene-loader"),StringView("场景加载器"),StringView("b1ank, CCYellowStar"),StringView("0.1.6"),Load,Start,Stop,Unload,Update,Draw};return Ok();
+        StringView("b1ank.scene-loader"),StringView("Scene Loader"),StringView("b1ank, CCYellowStar"),StringView("0.1.7"),Load,Start,Stop,Unload,Update,Draw};return Ok();
 }

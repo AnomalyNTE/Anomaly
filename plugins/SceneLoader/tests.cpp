@@ -1,5 +1,7 @@
 #include "model.hpp"
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 void Check(bool value,const char* text) {if(!value) throw std::runtime_error(text);}
 int main() {
@@ -14,7 +16,8 @@ int main() {
             Check(payload.size()==47 && payload[0]==0x2B && payload[1]==0 && payload[2]==0 && payload[3]==0 &&
                 payload[4]=='D' && payload[46]==0 && payload[45]=='A',"layer payload matches the captured 47-byte FString");
         }
-        Check(std::string(scene::LayerStateName(2))=="已激活" && std::string(scene::LayerStateName(0))=="未加载","layer states are labelled");
+        Check(std::string(scene::LayerStateName(2).fallback)=="Activated" && std::string(scene::LayerStateName(0).fallback)=="Unloaded" &&
+            std::string(scene::LayerStateName(1).key)=="layer.loaded","layer states are labelled");
         scene::Transition t;
         Check(!t.Begin("city","city",0) && !t.Begin("city","",0),"ignore current/empty destinations");
         Check(t.Begin("city","hotel",1000) && !t.Begin("city","castle",1100),"only one transfer can be pending");
@@ -34,8 +37,24 @@ int main() {
             !scene::Verified("DLC_Bank_Safety"),"scenes that failed in live tests are unusable, not verified");
         Check(scene::Verified("DLC_SpiralDreams") && scene::Verified("DLC_MoonDog") && !scene::Unusable("DLC_SpiralDreams"),"scenes that worked in live tests are verified");
         Check(!scene::Verified("DLC_NeverTried") && !scene::Unusable("DLC_NeverTried") &&
-            std::string(scene::StatusLabel("DLC_NeverTried"))=="未验证","untested scenes, switchable or not, stay unverified");
-        Check(std::string(scene::StatusLabel("DLC_Bank_Safety"))=="不可用" && std::string(scene::UnusableReason("DLC_Bank_Safety")).size()>0,"unusable scenes carry a reason");
+            std::string(scene::StatusLabel("DLC_NeverTried").key)=="scene.unverified","untested scenes, switchable or not, stay unverified");
+        Check(std::string(scene::StatusLabel("DLC_Bank_Safety").key)=="scene.unusable" && scene::UnusableReason("DLC_Bank_Safety").key &&
+            !scene::UnusableReason("DLC_SpiralDreams").key,"unusable scenes carry a reason, the others none");
+        {
+            // Every text the model hands to the UI must exist in the shipped zh-CN catalog, or the
+            // panel silently falls back to English for that line.
+            std::ifstream file(SCENE_LOADER_ZH_CN_CATALOG,std::ios::binary);
+            Check(file.good(),"the zh-CN catalog is readable");
+            const std::string catalog((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
+            const auto has=[&](const scene::Text& text) {return catalog.find(std::string("\"")+text.key+"\"")!=std::string::npos;};
+            for(uint8_t state=0;state<4;++state) Check(has(scene::LayerStateName(state)),"every layer state is translated");
+            for(uint8_t type=0;type<10;++type) Check(has(scene::TypeName(type)),"every scene type is translated");
+            for(const auto& known:scene::kKnownScenes) {
+                Check(has(scene::StatusLabel(known.key)),"every scene status is translated");
+                if(known.reason.key) Check(has(known.reason),"every unusable reason is translated");
+            }
+            Check(has(scene::StatusLabel("DLC_NeverTried")),"the unverified status is translated");
+        }
         Check(scene::HoldsExit("DLC_Hockshop") && scene::Verified("DLC_Hockshop") && !scene::HoldsExit("DLC_WuChao"),
             "the pawnshop is entered with its own exit request held back; other scenes are left alone");
         // Flags read from the live ServerRequestExitSingleLevelSceneRPC: 0x00220CC0, and the value the

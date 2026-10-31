@@ -277,7 +277,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 | --- | --- |
 | **ID** | `b1ank.scene-loader` |
 | **作用** | 列出游戏场景，用游戏自己配置的入口切换场景；可在场景内切换入口、强制返回大世界，并开关当前场景的数据层。 |
-| **依赖服务** | `anomaly.core`、`anomaly.ui`、`anomaly.ue5.names`（V2）、`anomaly.ue5.objects`、`anomaly.ue5.framework`、`anomaly.ue5.world`、`anomaly.interop.signature`；`anomaly.window`、`anomaly.ue5.process-event`（可选） |
+| **依赖服务** | `anomaly.core`、`anomaly.ui`、`anomaly.ue5.names`（V2）、`anomaly.ue5.objects`、`anomaly.ue5.framework`、`anomaly.ue5.world`、`anomaly.interop.signature`；`anomaly.localization`、`anomaly.window`、`anomaly.ue5.process-event`（可选） |
 | **需要 Profile** | 否（自行按 AOB 特征码定位对象表与当前世界，依赖 `memory-read`/`memory-write` capability） |
 
 场景列表来自游戏的关卡、传送与副本配置表。每个场景标注三种状态之一：**已验证**（实测能进）、

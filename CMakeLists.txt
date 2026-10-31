@@ -1483,6 +1483,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_executable(anomaly_scene_loader_fixture plugins/SceneLoader/tests.cpp)
         target_compile_features(anomaly_scene_loader_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_scene_loader_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_compile_definitions(anomaly_scene_loader_fixture PRIVATE
+            SCENE_LOADER_ZH_CN_CATALOG="${CMAKE_SOURCE_DIR}/plugins/SceneLoader/locales/zh-CN.json")
     endif()
 
     anomaly_add_plugin(anomaly_builtin_damage_dashboard

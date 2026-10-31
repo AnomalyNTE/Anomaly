@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "id": "b1ank.scene-loader",
-  "name": "场景加载器",
-  "description": "列出游戏场景，使用已配置的游戏入口切换场景。",
+  "name": "Scene Loader",
+  "description": "Lists the game's scenes and switches between them through the game's own entrances; switches entrances inside a scene, forces a return to the big world, and toggles the current scene's data layers.",
   "author": "b1ank, CCYellowStar",
   "license": "AGPL-3.0-only",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -14,6 +14,7 @@
   "services": [
     {"id": "anomaly.core", "minVersion": 1},
     {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1, "optional": true},
     {"id": "anomaly.window", "minVersion": 1, "optional": true},
     {"id": "anomaly.ue5.names", "minVersion": 2},
     {"id": "anomaly.ue5.objects", "minVersion": 1},

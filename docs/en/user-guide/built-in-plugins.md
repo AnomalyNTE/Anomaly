@@ -206,6 +206,29 @@ Besides ordinary buttons, the catalog also lists tabs / radio buttons (type show
 
 **Button pickup**: hover over a button in the game and press F8 (rebindable in the panel), and the top of the panel shows the buttons under the cursor, with the innermost one first when they are nested. **Pick after 3 seconds** covers situations where pressing a hotkey is inconvenient. With **Show UI layers** checked you can see which interfaces each UI layer currently shows, and which interfaces are judged to occlude the layers beneath them.
 
+## Scene Loader
+
+| | |
+| --- | --- |
+| **ID** | `b1ank.scene-loader` |
+| **Purpose** | Lists the game's scenes and switches between them through the game's own entrances; switches entrances inside a scene, forces a return to the big world, and toggles the current scene's data layers. |
+| **Required services** | `anomaly.core`, `anomaly.ui`, `anomaly.ue5.names` (V2), `anomaly.ue5.objects`, `anomaly.ue5.framework`, `anomaly.ue5.world`, `anomaly.interop.signature`; `anomaly.localization`, `anomaly.window`, `anomaly.ue5.process-event` (optional) |
+| **Requires Profile** | No (locates the object table and the current world by its own AOB patterns and depends on the `memory-read`/`memory-write` capability) |
+
+The scene list comes from the game's level, transfer and clone tables. Each scene carries one of three
+states: **Verified** (entering worked in live tests), **Unusable** (it failed; selecting it shows the reason
+and the switch button is disabled) and **Unverified** (not tried). By default only switchable, verified
+scenes are listed.
+
+- **Entrance**: another entrance of the current scene can be chosen too, which teleports inside the scene without leaving it.
+- **Force return to big world**: teleports to the big-world entrance closest to the last big-world position; single-player scenes go through the game's exit flow.
+- **Scene data layers**: reads every data layer of the current world, and each checkbox shows the real state (checked means activated). Ticking opens a layer and unticking closes it; the list is re-read about a second later, so a change the game did not apply springs back. **Open all** and **Close all** handle every layer at once. In the big world only single layers can be toggled and the bulk buttons are off, because the big world mixes in layers that must stay closed and layers that follow quest stages.
+- **Moonlight Pawnshop**: about 8 seconds after arrival this scene's own logic sends the player back to the big world. While heading there or staying, the plugin holds that exit request back, and releases it on leaving, on a force return and when the plugin stops; use **Force return to big world** to leave.
+
+Layer toggles and the held request only change the local client: the server does not know about them,
+some interactions may not work, and the server sends the layer states again after you leave the area or
+re-enter the scene. Instance scenes need the game's own instance entry flow and cannot be teleported into.
+
 ## Deserted
 
 | | |
