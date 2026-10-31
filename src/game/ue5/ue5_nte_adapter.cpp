@@ -30,6 +30,107 @@
 #include <utility>
 #include <vector>
 
+// -----------------------------------------------------------------------------
+// NTE vehicle service helpers.
+//
+// UHTVehicleMovementComponent owns its speed state (TopSpeedRatio is
+// BlueprintReadOnly, bEnableTopSpeedLimit is EditConst and
+// ReSetupEngineAndTransmission rebuilds the engine/transmission), so a raised
+// speed cap written once is reverted by the game on a later tick. SpeedCapMaintenance
+// keeps the applied targets and re-asserts them from the Game tick.
+//
+// Durability repair invokes the dump-defined
+// HTWheeledVehicleDrivable::RepairSelf(bool RefreshDisplay) after validating the
+// reflected signature (one BoolProperty, no return value).
+// -----------------------------------------------------------------------------
+namespace anomaly {
+namespace nte_vehicle_helpers {
+
+enum class SpeedCapMaintenanceResult {
+    Unchanged,   // nothing to do / observed fields still cover the target
+    Rewritten,   // the game reverted the cap and the targets were written again
+    WriteFailed  // the rewrite failed; the caller must disarm
+};
+
+template <typename Fields>
+class SpeedCapMaintenance final {
+public:
+    SpeedCapMaintenance() = default;
+
+    void Reset() noexcept {
+        targets_ = Fields{};
+        requested_ratio_ = 1.0F;
+        armed_ = false;
+    }
+
+    // Called after the speed fields were written and verified.
+    void Arm(const Fields& targets, const float requested_ratio) noexcept {
+        targets_ = targets;
+        requested_ratio_ = std::isfinite(requested_ratio) ? requested_ratio : 1.0F;
+        armed_ = targets_.valid && requested_ratio_ > 1.0F;
+    }
+
+    [[nodiscard]] bool Armed() const noexcept { return armed_; }
+
+    // read_observed: bool(Fields&) - fills the current movement-component values.
+    // write_targets: bool(const Fields&, std::string&) - writes and readback-validates.
+    template <typename ReadObserved, typename WriteTargets>
+    SpeedCapMaintenanceResult Maintain(
+        const ReadObserved& read_observed,
+        const WriteTargets& write_targets,
+        std::string& failure) const {
+        if (!armed_ || requested_ratio_ <= 1.001F) return SpeedCapMaintenanceResult::Unchanged;
+        Fields observed{};
+        if (!read_observed(observed)) return SpeedCapMaintenanceResult::Unchanged;
+        // 1% slack covers float round-trip and the game's own rounding.
+        if (observed.top_speed_kmh >= targets_.top_speed_kmh * 0.99F &&
+            observed.max_linear_velocity >= targets_.max_linear_velocity * 0.99F) {
+            return SpeedCapMaintenanceResult::Unchanged;
+        }
+        if (!write_targets(targets_, failure)) return SpeedCapMaintenanceResult::WriteFailed;
+        return SpeedCapMaintenanceResult::Rewritten;
+    }
+
+private:
+    Fields targets_{};
+    float requested_ratio_{1.0F};
+    bool armed_{};
+};
+
+// Dump 5.6.1: HTWheeledVehicleDrivable::RepairSelf(bool RefreshDisplay).
+struct DurabilityRepairBinding final {
+    std::uintptr_t function{};
+    std::uint16_t parms_size{};
+    std::uint16_t parameter_offset{};
+    bool has_return{};
+};
+
+[[nodiscard]] inline bool DurabilityRepairBindingValid(
+    const DurabilityRepairBinding& binding) noexcept {
+    return binding.function != 0 && binding.parms_size == 1U &&
+        binding.parameter_offset < binding.parms_size && !binding.has_return;
+}
+
+// invoke: bool(std::uintptr_t object, std::uintptr_t function, void* parms, std::size_t size)
+template <typename Invoke>
+bool InvokeDurabilityRepair(const DurabilityRepairBinding& binding, const std::uintptr_t vehicle,
+                            const Invoke& invoke, std::string& failure) {
+    if (!DurabilityRepairBindingValid(binding)) {
+        failure = "HTGame.HTWheeledVehicleDrivable.RepairSelf(bool RefreshDisplay) failed Dump ABI validation";
+        return false;
+    }
+    std::uint8_t parameters[1]{};
+    parameters[binding.parameter_offset] = 1U;
+    if (!invoke(vehicle, binding.function, parameters, binding.parms_size)) {
+        failure = "HTWheeledVehicleDrivable.RepairSelf ProcessEvent failed";
+        return false;
+    }
+    return true;
+}
+
+}  // namespace nte_vehicle_helpers
+}  // namespace anomaly
+
 namespace anomaly {
 namespace {
 
@@ -756,6 +857,8 @@ struct Ue5NteAdapter::State {
         VehicleFunctionBinding set_water_top_speed_limit{};
         VehicleFunctionBinding speed_kmh{};
         VehicleFunctionBinding set_top_speed_ratio{};
+        // Dump 5.6.1: HTWheeledVehicleDrivable::RepairSelf(bool RefreshDisplay).
+        VehicleFunctionBinding repair_self{};
         VehicleFunctionBinding get_external_torque_ratio{};
         VehicleFunctionBinding set_external_torque_ratio{};
         VehicleFunctionBinding set_max_engine_torque{};
@@ -803,6 +906,31 @@ struct Ue5NteAdapter::State {
     std::uint64_t vehicle_catalog_sequence{};
     std::uintptr_t vehicle_catalog_table{};
     bool vehicle_catalog_valid{};
+    // Vehicle data asset resolved by EnsureVehicleCatalogLocked, kept for the
+    // customization tables (DT_vehicleModuleData / VehicleSkinDataTable).
+    std::uintptr_t vehicle_data_asset_object{};
+    struct VehicleBuildConfiguration {
+        std::uint64_t vehicle_id{};
+        std::uint64_t skin_id{};
+        std::array<std::uint8_t, 0x1C> default_module_data{};
+        std::vector<std::uint64_t> module_ids;
+    };
+    struct VehicleCustomizationOption {
+        std::string id;
+        std::string label;
+        std::uint32_t kind{};
+        std::uint32_t module_type{};
+        std::uint32_t name_comparison_index{};
+        std::uint32_t name_number{};
+        std::uint64_t native_name{};
+        bool is_default{};
+    };
+    std::vector<VehicleCustomizationOption> vehicle_customization_options;
+    std::string vehicle_customization_vehicle_row_id;
+    std::uint64_t vehicle_customization_generation{};
+    std::uint64_t vehicle_customization_vehicle_sequence{};
+    std::uint64_t vehicle_customization_sequence{};
+    const char* vehicle_customization_failure_reason{"customization catalog has not been scanned"};
     const char* vehicle_catalog_failure_reason{"catalog has not been scanned"};
     // Names converted from FText are cached by canonical row key so explicit refreshes
     // do not allocate a fresh engine FString for every unchanged catalog row.
@@ -831,6 +959,10 @@ struct Ue5NteAdapter::State {
     VehicleSpeedFieldBaseline vehicle_speed_field_baseline{};
     std::uintptr_t vehicle_speed_field_baseline_component{};
     bool vehicle_speed_fields_applied{};
+    // Keeps the applied speed targets so the Game tick can re-assert them after the
+    // movement component rebuilds its speed state from the data table.
+    nte_vehicle_helpers::SpeedCapMaintenance<VehicleSpeedFieldBaseline>
+        vehicle_speed_maintenance;
     bool vehicle_wheel_friction_enabled{true};
     // 按非玩家载具的 MovementComponent 分别保存速率倍率和原始扭矩基准，绝不与玩家载具共用状态。
     std::unordered_map<std::uintptr_t, float> other_vehicle_velocity_ratios;
@@ -7896,6 +8028,7 @@ struct Ue5NteAdapter::State {
             vehicle_catalog = std::move(next);
             vehicle_catalog_generation = object_generation;
             vehicle_catalog_table = table;
+            vehicle_data_asset_object = vehicle_asset;
             vehicle_catalog_valid = true;
             ++vehicle_catalog_sequence;
             if (vehicle_catalog_sequence == 0) ++vehicle_catalog_sequence;
@@ -8171,6 +8304,12 @@ struct Ue5NteAdapter::State {
                 static_cast<void>(FindVehicleFunctionLocked("SetTopSpeedRatio", vehicle_outer,
                     "FloatInput", vehicle_bindings.set_top_speed_ratio));
             }
+            if (vehicle_bindings.repair_self.function == 0) {
+                static constexpr std::array<std::string_view, 1> drivable_outer{
+                    "HTWheeledVehicleDrivable"};
+                static_cast<void>(FindVehicleFunctionLocked("RepairSelf", drivable_outer,
+                    "BoolInput", vehicle_bindings.repair_self));
+            }
             if (vehicle_bindings.speed_kmh.function == 0) {
                 static_cast<void>(FindVehicleFunctionLocked("GetForwardSpeedKmH", movement_outer,
                     "FloatReturn", vehicle_bindings.speed_kmh));
@@ -8282,6 +8421,7 @@ struct Ue5NteAdapter::State {
                     vehicle_speed_field_baseline = {};
                     vehicle_speed_field_baseline_component = 0;
                     vehicle_speed_fields_applied = false;
+                    vehicle_speed_maintenance.Reset();
                 }
                 static constexpr std::array<std::string_view, 1> water_vehicle_outer{
                     "HTWaterVehicleBasePawn"};
@@ -8333,6 +8473,7 @@ struct Ue5NteAdapter::State {
                 vehicle_speed_field_baseline = {};
                 vehicle_speed_field_baseline_component = 0;
                 vehicle_speed_fields_applied = false;
+                vehicle_speed_maintenance.Reset();
                 // Revalidate this dump-defined UFunction for each movement component.
                 vehicle_bindings.set_delayed_velocity_restore = 0;
                 vehicle_delayed_velocity_restore_failure_reason.clear();
@@ -8688,6 +8829,68 @@ struct Ue5NteAdapter::State {
         return Status(ANOMALY_STATUS_V1_OK, "Core has no debug-key authorization state");
     }
 
+    // UHTVehicleMovementComponent recomputes its speed state, so a raised cap is reverted on a
+    // later tick and the car falls back to its stock top speed. Re-assert the applied targets
+    // whenever the observed fields no longer cover them.
+    void MaintainVehicleSpeedFieldsLocked() noexcept {
+        if (!vehicle_speed_fields_applied || vehicle_movement_component == 0) return;
+        const std::uintptr_t movement = vehicle_movement_component;
+        std::string failure;
+        const auto result = vehicle_speed_maintenance.Maintain(
+            [this, movement](VehicleSpeedFieldBaseline& observed) {
+                return ReadVehicleSpeedFieldSnapshotLocked(movement, observed);
+            },
+            [this, movement](const VehicleSpeedFieldBaseline& targets,
+                             std::string& write_failure) {
+                return WriteVehicleSpeedFieldSnapshotLocked(movement, targets, write_failure);
+            },
+            failure);
+        if (result == nte_vehicle_helpers::SpeedCapMaintenanceResult::WriteFailed) {
+            vehicle_speed_fields_applied = false;
+            vehicle_speed_restore_status = "速度上限已被游戏重置，且重新写入失败：" + failure;
+        }
+    }
+
+    // Dump 5.6.1: HTWheeledVehicleDrivable::RepairSelf(bool RefreshDisplay). Resolve the live
+    // current vehicle on every call; never reuse a previous vehicle's object.
+    AnomalyStatusV1 VehicleRepairCurrentDurability() noexcept {
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle repair must run on Game thread");
+
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked())
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "current driving vehicle is unavailable");
+        if (vehicle_is_water)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                "Dump 5.6.1 does not expose a validated water-vehicle repair entry point");
+        if (current_vehicle_object == 0 ||
+            !ObjectClassChainContainsLocked(current_vehicle_object, "HTWheeledVehicleDrivable"))
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                "current vehicle is not a validated HTWheeledVehicleDrivable");
+
+        auto& binding = vehicle_bindings.repair_self;
+        if (binding.function == 0) {
+            static constexpr std::array<std::string_view, 1> drivable_outer{
+                "HTWheeledVehicleDrivable"};
+            static_cast<void>(FindVehicleFunctionLocked(
+                "RepairSelf", drivable_outer, "BoolInput", binding));
+        }
+        const nte_vehicle_helpers::DurabilityRepairBinding repair{
+            binding.function, binding.parms_size, binding.parameter_offset, binding.has_return};
+        std::string failure;
+        if (!nte_vehicle_helpers::InvokeDurabilityRepair(repair, current_vehicle_object,
+                [this](std::uintptr_t object, std::uintptr_t function, void* parms,
+                       std::size_t size) {
+                    return InvokeProcessEventGuarded(
+                        process_event_invoker, object, function, parms, size);
+                }, failure)) {
+            return Status(nte_vehicle_helpers::DurabilityRepairBindingValid(repair)
+                    ? ANOMALY_STATUS_V1_FAILED : ANOMALY_STATUS_V1_UNAVAILABLE,
+                failure.c_str());
+        }
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
     AnomalyStatusV1 VehicleSetTopSpeedTargetValue(
         const float value,
         const bool value_is_ratio,
@@ -8821,6 +9024,8 @@ struct Ue5NteAdapter::State {
                 vehicle_movement_component, current_fields_before, rollback_failure);
             vehicle_top_speed_ratio = previous_top_speed_ratio;
             vehicle_speed_fields_applied = rollback_ok ? previous_fields_applied : false;
+            // The armed targets no longer describe the component after a failed apply.
+            vehicle_speed_maintenance.Reset();
             vehicle_speed_restore_status =
                 std::string("SetTopSpeedRatio 已调用，但 Anomaly 风格速度字段写入失败：") +
                 (field_failure.empty() ? "目标字段计算无效" : field_failure) +
@@ -8849,6 +9054,9 @@ struct Ue5NteAdapter::State {
         // native ratio path if that call fails, combining it with the user's independent torque
         // factor rather than multiplying a previous effective speed ratio a second time.
         vehicle_speed_fields_applied = true;
+        // Keep the written targets so the Game tick can re-assert them after the movement
+        // component rebuilds its speed state from the data table.
+        vehicle_speed_maintenance.Arm(field_targets, field_targets.top_speed_ratio);
         if (!engine_torque_refreshed) {
             const auto& external_binding = vehicle_bindings.set_external_torque_ratio;
             const float speed_torque_scale = (std::max)(2.0F * field_targets.top_speed_ratio, 2.0F);
@@ -9581,6 +9789,366 @@ struct Ue5NteAdapter::State {
             top_speed_kmh, false, minimum_speed_kmh);
     }
 
+    [[nodiscard]] bool EnsureVehicleCustomizationCatalogLocked(
+        const VehicleCatalogEntry& selected) noexcept {
+        const auto fail = [this](const char* reason) noexcept {
+            vehicle_customization_failure_reason = reason;
+            return false;
+        };
+        try {
+            if (!selected.vehicle_id_valid || selected.vehicle_id_comparison_index == 0) {
+                return fail("所选载具没有可验证的 VehicleID，无法关联模块/涂装数据");
+            }
+            if (!NteVehicleProfileAvailable() || object_registry.items == 0 ||
+                !process_event_invoker ||
+                GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire)) {
+                return fail("改装目录前置条件未通过：Profile、对象表、ProcessEvent 或 Game 线程不可用");
+            }
+            if (vehicle_customization_generation == object_generation &&
+                vehicle_customization_vehicle_sequence == vehicle_catalog_sequence &&
+                vehicle_customization_vehicle_row_id == selected.id) {
+                return true;
+            }
+            if (!EnsureVehicleCatalogLocked() || vehicle_data_asset_object == 0) {
+                return fail("无法取得已验证的 HTVehicleDataAsset");
+            }
+
+            std::uintptr_t asset_class{};
+            if (!ReadPointerAt(*memory, vehicle_data_asset_object,
+                    Layout(profile, "object.class"), asset_class)) {
+                return fail("无法读取 HTVehicleDataAsset 的运行时类");
+            }
+
+            const auto resolve_table = [&](const std::string_view property_name,
+                    const std::int32_t expected_offset,
+                    const std::string_view expected_row_name,
+                    std::uintptr_t& table_out,
+                    std::uintptr_t& row_struct_out,
+                    SparseMapView& view_out,
+                    std::vector<std::uint8_t>& elements_out) -> bool {
+                ReflectedPropertyInfo table_property;
+                if (!FindReflectedPropertyLocked(
+                        asset_class, property_name, table_property, true) ||
+                    table_property.type != "ObjectProperty" ||
+                    table_property.element_size != 8 ||
+                    table_property.offset != expected_offset ||
+                    table_property.array_dim != 1) {
+                    vehicle_customization_failure_reason =
+                        "HTVehicleDataAsset 数据表属性未通过 Dump 5.6.1 类型/大小/偏移校验";
+                    return false;
+                }
+                if (!ReadValue(*memory, vehicle_data_asset_object +
+                        static_cast<std::uintptr_t>(table_property.offset), table_out) ||
+                    table_out == 0) {
+                    vehicle_customization_failure_reason =
+                        "车型模块/涂装 DataTable 当前为空或不可读";
+                    return false;
+                }
+                std::string row_name;
+                if (!ReadPointerAt(*memory, table_out,
+                        Layout(profile, "dataTable.rowStruct"), row_struct_out) ||
+                    row_struct_out == 0 ||
+                    !ReadReflectedObjectNameLocked(row_struct_out, row_name) ||
+                    row_name != expected_row_name) {
+                    vehicle_customization_failure_reason =
+                        "改装 DataTable.RowStruct 与 Dump 5.6.1 声明不匹配";
+                    return false;
+                }
+                const auto row_map_offset = Layout(profile, "dataTable.rowMap", -1);
+                if (row_map_offset < 0 ||
+                    !ReadSparseMapViewLocked(
+                        table_out + static_cast<std::uintptr_t>(row_map_offset), view_out) ||
+                    view_out.num <= 0 || view_out.num > 16384 ||
+                    view_out.num_free < 0 || view_out.num_free > view_out.num ||
+                    view_out.stride <= 0 || view_out.stride > 4096) {
+                    vehicle_customization_failure_reason =
+                        "改装 DataTable.RowMap 的 sparse-map 布局或条目数未通过校验";
+                    return false;
+                }
+                const auto element_count = static_cast<std::size_t>(view_out.num);
+                const auto stride = static_cast<std::size_t>(view_out.stride);
+                if (element_count > (std::numeric_limits<std::size_t>::max)() / stride) {
+                    vehicle_customization_failure_reason = "改装 DataTable.RowMap 长度溢出";
+                    return false;
+                }
+                elements_out.assign(element_count * stride, 0);
+                if (!memory->Read(view_out.data, elements_out.data(), elements_out.size())) {
+                    vehicle_customization_failure_reason =
+                        "改装 DataTable.RowMap 元素数组不可读";
+                    return false;
+                }
+                return true;
+            };
+
+            std::vector<VehicleCustomizationOption> next;
+            const bool can_resolve_display_text = ValidateVehicleDisplayNameBindingLocked();
+            const auto scan_table = [&](const bool is_skin) -> bool {
+                std::uintptr_t table{}, row_struct{};
+                SparseMapView view{};
+                std::vector<std::uint8_t> elements;
+                if (!resolve_table(
+                        is_skin ? "VehicleSkinDataTable" : "DT_vehicleModuleData",
+                        is_skin ? 0x70 : 0x60,
+                        is_skin ? "VehicleSkinData" : "VehicleModuleData",
+                        table, row_struct, view, elements)) {
+                    return false;
+                }
+
+                ReflectedPropertyInfo id_property;
+                ReflectedPropertyInfo vehicle_id_property;
+                ReflectedPropertyInfo label_property;
+                if (!FindReflectedPropertyLocked(row_struct,
+                        is_skin ? "SkinID" : "ModuleID", id_property, true) ||
+                    id_property.type != "NameProperty" || id_property.element_size != 8 ||
+                    id_property.offset != 0x08 || id_property.array_dim != 1 ||
+                    !FindReflectedPropertyLocked(row_struct, "VehicleID",
+                        vehicle_id_property, true) ||
+                    vehicle_id_property.type != "NameProperty" ||
+                    vehicle_id_property.element_size != 8 ||
+                    vehicle_id_property.offset != 0x10 ||
+                    vehicle_id_property.array_dim != 1 ||
+                    !FindReflectedPropertyLocked(row_struct,
+                        is_skin ? "Name" : "ModuleName", label_property, true) ||
+                    label_property.type != "TextProperty" ||
+                    label_property.element_size != 0x10 ||
+                    label_property.offset != (is_skin ? 0x18 : 0x18) ||
+                    label_property.array_dim != 1) {
+                    vehicle_customization_failure_reason =
+                        "模块/涂装 ID、VehicleID 或 FText 字段未通过 Dump 5.6.1 校验";
+                    return false;
+                }
+
+                ReflectedPropertyInfo module_type_property{};
+                ReflectedPropertyInfo default_property{};
+                ReflectedBoolParameter default_bool{};
+                if (!is_skin) {
+                    if (!FindReflectedPropertyLocked(row_struct,
+                            "ModuleType", module_type_property, true) ||
+                        (module_type_property.type != "ByteProperty" &&
+                         module_type_property.type != "EnumProperty") ||
+                        module_type_property.element_size != 1 ||
+                        module_type_property.offset != 0x60 ||
+                        module_type_property.array_dim != 1 ||
+                        !FindReflectedPropertyLocked(row_struct,
+                            "bWasDefault", default_property, true) ||
+                        default_property.type != "BoolProperty" ||
+                        default_property.element_size != 1 ||
+                        default_property.offset != 0x61 ||
+                        default_property.array_dim != 1 ||
+                        !ReadReflectedBoolParameterLocked(default_property, 0xD0, default_bool)) {
+                        vehicle_customization_failure_reason =
+                            "VehicleModuleData.ModuleType/bWasDefault 未通过 Dump 5.6.1 校验";
+                        return false;
+                    }
+                } else {
+                    if (!FindReflectedPropertyLocked(row_struct,
+                            "bDefault", default_property, true) ||
+                        default_property.type != "BoolProperty" ||
+                        default_property.element_size != 1 ||
+                        default_property.offset != 0x38 ||
+                        default_property.array_dim != 1 ||
+                        !ReadReflectedBoolParameterLocked(default_property, 0xC8, default_bool)) {
+                        vehicle_customization_failure_reason =
+                            "VehicleSkinData.bDefault 未通过 Dump 5.6.1 校验";
+                        return false;
+                    }
+                }
+
+                for (std::int32_t slot = 0; slot < view.num; ++slot) {
+                    const auto u_slot = static_cast<std::uint32_t>(slot);
+                    if ((view.flags[static_cast<std::size_t>(u_slot) / 32U] &
+                            (1U << (u_slot & 31U))) == 0) {
+                        continue;
+                    }
+                    const auto* element = elements.data() +
+                        static_cast<std::size_t>(slot) * static_cast<std::size_t>(view.stride);
+                    std::uintptr_t row{};
+                    std::memcpy(&row, element + view.row_offset, sizeof(row));
+                    const auto required_row_bytes = static_cast<std::size_t>(
+                        (std::max)(id_property.offset + 8,
+                            vehicle_id_property.offset + 8));
+                    if (row == 0 || required_row_bytes == 0 ||
+                        !ReadableRange(*memory, row, required_row_bytes)) {
+                        continue;
+                    }
+
+                    std::uint32_t vehicle_comparison{}, vehicle_number{};
+                    std::uint32_t id_comparison{}, id_number{};
+                    if (!ReadValue(*memory,
+                            row + static_cast<std::uintptr_t>(vehicle_id_property.offset),
+                            vehicle_comparison) ||
+                        !ReadValue(*memory,
+                            row + static_cast<std::uintptr_t>(vehicle_id_property.offset) + 4U,
+                            vehicle_number) ||
+                        vehicle_comparison != selected.vehicle_id_comparison_index ||
+                        vehicle_number != selected.vehicle_id_number ||
+                        !ReadValue(*memory,
+                            row + static_cast<std::uintptr_t>(id_property.offset), id_comparison) ||
+                        !ReadValue(*memory,
+                            row + static_cast<std::uintptr_t>(id_property.offset) + 4U, id_number)) {
+                        continue;
+                    }
+                    std::string option_id;
+                    if (!ResolveFNameLocked(id_comparison, id_number, option_id) ||
+                        option_id.empty() || option_id == "None" ||
+                        option_id.size() >= ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES) {
+                        continue;
+                    }
+                    std::uint8_t default_byte{};
+                    if (!ReadValue(*memory,
+                            row + static_cast<std::uintptr_t>(default_bool.byte_offset),
+                            default_byte)) {
+                        vehicle_customization_failure_reason =
+                            "无法读取改装目录中的默认选项标记";
+                        return false;
+                    }
+                    const bool is_default = (default_byte & default_bool.byte_mask) != 0;
+                    std::string label;
+                    if (!can_resolve_display_text ||
+                        !ResolveVehicleDisplayNameLocked(row, label_property, label) ||
+                        label.empty()) {
+                        label = option_id;
+                    }
+                    VehicleCustomizationOption option{};
+                    option.id = std::move(option_id);
+                    option.label = std::move(label);
+                    option.kind = is_skin
+                        ? ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN
+                        : ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE;
+                    option.module_type = 0;
+                    option.name_comparison_index = id_comparison;
+                    option.name_number = id_number;
+                    option.native_name = static_cast<std::uint64_t>(id_comparison) |
+                        (static_cast<std::uint64_t>(id_number) << 32U);
+                    option.is_default = is_default;
+                    if (!is_skin) {
+                        std::uint8_t module_type{};
+                        if (!ReadValue(*memory,
+                                row + static_cast<std::uintptr_t>(module_type_property.offset),
+                                module_type)) {
+                            vehicle_customization_failure_reason =
+                                "无法读取 VehicleModuleData.ModuleType";
+                            return false;
+                        }
+                        // EVehicleModuleType 0 (None) and 27 (Max) are sentinels in Dump 5.6.1.
+                        if (module_type == 0U || module_type >= 27U) continue;
+                        option.module_type = module_type;
+                    }
+                    next.push_back(std::move(option));
+                }
+                return true;
+            };
+
+            if (!scan_table(false) || !scan_table(true)) {
+                return false;
+            }
+            std::ranges::sort(next, [](const auto& lhs, const auto& rhs) {
+                if (lhs.kind != rhs.kind) return lhs.kind < rhs.kind;
+                if (lhs.module_type != rhs.module_type) return lhs.module_type < rhs.module_type;
+                if (lhs.is_default != rhs.is_default) return lhs.is_default > rhs.is_default;
+                if (lhs.label != rhs.label) return lhs.label < rhs.label;
+                return lhs.id < rhs.id;
+            });
+            next.erase(std::unique(next.begin(), next.end(), [](const auto& lhs, const auto& rhs) {
+                return lhs.kind == rhs.kind && lhs.module_type == rhs.module_type && lhs.id == rhs.id;
+            }), next.end());
+
+            vehicle_customization_options = std::move(next);
+            vehicle_customization_vehicle_row_id = selected.id;
+            vehicle_customization_generation = object_generation;
+            vehicle_customization_vehicle_sequence = vehicle_catalog_sequence;
+            ++vehicle_customization_sequence;
+            if (vehicle_customization_sequence == 0) ++vehicle_customization_sequence;
+            vehicle_customization_failure_reason = "改装模块和涂装目录已从当前游戏 DataTable 校验读取";
+            return true;
+        } catch (...) {
+            vehicle_customization_options.clear();
+            vehicle_customization_vehicle_row_id.clear();
+            vehicle_customization_generation = 0;
+            vehicle_customization_vehicle_sequence = 0;
+            vehicle_customization_failure_reason = "读取实时改装目录时发生异常";
+            return false;
+        }
+    }
+
+    AnomalyStatusV1 VehicleCustomizationCatalogSnapshot(
+        const AnomalyStringViewV1 vehicle_row_id,
+        AnomalyNteVehicleCustomizationCatalogSnapshotV1* snapshot) noexcept {
+        if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot) ||
+            vehicle_row_id.data == nullptr || vehicle_row_id.size == 0 ||
+            vehicle_row_id.size >= ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "改装目录请求参数无效");
+        }
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire)) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "改装目录读取必须在 Game 线程执行");
+        }
+        std::scoped_lock lock(mutex);
+        if (!EnsureVehicleCatalogLocked()) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_catalog_failure_reason);
+        }
+        const std::string_view requested{vehicle_row_id.data, vehicle_row_id.size};
+        const auto selected = std::ranges::find(
+            vehicle_catalog, requested, &VehicleCatalogEntry::id);
+        if (selected == vehicle_catalog.end()) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "改装目录所请求的车型 RowName 不在当前 DT_VehicleData 中");
+        }
+        if (!EnsureVehicleCustomizationCatalogLocked(*selected)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_customization_failure_reason);
+        }
+        snapshot->struct_size = sizeof(*snapshot);
+        snapshot->flags = ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID;
+        snapshot->sequence = vehicle_customization_sequence;
+        snapshot->entry_count = static_cast<std::uint32_t>(vehicle_customization_options.size());
+        snapshot->reserved = 0;
+        return Status(ANOMALY_STATUS_V1_OK, vehicle_customization_failure_reason);
+    }
+
+    AnomalyStatusV1 VehicleCustomizationOptionAt(
+        const AnomalyStringViewV1 vehicle_row_id,
+        const std::uint32_t index,
+        AnomalyNteVehicleCustomizationOptionV1* option) noexcept {
+        if (option == nullptr || option->struct_size < sizeof(*option) ||
+            vehicle_row_id.data == nullptr || vehicle_row_id.size == 0 ||
+            vehicle_row_id.size >= ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "改装选项请求参数无效");
+        }
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire)) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT, "改装选项读取必须在 Game 线程执行");
+        }
+        std::scoped_lock lock(mutex);
+        if (!EnsureVehicleCatalogLocked()) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_catalog_failure_reason);
+        }
+        const std::string_view requested{vehicle_row_id.data, vehicle_row_id.size};
+        const auto selected = std::ranges::find(
+            vehicle_catalog, requested, &VehicleCatalogEntry::id);
+        if (selected == vehicle_catalog.end()) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "改装选项对应的车型 RowName 已失效");
+        }
+        if (!EnsureVehicleCustomizationCatalogLocked(*selected)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_customization_failure_reason);
+        }
+        if (index >= vehicle_customization_options.size()) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "改装选项索引越界");
+        }
+        const auto& source = vehicle_customization_options[index];
+        if (source.id.size() >= sizeof(option->option_id) ||
+            source.label.size() >= sizeof(option->label)) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "改装选项 ID 或标签超出 ABI 缓冲区");
+        }
+        const auto caller_size = option->struct_size;
+        std::memset(option, 0, sizeof(*option));
+        option->struct_size = static_cast<std::uint32_t>((std::min)(
+            static_cast<std::size_t>(caller_size), sizeof(*option)));
+        option->flags = ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_VALID |
+            (source.is_default ? ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_DEFAULT : 0U);
+        option->kind = source.kind;
+        option->module_type = source.module_type;
+        std::memcpy(option->option_id, source.id.data(), source.id.size());
+        std::memcpy(option->label, source.label.data(), source.label.size());
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
     AnomalyStatusV1 VehicleSetSpeedTarget(
         const AnomalyNteVehicleSpeedTargetV1* request) noexcept {
         if (request == nullptr || request->struct_size < sizeof(*request))
@@ -10190,13 +10758,402 @@ struct Ue5NteAdapter::State {
         }
     }
 
+    [[nodiscard]] bool BuildVehicleConfigurationLocked(
+        const VehicleCatalogEntry& selected,
+        const AnomalyNteVehicleSummonRequestV1& request,
+        VehicleBuildConfiguration& build,
+        std::string& failure) noexcept {
+        build = {};
+        failure.clear();
+        try {
+            if (!selected.vehicle_id_valid ||
+                (selected.vehicle_id_comparison_index == 0 && selected.vehicle_id_number == 0)) {
+                failure = "所选车型没有可验证的 VehicleData.VehicleID";
+                return false;
+            }
+            if (request.module_selection_count > 32U ||
+                (request.module_selection_count != 0 && request.module_selections == nullptr)) {
+                failure = "自定义模块选择数量或数组指针无效";
+                return false;
+            }
+            if (!EnsureVehicleCustomizationCatalogLocked(selected)) {
+                failure = vehicle_customization_failure_reason;
+                return false;
+            }
+            build.vehicle_id = static_cast<std::uint64_t>(selected.vehicle_id_comparison_index) |
+                (static_cast<std::uint64_t>(selected.vehicle_id_number) << 32U);
+
+            const VehicleCustomizationOption* selected_skin{};
+            if (request.skin_id.data != nullptr && request.skin_id.size != 0) {
+                if (request.skin_id.size >= ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES) {
+                    failure = "涂装 ID 超出 ABI 长度限制";
+                    return false;
+                }
+                const std::string_view requested_skin{request.skin_id.data, request.skin_id.size};
+                for (const auto& option : vehicle_customization_options) {
+                    if (option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
+                        option.id == requested_skin) {
+                        selected_skin = &option;
+                        break;
+                    }
+                }
+                if (selected_skin == nullptr) {
+                    failure = "所选涂装 ID 不属于当前车型的 VehicleSkinDataTable";
+                    return false;
+                }
+            } else {
+                for (const auto& option : vehicle_customization_options) {
+                    if (option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
+                        option.is_default) {
+                        selected_skin = &option;
+                        break;
+                    }
+                }
+                if (selected_skin == nullptr) {
+                    failure = "当前车型没有可验证的默认涂装，请先在改造清单中选择涂装";
+                    return false;
+                }
+            }
+            build.skin_id = selected_skin->native_name;
+            if (build.skin_id == 0) {
+                failure = "所选 SkinID 为 None，拒绝调用原生改装函数";
+                return false;
+            }
+
+            // Start from this model's game-defined default module records. The plugin sends only
+            // explicit per-slot overrides; this prevents an omitted UI slot from deleting the
+            // stock module list or pulling another model's choices into the build.
+            for (const auto& option : vehicle_customization_options) {
+                if (option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+                    option.is_default) {
+                    if (option.native_name == 0) {
+                        failure = "车型默认模块包含无效 FName";
+                        return false;
+                    }
+                    if (std::ranges::find(build.module_ids, option.native_name) ==
+                        build.module_ids.end()) {
+                        build.module_ids.push_back(option.native_name);
+                    }
+                }
+            }
+            if (build.module_ids.size() > 128U) {
+                failure = "车型默认模块数量超过安全上限";
+                return false;
+            }
+
+            std::array<bool, 27> seen_module_types{};
+            for (std::uint32_t index = 0; index < request.module_selection_count; ++index) {
+                const auto& selection = request.module_selections[index];
+                if (selection.struct_size < sizeof(AnomalyNteVehicleModuleSelectionV1) ||
+                    selection.module_type == 0 || selection.module_type >= seen_module_types.size() ||
+                    selection.module_id.data == nullptr || selection.module_id.size == 0 ||
+                    selection.module_id.size >= ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES) {
+                    failure = "自定义模块选择字段或 ModuleType 无效";
+                    return false;
+                }
+                if (seen_module_types[selection.module_type]) {
+                    failure = "同一 ModuleType 选择了多个模块；每个槽位只能指定一个 ID";
+                    return false;
+                }
+                seen_module_types[selection.module_type] = true;
+                const std::string_view module_id{
+                    selection.module_id.data, selection.module_id.size};
+                const VehicleCustomizationOption* selected_module{};
+                for (const auto& option : vehicle_customization_options) {
+                    if (option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+                        option.module_type == selection.module_type && option.id == module_id) {
+                        selected_module = &option;
+                        break;
+                    }
+                }
+                if (selected_module == nullptr || selected_module->native_name == 0) {
+                    failure = "模块 ID 或 ModuleType 不属于当前车型的 DT_vehicleModuleData";
+                    return false;
+                }
+
+                // Remove every default item in this slot before inserting the chosen module ID.
+                std::erase_if(build.module_ids, [&](const std::uint64_t native_name) {
+                    for (const auto& candidate : vehicle_customization_options) {
+                        if (candidate.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+                            candidate.native_name == native_name &&
+                            candidate.module_type == selection.module_type) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+                build.module_ids.push_back(selected_module->native_name);
+            }
+            if (build.module_ids.size() > 128U) {
+                failure = "合并后的模块列表超过安全上限";
+                return false;
+            }
+            failure.clear();
+            return true;
+        } catch (...) {
+            build = {};
+            failure = "组装用户选择的载具改造配置时发生异常";
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool ApplyVehicleConfigurationLocked(
+        const std::uintptr_t spawned_vehicle,
+        const VehicleBuildConfiguration& saved,
+        std::size_t& configured_module_count,
+        std::string& failure) noexcept {
+        configured_module_count = 0;
+        failure.clear();
+        try {
+            if (spawned_vehicle == 0 || saved.vehicle_id == 0 ||
+                saved.module_ids.size() > 128U || saved.skin_id == 0) {
+                failure = "生成的车辆或用户自定义配置参数无效";
+                return false;
+            }
+            std::uintptr_t spawned_class{};
+            if (!ReadPointerAt(*memory, spawned_vehicle, Layout(profile, "object.class"), spawned_class)) {
+                failure = "无法解析新载具的运行时类型";
+                return false;
+            }
+            ReflectedPropertyInfo module_manager_property;
+            if (!FindReflectedPropertyLocked(
+                    spawned_class, "ModuleManagerComponent", module_manager_property, true) ||
+                module_manager_property.type != "ObjectProperty" ||
+                module_manager_property.element_size != 8 ||
+                module_manager_property.offset != 0x12A0 ||
+                module_manager_property.array_dim != 1) {
+                failure = "新载具的 ModuleManagerComponent 未通过 Dump 5.6.1 反射校验";
+                return false;
+            }
+            std::uintptr_t module_manager{};
+            if (!ReadValue(*memory,
+                    spawned_vehicle + static_cast<std::uintptr_t>(module_manager_property.offset),
+                    module_manager) || module_manager == 0) {
+                failure = "新载具尚未初始化 HTVehicleModificationComponent";
+                return false;
+            }
+            std::uintptr_t expected_module_manager_class{};
+            std::uintptr_t actual_module_manager_class{};
+            if (!FindExactObjectLocked(
+                    L"/Script/HTGame.HTVehicleModificationComponent", expected_module_manager_class) ||
+                !ReadPointerAt(*memory, module_manager, Layout(profile, "object.class"),
+                    actual_module_manager_class) ||
+                !IsClassDerivedFromLocked(actual_module_manager_class, expected_module_manager_class)) {
+                failure = "新载具的改装组件运行时类型未通过校验";
+                return false;
+            }
+
+            std::uintptr_t update_function{};
+            if (!FindExactObjectLocked(
+                    L"/Script/HTGame.HTVehicleModificationComponent.UpdateAllModulesWithIDs",
+                    update_function) || update_function == 0) {
+                failure = "Dump 中声明的 UpdateAllModulesWithIDs 原生入口不可用";
+                return false;
+            }
+            std::uintptr_t function_owner{};
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            if (!ReadPointerAt(*memory, update_function, Layout(profile, "object.outer"), function_owner) ||
+                function_owner != expected_module_manager_class ||
+                !ReadValue(*memory,
+                    update_function + Layout(profile, "ufunction.numParms"), num_parms) ||
+                !ReadValue(*memory,
+                    update_function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
+                num_parms != 5 || parms_size != 0x40) {
+                failure = "UpdateAllModulesWithIDs 的所属类 / NumParms / ParmsSize 与 Dump 不匹配";
+                return false;
+            }
+
+            const auto validate_parameter = [&](const std::string_view name,
+                    const std::string_view type, const std::int32_t element_size,
+                    const std::int32_t offset, ReflectedPropertyInfo& property) {
+                return FindReflectedPropertyLocked(update_function, name, property, false) &&
+                    property.type == type && property.element_size == element_size &&
+                    property.offset == offset && property.array_dim == 1;
+            };
+            ReflectedPropertyInfo module_ids_parameter;
+            ReflectedPropertyInfo force_update_parameter;
+            ReflectedPropertyInfo vehicle_id_parameter;
+            ReflectedPropertyInfo skin_id_parameter;
+            ReflectedPropertyInfo default_data_parameter;
+            if (!validate_parameter("VehicleModuleIDList", "ArrayProperty", 0x10, 0x00,
+                    module_ids_parameter) ||
+                !validate_parameter("bForceUpdate", "BoolProperty", 1, 0x10,
+                    force_update_parameter) ||
+                !validate_parameter("VehicleID", "NameProperty", 8, 0x14,
+                    vehicle_id_parameter) ||
+                !validate_parameter("SkinID", "NameProperty", 8, 0x1C,
+                    skin_id_parameter) ||
+                !validate_parameter("DefaultModuleData", "StructProperty", 0x1C, 0x24,
+                    default_data_parameter) ||
+                default_data_parameter.structure == 0) {
+                failure = "UpdateAllModulesWithIDs 参数类型 / 大小 / 偏移未通过 Dump 5.6.1 校验";
+                return false;
+            }
+            std::string update_default_data_type;
+            if (!ReadReflectedObjectNameLocked(
+                    default_data_parameter.structure, update_default_data_type) ||
+                update_default_data_type != "VehicleModuleDefaultData") {
+                failure = "UpdateAllModulesWithIDs.DefaultModuleData 结构类型不符";
+                return false;
+            }
+            const auto module_inner_offset = Layout(profile, "farrayProperty.inner", -1);
+            std::uintptr_t module_inner{};
+            std::string module_inner_type;
+            if (module_inner_offset < 0 ||
+                !ReadPointerAt(*memory, module_ids_parameter.property, module_inner_offset, module_inner) ||
+                module_inner == 0 ||
+                !ReadReflectedFieldClassNameLocked(module_inner, module_inner_type) ||
+                module_inner_type != "NameProperty") {
+                failure = "UpdateAllModulesWithIDs.VehicleModuleIDList 元素不是 FName";
+                return false;
+            }
+            ReflectedBoolParameter force_bool;
+            if (!ReadReflectedBoolParameterLocked(force_update_parameter, parms_size, force_bool) ||
+                force_bool.byte_offset < 0x10 || force_bool.byte_offset >= parms_size) {
+                failure = "UpdateAllModulesWithIDs.bForceUpdate bool mask 未通过校验";
+                return false;
+            }
+
+            struct NativeArrayArgument {
+                std::uintptr_t data{};
+                std::int32_t count{};
+                std::int32_t capacity{};
+            };
+            static_assert(sizeof(NativeArrayArgument) == 0x10);
+            std::array<std::uint8_t, 0x40> parameters{};
+            NativeArrayArgument module_ids_argument{};
+            module_ids_argument.count = static_cast<std::int32_t>(saved.module_ids.size());
+            module_ids_argument.capacity = module_ids_argument.count;
+            if (!saved.module_ids.empty())
+                module_ids_argument.data = reinterpret_cast<std::uintptr_t>(saved.module_ids.data());
+            std::memcpy(parameters.data() + module_ids_parameter.offset,
+                &module_ids_argument, sizeof(module_ids_argument));
+            const auto force_offset = static_cast<std::size_t>(force_bool.byte_offset);
+            parameters[force_offset] = static_cast<std::uint8_t>(
+                (parameters[force_offset] & static_cast<std::uint8_t>(~force_bool.field_mask)) |
+                force_bool.byte_mask);
+            std::memcpy(parameters.data() + vehicle_id_parameter.offset,
+                &saved.vehicle_id, sizeof(saved.vehicle_id));
+            std::memcpy(parameters.data() + skin_id_parameter.offset,
+                &saved.skin_id, sizeof(saved.skin_id));
+            std::memcpy(parameters.data() + default_data_parameter.offset,
+                saved.default_module_data.data(), saved.default_module_data.size());
+
+            if (!InvokeProcessEventGuarded(process_event_invoker, module_manager,
+                    update_function, parameters.data(), parms_size)) {
+                failure = "调用 HTVehicleModificationComponent.UpdateAllModulesWithIDs 失败";
+                return false;
+            }
+
+            // The supplied Dump declares UpdateVehicleMat(FName VehicleID, FName SkinID).
+            // Validate its owner and exact parameters before applying the selected skin.
+            std::uintptr_t update_mat_function{};
+            if (!FindExactObjectLocked(
+                    L"/Script/HTGame.HTVehicleModificationComponent.UpdateVehicleMat",
+                    update_mat_function) || update_mat_function == 0) {
+                failure = "Dump 中声明的 UpdateVehicleMat 原生入口不可用";
+                return false;
+            }
+            std::uintptr_t update_mat_owner{};
+            std::uint8_t update_mat_num_parms{};
+            std::uint16_t update_mat_parms_size{};
+            std::uint16_t update_mat_return_offset{};
+            if (!ReadPointerAt(*memory, update_mat_function,
+                    Layout(profile, "object.outer"), update_mat_owner) ||
+                update_mat_owner != expected_module_manager_class ||
+                !ReadValue(*memory, update_mat_function + Layout(profile, "ufunction.numParms"),
+                    update_mat_num_parms) ||
+                !ReadValue(*memory, update_mat_function + Layout(profile, "ufunction.parmsSize"),
+                    update_mat_parms_size) ||
+                !ReadValue(*memory, update_mat_function + Layout(profile, "ufunction.returnValueOffset"),
+                    update_mat_return_offset) ||
+                update_mat_num_parms != 2 || update_mat_parms_size != 0x10 ||
+                update_mat_return_offset != 0xFFFFu) {
+                failure = "UpdateVehicleMat 的所属类 / NumParms / ParmsSize 与 Dump 不匹配";
+                return false;
+            }
+            ReflectedPropertyInfo update_mat_vehicle_id;
+            ReflectedPropertyInfo update_mat_skin_id;
+            if (!FindReflectedPropertyLocked(update_mat_function,
+                    "VehicleID", update_mat_vehicle_id, false) ||
+                update_mat_vehicle_id.type != "NameProperty" ||
+                update_mat_vehicle_id.element_size != 8 || update_mat_vehicle_id.offset != 0 ||
+                update_mat_vehicle_id.array_dim != 1 ||
+                !FindReflectedPropertyLocked(update_mat_function,
+                    "SkinID", update_mat_skin_id, false) ||
+                update_mat_skin_id.type != "NameProperty" ||
+                update_mat_skin_id.element_size != 8 || update_mat_skin_id.offset != 8 ||
+                update_mat_skin_id.array_dim != 1) {
+                failure = "UpdateVehicleMat.VehicleID/SkinID 未通过 Dump 5.6.1 参数校验";
+                return false;
+            }
+            std::array<std::uint8_t, 0x10> update_mat_parameters{};
+            std::memcpy(update_mat_parameters.data() + update_mat_vehicle_id.offset,
+                &saved.vehicle_id, sizeof(saved.vehicle_id));
+            std::memcpy(update_mat_parameters.data() + update_mat_skin_id.offset,
+                &saved.skin_id, sizeof(saved.skin_id));
+            if (!InvokeProcessEventGuarded(process_event_invoker, module_manager,
+                    update_mat_function, update_mat_parameters.data(), update_mat_parameters.size())) {
+                failure = "调用 HTVehicleModificationComponent.UpdateVehicleMat 失败";
+                return false;
+            }
+
+            ReflectedPropertyInfo current_modules_property;
+            if (!FindReflectedPropertyLocked(actual_module_manager_class,
+                    "CurrentModuleIDList", current_modules_property, true) ||
+                current_modules_property.type != "ArrayProperty" ||
+                current_modules_property.element_size != 0x10 ||
+                current_modules_property.offset != 0x138 ||
+                current_modules_property.array_dim != 1) {
+                failure = "CurrentModuleIDList 未通过 Dump 5.6.1 后置校验";
+                return false;
+            }
+            std::uintptr_t current_modules_address{};
+            if (!AddAddress(module_manager, current_modules_property.offset, current_modules_address)) {
+                failure = "CurrentModuleIDList 地址计算失败";
+                return false;
+            }
+            NativeArrayHeader current_modules_array;
+            if (!ReadNativeArrayHeaderLocked(current_modules_address, current_modules_array, 128) ||
+                current_modules_array.count != static_cast<std::int32_t>(saved.module_ids.size())) {
+                failure = "原生改装调用后 CurrentModuleIDList 数量与用户所选配置不一致";
+                return false;
+            }
+            std::vector<std::uint64_t> observed_module_ids(saved.module_ids.size());
+            if (!observed_module_ids.empty() &&
+                !memory->Read(current_modules_array.data, observed_module_ids.data(),
+                    observed_module_ids.size() * sizeof(std::uint64_t))) {
+                failure = "无法读取改装调用后的 CurrentModuleIDList";
+                return false;
+            }
+            auto expected_module_ids = saved.module_ids;
+            std::ranges::sort(expected_module_ids);
+            std::ranges::sort(observed_module_ids);
+            if (expected_module_ids != observed_module_ids) {
+                failure = "原生改装调用后 CurrentModuleIDList 与用户所选配置不一致";
+                return false;
+            }
+            configured_module_count = saved.module_ids.size();
+            return true;
+        } catch (...) {
+            failure = "应用用户选择的载具改装配置时发生异常";
+            return false;
+        }
+    }
+
     AnomalyStatusV1 VehicleSummon(
         const AnomalyNteVehicleSummonRequestV1* request) noexcept {
+        constexpr std::uint32_t kAllowedSummonFlags =
+            ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION |
+            ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER |
+            ANOMALY_NTE_VEHICLE_SUMMON_V1_APPLY_CUSTOM_CONFIGURATION;
         if (request == nullptr || request->struct_size < sizeof(*request) ||
             (request->flags & (ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION |
                 ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER)) !=
                 (ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION |
                  ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER) ||
+            (request->flags & ~kAllowedSummonFlags) != 0 ||
             !std::ranges::all_of(request->world_position,
                 [](double value) { return std::isfinite(value); })) {
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
@@ -10230,6 +11187,33 @@ struct Ue5NteAdapter::State {
             return Status(ANOMALY_STATUS_V1_NOT_FOUND, "selected VehicleID is no longer in the current data table");
         }
 
+        const bool apply_custom_configuration =
+            (request->flags & ANOMALY_NTE_VEHICLE_SUMMON_V1_APPLY_CUSTOM_CONFIGURATION) != 0;
+        VehicleBuildConfiguration selected_configuration;
+        if (apply_custom_configuration) {
+            std::string configuration_failure;
+            if (!BuildVehicleConfigurationLocked(
+                    *selected, *request, selected_configuration, configuration_failure)) {
+                vehicle_summon_status_message = "改装召唤失败：" + configuration_failure;
+                return Status(ANOMALY_STATUS_V1_FAILED, vehicle_summon_status_message.c_str());
+            }
+        } else if (request->skin_id.data != nullptr || request->skin_id.size != 0 ||
+                   request->module_selections != nullptr || request->module_selection_count != 0) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                "普通召唤不能携带自定义改装选择");
+        }
+        std::size_t configured_module_count{};
+        const auto apply_custom_modifications = [&](const std::uintptr_t spawned_actor) noexcept {
+            if (!apply_custom_configuration) return true;
+            std::string apply_failure;
+            if (!ApplyVehicleConfigurationLocked(
+                    spawned_actor, selected_configuration, configured_module_count, apply_failure)) {
+                vehicle_summon_status_message = "车辆已生成，但所选改装应用失败：" + apply_failure;
+                return false;
+            }
+            return true;
+        };
+
         // Prefer the Anomaly-style direct route: resolve the VehicleData row's InVehicleTemple
         // soft class and use GameplayStatics deferred spawn. This path does not require a CheatManager.
         const std::array<double, 3> direct_destination{
@@ -10240,6 +11224,8 @@ struct Ue5NteAdapter::State {
             const char* direct_spawn_failure{};
             if (SpawnVehicleDirectLocked(
                     direct_vehicle_class, direct_destination, direct_spawned, direct_spawn_failure)) {
+                if (!apply_custom_modifications(direct_spawned))
+                    return Status(ANOMALY_STATUS_V1_FAILED, vehicle_summon_status_message.c_str());
                 std::string class_name = "Vehicle";
                 std::uintptr_t class_object{};
                 if (ReadPointerAt(*memory, direct_spawned, Layout(profile, "object.class"), class_object))
@@ -10250,11 +11236,16 @@ struct Ue5NteAdapter::State {
                 if (AddAddress(direct_spawned, Layout(profile, "object.internalIndex"), index_address) &&
                     ReadValue(*memory, index_address, internal_index) && internal_index >= 0)
                     entity_id = static_cast<std::uint64_t>(static_cast<std::uint32_t>(internal_index)) + 1U;
-                vehicle_summon_status_message = "召唤已实际生成并通过后置验证：" + class_name;
+                vehicle_summon_status_message = "召唤已实际生成并通过后置验证：" +
+                    (selected->display_label.empty() ? selected->id : selected->display_label);
                 if (entity_id != 0) vehicle_summon_status_message += " (#" + std::to_string(entity_id) + ")";
                 vehicle_summon_status_message += "；目标位置=(" + std::to_string(direct_destination[0]) +
                     ", " + std::to_string(direct_destination[1]) + ", " + std::to_string(direct_destination[2]) +
                     ")；Actor.Owner 已核验为本地玩家 Pawn";
+                if (apply_custom_configuration) {
+                    vehicle_summon_status_message += "；用户所选改装已提交游戏原生函数并通过模块列表后置验证（模块数=" +
+                        std::to_string(configured_module_count) + "；SkinID 已传入 UpdateVehicleMat）";
+                }
                 return Status(ANOMALY_STATUS_V1_OK, vehicle_summon_status_message.c_str());
             }
             // The detailed failure stage tells us whether no actor was created or a
@@ -10366,6 +11357,8 @@ struct Ue5NteAdapter::State {
             return Status(ANOMALY_STATUS_V1_FAILED,
                 "vehicle position verified but Actor.Owner is not the local player pawn");
         }
+        if (!apply_custom_modifications(spawned))
+            return Status(ANOMALY_STATUS_V1_FAILED, vehicle_summon_status_message.c_str());
         std::string class_name = "Vehicle";
         std::uintptr_t class_object{};
         if (ReadPointerAt(*memory, spawned, Layout(profile, "object.class"), class_object))
@@ -10376,11 +11369,16 @@ struct Ue5NteAdapter::State {
         if (AddAddress(spawned, Layout(profile, "object.internalIndex"), index_address) &&
             ReadValue(*memory, index_address, internal_index) && internal_index >= 0)
             entity_id = static_cast<std::uint64_t>(static_cast<std::uint32_t>(internal_index)) + 1U;
-        vehicle_summon_status_message = "召唤已实际生成并通过后置验证：" + class_name;
+        vehicle_summon_status_message = "召唤已实际生成并通过后置验证：" +
+            (selected->display_label.empty() ? selected->id : selected->display_label);
         if (entity_id != 0) vehicle_summon_status_message += " (#" + std::to_string(entity_id) + ")";
         vehicle_summon_status_message += "；目标位置=(" + std::to_string(destination[0]) +
             ", " + std::to_string(destination[1]) + ", " + std::to_string(destination[2]) +
             ")；Actor.Owner 已核验为本地玩家 Pawn";
+        if (apply_custom_configuration) {
+            vehicle_summon_status_message += "；用户所选改装已提交游戏原生函数并通过模块列表后置验证（模块数=" +
+                std::to_string(configured_module_count) + "；SkinID 已传入 UpdateVehicleMat）";
+        }
         return Status(ANOMALY_STATUS_V1_OK, vehicle_summon_status_message.c_str());
     }
 
@@ -10453,6 +11451,7 @@ struct Ue5NteAdapter::State {
                                 vehicle_current_velocity_ratio =
                                     vehicle_speed_field_baseline.top_speed_ratio;
                                 vehicle_speed_fields_applied = false;
+                                vehicle_speed_maintenance.Reset();
                             } else {
                                 std::array<std::uint8_t, 8> rollback_parameters{};
                                 std::memcpy(rollback_parameters.data() +
@@ -15655,7 +16654,9 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             VehicleSetOtherVehiclesEngineTorqueRatioThunk,
             VehicleSetOtherVehiclesMinSpeedRatioThunk,
             VehicleAuthorizeFineSpeedThunk, VehicleSetFineSpeedTuningEnabledThunk,
-            VehicleRevokeFineSpeedAuthorizationThunk, VehicleSetSpeedTargetThunk};
+            VehicleRevokeFineSpeedAuthorizationThunk,
+            VehicleCustomizationSnapshotThunk, VehicleCustomizationOptionThunk,
+            VehicleRepairCurrentDurabilityThunk, VehicleSetSpeedTargetThunk};
         pickup_service = {
             sizeof(AnomalyNtePickupServiceV1),
             ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
@@ -16024,6 +17025,33 @@ private:
         const AnomalyNteVehicleSpeedTargetV1* request) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? static_cast<State*>(lease.User())->VehicleSetSpeedTarget(request)
+                     : StoppedStatus();
+    }
+
+    // V7-V8: customization catalog reads the vehicle asset's module and skin tables.
+    static AnomalyStatusV1 ANOMALY_CALL VehicleCustomizationSnapshotThunk(
+        void* user, AnomalyStringViewV1 vehicle_row_id,
+        AnomalyNteVehicleCustomizationCatalogSnapshotV1* snapshot) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease
+            ? static_cast<State*>(lease.User())->VehicleCustomizationCatalogSnapshot(
+                  vehicle_row_id, snapshot)
+            : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleCustomizationOptionThunk(
+        void* user, AnomalyStringViewV1 vehicle_row_id, std::uint32_t index,
+        AnomalyNteVehicleCustomizationOptionV1* option) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease
+            ? static_cast<State*>(lease.User())->VehicleCustomizationOptionAt(
+                  vehicle_row_id, index, option)
+            : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL VehicleRepairCurrentDurabilityThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? static_cast<State*>(lease.User())->VehicleRepairCurrentDurability()
                      : StoppedStatus();
     }
 
@@ -17815,6 +18843,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         }
         state->RefreshAhudBindingLocked();
         state->RefreshCombatSkillBindingsLocked();
+        state->MaintainVehicleSpeedFieldsLocked();
         const bool combat_service_ready =
             state->NteCombatProfileAvailable() &&
             !state->IsPublished(ANOMALY_NTE_COMBAT_SERVICE_V1_ID);

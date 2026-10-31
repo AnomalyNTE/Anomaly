@@ -1,8 +1,9 @@
 #pragma once
 // 自动战斗：复用 plugins/common/combat 的共享状态机（静态库 anomaly_plugin_combat）。
 // 策略：技能优先（大招 → 小技能 → 平A），三项各由一个勾选框控制。
-// 结束判据只有两条，都不依赖伤害流：模块报 cleared（搜索半径内连续 5 秒无怪）或 attack_failed
-// （普攻/技能调用失败）。「多久没伤害」不能当判据——伤害流读不到时它在怪还活着时就成立。
+// 结束判据（命中任一即结束本点）：模块报 cleared（半径内连续 3 秒无怪，不要求先见过怪）、
+// 开打 15 秒一次怪都没遇到（面板值设到 3 秒以下才会先生效）；脚本侧另有 5 分钟兜底。判定不看
+// 伤害读数——伤害流读不到时（偏移失效或参与者句柄对不上），「多久没伤害」会在怪还活着时成立。
 
 namespace {
 
@@ -21,16 +22,17 @@ constexpr double kCombatRadiusMaximumMeters = 300.0;
 constexpr double kCombatFirstContactDefaultSeconds = 15.0;
 constexpr double kCombatFirstContactMinimumSeconds = 1.0;
 constexpr double kCombatFirstContactMaximumSeconds = 120.0;
+// 无怪判据（秒）：半径内连续这么久无怪 ⇒ 本点打完（模块侧计数，不要求先见过怪）。
+constexpr std::uint32_t kCombatNoMonsterSeconds = 3;
 constexpr std::size_t kCombatSecondsTextCapacity = 16;
 constexpr std::size_t kCombatRadiusTextCapacity = 8;
 
-// 自动战斗的收尾原因。脚本循环据此决定下一步（cleared/timeout/attack_failed 都可走下一步）。
+// 自动战斗的收尾原因。脚本循环据此决定下一步（none 以外的值都可走下一步）。
 enum class CombatResult : std::int32_t {
     none = 0,
     cleared = 1,
     first_contact_timeout = 2,
-    attack_failed = 3,
-    stopped = 4,
+    stopped = 3,
 };
 
 // on_draw 置位、on_update 消费。
@@ -152,6 +154,9 @@ Host CombatMakeHost() {
     host.skill_invocation = g_context.skill_invocation;
     host.pickup = g_context.pickup;
     host.search_radius_m = g_combat_radius_meters.load();
+    host.no_monster_seconds = kCombatNoMonsterSeconds;
+    // 半径内连续 3 秒无怪就收工，不要求先见过怪：空点也照这个时间走。
+    host.require_seen_monster = false;
     host.developer_mode = false;
     // 清空那一刻由模块发一次范围拾取。
     host.loot_after_kill = true;
@@ -204,7 +209,6 @@ const char* CombatResultName(const CombatResult result) {
     switch (result) {
     case CombatResult::cleared: return "已清空";
     case CombatResult::first_contact_timeout: return "首次接敌超时";
-    case CombatResult::attack_failed: return "打不动目标";
     case CombatResult::stopped: return "已停止";
     default: return "";
     }
@@ -213,9 +217,11 @@ const char* CombatResultName(const CombatResult result) {
 void AdvanceCombat() {
     if (g_combat_start_requested.exchange(false)) {
         g_combat_result.store(static_cast<std::int32_t>(CombatResult::none));
+        // 先重置再打时间戳：`CombatResetState` 会把 `g_combat_started_at` 清零，顺序反了它就在
+        // 同一帧里变成「开打于 epoch」，首次接敌超时立刻成立、怪还没动就去下一个点。
+        CombatResetState();
         g_combat_started_at = std::chrono::steady_clock::now();
         g_combat_hit_baseline = g_combat_state.last_player_hit_at;
-        CombatResetState();
         g_combat_active.store(true);
         CombatPublish("自动战斗：开始（技能优先，平A 兜底）");
         // 伤害流入口是否随服务发布：缺失是能力问题，齐全却收不到事件才是偏移或句柄问题。
@@ -237,11 +243,7 @@ void AdvanceCombat() {
     const Result result = anomaly::plugins::combat::Tick(host, g_combat_state);
 
     if (result == Result::cleared) {
-        CombatFinish(CombatResult::cleared, "自动战斗：已清空（见过怪后连续 5 秒无怪）");
-        return;
-    }
-    if (result == Result::unavailable && g_combat_state.attack_failed) {
-        CombatFinish(CombatResult::attack_failed, "自动战斗：打不动目标，已停止");
+        CombatFinish(CombatResult::cleared, "自动战斗：已清空（半径内连续 3 秒无怪）");
         return;
     }
     // 首次接敌超时：开打至今没遇到过怪 ⇒ 判定这个点没怪。
@@ -279,7 +281,7 @@ void CombatContent(const AnomalyUiServiceV1* ui) {
     // 单位写进标签：输入框已占掉窗口宽度的 65%，后面挂说明会被挤出窗口。
     LabeledField(ui, "首次接敌超时(秒)", "##night999-combat-first-contact",
                  g_combat_first_contact_text.data(), g_combat_first_contact_text.size());
-    // 半径就是「打完」的定义：半径内连续 5 秒无怪才收工。
+    // 半径就是「打完」的定义：半径内连续 3 秒无怪才收工。
     LabeledField(ui, "搜索半径(米)", "##night999-combat-radius", g_combat_radius_text.data(),
                  g_combat_radius_text.size());
     // 解析进原子量：on_update 只读原子量，不跨线程读这些 char 缓冲。

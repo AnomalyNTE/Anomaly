@@ -12,7 +12,8 @@ constexpr std::chrono::seconds kScriptTeleportTimeout{14};
 // 每次落地后的稳定等待：流送与区域状态需要一点时间才就绪，紧接着刷新会打空。
 constexpr std::chrono::seconds kScriptSettleDuration{2};
 constexpr std::chrono::seconds kScriptRefreshTimeout{30};
-constexpr std::chrono::minutes kScriptCombatTimeout{15};
+// 单个战斗点的兜底上限：正常由战斗模块的收尾判据结束，这里只防卡死。
+constexpr std::chrono::minutes kScriptCombatTimeout{5};
 
 // 传送点槽位：0 = 营地、1 = 1 号战斗点、2 = 2 号战斗点。
 constexpr int kScriptSlotCamp = 0;

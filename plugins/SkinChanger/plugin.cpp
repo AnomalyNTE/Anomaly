@@ -2,6 +2,7 @@
 #include "cosmetics.hpp"
 #include "awakening.hpp"
 #include "plates.hpp"
+#include "vehicle.hpp"
 #include <chrono>
 
 namespace {
@@ -52,6 +53,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     fallback_open = 1;
     lite_awakening::Load(host);
     lite_plates::Load(host);
+    lite_vehicle::Load(host);
     return CosmeticsLoad(host, context);
 }
 
@@ -60,6 +62,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) noexcept {
     next_update = {};
     lite_awakening::Start();
     lite_plates::Start();
+    lite_vehicle::Start();
     cosmetics_started = CosmeticsStart(context).code == ANOMALY_STATUS_V1_OK;
     static_cast<void>(EnsureWindow());
     return Ok();
@@ -68,6 +71,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) noexcept {
 AnomalyStatusV1 ANOMALY_CALL Stop(void* context, uint32_t reason) noexcept {
     ReleaseWindow();
     lite_plates::Stop();
+    const auto vehicle_status=lite_vehicle::Stop();
+    if(vehicle_status.code!=ANOMALY_STATUS_V1_OK) return vehicle_status;
     const auto awakening_status = lite_awakening::Stop();
     if (awakening_status.code != ANOMALY_STATUS_V1_OK) return awakening_status;
     if (!cosmetics_started) return Ok();
@@ -85,6 +90,7 @@ void ANOMALY_CALL Unload(void* context) noexcept {
 void ANOMALY_CALL Update(void* context, double delta) noexcept {
     lite_awakening::Update();
     lite_plates::Update();
+    lite_vehicle::Update();
     const auto now = Clock::now();
     if (cosmetics_started && now >= next_update) {
         next_update = now + std::chrono::milliseconds(100);
@@ -100,8 +106,12 @@ void DrawContent(void* context, const AnomalyUiServiceV1* ui) {
     if (ui->button(ui->user, StringView("解锁觉醒##category"), 0, 0)) category = 3;
     ui->same_line(ui->user, 0, -1);
     if (ui->button(ui->user, StringView("车牌##category"), 0, 0)) category = 4;
+    ui->same_line(ui->user, 0, -1);
+    if (ui->button(ui->user, StringView("载具##category"), 0, 0)) category = 5;
     lite_awakening::SetVisible(category == 3);
-    if (category == 4) lite_plates::Draw(ui);
+    lite_vehicle::SetVisible(category == 5);
+    if (category == 5) lite_vehicle::Draw(ui);
+    else if (category == 4) lite_plates::Draw(ui);
     else if (category == 3) lite_awakening::Draw(ui);
     else if (cosmetics_started) CosmeticsDraw(context, ui, category);
     else ui->text(ui->user, StringView("当前游戏版本的配饰/滑翔翼接口不可用。"));
@@ -133,7 +143,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPlug
     if (!descriptor || descriptor->struct_size < sizeof(*descriptor)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("b1ank.skin-changer"), anomaly::sdk::StringView("换肤器 Lite"),
-        anomaly::sdk::StringView("b1ank"), anomaly::sdk::StringView("0.1.29"),
+        anomaly::sdk::StringView("b1ank"), anomaly::sdk::StringView("0.1.41"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

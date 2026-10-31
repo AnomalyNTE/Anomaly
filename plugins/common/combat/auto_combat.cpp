@@ -82,8 +82,6 @@ constexpr double kAutoCombatDeadPosTolerance = 150.0;
 constexpr double kAutoCombatAttackRangeCm = 600.0;
 // 离开这个距离才算「不再打它」（迟滞，避免在攻击距离边界抖动时反复清零计时）。
 constexpr double kAutoCombatLeaveRangeCm = 1200.0;
-// 见过怪之后连续这么多秒无怪，本点就算打完（CloneEnter/plugin.cpp:6875 的同一个 5）。
-constexpr std::uint32_t kAutoCombatNoMonsterSeconds = 5;
 
 struct FNamePair {
     std::uint32_t cmp{};
@@ -1001,20 +999,24 @@ Result Tick(Host& host, State& state) noexcept {
             SetStatus(host, std::to_string(host.search_radius_m) + "米内无怪");
         }
     }
-    // 完成判据（原来在副本流程里，CloneEnter/plugin.cpp:6868–6887）：必须先见过怪才开始
-    // 计秒，所以「本来就没怪的点」不会被误判为完成——那种点由调用方自己的首次接敌超时收场。
+    // 完成判据（原来在副本流程里，CloneEnter/plugin.cpp:6868–6887）：`host.require_seen_monster`
+    // 为真时必须先见过怪才开始计秒，所以「本来就没怪的点」不会被误判为完成——那种点由调用方
+    // 自己的超时收场；为假时进战斗就计，空点按同一时长结束。
     // 计数是秒级的：no_monster_tick_at 是下一次允许 +1 的时刻。
     if (state.target_valid) {
         state.met_monster = true;
         state.no_monster_seconds = 0;
-        // 丢目标后要过满一秒才 +1：置 {} 会让第一帧立刻计数，「连续 5 秒」实际只剩约 4 秒。
+        // 丢目标后要过满一秒才 +1：置 {} 会让第一帧立刻计数，「连续 N 秒」实际只剩约 N-1 秒。
         state.no_monster_tick_at = now + std::chrono::seconds(1);
-    } else if (state.met_monster) {
-        if (now >= state.no_monster_tick_at) {
+    } else if (state.met_monster || !host.require_seen_monster) {
+        // 首次无怪（还没见过怪、也没排过计秒）同样要先等满一秒，否则开打那一帧就算掉一秒。
+        if (state.no_monster_tick_at == std::chrono::steady_clock::time_point{}) {
+            state.no_monster_tick_at = now + std::chrono::seconds(1);
+        } else if (now >= state.no_monster_tick_at) {
             ++state.no_monster_seconds;
             state.no_monster_tick_at = now + std::chrono::seconds(1);
         }
-        if (state.no_monster_seconds >= kAutoCombatNoMonsterSeconds) {
+        if (state.no_monster_seconds >= host.no_monster_seconds) {
             // cleared 只在进入该状态的那一帧报一次；清空后的掉落拾取（原实现每秒都发一次，
             // CloneEnter/plugin.cpp:4571–4576）挂在这同一次跳变上，因此也只会发一次。
             if (!state.cleared_reported) {
