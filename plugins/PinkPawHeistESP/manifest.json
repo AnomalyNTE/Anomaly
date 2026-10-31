@@ -5,7 +5,7 @@
   "description": "Displays Pink Paw Heist loot and extraction points with value filters and pickup controls.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "1.14.0",
+  "version": "1.18.0",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -26,7 +26,8 @@
     {"id": "anomaly.nte.entities", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.actors", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.pickup", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.ui-buttons", "minVersion": 1, "optional": true},
     {"id": "anomaly.font", "minVersion": 1, "optional": true}
   ],
-  "capabilities": ["ui", "configuration", "game-events", "interop-signature", "memory-read", "ue5-ahud", "ue5-names", "ue5-objects", "websocket", "nte-entity-snapshot", "nte-actor-snapshot", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "nte-pickup", "ui-font"]
+  "capabilities": ["ui", "configuration", "game-events", "interop-signature", "memory-read", "ue5-ahud", "ue5-names", "ue5-objects", "websocket", "nte-entity-snapshot", "nte-actor-snapshot", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "nte-pickup", "nte-ui-buttons", "ui-font"]
 }

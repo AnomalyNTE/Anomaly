@@ -21,24 +21,22 @@ BankLoopObservation Ready(const bool in_bank) {
     o.in_bank = in_bank;
     o.loot_ready = true;
     o.loot_present = true;
-    o.loot_revision = 1;
     return o;
 }
-void ReachExtraction(BankLoop& loop, BankLoopObservation& o) {
+void ReachEvacuation(BankLoop& loop, BankLoopObservation& o) {
     loop.Start(origin);
     o = Ready(true);
     Check(loop.Tick(o, origin) == BankLoopAction::none, "Joining an existing bank must collect first");
-    Check(loop.Tick(o, origin + 3s) == BankLoopAction::refresh_loot, "An empty observation needs a refresh");
-    Check(loop.Tick(o, origin + 4s) == BankLoopAction::none, "The pre-refresh cache cannot authorize departure");
-    ++o.loot_revision;
-    Check(loop.Tick(o, origin + 5s) == BankLoopAction::none, "A completed refresh confirms the empty bank");
-    Check(loop.Phase() == BankLoopPhase::waiting_extraction, "Must find an active extraction after confirmation");
+    Check(loop.Tick(o, origin + 3s) == BankLoopAction::evacuate,
+        "A finished bank requests settlement on the same observation, without an extraction marker");
+    Check(loop.Phase() == BankLoopPhase::evacuating, "The finished bank is evacuating");
 }
 }
 
 void RunBankIntroRuntimeTests();
 
 int main() {
+    // The entry cinema's presentation gate, exercised through its real timing contract.
     RunBankIntroRuntimeTests();
     {
         BankIntroSkip intro;
@@ -61,22 +59,32 @@ int main() {
     }
     {
         constexpr std::string_view saved_v11 = R"({"alwaysShowAccessCards":true,"autoTeleportPickup":false,"autoTeleportPickupDelayMs":350,"drawExtractions":true,"drawLootBoxes":false,"enabled":false,"menuOpen":true,"minimumValue":1000,"showActiveExtractionsOnly":true,"showPickableOnly":true,"teleportZOffset":0,"websocketEnabled":true,"websocketPort":14514})";
+        constexpr std::string_view saved_v13 = R"({"alwaysShowAccessCards":true,"autoTeleportPickup":false,"autoTeleportPickupDelayMs":350,"bankLoopRounds":5,"drawExtractions":true,"drawLootBoxes":false,"enabled":false,"menuOpen":true,"minimumValue":1000,"showActiveExtractionsOnly":true,"showPickableOnly":true,"teleportZOffset":0,"websocketEnabled":true,"websocketPort":14514})";
         Settings settings;
-        Check(SettingsDocumentReader(saved_v11).Read(settings, 11), "The existing v11 settings must migrate");
-        Check(settings.bank_loop_rounds == 0 && settings.bank_loop_skip_cutscenes &&
-            settings.minimum_value == 1000 && settings.auto_teleport_pickup_delay_ms == 350,
-            "Migration must preserve filters/delay and supply loop defaults");
+        Check(SettingsDocumentReader(saved_v13).Read(settings, 13),
+            "A schema 13 document must migrate to the round pause");
+        Check(settings.bank_loop_rounds == 5 && settings.minimum_value == 1000 &&
+            settings.auto_teleport_pickup_delay_ms == 350,
+            "Migration must preserve filters, rounds and the pickup delay");
+        Check(settings.bank_loop_cooldown_seconds == 6,
+            "Documents written before the pause default to a six second cooldown");
         settings.bank_loop_rounds = 7;
-        settings.bank_loop_skip_cutscenes = false;
+        settings.bank_loop_cooldown_seconds = 12;
         ApplySettings(settings);
         const auto serialized = SerializeSettings();
         Settings restored;
-        Check(SettingsDocumentReader(serialized).Read(restored, 12) && restored.bank_loop_rounds == 7 &&
-            !restored.bank_loop_skip_cutscenes && restored.minimum_value == 1000 &&
+        Check(SettingsDocumentReader(serialized).Read(restored, 14) && restored.bank_loop_rounds == 7 &&
+            restored.bank_loop_cooldown_seconds == 12 && restored.minimum_value == 1000 &&
             restored.auto_teleport_pickup_delay_ms == 350,
             "Loop options and old settings must survive serialization");
-        Check(!SettingsDocumentReader(saved_v11).Read(restored, 12),
+        Check(serialized.find("bankLoopSkipCutscenes") == std::string_view::npos,
+            "Cutscene skipping is unconditional, so no toggle is stored");
+        Check(!SettingsDocumentReader(saved_v11).Read(restored, 14),
             "The new schema must reject missing loop options");
+        std::string out_of_range(saved_v13);
+        out_of_range.insert(out_of_range.find('}'), ",\"bankLoopCooldownSeconds\":0");
+        Check(!SettingsDocumentReader(out_of_range).Read(restored, 14),
+            "A cooldown outside the documented range must be rejected, not clamped silently");
     }
     {
         BankLoop loop;
@@ -90,13 +98,8 @@ int main() {
             static_cast<void>(loop.Tick(o, now += 1s));
             Check(loop.Collecting() && loop.SkippingCutscenes(),
                 "An entry cinema can still show its skip button after loot is ready");
-            Check(loop.Tick(o, now += 3s) == BankLoopAction::refresh_loot, "Confirm empty filtered loot");
-            ++o.loot_revision;
-            static_cast<void>(loop.Tick(o, now += 1s));
-            o.extraction_available = true;
-            Check(loop.Tick(o, now += 1s) == BankLoopAction::teleport_extraction, "Reach the extraction");
-            o.at_extraction = true;
-            Check(loop.Tick(o, now += 1s) == BankLoopAction::evacuate, "Request normal evacuation");
+            Check(loop.Tick(o, now += 3s) == BankLoopAction::evacuate,
+                "Request normal evacuation as soon as nothing is left to collect");
             Check(loop.SkippingCutscenes() && loop.Rounds() == round - 1,
                 "Evacuation animation permits skipping but is not a completed round");
             o.world_ready = false;
@@ -106,7 +109,7 @@ int main() {
             o = Ready(false);
             static_cast<void>(loop.Tick(o, now += 1s));
             Check(loop.Rounds() == round && loop.RoundLimit() == 2, "Only confirmed returns count");
-            now += 8s;
+            now += 6s;
         }
         Check(loop.Phase() == BankLoopPhase::completed && !loop.Running() && !loop.SkippingCutscenes(),
             "The last requested round must stop both automation and skipping");
@@ -235,54 +238,35 @@ int main() {
         Check(loop.Tick(o, origin + 4s) == BankLoopAction::none && loop.Collecting(),
             "Unattempted cards must still be collected before departure");
         apply(o, ObserveBankLoopLoot(entries, true, true, false, target, all_attempted));
-        Check(loop.Tick(o, origin + 7s) == BankLoopAction::refresh_loot,
-            "Persistent attempted cards cannot prevent empty-loot confirmation");
-        // A newly observed card during confirmation must get its attempt too.
-        apply(o, ObserveBankLoopLoot(entries, true, true, false, target, not_attempted));
-        Check(loop.Tick(o, origin + 8s) == BankLoopAction::none && loop.Collecting(),
-            "New supporting cards must cancel pending departure");
-        apply(o, ObserveBankLoopLoot(entries, true, true, false, target, all_attempted));
-        Check(loop.Tick(o, origin + 11s) == BankLoopAction::refresh_loot,
-            "Attempting the new cards must allow confirmation again");
-        ++o.loot_revision;
-        static_cast<void>(loop.Tick(o, origin + 12s));
-        Check(loop.Phase() == BankLoopPhase::waiting_extraction,
-            "An unchanged card-only snapshot must allow finding an exit");
-        o.extraction_available = true;
-        Check(loop.Tick(o, origin + 13s) == BankLoopAction::teleport_extraction,
-            "Attempted cards must not send the loop back to collection");
-        o.at_extraction = true;
-        Check(loop.Tick(o, origin + 15s) == BankLoopAction::evacuate,
-            "Card-only leftovers must permit the normal evacuation request");
+        Check(loop.Tick(o, origin + 7s) == BankLoopAction::evacuate,
+            "Persistent attempted cards must permit the evacuation request");
 
-        // A normal valued item left after a successful request still blocks exit.
+        // A valued item that stays pickable after its attempt is reported, not fatal:
+        // the run must still leave the bank instead of stranding the player inside.
         entries[1].rob_bank.is_access_card = false;
         entries[1].rob_bank.fons_value = 50000;
         const auto remaining = ObserveBankLoopLoot(entries, true, true, false, target, all_attempted);
         Check(remaining.has_targets && remaining.target_count == 1 &&
             !remaining.has_unattempted_targets,
-            "Only supporting cards can be ignored after an attempt, never valued loot");
+            "An attempted valued item is still counted as a pending target");
         loop.Start(origin);
         apply(o, remaining);
         static_cast<void>(loop.Tick(o, origin));
-        static_cast<void>(loop.Tick(o, origin + 8s));
-        Check(loop.Failure() == BankLoopFailure::pickup_unconfirmed && loop.Rounds() == 0,
-            "A valued item still pickable must stop before evacuation");
+        Check(loop.Tick(o, origin + 1s) == BankLoopAction::evacuate,
+            "Surviving targets must not block the evacuation request");
     }
     {
         BankLoop loop;
         auto o = Ready(false);
         o.loot_present = false;
-        o.extraction_available = true;
         loop.Start(origin);
         Check(loop.Tick(o, origin) == BankLoopAction::enter, "Request initial bank entry");
         o.in_bank = true;
-        Check(loop.Tick(o, origin + 1s) == BankLoopAction::none, "Extraction appears before bank loot");
+        Check(loop.Tick(o, origin + 1s) == BankLoopAction::none, "An early empty scan cannot evacuate");
         for (const auto delay : {4s, 15s, 30s}) {
-            ++o.loot_revision;
             Check(loop.Tick(o, origin + delay) == BankLoopAction::none &&
                 loop.Phase() == BankLoopPhase::waiting_loot && loop.Rounds() == 0,
-                "Empty early scans with an active exit must wait for actual loot");
+                "Empty early scans must wait for actual loot");
         }
         o.loot_present = true;
         o.has_targets = o.has_unattempted_targets = true;
@@ -291,14 +275,8 @@ int main() {
         static_cast<void>(loop.Tick(o, origin + 36s));
         o.has_targets = o.has_unattempted_targets = false;
         o.loot_present = false;
-        Check(loop.Tick(o, origin + 39s) == BankLoopAction::refresh_loot,
-            "After actual collection an empty bank can be confirmed");
-        ++o.loot_revision;
-        static_cast<void>(loop.Tick(o, origin + 40s));
-        Check(loop.Tick(o, origin + 41s) == BankLoopAction::teleport_extraction,
-            "The active exit becomes usable after real loot was collected");
-        o.at_extraction = true;
-        Check(loop.Tick(o, origin + 43s) == BankLoopAction::evacuate, "Evacuate the collected round");
+        Check(loop.Tick(o, origin + 39s) == BankLoopAction::evacuate,
+            "The empty bank evacuates as soon as real loot was collected");
         o.in_bank = false;
         static_cast<void>(loop.Tick(o, origin + 45s));
         Check(loop.Tick(o, origin + 53s) == BankLoopAction::enter, "Request the next round");
@@ -326,23 +304,19 @@ int main() {
         o.pickup_busy = true;
         Check(loop.Tick(o, origin + 40s) == BankLoopAction::none, "A pickup in flight prevents departure");
         o.pickup_busy = false;
-        Check(loop.Tick(o, origin + 43s) == BankLoopAction::refresh_loot, "Refresh after the final pickup settles");
+        Check(loop.Tick(o, origin + 43s) == BankLoopAction::evacuate,
+            "The last settled pickup departs on the next observation, without a pause");
         o.has_targets = o.has_unattempted_targets = true;
-        ++o.loot_revision;
-        Check(loop.Tick(o, origin + 44s) == BankLoopAction::none && loop.Collecting(),
-            "A newly unlocked target cancels departure");
+        Check(loop.Tick(o, origin + 44s) == BankLoopAction::none &&
+            loop.Phase() == BankLoopPhase::evacuating,
+            "A requested settlement is never withdrawn for freshly seen loot");
     }
     {
         BankLoop loop;
         BankLoopObservation o;
-        ReachExtraction(loop, o);
-        Check(loop.Tick(o, origin + 6s) == BankLoopAction::none, "Inactive exits cannot be used");
-        o.extraction_available = true;
-        Check(loop.Tick(o, origin + 7s) == BankLoopAction::teleport_extraction, "Travel to an active exit");
-        Check(loop.Tick(o, origin + 9s) == BankLoopAction::none, "An issued teleport is not arrival");
-        o.at_extraction = true;
-        Check(loop.Tick(o, origin + 10s) == BankLoopAction::evacuate, "Evacuate after confirmed arrival");
-        Check(loop.Tick(o, origin + 11s) == BankLoopAction::none, "Do not repeat the evacuation request");
+        ReachEvacuation(loop, o);
+        Check(loop.Tick(o, origin + 6s) == BankLoopAction::none, "Do not repeat the evacuation request");
+        Check(loop.Phase() == BankLoopPhase::evacuating, "The evacuation request stays pending");
         o.world_ready = false;
         o.in_bank = false;
         Check(loop.Tick(o, origin + 15s) == BankLoopAction::none && loop.Rounds() == 0,
@@ -350,20 +324,39 @@ int main() {
         o = Ready(false);
         Check(loop.Tick(o, origin + 20s) == BankLoopAction::none && loop.Rounds() == 1,
             "Only returning outside completes a round");
-        Check(loop.Tick(o, origin + 27s) == BankLoopAction::none, "Wait between rounds");
-        Check(loop.Tick(o, origin + 28s) == BankLoopAction::enter, "Begin the next bank round");
+        Check(loop.Tick(o, origin + 25s) == BankLoopAction::none,
+            "The default round pause keeps a six second gap before the next entry");
+        Check(loop.Tick(o, origin + 26s) == BankLoopAction::enter, "Begin the next bank round");
         loop.Stop();
         Check(loop.Tick(o, origin + 50s) == BankLoopAction::none && !loop.Running(), "Stop cancels future entry");
     }
     {
+        // The pause between rounds is the player's setting, not a fixed delay.
         BankLoop loop;
         BankLoopObservation o;
-        ReachExtraction(loop, o);
-        Check(loop.Tick(o, origin + 66s) == BankLoopAction::none && loop.Phase() == BankLoopPhase::failed,
-            "No active extraction must stop without pretending a round succeeded");
+        ReachEvacuation(loop, o);
+        Check(loop.Cooldown() == 6s, "A fresh run starts with the documented six second pause");
+        o = Ready(false);
+        Check(loop.Tick(o, origin + 10s) == BankLoopAction::none && loop.Rounds() == 1,
+            "Returning outside ends the round and opens the pause");
+        loop.SetCooldown(2s);
+        Check(loop.Cooldown() == 2s, "A retuned pause replaces the running value");
+        Check(loop.Tick(o, origin + 11s) == BankLoopAction::none, "The retuned pause still holds entry");
+        Check(loop.Tick(o, origin + 12s) == BankLoopAction::enter, "The retuned pause expires on its own value");
+        loop.SetCooldown(0s);
+        Check(loop.Cooldown() == BankLoop::kMinimumCooldown, "A pause below the floor is clamped, not accepted");
+        loop.SetCooldown(10min);
+        Check(loop.Cooldown() == BankLoop::kMaximumCooldown, "A pause above the cap is clamped, not accepted");
+    }
+    {
+        BankLoop loop;
+        BankLoopObservation o;
+        ReachEvacuation(loop, o);
+        Check(loop.Tick(o, origin + 96s) == BankLoopAction::none && loop.Phase() == BankLoopPhase::failed,
+            "An unconfirmed evacuation must stop without pretending a round succeeded");
         Check(loop.Rounds() == 0, "A failure cannot increment the completed count");
-        Check(loop.Failure() == BankLoopFailure::extraction_unavailable,
-            "A missing extraction needs a specific failure reason");
+        Check(loop.Failure() == BankLoopFailure::evacuation_timeout,
+            "An unconfirmed evacuation needs its own failure reason");
     }
     {
         BankLoop loop;
@@ -373,13 +366,8 @@ int main() {
         o.has_targets = o.has_unattempted_targets = true;
         static_cast<void>(loop.Tick(o, origin + 1s));
         o.has_unattempted_targets = false;
-        Check(loop.Tick(o, origin + 4s) == BankLoopAction::none && loop.Collecting(),
-            "Wait for server pickup confirmation");
-        static_cast<void>(loop.Tick(o, origin + 9s));
-        Check(loop.Phase() == BankLoopPhase::failed && loop.Rounds() == 0,
-            "Uncollected attempted loot must stop, not be treated as an empty bank");
-        Check(loop.Failure() == BankLoopFailure::pickup_unconfirmed,
-            "Unconfirmed pickup must not be reported as a generic game timeout");
+        Check(loop.Tick(o, origin + 2s) == BankLoopAction::evacuate,
+            "Attempted loot that stayed pickable cannot strand the run inside the bank");
     }
     {
         BankLoop loop;
