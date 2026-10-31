@@ -1474,6 +1474,16 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CloneEnter/manifest.json
         PACKAGE_NAME CloneEnter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CloneEnter")
+    anomaly_add_plugin(anomaly_builtin_scene_loader
+        SOURCES plugins/SceneLoader/plugin.cpp
+        MANIFEST plugins/SceneLoader/manifest.json
+        PACKAGE_NAME SceneLoader
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SceneLoader")
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_scene_loader_fixture plugins/SceneLoader/tests.cpp)
+        target_compile_features(anomaly_scene_loader_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_scene_loader_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
 
     anomaly_add_plugin(anomaly_builtin_damage_dashboard
         SOURCES plugins/DamageDashboard/plugin.cpp
@@ -1668,7 +1678,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
         anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-        anomaly_builtin_clone_enter anomaly_builtin_damage_dashboard
+        anomaly_builtin_clone_enter anomaly_builtin_scene_loader anomaly_builtin_damage_dashboard
         anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
@@ -1692,6 +1702,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_box_auto PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_scene_loader PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_damage_dashboard PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
@@ -1750,6 +1761,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_wallet_collector WalletCol
 anomaly_stage_platform_preview_plugin(anomaly_builtin_box_auto BoxAuto)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_combat_box CombatBox)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_scene_loader SceneLoader)
 anomaly_stage_platform_preview_plugin(
     anomaly_builtin_damage_dashboard DamageDashboard)
 anomaly_stage_platform_preview_plugin(

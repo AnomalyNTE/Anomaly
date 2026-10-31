@@ -13,6 +13,7 @@
 - `BoxAuto`
 - `CombatBox`
 - `CloneEnter`
+- `SceneLoader`
 - `QuickUltimate`
 - `WalletCollector`
 - `NteFreeFly`
