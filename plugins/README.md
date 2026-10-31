@@ -22,6 +22,7 @@
 - `UiButtons`
 - `Jelly`
 - `Night999`
+- `NpcSummon`
 - `DamageDashboard`
 - `Deserted`
 
