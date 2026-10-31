@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "伤害来源记录",
+    "plugin.description": "记录角色造成的伤害类型与伤害来源（技能/效果），按“一段伤害”汇总，并可把记录到的那个伤害效果重新施加到记录的目标上。"
+  }
+}
