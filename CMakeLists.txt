@@ -1607,6 +1607,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/ModelScale/manifest.json
         PACKAGE_NAME ModelScale
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModelScale")
+    anomaly_add_plugin(anomaly_builtin_npc_summon
+        SOURCES plugins/NpcSummon/plugin.cpp
+        MANIFEST plugins/NpcSummon/manifest.json
+        PACKAGE_NAME NpcSummon
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NpcSummon")
     target_link_libraries(anomaly_builtin_hifi_vehicle_music PRIVATE
         nlohmann_json::nlohmann_json anomaly_miniaudio anomaly_rtaudio_asio anomaly_monkeys_audio anomaly_dsd2pcm
         ole32 shell32 uuid avrt winmm winhttp)
@@ -1673,7 +1678,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
         anomaly_builtin_model_scale anomaly_builtin_autofish
-        anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999)
+        anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
+        anomaly_builtin_npc_summon)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1700,6 +1706,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_deserted PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_night999 PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_npc_summon PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     if(TARGET anomaly-platform-preview)

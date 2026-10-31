@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "NPC 召唤",
+    "plugin.description": "搜索并召唤游戏内的 NPC：列出世界里真实运行的 actor 类，支持关键词筛选，一键生成到你面前，并可一键清除自己生成的 NPC。",
+    "window.title": "NPC 召唤",
+    "window.records.title": "NPC 生成记录"
+  }
+}
