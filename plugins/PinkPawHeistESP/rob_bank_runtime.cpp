@@ -107,6 +107,16 @@ constexpr std::ptrdiff_t kRobBankItemCoinOffset = 4;
 constexpr std::string_view kAccessCardItemPrefix = "RobBankItem_G";
 constexpr std::string_view kAwardDropIdPrefix = "drop_";
 
+// Clone-scene requests are resolved by name on the local PlayerState; no extraction id is read.
+constexpr std::ptrdiff_t kStructChildren = 72;
+constexpr std::ptrdiff_t kFieldNext = 40;
+constexpr std::size_t kMaximumFunctionParameters = 512;
+constexpr std::string_view kEvacuationFunctionName = "RobBankRequestEvacuation";
+constexpr std::array<std::string_view, 2> kExitCloneFunctionNames{
+    "ServerExitCloneSceneRPC",
+    "ServerRequestExitCloneSceneRPC",
+};
+
 constexpr std::uint32_t kMaximumObjects = 16U * 1024U * 1024U;
 constexpr std::uint32_t kMaximumObjectChunks = 4096;
 constexpr std::uint32_t kObjectDiscoveryBatch = 2048;
@@ -545,6 +555,53 @@ struct RobBankRuntime::Impl final {
             Read(vtable + bank_profile::kProcessEventSlot * sizeof(std::uintptr_t), method) &&
             method != 0 && InvokeBankFunction(
                 reinterpret_cast<void*>(object), method, function, parameters);
+    }
+
+    // Finds a reflected function by name along the class chain; parameters stay zeroed.
+    [[nodiscard]] bool FindClassFunction(
+        const std::uintptr_t class_object,
+        const std::string_view name,
+        std::uintptr_t& function) const {
+        std::uintptr_t owner = class_object;
+        for (std::uint32_t depth{}; owner != 0 && depth < 64; ++depth) {
+            std::uintptr_t field{};
+            if (Read(owner + kStructChildren, field)) {
+                for (std::uint32_t count{}; field != 0 && count < 8192; ++count) {
+                    std::uintptr_t next{}, field_class{};
+                    if (!Read(field + kFieldNext, next) ||
+                        !ReadPointerAt(field, kObjectClassOffset, field_class)) {
+                        return false;
+                    }
+                    if (ResolveObjectName(field_class) == "Function" &&
+                        ResolveObjectName(field) == name) {
+                        function = field;
+                        return true;
+                    }
+                    if (next == field) return false;
+                    field = next;
+                }
+            }
+            std::uintptr_t super{};
+            if (!Read(owner + kStructSuperOffset, super) || super == 0 ||
+                super == owner) {
+                return false;
+            }
+            owner = super;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool InvokeZeroedFunction(
+        const std::uintptr_t object, const std::uintptr_t function) const noexcept {
+        std::uint16_t parameter_size{};
+        if (function == 0 ||
+            !Read(function + bank_profile::kFunctionParmsSize, parameter_size) ||
+            parameter_size > kMaximumFunctionParameters) {
+            return false;
+        }
+        std::array<std::uint8_t, kMaximumFunctionParameters> parameters{};
+        return InvokeOnObject(
+            object, function, parameter_size == 0 ? nullptr : parameters.data());
     }
 
     [[nodiscard]] bool ReadBankEntry(
@@ -1706,28 +1763,21 @@ AnomalyStatusV1 RobBankRuntime::EnterBank() noexcept {
     }
 }
 
-AnomalyStatusV1 RobBankRuntime::Evacuate(const std::uint64_t extraction_entity_id) noexcept {
+AnomalyStatusV1 RobBankRuntime::RequestEvacuation() noexcept {
     if (!Refresh()) return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank evacuation context is unavailable");
+    if (!impl_->IsGameThread()) return Status(ANOMALY_STATUS_V1_CONFLICT, "Bank evacuation requires the Game thread");
     try {
-        if (extraction_entity_id == 0 || extraction_entity_id - 1U >= impl_->registry.count) {
-            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "Extraction identity changed");
+        std::uintptr_t player_state{}, player_class{}, function{};
+        if (!impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
+            !impl_->ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+            !impl_->ClassIsOrDerivesFrom(player_class, "HTPlayerState")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank evacuation context is unavailable");
         }
-        std::uintptr_t actor{}, actor_class{}, property{}, player_state{}, function{};
-        std::uint32_t serial{};
-        std::int32_t offset{};
-        FNameValue id;
-        if (!impl_->ReadObjectSlot(impl_->registry,
-                static_cast<std::uint32_t>(extraction_entity_id - 1U), actor, serial) || serial == 0 ||
-            !impl_->ReadPointerAt(actor, kObjectClassOffset, actor_class) ||
-            impl_->ResolveObjectName(actor_class) != kWorldMarkerClassName ||
-            !impl_->FindProperty(actor_class, "Extract_ID", "NameProperty", 8, property, offset) ||
-            !impl_->Read(actor + offset, id) || id.comparison_index == 0 ||
-            !impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
-            !impl_->BindFunction(bank_profile::kEvacuateFunction, 8,
-                bank_profile::kEvacuateParameters, function)) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank evacuation reflection contract is unavailable");
+        if (!impl_->FindClassFunction(player_class, kEvacuationFunctionName, function)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                "RobBankRequestEvacuation is not declared by the PlayerState");
         }
-        return impl_->InvokeOnObject(player_state, function, &id)
+        return impl_->InvokeZeroedFunction(player_state, function)
             ? Status(ANOMALY_STATUS_V1_OK)
             : Status(ANOMALY_STATUS_V1_FAILED, "Bank evacuation request failed");
     } catch (...) {
@@ -1735,8 +1785,27 @@ AnomalyStatusV1 RobBankRuntime::Evacuate(const std::uint64_t extraction_entity_i
     }
 }
 
-void RobBankRuntime::ResetCutsceneSkipping() noexcept {
-    impl_->intro_skip.Reset();
+AnomalyStatusV1 RobBankRuntime::ExitClone() noexcept {
+    if (!Refresh()) return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Clone exit context is unavailable");
+    if (!impl_->IsGameThread()) return Status(ANOMALY_STATUS_V1_CONFLICT, "Clone exit requires the Game thread");
+    try {
+        std::uintptr_t player_state{}, player_class{}, function{};
+        if (!impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
+            !impl_->ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+            !impl_->ClassIsOrDerivesFrom(player_class, "HTPlayerState")) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Clone exit context is unavailable");
+        }
+        for (const std::string_view name : kExitCloneFunctionNames) {
+            if (!impl_->FindClassFunction(player_class, name, function)) continue;
+            return impl_->InvokeZeroedFunction(player_state, function)
+                ? Status(ANOMALY_STATUS_V1_OK)
+                : Status(ANOMALY_STATUS_V1_FAILED, "Clone exit request failed");
+        }
+        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+            "The PlayerState declares no clone exit request");
+    } catch (...) {
+        return Status(ANOMALY_STATUS_V1_FAILED, "Clone exit resolution failed");
+    }
 }
 
 AnomalyStatusV1 RobBankRuntime::SkipCutscenes(std::uint32_t& requests_sent) noexcept {
@@ -1841,6 +1910,10 @@ AnomalyStatusV1 RobBankRuntime::SkipCutscenes(std::uint32_t& requests_sent) noex
     } catch (...) {
         return Status(ANOMALY_STATUS_V1_FAILED, "Cutscene skip resolution failed");
     }
+}
+
+void RobBankRuntime::ResetCutsceneSkipping() noexcept {
+    impl_->intro_skip.Reset();
 }
 
 bool RobBankRuntime::Available() const noexcept {
