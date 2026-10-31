@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "id": "com.yu.damage-source-recorder",
+  "name": "伤害来源记录",
+  "description": "记录角色造成的伤害类型与伤害来源（技能/效果），按“一段伤害”汇总，并可把记录到的那一个伤害效果重新施加到记录的目标上。",
+  "author": "YU-1021",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.3",
+  "audience": "user",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.core", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.combat", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.skill-invocation", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ue5.objects", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ue5.names", "minVersion": 1, "optional": true},
+    {"id": "anomaly.interop.signature", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "ui",
+    "nte-combat-read",
+    "nte-skills-read",
+    "nte-skill-invocation",
+    "ue5-objects",
+    "ue5-names",
+    "interop-signature",
+    "memory-read"
+  ]
+}
