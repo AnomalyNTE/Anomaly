@@ -81,7 +81,7 @@ The runtime package contains the following common built-in plugins (see [built-i
 | **Custom UID** | Sets a custom UID for the client UI |
 | **Skin Swapper Lite** | Character accessories, glider, awakened appearance previews, and custom license plates |
 | **Camera Tools** | Increases draw distance, adjusts view FOV and the free camera view, and optionally loads the scene at the free camera position |
-| **CameraBlurFix** | Removes the blur effect on the character when the camera tilts up |
+| **CameraBlurFix** | Removes the camera fade on the player, NPCs and crowd entities |
 | **Better Pose** | Adjusts animation speed, pause, and displacement scale, edits joint poses, and imports MMD motions and cameras, with playback speed, height correction, XYZ motion ratios, per-part amplitude, per-joint calibration, limb extension/landing points, and manual A/T-pose skeleton calibration |
 | **HiFi Vehicle Music** | Replaces in-vehicle music with a local lossless library, with WASAPI, DirectSound, and ASIO support |
 | **Quick Ultimate** | Hold Alt+1/2/3/4 to switch characters automatically and keep sending Q; release to stop |
