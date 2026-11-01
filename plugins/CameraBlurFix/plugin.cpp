@@ -713,7 +713,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
       sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR,
       ANOMALY_PLUGIN_API_V1_MINOR,
       anomaly::sdk::StringView("anomaly.local.nte.camera-blur-fix"),
-      anomaly::sdk::StringView("\xE5\x8F\x8D\xE8\x99\x9A\xE5\x8C\x96"),
+      anomaly::sdk::StringView("Camera Blur Fix"),
       anomaly::sdk::StringView("Anomaly"),
       anomaly::sdk::StringView("1.3.2"), Load, Start, Stop, Unload, Update,
       nullptr};
