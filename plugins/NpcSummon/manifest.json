@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "id": "local.nte.npc-summon",
+  "name": "NPC Summon",
+  "description": "Browse the NPC and vehicle classes that are actually running in the world, filter them by keyword, spawn one in front of the player, and clear the ones you spawned.",
+  "author": "OUO",
+  "license": "AGPL-3.0-only",
+  "audience": "user",
+  "version": "1.1.0",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.window", "minVersion": 1},
+    {"id": "anomaly.ue5.objects", "minVersion": 1},
+    {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.ue5.framework", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.actors", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "ui",
+    "ui-window",
+    "game-events",
+    "ue5-objects",
+    "ue5-names",
+    "interop-signature",
+    "nte-actor-snapshot",
+    "memory-read"
+  ]
+}
