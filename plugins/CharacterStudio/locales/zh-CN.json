@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "角色模型工作室",
+    "plugin.description": "本地生成角色模型：完整角色目录与中文名、不限数量和重复、循环待机、移动与销毁。",
+    "window.title": "角色模型工作室"
+  }
+}

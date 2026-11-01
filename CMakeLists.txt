@@ -1636,6 +1636,22 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/ModelScale/manifest.json
         PACKAGE_NAME ModelScale
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModelScale")
+    anomaly_add_plugin(anomaly_builtin_character_studio
+        SOURCES plugins/CharacterStudio/plugin.cpp
+        MANIFEST plugins/CharacterStudio/manifest.json
+        PACKAGE_NAME CharacterStudio
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CharacterStudio")
+    target_link_libraries(anomaly_builtin_character_studio PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(anomaly_builtin_character_studio PRIVATE /utf-8)
+    target_compile_definitions(anomaly_builtin_character_studio PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    add_custom_command(TARGET anomaly_builtin_character_studio POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/plugins/CharacterStudio/layout.json"
+            "$<TARGET_FILE_DIR:anomaly_builtin_character_studio>/layout.json")
+    set_property(TARGET anomaly_builtin_character_studio APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/plugins/CharacterStudio/layout.json")
+    install(FILES plugins/CharacterStudio/layout.json
+        DESTINATION Anomaly/plugins/CharacterStudio COMPONENT GameRuntime)
     anomaly_add_plugin(anomaly_builtin_npc_summon
         SOURCES plugins/NpcSummon/plugin.cpp
         MANIFEST plugins/NpcSummon/manifest.json
@@ -1706,7 +1722,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
-        anomaly_builtin_model_scale anomaly_builtin_autofish
+        anomaly_builtin_model_scale anomaly_builtin_autofish anomaly_builtin_character_studio
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon)
     if(ANOMALY_BUILD_TEST_PLUGINS)
