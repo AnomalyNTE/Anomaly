@@ -375,6 +375,14 @@
         "ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP": 2
       }
     },
+    "AnomalyUiChildFlagsV1": {
+      "size": 4,
+      "alignment": 4,
+      "values": {
+        "ANOMALY_UI_CHILD_V1_NONE": 0,
+        "ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y": 32
+      }
+    },
     "AnomalyUiTabBarFlagsV1": {
       "size": 4,
       "alignment": 4,
@@ -1001,7 +1009,7 @@
       }
     },
     "AnomalyUiServiceV1": {
-      "size": 360,
+      "size": 368,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -1049,7 +1057,8 @@
         "end_tab_bar": 328,
         "text_wrapped": 336,
         "begin_child_auto_fit_y": 344,
-        "slider_float_enabled": 352
+        "slider_float_enabled": 352,
+        "set_next_item_width": 360
       }
     },
     "AnomalyWindowSpecV1": {

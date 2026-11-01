@@ -64,6 +64,12 @@ typedef enum AnomalyUiTableFlagsV1 {
     ANOMALY_UI_TABLE_V1_SIZING_STRETCH_PROP = 1u << 1u
 } AnomalyUiTableFlagsV1;
 
+// Child flags retain the native flag values accepted by begin_child.
+typedef enum AnomalyUiChildFlagsV1 {
+    ANOMALY_UI_CHILD_V1_NONE = 0,
+    ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y = 1u << 5u
+} AnomalyUiChildFlagsV1;
+
 typedef enum AnomalyUiTabBarFlagsV1 {
     ANOMALY_UI_TAB_BAR_V1_NONE = 0,
     ANOMALY_UI_TAB_BAR_V1_REORDERABLE = 1u << 0u,
@@ -181,6 +187,9 @@ typedef struct AnomalyUiServiceV1 {
     int (ANOMALY_CALL *slider_float_enabled)(
         void* user, AnomalyStringViewV1 label, float* value,
         float minimum, float maximum, int enabled);
+    // Width for the next input/slider only; negative values reserve space at the right edge.
+    // A width of -1 fills the remaining content width, leaving one pixel.
+    void (ANOMALY_CALL *set_next_item_width)(void* user, float width);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus

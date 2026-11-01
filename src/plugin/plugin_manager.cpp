@@ -1189,6 +1189,18 @@ int ANOMALY_CALL ProxyTextLink(
         : 0;
 }
 
+void ANOMALY_CALL ProxySetNextItemWidth(void* user, const float width) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return;
+    if (context != nullptr &&
+        HasUiField<decltype(AnomalyUiServiceV1::set_next_item_width)>(
+            context->service, offsetof(AnomalyUiServiceV1, set_next_item_width)) &&
+        context->service->set_next_item_width != nullptr) {
+        context->service->set_next_item_width(context->service->user, width);
+    }
+}
+
 AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
     AnomalyUiServiceV1 proxy{
         sizeof(AnomalyUiServiceV1), ANOMALY_UI_SERVICE_V1_VERSION,
@@ -1204,6 +1216,7 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         ProxyDeveloperModeEnabled, ProxyInputText, ProxyButtonEnabled,
         ProxySameLine, ProxySetCursorPosX, ProxyTextLink,
         ProxyBeginTabBar, ProxyBeginTabItem, ProxyEndTabItem, ProxyEndTabBar};
+    proxy.set_next_item_width = ProxySetNextItemWidth;
     if (context == nullptr || context->service == nullptr) {
         proxy.struct_size = offsetof(AnomalyUiServiceV1, user) + sizeof(proxy.user);
         return proxy;
@@ -1252,6 +1265,12 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         context->service->end_tab_bar == nullptr) {
         advertised_size = (std::min)(
             advertised_size, offsetof(AnomalyUiServiceV1, end_tab_bar));
+    }
+    if (!HasUiField<decltype(AnomalyUiServiceV1::set_next_item_width)>(
+            context->service, offsetof(AnomalyUiServiceV1, set_next_item_width)) ||
+        context->service->set_next_item_width == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size, offsetof(AnomalyUiServiceV1, set_next_item_width));
     }
     proxy.struct_size = static_cast<std::uint32_t>(advertised_size);
     return proxy;

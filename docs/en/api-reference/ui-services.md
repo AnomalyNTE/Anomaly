@@ -74,6 +74,10 @@ typedef struct AnomalyUiServiceV1 {
     int  (ANOMALY_CALL *begin_tab_item)(void* user, AnomalyStringViewV1 label, int* open, uint32_t flags, int enabled);
     void (ANOMALY_CALL *end_tab_item)(void* user);
     void (ANOMALY_CALL *end_tab_bar)(void* user);
+    void (ANOMALY_CALL *text_wrapped)(void* user, AnomalyStringViewV1 text);
+    int  (ANOMALY_CALL *begin_child_auto_fit_y)(void* user, AnomalyStringViewV1 id, float width, float max_height);
+    int  (ANOMALY_CALL *slider_float_enabled)(void* user, AnomalyStringViewV1 label, float* value, float minimum, float maximum, int enabled);
+    void (ANOMALY_CALL *set_next_item_width)(void* user, float width);
 } AnomalyUiServiceV1;
 ```
 
@@ -129,6 +133,8 @@ typedef enum AnomalyUiTabItemFlagsV1 {
 ```
 
 `begin_table` accepts only `AnomalyUiTableFlagsV1` in `flags`. Use `ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT` to fit column widths to their content instead of stretching the columns of one row to the available width. `same_line(0, spacing)` gives a fixed small gap between adjacent widgets; `set_cursor_pos_x` takes a window-local X coordinate. Check the trailing fields of the service table with `struct_size` before calling them, so the plugin stays compatible with V1 hosts that do not yet provide these optional widgets.
+
+`set_next_item_width(width)` affects only the next input or slider. A negative width reserves space from the current content region right edge; for example, `-52` leaves 52 pixels for the label while the input fills the rest. Native step buttons keep their normal size. Check `struct_size` and the callback before use. `begin_child` accepts `ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y` (`1u << 5u`) to size its height to actual content rather than filling the remaining height.
 
 ---
 
