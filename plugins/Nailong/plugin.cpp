@@ -1495,7 +1495,7 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
 
     if(!ui||!ui->begin_window||!ui->end_window)return;
 
-    ui->set_next_window_size(ui->user,530,370,4);
+    ui->set_next_window_size(ui->user,420,330,4);
 
     if(ui->begin_window(ui->user,Sv("奶龙换装 · 原生模型替换"),nullptr,0)){
 
@@ -1540,41 +1540,12 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
 
         ui->separator(ui->user);
 
-        ui->text(ui->user,Sv("模式：UE 原生组件；玩家与附近 NPC 独立替换/恢复；不使用 Present 叠加"));
+        std::string summary="已替换 NPC："+std::to_string(npc_count.load())+" 个（离开范围自动恢复）";
+        ui->text(ui->user,{summary.data(),summary.size()});
 
-        std::string npc_line="附近 NPC："+std::to_string(npc_count.load())+" / 12（离开范围自动恢复）";
-        ui->text(ui->user,{npc_line.data(),npc_line.size()});
+        ui->text(ui->user,Sv("停用或卸载插件前，请先点击“恢复玩家与 NPC 并移除奶龙”。"));
 
-        char scan_line[320]{};std::string rejected;
-        {std::lock_guard lock2(npc_diag_mutex);rejected=npc_scan_rejected;}
-        const bool base_ready=CharacterBaseClass()!=0||HtCharacterClass()!=0;
-        std::snprintf(scan_line,sizeof(scan_line),"NPC 扫描: 已读 %u/%u(%u页) / 范围 %u / 槽位 %u / 职业 %u / 有网格 %u / 候选 %u / 最近 %.1fm %s%s%s",
-            npc_scan_seen.load(),npc_scan_total.load(),npc_scan_pages.load(),npc_scan_range.load(),
-            npc_scan_slots.load(),npc_scan_class.load(),npc_scan_meshes.load(),
-            npc_scan_candidates.load(),npc_scan_nearest.load(),
-            base_ready?"[继承链已解析]":"[继承链未解析]",
-            rejected.empty()?"":" 排除=",rejected.c_str());
-        ui->text(ui->user,Sv(scan_line));
-
-        ui->text(ui->user,Sv("模型：提供的 NLM4，保留源颜色、法线、比例"));
-
-        std::string bones="源骨骼: "+std::to_string(source_rig.bones.size())+" | 映射: "+std::to_string(mapped_bones.load())+" | 已蒙皮: "+std::to_string(skin_frames.load())+" 帧";
-
-        ui->text(ui->user,{bones.data(),bones.size()});
-
-        char actor_line[256]{}; std::string actor_name; {std::lock_guard lock2(actor_diag_mutex);actor_name=actor_class_diag;}
-
-        std::snprintf(actor_line,sizeof(actor_line),"Actor 页: %u/%u flags=0x%X class=%s",actor_returned.load(),actor_total.load(),actor_flags.load(),actor_name.c_str());
-
-        ui->text(ui->user,Sv(actor_line));
-
-        ui->text(ui->user,Sv("骨骼跟随：启用后模型会跟随原角色动作；关闭则为静态姿势"));
-
-        ui->text(ui->user,Sv("身体骨骼已接入；MMD 表情/口型 Morph 尚未映射"));
-
-        ui->text(ui->user,Sv("停用/热重载插件前，请先点击上方恢复按钮。"));
-
-        ui->text(ui->user,{status.data(),status.size()});
+        if(!status.empty())ui->text(ui->user,{status.data(),status.size()});
 
     }
 
