@@ -58,6 +58,10 @@ struct PlatformDiagnostics {
     std::function<std::string()> profile_json;
     std::function<anomaly::NteCompatibilitySnapshot()> nte_compatibility;
     std::function<std::vector<anomaly::HookRecordView>()> hooks;
+    // Driven by the platform worker: retries a game tick hook that failed during runtime
+    // startup and republishes the framework services once it comes up. Returns true when the
+    // retry is settled, which lets the worker drop the callback and stop polling.
+    std::function<bool()> retry_profile_hooks;
     std::function<anomaly::RepositoryCoordinatorSnapshot()> repository_snapshot;
     std::function<anomaly::RepositoryOperationSubmission()> repository_refresh;
     std::function<anomaly::RepositoryOperationSubmission(
@@ -71,6 +75,8 @@ struct PlatformDiagnostics {
     std::function<anomaly::PlatformSettingsApplyResult(
         const anomaly::PlatformSettingsApplyRequest&)> settings_apply;
     std::function<bool(std::string_view route)> settings_record_route;
+    // Persists the notice acceptance; false keeps it pending.
+    std::function<bool(std::uint32_t version)> settings_record_notice;
     // Phase 10 production evidence. The capture provider gates the GPU
     // readback work; the remaining callbacks are cheap no-op observations
     // when the evidence session is idle.

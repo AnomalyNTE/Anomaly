@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -52,6 +53,8 @@ constexpr auto kExtractionWorldPollInterval = std::chrono::seconds(1);
 constexpr auto kExtractionStateReadDelay = std::chrono::seconds(1);
 constexpr auto kExtractionStateRetryInterval = std::chrono::milliseconds(250);
 constexpr auto kMapPositionPublishInterval = std::chrono::milliseconds(200);
+// A game-button click is one request; the game needs a moment to answer with the next window.
+constexpr auto kButtonRetryInterval = std::chrono::milliseconds(1200);
 constexpr auto kMapLootSnapshotInterval = std::chrono::seconds(2);
 constexpr auto kMapLootSnapshotChunkPublishInterval = std::chrono::milliseconds(100);
 constexpr auto kMapLootSnapshotChunkRetryInterval = std::chrono::milliseconds(250);
@@ -60,7 +63,11 @@ constexpr std::size_t kMapLootSnapshotMetadataMaximumBytes = 256U;
 constexpr std::size_t kMapLootSnapshotMaximumItemsBytes =
     kMapLootSnapshotMaximumTextBytes - kMapLootSnapshotMetadataMaximumBytes;
 constexpr std::string_view kSettingsSchemaId = "settings";
-constexpr std::uint32_t kSettingsSchemaVersion = 12;
+constexpr std::uint32_t kSettingsSchemaVersion = 14;
+// Schema 13 fixed the round limit but had no pause between rounds.
+constexpr std::uint32_t kSettingsSchemaVersionBeforeBankLoopCooldown = 13;
+// Schema 12 still stored the retired cutscene-skip toggle; skipping is now unconditional.
+constexpr std::uint32_t kSettingsSchemaVersionBeforeAlwaysSkip = 12;
 constexpr std::uint32_t kSettingsSchemaVersionBeforeBankLoopOptions = 11;
 constexpr std::uint32_t kSettingsSchemaVersionBeforeAutoTeleportPickupDelay = 10;
 constexpr std::uint32_t kSettingsSchemaVersionBeforeAutoTeleportPickup = 9;
@@ -73,9 +80,15 @@ constexpr std::uint32_t kMinimumWebSocketPort = 1U;
 constexpr std::uint32_t kMaximumWebSocketPort = 65535U;
 constexpr std::uint32_t kDefaultAutoTeleportPickupDelayMilliseconds = 100U;
 constexpr std::uint32_t kMaximumAutoTeleportPickupDelayMilliseconds = 60000U;
+constexpr std::uint32_t kDefaultBankLoopCooldownSeconds =
+    static_cast<std::uint32_t>(pink_paw_heist_esp::BankLoop::kDefaultCooldown.count());
+constexpr std::uint32_t kMinimumBankLoopCooldownSeconds =
+    static_cast<std::uint32_t>(pink_paw_heist_esp::BankLoop::kMinimumCooldown.count());
+constexpr std::uint32_t kMaximumBankLoopCooldownSeconds =
+    static_cast<std::uint32_t>(pink_paw_heist_esp::BankLoop::kMaximumCooldown.count());
 constexpr std::uint32_t kEternalHeartValue = 666666U;
 constexpr std::string_view kSettingsSchema = R"json(
-{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","autoTeleportPickup","autoTeleportPickupDelayMs","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","alwaysShowAccessCards","minimumValue","teleportZOffset","websocketEnabled","websocketPort","bankLoopRounds","bankLoopSkipCutscenes"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"autoTeleportPickup":{"type":"boolean"},"autoTeleportPickupDelayMs":{"type":"integer","minimum":0,"maximum":60000},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"alwaysShowAccessCards":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"},"websocketEnabled":{"type":"boolean"},"websocketPort":{"type":"integer","minimum":1,"maximum":65535},"bankLoopRounds":{"type":"integer","minimum":0,"maximum":4294967295},"bankLoopSkipCutscenes":{"type":"boolean"}}}
+{"type":"object","additionalProperties":false,"required":["menuOpen","enabled","autoTeleportPickup","autoTeleportPickupDelayMs","drawLootBoxes","drawExtractions","showActiveExtractionsOnly","showPickableOnly","alwaysShowAccessCards","minimumValue","teleportZOffset","websocketEnabled","websocketPort","bankLoopRounds","bankLoopCooldownSeconds"],"properties":{"menuOpen":{"type":"boolean"},"enabled":{"type":"boolean"},"autoTeleportPickup":{"type":"boolean"},"autoTeleportPickupDelayMs":{"type":"integer","minimum":0,"maximum":60000},"drawLootBoxes":{"type":"boolean"},"drawExtractions":{"type":"boolean"},"showActiveExtractionsOnly":{"type":"boolean"},"showPickableOnly":{"type":"boolean"},"alwaysShowAccessCards":{"type":"boolean"},"minimumValue":{"type":"integer","minimum":0,"maximum":4294967295},"teleportZOffset":{"type":"number"},"websocketEnabled":{"type":"boolean"},"websocketPort":{"type":"integer","minimum":1,"maximum":65535},"bankLoopRounds":{"type":"integer","minimum":0,"maximum":4294967295},"bankLoopCooldownSeconds":{"type":"integer","minimum":1,"maximum":600}}}
 )json";
 
 struct LootEntity final {
@@ -168,7 +181,7 @@ struct Settings final {
     bool websocket_enabled{true};
     std::uint32_t websocket_port{kDefaultWebSocketPort};
     std::uint32_t bank_loop_rounds{};
-    bool bank_loop_skip_cutscenes{true};
+    std::uint32_t bank_loop_cooldown_seconds{kDefaultBankLoopCooldownSeconds};
 };
 
 struct DisplaySettings final {
@@ -228,6 +241,7 @@ struct Context final {
     const AnomalyConfigServiceV1* config{};
     const AnomalyUe5AhudServiceV1* ahud{};
     const AnomalyWebSocketServiceV1* websocket{};
+    const AnomalyNteUiButtonsServiceV1* buttons{};
     AnomalyGenerationHandleV1 settings_schema{};
     pink_paw_heist_esp::LootClassCache loot_classes;
     pink_paw_heist_esp::LootRefreshPolicy loot_refresh{kLootRefreshInterval};
@@ -248,7 +262,7 @@ struct Context final {
     int websocket_enabled{1};
     std::uint32_t websocket_port{kDefaultWebSocketPort};
     std::uint32_t bank_loop_rounds{};
-    int bank_loop_skip_cutscenes{1};
+    std::uint32_t bank_loop_cooldown_seconds{kDefaultBankLoopCooldownSeconds};
     std::size_t current_page{};
 
     bool settings_dirty{};
@@ -257,37 +271,40 @@ struct Context final {
     Clock::time_point next_pickability_context_refresh{};
     Clock::time_point next_rob_bank_preparation{};
     std::size_t known_loot_validation_cursor{};
-    std::uint64_t loot_revision{};
 };
 
 Context g_context;
 TeleportState g_teleport;
 PickupState g_pickup;
 AutoTeleportPickupState g_auto_teleport_pickup;
+
+// One-click automation requests from the Automation tab. The render thread only sets a
+// command; the Game thread resolves and runs it.
+enum class BankActionCommand : int {
+    none,
+    enter,
+    settle,
+    exit,
+};
 pink_paw_heist_esp::BankLoop g_bank_loop;
 std::atomic_int g_bank_loop_command{};
 std::atomic_uint32_t g_bank_loop_requested_rounds{};
-std::atomic_bool g_bank_loop_requested_skip{true};
-bool g_bank_loop_skip_cutscenes{true};
 bool g_bank_loop_skip_available{true};
-std::uint32_t g_bank_loop_skip_requests{};
-Clock::time_point g_bank_loop_next_skip{};
+Clock::time_point g_bank_loop_next_skip;
 std::atomic_bool g_disable_auto_pickup{};
 struct BankLoopDisplay final {
     pink_paw_heist_esp::BankLoopPhase phase{};
     std::uint32_t rounds{};
     std::string detail;
-    std::uint32_t observed_count{};
-    std::uint32_t ready_count{};
-    std::uint32_t target_count{};
     pink_paw_heist_esp::BankLoopFailure failure{};
     std::uint32_t round_limit{};
-    bool skip_available{true};
-    std::uint32_t skip_requests{};
 };
 std::atomic<std::shared_ptr<const BankLoopDisplay>> g_bank_loop_display;
 std::string g_bank_loop_error;
-ExtractionPoint g_bank_loop_extraction;
+std::atomic_int g_bank_action_command{};
+std::atomic<std::shared_ptr<const std::string>> g_bank_action_detail;
+Clock::time_point g_button_retry{};
+Clock::time_point g_button_scan_retry{};
 Clock::time_point g_bank_loop_next_probe{};
 ExtractionCache g_extractions;
 pink_paw_heist_esp::RobBankRuntime g_rob_bank;
@@ -302,6 +319,8 @@ AnomalyGenerationHandleV1 g_ahud_subscription{};
 MapSyncState g_map_sync;
 std::atomic_bool g_websocket_map_enabled{true};
 std::atomic_bool g_developer_mode{};
+// Published for the Automation tab, which runs on the render thread.
+std::atomic_bool g_in_bank{};
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -327,7 +346,10 @@ public:
             schema_version > kSettingsSchemaVersionBeforeAutoTeleportPickup;
         const bool require_auto_teleport_pickup_delay =
             schema_version >= kSettingsSchemaVersionBeforeBankLoopOptions;
-        const bool require_bank_loop_options = schema_version >= kSettingsSchemaVersion;
+        const bool require_bank_loop_options =
+            schema_version >= kSettingsSchemaVersionBeforeAlwaysSkip;
+        const bool require_bank_loop_cooldown =
+            schema_version > kSettingsSchemaVersionBeforeBankLoopCooldown;
 
         bool menu_open_seen{};
         bool enabled_seen{};
@@ -343,7 +365,7 @@ public:
         bool websocket_enabled_seen{};
         bool websocket_port_seen{};
         bool bank_loop_rounds_seen{};
-        bool bank_loop_skip_seen{};
+        bool bank_loop_cooldown_seen{};
         for (;;) {
             if (Consume('}')) break;
 
@@ -417,10 +439,18 @@ public:
                 if (!require_bank_loop_options || bank_loop_rounds_seen ||
                     !ReadUInt32(settings.bank_loop_rounds)) return false;
                 bank_loop_rounds_seen = true;
+            } else if (key == "bankLoopCooldownSeconds") {
+                if (!require_bank_loop_cooldown || bank_loop_cooldown_seen ||
+                    !ReadUInt32(settings.bank_loop_cooldown_seconds) ||
+                    settings.bank_loop_cooldown_seconds < kMinimumBankLoopCooldownSeconds ||
+                    settings.bank_loop_cooldown_seconds > kMaximumBankLoopCooldownSeconds) {
+                    return false;
+                }
+                bank_loop_cooldown_seen = true;
             } else if (key == "bankLoopSkipCutscenes") {
-                if (!require_bank_loop_options || bank_loop_skip_seen ||
-                    !ReadBoolean(settings.bank_loop_skip_cutscenes)) return false;
-                bank_loop_skip_seen = true;
+                // Skipping is unconditional now; older documents still name the retired toggle.
+                bool retired{};
+                if (!ReadBoolean(retired)) return false;
             } else {
                 return false;
             }
@@ -433,7 +463,8 @@ public:
         return menu_open_seen && enabled_seen &&
             (!require_auto_teleport_pickup || auto_teleport_pickup_seen) &&
             (!require_auto_teleport_pickup_delay || auto_teleport_pickup_delay_seen) &&
-            (!require_bank_loop_options || (bank_loop_rounds_seen && bank_loop_skip_seen)) &&
+            (!require_bank_loop_options || bank_loop_rounds_seen) &&
+            (!require_bank_loop_cooldown || bank_loop_cooldown_seen) &&
             (!require_hud_draw_settings || (draw_loot_boxes_seen && draw_extractions_seen)) &&
             show_active_extractions_only_seen && show_pickable_only_seen &&
             (!require_access_card_setting || always_show_access_cards_seen) &&
@@ -614,7 +645,7 @@ Settings CurrentSettings() noexcept {
         g_context.websocket_enabled != 0,
         std::clamp(
             g_context.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort),
-        g_context.bank_loop_rounds, g_context.bank_loop_skip_cutscenes != 0};
+        g_context.bank_loop_rounds, g_context.bank_loop_cooldown_seconds};
 }
 
 DisplaySettings CurrentDisplaySettings() noexcept {
@@ -654,7 +685,7 @@ void ApplySettings(const Settings& settings) noexcept {
     g_context.websocket_port = std::clamp(
         settings.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort);
     g_context.bank_loop_rounds = settings.bank_loop_rounds;
-    g_context.bank_loop_skip_cutscenes = settings.bank_loop_skip_cutscenes ? 1 : 0;
+    g_context.bank_loop_cooldown_seconds = settings.bank_loop_cooldown_seconds;
     g_websocket_map_enabled.store(settings.websocket_enabled, std::memory_order_release);
     g_context.current_page = 0;
     g_context.settings_dirty = false;
@@ -688,7 +719,7 @@ std::string SerializeSettings() {
         ",\"websocketEnabled\":" + (settings.websocket_enabled ? "true" : "false") +
         ",\"websocketPort\":" + std::to_string(settings.websocket_port) +
         ",\"bankLoopRounds\":" + std::to_string(settings.bank_loop_rounds) +
-        ",\"bankLoopSkipCutscenes\":" + (settings.bank_loop_skip_cutscenes ? "true" : "false") + "}";
+        ",\"bankLoopCooldownSeconds\":" + std::to_string(settings.bank_loop_cooldown_seconds) + "}";
 }
 
 bool LoadSettings() {
@@ -701,6 +732,8 @@ bool LoadSettings() {
         {nullptr, 0}, &size);
     if (size_status.code != ANOMALY_STATUS_V1_OK ||
         (schema_version != kSettingsSchemaVersion &&
+         schema_version != kSettingsSchemaVersionBeforeBankLoopCooldown &&
+         schema_version != kSettingsSchemaVersionBeforeAlwaysSkip &&
          schema_version != kSettingsSchemaVersionBeforeBankLoopOptions &&
          schema_version != kSettingsSchemaVersionBeforeAutoTeleportPickupDelay &&
          schema_version != kSettingsSchemaVersionBeforeAutoTeleportPickup &&
@@ -1270,7 +1303,6 @@ void RefreshCacheIfDue() {
         cache->loot = std::move(loot);
         cache->available = true;
         g_loot_cache.store(std::move(cache), std::memory_order_release);
-        ++g_context.loot_revision;
         g_context.last_valid_refresh = now;
         g_context.next_known_loot_validation = now + kKnownLootValidationInterval;
         g_context.known_loot_validation_cursor = 0;
@@ -1653,6 +1685,71 @@ bool DeveloperModeEnabled(const AnomalyHostApiV1* host) noexcept {
     const auto ui = QueryService<AnomalyUiServiceV1>(
         host, ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
     return ui && DeveloperModeEnabled(ui.service);
+}
+
+// Game buttons are clicked through the ui-buttons service; the game's handlers decide the outcome.
+bool ButtonsAvailable() noexcept {
+    const AnomalyNteUiButtonsServiceV1* const service = g_context.buttons;
+    return service != nullptr && service->status != nullptr && service->button_at != nullptr &&
+        service->find != nullptr && service->request_scan != nullptr &&
+        service->request_click != nullptr;
+}
+
+// A stale catalog hides on-screen buttons; rescan at most once a second.
+void EnsureButtonCatalog(const Clock::time_point now) noexcept {
+    if (!ButtonsAvailable()) return;
+    const AnomalyNteUiButtonsServiceV1* const service = g_context.buttons;
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return;
+    if ((status.flags & ANOMALY_NTE_UI_BUTTONS_STATUS_V1_SCANNING) != 0) return;
+    if (now < g_button_scan_retry) return;
+    g_button_scan_retry = now + std::chrono::seconds(1);
+    AnomalyGenerationHandleV1 request{};
+    static_cast<void>(service->request_scan(service->user, &request));
+}
+
+bool FindButton(const std::string_view name, AnomalyNteUiButtonSnapshotV1& snapshot) noexcept {
+    if (!ButtonsAvailable()) return false;
+    AnomalyNteUiButtonQueryV1 query{sizeof(query)};
+    query.category_mask =
+        ANOMALY_NTE_UI_BUTTON_QUERY_V1_CATEGORY(ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE);
+    query.name = anomaly::sdk::StringView(name);
+    std::uint32_t matches{};
+    const AnomalyNteUiButtonsServiceV1* const service = g_context.buttons;
+    if (service->find(service->user, &query, &snapshot, &matches).code !=
+        ANOMALY_STATUS_V1_OK) {
+        return false;
+    }
+    return matches != 0 && snapshot.button.id != 0;
+}
+
+bool ClickButton(const AnomalyNteUiButtonSnapshotV1& snapshot) noexcept {
+    if (!ButtonsAvailable()) return false;
+    AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
+    click.button = snapshot.button;
+    AnomalyGenerationHandleV1 request{};
+    const AnomalyNteUiButtonsServiceV1* const service = g_context.buttons;
+    return service->request_click(service->user, &click, &request).code ==
+        ANOMALY_STATUS_V1_OK;
+}
+
+// Clicks the first present button among the accepted names; the caller owns the interval.
+bool ClickAny(const std::initializer_list<std::string_view> names) noexcept {
+    AnomalyNteUiButtonSnapshotV1 snapshot{sizeof(snapshot)};
+    for (const std::string_view name : names) {
+        if (FindButton(name, snapshot)) return ClickButton(snapshot);
+    }
+    return false;
+}
+
+// The settlement window keeps the player inside the clone scene until it is dismissed.
+bool PollSettlementExit(const Clock::time_point now) noexcept {
+    if (!ButtonsAvailable()) return false;
+    EnsureButtonCatalog(now);
+    if (now < g_button_retry) return false;
+    if (!ClickAny({"BTN_Exit", "Btn_Exit", "BtnExit"})) return false;
+    g_button_retry = now + kButtonRetryInterval;
+    return true;
 }
 
 const char* StatusName(const std::uint32_t code) noexcept {
@@ -2365,31 +2462,72 @@ void ProcessAutoTeleportPickup() {
             g_auto_teleport_pickup.entity = entry.rob_bank.entity;
             g_auto_teleport_pickup.waiting_for_teleport = true;
         } else {
+            // Untried target: depart would leave loot behind and report a clean round.
+            if (g_bank_loop.Collecting()) {
+                g_bank_loop.Fail();
+                g_bank_loop_error = "Automatic teleport could not be requested";
+            }
             FinishAutoTarget();
         }
         return;
     }
 }
 
-void PublishBankLoop(const pink_paw_heist_esp::BankLoopLootObservation* loot = nullptr) {
+void PublishBankActionDetail(std::string detail) {
+    g_bank_action_detail.store(
+        std::make_shared<const std::string>(std::move(detail)), std::memory_order_release);
+}
+
+// The one-click Automation entries read live reflection state, so the Game thread runs them
+// and publishes only the outcome the render thread shows.
+void ProcessBankAction() {
+    const int command = g_bank_action_command.exchange(0, std::memory_order_acq_rel);
+    if (command == static_cast<int>(BankActionCommand::none)) return;
+    if (!g_developer_mode.load(std::memory_order_acquire) ||
+        !DeveloperModeEnabled(g_context.host)) {
+        PublishBankActionDetail("Developer mode is required");
+        return;
+    }
+    AnomalyStatusV1 result = StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+    switch (static_cast<BankActionCommand>(command)) {
+    case BankActionCommand::enter:
+        result = g_rob_bank.EnterBank();
+        if (result.code == ANOMALY_STATUS_V1_OK) {
+            g_world_gate_refresh_requested.store(true, std::memory_order_release);
+            g_loot_refresh_requested.store(true, std::memory_order_release);
+            g_extractions.refresh_requested.store(true, std::memory_order_release);
+        }
+        break;
+    case BankActionCommand::settle:
+        result = g_rob_bank.RequestEvacuation();
+        break;
+    case BankActionCommand::exit:
+        result = g_rob_bank.ExitClone();
+        if (result.code == ANOMALY_STATUS_V1_OK) {
+            g_world_gate_refresh_requested.store(true, std::memory_order_release);
+        }
+        break;
+    default: break;
+    }
+    PublishBankActionDetail(result.code == ANOMALY_STATUS_V1_OK
+        ? std::string("Request sent")
+        : (result.message.data != nullptr && result.message.size != 0
+            ? std::string(result.message.data, result.message.size)
+            : std::string(StatusName(result.code))));
+}
+
+void PublishBankLoop() {
     const auto previous = g_bank_loop_display.load(std::memory_order_acquire);
     const bool state_changed = !previous || previous->phase != g_bank_loop.Phase() ||
         previous->rounds != g_bank_loop.Rounds() || previous->detail != g_bank_loop_error ||
         previous->failure != g_bank_loop.Failure() ||
-        previous->round_limit != g_bank_loop.RoundLimit() ||
-        previous->skip_available != g_bank_loop_skip_available ||
-        previous->skip_requests != g_bank_loop_skip_requests;
-    const auto observed = loot ? loot->observed_count : previous ? previous->observed_count : 0U;
-    const auto ready = loot ? loot->ready_count : previous ? previous->ready_count : 0U;
-    const auto targets = loot ? loot->target_count : previous ? previous->target_count : 0U;
-    if (!state_changed && previous->observed_count == observed && previous->ready_count == ready &&
-        previous->target_count == targets) return;
+        previous->round_limit != g_bank_loop.RoundLimit();
+    if (!state_changed) return;
     g_bank_loop_display.store(std::make_shared<BankLoopDisplay>(BankLoopDisplay{
-        g_bank_loop.Phase(), g_bank_loop.Rounds(), g_bank_loop_error, observed, ready, targets,
-        g_bank_loop.Failure(), g_bank_loop.RoundLimit(), g_bank_loop_skip_available,
-        g_bank_loop_skip_requests}),
+        g_bank_loop.Phase(), g_bank_loop.Rounds(), g_bank_loop_error,
+        g_bank_loop.Failure(), g_bank_loop.RoundLimit()}),
         std::memory_order_release);
-    if (state_changed && (previous || g_bank_loop.Phase() != pink_paw_heist_esp::BankLoopPhase::stopped)) {
+    {
         const auto core = QueryService<AnomalyCoreServiceV1>(g_context.host,
             ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
         if (core && core.service->log) {
@@ -2409,14 +2547,14 @@ void PublishBankLoop(const pink_paw_heist_esp::BankLoopLootObservation* loot = n
 void ProcessBankLoop(const pink_paw_heist_esp::PinkPawWorldState bank_state) {
     using namespace pink_paw_heist_esp;
     const auto now = Clock::now();
+    g_bank_loop.SetCooldown(std::chrono::seconds(g_context.bank_loop_cooldown_seconds));
     const int command = g_bank_loop_command.exchange(0, std::memory_order_acq_rel);
     if (command == 1) {
-        g_bank_loop.Start(now, g_bank_loop_requested_rounds.load(std::memory_order_acquire));
-        g_bank_loop_skip_cutscenes = g_bank_loop_requested_skip.load(std::memory_order_acquire);
+        g_bank_loop.Start(now, g_bank_loop_requested_rounds.load(std::memory_order_acquire),
+            std::chrono::seconds(g_context.bank_loop_cooldown_seconds));
         g_bank_loop_skip_available = true;
-        g_bank_loop_skip_requests = 0;
-        g_rob_bank.ResetCutsceneSkipping();
         g_bank_loop_next_skip = {};
+        g_rob_bank.ResetCutsceneSkipping();
         g_bank_loop_error.clear();
         g_auto_teleport_pickup = {};
         g_disable_auto_pickup.store(true, std::memory_order_release);
@@ -2439,18 +2577,21 @@ void ProcessBankLoop(const pink_paw_heist_esp::PinkPawWorldState bank_state) {
         }
     }
     if (!g_bank_loop.Running()) { PublishBankLoop(); return; }
-    if (g_bank_loop_skip_cutscenes && g_bank_loop_skip_available &&
-        g_bank_loop.SkippingCutscenes() && now >= g_bank_loop_next_skip) {
+    // Once per second; the dialogue handler ends the sequence itself.
+    if (g_bank_loop_skip_available && g_bank_loop.SkippingCutscenes() &&
+        now >= g_bank_loop_next_skip) {
         std::uint32_t requests{};
-        g_bank_loop_skip_available = g_rob_bank.SkipCutscenes(requests).code == ANOMALY_STATUS_V1_OK;
-        g_bank_loop_skip_requests += requests;
+        g_bank_loop_skip_available =
+            g_rob_bank.SkipCutscenes(requests).code == ANOMALY_STATUS_V1_OK;
         g_bank_loop_next_skip = now + std::chrono::seconds(1);
+    }
+    if (g_bank_loop.Phase() == BankLoopPhase::evacuating) {
+        static_cast<void>(PollSettlementExit(now));
     }
 
     BankLoopObservation observation;
     observation.bank_known = bank_state != PinkPawWorldState::unavailable;
     observation.in_bank = bank_state == PinkPawWorldState::active;
-    observation.loot_revision = g_context.loot_revision;
     const auto session = QueryService<AnomalyNteSessionServiceV1>(g_context.host,
         ANOMALY_NTE_SESSION_SERVICE_V1_ID, ANOMALY_NTE_SESSION_SERVICE_V1_VERSION);
     const auto player = QueryService<AnomalyNtePlayerServiceV1>(g_context.host,
@@ -2476,53 +2617,12 @@ void ProcessBankLoop(const pink_paw_heist_esp::PinkPawWorldState bank_state) {
         g_auto_teleport_pickup.waiting_for_pickup_delay || g_auto_teleport_pickup.waiting_for_pickup_result;
     { std::scoped_lock lock(g_pickup.mutex); observation.pickup_busy |= g_pickup.pending.queued; }
     { std::scoped_lock lock(g_teleport.mutex); observation.pickup_busy |= g_teleport.pending.queued; }
-    if (g_bank_loop.Phase() == BankLoopPhase::waiting_extraction) {
-        const auto extractions = g_extraction_snapshot.load(std::memory_order_acquire);
-        double nearest = (std::numeric_limits<double>::max)();
-        if (extractions && extractions->available) {
-            for (const auto& point : extractions->points) {
-                if (point.activation != ExtractionActivation::active || !HasCurrentIdentity(point.snapshot.flags)) continue;
-                double distance{};
-                for (std::size_t axis{}; axis < 3; ++axis) {
-                    const double delta = point.snapshot.bounds_center[axis] - player_snapshot.position[axis];
-                    distance += delta * delta;
-                }
-                if (distance < nearest) { nearest = distance; g_bank_loop_extraction = point; }
-            }
-        }
-        observation.extraction_available = nearest != (std::numeric_limits<double>::max)();
-        // Activation may change after looting. Do not retain the display's settled
-        // inactive observation indefinitely while the loop waits for an exit.
-        if (!observation.extraction_available && now >= g_bank_loop_next_probe) {
-            g_extractions.refresh_requested.store(true, std::memory_order_release);
-            g_bank_loop_next_probe = now + std::chrono::seconds(1);
-        }
-    }
-    if (g_bank_loop.Phase() == BankLoopPhase::traveling && observation.world_ready) {
-        double distance{};
-        for (std::size_t axis{}; axis < 3; ++axis) {
-            const double destination = g_bank_loop_extraction.snapshot.bounds_center[axis] +
-                (axis == 2 ? g_context.teleport_z_offset : 0.0);
-            const double delta = destination - player_snapshot.position[axis];
-            distance += delta * delta;
-        }
-        std::scoped_lock lock(g_teleport.mutex);
-        observation.at_extraction = g_teleport.has_result &&
-            g_teleport.result_code == ANOMALY_STATUS_V1_OK && distance < 300.0 * 300.0;
-    }
     AnomalyStatusV1 result = anomaly::sdk::Ok();
     switch (g_bank_loop.Tick(observation, now)) {
     case BankLoopAction::enter: result = g_rob_bank.EnterBank(); break;
-    case BankLoopAction::refresh_loot:
-        g_loot_refresh_requested.store(true, std::memory_order_release); break;
-    case BankLoopAction::teleport_extraction: {
-        TryQueueTeleport(g_bank_loop_extraction.snapshot);
-        std::scoped_lock lock(g_teleport.mutex);
-        if (!g_teleport.pending.queued) result = StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE);
-        break;
-    }
     case BankLoopAction::evacuate:
-        result = g_rob_bank.Evacuate(g_bank_loop_extraction.snapshot.entity_id); break;
+        // The settlement flow's own request carries no id, so it needs no extraction marker.
+        result = g_rob_bank.RequestEvacuation(); break;
     default: break;
     }
     if (result.code != ANOMALY_STATUS_V1_OK) {
@@ -2536,7 +2636,7 @@ void ProcessBankLoop(const pink_paw_heist_esp::PinkPawWorldState bank_state) {
         g_world_gate_refresh_requested.store(true, std::memory_order_release);
         g_bank_loop_next_probe = now + std::chrono::seconds(1);
     }
-    PublishBankLoop(&loot_observation);
+    PublishBankLoop();
 }
 
 void DrawTeleportStatus(const AnomalyUiServiceV1* ui) {
@@ -2953,6 +3053,295 @@ void DrawExtractionRows(
     }
 }
 
+bool TabsAvailable(const AnomalyUiServiceV1* ui) noexcept {
+    return ui != nullptr && ui->begin_tab_bar != nullptr && ui->begin_tab_item != nullptr &&
+        ui->end_tab_item != nullptr && ui->end_tab_bar != nullptr;
+}
+
+bool BeginTabItem(const AnomalyUiServiceV1* ui, const std::string_view label) {
+    return ui->begin_tab_item(ui->user, anomaly::sdk::StringView(label), nullptr, 0U, 1) != 0;
+}
+
+void DrawLootTab(
+    const AnomalyUiServiceV1* ui,
+    const LootCache& loot_cache,
+    const bool developer_mode) {
+    const std::string enabled = g_context.localizer.Label(
+        "option.enabled", "Enable display", "enabled");
+    const bool changed_enabled = Checkbox(ui, enabled, &g_context.enabled);
+    const std::string loot_boxes = g_context.localizer.Label(
+        "option.draw_loot_boxes", "Draw loot boxes", "draw-loot-boxes");
+    const bool changed_loot_boxes = Checkbox(
+        ui, loot_boxes, &g_context.draw_loot_boxes);
+    const std::string extractions = g_context.localizer.Label(
+        "option.draw_extractions", "Draw extractions", "draw-extractions");
+    const bool changed_extractions = Checkbox(
+        ui, extractions, &g_context.draw_extractions);
+    const std::string active_extractions = g_context.localizer.Label(
+        "option.active_extractions_only", "Show active extractions only",
+        "active-extractions-only");
+    const bool changed_active_only = Checkbox(
+        ui, active_extractions, &g_context.show_active_extractions_only);
+    const std::string pickable_only = g_context.localizer.Label(
+        "option.pickable_only", "Show pickable loot only", "pickable-only");
+    const bool changed_pickable_only = Checkbox(
+        ui, pickable_only, &g_context.show_pickable_only);
+    const std::string access_cards = g_context.localizer.Label(
+        "option.always_show_access_cards", "Show access cards",
+        "always-show-access-cards");
+    const bool changed_access_cards = Checkbox(
+        ui, access_cards, &g_context.always_show_access_cards);
+    const std::string rainbow_preview = g_context.localizer.Label(
+        "option.rainbow_preview", "R \xC2\xB7 G \xC2\xB7 B", "rgb-easter-egg");
+    const bool changed_rainbow_preview = Checkbox(
+        ui, rainbow_preview, &g_context.rainbow_preview);
+    const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
+    const std::string minimum_value = g_context.localizer.Label(
+        "option.minimum_value", "Minimum value", "minimum-value");
+    const bool changed_minimum =
+        InputUInt32(ui, minimum_value, &g_context.minimum_value, 1000, 10000);
+    const bool supports_double_input = DoubleInputUi(ui) != nullptr;
+    bool changed_teleport_offset{};
+    if (developer_mode) {
+        const std::string teleport_offset = g_context.localizer.Label(
+            "option.teleport_z_offset", "Teleport Z offset (cm)", "teleport-z-offset");
+        changed_teleport_offset = InputDouble(
+            ui, teleport_offset, &g_context.teleport_z_offset, 10.0, 100.0);
+    }
+    const std::string websocket_enabled = g_context.localizer.Label(
+        "option.websocket_enabled", "Enable WebSocket real-time positioning",
+        "websocket-enabled");
+    const bool changed_websocket_enabled = Checkbox(
+        ui, websocket_enabled, &g_context.websocket_enabled);
+    const std::string websocket_port = g_context.localizer.Label(
+        "option.websocket_port", "WebSocket port", "websocket-port");
+    const bool changed_websocket_port = InputUInt32(
+        ui, websocket_port, &g_context.websocket_port, 1U, 100U);
+    if (changed_websocket_port) {
+        g_context.websocket_port = std::clamp(
+            g_context.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort);
+        static_cast<void>(RequestConfiguredWebSocketPort());
+    }
+    if (changed_websocket_enabled) {
+        g_websocket_map_enabled.store(
+            g_context.websocket_enabled != 0, std::memory_order_release);
+    }
+    const bool changed_display_settings =
+        changed_enabled || changed_loot_boxes || changed_extractions || changed_active_only ||
+        changed_pickable_only || changed_access_cards || changed_minimum ||
+        changed_teleport_offset;
+    if (changed_display_settings) {
+        g_context.settings_dirty = true;
+        g_context.current_page = 0;
+        PublishDisplaySettings();
+    }
+    if (changed_rainbow_preview) PublishDisplaySettings();
+    if (changed_websocket_enabled || changed_websocket_port) g_context.settings_dirty = true;
+    if (!supports_numeric_input) {
+        const std::string value = std::to_string(g_context.minimum_value);
+        const std::array arguments{std::string_view(value)};
+        Text(ui, g_context.localizer.Format(
+            "option.minimum_value.summary", "Minimum value: {0}", arguments));
+        const std::string port = std::to_string(g_context.websocket_port);
+        const std::array port_arguments{std::string_view(port)};
+        Text(ui, g_context.localizer.Format(
+            "option.websocket_port.summary", "WebSocket port: {0}", port_arguments));
+    }
+    DrawWebSocketInstructions(ui);
+    if (developer_mode && !supports_double_input) {
+        const std::string value = FormatSettingsDouble(g_context.teleport_z_offset);
+        const std::array arguments{std::string_view(value)};
+        Text(ui, g_context.localizer.Format(
+            "option.teleport_z_offset.summary", "Teleport Z offset (cm): {0}", arguments));
+    }
+    const std::string refresh = g_context.localizer.Label(
+        "action.refresh", "Refresh now", "refresh-now");
+    if (Button(ui, refresh)) {
+        g_world_gate_refresh_requested.store(true, std::memory_order_release);
+        g_loot_refresh_requested.store(true, std::memory_order_release);
+        g_extractions.refresh_requested.store(true, std::memory_order_release);
+    }
+
+    const DisplaySettings display_settings = CurrentDisplaySettings();
+    const auto extraction_snapshot =
+        g_extraction_snapshot.load(std::memory_order_acquire);
+    const bool extraction_available =
+        extraction_snapshot && extraction_snapshot->available;
+    std::vector<ExtractionPoint> extraction_points = extraction_snapshot
+        ? extraction_snapshot->points : std::vector<ExtractionPoint>{};
+    FilterExtractionPoints(extraction_points, display_settings);
+    const std::string extraction_count = std::to_string(extraction_points.size());
+    const std::array extraction_arguments{std::string_view(extraction_count)};
+    Text(ui, g_context.localizer.Format(
+        "extraction.count", "Extractions: {0}", extraction_arguments));
+    if (!extraction_available) {
+        Text(ui, g_context.localizer.Text(
+            "extraction.unavailable", "Extraction data unavailable"));
+    } else if (extraction_points.empty()) {
+        Text(ui, g_context.show_active_extractions_only != 0
+                ? g_context.localizer.Text(
+                      "extraction.no_active", "No active extractions")
+                : g_context.localizer.Text(
+                      "extraction.none", "No extractions on the current map"));
+    } else {
+        DrawExtractionRows(ui, extraction_points, developer_mode);
+    }
+
+    const std::vector<const LootEntity*> visible_loot =
+        CollectVisibleLoot(loot_cache, display_settings);
+    const std::size_t visible_count = visible_loot.size();
+    const std::string total = std::to_string(loot_cache.loot.size());
+    const std::string visible_total = std::to_string(visible_count);
+    const std::array summary_arguments{
+        std::string_view(total), std::string_view(visible_total)};
+    Text(ui, g_context.localizer.Format(
+        "loot.summary", "Current BankBox frame: {0}, visible: {1}", summary_arguments));
+    if (!loot_cache.available) {
+        Text(ui, g_context.localizer.Text(
+            "loot.snapshot_unavailable", "Entity snapshot unavailable"));
+    } else if (visible_loot.empty()) {
+        Text(ui, g_context.localizer.Text(
+            "loot.none_above_threshold", "No loot meets the current value threshold"));
+    } else {
+        const std::size_t page_count =
+            (visible_count + kLootRowsPerPage - 1) / kLootRowsPerPage;
+        g_context.current_page = (std::min)(g_context.current_page, page_count - 1);
+        const std::size_t first = g_context.current_page * kLootRowsPerPage;
+        const std::size_t last = (std::min)(first + kLootRowsPerPage, visible_count);
+        DrawLootRows(ui, visible_loot, first, last, developer_mode, true);
+        DrawLootPagination(ui, page_count);
+    }
+    if (developer_mode) DrawTeleportStatus(ui);
+    DrawPickupStatus(ui);
+}
+
+// Developer-only page: the loop switch, the round budget, the one-click bank entries and the
+// pickup control the loop owns while it runs.
+void DrawAutomationTab(const AnomalyUiServiceV1* ui) {
+    using pink_paw_heist_esp::BankLoopFailure;
+    using pink_paw_heist_esp::BankLoopPhase;
+    const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
+    const auto loop = g_bank_loop_display.load(std::memory_order_acquire);
+    const auto phase = loop ? loop->phase : BankLoopPhase::stopped;
+    const bool running = phase != BankLoopPhase::stopped && phase != BankLoopPhase::failed &&
+        phase != BankLoopPhase::completed;
+
+    int enabled = running ? 1 : 0;
+    if (Checkbox(ui, g_context.localizer.Label(
+            "option.bank_loop", "Automatic bank loop", "bank-loop-enabled"), &enabled)) {
+        if (enabled != 0) {
+            g_bank_loop_requested_rounds.store(
+                g_context.bank_loop_rounds, std::memory_order_release);
+            g_bank_loop_command.store(1, std::memory_order_release);
+        } else {
+            g_bank_loop_command.store(2, std::memory_order_release);
+        }
+    }
+    if (!running) {
+        g_context.settings_dirty |= InputUInt32(ui, g_context.localizer.Label(
+            "loop.rounds", "Bank rounds (0 = unlimited)", "bank-loop-rounds"),
+            &g_context.bank_loop_rounds, 1, 10);
+        g_context.settings_dirty |= InputUInt32(ui, g_context.localizer.Label(
+            "loop.cooldown_seconds", "Cooldown between rounds (CD)", "bank-loop-cooldown"),
+            &g_context.bank_loop_cooldown_seconds,
+            kMinimumBankLoopCooldownSeconds, kMaximumBankLoopCooldownSeconds);
+    }
+    const bool in_bank = g_in_bank.load(std::memory_order_acquire);
+    if (ButtonEnabled(ui, g_context.localizer.Label(
+            "action.enter_dungeon", "Enter the bank", "enter-dungeon"), !in_bank)) {
+        g_bank_action_command.store(
+            static_cast<int>(BankActionCommand::enter), std::memory_order_release);
+    }
+    if (ButtonEnabled(ui, g_context.localizer.Label(
+            "action.settle", "Request settlement", "request-settlement"), in_bank)) {
+        g_bank_action_command.store(
+            static_cast<int>(BankActionCommand::settle), std::memory_order_release);
+    }
+    if (ButtonEnabled(ui, g_context.localizer.Label(
+            "action.exit_dungeon", "Leave the bank", "exit-dungeon"), in_bank)) {
+        g_bank_action_command.store(
+            static_cast<int>(BankActionCommand::exit), std::memory_order_release);
+    }
+    if (const auto detail = g_bank_action_detail.load(std::memory_order_acquire);
+        detail != nullptr && !detail->empty()) {
+        Text(ui, *detail);
+    }
+
+    const char* key = "loop.stopped";
+    const char* fallback = "Stopped";
+    switch (phase) {
+    case BankLoopPhase::waiting_outside: key = "loop.ready"; fallback = "Preparing"; break;
+    case BankLoopPhase::entering: key = "loop.entering"; fallback = "Waiting for bank entry"; break;
+    case BankLoopPhase::waiting_loot: key = "loop.waiting_loot"; fallback = "Waiting for bank loot to load"; break;
+    case BankLoopPhase::looting: key = "loop.looting"; fallback = "Collecting filtered loot and access cards"; break;
+    case BankLoopPhase::evacuating: key = "loop.evacuating"; fallback = "Waiting for evacuation"; break;
+    case BankLoopPhase::cooldown: key = "loop.cooldown"; fallback = "Waiting before the next round"; break;
+    case BankLoopPhase::failed: key = "loop.failed"; fallback = "Stopped after a failure"; break;
+    case BankLoopPhase::completed: key = "loop.completed"; fallback = "Completed the requested rounds"; break;
+    default: break;
+    }
+    const std::string state = g_context.localizer.Text(key, fallback);
+    const std::string rounds = std::to_string(loop ? loop->rounds : 0);
+    const std::array loop_arguments{std::string_view(state), std::string_view(rounds)};
+    Text(ui, g_context.localizer.Format(
+        "loop.status", "Bank loop: {0}; completed rounds: {1}", loop_arguments));
+    if (loop && loop->round_limit != 0) {
+        const std::string limit = std::to_string(loop->round_limit);
+        const std::array arguments{std::string_view(limit)};
+        Text(ui, g_context.localizer.Format("loop.round_limit", "Target rounds: {0}", arguments));
+    }
+    if (loop && !loop->detail.empty()) {
+        Text(ui, loop->detail);
+    } else if (loop && phase == BankLoopPhase::failed) {
+        const char* error_key = "loop.error.action";
+        const char* error_fallback = "The bank action failed";
+        switch (loop->failure) {
+        case BankLoopFailure::world_unavailable:
+            error_key = "loop.error.world"; error_fallback = "Timed out waiting for the current world and player"; break;
+        case BankLoopFailure::entry_timeout:
+            error_key = "loop.error.entry"; error_fallback = "Bank entry was not confirmed"; break;
+        case BankLoopFailure::evacuation_timeout:
+            error_key = "loop.error.evacuation"; error_fallback = "Evacuation was requested, but returning outside was not confirmed"; break;
+        case BankLoopFailure::left_bank:
+            error_key = "loop.error.left"; error_fallback = "The bank was left before evacuation completed"; break;
+        case BankLoopFailure::loot_unavailable:
+            error_key = "loop.error.loot"; error_fallback = "Timed out preparing bank loot for pickup"; break;
+        default: break;
+        }
+        Text(ui, g_context.localizer.Text(error_key, error_fallback));
+    }
+
+    const std::string auto_teleport_pickup = g_context.localizer.Label(
+        "option.auto_teleport_pickup", "Auto teleport and pickup",
+        "auto-teleport-pickup");
+    bool changed_auto_teleport_pickup{};
+    if (!running) {
+        changed_auto_teleport_pickup = Checkbox(
+            ui, auto_teleport_pickup, &g_context.auto_teleport_pickup);
+    } else {
+        Text(ui, g_context.localizer.Text(
+            "loop.owns_pickup", "The loop controls automatic pickup"));
+    }
+    const std::string auto_teleport_pickup_delay = g_context.localizer.Label(
+        "option.auto_teleport_pickup_delay", "Teleport-pickup delay (ms)",
+        "auto-teleport-pickup-delay");
+    const bool changed_auto_teleport_pickup_delay = InputUInt32(
+        ui, auto_teleport_pickup_delay, &g_context.auto_teleport_pickup_delay_ms,
+        10U, 100U);
+    g_context.auto_teleport_pickup_delay_ms = std::clamp(
+        g_context.auto_teleport_pickup_delay_ms, 0U,
+        kMaximumAutoTeleportPickupDelayMilliseconds);
+    if (!supports_numeric_input) {
+        const std::string delay = std::to_string(g_context.auto_teleport_pickup_delay_ms);
+        const std::array arguments{std::string_view(delay)};
+        Text(ui, g_context.localizer.Format(
+            "option.auto_teleport_pickup_delay.summary",
+            "Teleport-pickup delay (ms): {0}", arguments));
+    }
+    g_context.settings_dirty |=
+        changed_auto_teleport_pickup || changed_auto_teleport_pickup_delay;
+}
+
 void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
     if (ui == nullptr || ui->begin_window == nullptr || ui->end_window == nullptr) return;
     if (g_disable_auto_pickup.load(std::memory_order_acquire)) {
@@ -2972,279 +3361,24 @@ void DrawMenu(const AnomalyUiServiceV1* ui, const LootCache& loot_cache) {
         ui->user, anomaly::sdk::StringView(title), &g_context.menu_open, 0);
     if (g_context.menu_open != menu_open_before) g_context.settings_dirty = true;
     if (visible != 0) {
-        const std::string enabled = g_context.localizer.Label(
-            "option.enabled", "Enable display", "enabled");
-        const bool changed_enabled = Checkbox(ui, enabled, &g_context.enabled);
-        const std::string loot_boxes = g_context.localizer.Label(
-            "option.draw_loot_boxes", "Draw loot boxes", "draw-loot-boxes");
-        const bool changed_loot_boxes = Checkbox(
-            ui, loot_boxes, &g_context.draw_loot_boxes);
-        const std::string extractions = g_context.localizer.Label(
-            "option.draw_extractions", "Draw extractions", "draw-extractions");
-        const bool changed_extractions = Checkbox(
-            ui, extractions, &g_context.draw_extractions);
-        const std::string active_extractions = g_context.localizer.Label(
-            "option.active_extractions_only", "Show active extractions only",
-            "active-extractions-only");
-        const bool changed_active_only = Checkbox(
-            ui, active_extractions, &g_context.show_active_extractions_only);
-        const std::string pickable_only = g_context.localizer.Label(
-            "option.pickable_only", "Show pickable loot only", "pickable-only");
-        const bool changed_pickable_only = Checkbox(
-            ui, pickable_only, &g_context.show_pickable_only);
-        const std::string access_cards = g_context.localizer.Label(
-            "option.always_show_access_cards", "Show access cards",
-            "always-show-access-cards");
-        const bool changed_access_cards = Checkbox(
-            ui, access_cards, &g_context.always_show_access_cards);
-        const std::string rainbow_preview = g_context.localizer.Label(
-            "option.rainbow_preview", "R \xC2\xB7 G \xC2\xB7 B", "rgb-easter-egg");
-        const bool changed_rainbow_preview = Checkbox(
-            ui, rainbow_preview, &g_context.rainbow_preview);
-        const bool supports_numeric_input = UInt32InputUi(ui) != nullptr;
-        const std::string minimum_value = g_context.localizer.Label(
-            "option.minimum_value", "Minimum value", "minimum-value");
-        const bool changed_minimum =
-            InputUInt32(ui, minimum_value, &g_context.minimum_value, 1000, 10000);
-        const bool supports_double_input = DoubleInputUi(ui) != nullptr;
-        bool changed_teleport_offset{};
-        if (developer_mode) {
-            const std::string teleport_offset = g_context.localizer.Label(
-                "option.teleport_z_offset", "Teleport Z offset (cm)", "teleport-z-offset");
-            changed_teleport_offset = InputDouble(
-                ui, teleport_offset, &g_context.teleport_z_offset, 10.0, 100.0);
-        }
-        const std::string websocket_enabled = g_context.localizer.Label(
-            "option.websocket_enabled", "Enable WebSocket real-time positioning",
-            "websocket-enabled");
-        const bool changed_websocket_enabled = Checkbox(
-            ui, websocket_enabled, &g_context.websocket_enabled);
-        const std::string websocket_port = g_context.localizer.Label(
-            "option.websocket_port", "WebSocket port", "websocket-port");
-        const bool changed_websocket_port = InputUInt32(
-            ui, websocket_port, &g_context.websocket_port, 1U, 100U);
-        if (changed_websocket_port) {
-            g_context.websocket_port = std::clamp(
-                g_context.websocket_port, kMinimumWebSocketPort, kMaximumWebSocketPort);
-            static_cast<void>(RequestConfiguredWebSocketPort());
-        }
-        if (changed_websocket_enabled) {
-            g_websocket_map_enabled.store(
-                g_context.websocket_enabled != 0, std::memory_order_release);
-        }
-        const bool changed_display_settings =
-            changed_enabled || changed_loot_boxes || changed_extractions || changed_active_only ||
-            changed_pickable_only || changed_access_cards || changed_minimum ||
-            changed_teleport_offset;
-        if (changed_display_settings) {
-            g_context.settings_dirty = true;
-            g_context.current_page = 0;
-            PublishDisplaySettings();
-        }
-        if (changed_rainbow_preview) PublishDisplaySettings();
-        if (changed_websocket_enabled || changed_websocket_port) g_context.settings_dirty = true;
-        if (!supports_numeric_input) {
-            const std::string value = std::to_string(g_context.minimum_value);
-            const std::array arguments{std::string_view(value)};
-            Text(ui, g_context.localizer.Format(
-                "option.minimum_value.summary", "Minimum value: {0}", arguments));
-            const std::string port = std::to_string(g_context.websocket_port);
-            const std::array port_arguments{std::string_view(port)};
-            Text(ui, g_context.localizer.Format(
-                "option.websocket_port.summary", "WebSocket port: {0}", port_arguments));
-        }
-        DrawWebSocketInstructions(ui);
-        if (developer_mode && !supports_double_input) {
-            const std::string value = FormatSettingsDouble(g_context.teleport_z_offset);
-            const std::array arguments{std::string_view(value)};
-            Text(ui, g_context.localizer.Format(
-                "option.teleport_z_offset.summary", "Teleport Z offset (cm): {0}", arguments));
-        }
-        const std::string refresh = g_context.localizer.Label(
-            "action.refresh", "Refresh now", "refresh-now");
-        if (Button(ui, refresh)) {
-            g_world_gate_refresh_requested.store(true, std::memory_order_release);
-            g_loot_refresh_requested.store(true, std::memory_order_release);
-            g_extractions.refresh_requested.store(true, std::memory_order_release);
-        }
-
-        const DisplaySettings display_settings = CurrentDisplaySettings();
-        const auto extraction_snapshot =
-            g_extraction_snapshot.load(std::memory_order_acquire);
-        const bool extraction_available =
-            extraction_snapshot && extraction_snapshot->available;
-        std::vector<ExtractionPoint> extraction_points = extraction_snapshot
-            ? extraction_snapshot->points : std::vector<ExtractionPoint>{};
-        FilterExtractionPoints(extraction_points, display_settings);
-        const std::string extraction_count = std::to_string(extraction_points.size());
-        const std::array extraction_arguments{std::string_view(extraction_count)};
-        Text(ui, g_context.localizer.Format(
-            "extraction.count", "Extractions: {0}", extraction_arguments));
-        if (!extraction_available) {
-            Text(ui, g_context.localizer.Text(
-                "extraction.unavailable", "Extraction data unavailable"));
-        } else if (extraction_points.empty()) {
-            Text(ui, g_context.show_active_extractions_only != 0
-                    ? g_context.localizer.Text(
-                          "extraction.no_active", "No active extractions")
-                    : g_context.localizer.Text(
-                          "extraction.none", "No extractions on the current map"));
+        // The automation page is a developer tool, so everyone else sees the loot page alone.
+        const bool tabs = developer_mode && TabsAvailable(ui) &&
+            ui->begin_tab_bar(ui->user, anomaly::sdk::StringView("##pink-paw-tabs"), 0) != 0;
+        if (!tabs) {
+            DrawLootTab(ui, loot_cache, developer_mode);
         } else {
-            DrawExtractionRows(ui, extraction_points, developer_mode);
+            if (BeginTabItem(ui, g_context.localizer.Label(
+                    "tab.loot", "Loot", "pink-paw-tab-loot"))) {
+                DrawLootTab(ui, loot_cache, developer_mode);
+                ui->end_tab_item(ui->user);
+            }
+            if (BeginTabItem(ui, g_context.localizer.Label(
+                    "tab.automation", "Automation", "pink-paw-tab-automation"))) {
+                DrawAutomationTab(ui);
+                ui->end_tab_item(ui->user);
+            }
+            ui->end_tab_bar(ui->user);
         }
-
-        const std::vector<const LootEntity*> visible_loot =
-            CollectVisibleLoot(loot_cache, display_settings);
-        bool changed_auto_teleport_pickup{};
-        bool changed_auto_teleport_pickup_delay{};
-        if (developer_mode) {
-            using pink_paw_heist_esp::BankLoopPhase;
-            const auto loop = g_bank_loop_display.load(std::memory_order_acquire);
-            const auto phase = loop ? loop->phase : BankLoopPhase::stopped;
-            const bool running = phase != BankLoopPhase::stopped && phase != BankLoopPhase::failed &&
-                phase != BankLoopPhase::completed;
-            if (!running) {
-                const bool rounds_changed = InputUInt32(ui, g_context.localizer.Label(
-                    "loop.rounds", "Bank rounds (0 = unlimited)", "bank-loop-rounds"),
-                    &g_context.bank_loop_rounds, 1, 10);
-                const bool skip_changed = Checkbox(ui, g_context.localizer.Label(
-                    "loop.skip_cutscenes", "Skip bank cutscenes", "bank-loop-skip"),
-                    &g_context.bank_loop_skip_cutscenes);
-                g_context.settings_dirty |= rounds_changed || skip_changed;
-            }
-            if (ButtonEnabled(ui, g_context.localizer.Label(
-                    "loop.start", "Start bank loop", "bank-loop-start"), !running)) {
-                g_bank_loop_requested_rounds.store(g_context.bank_loop_rounds, std::memory_order_release);
-                g_bank_loop_requested_skip.store(g_context.bank_loop_skip_cutscenes != 0, std::memory_order_release);
-                g_bank_loop_command.store(1, std::memory_order_release);
-            }
-            if (ButtonEnabled(ui, g_context.localizer.Label(
-                    "loop.stop", "Stop bank loop", "bank-loop-stop"), running)) {
-                g_bank_loop_command.store(2, std::memory_order_release);
-            }
-            const char* key = "loop.stopped";
-            const char* fallback = "Stopped";
-            switch (phase) {
-            case BankLoopPhase::waiting_outside: key = "loop.ready"; fallback = "Preparing"; break;
-            case BankLoopPhase::entering: key = "loop.entering"; fallback = "Waiting for bank entry"; break;
-            case BankLoopPhase::waiting_loot: key = "loop.waiting_loot"; fallback = "Waiting for bank loot to load"; break;
-            case BankLoopPhase::looting: key = "loop.looting"; fallback = "Collecting filtered loot and access cards"; break;
-            case BankLoopPhase::confirming_loot: key = "loop.confirming"; fallback = "Refreshing to confirm no targets remain"; break;
-            case BankLoopPhase::waiting_extraction: key = "loop.finding_exit"; fallback = "Waiting for an active extraction"; break;
-            case BankLoopPhase::traveling: key = "loop.traveling"; fallback = "Moving to extraction"; break;
-            case BankLoopPhase::evacuating: key = "loop.evacuating"; fallback = "Waiting for evacuation"; break;
-            case BankLoopPhase::cooldown: key = "loop.cooldown"; fallback = "Waiting before the next round"; break;
-            case BankLoopPhase::failed: key = "loop.failed"; fallback = "Stopped after a failure"; break;
-            case BankLoopPhase::completed: key = "loop.completed"; fallback = "Completed the requested rounds"; break;
-            default: break;
-            }
-            const std::string state = g_context.localizer.Text(key, fallback);
-            const std::string rounds = std::to_string(loop ? loop->rounds : 0);
-            const std::array loop_arguments{std::string_view(state), std::string_view(rounds)};
-            Text(ui, g_context.localizer.Format(
-                "loop.status", "Bank loop: {0}; completed rounds: {1}", loop_arguments));
-            if (loop && loop->round_limit != 0) {
-                const std::string limit = std::to_string(loop->round_limit);
-                const std::array arguments{std::string_view(limit)};
-                Text(ui, g_context.localizer.Format("loop.round_limit", "Target rounds: {0}", arguments));
-            }
-            if (loop && !loop->skip_available) Text(ui, g_context.localizer.Text(
-                "loop.skip_unavailable", "Automatic skipping is unavailable; waiting for normal cutscene completion"));
-            if (loop && g_context.bank_loop_skip_cutscenes != 0 && phase != BankLoopPhase::stopped) {
-                const std::string requests = std::to_string(loop->skip_requests);
-                const std::array arguments{std::string_view(requests)};
-                Text(ui, g_context.localizer.Format("loop.skip_requests", "Cutscene skip requests: {0}", arguments));
-            }
-            if (loop && phase != BankLoopPhase::stopped) {
-                const std::string observed = std::to_string(loop->observed_count);
-                const std::string ready = std::to_string(loop->ready_count);
-                const std::string targets = std::to_string(loop->target_count);
-                const std::array counts{std::string_view(observed), std::string_view(ready), std::string_view(targets)};
-                Text(ui, g_context.localizer.Format("loop.loot_counts",
-                    "Loot found: {0}; ready: {1}; matching filter: {2}", counts));
-                Text(ui, g_context.localizer.Text("loop.card_completion",
-                    "Access cards are attempted once per round; evacuation follows the minimum-value loot filter"));
-            }
-            if (loop && !loop->detail.empty()) {
-                Text(ui, loop->detail);
-            } else if (loop && phase == BankLoopPhase::failed) {
-                using pink_paw_heist_esp::BankLoopFailure;
-                const char* error_key = "loop.error.action";
-                const char* error_fallback = "The bank action failed";
-                switch (loop->failure) {
-                case BankLoopFailure::world_unavailable:
-                    error_key = "loop.error.world"; error_fallback = "Timed out waiting for the current world and player"; break;
-                case BankLoopFailure::entry_timeout:
-                    error_key = "loop.error.entry"; error_fallback = "Bank entry was not confirmed"; break;
-                case BankLoopFailure::evacuation_timeout:
-                    error_key = "loop.error.evacuation"; error_fallback = "Evacuation was requested, but returning outside was not confirmed"; break;
-                case BankLoopFailure::left_bank:
-                    error_key = "loop.error.left"; error_fallback = "The bank was left before evacuation completed"; break;
-                case BankLoopFailure::loot_unavailable:
-                    error_key = "loop.error.loot"; error_fallback = "Timed out preparing bank loot for pickup"; break;
-                case BankLoopFailure::pickup_unconfirmed:
-                    error_key = "loop.error.pickup"; error_fallback = "Pickup was requested, but some targets are still pickable"; break;
-                case BankLoopFailure::refresh_timeout:
-                    error_key = "loop.error.refresh"; error_fallback = "Timed out refreshing the loot list after pickup"; break;
-                case BankLoopFailure::extraction_unavailable:
-                    error_key = "loop.error.extraction"; error_fallback = "No active extraction was found"; break;
-                case BankLoopFailure::arrival_timeout:
-                    error_key = "loop.error.arrival"; error_fallback = "Arrival at the extraction was not confirmed"; break;
-                default: break;
-                }
-                Text(ui, g_context.localizer.Text(error_key, error_fallback));
-            }
-            const std::string auto_teleport_pickup = g_context.localizer.Label(
-                "option.auto_teleport_pickup", "Auto teleport and pickup",
-                "auto-teleport-pickup");
-            if (!running) {
-                changed_auto_teleport_pickup = Checkbox(
-                    ui, auto_teleport_pickup, &g_context.auto_teleport_pickup);
-            } else {
-                Text(ui, g_context.localizer.Text(
-                    "loop.owns_pickup", "The loop controls automatic pickup"));
-            }
-            const std::string auto_teleport_pickup_delay = g_context.localizer.Label(
-                "option.auto_teleport_pickup_delay", "Teleport-pickup delay (ms)",
-                "auto-teleport-pickup-delay");
-            changed_auto_teleport_pickup_delay = InputUInt32(
-                ui, auto_teleport_pickup_delay, &g_context.auto_teleport_pickup_delay_ms,
-                10U, 100U);
-            g_context.auto_teleport_pickup_delay_ms = std::clamp(
-                g_context.auto_teleport_pickup_delay_ms, 0U,
-                kMaximumAutoTeleportPickupDelayMilliseconds);
-            if (!supports_numeric_input) {
-                const std::string delay = std::to_string(g_context.auto_teleport_pickup_delay_ms);
-                const std::array arguments{std::string_view(delay)};
-                Text(ui, g_context.localizer.Format(
-                    "option.auto_teleport_pickup_delay.summary",
-                    "Teleport-pickup delay (ms): {0}", arguments));
-            }
-        }
-        const std::size_t visible_count = visible_loot.size();
-        const std::string total = std::to_string(loot_cache.loot.size());
-        const std::string visible_total = std::to_string(visible_count);
-        const std::array summary_arguments{
-            std::string_view(total), std::string_view(visible_total)};
-        Text(ui, g_context.localizer.Format(
-            "loot.summary", "Current BankBox frame: {0}, visible: {1}", summary_arguments));
-        if (!loot_cache.available) {
-            Text(ui, g_context.localizer.Text(
-                "loot.snapshot_unavailable", "Entity snapshot unavailable"));
-        } else if (visible_loot.empty()) {
-            Text(ui, g_context.localizer.Text(
-                "loot.none_above_threshold", "No loot meets the current value threshold"));
-        } else {
-            const std::size_t page_count =
-                (visible_count + kLootRowsPerPage - 1) / kLootRowsPerPage;
-            g_context.current_page = (std::min)(g_context.current_page, page_count - 1);
-            const std::size_t first = g_context.current_page * kLootRowsPerPage;
-            const std::size_t last = (std::min)(first + kLootRowsPerPage, visible_count);
-            DrawLootRows(ui, visible_loot, first, last, developer_mode, true);
-            DrawLootPagination(ui, page_count);
-        }
-        if (developer_mode) DrawTeleportStatus(ui);
-        DrawPickupStatus(ui);
     }
     ui->end_window(ui->user);
 }
@@ -3506,6 +3640,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION);
     const auto websocket = host_view.Query<AnomalyWebSocketServiceV1>(
         ANOMALY_WEBSOCKET_SERVICE_V1_ID, ANOMALY_WEBSOCKET_SERVICE_V1_VERSION);
+    // Optional: without it the cutscene skip and the settlement exit stay unavailable.
+    const auto buttons = host_view.Query<AnomalyNteUiButtonsServiceV1>(
+        ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID, ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION);
     if (!ui || !HasField<AnomalyUiServiceV1,
             decltype(AnomalyUiServiceV1::button_enabled)>(
             ui.get(), offsetof(AnomalyUiServiceV1, button_enabled)) ||
@@ -3532,8 +3669,14 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
             websocket->publish_text != nullptr
         ? websocket.get()
         : nullptr;
+    g_context.buttons = buttons ? buttons.get() : nullptr;
     g_map_sync = {};
     g_auto_teleport_pickup = {};
+    g_bank_action_command.store(0, std::memory_order_release);
+    g_bank_action_detail.store({}, std::memory_order_release);
+    g_button_retry = {};
+    g_button_scan_retry = {};
+    g_in_bank.store(false, std::memory_order_release);
     const AnomalyStatusV1 schema_status = g_context.config->register_schema(
         g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
         kSettingsSchemaVersion, Bytes(kSettingsSchema), &g_context.settings_schema);
@@ -3570,9 +3713,13 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 AnomalyStatusV1 ANOMALY_CALL Start(void*) {
     g_bank_loop = {};
     g_bank_loop_skip_available = true;
-    g_bank_loop_skip_requests = 0;
     g_bank_loop_next_skip = {};
     g_bank_loop_command.store(0, std::memory_order_release);
+    g_bank_action_command.store(0, std::memory_order_release);
+    g_bank_action_detail.store({}, std::memory_order_release);
+    g_button_retry = {};
+    g_button_scan_retry = {};
+    g_in_bank.store(false, std::memory_order_release);
     g_disable_auto_pickup.store(false, std::memory_order_release);
     g_bank_loop_display.store({}, std::memory_order_release);
     g_bank_loop_error.clear();
@@ -3611,6 +3758,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_bank_loop.Stop();
     g_bank_loop_command.store(0, std::memory_order_release);
+    g_bank_action_command.store(0, std::memory_order_release);
+    g_bank_action_detail.store({}, std::memory_order_release);
+    g_in_bank.store(false, std::memory_order_release);
     g_developer_mode.store(false, std::memory_order_release);
     const AnomalyStatusV1 ahud_status = UnsubscribeAhud();
     const bool saved = SaveSettings();
@@ -3636,6 +3786,9 @@ void ANOMALY_CALL Unload(void*) {
     g_bank_loop.Stop();
     g_bank_loop_command.store(0, std::memory_order_release);
     g_bank_loop_display.store({}, std::memory_order_release);
+    g_bank_action_command.store(0, std::memory_order_release);
+    g_bank_action_detail.store({}, std::memory_order_release);
+    g_in_bank.store(false, std::memory_order_release);
     g_developer_mode.store(false, std::memory_order_release);
     static_cast<void>(UnsubscribeAhud());
     g_world_gate.Reset();
@@ -3797,6 +3950,8 @@ void ANOMALY_CALL Update(void*, double) {
         }
     }
     g_in_pink_paw_world = active;
+    g_in_bank.store(active, std::memory_order_release);
+    ProcessBankAction();
     ProcessBankLoop(bank_state);
     ProcessPendingTeleport();
     ProcessPendingPickup();
@@ -3821,6 +3976,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.builtin.pink-paw-heist-esp"),
         anomaly::sdk::StringView("Pink Paw Heist ESP"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.14.0"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.18.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

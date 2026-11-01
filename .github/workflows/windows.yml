@@ -17,9 +17,15 @@ on:
         description: Also build the development fixtures and test plugin packages
         type: boolean
         default: false
+      announce:
+        description: Send the latest release notes to Discord as a webhook test (creates no release)
+        type: boolean
+        default: false
 
 jobs:
   build:
+    # Run workflow with announce=true is a Discord-only test and builds nothing.
+    if: github.event_name != 'workflow_dispatch' || inputs.announce != true
     permissions:
       contents: read
     runs-on: windows-2022
@@ -105,12 +111,16 @@ jobs:
           OUTPUT: CHANGES.md
           GITHUB_REPO: ${{ github.repository }}
       - name: Check release notes
+        id: notes
         shell: pwsh
         run: |
           if (!(Test-Path CHANGES.md) -or (Get-Item CHANGES.md).Length -eq 0) {
             throw 'git-cliff did not generate release notes.'
           }
           Get-Content CHANGES.md
+          "body<<ANOMALY_NOTES_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Get-Content CHANGES.md -Raw | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "ANOMALY_NOTES_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
       - name: Download release archives
         uses: actions/download-artifact@v4
         with:
@@ -132,3 +142,63 @@ jobs:
             .build/release/Anomaly-*-sdk.zip
           fail_on_unmatched_files: true
           body_path: CHANGES.md
+      - name: Announce release on Discord
+        uses: SethCohen/github-releases-to-discord@v1.20
+        continue-on-error: true
+        with:
+          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          release_name: Anomaly ${{ github.ref_name }}
+          release_body: ${{ steps.notes.outputs.body }}
+          release_html_url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          color: '11052455'
+          username: Anomaly
+          avatar_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
+          footer_title: Anomaly
+          footer_icon_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
+          footer_timestamp: true
+  discord-test:
+    # Manual "Run workflow" check of the Discord webhook: rebuilds the notes of
+    # the last released tag and posts them again. Nothing is published.
+    if: github.event_name == 'workflow_dispatch' && inputs.announce == true
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: .github/cliff.toml
+          args: -vv --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+          GITHUB_REPO: ${{ github.repository }}
+      - name: Read release notes
+        id: notes
+        run: |
+          if [ ! -s CHANGES.md ]; then
+            echo '::error::git-cliff produced no release notes to send.'
+            exit 1
+          fi
+          {
+            echo 'body<<ANOMALY_NOTES_EOF'
+            cat CHANGES.md
+            echo 'ANOMALY_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+      - name: Announce test release on Discord
+        uses: SethCohen/github-releases-to-discord@v1.20
+        with:
+          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          release_name: '[测试] Anomaly ${{ github.ref_name }}'
+          release_body: ${{ steps.notes.outputs.body }}
+          release_html_url: ${{ github.server_url }}/${{ github.repository }}/releases/latest
+          content: '`Discord webhook 测试消息，可忽略`'
+          color: '11052455'
+          username: Anomaly
+          avatar_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
+          footer_title: Anomaly (测试)
+          footer_icon_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
+          footer_timestamp: true

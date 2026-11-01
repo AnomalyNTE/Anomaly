@@ -12,6 +12,9 @@
 
 namespace anomaly {
 
+// Notice version to accept; raising it asks every installation once more.
+inline constexpr std::uint32_t kPlatformNoticeVersion = 1;
+
 inline constexpr std::uint32_t kPlatformInterfaceScaleMinimumPercent = 100;
 inline constexpr std::uint32_t kPlatformInterfaceScaleMaximumPercent = 200;
 inline constexpr std::uint32_t kPlatformInterfaceScaleStepPercent = 5;
@@ -45,6 +48,8 @@ struct PlatformSettingsValues final {
     bool interface_reduced_motion{};
     bool interface_reduced_transparency{};
     bool interface_remember_last_route{true};
+    // Highest accepted notice version; zero means never acknowledged.
+    std::uint32_t interface_notice_accepted_version{};
     std::uint32_t input_menu_toggle{0x2d};
     PlatformInputCapturePolicy input_capture_policy{PlatformInputCapturePolicy::Automatic};
     bool input_gamepad_navigation{true};
@@ -117,6 +122,8 @@ public:
     [[nodiscard]] PlatformSettingsSnapshot Snapshot() const;
     [[nodiscard]] PlatformSettingsApplyResult Apply(const PlatformSettingsApplyRequest& request);
     [[nodiscard]] bool RecordLastRoute(std::string_view route);
+    // Records an accepted notice version without consuming a settings revision.
+    [[nodiscard]] bool RecordNoticeAcceptance(std::uint32_t version);
 
 private:
     class Impl;

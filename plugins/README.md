@@ -13,6 +13,7 @@
 - `BoxAuto`
 - `CombatBox`
 - `CloneEnter`
+- `SceneLoader`
 - `QuickUltimate`
 - `WalletCollector`
 - `NteFreeFly`
@@ -22,6 +23,7 @@
 - `UiButtons`
 - `Jelly`
 - `Night999`
+- `NpcSummon`
 - `DamageDashboard`
 - `Deserted`
 

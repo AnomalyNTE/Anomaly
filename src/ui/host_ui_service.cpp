@@ -1,4 +1,4 @@
-﻿#include "anomaly/host_ui_service.hpp"
+#include "anomaly/host_ui_service.hpp"
 #include "anomaly/liquid_glass.hpp"
 #include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/thread_local_value.hpp"
@@ -27,6 +27,7 @@ std::atomic_bool g_menus_collapsed{};
 std::atomic_bool g_menu_state_pending{true};
 std::atomic_bool g_management_expansion_requested{};
 std::atomic_bool g_developer_mode{};
+std::atomic_bool g_plugin_draw_suppressed{};
 std::atomic<PlatformInputCapturePolicy> g_input_capture_policy{
     PlatformInputCapturePolicy::Automatic};
 std::mutex g_external_url_mutex;
@@ -47,7 +48,6 @@ constexpr float kPluginWindowBodyPadding = 12.0F;
 constexpr float kPluginWindowActionSize = 30.0F;
 constexpr float kPluginWindowActionGap = 4.0F;
 constexpr float kPluginWindowActionRightInset = 12.0F;
-
 struct PluginWindowChromeState {
     bool manually_collapsed{};
     bool host_collapsed{};
@@ -238,12 +238,12 @@ bool DrawPluginWindowChromeButton(
     // Plugin content can select a CJK font, but these are host-owned icon glyphs.
     ImFont* const glyph_font = ImGui::GetIO().FontDefault;
     const float glyph_font_size = glyph_font != nullptr ? glyph_font->FontSize : ImGui::GetFontSize();
-    const ImVec2 glyph_size = glyph_font != nullptr
-        ? glyph_font->CalcTextSizeA(glyph_font_size, FLT_MAX, 0.0F, glyph_text)
-        : ImGui::CalcTextSize(glyph_text);
+    const ImVec2 ink_center =
+        glass::GlyphInkCenter(glyph_font, glyph_font_size, glyph_text);
+    const ImVec2 button_center = bounds.GetCenter();
     draw_list->AddText(glyph_font, glyph_font_size,
-        Offset(bounds.Min, (bounds.GetWidth() - glyph_size.x) * 0.5F,
-            (bounds.GetHeight() - glyph_size.y) * 0.5F - 1.0F),
+        ImVec2(std::round(button_center.x - ink_center.x),
+            std::round(button_center.y - ink_center.y)),
         ToU32(text), glyph_text);
     if (hovered && tooltip != nullptr) ImGui::SetTooltip("%s", tooltip);
     return pressed;
@@ -269,12 +269,17 @@ bool DrawPluginWindowChrome(
     ImDrawList* const draw_list = window.DrawList;
     const ImRect header(origin, Offset(origin, size.x, kPluginWindowHeaderHeight));
     const auto& theme = PlatformUiTheme();
+    const bool collapsed = IsPluginWindowCollapsed(state);
     // The window body is glass, so the header is only a hairline under the
-    // title rather than a band of its own.
-    draw_list->AddLine(
-        Offset(origin, 14.0F, kPluginWindowHeaderHeight - 1.0F),
-        Offset(origin, size.x - 14.0F, kPluginWindowHeaderHeight - 1.0F),
-        ToU32(ThemeColorWithAlpha(theme.text, 0.10F)));
+    // title rather than a band of its own. A collapsed window has no body to
+    // separate from: its whole height is the header, so the hairline would land
+    // on the rounded bottom edge of the pill and read as a stray line.
+    if (!collapsed) {
+        draw_list->AddLine(
+            Offset(origin, 14.0F, kPluginWindowHeaderHeight - 1.0F),
+            Offset(origin, size.x - 14.0F, kPluginWindowHeaderHeight - 1.0F),
+            ToU32(ThemeColorWithAlpha(theme.text, 0.10F)));
+    }
 
     const float close_x = size.x - kPluginWindowActionRightInset - kPluginWindowActionSize;
     const float pin_x = close_x - kPluginWindowActionGap - kPluginWindowActionSize;
@@ -425,6 +430,9 @@ void ANOMALY_CALL SetNextWindowSize(void*, float width, float height, std::uint3
 
 int ANOMALY_CALL BeginWindow(
     void*, AnomalyStringViewV1 title, int* open, std::uint32_t flags) {
+    const ImVec2 requested_size =
+        (GImGui->NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasSize) != 0
+        ? GImGui->NextWindowData.SizeVal : ImVec2(0.0F, 0.0F);
     const std::string id = Copy(title);
     std::string text = id;
     if (id.find("###") == std::string::npos) {
@@ -505,6 +513,19 @@ int ANOMALY_CALL BeginWindow(
         chrome.body_auto_fit_frames_y > 0;
     const bool auto_fit_pending = PluginWindowHasPendingAutoFit(*window) || body_auto_fit_pending;
     if (!IsPluginWindowCollapsed(chrome) && !auto_fit_pending &&
+        window->SizeFull.y <= kPluginWindowHeaderHeight) {
+        // Older settings may contain the custom collapsed size. FirstUseEver
+        // cannot repair it because ImGui has already accepted that saved size.
+        // Keep a usable width and remeasure only the lost axes when no explicit
+        // initial size was supplied by the plugin.
+        ImGui::SetWindowSize(window,
+            ImVec2(window->SizeFull.x > kPluginWindowHeaderHeight
+                    ? window->SizeFull.x : requested_size.x,
+                requested_size.y),
+            ImGuiCond_Always);
+        chrome.auto_fit_recovery = true;
+    }
+    if (!IsPluginWindowCollapsed(chrome) && !auto_fit_pending &&
         window->SizeFull.y > kPluginWindowHeaderHeight) {
         static_cast<void>(CapturePluginWindowExpandedSize(chrome, *window));
         chrome.auto_fit_recovery = false;
@@ -561,6 +582,24 @@ void ANOMALY_CALL EndWindow(void*) {
         g_host_ui_window_scopes.Get().pop_back();
     }
     if (plugin_body_child_open) ImGui::EndChild();
+    ImGuiWindow* const window = ImGui::GetCurrentWindow();
+    const auto chrome = g_plugin_window_chrome.find(window->ID);
+    if (chrome != g_plugin_window_chrome.end() &&
+        IsPluginWindowCollapsed(chrome->second) &&
+        (window->Flags & ImGuiWindowFlags_NoSavedSettings) == 0) {
+        // Native collapsed windows retain SizeFull. Our custom chrome instead
+        // shrinks SizeFull to the header, so snapshot the expanded dimensions
+        // and exclude that temporary geometry from ImGui's settings writer.
+        ImGuiWindowSettings* settings = ImGui::FindWindowSettingsByWindow(window);
+        if (settings == nullptr) {
+            settings = ImGui::CreateNewWindowSettings(window->Name);
+            window->SettingsOffset = GImGui->SettingsWindows.offset_from_ptr(settings);
+        }
+        settings->Pos = ImVec2ih(window->Pos);
+        settings->Size = ImVec2ih(chrome->second.expanded_size);
+        settings->Collapsed = false;
+        window->Flags |= ImGuiWindowFlags_NoSavedSettings;
+    }
     ImGui::End();
 }
 
@@ -574,17 +613,33 @@ void ANOMALY_CALL TextWrapped(void*, AnomalyStringViewV1 value) {
     ImGui::TextWrapped("%s", text.c_str());
 }
 
+// A plugin names its button widths in fixed pixels while the host scales the
+// font and the frame padding with the interface scale. Once the label stops
+// fitting inside the requested width, ImGui gives up on centring it: it pins the
+// text to the left padding and clips the overhang against the frame, so a reset
+// chip that reads centred at 100% reads left-aligned and cut off at 150%. A
+// width is therefore a floor for plugin buttons -- never less than the label it
+// has to show. A non-positive width already means auto-size or fill-the-row.
+ImVec2 PluginButtonSize(
+    const std::string& text, const float width, const float height) {
+    if (!(width > 0.0F)) return ImVec2(width, height);
+    const ImVec2 label_size = ImGui::CalcTextSize(text.c_str(), nullptr, true);
+    const float required = label_size.x + ImGui::GetStyle().FramePadding.x * 2.0F;
+    return ImVec2(width > required ? width : required, height);
+}
+
 int ANOMALY_CALL Button(
     void*, AnomalyStringViewV1 label, float width, float height) {
     const std::string text = Copy(label);
-    return ImGui::Button(text.c_str(), ImVec2(width, height)) ? 1 : 0;
+    return ImGui::Button(text.c_str(), PluginButtonSize(text, width, height)) ? 1 : 0;
 }
 
 int ANOMALY_CALL ButtonEnabled(
     void*, AnomalyStringViewV1 label, float width, float height, int enabled) {
     const std::string text = Copy(label);
     ImGui::BeginDisabled(enabled == 0);
-    const bool pressed = ImGui::Button(text.c_str(), ImVec2(width, height));
+    const bool pressed =
+        ImGui::Button(text.c_str(), PluginButtonSize(text, width, height));
     ImGui::EndDisabled();
     return enabled != 0 && pressed ? 1 : 0;
 }
@@ -728,6 +783,10 @@ int ANOMALY_CALL InputUInt32(
         "%u");
     if (changed) *value = static_cast<std::uint32_t>(input);
     return changed ? 1 : 0;
+}
+
+void ANOMALY_CALL SetNextItemWidth(void*, float width) {
+    ImGui::SetNextItemWidth(width);
 }
 
 int ANOMALY_CALL InputDouble(
@@ -1183,7 +1242,7 @@ const AnomalyUiServiceV1 kUiService{
     SetNextWindowSizeConstraints, GetWindowSize, InputUInt32, InputDouble,
     DeveloperModeEnabled, InputText, ButtonEnabled, SameLine, SetCursorPosX, TextLink,
     BeginTabBar, BeginTabItem, EndTabItem, EndTabBar,
-    TextWrapped, BeginChildAutoFitY, SliderFloatEnabled};
+    TextWrapped, BeginChildAutoFitY, SliderFloatEnabled, SetNextItemWidth};
 
 }  // namespace
 
@@ -1225,6 +1284,12 @@ void SetHostUiDeveloperMode(const bool enabled) noexcept {
 }
 
 bool HostUiDeveloperModeEnabled() noexcept { return g_developer_mode.load(); }
+
+void SetHostUiPluginDrawSuppressed(const bool suppressed) noexcept {
+    g_plugin_draw_suppressed.store(suppressed);
+}
+
+bool HostUiPluginDrawSuppressed() noexcept { return g_plugin_draw_suppressed.load(); }
 
 std::optional<std::string> ConsumeHostUiExternalUrlRequest() noexcept {
     std::scoped_lock lock(g_external_url_mutex);

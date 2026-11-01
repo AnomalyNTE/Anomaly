@@ -1,7 +1,6 @@
 #include "analyzer.hpp"
 #include "anomaly/core_api.hpp"
 #include "anomaly/adapter_service_registry.hpp"
-#include "anomaly/ace_unhook.hpp"
 #include "anomaly/crash_reporter.hpp"
 #include "anomaly/embedded_artwork.hpp"
 #include "anomaly/diagnostic_pipe_service.hpp"
@@ -9,8 +8,6 @@
 #include "anomaly/nte_profile_runtime.hpp"
 #include "anomaly/platform_settings.hpp"
 #include "anomaly/repository_coordinator.hpp"
-#include "anomaly/runtime_crash_coordinator.hpp"
-#include "anomaly/runtime_recovery.hpp"
 #include "anomaly/runtime_session.hpp"
 #include "anomaly/sdk/version.h"
 #include "anomaly/service_graph.hpp"
@@ -69,15 +66,6 @@ struct CoreContext {
     std::shared_ptr<anomaly::RepositoryCoordinator> repository;
     std::string repository_diagnostics{
         "{\"schemaVersion\":1,\"state\":\"unavailable\",\"reason\":\"not-started\"}"};
-    anomaly::RuntimeSafeModeState safe_mode;
-    bool recovery_state_conservative{};
-    mutable std::mutex recovery_mutex;
-    std::unique_ptr<anomaly::RuntimeCrashCoordinatorClient> crash_coordinator;
-    std::string crash_coordinator_state{"unavailable"};
-    std::string recovery_diagnostics{
-        "{\"schemaVersion\":1,\"state\":\"normal\",\"minimalCore\":false,"
-        "\"thirdPartyPluginsSuspended\":false,\"profileOverridesSuspended\":false,"
-        "\"reason\":\"\"}"};
     mutable std::mutex plugins_mutex;
     std::shared_ptr<ue5mem::PluginManager> plugins;
     std::weak_ptr<anomaly::RuntimeSession> session;
@@ -87,25 +75,6 @@ struct CoreContext {
 };
 
 std::string EscapeJson(std::string_view value);
-
-std::string RecoveryDiagnosticsJson(const CoreContext& context) {
-    const auto& safe_mode = context.safe_mode;
-    const char* state = context.recovery_state_conservative
-        ? "conservative" : safe_mode.Active() ? "safe-mode" : "normal";
-    return "{\"schemaVersion\":1,\"state\":\"" + std::string(state) +
-        "\",\"minimalCore\":" + (safe_mode.minimal_core ? "true" : "false") +
-        ",\"thirdPartyPluginsSuspended\":" +
-        (safe_mode.third_party_plugins_suspended ? "true" : "false") +
-        ",\"profileOverridesSuspended\":" +
-        (safe_mode.profile_overrides_suspended ? "true" : "false") +
-        ",\"crashCoordinator\":\"" + EscapeJson(context.crash_coordinator_state) + "\"" +
-        ",\"reason\":\"" + EscapeJson(safe_mode.reason) + "\"}";
-}
-
-std::string RecoveryDiagnosticsSnapshot(const CoreContext& context) {
-    std::scoped_lock lock(context.recovery_mutex);
-    return context.recovery_diagnostics;
-}
 
 struct RuntimeControl {
     std::mutex mutex;
@@ -197,7 +166,6 @@ bool WriteDiagnosticsSummary(
                << ANOMALY_SDK_VERSION_STRING << "\",\"runtimeState\":\""
                << runtime_state << "\",\"profile\":"
                << context->profile_diagnostics << ",\"repository\":" << repository
-               << ",\"recovery\":" << RecoveryDiagnosticsSnapshot(*context)
                << ",\"plugins\":"
                << context->plugin_stop_diagnostics << "}\n";
         output.flush();
@@ -312,49 +280,6 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
             "catalog_path=" + diagnostic.path + " reason=" + diagnostic.message);
     }
     context->translator = std::move(translator.translator);
-    anomaly::RuntimeRecoveryStore recovery(context->runtime_root);
-    const auto recovery_state = recovery.Load();
-    if (recovery_state.Ok()) {
-        context->safe_mode = recovery_state.state->safe_mode;
-    } else if (recovery_state.error != anomaly::RuntimeRecoveryError::StateUnavailable) {
-        context->safe_mode.minimal_core = true;
-        context->safe_mode.reason = recovery_state.message.empty()
-            ? "Runtime recovery state is unavailable"
-            : "Runtime recovery state rejected: " + recovery_state.message;
-        context->recovery_state_conservative = true;
-    }
-
-    const auto session = context->session.lock();
-    const auto generation = session == nullptr ? 0 : session->Snapshot().generation;
-    std::filesystem::path coordinator_executable =
-        ModuleDirectory(g_core_module) / L"AnomalyCrashCoordinator.exe";
-    if (!std::filesystem::is_regular_file(coordinator_executable)) {
-        coordinator_executable = context->runtime_root / L"AnomalyCrashCoordinator.exe";
-    }
-    auto crash_coordinator = std::make_unique<anomaly::RuntimeCrashCoordinatorClient>(
-        anomaly::RuntimeCrashCoordinatorOptions{
-            context->runtime_root,
-            std::move(coordinator_executable),
-            GetCurrentProcessId(),
-            generation,
-            ANOMALY_SDK_VERSION_STRING});
-    const auto coordinator_started = crash_coordinator->Start();
-    if (coordinator_started.Ok()) {
-        context->crash_coordinator_state = "monitoring";
-        context->crash_coordinator = std::move(crash_coordinator);
-    } else {
-        context->crash_coordinator_state =
-            std::string(anomaly::RuntimeCrashCoordinatorErrorName(
-                coordinator_started.error));
-        RuntimeLog(
-            context, anomaly::LogLevel::Warning,
-            "runtime.crash_coordinator_unavailable",
-            "crash_coordinator=unavailable reason=" + coordinator_started.message);
-    }
-    {
-        std::scoped_lock lock(context->recovery_mutex);
-        context->recovery_diagnostics = RecoveryDiagnosticsJson(*context);
-    }
     context->profile_diagnostics = "null";
     if (!WriteDiagnosticsSummary(context, "starting")) {
         LogDiagnosticsSummaryFailure(context);
@@ -362,11 +287,6 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
     RuntimeLog(
         context, anomaly::LogLevel::Info, "runtime.start",
         "runtime=start version=" ANOMALY_SDK_VERSION_STRING);
-    if (context->safe_mode.Active()) {
-        RuntimeLog(
-            context, anomaly::LogLevel::Warning, "runtime.safe_mode",
-            "runtime_safe_mode=" + RecoveryDiagnosticsSnapshot(*context));
-    }
     return stop_token.stop_requested() ? ERROR_CANCELLED : ERROR_SUCCESS;
 }
 
@@ -477,7 +397,6 @@ DWORD PrepareDiagnosticPipe(
                 : anomaly::SerializeRepositoryCoordinatorSnapshotJson(
                       context->repository->Snapshot());
             runtime += ",\"repository\":" + repository +
-                ",\"recovery\":" + RecoveryDiagnosticsSnapshot(*context) +
                 ",\"plugin_diagnostics\":" + plugin_diagnostics + '}';
             return runtime;
         },
@@ -541,24 +460,11 @@ DWORD PrepareNteProfile(
     const std::shared_ptr<CoreContext>& context,
     std::stop_token stop_token) {
     if (stop_token.stop_requested()) return ERROR_CANCELLED;
-    if (context->safe_mode.minimal_core) {
-        context->profile_diagnostics =
-            "{\"state\":\"suspended\",\"reason\":\"minimal-core recovery mode\"}";
-        RuntimeLog(
-            context, anomaly::LogLevel::Warning, "profile.suspended",
-            "profile=suspended reason=minimal-core");
-        if (!WriteDiagnosticsSummary(context, "running")) {
-            LogDiagnosticsSummaryFailure(context);
-        }
-        return ERROR_SUCCESS;
-    }
     anomaly::NteProfileRuntimeOptions options;
     options.runtime_root = context->runtime_root;
     options.profile_directory = context->config.profile_directory;
     options.local_profile_directory = context->config.local_profile_directory;
     options.managed_profile_directory = context->config.managed_profile_directory;
-    options.profile_overrides_enabled =
-        !context->safe_mode.profile_overrides_suspended;
     options.game_id = context->config.game_id;
     options.game_module = context->game_module;
     options.memory_services = context->memory_services;
@@ -572,30 +478,6 @@ DWORD PrepareNteProfile(
     options.snapshot_sampling.actor_tick_interval = static_cast<std::uint32_t>((std::min)(
         context->config.actor_snapshot_tick_interval,
         static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())));
-    bool override_candidate{};
-    if (options.profile_overrides_enabled) {
-        const auto has_files = [](const std::filesystem::path& path) {
-            std::error_code error;
-            const auto absolute = std::filesystem::absolute(path, error);
-            if (error || !std::filesystem::is_directory(absolute, error) || error) return false;
-            for (std::filesystem::directory_iterator iterator(absolute, error), end;
-                 !error && iterator != end; iterator.increment(error)) {
-                if (iterator->is_regular_file(error) && !error) return true;
-            }
-            return false;
-        };
-        const auto rooted = [&](const std::filesystem::path& path) {
-            return path.is_absolute() ? path : context->runtime_root / path;
-        };
-        override_candidate = has_files(
-            rooted(options.local_profile_directory) / options.game_id) || has_files(
-            rooted(options.managed_profile_directory) / options.game_id);
-    }
-    if (override_candidate && context->crash_coordinator != nullptr) {
-        static_cast<void>(context->crash_coordinator->SetFailureContext(
-            anomaly::RuntimeFailureSource::ProfileOverride,
-            "active-profile-override"));
-    }
     auto runtime = std::make_shared<anomaly::NteProfileRuntime>(std::move(options));
     if (!runtime->Start(stop_token)) {
         return stop_token.stop_requested() ? ERROR_CANCELLED : ERROR_GEN_FAILURE;
@@ -612,10 +494,6 @@ DWORD PrepareNteProfile(
         context, anomaly::LogLevel::Info, "profile.ready",
         "profile=" + context->profile_diagnostics);
     context->profile_runtime = std::move(runtime);
-    if (context->crash_coordinator != nullptr) {
-        static_cast<void>(context->crash_coordinator->SetFailureContext(
-            anomaly::RuntimeFailureSource::RuntimeStartup));
-    }
     return ERROR_SUCCESS;
 }
 
@@ -657,9 +535,6 @@ DWORD PreparePluginHost(
     const std::shared_ptr<CoreContext>& context, std::stop_token stop_token) {
     if (stop_token.stop_requested()) return ERROR_CANCELLED;
     try {
-        const bool minimal_core = context->safe_mode.minimal_core;
-        const bool suspend_third_party =
-            context->safe_mode.third_party_plugins_suspended;
         auto plugins = std::make_shared<ue5mem::PluginManager>(
             context->runtime_root, context->config.plugin_directory,
             context->memory_services,
@@ -708,27 +583,6 @@ DWORD PreparePluginHost(
                 }
                 return static_cast<bool>(runtime->Dispatchers().Post(
                     domain, std::move(owner), generation, std::move(callback)));
-            },
-            [minimal_core, suspend_third_party](
-                const anomaly::PluginManifest& manifest) {
-                if (minimal_core) return false;
-                return !suspend_third_party ||
-                    manifest.id.starts_with("anomaly.builtin.");
-            },
-            [weak = std::weak_ptr<CoreContext>(context)](
-                std::string_view plugin_id,
-                std::uint64_t generation,
-                bool entering) {
-                const auto current = weak.lock();
-                if (current == nullptr || current->crash_coordinator == nullptr) return;
-                if (entering) {
-                    static_cast<void>(current->crash_coordinator->SetFailureContext(
-                        anomaly::RuntimeFailureSource::PluginGeneration,
-                        {}, std::string(plugin_id), generation));
-                } else {
-                    static_cast<void>(current->crash_coordinator->SetFailureContext(
-                        anomaly::RuntimeFailureSource::RuntimeStartup));
-                }
             });
         plugins->SetTranslator(context->translator);
         const auto session = context->session;
@@ -822,10 +676,6 @@ DWORD StopPluginHost(
 
 DWORD RunPlatform(const std::shared_ptr<CoreContext>& context, std::stop_token stop_token) {
     if (stop_token.stop_requested() || !context->config.platform_enabled) return ERROR_SUCCESS;
-    if (context->crash_coordinator != nullptr) {
-        static_cast<void>(context->crash_coordinator->SetFailureContext(
-            anomaly::RuntimeFailureSource::RenderInitialization));
-    }
     ue5mem::PlatformDiagnostics diagnostics;
     diagnostics.translator = context->translator;
     diagnostics.runtime_root = context->runtime_root;
@@ -851,6 +701,12 @@ DWORD RunPlatform(const std::shared_ptr<CoreContext>& context, std::stop_token s
         const auto runtime = weak.lock();
         return runtime ? runtime->Hooks() : std::vector<anomaly::HookRecordView>{};
     };
+    diagnostics.retry_profile_hooks =
+        [weak = std::weak_ptr<anomaly::NteProfileRuntime>(context->profile_runtime)] {
+            const auto runtime = weak.lock();
+            // A settled retry (or a runtime that is already gone) stops the worker polling.
+            return runtime == nullptr || runtime->RetryPendingHooks();
+        };
     diagnostics.repository_snapshot =
         [weak = std::weak_ptr<anomaly::RepositoryCoordinator>(context->repository)] {
             const auto repository = weak.lock();
@@ -931,6 +787,12 @@ DWORD RunPlatform(const std::shared_ptr<CoreContext>& context, std::stop_token s
             const std::string_view route) {
             const auto settings = weak.lock();
             return settings != nullptr && settings->RecordLastRoute(route);
+        };
+    diagnostics.settings_record_notice =
+        [weak = std::weak_ptr<anomaly::PlatformSettingsStore>(context->settings)](
+            const std::uint32_t version) {
+            const auto settings = weak.lock();
+            return settings != nullptr && settings->RecordNoticeAcceptance(version);
         };
     diagnostics.game_pump = [weak = context->session]() -> std::size_t {
         const auto session = weak.lock();
@@ -1026,33 +888,6 @@ DWORD ConfirmRuntimeHealth(
         return ERROR_SUCCESS;
     }
 
-    if (context->crash_coordinator != nullptr) {
-        const auto marked = context->crash_coordinator->MarkHealthy();
-        if (!marked.Ok()) {
-            RuntimeLog(
-                context, anomaly::LogLevel::Warning,
-                "runtime.crash_coordinator_health_rejected",
-                "crash_coordinator_health=rejected reason=" + marked.message,
-                anomaly::LogThreadDomain::Worker);
-        } else {
-            std::scoped_lock lock(context->recovery_mutex);
-            context->crash_coordinator_state = "healthy";
-            context->recovery_diagnostics = RecoveryDiagnosticsJson(*context);
-        }
-    }
-
-    anomaly::RuntimeRecoveryStore recovery(context->runtime_root);
-    const auto recovery_state = recovery.Load();
-    if (recovery_state.Ok()) {
-        const auto healthy = recovery.MarkHealthy();
-        if (!healthy.Ok()) {
-            RuntimeLog(
-                context, anomaly::LogLevel::Warning,
-                "runtime.recovery_health_rejected",
-                "runtime_recovery_health=rejected reason=" + healthy.message,
-                anomaly::LogThreadDomain::Worker);
-        }
-    }
     RuntimeLog(
         context, anomaly::LogLevel::Info,
         "runtime.health_confirmed",
@@ -1062,17 +897,6 @@ DWORD ConfirmRuntimeHealth(
 }
 
 void ShutdownCore(const std::shared_ptr<CoreContext>& context) noexcept {
-    try {
-        if (context->crash_coordinator != nullptr) {
-            static_cast<void>(context->crash_coordinator->MarkStopping());
-            static_cast<void>(context->crash_coordinator->WaitForMonitor(
-                std::chrono::milliseconds(500)));
-            std::scoped_lock lock(context->recovery_mutex);
-            context->crash_coordinator_state = "stopped";
-            context->recovery_diagnostics = RecoveryDiagnosticsJson(*context);
-        }
-    } catch (...) {
-    }
     try {
         if (context->crash_reporter != nullptr) context->crash_reporter->Uninstall();
         context->crash_reporter.reset();
@@ -1380,13 +1204,6 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
         auto session = std::make_shared<anomaly::RuntimeSession>(
             start_context, BuildSessionOptions(core_context));
         core_context->session = session;
-        // An injected core is the one that needs this: the anti-cheat inline-hooks the loader entry, and its
-        // hook is what asks the compatibility database about an image the loader cannot identify. The restore
-        // runs before the first service loads anything and keeps watching for the whole session.
-        anomaly::AceUnhookReport ace_unhook;
-        if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) {
-            ace_unhook = anomaly::StartAntiCheatHookRestore(start_context.log_directory);
-        }
         auto& control = *g_runtime_control;
         std::scoped_lock lock(control.mutex);
         ArchiveStoppedSessionLocked(control);
@@ -1394,13 +1211,6 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
 
         const DWORD result = session->Start();
         control.session = session;
-        if (start_context.bootstrap_type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL && ace_unhook.available) {
-            RuntimeLog(
-                core_context, anomaly::LogLevel::Info, "ace.unhook.restored",
-                "ace_unhook=restored count=" + std::to_string(ace_unhook.restored) +
-                    " rehooks=" + std::to_string(ace_unhook.rehooks) +
-                    " passes=" + std::to_string(ace_unhook.passes));
-        }
         if (result != ERROR_SUCCESS) ArchiveStoppedSessionLocked(control);
         return result;
     } catch (...) {

@@ -1,5 +1,7 @@
 # 用户文档
 
+> 🌐 [English](../en/user-guide/README.md) · 简体中文
+
 这里写的是 Anomaly 的日常用法：怎么安装、去哪找插件、怎样更新，以及出问题时先看什么。如果你要从源码构建或自己写插件，请转到[开发者文档](../developer-guide/README.md)。
 
 ## 阅读顺序

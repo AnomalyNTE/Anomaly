@@ -139,7 +139,6 @@ capability 与 service 的对应关系见[插件开发](../developer-guide/plugi
 ## 崩溃
 
 - 未处理异常会生成 `MiniDumpNormal` 与旁路 metadata。
-- `AnomalyCrashCoordinator.exe` 会区分正常退出和启动故障。同一类故障反复发生时，它会逐步启用最小 Core、暂停 Profile 覆盖、停用第三方插件或回退待定 Runtime。当前恢复状态可在 Runtime 诊断中查看。
 
 > [!CAUTION]
 > 诊断包、崩溃转储与 Profile 数据可能含敏感信息，分享前请审查并脱敏。

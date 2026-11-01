@@ -304,6 +304,90 @@ int main() {
   ApplyMotionPoseDirect(context);
   Check(std::abs(b.buffer0[0].rotation[2]-.70710678)<1e-6 && std::abs(b.buffer1[0].translation[2]-17)<1e-6,
         "new main skeleton did not receive rotation and root/offset tracks");
+  // Character Studio puts attached costume/facial meshes on the same
+  // SkeletalMeshActor. They must not become duplicate BetterPose targets.
+  {
+    Context target_context;
+    target_context.core = &core;
+    Block root_component, child_component, parent_class;
+    Register(root_component);
+    Register(child_component);
+    Register(parent_class);
+    parent_class.Set(kObjectClassOffset, parent_class.Address());
+    parent_class.Set(kObjectNameOffset, std::uint32_t{1});
+    child_component.Set(kMeshAttachParentOffset, parent_class.Address());
+    target_context.mesh_scan_class_cache[parent_class.Address()] =
+        "SkeletalMeshComponent";
+    Check(IsPoseTargetRootComponent(target_context, root_component.Address()),
+          "unattached Character Studio body was rejected as a pose target");
+    Check(!IsPoseTargetRootComponent(target_context, child_component.Address()),
+          "attached Character Studio child mesh was exposed as a pose target");
+
+    Block actor, actor_class, invalid_actor, invalid_actor_class, component_class;
+    std::array<PackedTransform, 3> buffers{};
+    std::array<PackedTransform, 3> invalid_buffers{};
+    std::array<std::uint8_t, 96> entries{};
+    std::array<std::uintptr_t, 1> chunks{};
+    Register(actor);
+    Register(actor_class);
+    Register(invalid_actor);
+    Register(invalid_actor_class);
+    Register(component_class);
+    Register(buffers);
+    Register(invalid_buffers);
+    Register(entries);
+    Register(chunks);
+    actor.Set(kObjectClassOffset, actor_class.Address());
+    invalid_actor.Set(kObjectClassOffset, invalid_actor_class.Address());
+    root_component.Set(kObjectClassOffset, component_class.Address());
+    child_component.Set(kObjectClassOffset, component_class.Address());
+    child_component.Set(kMeshAttachParentOffset, root_component.Address());
+    root_component.Set(kObjectOuterOffset, actor.Address());
+    child_component.Set(kObjectOuterOffset, actor.Address());
+    root_component.Set(kMeshComponentSpaceBuffer0Offset,
+                       reinterpret_cast<std::uintptr_t>(buffers.data()));
+    root_component.Set(kMeshComponentSpaceBuffer0Offset + 8,
+                       std::int32_t{3});
+    child_component.Set(kMeshComponentSpaceBuffer0Offset,
+                        reinterpret_cast<std::uintptr_t>(buffers.data()));
+    child_component.Set(kMeshComponentSpaceBuffer0Offset + 8,
+                        std::int32_t{3});
+    Block invalid_component;
+    Register(invalid_component);
+    invalid_component.Set(kObjectClassOffset, component_class.Address());
+    invalid_component.Set(kObjectOuterOffset, invalid_actor.Address());
+    invalid_component.Set(kMeshComponentSpaceBuffer0Offset,
+                          reinterpret_cast<std::uintptr_t>(invalid_buffers.data()));
+    invalid_component.Set(kMeshComponentSpaceBuffer0Offset + 8,
+                          std::int32_t{3});
+    const auto root_address = root_component.Address();
+    std::memcpy(entries.data(), &root_address, sizeof(root_address));
+    const auto child_address = child_component.Address();
+    std::memcpy(entries.data() + 24, &child_address, sizeof(child_address));
+    const auto invalid_address = invalid_component.Address();
+    std::memcpy(entries.data() + 48, &invalid_address, sizeof(invalid_address));
+    const auto invalid_actor_address = invalid_actor.Address();
+    std::memcpy(entries.data() + 72, &invalid_actor_address,
+                sizeof(invalid_actor_address));
+    const auto entries_address = reinterpret_cast<std::uintptr_t>(entries.data());
+    chunks[0] = entries_address;
+    target_context.mesh_scan_class_cache[actor_class.Address()] =
+        "SkeletalMeshActor";
+    target_context.mesh_scan_class_cache[invalid_actor_class.Address()] =
+        "HTSkeletalMeshActor_UID_123";
+    target_context.mesh_scan_class_cache[component_class.Address()] =
+        "SkeletalMeshComponent";
+    target_context.object_registry = {
+        reinterpret_cast<std::uintptr_t>(chunks.data()), 4, 4, 1, 1};
+    target_context.pose_target_scan_requested.store(true);
+    target_context.pose_target_scan_running = true;
+    target_context.pose_target_scan_cursor = 0;
+    target_context.pose_target_scan_results.clear();
+    StepPoseTargetScan(target_context);
+    Check(target_context.pose_targets.size() == 1 &&
+              target_context.pose_targets.front().mesh == root_component.Address(),
+          "Character Studio target scan did not keep only the actor root mesh");
+  }
   amp::Settings amplitude;
   amplitude.master = 0.5F;
   context.motion_amplitude.Store(amplitude);
@@ -720,5 +804,42 @@ int main() {
   CheckExtraAnimationMode();
   CheckNativeCapsuleRuntime();
   CheckKawaiiLimitDecode();
-  std::cout << "PASS automatic unload, paused/playing switches, extra animation restore, modular Kawaii capsule geometry and decoding, transient gap, stale conversion rejection and explicit reload\n";
+  // Character Studio models are ordinary SkeletalMeshActor bodies. BetterPose
+  // must be able to bind one as a pose target without treating its actor as an
+  // ACharacter or writing the local pawn's root-motion field.
+  Character studio(reinterpret_cast<std::uintptr_t>(vtable.data()), 2, 0x10, 1, 7, 0);
+  context.pose_targets = {
+      {a.actor.Address(), a.mesh.Address(), "Player"},
+      {studio.actor.Address(), studio.mesh.Address(), "Studio model"}};
+  context.selected_pose_target_mesh = studio.mesh.Address();
+  Check(ResolveLocalCharacter(context) &&
+            context.runtime.external_target &&
+            context.runtime.character == studio.actor.Address() &&
+            context.runtime.mesh == studio.mesh.Address(),
+        "Character Studio target was not selected");
+  Check(ReadAnimationState(context) && ReadPoseArrays(context),
+        "Character Studio target pose buffers were not readable");
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.bone_parents = {-1, 0, 1};
+    context.bone_angles.assign(3, {0.0, 0.0, 0.0});
+    context.bone_angles[0][2] = 15.0;
+    context.pose_base_ready = false;
+    context.pose_base_mesh = 0;
+  }
+  context.pose_override_enabled.store(true, std::memory_order_release);
+  ApplyPoseOverridesDirect(context);
+  Check(std::abs(studio.buffer0[0].rotation[0]) > 0.01 ||
+            std::abs(studio.buffer0[0].rotation[1]) > 0.01 ||
+            std::abs(studio.buffer0[0].rotation[2]) > 0.01,
+        "Character Studio target did not receive a pose override");
+  Check(ApplyRootMotion(context, true, 0.25F) &&
+            studio.actor.Get<float>(kCharacterAnimRootMotionScaleOffset) == 7.0F,
+        "external target touched the pawn-only root-motion field");
+  context.selected_pose_target_mesh = 0;
+  Check(ResolveLocalCharacter(context) &&
+            !context.runtime.external_target &&
+            context.runtime.character == a.actor.Address(),
+        "returning to the local player after an external target failed");
+  std::cout << "PASS automatic unload, paused/playing switches, multi-entity Character Studio target binding, extra animation restore, modular Kawaii capsule geometry and decoding, transient gap, stale conversion rejection and explicit reload\n";
 }

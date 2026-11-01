@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "id": "anomaly.local.nte.camera-blur-fix",
-  "name": "反虚化",
-  "description": "取消抬头时角色的虚化",
+  "name": "Camera Blur Fix",
+  "description": "Disables camera-induced fading for the player, NPCs, and crowds, including pitch-based fading and close-range character hiding.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "1.0.0",
+  "version": "1.3.2",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -13,7 +13,10 @@
   "loadPhase": "game-ready",
   "services": [
     {"id": "anomaly.core", "minVersion": 1},
-    {"id": "anomaly.interop.signature", "minVersion": 1}
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.ue5.objects", "minVersion": 1},
+    {"id": "anomaly.interop.hook", "minVersion": 1},
+    {"id": "anomaly.ue5.names", "minVersion": 1}
   ],
-  "capabilities": ["interop-signature", "memory-read", "memory-write"]
+  "capabilities": ["interop-signature", "memory-read", "memory-write", "ue5-objects", "interop-hook", "ue5-names"]
 }

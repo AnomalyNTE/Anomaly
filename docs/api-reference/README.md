@@ -1,5 +1,7 @@
 # API 参考
 
+> 🌐 [English](../en/api-reference/README.md) · 简体中文
+
 这是 Anomaly 插件 **纯 C ABI v1** 的完整参考。权威定义始终以 `include/anomaly/sdk/` 下的头文件为准；本参考与之对应并补充语义说明。
 
 面向流程的讲解见[插件开发](../developer-guide/plugin-development.md)。

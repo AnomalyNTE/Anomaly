@@ -98,7 +98,7 @@ attestation。PDB 不属于发布内容：默认构建不生成 PDB，需要本�
 | `anomaly-abi-snapshot.exe` | ABI 基线生成与校验 |
 | `anomaly-test-host.exe` | 无游戏的插件 fixture 宿主 |
 
-`AnomalyLauncher.exe` 与 `AnomalyCrashCoordinator.exe` 随 Runtime 分发；`anomaly-platform-preview.exe` 属于开发夹具，只在 `build.cmd fixtures` 之后出现在构建目录中。
+`AnomalyLauncher.exe` 随 Runtime 分发；`anomaly-platform-preview.exe` 属于开发夹具，只在 `build.cmd fixtures` 之后出现在构建目录中。
 
 ## 相关
 

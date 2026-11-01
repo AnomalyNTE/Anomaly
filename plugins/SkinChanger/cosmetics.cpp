@@ -714,6 +714,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context,std::uint32_t) noexcept {
 void ANOMALY_CALL Unload(void* context) noexcept {delete static_cast<Context*>(context);}
 }
 AnomalyStatusV1 CosmeticsLoad(const AnomalyHostApiV1* host,void** context) noexcept { return Load(host,context); }
+std::uintptr_t CosmeticsNameArrayCopyAddress() noexcept {const auto c=active.load();return c?c->copy:0;}
 AnomalyStatusV1 CosmeticsStart(void* context) noexcept { return Start(context); }
 AnomalyStatusV1 CosmeticsStop(void* context,uint32_t reason) noexcept { return Stop(context,reason); }
 void CosmeticsUnload(void* context) noexcept { Unload(context); }

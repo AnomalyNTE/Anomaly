@@ -653,6 +653,14 @@ std::string BuildSnapshot() {
         false);
     AppendEnum(
         output,
+        "AnomalyUiChildFlagsV1",
+        sizeof(AnomalyUiChildFlagsV1),
+        alignof(AnomalyUiChildFlagsV1),
+        {{"ANOMALY_UI_CHILD_V1_NONE", ANOMALY_UI_CHILD_V1_NONE},
+         {"ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y", ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y}},
+        false);
+    AppendEnum(
+        output,
         "AnomalyUiTabBarFlagsV1",
         sizeof(AnomalyUiTabBarFlagsV1),
         alignof(AnomalyUiTabBarFlagsV1),
@@ -1341,7 +1349,8 @@ std::string BuildSnapshot() {
          {"end_tab_bar", offsetof(AnomalyUiServiceV1, end_tab_bar)},
          {"text_wrapped", offsetof(AnomalyUiServiceV1, text_wrapped)},
          {"begin_child_auto_fit_y", offsetof(AnomalyUiServiceV1, begin_child_auto_fit_y)},
-         {"slider_float_enabled", offsetof(AnomalyUiServiceV1, slider_float_enabled)}},
+         {"slider_float_enabled", offsetof(AnomalyUiServiceV1, slider_float_enabled)},
+         {"set_next_item_width", offsetof(AnomalyUiServiceV1, set_next_item_width)}},
         false);
     AppendStruct(
         output,
@@ -1934,6 +1943,12 @@ std::string BuildSnapshot() {
           offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)},
          {"revoke_fine_speed_authorization",
           offsetof(AnomalyNteVehicleServiceV1, revoke_fine_speed_authorization)},
+         {"customization_catalog_snapshot",
+          offsetof(AnomalyNteVehicleServiceV1, customization_catalog_snapshot)},
+         {"customization_option_at",
+          offsetof(AnomalyNteVehicleServiceV1, customization_option_at)},
+         {"repair_current_vehicle",
+          offsetof(AnomalyNteVehicleServiceV1, repair_current_vehicle)},
          {"set_speed_target", offsetof(AnomalyNteVehicleServiceV1, set_speed_target)}},
         false);
     AppendStruct(

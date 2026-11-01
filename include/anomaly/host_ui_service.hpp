@@ -22,6 +22,9 @@ void RequestHostUiManagementExpansion() noexcept;
 void SetHostUiInputCapturePolicy(PlatformInputCapturePolicy policy) noexcept;
 void SetHostUiDeveloperMode(bool enabled) noexcept;
 [[nodiscard]] bool HostUiDeveloperModeEnabled() noexcept;
+// Suspends plugin draw callbacks while a blocking host notice is up.
+void SetHostUiPluginDrawSuppressed(bool suppressed) noexcept;
+[[nodiscard]] bool HostUiPluginDrawSuppressed() noexcept;
 // UI link clicks are collected during Render and consumed by the Platform UI
 // after the frame, where the Lifecycle dispatcher owns the browser launch.
 [[nodiscard]] std::optional<std::string> ConsumeHostUiExternalUrlRequest() noexcept;

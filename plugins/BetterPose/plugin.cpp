@@ -170,10 +170,18 @@ constexpr double kExtraMeshBindCm = 1.0;
 constexpr std::size_t kMaximumMotionBytes = 256U << 20;
 constexpr std::string_view kPoseExportPath = "pose-export.json";
 constexpr std::string_view kPoseProfileDirectory = "character-pose/profiles/";
+// The host validates every write against this schema, so it has to accept exactly what
+// BuildPoseDocument emits. It did not: the document grew motion, calibration, physics and
+// per-bone name fields while the schema still listed three properties, and
+// `additionalProperties: false` turned every save into a failure. Around a fresh install
+// that was fatal -- load finds no settings, writes the defaults, the write is rejected and
+// the plugin refuses to activate ("character pose settings are invalid"). The list is left
+// open instead of transcribed, because a transposed list has drifted twice now; the field
+// types are still checked one by one in ApplyPoseDocument when the document is read back.
 constexpr std::string_view kPoseSettingsSchema = R"json(
 {
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": ["bones"],
   "properties": {
     "rootOffset": {
@@ -191,13 +199,14 @@ constexpr std::string_view kPoseSettingsSchema = R"json(
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "required": ["index", "pitch", "yaw", "roll"],
         "properties": {
           "index": {"type": "integer", "minimum": 0},
           "pitch": {"type": "number", "minimum": -180.0, "maximum": 180.0},
           "yaw": {"type": "number", "minimum": -180.0, "maximum": 180.0},
-          "roll": {"type": "number", "minimum": -180.0, "maximum": 180.0}
+          "roll": {"type": "number", "minimum": -180.0, "maximum": 180.0},
+          "name": {"type": "string"}
         }
       }
     }
@@ -219,6 +228,7 @@ struct RuntimeState {
   std::uintptr_t bound_mesh{};
   std::uintptr_t character{};
   std::uintptr_t mesh{};
+  bool external_target{};
   std::uintptr_t anim_instance{};
   std::uint32_t animation_mode{};
   std::uint8_t animation_flags{};
@@ -267,10 +277,19 @@ struct ObjectRegistry {
   std::uint32_t num_chunks{};
 };
 
+struct PoseTarget {
+  std::uintptr_t character{};
+  std::uintptr_t mesh{};
+  std::string label;
+};
+
 struct RenderSnapshot {
   bool active{};
   std::uintptr_t character{};
   std::uintptr_t mesh{};
+  bool external_target{};
+  std::uintptr_t selected_target_mesh{};
+  std::vector<PoseTarget> pose_targets;
   std::uintptr_t anim_instance{};
   std::uint32_t animation_mode{};
   std::uint32_t bone_space_count{};
@@ -868,6 +887,19 @@ struct Context final {
   std::atomic<std::uint64_t> pose_settings_save_error_log_ms{};
   std::uintptr_t g_objects_address{};
   ObjectRegistry object_registry{};
+  // Pose targets are the local pawn plus root skeletal meshes owned by
+  // SkeletalMeshActor instances (Character Studio uses this actor type).
+  // Discovery is read-only and chunked over the UE object registry.
+  std::vector<PoseTarget> pose_targets;
+  std::vector<PoseTarget> pose_target_scan_results;
+  std::atomic<std::uintptr_t> requested_pose_target{
+      (std::numeric_limits<std::uintptr_t>::max)()};
+  std::uintptr_t selected_pose_target_mesh{};
+  std::uintptr_t local_character{};
+  std::uintptr_t local_mesh{};
+  std::atomic_bool pose_target_scan_requested{true};
+  bool pose_target_scan_running{};
+  std::uint32_t pose_target_scan_cursor{};
   std::string reflection_status{"reflection idle"};
   std::array<char, 256> pose_status{};
   std::vector<std::string> bone_names;
@@ -1509,7 +1541,10 @@ std::atomic<Context *> g_active{};
 // extra mesh helpers are defined) has to drop them when the pawn changes.
 bool DropExtraMeshes(Context &context) noexcept;
 void BindRuntimeCharacter(Context &context, std::uintptr_t character,
-                          std::uintptr_t mesh) noexcept;
+                          std::uintptr_t mesh,
+                          bool external_target = false) noexcept;
+bool ReadArrayHeader(Context &context, std::uintptr_t array_address,
+                     std::uintptr_t &data, std::uint32_t &count) noexcept;
 
 AnomalyStatusV1 Status(const std::uint32_t code,
                        const std::string_view message = {}) noexcept {
@@ -2936,8 +2971,17 @@ bool PersistPoseSettings(Context &context) noexcept {
     const auto config_status = context.config->write_atomic(
         context.config->user, anomaly::sdk::StringView(kPoseSettingsSchemaId),
         kPoseSettingsSchemaVersion, Bytes(document));
+    // The settings document itself is what this function is for: a rejected write is a
+    // failure even when the per-character profile below happens to land.
+    if (config_status.code != ANOMALY_STATUS_V1_OK) {
+      return fail("config write code=" + std::to_string(config_status.code) +
+                  " id=" + context.active_character_id);
+    }
+    // Only a known character has a per-character profile to write, and at load time there
+    // is none yet. Counting that as a failed save made every fresh install refuse to
+    // activate the plugin, so an empty id means "nothing to write", not "write failed".
     bool profile_attempted = false;
-    bool profile_ok = false;
+    bool profile_ok = context.active_character_id.empty();
     AnomalyStatusV1 profile_status = anomaly::sdk::Ok();
     std::string direct_error;
     if (!context.active_character_id.empty() && StorageReady(context.storage)) {
@@ -2955,12 +2999,10 @@ bool PersistPoseSettings(Context &context) noexcept {
                                           BuildPoseDocument(context),
                                           direct_error);
     if (!profile_ok) {
-      std::string reason = "config write code=" +
-                           std::to_string(config_status.code);
-      reason += profile_attempted
-                    ? "; character profile write code=" +
-                          std::to_string(profile_status.code)
-                    : "; storage unavailable";
+      std::string reason = profile_attempted
+                               ? "character profile write code=" +
+                                     std::to_string(profile_status.code)
+                               : "character profile storage unavailable";
       reason += direct_error.empty() ? std::string()
                                      : "; direct=" + direct_error;
       reason += " id=" + context.active_character_id;
@@ -3222,17 +3264,15 @@ bool ResolveGWorld(Context &context) noexcept {
   return true;
 }
 
-bool ResolveLocalCharacter(Context &context) noexcept {
-  context.runtime.character = 0;
-  context.runtime.mesh = 0;
-  context.runtime.anim_instance = 0;
+bool ResolvePlayerCharacterPair(Context &context, std::uintptr_t &character,
+                                std::uintptr_t &mesh) noexcept {
+  character = 0;
+  mesh = 0;
   std::uintptr_t world{};
   std::uintptr_t game_instance{};
   std::uintptr_t local_players{};
   std::uintptr_t local_player{};
   std::uintptr_t controller{};
-  std::uintptr_t character{};
-  std::uintptr_t mesh{};
   if (!Read(context, context.runtime.g_world_address, world) ||
       !ReadPointerAt(context, world, kWorldGameInstanceOffset, game_instance) ||
       !ReadPointerAt(context, game_instance, kGameInstanceLocalPlayersOffset,
@@ -3244,21 +3284,62 @@ bool ResolveLocalCharacter(Context &context) noexcept {
       !ReadPointerAt(context, character, kCharacterMeshOffset, mesh)) {
     return false;
   }
-  BindRuntimeCharacter(context, character, mesh);
+  return true;
+}
+
+bool ResolveLocalCharacter(Context &context) noexcept {
+  context.runtime.character = 0;
+  context.runtime.mesh = 0;
+  context.runtime.anim_instance = 0;
+  std::uintptr_t player_character{};
+  std::uintptr_t player_mesh{};
+  if (!ResolvePlayerCharacterPair(context, player_character, player_mesh))
+    return false;
+  context.local_character = player_character;
+  context.local_mesh = player_mesh;
+
+  std::uintptr_t character = player_character;
+  std::uintptr_t mesh = player_mesh;
+  bool external_target = false;
+  if (context.selected_pose_target_mesh != 0 &&
+      context.selected_pose_target_mesh != player_mesh) {
+    const auto found = std::find_if(
+        context.pose_targets.begin(), context.pose_targets.end(),
+        [&](const PoseTarget &target) {
+          return target.mesh == context.selected_pose_target_mesh &&
+                 target.character != 0;
+        });
+    std::uintptr_t target_data{};
+    std::uint32_t target_count{};
+    const bool target_readable =
+        found != context.pose_targets.end() &&
+        ReadArrayHeader(context,
+                        found->mesh + kMeshComponentSpaceBuffer0Offset,
+                        target_data, target_count) &&
+        target_data != 0 && target_count != 0 && target_count <= 4096;
+    if (target_readable) {
+      character = found->character;
+      mesh = found->mesh;
+      external_target = true;
+    } else {
+      context.selected_pose_target_mesh = 0;
+      context.pose_target_scan_requested.store(true, std::memory_order_release);
+    }
+  }
+  BindRuntimeCharacter(context, character, mesh, external_target);
   context.runtime.character = character;
   context.runtime.mesh = mesh;
+  context.runtime.external_target = external_target;
   if (context.extra_mesh_owner != mesh &&
       context.mesh_scan_owner != mesh &&
       !context.mesh_scan_requested.load(std::memory_order_acquire) &&
       !context.mesh_scan_running) {
-    // The extra components belong to a pawn, so switching character invalidates
-    // them; rescan once per pawn instead of asking for another scan. Cheap: it is
-    // chunked across ticks and read-only.
+    // The extra components belong to the selected actor, so switching target
+    // invalidates them; rescan once per target instead of asking every frame.
     context.mesh_scan_requested.store(true, std::memory_order_release);
   }
   return true;
 }
-
 bool ReadAnimationState(Context &context) noexcept {
   const auto mesh = context.runtime.mesh;
   if (mesh == 0)
@@ -3391,7 +3472,7 @@ bool ApplyRate(Context &context, const bool enabled, const float value) noexcept
 
 bool RestoreRootMotion(Context &context) noexcept {
   RuntimeState &state = context.runtime;
-  if (!state.saved_root_motion || state.character == 0)
+  if (!state.saved_root_motion || state.external_target || state.character == 0)
     return true;
   if (!Write(context, state.character + kCharacterAnimRootMotionScaleOffset,
              state.original_root_motion_scale))
@@ -3403,6 +3484,8 @@ bool RestoreRootMotion(Context &context) noexcept {
 bool ApplyRootMotion(Context &context, const bool enabled,
                      const float value) noexcept {
   RuntimeState &state = context.runtime;
+  if (state.external_target)
+    return true;
   if (state.character == 0)
     return false;
   if (!enabled)
@@ -6251,8 +6334,8 @@ void StepMeshScan(Context &context) noexcept {
     if (class_name.find("MeshComponent") == std::string::npos)
       continue;
     ++context.mesh_scan_mesh_objects;
-    // Only the local player's own components: the outer of a component is the
-    // actor that owns it, so anything else in the world is filtered out here.
+    // Only the selected actor's own components: the outer of a component is
+    // the actor that owns it, so anything else in the world is filtered out.
     std::uintptr_t outer{};
     if (context.runtime.character == 0 ||
         !Read(context, object + kObjectOuterOffset, outer) ||
@@ -7188,6 +7271,122 @@ std::string ObjectNameOf(Context &context, const std::uintptr_t object) noexcept
   if (Read(context, object + kObjectNameOffset, name_id))
     static_cast<void>(ResolveName(context, name_id, name));
   return name;
+}
+
+bool IsPoseTargetRootComponent(Context &context,
+                               const std::uintptr_t component) noexcept {
+  std::uintptr_t attach_parent{};
+  if (!Read(context, component + kMeshAttachParentOffset, attach_parent) ||
+      attach_parent == 0)
+    return true;
+  // A generated actor's child costume/facial meshes point at the body through
+  // AttachParent. Only a resolved SceneComponent/Actor reference is evidence
+  // that the field is an attachment; an unrelated unreadable value must not
+  // make the root body disappear from the target list.
+  return ClassNameOf(context, attach_parent).find("Component") ==
+         std::string::npos;
+}
+
+void ApplyRequestedPoseTarget(Context &context) noexcept {
+  constexpr auto kNoRequest = (std::numeric_limits<std::uintptr_t>::max)();
+  const auto requested =
+      context.requested_pose_target.exchange(kNoRequest, std::memory_order_acq_rel);
+  if (requested == kNoRequest)
+    return;
+  if (requested == 0) {
+    context.selected_pose_target_mesh = 0;
+    return;
+  }
+  const auto found = std::find_if(
+      context.pose_targets.begin(), context.pose_targets.end(),
+      [&](const PoseTarget &target) { return target.mesh == requested; });
+  if (found != context.pose_targets.end()) {
+    context.selected_pose_target_mesh = requested;
+    return;
+  }
+  // The list is read-only and can lag one frame behind Character Studio's
+  // spawn. Re-scan instead of accepting an arbitrary address.
+  context.pose_target_scan_requested.store(true, std::memory_order_release);
+}
+
+void StepPoseTargetScan(Context &context) noexcept {
+  if (!context.pose_target_scan_requested.load(std::memory_order_acquire))
+    return;
+  if (!context.pose_target_scan_running) {
+    context.pose_target_scan_running = true;
+    context.pose_target_scan_cursor = 0;
+    context.pose_target_scan_results.clear();
+    if (context.local_character != 0 && context.local_mesh != 0)
+      context.pose_target_scan_results.push_back(
+          {context.local_character, context.local_mesh, "Player"});
+    // Character Studio can grow the object array after the previous scan.
+    // Re-read the registry header at the beginning of each target scan.
+    context.object_registry = {};
+    if (!RefreshObjectRegistry(context)) {
+      context.pose_target_scan_requested.store(false, std::memory_order_release);
+      context.pose_target_scan_running = false;
+      return;
+    }
+  }
+
+  std::uint32_t budget = 20000;
+  while (context.pose_target_scan_cursor < context.object_registry.count &&
+         budget-- != 0) {
+    const std::uint32_t index = context.pose_target_scan_cursor++;
+    std::uintptr_t object{};
+    if (!ObjectAtIndex(context, index, object) || object == 0)
+      continue;
+    const std::string class_name = ClassNameOf(context, object);
+    if (class_name.find("SkeletalMeshComponent") == std::string::npos)
+      continue;
+    std::uintptr_t owner{};
+    if (!Read(context, object + kObjectOuterOffset, owner) || owner == 0 ||
+        owner == context.local_character)
+      continue;
+    const std::string owner_class = ClassNameOf(context, owner);
+    // Character Studio's generated body is the native SkeletalMeshActor.
+    // HTSkeletalMeshActor_UID_* entries are transient helper actors and do not
+    // represent selectable character entities.
+    if (owner_class != "SkeletalMeshActor")
+      continue;
+    // Character Studio adds costume/facial components to the same
+    // SkeletalMeshActor and attaches them below the primary body component.
+    // They are not independent pose targets: selecting one would bind
+    // BetterPose to a partial skeleton and expose duplicate entries for one
+    // generated character.
+    if (!IsPoseTargetRootComponent(context, object))
+      continue;
+    std::uintptr_t data{};
+    std::uint32_t count{};
+    if (!ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset,
+                         data, count) ||
+        data == 0 || count == 0 || count > 4096)
+      continue;
+    if (std::find_if(context.pose_target_scan_results.begin(),
+                     context.pose_target_scan_results.end(),
+                     [&](const PoseTarget &target) {
+                       return target.mesh == object;
+                     }) != context.pose_target_scan_results.end())
+      continue;
+    std::string label = ObjectNameOf(context, owner);
+    if (label.empty())
+      label = "SkeletalMeshActor";
+    label += " [" + Hex(owner) + "]";
+    context.pose_target_scan_results.push_back({owner, object, std::move(label)});
+  }
+
+  if (context.pose_target_scan_cursor < context.object_registry.count)
+    return;
+  context.pose_target_scan_running = false;
+  context.pose_target_scan_requested.store(false, std::memory_order_release);
+  context.pose_targets = std::move(context.pose_target_scan_results);
+  if (context.selected_pose_target_mesh != 0 &&
+      std::none_of(context.pose_targets.begin(), context.pose_targets.end(),
+                   [&](const PoseTarget &target) {
+                     return target.mesh == context.selected_pose_target_mesh;
+                   })) {
+    context.selected_pose_target_mesh = 0;
+  }
 }
 
 // Read ANY mesh asset's reference (bind) skeleton: the same RawRefBoneInfo /
@@ -8178,7 +8377,7 @@ void BeginKawaiiInitialization(Context &context,
         context, extra.object, kFunctionSetAnimationModePath,
         &parameters, sizeof(parameters), detail));
   }
-  if (context.runtime.character != 0)
+  if (context.runtime.character != 0 && !context.runtime.external_target)
     static_cast<void>(CallVirtualUFunction(
         context, context.runtime.character,
         kFunctionRefreshAnimInstancePath, nullptr, 0, detail));
@@ -11611,7 +11810,9 @@ void ExecuteReflectionAction(Context &context) noexcept {
                                 sizeof(parameters), detail);
     } else if (action == 4) {
       if (context.runtime.character == 0) {
-        detail = "local character is unavailable";
+        detail = "character is unavailable";
+      } else if (context.runtime.external_target) {
+        detail = "external pose target has no gameplay animation refresh";
       } else {
         ok = CallVirtualUFunction(context, context.runtime.character,
                                   kFunctionRefreshAnimInstancePath, nullptr, 0,
@@ -11662,6 +11863,9 @@ void PublishSnapshot(Context &context, const std::string_view status) {
   next.active = context.runtime.character != 0 && context.runtime.mesh != 0;
   next.character = context.runtime.character;
   next.mesh = context.runtime.mesh;
+  next.external_target = context.runtime.external_target;
+  next.selected_target_mesh = context.selected_pose_target_mesh;
+  next.pose_targets = context.pose_targets;
   next.anim_instance = context.runtime.anim_instance;
   next.animation_mode = context.runtime.animation_mode;
   next.bone_space_count = context.runtime.bone_space_count;
@@ -11728,9 +11932,12 @@ bool RefreshRuntime(Context &context) noexcept {
   static_cast<void>(Read(context,
                          context.runtime.mesh + kMeshGlobalAnimRateScaleOffset,
                          context.runtime.rate_scale));
-  static_cast<void>(Read(
-      context, context.runtime.character + kCharacterAnimRootMotionScaleOffset,
-      context.runtime.root_motion_scale));
+  if (context.runtime.external_target)
+    context.runtime.root_motion_scale = 1.0F;
+  else
+    static_cast<void>(Read(
+        context, context.runtime.character + kCharacterAnimRootMotionScaleOffset,
+        context.runtime.root_motion_scale));
   return true;
 }
 
@@ -13013,10 +13220,12 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
 }
 
 void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
+  ApplyRequestedPoseTarget(context);
   if (!RefreshRuntime(context)) {
     PublishSnapshot(context, "local player character is unavailable");
     return;
   }
+  StepPoseTargetScan(context);
 
   EnsureActiveCharacterProfile(context);
   StepAutomaticCalibrationStatus(context);
@@ -13418,9 +13627,11 @@ void RestoreAll(Context &context) noexcept {
 }
 
 void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
-                          const std::uintptr_t mesh) noexcept {
+                          const std::uintptr_t mesh,
+                          const bool external_target) noexcept {
   auto& state = context.runtime;
-  if (state.bound_character == character && state.bound_mesh == mesh)
+  if (state.bound_character == character && state.bound_mesh == mesh &&
+      state.external_target == external_target)
     return;
   const auto previous_mesh = state.bound_mesh;
   const auto g_world_address = state.g_world_address;
@@ -13430,6 +13641,7 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   state.g_world_address = g_world_address;
   state.bound_character = character;
   state.bound_mesh = mesh;
+  state.external_target = external_target;
 
   // Converted rotations and offsets belong to one skeleton, even if another
   // character has matching names/counts. Require an explicit load for the new rig.
@@ -19575,6 +19787,31 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   const std::string character_line =
       "Character " + Hex(snapshot.character) + "  Mesh " + Hex(snapshot.mesh);
   ui->text(ui->user, anomaly::sdk::StringView(character_line));
+  const auto draw_pose_targets = [&]() {
+    ui->separator(ui->user);
+    const std::string target_label =
+        context->localizer.Text("target.title", "Pose target");
+    ui->text(ui->user, anomaly::sdk::StringView(target_label));
+    const std::string refresh_targets_label =
+        context->localizer.Text("target.refresh", "Refresh entities");
+    if (ui->button(ui->user, anomaly::sdk::StringView(refresh_targets_label),
+                   0.0F, 0.0F) != 0)
+      context->pose_target_scan_requested.store(true, std::memory_order_release);
+    for (const auto &target : snapshot.pose_targets) {
+      const bool selected = target.mesh == snapshot.mesh;
+      const std::string label =
+          std::string(selected ? "[x] " : "[ ] ") + target.label +
+          "##better-pose-target-" + Hex(target.mesh);
+      if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F) != 0)
+        context->requested_pose_target.store(
+            target.mesh == context->local_mesh ? 0 : target.mesh,
+            std::memory_order_release);
+    }
+    if (snapshot.pose_targets.empty())
+      ui->text(ui->user, anomaly::sdk::StringView(
+                               context->localizer.Text(
+                                   "target.empty", "No selectable entities found")));
+  };
   const std::string anim_line = "AnimInstance " + Hex(snapshot.anim_instance) +
                                 "  Mode " + std::to_string(snapshot.animation_mode);
   ui->text(ui->user, anomaly::sdk::StringView(anim_line));
@@ -19766,9 +20003,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     ui->text(ui->user, anomaly::sdk::StringView(hint));
   };
 
-  // Two pages: the MMD motion player and the joint-pose tool. Tab containers
-  // are tail members of the UI service, so a host that predates them keeps the
-  // single scrolling page.
+  // Three pages: target selection, the MMD motion player and the joint-pose
+  // tool. Target selection is deliberately first so it is the highest
+  // priority control when Character Studio has spawned multiple entities.
+  // Tab containers are tail members of the UI service, so a host that
+  // predates them keeps the single scrolling page.
   const bool can_tabs =
       HasField<AnomalyUiServiceV1,
                decltype(AnomalyUiServiceV1::begin_tab_bar)>(
@@ -19782,6 +20021,8 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       HasField<AnomalyUiServiceV1,
                decltype(AnomalyUiServiceV1::end_tab_bar)>(
           ui, offsetof(AnomalyUiServiceV1, end_tab_bar));
+  const std::string target_tab_label =
+      context->localizer.Text("tab.target", "选择骨骼");
   const std::string mmd_tab_label =
       context->localizer.Text("tab.mmd", "MMD motion");
   const std::string pose_tab_label =
@@ -19792,7 +20033,17 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       can_tabs &&
       ui->begin_tab_bar(ui->user,
                         anomaly::sdk::StringView("better-pose-pages"), 0U) != 0;
-  // The motion page is first, so it is the one the panel opens on.
+
+  const bool target_page =
+      !use_tabs ||
+      ui->begin_tab_item(ui->user, anomaly::sdk::StringView(target_tab_label),
+                         nullptr, 0U, 1) != 0;
+  if (target_page) {
+    draw_pose_targets();
+    if (use_tabs)
+      ui->end_tab_item(ui->user);
+  }
+
   const bool mmd_page =
       !use_tabs ||
       ui->begin_tab_item(ui->user, anomaly::sdk::StringView(mmd_tab_label),

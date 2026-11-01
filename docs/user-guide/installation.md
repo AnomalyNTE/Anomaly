@@ -24,7 +24,6 @@ AnomalyLauncher.exe          安装、更新和实时附加
 dwmapi.dll                   游戏启动时使用的代理入口
 Anomaly\
   Anomaly.Core.dll           Runtime 主程序
-  AnomalyCrashCoordinator.exe
   anomaly.ini
   repository.json
   plugin-repositories.json

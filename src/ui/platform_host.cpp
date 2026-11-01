@@ -8,6 +8,7 @@
 #include "anomaly/platform_ui_model.hpp"
 #include "anomaly/platform_ui_input_policy.hpp"
 #include "anomaly/platform_ui_theme.hpp"
+#include "anomaly/platform_notice.hpp"
 #include "anomaly/plugin_scope.hpp"
 #include "anomaly/ui_resource_decoder.hpp"
 #include "anomaly/ui_resource_registry.hpp"
@@ -331,8 +332,7 @@ bool EnableHostWindowTransparency(HWND window) noexcept {
     return SUCCEEDED(result);
 }
 
-bool CreateDevice(HostWindow& host) {
-    DXGI_SWAP_CHAIN_DESC description{};
+bool CreateDevice(HostWindow& host) {    DXGI_SWAP_CHAIN_DESC description{};
     description.BufferCount = 2;
     description.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -1067,6 +1067,14 @@ public:
                 anomaly::ParseHostCatalog(anomaly::Locale::EnUs).translator;
         }
         anomaly::SetHostUiDeveloperMode(false);
+        // Read once, off the render thread.
+        if (auto document = anomaly::LoadNoticeDocument(diagnostics_.runtime_root,
+                anomaly::kFirstRunNoticeDocument,
+                anomaly::LocaleName(diagnostics_.translator->locale()),
+                anomaly::kPlatformNoticeVersion)) {
+            notice_document_ = std::make_shared<const anomaly::NoticeDocument>(
+                std::move(*document));
+        }
         // Keep route, tab and selection outside the renderer-owned ImGui
         // context so a device rebuild does not reset the management surface.
         model_.State() = std::move(state);
@@ -1118,9 +1126,11 @@ public:
                     // Keep the last good catalog visible when a package is being
                     // replaced or a manifest is temporarily unreadable.
                 }
-                for (int tick = 0; tick != 10 && !stop_token.stop_requested(); ++tick) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
+                // Waits for a directory notification or a stop request. The old fixed ten-tick wait rescanned
+                // every package on a clock; a quiet plugin directory now costs nothing.
+                std::unique_lock wait_lock(catalog_wait_mutex_);
+                catalog_wait_condition_.wait(wait_lock, stop_token, [this] { return catalog_reload_; });
+                catalog_reload_ = false;
             }
         });
         // The theme layout lives outside the plugin packages and is re-read on
@@ -1133,11 +1143,9 @@ public:
                 std::shared_ptr<ThemeBackgroundPick> dialog_request;
                 {
                     std::unique_lock lock(theme_layout_write_mutex_);
-                    theme_wait_condition_.wait_for(lock, std::chrono::seconds(1),
-                        [this, &stop_token] {
-                            return stop_token.stop_requested() ||
-                                theme_picker_dialog_request_ != nullptr;
-                        });
+                    theme_wait_condition_.wait(lock, stop_token, [this] {
+                        return theme_picker_dialog_request_ != nullptr;
+                    });
                     if (stop_token.stop_requested()) return;
                     dialog_request =
                         std::exchange(theme_picker_dialog_request_, nullptr);
@@ -1159,16 +1167,34 @@ public:
                 }
                 theme_wait_condition_.notify_all();
             }
-        });        theme_worker_ = std::jthread(
+        });
+        StartThemeWatcher(diagnostics_.runtime_root / std::filesystem::path(anomaly::kPlatformUiLayoutDirectory));
+        StartCatalogWatcher(directory);
+        theme_worker_ = std::jthread(
             [this, root = diagnostics_.runtime_root](std::stop_token stop_token) {
                 std::uint64_t version = 0;
                 ThemeLayoutFileStamp previous;
                 std::filesystem::path previous_path;
                 bool primed = false;
                 while (!stop_token.stop_requested()) {
+                    // Blocks until there is work. The predicate names every slot
+                    // this loop consumes, because a wait that returned on any
+                    // notification and then slept again would swallow the request
+                    // and leave the previous palette's artwork on screen for the
+                    // rest of the session.
+                    bool requested = false;
+                    {
+                        std::unique_lock wait_lock(theme_layout_write_mutex_);
+                        theme_wait_condition_.wait(wait_lock, stop_token,
+                            [this] { return ThemeWorkerPending(); });
+                        if (stop_token.stop_requested()) break;
+                        // Cleared while the posters' mutex is still held, so a
+                        // request arriving from here on leaves the flag set and
+                        // the next pass picks it up instead of losing it.
+                        requested = theme_layout_reload_.exchange(
+                            false, std::memory_order_relaxed);
+                    }
                     try {
-                        const bool requested =
-                            theme_layout_reload_.exchange(false, std::memory_order_relaxed);
                         // The palette picks the file: a per-palette layout under
                         // config/themes wins over the shared one, so switching
                         // palettes switches artwork instead of layering it.
@@ -1334,9 +1360,6 @@ public:
                         theme_background_pick_result_ = std::make_shared<ThemeBackgroundPick>();
                         theme_background_pick_result_->message = "cannot apply the background image";
                     }
-                    std::unique_lock wait_lock(theme_wait_mutex_);
-                    theme_wait_condition_.wait_for(
-                        wait_lock, stop_token, std::chrono::seconds(1), [] { return false; });
                 }
             });
         management_window_ = plugins_.UiResources().RegisterWindow(
@@ -1361,14 +1384,102 @@ public:
         catalog_worker_.request_stop();
         StopThemeWorker();
         theme_worker_.join();
+        theme_watcher_.request_stop();
+        catalog_watcher_.request_stop();
+        if (catalog_watch_stop_ != nullptr) {
+            SetEvent(catalog_watch_stop_);
+            catalog_watcher_.join();
+            CloseHandle(catalog_watch_stop_);
+            catalog_watch_stop_ = nullptr;
+        }
+        if (theme_watch_stop_ != nullptr) {
+            SetEvent(theme_watch_stop_);
+            theme_watcher_.join();
+            CloseHandle(theme_watch_stop_);
+            theme_watch_stop_ = nullptr;
+        }
         ReleaseThemeTextures();
         RevokeManagementWindow();
     }
 
     void StopThemeWorker() noexcept {
+        if (theme_watch_stop_ != nullptr) SetEvent(theme_watch_stop_);
+        if (catalog_watch_stop_ != nullptr) SetEvent(catalog_watch_stop_);
         theme_picker_worker_.request_stop();
         theme_worker_.request_stop();
         theme_wait_condition_.notify_all();
+    }
+
+
+    // Blocks on the directory change notification: a theme edited outside the UI reloads at once, and an
+    // idle one costs nothing because there is no interval to wake up on.
+    // Watches a directory until the UI stops. `on_change` runs on this thread and must not block.
+    void WatchDirectory(const std::filesystem::path& directory, const HANDLE stop_event,
+        const std::function<void()>& on_change) noexcept {
+        const HANDLE change = FindFirstChangeNotificationW(
+            directory.c_str(), FALSE,
+            FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_FILE_NAME |
+                FILE_NOTIFY_CHANGE_DIR_NAME);
+        if (change == INVALID_HANDLE_VALUE) return;
+        for (;;) {
+            const HANDLE handles[] = {change, stop_event};
+            if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) != WAIT_OBJECT_0) break;
+            on_change();
+            if (FindNextChangeNotification(change) == FALSE) break;
+        }
+        FindCloseChangeNotification(change);
+    }
+
+    // Everything the theme worker has to look at. Read under the mutex the
+    // settings page and the picker post their intents with, so the wait cannot
+    // miss a request: a slot that is already filled keeps the predicate true and
+    // the worker runs instead of going back to sleep.
+    [[nodiscard]] bool ThemeWorkerPending() const noexcept {
+        return theme_layout_reload_.load(std::memory_order_relaxed) ||
+            theme_background_mode_request_ >= 0 || theme_surface_opacity_request_ >= 0.0f ||
+            theme_background_pick_request_ != nullptr;
+    }
+
+    // Posts a reload request. The flag is set while the mutex the worker waits on
+    // is held, because a request that lands between the worker's predicate and its
+    // block would otherwise be lost and the worker would sleep through it.
+    void RequestThemeReload() noexcept {
+        {
+            std::scoped_lock lock(theme_layout_write_mutex_);
+            theme_layout_reload_.store(true, std::memory_order_relaxed);
+        }
+        theme_wait_condition_.notify_all();
+    }
+
+    void WatchThemeDirectory() noexcept {
+        WatchDirectory(theme_watch_directory_, theme_watch_stop_, [this] {
+            RequestThemeReload();
+        });
+    }
+
+    void StartThemeWatcher(const std::filesystem::path& themes_directory) noexcept {
+        std::error_code error;
+        if (!std::filesystem::is_directory(themes_directory, error) || error) return;
+        theme_watch_directory_ = themes_directory;
+        theme_watch_stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (theme_watch_stop_ == nullptr) return;
+        theme_watcher_ = std::jthread([this](std::stop_token) { WatchThemeDirectory(); });
+    }
+
+    // The plugin directory is watched instead of rescanned: a package appearing, vanishing or being
+    // rewritten wakes the catalog worker, and nothing wakes it in between.
+    void StartCatalogWatcher(const std::filesystem::path& plugins_directory) noexcept {
+        std::error_code error;
+        if (!std::filesystem::is_directory(plugins_directory, error) || error) return;
+        catalog_watch_stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (catalog_watch_stop_ == nullptr) return;
+        catalog_watcher_ = std::jthread([this, plugins_directory](std::stop_token) {
+            WatchDirectory(plugins_directory, catalog_watch_stop_, [this] {
+                std::scoped_lock lock(catalog_wait_mutex_);
+                catalog_reload_ = true;
+                catalog_wait_condition_.notify_all();
+            });
+        });
     }
 
     [[nodiscard]] bool Ready() const noexcept { return static_cast<bool>(management_window_); }
@@ -1445,6 +1556,8 @@ public:
     [[nodiscard]] ShutdownResult BeginShutdown(
         std::chrono::milliseconds drain_timeout = std::chrono::seconds(5)) {
         anomaly::SetHostUiDeveloperMode(false);
+        // A retired owner must not leave plugin drawing suppressed behind it.
+        anomaly::SetHostUiPluginDrawSuppressed(false);
         const auto bounded_timeout = (std::max)(drain_timeout, std::chrono::milliseconds::zero());
         const auto deadline = bounded_timeout == std::chrono::milliseconds::max()
             ? std::chrono::steady_clock::time_point::max()
@@ -1518,6 +1631,19 @@ public:
         std::scoped_lock operation_lock(operation_mutex_);
         RecordPerformance(
             PlatformUiPerformanceStage::OperationLockWait, phase_started);
+        // Set before the early returns: it must answer while the shell is closed.
+        const bool notice_pending = NoticeGateClosed();
+        anomaly::SetHostUiPluginDrawSuppressed(notice_pending);
+        // First sight of an unanswered notice: open the shell and take the mouse
+        // the way an expanded menu does, so the card is clickable without pressing
+        // the toggle key first. The key still hides and restores it.
+        if (notice_pending && !notice_revealed_) {
+            notice_revealed_ = true;
+            static_cast<void>(plugins_.UiResources().OpenWindow(
+                management_window_scope_, management_window_));
+            anomaly::SetHostUiMenusCollapsed(false);
+        }
+        const bool notice_visible = notice_pending && !anomaly::HostUiMenusCollapsed();
         phase_started = measure ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
         const auto window = plugins_.UiResources().WindowState(
@@ -1572,6 +1698,14 @@ public:
             logical_expanded_size.x * ui_scale, logical_expanded_size.y * ui_scale};
         expanded_size.x = std::clamp(expanded_size.x, minimum_shell_width, maximum_shell_width);
         expanded_size.y = std::clamp(expanded_size.y, minimum_shell_height, maximum_shell_height);
+        if (notice_pending) {
+            // Nothing of the shell is drawn, so the window shrinks to a point:
+            // it only has to be a parent for the card, and a shell-sized window
+            // would paint a compositor-blurred rectangle over the desktop.
+            ui->set_next_window_size_constraints(ui->user, 1.0f, 1.0f, 1.0f, 1.0f);
+            ui->set_next_window_size(
+                ui->user, 1.0f, 1.0f, static_cast<std::uint32_t>(ImGuiCond_Always));
+        }
         const bool globally_collapsed = ManagementShellGloballyCollapsed();
         const bool shell_collapsed = ManagementShellCollapsed();
         const bool restoring_from_collapse = management_shell_was_collapsed_ && !shell_collapsed;
@@ -1583,7 +1717,9 @@ public:
         ImGui::SetNextWindowPos(
             ImVec2(shell_margin, shell_margin),
             ImGuiCond_FirstUseEver);
-        if (globally_collapsed) {
+        if (notice_pending) {
+            // Sized above; the card is centred on the viewport, not on this.
+        } else if (globally_collapsed) {
             ui->set_next_window_size_constraints(
                 ui->user, shell_width, shell_height, shell_width, shell_height);
             ui->set_next_window_size(
@@ -1624,38 +1760,43 @@ public:
             const ImVec2 management_window_size = ImGui::GetWindowSize();
             management_shell_locked_ = anomaly::HostUiCurrentWindowLocked();
             UpdateLayout();
-            HandleShellShortcuts();
-            const bool shell_was_collapsed = ManagementShellCollapsed();
-            // Collapsing keeps the wallpaper: the strip is the entire window, so
-            // dropping the artwork as well left a hole in the game rather than a
-            // small copy of the custom background. The stickers still go, because a
-            // placement normalised against the expanded shell reads as noise in a
-            // strip this thin.
-            DrawThemeImages(
-                management_window_origin, management_window_size, false,
-                !shell_was_collapsed);
-            if (!shell_was_collapsed) {
-                // The second sticker pass also runs before the shell, so a sticker
-                // can paint over the wallpaper without ever landing on the text.
-                DrawThemeImages(management_window_origin, management_window_size, true);
+            // Unanswered: draw no shell, only the card.
+            if (!notice_pending) {
+                HandleShellShortcuts();
+                const bool shell_was_collapsed = ManagementShellCollapsed();
+                // Collapsing keeps the wallpaper: the strip is the entire window, so
+                // dropping the artwork as well left a hole in the game rather than a
+                // small copy of the custom background. The stickers still go, because a
+                // placement normalised against the expanded shell reads as noise in a
+                // strip this thin.
+                DrawThemeImages(
+                    management_window_origin, management_window_size, false,
+                    !shell_was_collapsed);
+                if (!shell_was_collapsed) {
+                    // The second sticker pass also runs before the shell, so a sticker
+                    // can paint over the wallpaper without ever landing on the text.
+                    DrawThemeImages(management_window_origin, management_window_size, true);
+                }
+                // Everything the shell's glass refracts is on screen now: the
+                // wallpaper, its veil and the stickers behind the panels.
+                anomaly::glass::CaptureBackdrop(ImGui::GetWindowDrawList());
+                RecordPerformance(PlatformUiPerformanceStage::FrameSetup, phase_started);
+                phase_started = measure ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
+                DrawManagementShell();
+                RecordPerformance(PlatformUiPerformanceStage::ManagementShell, phase_started);
+                phase_started = measure ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
+                if (!shell_was_collapsed && !ManagementShellCollapsed()) {
+                    DrawConfirmationPopup();
+                    DrawRepositoryUninstallPopup();
+                    DrawOperationDetailsPopup();
+                    DrawMemoryConfirmationPopup();
+                    DrawSettingsLeavePopup();
+                }
             }
-            // Everything the shell's glass refracts is on screen now: the
-            // wallpaper, its veil and the stickers behind the panels.
-            anomaly::glass::CaptureBackdrop(ImGui::GetWindowDrawList());
-            RecordPerformance(PlatformUiPerformanceStage::FrameSetup, phase_started);
-            phase_started = measure ? std::chrono::steady_clock::now()
-                                    : std::chrono::steady_clock::time_point{};
-            DrawManagementShell();
-            RecordPerformance(PlatformUiPerformanceStage::ManagementShell, phase_started);
-            phase_started = measure ? std::chrono::steady_clock::now()
-                                    : std::chrono::steady_clock::time_point{};
-            if (!shell_was_collapsed && !ManagementShellCollapsed()) {
-                DrawConfirmationPopup();
-                DrawRepositoryUninstallPopup();
-                DrawOperationDetailsPopup();
-                DrawMemoryConfirmationPopup();
-                DrawSettingsLeavePopup();
-            }
+            // Outside the shell guard: the notice is the only surface meanwhile.
+            DrawFirstRunNoticePopup(notice_visible);
             DrawStatusToast(management_window_origin, management_window_size);
             RecordPerformance(PlatformUiPerformanceStage::Popups, phase_started);
             phase_started = measure ? std::chrono::steady_clock::now()
@@ -1729,8 +1870,7 @@ private:
                 theme_layout_palette_ = active_palette;
             } else if (*theme_layout_palette_ != active_palette) {
                 theme_layout_palette_ = active_palette;
-                theme_layout_reload_.store(true, std::memory_order_relaxed);
-                theme_wait_condition_.notify_all();
+                RequestThemeReload();
                 return;
             }
             std::shared_ptr<ThemeLayoutCache> published;
@@ -1776,6 +1916,17 @@ private:
                 return target;
             };
             state->background = resolve(background);
+            // Textures are requested through the render side, which may not have a device or descriptor heap yet
+            // on the frame the layout arrives. Recording the version as applied in that state left the artwork
+            // missing for the rest of the session, so an incomplete resolve leaves it un-applied and asks again a
+            // frame later instead.
+            const auto missing = [](const ThemeImage& image) {
+                return image.width > 0.0f && image.height > 0.0f && !image.Valid();
+            };
+            bool textures_incomplete = missing(state->background);
+            for (const ThemeImage& sticker : state->stickers) {
+                textures_incomplete = textures_incomplete || missing(sticker);
+            }
             state->stickers.reserve(stickers.size());
             for (const anomaly::UiRgba8Image& image : stickers) {
                 state->stickers.push_back(resolve(image));
@@ -1795,6 +1946,19 @@ private:
             state->layout = std::move(published->layout);
             state->message = published->message;
             theme_layout_applied_ = std::move(state);
+            if (textures_incomplete) {
+                // The pixels this pass resolved were consumed by the move above, so retrying means asking the
+                // worker to decode and publish again, not reading the same cache. The version stays un-applied
+                // until that happens, and the ask is throttled so a render side that is never ready does not
+                // spin the worker.
+                theme_layout_applied_version_ = 0;
+                if (++theme_texture_retry_ >= 300) {
+                    theme_texture_retry_ = 0;
+                    RequestThemeReload();
+                }
+                return;
+            }
+            theme_texture_retry_ = 0;
             theme_style_dirty_ = true;
             // Keep the page's fill-mode control on what was just applied, unless
             // the user is mid-change on it. A pending change stops being pending
@@ -2110,6 +2274,12 @@ private:
     struct SettingsApplyMailbox final {
         std::mutex mutex;
         std::optional<anomaly::PlatformSettingsApplyResult> result;
+    };
+
+    // Notice acceptance write result, filled by the lifecycle domain.
+    struct NoticeAcceptMailbox final {
+        std::mutex mutex;
+        std::optional<bool> result;
     };
 
     struct RepositoryConfigureResult final {
@@ -2629,6 +2799,11 @@ private:
             }
         }
 
+        if (notice_accept_mailbox_ != nullptr) {
+            std::scoped_lock lock(notice_accept_mailbox_->mutex);
+            notice_accept_mailbox_->result.reset();
+        }
+
         if (repository_configure_mailbox_ != nullptr) {
             std::optional<RepositoryConfigureResult> result;
             {
@@ -2938,6 +3113,29 @@ private:
 
     [[nodiscard]] bool ManagementShellCollapsed() const noexcept {
         return management_shell_collapsed_ || ManagementShellGloballyCollapsed();
+    }
+
+    // Reads the store, not the cached draft: it answers while the shell is closed.
+    [[nodiscard]] bool NoticeGateClosed() const {
+        if (notice_accepted_) return false;
+        const anomaly::PlatformSettingsSnapshot published = diagnostics_.settings_snapshot
+            ? diagnostics_.settings_snapshot() : settings_snapshot_;
+        return published.ready &&
+            published.values.interface_notice_accepted_version <
+                anomaly::kPlatformNoticeVersion;
+    }
+
+    void CloseManagementShell() {
+        if (plugins_.UiResources().CloseWindow(management_window_scope_, management_window_)) {
+            anomaly::SetHostUiMenusCollapsed(true);
+        }
+    }
+
+    void AcceptNotice() {
+        notice_accepted_ = true;
+        notice_accept_pending_ = anomaly::kPlatformNoticeVersion;
+        status_ = Text(anomaly::MessageId::NoticeWelcome);
+        status_failure_ = false;
     }
 
     // The floating tab bar at the bottom of the shell. Items are equal width
@@ -3551,10 +3749,7 @@ private:
         ImGui::SameLine(0.0f, Scaled(4.0f));
         if (DrawShellHeaderControl("##shell-close", ShellHeaderControl::Close,
                 false, false, Text(anomaly::MessageId::ShellClose))) {
-            if (plugins_.UiResources().CloseWindow(
-                    management_window_scope_, management_window_)) {
-                anomaly::SetHostUiMenusCollapsed(true);
-            }
+            CloseManagementShell();
         }
     }
 
@@ -6369,15 +6564,27 @@ private:
                 Text(anomaly::MessageId::SettingsBackgroundVisibility),
                 Text(anomaly::MessageId::SettingsBackgroundVisibilityHint),
                 "veil opacity dim wallpaper readability", [&] {
-                    int value = static_cast<int>(std::lround(
-                        std::clamp(theme_surface_opacity_, 0.0f, 1.0f) * 100.0f));
+                    int value = static_cast<int>(std::lround(std::clamp(
+                        theme_surface_opacity_edit_.value_or(theme_surface_opacity_),
+                        anomaly::kPlatformUiLayoutSurfaceOpacityMinimum, 1.0f) * 100.0f));
                     if (anomaly::glass::SliderInt("##value", &value,
                             static_cast<int>(
                                 anomaly::kPlatformUiLayoutSurfaceOpacityMinimum * 100.0f),
                             100, "%d%%")) {
-                        const float chosen = static_cast<float>(value) / 100.0f;
+                        // Dragging only holds a pending value, exactly like the
+                        // scale slider: committing the veil writes the shared
+                        // layout and reloads the theme, so it waits for the
+                        // release instead of running once per frame.
+                        theme_surface_opacity_edit_ = static_cast<float>(value) / 100.0f;
+                    }
+                    if (theme_surface_opacity_edit_ && !ImGui::IsItemActive() &&
+                        !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const float chosen = *theme_surface_opacity_edit_;
+                        theme_surface_opacity_edit_.reset();
                         std::scoped_lock lock(theme_layout_write_mutex_);
                         theme_surface_opacity_request_ = chosen;
+                        // Hold the control on the value just committed until the
+                        // worker has written and applied it.
                         theme_surface_opacity_ = chosen;
                         theme_surface_opacity_dirty_ = true;
                         theme_wait_condition_.notify_all();
@@ -6630,6 +6837,218 @@ private:
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+
+    // Faux bold: the run drawn twice, skipped when it wrapped.
+    void DrawNoticeEmphasis(const std::string& text) const {
+        ImGui::TextUnformatted(text.c_str());
+        if (ImGui::GetItemRectSize().y > ImGui::GetTextLineHeight() * 1.6f) return;
+        const ImVec2 origin = ImGui::GetItemRectMin();
+        ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+            ImVec2(origin.x + std::max(0.5f, Scaled(0.5f)), origin.y),
+            ImGui::GetColorU32(ImGuiCol_Text), text.c_str());
+    }
+
+    // One line sequence, so emphasis and links stay inside the sentence.
+    void DrawNoticeRuns(const std::vector<anomaly::NoticeRun>& runs) {
+        ImGui::PushTextWrapPos(0.0f);
+        for (std::size_t index = 0; index < runs.size(); ++index) {
+            if (index > 0) ImGui::SameLine(0.0f, 0.0f);
+            const anomaly::NoticeRun& run = runs[index];
+            switch (run.style) {
+            case anomaly::NoticeRunStyle::Text:
+                ImGui::TextUnformatted(run.text.c_str());
+                break;
+            case anomaly::NoticeRunStyle::Emphasis:
+                DrawNoticeEmphasis(run.text);
+                break;
+            case anomaly::NoticeRunStyle::Code:
+                ImGui::TextColored(
+                    ThemeColor(anomaly::PlatformUiTheme().text_muted), "%s", run.text.c_str());
+                break;
+            case anomaly::NoticeRunStyle::Link:
+                ImGui::PushStyleColor(ImGuiCol_Text, AccentColor());
+                ImGui::TextUnformatted(run.text.c_str());
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    ImGui::SetTooltip("%s", run.url.c_str());
+                }
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                    pending_external_url_ = run.url;
+                }
+                break;
+            }
+        }
+        ImGui::PopTextWrapPos();
+    }
+
+    // Draws the Markdown subset; unknown kinds fall back to a paragraph.
+    void DrawNoticeDocument(const anomaly::NoticeDocument& document) {
+        // Baked tiers, not window scaling: scaling a baked atlas blurs the glyphs.
+        const float ui_scale = PlatformUiScale();
+        ImFont* const body_font = ue5mem::PlatformUiFontForScale(ui_scale * 1.12f);
+        ImFont* const heading_font = ue5mem::PlatformUiFontForScale(ui_scale * 1.55f);
+        ImFont* const subheading_font = ue5mem::PlatformUiFontForScale(ui_scale * 1.28f);
+        const auto draw_block = [&](const anomaly::NoticeBlock& block) {
+            ImFont* font = body_font;
+            if (block.kind == anomaly::NoticeBlockKind::Heading) font = heading_font;
+            else if (block.kind == anomaly::NoticeBlockKind::Subheading) font = subheading_font;
+            const bool pushed = font != nullptr;
+            if (pushed) ImGui::PushFont(font);
+            switch (block.kind) {
+            case anomaly::NoticeBlockKind::Heading:
+                DrawNoticeRuns(block.runs);
+                ImGui::Spacing();
+                break;
+            case anomaly::NoticeBlockKind::Subheading:
+                DrawNoticeRuns(block.runs);
+                ImGui::Spacing();
+                break;
+            case anomaly::NoticeBlockKind::Paragraph:
+                DrawNoticeRuns(block.runs);
+                ImGui::Spacing();
+                break;
+            case anomaly::NoticeBlockKind::Bullet:
+                ImGui::Bullet();
+                ImGui::SameLine();
+                DrawNoticeRuns(block.runs);
+                ImGui::Spacing();
+                break;
+            case anomaly::NoticeBlockKind::Numbered:
+                ImGui::TextUnformatted(block.marker.c_str());
+                ImGui::SameLine();
+                DrawNoticeRuns(block.runs);
+                ImGui::Spacing();
+                break;
+            case anomaly::NoticeBlockKind::Separator:
+                ImGui::Separator();
+                break;
+            }
+            if (pushed) ImGui::PopFont();
+        };
+        for (const anomaly::NoticeBlock& block : document.blocks) {
+            if (block.alert == anomaly::NoticeAlert::None) {
+                draw_block(block);
+                continue;
+            }
+            // Alert lines are indented and carry a rule, so consecutive blocks
+            // read as one callout.
+            const bool severe = block.alert == anomaly::NoticeAlert::Caution ||
+                block.alert == anomaly::NoticeAlert::Warning;
+            const float indent = Scaled(14.0f);
+            const ImVec2 start = ImGui::GetCursorScreenPos();
+            ImGui::Indent(indent);
+            draw_block(block);
+            ImGui::Unindent(indent);
+            const ImVec2 end = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(start.x, start.y - Scaled(2.0f)),
+                ImVec2(start.x + Scaled(3.0f), end.y - Scaled(4.0f)),
+                ImGui::GetColorU32(severe ? WarningColor() : AccentColor()),
+                Scaled(1.5f));
+        }
+    }
+
+    // First-launch gate: modal, no close button, no Escape.
+    void DrawFirstRunNoticePopup(const bool pending) {
+        if (!pending) {
+            notice_popup_opened_ = false;
+            return;
+        }
+        // Id is not localized; the document heading is the title.
+        constexpr const char* kNoticePopupId = "first-run-notice";
+        if (!notice_popup_opened_) {
+            ImGui::OpenPopup(kNoticePopupId);
+            notice_popup_opened_ = true;
+        }
+        // Sized against the viewport, not the shell: while the notice stands the
+        // shell window is a 1x1 stub.
+        const ImVec2 viewport_size = ImGui::GetMainViewport()->Size;
+        const float modal_width = std::min(
+            Scaled(700.0f), std::max(Scaled(360.0f), viewport_size.x - Scaled(48.0f)));
+        const float modal_height = std::min(
+            Scaled(620.0f), std::max(Scaled(320.0f), viewport_size.y - Scaled(56.0f)));
+        ImGui::SetNextWindowSize(ImVec2(modal_width, modal_height), ImGuiCond_Appearing);
+        // Centred on the viewport: there is no shell to anchor to.
+        const ImGuiViewport* const viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(
+            ImVec2(viewport->Pos.x + viewport->Size.x * 0.5f,
+                viewport->Pos.y + viewport->Size.y * 0.5f),
+            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        // No Escape handling and no close button.
+        if (!ImGui::BeginPopupModal(kNoticePopupId, nullptr,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
+                    // Only the body scrolls; the footer stays put.
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+            return;
+        }
+        // Untinted: the backdrop, blurred, with no colour mixed in.
+        anomaly::glass::SurfaceOptions surface;
+        surface.variant = anomaly::glass::Variant::Regular;
+        surface.rounding = ImGui::GetStyle().PopupRounding;
+        surface.scale = ImGui::GetIO().FontGlobalScale > 0.0f
+            ? ImGui::GetIO().FontGlobalScale : 1.0f;
+        surface.clip = false;
+        surface.shadow = true;
+        surface.saturation = 1.0f;
+        surface.tint_strength = 0.0f;
+        // Nothing is filled where the backdrop is empty: the compositor blurs the
+        // desktop behind the window instead.
+        surface.minimum_alpha = 0.0f;
+        anomaly::glass::RegisterWindowSurface(surface);
+        const float footer_height = Scaled(104.0f);
+        const float body_height = std::max(
+            Scaled(110.0f), ImGui::GetContentRegionAvail().y - footer_height);
+        ImGui::BeginChild("FirstRunNoticeBody", ImVec2(0.0f, body_height), false);
+        if (notice_document_ != nullptr) {
+            DrawNoticeDocument(*notice_document_);
+        } else {
+            // Missing document: show the expected path, keep the gate closed.
+            ImGui::TextColored(ErrorColor(), "!  %s",
+                anomaly::NoticeDocumentPath(diagnostics_.runtime_root,
+                    anomaly::kFirstRunNoticeDocument,
+                    anomaly::LocaleName(diagnostics_.translator->locale()))
+                    .string().c_str());
+        }
+        ImGui::EndChild();
+        ImGui::Separator();
+        ImFont* const footer_font =
+            ue5mem::PlatformUiFontForScale(PlatformUiScale() * 1.12f);
+        const bool footer_pushed = footer_font != nullptr;
+        if (footer_pushed) ImGui::PushFont(footer_font);
+        const std::string agree = StableLabel(
+            anomaly::MessageId::NoticeAgree, "first-run-notice-agree");
+        anomaly::glass::Switch(agree.c_str(), &notice_agreed_);
+        const std::string exit_label =
+            StableLabel(anomaly::MessageId::NoticeExit, "first-run-notice-exit");
+        const std::string confirm_label =
+            StableLabel(anomaly::MessageId::NoticeConfirm, "first-run-notice-confirm");
+        const float button_height = Scaled(32.0f);
+        const float frame_padding = ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float exit_width = ImGui::CalcTextSize(exit_label.c_str()).x + frame_padding;
+        const float confirm_width = ImGui::CalcTextSize(confirm_label.c_str()).x + frame_padding;
+        const float footer_width =
+            exit_width + ImGui::GetStyle().ItemSpacing.x + confirm_width;
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
+            ImGui::GetWindowContentRegionMax().x - footer_width));
+        if (ImGui::Button(exit_label.c_str(), ImVec2(exit_width, button_height))) {
+            notice_agreed_ = false;
+            notice_popup_opened_ = false;
+            ImGui::CloseCurrentPopup();
+            CloseManagementShell();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!notice_agreed_);
+        if (PrimaryButton(confirm_label.c_str(), ImVec2(confirm_width, button_height))) {
+            AcceptNotice();
+            notice_popup_opened_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        if (footer_pushed) ImGui::PopFont();
         ImGui::EndPopup();
     }
 
@@ -7552,12 +7971,14 @@ private:
         std::optional<anomaly::PluginRepositoryConfig> repository_configure;
         std::optional<std::string> route;
         std::optional<std::string> external_url;
+        std::optional<std::uint32_t> notice_version;
         {
             std::scoped_lock operation_lock(operation_mutex_);
             apply.swap(pending_settings_apply_);
             repository_configure.swap(pending_repository_configure_);
             route.swap(settings_route_to_record_);
             external_url.swap(pending_external_url_);
+            notice_version.swap(notice_accept_pending_);
         }
         if (!external_url) external_url = anomaly::ConsumeHostUiExternalUrlRequest();
         const auto submit = diagnostics_.lifecycle_post
@@ -7612,6 +8033,23 @@ private:
                 std::scoped_lock lock(mailbox->mutex);
                 mailbox->result = RepositoryConfigureResult{
                     *repository_configure, std::move(submission)};
+            }
+        }
+        if (notice_version) {
+            // File I/O goes through the lifecycle domain and reports via the mailbox.
+            const auto mailbox = notice_accept_mailbox_;
+            const auto provider = diagnostics_.settings_record_notice;
+            const auto operation = [mailbox, provider, version = *notice_version] {
+                const bool stored = provider ? provider(version) : false;
+                std::scoped_lock lock(mailbox->mutex);
+                mailbox->result = stored;
+            };
+            std::uint32_t error = ERROR_SUCCESS;
+            if (submit) error = submit(operation);
+            else operation();
+            if (error != ERROR_SUCCESS) {
+                std::scoped_lock lock(mailbox->mutex);
+                mailbox->result = false;
             }
         }
         if (route && diagnostics_.settings_record_route) {
@@ -8105,16 +8543,36 @@ private:
     float theme_surface_opacity_request_{-1.0f};
     float theme_surface_opacity_{1.0f};
     bool theme_surface_opacity_dirty_{};
+    // A veil the user is still dragging. Held until the slider is released,
+    // because every commit costs a layout write plus a theme reload.
+    std::optional<float> theme_surface_opacity_edit_;
     // D3D11 views the standalone surface created for the current theme layout.
     // They live as long as the layout that produced them.
     std::vector<ID3D11ShaderResourceView*> standalone_theme_views_;
     std::uint64_t theme_layout_applied_version_{};
+    // Frames to wait before asking for the theme textures again after a device that was not ready refused them.
+    std::uint32_t theme_texture_retry_{};
     bool theme_style_dirty_{};
     std::atomic<bool> theme_layout_reload_{true};
     mutable std::mutex theme_layout_mutex_;
-    std::mutex theme_wait_mutex_;
+    // _any, and waited on with the mutex the intents above are posted under: the
+    // predicate has to see those slots, and the wait takes the worker's stop token
+    // so a stop wakes it without an extra event.
     std::condition_variable_any theme_wait_condition_;
     std::jthread theme_worker_;
+    // Watches config/themes so an edit made outside the UI is noticed by a notification instead of a
+    // timer: the wait blocks until the directory changes or the UI stops.
+    std::jthread theme_watcher_;
+    HANDLE theme_watch_stop_{};
+    std::filesystem::path theme_watch_directory_;
+    // The plugin directory is watched the same way: a package appearing or vanishing wakes the catalog
+    // worker, and nothing wakes it in between.
+    std::jthread catalog_watcher_;
+    HANDLE catalog_watch_stop_{};
+    std::mutex catalog_wait_mutex_;
+    // _any: the wait takes the worker's stop token, so a stop wakes it without an extra event.
+    std::condition_variable_any catalog_wait_condition_;
+    bool catalog_reload_{true};
     // The picker thread services dialog requests so the render loop never waits.
     // Declared after the layout worker so it stops first at teardown.
     std::shared_ptr<ThemeBackgroundPick> theme_picker_dialog_request_;
@@ -8198,6 +8656,16 @@ private:
     std::string settings_apply_error_;
     bool settings_save_pending_{};
     bool settings_route_restored_{};
+    // Accepted is process-local; the persisted value decides the next launch.
+    bool notice_accepted_{};
+    bool notice_agreed_{};
+    bool notice_popup_opened_{};
+    bool notice_revealed_{};
+    // Notice document; null when the installation is missing it.
+    std::shared_ptr<const anomaly::NoticeDocument> notice_document_;
+    std::optional<std::uint32_t> notice_accept_pending_;
+    std::shared_ptr<NoticeAcceptMailbox> notice_accept_mailbox_{
+        std::make_shared<NoticeAcceptMailbox>()};
     std::optional<std::string> pending_external_url_;
     bool settings_hotkey_capture_{};
     std::array<bool, 256> settings_hotkey_down_{};
@@ -8870,7 +9338,10 @@ void RunPlatform(
         {
             std::scoped_lock lock(*plugin_mutex);
             DrawPlatformUi();
-            plugins.Draw(ImGui::GetCurrentContext());
+            // No plugin draw before the notice is accepted.
+            if (!anomaly::HostUiPluginDrawSuppressed()) {
+                plugins.Draw(ImGui::GetCurrentContext());
+            }
         }
         ImGui::Render();
         UpdateHostWindowRegion(host);

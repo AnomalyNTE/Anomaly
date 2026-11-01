@@ -89,8 +89,8 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 3> kDsdModeL
     {"dsd.dop_native_pcm", "DoP > Native > PCM"},
 }};
 
-// Hooks before kCoreHookCount are required for the takeover; the album hooks
-// after it add the library to the in-game music list and are all-or-nothing.
+// Hooks before kCoreHookCount carry the takeover; the album hooks after it add
+// the library to the in-game music list and are all-or-nothing.
 //
 // The stop path drains every hook with the host stop deadline (1s) as its only
 // bound, so a detour that can outlive that budget -- a table walk, a row
@@ -108,6 +108,14 @@ enum HookIndex : std::size_t {
     kPageCover, kItemSelected, kRowClick, kListClick, kSetCurrentIdHook, kDuration2,
     kHookCount
 };
+
+// The takeover cannot run without these: they post, stop, pause and finish the
+// vehicle music, and the down-vehicle signal is the only stop path a taken-over
+// song has. kSetPlayerType only notices a switch away from vehicle music, so a
+// game build whose prologue changed costs that one signal instead of the plugin.
+constexpr bool RequiredHook(const std::size_t index) noexcept {
+    return index < kCoreHookCount && index != kSetPlayerType;
+}
 
 using PostFn = std::int64_t(__fastcall*)(void*, void*, void*, float);
 // Also EndGetOffVehicle(this, bool).
@@ -2959,15 +2967,52 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
     }
     if (!album_missing.empty()) context.album_layout.reset();
 
+    // A resolved declaration can still name witnesses this build no longer
+    // contains; that is what a game update looks like, and the name is the only
+    // way to tell which pattern needs a new declaration.
+    std::string absent_witnesses;
+    const auto note_absent = [&absent_witnesses](const std::string_view id) {
+        if (!absent_witnesses.empty()) absent_witnesses += ", ";
+        absent_witnesses += id;
+    };
+    for (const auto& witness : profile::kPlaybackWitnesses) {
+        if (layout.address({witness.id.data, witness.id.size}) == 0)
+            note_absent({witness.id.data, witness.id.size});
+    }
+    if (context.album_layout) {
+        for (const auto& witness : profile::kAlbumWitnesses) {
+            if (album.value().address({witness.id.data, witness.id.size}) == 0)
+                note_absent({witness.id.data, witness.id.size});
+        }
+    }
+    if (!absent_witnesses.empty()) {
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "signature witness not found: " + absent_witnesses);
+    }
+
     const auto resolve = [&context, &layout, &album](const std::string_view pattern) {
+        // The layout service answers the witness patterns from one declaration and
+        // leaves a null address for a witness this build no longer contains; that
+        // site still has to be looked for, so the address-only resolver below runs
+        // as the fallback instead of the hook silently disappearing.
         for (const auto& witness : profile::kPlaybackWitnesses) {
-            if (pattern == std::string_view(witness.pattern.data, witness.pattern.size))
-                return layout.address({witness.id.data, witness.id.size});
+            if (pattern != std::string_view(witness.pattern.data, witness.pattern.size)) continue;
+            if (const std::uintptr_t located = layout.address({witness.id.data, witness.id.size});
+                located != 0) {
+                return located;
+            }
+            break;
         }
         for (const auto& witness : profile::kAlbumWitnesses) {
-            if (pattern == std::string_view(witness.pattern.data, witness.pattern.size))
-                return context.album_layout
-                    ? album.value().address({witness.id.data, witness.id.size}) : std::uintptr_t{0};
+            if (pattern != std::string_view(witness.pattern.data, witness.pattern.size)) continue;
+            if (context.album_layout) {
+                if (const std::uintptr_t located = album.value().address(
+                        {witness.id.data, witness.id.size});
+                    located != 0) {
+                    return located;
+                }
+            }
+            break;
         }
 
         std::uintptr_t address{};
@@ -2990,13 +3035,25 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
     };
 
     std::array<std::uintptr_t, kHookCount> addresses{};
+    std::string skipped;
     for (std::size_t i = 0; i < kHookCount; ++i) {
         if (i >= kCoreHookCount && !context.album_layout) continue;
         addresses[i] = resolve(targets[i].pattern);
         if (targets[i].call_site) addresses[i] = call_target(addresses[i]);
         if (addresses[i] != 0) continue;
-        if (i < kCoreHookCount) return {HookState::SignatureMissing, std::string(targets[i].label)};
+        if (RequiredHook(i)) return {HookState::SignatureMissing, std::string(targets[i].label)};
+        if (i < kCoreHookCount) {
+            // A signal the takeover survives without: keep every other hook and
+            // report what is missing instead of giving up the whole takeover.
+            if (!skipped.empty()) skipped += ", ";
+            skipped += targets[i].label;
+            continue;
+        }
         if (album_missing.empty()) album_missing = targets[i].label;
+    }
+    if (!skipped.empty()) {
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "hook not found: " + skipped + "; that signal is unavailable");
     }
     // Helpers the album rows are built with.
     const std::uintptr_t game_instance = resolve(profile::kGameInstancePattern);
@@ -3074,7 +3131,7 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
         g_slots[i].generation.store(handle.generation, std::memory_order_release);
         g_slots[i].id.store(handle.id, std::memory_order_release);
     }
-    return {HookState::Installed, {}};
+    return {HookState::Installed, std::move(skipped)};
 }
 
 // The UI event trace that used to sit here resolved FName ids through the Host's
@@ -4082,7 +4139,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
         g_context.store(context, std::memory_order_release);
         auto [state, detail] = InstallHooks(*context);
         if (state == HookState::Installed) {
-            Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "music hooks installed");
+            Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                detail.empty() ? "music hooks installed" : "music hooks installed without: " + detail);
         // Diagnostic probe (off): where this build's ChangePlayerMusicSound lives,
         // to calibrate the caller offsets the LogCaller probe logged.
         // {
@@ -4267,7 +4325,9 @@ std::string HookStateText(const Context& context) {
     case HookState::Waiting:
         return l10n.Text("hooks.waiting", "Hooks: not installed");
     case HookState::Installed:
-        return l10n.Text("hooks.installed", "Hooks: installed");
+        return context.hook_detail.empty()
+            ? l10n.Text("hooks.installed", "Hooks: installed")
+            : l10n.Format("hooks.installed_partial", "Hooks: installed without ({0})", args);
     case HookState::SignatureMissing:
         return l10n.Format("hooks.signature_missing", "Hooks: signature not found ({0})", args);
     case HookState::HookFailed:

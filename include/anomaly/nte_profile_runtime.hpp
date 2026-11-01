@@ -23,7 +23,6 @@ struct NteProfileRuntimeOptions {
     std::filesystem::path profile_directory{L"profiles"};
     std::filesystem::path local_profile_directory{L"profiles-local"};
     std::filesystem::path managed_profile_directory{L"state/profiles/managed"};
-    bool profile_overrides_enabled{true};
     std::string game_id{"nte"};
     HMODULE game_module{};
     CoreMemoryServices memory_services;
@@ -62,6 +61,11 @@ public:
     // is retained in process quarantine so Runtime shutdown can continue.
     bool Stop(
         std::chrono::milliseconds timeout = std::chrono::seconds(5)) noexcept;
+    // Retries a game tick hook that failed during Start. A caller on a worker thread drives
+    // this periodically; on success the framework-gated services are published immediately,
+    // so plugins waiting for them do not need a re-injection. Returns true when no retry is
+    // outstanding or the hook is now running.
+    bool RetryPendingHooks() noexcept;
 
     [[nodiscard]] bool Started() const noexcept;
     [[nodiscard]] std::optional<BuildFingerprint> Fingerprint() const;

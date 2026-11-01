@@ -28,6 +28,7 @@
     "device.current": "设备：{0}",
     "hooks.waiting": "Hook：未安装",
     "hooks.installed": "Hook：已安装",
+    "hooks.installed_partial": "Hook：已安装（缺少 {0}）",
     "hooks.signature_missing": "Hook：特征码未找到（{0}）",
     "hooks.failed": "Hook：安装失败（{0}）",
     "engine.starting": "引擎：启动中",

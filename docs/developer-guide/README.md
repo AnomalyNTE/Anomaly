@@ -1,5 +1,7 @@
 # 开发者文档
 
+> 🌐 [English](../en/developer-guide/README.md) · 简体中文
+
 本文档集面向**贡献者与插件作者**。如果你只是想使用 Anomaly，请看[用户文档](../user-guide/README.md)。
 
 ## 阅读顺序

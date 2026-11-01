@@ -927,6 +927,8 @@ Look ResolveLook(const SurfaceOptions& options) noexcept {
         look.tint.w = 1.0f;
     }
     if (options.tint_strength >= 0.0f) look.tint_strength = options.tint_strength;
+    if (options.saturation >= 0.0f) look.saturation = options.saturation;
+    if (options.minimum_alpha >= 0.0f) look.minimum_alpha = options.minimum_alpha;
     if (options.face_blur >= 0.0f) look.blur_mix = options.face_blur;
     if (options.rim_blur >= 0.0f) look.rim_blur = options.rim_blur;
     if (!options.shadow) {

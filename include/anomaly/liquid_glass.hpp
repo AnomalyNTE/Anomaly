@@ -69,6 +69,13 @@ struct SurfaceOptions final {
     // Overrides the variant's tint colour when its alpha is > 0; the alpha is
     // how far toward the colour the tint moves.
     ImVec4 tint{0.0f, 0.0f, 0.0f, 0.0f};
+    // Overrides the variant's saturation boost when >= 0. 1 keeps the backdrop
+    // as captured.
+    float saturation{-1.0f};
+    // Overrides the body the shader fills in where the backdrop is empty. The
+    // shipped panes keep a minimum so text stays readable over nothing; 0 leaves
+    // the pane as pure blur.
+    float minimum_alpha{-1.0f};
 };
 
 // palette_tint selects the tinted material the shells ship with; a host that

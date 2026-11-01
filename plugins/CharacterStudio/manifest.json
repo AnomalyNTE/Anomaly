@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.local.nte.character-studio",
+  "name": "Character Studio",
+  "description": "Local character models with a complete catalog, Chinese names, unlimited duplicate spawning, looping idle animations, camera-relative placement, and controls to move or remove each model.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1
+    }
+  ],
+  "capabilities": [
+    "memory-read",
+    "ue5-names",
+    "ue5-objects",
+    "game-events",
+    "interop-signature",
+    "ui",
+    "nte-session-snapshot",
+    "nte-player-snapshot"
+  ]
+}

@@ -6,7 +6,6 @@
 #include "anomaly/platform_ui_layout.hpp"
 #include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/runtime_launch.hpp"
-#include "anomaly/runtime_recovery.hpp"
 #include "anomaly/ui_resource_decoder.hpp"
 #include "config.hpp"
 
@@ -156,8 +155,6 @@ struct LauncherSnapshot final {
     std::filesystem::path game_directory;
     std::filesystem::path launcher_executable;
     anomaly::launcher::ProxyInstallationStatus proxy;
-    std::optional<anomaly::RuntimeRecoveryState> recovery;
-    std::string recovery_message;
     std::vector<anomaly::launcher::AttachableProcess> processes;
     DWORD attached_process{};
     bool core_available{};
@@ -496,7 +493,6 @@ public:
             const auto saved = PersistConfigurationImpl();
             RefreshHotkeyImpl();
             RefreshProxyImpl();
-            RefreshRecoveryImpl();
             RefreshProcessesImpl(ProcessAnnounce::Never);
             if (!saved.Ok()) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
@@ -508,7 +504,6 @@ public:
     void RefreshProxy() {
         Queue(anomaly::MessageId::LauncherStatusInspectingProxy, MessageScope::Proxy, [this] {
             RefreshProxyImpl();
-            RefreshRecoveryImpl();
             RefreshProcessesImpl(ProcessAnnounce::Never);
         });
     }
@@ -518,7 +513,6 @@ public:
             const auto game = GameDirectory();
             const auto result = anomaly::launcher::InstallProxyRuntime(game, source_);
             PublishProxy(result);
-            RefreshRecoveryImpl();
             RefreshProcessesImpl(ProcessAnnounce::Never);
         });
     }
@@ -531,14 +525,6 @@ public:
             const auto result = anomaly::launcher::SetProxyEnabled(
                 game, source_, enabled);
             PublishProxy(result);
-        });
-    }
-
-    void RestoreRecovery(anomaly::RuntimeRecoveryAxis axis) {
-        Queue(anomaly::MessageId::LauncherStatusRestoringRecovery, MessageScope::Proxy, [this, axis] {
-            const auto runtime_root = GameDirectory() / L"Anomaly";
-            anomaly::RuntimeRecoveryStore store(runtime_root);
-            PublishRecovery(store.Restore(axis), true);
         });
     }
 
@@ -598,8 +584,6 @@ public:
             state_.game_directory = selected.game_directory;
             state_.launcher_executable = selected.launcher_executable;
             state_.proxy = {};
-            state_.recovery.reset();
-            state_.recovery_message.clear();
             state_.attached_process = 0;
         }
         Queue(anomaly::MessageId::LauncherStatusScanningLocal, MessageScope::Both, [this] {
@@ -607,7 +591,6 @@ public:
             const auto saved = PersistConfigurationImpl();
             RefreshHotkeyImpl();
             RefreshProxyImpl();
-            RefreshRecoveryImpl();
             RefreshProcessesImpl();
             if (!saved.Ok()) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
@@ -866,45 +849,6 @@ private:
             : MessageKind::Error;
     }
 
-    void RefreshRecoveryImpl() {
-        const auto runtime_root = GameDirectory() / L"Anomaly";
-        std::error_code error;
-        if (!std::filesystem::is_directory(runtime_root, error) || error) {
-            std::scoped_lock lock(state_mutex_);
-            state_.recovery.reset();
-            state_.recovery_message.clear();
-            return;
-        }
-        anomaly::RuntimeRecoveryStore store(runtime_root);
-        PublishRecovery(store.Load(), false);
-    }
-
-    void PublishRecovery(anomaly::RuntimeRecoveryResult result, bool announce) {
-        std::scoped_lock lock(state_mutex_);
-        if (result.Ok()) {
-            state_.recovery = std::move(result.state);
-            state_.recovery_message.clear();
-            if (announce) {
-                state_.message = MakeLauncherMessage(
-                    anomaly::MessageId::LauncherStatusRecoveryRestored);
-                state_.message_kind = MessageKind::Success;
-            }
-            return;
-        }
-        state_.recovery.reset();
-        if (result.error == anomaly::RuntimeRecoveryError::StateUnavailable) {
-            state_.recovery_message.clear();
-            return;
-        }
-        state_.recovery_message = std::move(result.message);
-        if (announce) {
-            state_.message = MakeLauncherMessage(
-                anomaly::MessageId::LauncherStatusRecoveryRestoreFailed, {},
-                state_.recovery_message);
-            state_.message_kind = MessageKind::Error;
-        }
-    }
-
     void InitializePathsImpl() {
         const auto loaded = anomaly::launcher::LoadLauncherConfiguration(configuration_path_);
         const auto game_processes = anomaly::launcher::EnumerateAttachableProcesses();
@@ -953,7 +897,6 @@ private:
         const auto saved = PersistConfigurationImpl();
         RefreshHotkeyImpl();
         RefreshProxyImpl();
-        RefreshRecoveryImpl();
         RefreshProcessesImpl();
         RefreshThemeImpl();
         if (!saved.Ok()) {
@@ -975,6 +918,14 @@ private:
         options.client = client;
         options.payload_root = payload_root_;
         options.allow_unpaired_game_discovery = true;
+        // A game that is already running is the surest pairing there is: its own directory is where the client
+        // the user is switching to is installed, and it is the directory the process list filters on next. It
+        // only fills a directory that is not known yet -- a stored one always wins in the discovery below.
+        for (const auto& process : anomaly::launcher::EnumerateAttachableProcesses()) {
+            if (!process.executable_path.empty()) {
+                options.running_game_executables.push_back(process.executable_path);
+            }
+        }
         const auto discovered = anomaly::launcher::DiscoverLauncherConfiguration(
             preferred, options);
         std::scoped_lock lock(state_mutex_);
@@ -1551,6 +1502,20 @@ std::optional<std::filesystem::path> ChooseGameDirectory(
     return result;
 }
 
+// The file name the selected client's official launcher ships under. The two installs are separate programs
+// with separate launchers, so a label that names one of them has to name the one this client actually starts.
+const char* ClientLauncherFileName(const anomaly::launcher::NteClient client) noexcept {
+    return client == anomaly::launcher::NteClient::Global
+        ? "NTEGlobalLauncher.exe" : "NTELauncher.exe";
+}
+
+std::string Format(
+    const anomaly::Translator& translator, anomaly::MessageId id,
+    std::initializer_list<std::string_view> arguments) {
+    return translator.Format(id, std::span<const std::string_view>(
+        arguments.begin(), arguments.size()));
+}
+
 std::optional<std::filesystem::path> ChooseLauncherExecutable(
     HWND owner, const std::filesystem::path& current,
     const anomaly::launcher::NteClient client, const anomaly::Translator& translator) {
@@ -1577,8 +1542,9 @@ std::optional<std::filesystem::path> ChooseLauncherExecutable(
     };
     static_cast<void>(dialog->SetFileTypes(
         static_cast<UINT>(std::size(filters)), filters));
-    const std::wstring title = Utf8Wide(
-        translator.Text(anomaly::MessageId::LauncherDialogNteLauncher));
+    const std::wstring title = Utf8Wide(Format(
+        translator, anomaly::MessageId::LauncherDialogNteLauncher,
+        {ClientLauncherFileName(client)}));
     dialog->SetTitle(title.c_str());
     if (!current.empty()) {
         ComPtr<IShellItem> folder;
@@ -1664,6 +1630,16 @@ bool CommandButton(
     return pressed && enabled;
 }
 
+// The width a command button needs for its own label, in the same unscaled units CommandButton takes. A
+// translation is as long as it is: a fixed width ellipsizes the ones that grew.
+float CommandButtonWidth(char32_t glyph, const char* label) {
+    const std::string text = std::string(Glyph(glyph)) + "  " + label;
+    const float pixels = ImGui::CalcTextSize(text.c_str()).x +
+        ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float scale = g_launcher_dpi_scale > 0.0f ? g_launcher_dpi_scale : 1.0f;
+    return std::ceil(pixels / scale) + 6.0f;
+}
+
 const char* Text(const anomaly::Translator& translator, anomaly::MessageId id) noexcept {
     return translator.Text(id).data();
 }
@@ -1672,13 +1648,6 @@ std::string StableLabel(
     const anomaly::Translator& translator, anomaly::MessageId id,
     std::string_view stable_id) {
     return anomaly::StableDisplayLabel(translator.Text(id), stable_id);
-}
-
-std::string Format(
-    const anomaly::Translator& translator, anomaly::MessageId id,
-    std::initializer_list<std::string_view> arguments) {
-    return translator.Format(id, std::span<const std::string_view>(
-        arguments.begin(), arguments.size()));
 }
 
 std::string RenderMessage(
@@ -1723,27 +1692,34 @@ void DrawModes(
     ImGui::BeginChild(
         "LauncherModes", ImVec2(0.0f, Scale(kModeHeight)),
         ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
-    if (ImGui::BeginTable("LauncherToolbar", 2, ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Modes", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Client", ImGuiTableColumnFlags_WidthFixed, Scale(190.0f));
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        const std::array<const char*, 2> labels{
-            Text(translator, anomaly::MessageId::LauncherModeProxyInstall),
-            Text(translator, anomaly::MessageId::LauncherModeLiveAttach)};
-        anomaly::glass::SegmentedOptions options;
-        options.height = 46.0f;
-        options.padding_x = 30.0f;
-        options.scale = g_launcher_dpi_scale;
-        options.disabled_mask = snapshot.busy || proxy_enabled ? 0b10U : 0U;
-        int selected = mode == LauncherMode::Attach ? 1 : 0;
-        if (anomaly::glass::SegmentedControl("launcher-modes", labels, selected, options)) {
-            mode = selected == 1 ? LauncherMode::Attach : LauncherMode::Proxy;
-        }
-        // The client is always the mainland one. The switch that used to live in
-        // the second column only ever had one useful setting, and NteClient's
-        // default already is MainlandChina, so the column is simply gone.
-        ImGui::EndTable();
+    const std::array<const char*, 2> labels{
+        Text(translator, anomaly::MessageId::LauncherModeProxyInstall),
+        Text(translator, anomaly::MessageId::LauncherModeLiveAttach)};
+    anomaly::glass::SegmentedOptions options;
+    options.height = 46.0f;
+    options.padding_x = 30.0f;
+    options.scale = g_launcher_dpi_scale;
+    options.disabled_mask = snapshot.busy || proxy_enabled ? 0b10U : 0U;
+    int selected = mode == LauncherMode::Attach ? 1 : 0;
+    if (anomaly::glass::SegmentedControl("launcher-modes", labels, selected, options)) {
+        mode = selected == 1 ? LauncherMode::Attach : LauncherMode::Proxy;
+    }
+    // The client sits right beside the mode, on the same band: it decides which game directory the process
+    // list, the proxy install and the launch all read from, and the two installs live in different
+    // directories -- a game under the client that is not selected is not in the list at all. The labels are
+    // the clients' own names in both locales, so they are not translated.
+    ImGui::SameLine(0.0f, Scale(12.0f));
+    const std::array<const char*, 2> clients{"CN", "Global"};
+    anomaly::glass::SegmentedOptions client_options;
+    client_options.height = 46.0f;
+    client_options.padding_x = 20.0f;
+    client_options.scale = g_launcher_dpi_scale;
+    client_options.disabled_mask = snapshot.busy ? 0b11U : 0U;
+    int client = snapshot.selected_client == anomaly::launcher::NteClient::Global ? 1 : 0;
+    if (anomaly::glass::SegmentedControl("launcher-client", clients, client, client_options)) {
+        controller.SelectClient(client == 1
+            ? anomaly::launcher::NteClient::Global
+            : anomaly::launcher::NteClient::MainlandChina);
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
@@ -1761,83 +1737,6 @@ void DrawReadOnlyPath(
     ImGui::InputText(
         id, value.data(), value.size() + 1,
         ImGuiInputTextFlags_ReadOnly);
-}
-
-void DrawRecoveryAxis(
-    LauncherController& controller, const LauncherSnapshot& snapshot,
-    const anomaly::Translator& translator, const char* stable_id,
-    anomaly::MessageId label, anomaly::MessageId action,
-    anomaly::RuntimeRecoveryAxis axis) {
-    ImGui::TableNextRow(ImGuiTableRowFlags_None, Scale(28.0f));
-    ImGui::TableSetColumnIndex(0);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(Text(translator, label));
-    ImGui::TableSetColumnIndex(1);
-    ImGui::BeginDisabled(snapshot.busy);
-    ImGui::PushID(stable_id);
-    if (ImGui::SmallButton(Text(translator, action))) controller.RestoreRecovery(axis);
-    ImGui::PopID();
-    ImGui::EndDisabled();
-}
-
-void DrawRecoveryState(
-    LauncherController& controller, const LauncherSnapshot& snapshot,
-    const anomaly::Translator& translator) {
-    const auto& theme = ue5mem::PlatformUiTheme();
-    const bool active = snapshot.recovery && snapshot.recovery->safe_mode.Active();
-    if (!active && snapshot.recovery_message.empty()) return;
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionRecovery));
-    if (!snapshot.recovery_message.empty()) {
-        ImGui::PushTextWrapPos();
-        ImGui::TextColored(ThemeColor(theme.danger), "%s", snapshot.recovery_message.c_str());
-        ImGui::PopTextWrapPos();
-        return;
-    }
-
-    const auto& safe_mode = snapshot.recovery->safe_mode;
-    ImGui::TextColored(ThemeColor(theme.warning), "%s",
-        Text(translator, anomaly::MessageId::LauncherRecoverySafeModeActive));
-    if (!safe_mode.reason.empty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(kLauncherMutedInk, "%s", safe_mode.reason.c_str());
-    }
-    if (ImGui::BeginTable(
-            "RecoveryAxes", 2, ImGuiTableFlags_SizingStretchProp,
-            ImVec2(0.0f, 0.0f))) {
-        const std::string axis_column = StableLabel(translator,
-            anomaly::MessageId::LauncherRecoveryAxis, "recovery-axis");
-        const std::string action_column = StableLabel(translator,
-            anomaly::MessageId::LauncherRecoveryAction, "recovery-action");
-        ImGui::TableSetupColumn(axis_column.c_str(), ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn(
-            action_column.c_str(), ImGuiTableColumnFlags_WidthFixed, Scale(72.0f));
-        if (safe_mode.minimal_core) {
-            DrawRecoveryAxis(
-                controller, snapshot, translator, "minimal-core",
-                anomaly::MessageId::LauncherRecoveryMinimalCore,
-                anomaly::MessageId::LauncherRecoveryRestore,
-                anomaly::RuntimeRecoveryAxis::MinimalCore);
-        }
-        if (safe_mode.third_party_plugins_suspended) {
-            DrawRecoveryAxis(
-                controller, snapshot, translator, "third-party-plugins",
-                anomaly::MessageId::LauncherRecoveryThirdPartyPlugins,
-                anomaly::MessageId::LauncherRecoveryRestore,
-                anomaly::RuntimeRecoveryAxis::ThirdPartyPlugins);
-        }
-        if (safe_mode.profile_overrides_suspended) {
-            DrawRecoveryAxis(
-                controller, snapshot, translator, "profile-overrides",
-                anomaly::MessageId::LauncherRecoveryProfileOverrides,
-                anomaly::MessageId::LauncherRecoveryRestore,
-                anomaly::RuntimeRecoveryAxis::ProfileOverrides);
-        }
-        ImGui::EndTable();
-    }
 }
 
 void DrawStartupSettings(
@@ -1945,8 +1844,6 @@ void DrawProxyMode(
         ImGui::PopTextWrapPos();
     }
 
-    DrawRecoveryState(controller, snapshot, translator);
-
     // Pinned to a fixed band rather than derived from the cursor: taking the
     // larger of the two made each mode's button land at a different height,
     // because the content above them differs in length. This is the same band the
@@ -2011,9 +1908,11 @@ void DrawAttachMode(
     DrawReadOnlyPath(
         "##NteLauncherExecutable", snapshot.launcher_executable, 38.0f, translator);
     ImGui::SameLine();
+    const std::string choose_label = Format(
+        translator, anomaly::MessageId::LauncherChooseNteLauncher,
+        {ClientLauncherFileName(snapshot.selected_client)});
     if (IconButton(
-            "choose-nte-launcher", 0xe838,
-            Text(translator, anomaly::MessageId::LauncherChooseNteLauncher),
+            "choose-nte-launcher", 0xe838, choose_label.c_str(),
             !snapshot.busy)) {
         if (const auto selected = ChooseLauncherExecutable(
                 window, snapshot.launcher_executable, snapshot.selected_client, translator)) {
@@ -2067,22 +1966,25 @@ void DrawAttachMode(
         }
     }
     const bool can_inject = !snapshot.busy && snapshot.core_available && inject_target != 0;
-    // The same bottom-right placement and size as the proxy mode's primary action,
-    // so switching modes does not move the button under the cursor.
+    // The same bottom-right placement and size as the proxy mode's primary action, so switching modes does not
+    // move the button under the cursor -- but the widths are measured from the labels, because a fixed width
+    // ellipsized the English "Inject into running process" down to "Inject into running ...".
+    const char* inject_label = Text(translator, anomaly::MessageId::LauncherActionInjectRunning);
+    const char* launch_label = Text(translator, anomaly::MessageId::LauncherLaunchAttach);
+    const float inject_width = (std::max)(200.0f, CommandButtonWidth(0xe8e5, inject_label));
+    const float launch_width = (std::max)(240.0f, CommandButtonWidth(0xe768, launch_label));
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - Scale(74.0f));
     ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(),
-        ImGui::GetWindowWidth() - Scale(452.0f) - Scale(16.0f)));
+        ImGui::GetWindowWidth() - Scale(inject_width + 12.0f + launch_width) - Scale(16.0f)));
     if (CommandButton(
-            "inject-running-process", 0xe8e5,
-            Text(translator, anomaly::MessageId::LauncherActionInjectRunning), false,
-            can_inject, ImVec2(200.0f, 62.0f))) {
+            "inject-running-process", 0xe8e5, inject_label, false,
+            can_inject, ImVec2(inject_width, 62.0f))) {
         controller.InjectIntoRunningProcess(inject_target);
     }
     ImGui::SameLine(0.0f, Scale(12.0f));
     if (CommandButton(
-            "launch-attach-core", 0xe768,
-            Text(translator, anomaly::MessageId::LauncherLaunchAttach), true, can_launch,
-            ImVec2(240.0f, 62.0f))) {
+            "launch-attach-core", 0xe768, launch_label, true, can_launch,
+            ImVec2(launch_width, 62.0f))) {
         controller.LaunchAndAttach();
     }
 }

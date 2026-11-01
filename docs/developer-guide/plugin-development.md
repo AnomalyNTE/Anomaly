@@ -256,8 +256,8 @@ manifest 中将该服务的 `minVersion` 设为 `2`。签名和语义种子仍�
 
 ```cpp
 inline constexpr AnomalySignatureFieldV2 fields[]{
-    anomaly::sdk::FieldSeed("PlayingID", 0x420, 4),
-    anomaly::sdk::FieldSeed("Paused", 0x424),
+    anomaly::sdk::FieldSeed("PlayingID", 0x438, 4),
+    anomaly::sdk::FieldSeed("Paused", 0x43C),
 };
 inline constexpr AnomalySignatureMemberV2 members[]{
     anomaly::sdk::MemberUse(0, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
@@ -281,7 +281,10 @@ if (resolved) {
 // 失败时使用 resolved.error() 报告原因，并停用依赖该组布局的功能。
 ```
 
-框架验证对象来源、访问宽度、对齐、唯一匹配及多个提取点的一致性，整组成功后才发布和学习。
+框架验证对象来源、访问宽度、对齐、唯一匹配及多个提取点的一致性，整组字段成功后才发布和学习。
+一个函数被游戏改写、原签名与学习记录都找不到时，它在结果里是地址 0，其余字段和地址照常发布：
+给同一个字段声明第二个独立函数（如 `pause` 之外的读取点）即可让该字段在单个函数失效时仍然成立，
+需要该地址的 Hook 自己用 `resolve` 再找一次，仍失败就只跳过那一个 Hook。
 种子不是失败兜底值。完整限制、C ABI 输出所有权和错误码见
 [Interop 与内存](../api-reference/interop-and-memory.md#版本-2同时解析地址与字段布局)。
 HiFi 已接入 PlayingID、Paused、PlayerType、CurrentID、OwnedIDs；核心播放和可选专辑分组解析，

@@ -24,12 +24,11 @@ inline constexpr std::ptrdiff_t kFunctionParmsSize = 182;
 inline constexpr std::size_t kProcessEventSlot = 0x4C;
 inline constexpr std::string_view kCloneTablePath =
     "/Game/DataTable/CloneSystem/CloneSystemDataTable.CloneSystemDataTable";
-inline constexpr std::string_view kEnterFunction = "/Script/HTGame.HTPlayerState.EnterCloneSceneRequest";
-inline constexpr std::string_view kCanEnterFunction = "/Script/HTGame.HTPlayerState.CanEntryRobBankClone";
-inline constexpr std::string_view kEvacuateFunction = "/Script/HTGame.HTPlayerState.RobBankRequestEvacuation";
 // Observed through the bank-entry controller's LevelSequenceActor on 2026-10-20.
 inline constexpr std::string_view kBankIntroSequence =
     "/Game/Blueprints/Level/Quest/JYF/2p_xiaozhi01.2p_xiaozhi01";
+inline constexpr std::string_view kEnterFunction = "/Script/HTGame.HTPlayerState.EnterCloneSceneRequest";
+inline constexpr std::string_view kCanEnterFunction = "/Script/HTGame.HTPlayerState.CanEntryRobBankClone";
 
 struct Parameter final {
     std::string_view name;
@@ -44,7 +43,6 @@ inline constexpr std::array kEnterParameters{
     Parameter{"InCloneCustomArgs", "NameProperty", 16, 8},
 };
 inline constexpr std::array kCanEnterParameters{Parameter{"ReturnValue", "BoolProperty", 0, 1}};
-inline constexpr std::array kEvacuateParameters{Parameter{"ID", "NameProperty", 0, 8}};
 inline constexpr std::array kBoolResultParameters{Parameter{"ReturnValue", "BoolProperty", 0, 1}};
 inline constexpr std::array kParentResultParameters{Parameter{"ReturnValue", "ObjectProperty", 0, 8}};
 

@@ -22,7 +22,7 @@ std::atomic_bool interested{};
 std::vector<Target> owned, queue;
 std::vector<Backup> backups;
 size_t cursor{}, rejected{}, already{};
-bool enabled{}, restore_failed{};
+bool enabled{}, restore_failed{}, initial_complete{};
 uintptr_t world_pointer{}, item_class{}, ui_class{};
 AnomalyGenerationHandleV1 inventory_handle{}, ui_handle{};
 uint32_t ui_scan_index{};
@@ -268,7 +268,12 @@ bool EffectNames(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, FNa
     const auto id = r.Name(character);
     if (id.empty() || id.size() > 12 || id.find_first_not_of("0123456789") != std::string::npos) return false;
     const std::string path = "/Game/DataTable/Character/Awaken/"+id+"AwakenEffect."+id+"AwakenEffect";
-    const auto table = FindCached(r, objects, path.c_str()); uintptr_t row_type{}; RowArray entries{}; int32_t free{};
+    auto table = FindCached(r, objects, path.c_str());
+    if(!table) {
+        const auto variant="/Game/DataTable/Character/Awaken/"+id+"AwakenEffect1."+id+"AwakenEffect1";
+        table=FindCached(r,objects,variant.c_str());
+    }
+    uintptr_t row_type{}; RowArray entries{}; int32_t free{};
     if (!table || !r.IsA(table, "DataTable") || !r.Read(table+DataTableRowStruct, row_type) ||
         r.NameAt(row_type+24) != "CharacterAwakenEffectData" ||
         !Layout(r,row_type, "AwakenEffectStructList", 8, 16) || !r.Read(table+DataTableRowMap, entries) ||
@@ -301,7 +306,7 @@ bool EffectNames(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, FNa
     return false;
 }
 void Apply(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, const Target& target) {
-    if (std::any_of(backups.begin(),backups.end(),[&](const Backup& saved){return saved.target.item.id == target.item.id;})) return;
+    const auto existing=std::find_if(backups.begin(),backups.end(),[&](const Backup& saved){return saved.target.item.id == target.item.id;});
     uintptr_t item{}, effects{}; Effects before{}; int32_t level{};
     std::array<awakening_data::Name,6> names{};
     if (!Item(r,objects,target,item,effects,level,before)) {
@@ -315,11 +320,18 @@ void Apply(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, const Tar
     }
     const auto applied = awakening_data::Unlock(before,names);
     if (!applied) { ++rejected; return; }
-    const Backup saved{target,before,*applied,level}; backups.push_back(saved);
+    Backup saved{target,before,*applied,level};
+    const bool had_backup=existing!=backups.end();
+    const auto backup_index=had_backup?static_cast<size_t>(existing-backups.begin()):backups.size();
+    if(had_backup) {
+        saved.before=awakening_data::Rebase(before,existing->applied,existing->before);
+        if(level==6) saved.level=existing->level;
+        backups[backup_index]=saved;
+    } else backups.push_back(saved);
     const int32_t six = 6; Effects verified{}; int32_t verified_level{};
     if (!Write(effects,*applied) || !Write(item+ItemAwakenLevel,six) || !r.Read(effects,verified) || verified != *applied ||
         !r.Read(item+ItemAwakenLevel,verified_level) || verified_level != 6) {
-        if (RestoreOne(r,objects,saved,true)) backups.pop_back();
+        if (RestoreOne(r,objects,saved,true)) backups.erase(backups.begin()+static_cast<std::ptrdiff_t>(backup_index));
         ++rejected;
         Log("Awakening: failed local preview for "+r.Name(target.character)); return;
     }
@@ -330,7 +342,7 @@ void Publish() {
     auto data = std::make_shared<View>(); data->owned = owned.size(); data->changed = backups.size();
     data->rejected = rejected; data->already = already;
     data->processed = cursor; data->ready = !owned.empty(); data->active = enabled || !backups.empty() || !visual_backups.empty();
-    data->busy = cursor < queue.size();
+    data->busy = !initial_complete && cursor < queue.size();
     data->restore_failed = restore_failed;
     if (!result.empty()) data->status = result;
     else if (data->ready) data->status = "已读取全部已持有角色。";
@@ -359,6 +371,8 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
         }
         inventory_handle = handle;
         if (!inventory || !ReadOwned(r,objects,inventory)) { owned.clear(); Publish(); return; }
+        // Revisit late-loaded catalogs and replicated inventory changes.
+        if(enabled && cursor>=queue.size()) {queue=owned;cursor=0;rejected=already=0;}
         if (enabled) for (const auto& target : owned) {
             if (std::none_of(queue.begin(),queue.end(),[&](const Target& queued) {
                     return queued.item.id == target.item.id && queued.uid == target.uid;
@@ -374,12 +388,12 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
             result = restore_failed ? "部分角色恢复未完成，请重试。" : "已恢复全部角色原觉醒。";
         }
         else if (command == 1 && !owned.empty()) {
-            enabled = true; restore_failed = false; queue = owned; cursor = rejected = already = 0; result = "正在分批预览全部已持有角色。";
+            enabled = true; initial_complete=false; restore_failed = false; queue = owned; cursor = rejected = already = 0; result = "正在分批预览全部已持有角色。";
         }
     }
     if (enabled && cursor < queue.size()) {
         Apply(r,objects,queue[cursor++]);
-        if (cursor == queue.size()) result = rejected ? "部分角色未通过校验，未修改。" : "全部角色的觉醒节点已解锁（本机预览）。";
+        if (cursor == queue.size()) {initial_complete=true;result = rejected ? "部分角色未通过校验，未修改。" : "全部角色的觉醒节点已解锁（本机预览）。";}
     }
     // A selected page is refreshed once; no continuous rewriting or RPCs.
     if (enabled) {
@@ -399,7 +413,7 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
 }
 void Reset() {
     visual_backups.clear(); next_visual = {};
-    owned.clear(); queue.clear(); backups.clear(); cached_objects.clear(); layouts.clear(); cursor = rejected = already = 0; enabled = restore_failed = false;
+    owned.clear(); queue.clear(); backups.clear(); cached_objects.clear(); layouts.clear(); cursor = rejected = already = initial_complete = 0; enabled = restore_failed = false;
     world_pointer = item_class = ui_class = 0; inventory_handle = ui_handle = {}; ui_scan_index = 0;
     next_tick = next_inventory = next_ui_scan = {}; result.clear(); interested = false; requested = 0; Publish();
     // Signature discovery belongs to plugin startup, not an interactive frame.

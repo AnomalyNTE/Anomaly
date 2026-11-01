@@ -35,6 +35,13 @@ inline std::optional<Effects> Unlock(const Effects& original, const std::array<N
     }
     return result;
 }
+// Preserve authoritative changes while retaining the original values for bytes
+// that still belong to the previous local preview.
+inline Effects Rebase(const Effects& current,const Effects& applied,const Effects& before) {
+    auto result=before;
+    for(size_t i=0;i<result.size();++i) if(current[i]!=applied[i]) result[i]=current[i];
+    return result;
+}
 // Restore only bytes still owned by the preview. An inventory update from the
 // game takes precedence over our backup, independently for each node and level.
 inline Effects Restore(const Effects& current, const Effects& applied, const Effects& before) {
