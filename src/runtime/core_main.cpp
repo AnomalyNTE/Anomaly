@@ -788,6 +788,12 @@ DWORD RunPlatform(const std::shared_ptr<CoreContext>& context, std::stop_token s
             const auto settings = weak.lock();
             return settings != nullptr && settings->RecordLastRoute(route);
         };
+    diagnostics.settings_record_notice =
+        [weak = std::weak_ptr<anomaly::PlatformSettingsStore>(context->settings)](
+            const std::uint32_t version) {
+            const auto settings = weak.lock();
+            return settings != nullptr && settings->RecordNoticeAcceptance(version);
+        };
     diagnostics.game_pump = [weak = context->session]() -> std::size_t {
         const auto session = weak.lock();
         return session == nullptr ? 0 : session->Dispatchers().PumpGame();

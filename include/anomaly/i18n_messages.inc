@@ -525,3 +525,9 @@ ANOMALY_I18N_MESSAGE(LauncherStatusNoProcesses, "launcher.status.no_processes")
 ANOMALY_I18N_MESSAGE(LauncherStatusProcessFound, "launcher.status.process_found")
 ANOMALY_I18N_MESSAGE(LauncherStatusSavingSettings, "launcher.status.saving_settings")
 ANOMALY_I18N_MESSAGE(LauncherStatusSettingsSaved, "launcher.status.settings_saved")
+// First-launch notice: only the card's controls are localized here. The notice
+// text is authored Markdown in `notices/first-run.<locale>.md`.
+ANOMALY_I18N_MESSAGE(NoticeAgree, "notice.agree")
+ANOMALY_I18N_MESSAGE(NoticeConfirm, "notice.confirm")
+ANOMALY_I18N_MESSAGE(NoticeWelcome, "notice.welcome")
+ANOMALY_I18N_MESSAGE(NoticeExit, "notice.exit")

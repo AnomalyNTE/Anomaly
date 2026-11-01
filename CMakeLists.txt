@@ -923,6 +923,14 @@ target_include_directories(anomaly_platform_ui_layout PUBLIC include)
 target_compile_definitions(
     anomaly_platform_ui_layout PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_platform_ui_layout PRIVATE /W4 /permissive- /EHsc)
+
+# First-launch notice: Markdown parser shared by the host and the preview.
+add_library(anomaly_platform_notice STATIC src/ui/platform_notice.cpp)
+target_include_directories(anomaly_platform_notice PUBLIC include)
+target_compile_definitions(
+    anomaly_platform_notice PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_platform_notice PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_platform_notice PRIVATE winhttp)
 target_link_libraries(
     anomaly_platform_ui_layout PRIVATE nlohmann_json::nlohmann_json)
 
@@ -996,6 +1004,7 @@ set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
     anomaly_imgui
     anomaly_nte_profile_runtime
     anomaly_plugin_manifest
+    anomaly_platform_notice
     anomaly_reliable_storage
     anomaly_repository_configuration
     anomaly_repository_index
@@ -1011,6 +1020,7 @@ target_link_libraries(
     anomaly_platform_ui_model
     anomaly_platform_settings
     anomaly_platform_ui_layout
+    anomaly_platform_notice
     anomaly_scoped_platform
     anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
     anomaly_nte_profile_runtime
@@ -1036,6 +1046,10 @@ add_custom_command(TARGET anomaly_core POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/locales/host"
             "$<TARGET_FILE_DIR:anomaly_core>/locales/host"
+    # The notice text ships as content, not as a compiled string.
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/notices"
+            "$<TARGET_FILE_DIR:anomaly_core>/notices"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/assets/fonts"
             "$<TARGET_FILE_DIR:anomaly_core>/assets/fonts"
@@ -1137,7 +1151,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         anomaly-platform-preview PRIVATE
         ue5mem_core anomaly_imgui anomaly_plugin_shadow anomaly_plugin_dependency_resolver
         anomaly_platform_ui_model anomaly_plugin_enablement anomaly_adapter_services
-        anomaly_platform_settings anomaly_platform_ui_layout
+        anomaly_platform_settings anomaly_platform_ui_layout anomaly_platform_notice
         anomaly_plugin_runtime
         anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
         anomaly_i18n nlohmann_json::nlohmann_json ole32 shell32)
@@ -1181,6 +1195,9 @@ set(ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/locales/host"
             "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/locales/host"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/notices"
+            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/notices"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/assets/fonts"
             "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/assets/fonts"
@@ -1843,6 +1860,8 @@ install(FILES CONTACT config/anomaly.ini config/repository.json config/plugin-re
     DESTINATION Anomaly COMPONENT GameRuntime)
 install(DIRECTORY locales/host
     DESTINATION Anomaly/locales COMPONENT GameRuntime)
+install(DIRECTORY notices
+    DESTINATION Anomaly COMPONENT GameRuntime)
 install(FILES assets/fonts/NotoSansCJKsc-Regular.ttf
     DESTINATION Anomaly/assets/fonts COMPONENT GameRuntime)
 # Theme artwork and presets ship with the package: the game runtime and the

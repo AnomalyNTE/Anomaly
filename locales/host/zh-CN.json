@@ -529,6 +529,10 @@
     "launcher.status.no_processes": "未找到正在运行的 HTGame.exe 进程",
     "launcher.status.process_found": "已找到 HTGame.exe（PID {0}）",
     "launcher.status.saving_settings": "正在保存启动设置",
-    "launcher.status.settings_saved": "启动设置已保存"
+    "launcher.status.settings_saved": "启动设置已保存",
+    "notice.agree": "我已阅读并同意以上说明",
+    "notice.confirm": "同意并继续",
+    "notice.welcome": "欢迎使用 Anomaly",
+    "notice.exit": "暂不使用"
   }
 }

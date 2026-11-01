@@ -79,6 +79,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     diagnostics.settings_record_route = [settings](const std::string_view route) {
         return settings->RecordLastRoute(route);
     };
+    diagnostics.settings_record_notice = [settings](const std::uint32_t version) {
+        return settings->RecordNoticeAcceptance(version);
+    };
     ue5mem::RunPlatform(root, config, {}, {}, {}, std::move(diagnostics), plugins);
     static_cast<void>(plugins->StopForRuntime());
     return 0;

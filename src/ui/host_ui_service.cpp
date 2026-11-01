@@ -27,6 +27,7 @@ std::atomic_bool g_menus_collapsed{};
 std::atomic_bool g_menu_state_pending{true};
 std::atomic_bool g_management_expansion_requested{};
 std::atomic_bool g_developer_mode{};
+std::atomic_bool g_plugin_draw_suppressed{};
 std::atomic<PlatformInputCapturePolicy> g_input_capture_policy{
     PlatformInputCapturePolicy::Automatic};
 std::mutex g_external_url_mutex;
@@ -1302,6 +1303,12 @@ void SetHostUiDeveloperMode(const bool enabled) noexcept {
 }
 
 bool HostUiDeveloperModeEnabled() noexcept { return g_developer_mode.load(); }
+
+void SetHostUiPluginDrawSuppressed(const bool suppressed) noexcept {
+    g_plugin_draw_suppressed.store(suppressed);
+}
+
+bool HostUiPluginDrawSuppressed() noexcept { return g_plugin_draw_suppressed.load(); }
 
 std::optional<std::string> ConsumeHostUiExternalUrlRequest() noexcept {
     std::scoped_lock lock(g_external_url_mutex);

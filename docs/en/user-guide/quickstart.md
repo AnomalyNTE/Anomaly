@@ -26,6 +26,11 @@ The main management interface always has three main navigation entries:
 > [!NOTE]
 > The main management window has no close button, so you cannot lose the entry point for opening the platform again. `Insert` collapses or expands unlocked menus and also recovers a main window that closed abnormally; the lock button in the title bar keeps a single window expanded.
 
+> [!IMPORTANT]
+> The first time the interface appears it shows a **Before you start** card. Plugin features unlock only after you tick **I have read and accept these notes** and press **Accept and continue**; **Not now** closes the interface and the card returns on the next open. The acceptance is written to `interface.notice_accepted_version` in `Anomaly\config\platform-settings.json`.
+>
+> The text lives in `Anomaly\notices\first-run.en-US.md` (`first-run.zh-CN.md` for Chinese) and supports `#`/`##` headings, `-` lists, `**bold**`, `[label](link)` and `---`; `{version}` is replaced with the notice version.
+
 ## 3. Enable built-in plugins
 
 The **Plugins** page shows the built-in plugins installed with the runtime package. Select a plugin to enable or disable it, reload it, or inspect its status reason.

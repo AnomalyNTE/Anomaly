@@ -529,6 +529,10 @@
     "launcher.status.no_processes": "No running HTGame.exe process found",
     "launcher.status.process_found": "Found HTGame.exe (PID {0})",
     "launcher.status.saving_settings": "Saving startup settings",
-    "launcher.status.settings_saved": "Startup settings saved"
+    "launcher.status.settings_saved": "Startup settings saved",
+    "notice.agree": "I have read and accept these notes",
+    "notice.confirm": "Accept and continue",
+    "notice.welcome": "Welcome to Anomaly",
+    "notice.exit": "Not now"
   }
 }
