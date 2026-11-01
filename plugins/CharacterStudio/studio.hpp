@@ -186,6 +186,12 @@ public:
             ue_.Set(actor, "Actor.SetReplicates", "bInReplicates", false);
             ue_.Set(actor, "Actor.SetActorEnableCollision", "bNewActorEnableCollision", false);
             VerifyLocation(actor, position);
+            const auto facing = ue_.Call(
+                "/Script/Engine.SceneComponent.K2_GetComponentRotation", body)
+                .Get<Vector>("ReturnValue");
+            if (!std::isfinite(facing.y) ||
+                std::abs(std::remainder(facing.y - yaw, 360.0)) > 0.05)
+                throw std::runtime_error("模型身体朝向回读不一致");
             if (appearance.idle) playback_.emplace(record.id, playback);
             models_.push_back(std::move(record)); // no allocation after reserve above
             return next_id_++;

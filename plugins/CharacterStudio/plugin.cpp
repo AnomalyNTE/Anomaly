@@ -137,7 +137,7 @@ struct RenderState {
     char filter[128]{};
     std::uint32_t count{1};
     Vector offset{200, 0, -90}, position{};
-    double yaw{};
+    double facing_offset{};
     double spacing{DefaultSpacing};
     double model_yaw{};
     Name character{};
@@ -401,8 +401,27 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
                     !Same(camera.world, world) || !Same(camera.player, player.handle) ||
                     !std::isfinite(camera.rotation[1]))
                     throw std::runtime_error("玩家视角未就绪，请稍后生成");
+                const auto pawn = c.engine->Call(
+                    "/Script/Engine.GameplayStatics.GetPlayerPawn",
+                    c.engine->Find("/Script/Engine.Default__GameplayStatics"),
+                    [&](Engine::Parameters& p) {
+                        p.Put("WorldContextObject", native_world);
+                        p.Put("PlayerIndex", std::int32_t{0});
+                    }).Get<Address>("ReturnValue");
+                if (!c.engine->IsA(pawn, "Character"))
+                    throw std::runtime_error("玩家角色未就绪，请稍后生成");
+                const auto mesh = c.engine->ObjectField(pawn, "Mesh");
+                if (!c.engine->IsA(mesh, "SkeletalMeshComponent"))
+                    throw std::runtime_error("玩家身体模型未就绪，请稍后生成");
+                // Match the visible mesh, including its rotation relative to the Pawn.
+                // Placement and grid axes below remain camera-relative.
+                const auto facing = c.engine->Call(
+                    "/Script/Engine.SceneComponent.K2_GetComponentRotation", mesh)
+                    .Get<Vector>("ReturnValue");
+                if (!std::isfinite(facing.y))
+                    throw std::runtime_error("玩家身体朝向未就绪，请稍后生成");
                 const auto yaw = std::remainder(
-                    std::remainder(camera.rotation[1], 360.0) + std::remainder(cmd.yaw, 360.0), 360.0);
+                    std::remainder(facing.y, 360.0) + std::remainder(cmd.yaw, 360.0), 360.0);
                 const auto radians = std::remainder(camera.rotation[1], 360.0) *
                     3.14159265358979323846 / 180.0;
                 const auto cosine = std::cos(radians), sine = std::sin(radians);
@@ -609,7 +628,7 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                 ui->input_uint32(ui->user, StringView("数量"), &r.count, 1, 10);
                 if (enabled_button("生成", view->ready && selected && r.count > 0))
                     Request(c, {Action::spawn, view->world, r.character, 0, r.count,
-                                r.offset, r.yaw, r.spacing});
+                                r.offset, r.facing_offset, r.spacing});
                 if (view->queued) {
                     same_line();
                     if (Button(ui, "取消队列 (" + std::to_string(view->queued) + ")"))
@@ -672,8 +691,9 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                 ui->input_double(ui->user, StringView("前后"), &r.offset.x, 10, 100);
                 ui->input_double(ui->user, StringView("左右"), &r.offset.y, 10, 100);
                 ui->input_double(ui->user, StringView("高度"), &r.offset.z, 10, 100);
-                ui->input_double(ui->user, StringView("朝向偏移（相对视角）"), &r.yaw, 5, 45);
                 ui->input_double(ui->user, StringView("间距（厘米）"), &r.spacing, 10, 50);
+                Text(ui, "模型身体朝向（默认与玩家同向）");
+                ui->input_double(ui->user, StringView("身体旋转偏移（度）"), &r.facing_offset, 5, 45);
             }
         }
         tabs.Close();

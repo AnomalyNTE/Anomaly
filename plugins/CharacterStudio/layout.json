@@ -336,6 +336,20 @@
         }
       ]
     },
+    "/Script/Engine.GameplayStatics.GetPlayerPawn": {
+      "size": 24,
+      "fields": [
+        {"name": "WorldContextObject", "offset": 0, "size": 8, "type": "ObjectProperty"},
+        {"name": "PlayerIndex", "offset": 8, "size": 4, "type": "IntProperty"},
+        {"name": "ReturnValue", "offset": 16, "size": 8, "type": "ObjectProperty"}
+      ]
+    },
+    "/Script/Engine.SceneComponent.K2_GetComponentRotation": {
+      "size": 24,
+      "fields": [
+        {"name": "ReturnValue", "offset": 0, "size": 24, "type": "StructProperty"}
+      ]
+    },
     "/Script/Engine.Actor.K2_GetActorLocation": {
       "size": 24,
       "fields": [
