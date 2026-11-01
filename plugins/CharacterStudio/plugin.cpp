@@ -79,17 +79,8 @@ struct LiveProcess final : Process {
             objects->find_exact(objects->user, StringView(path), &result).code == 0) return result;
         return {};
     }
-    Handle At(std::uint32_t index) override {
-        AnomalyUe5ObjectSnapshotV1 value{sizeof(value)};
-        if (objects && objects->snapshot_at &&
-            objects->snapshot_at(objects->user, index, &value).code == 0) return value.handle;
-        return {};
-    }
-    bool Valid(Handle handle) override {
-        AnomalyUe5ObjectSnapshotV1 value{sizeof(value)};
-        return objects && objects->snapshot_by_handle &&
-            objects->snapshot_by_handle(objects->user, handle, &value).code == 0 &&
-            Same(handle, value.handle);
+    std::uint64_t Generation() override {
+        return objects && objects->generation ? objects->generation(objects->user) : 0;
     }
     bool Invoke(Address object, Address function, void* data, std::size_t size) override {
         if (faulted || !entry || !framework || !framework->is_game_thread ||
@@ -257,8 +248,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
         if (registry && c->world_slot && c->process.entry && core->read_memory &&
             c->process.names && c->process.names->resolve_utf8 &&
             c->process.names->resolve_ftext_utf8 && c->process.objects &&
-            c->process.objects->find_exact && c->process.objects->snapshot_at &&
-            c->process.objects->snapshot_by_handle && c->process.framework &&
+            c->process.objects->find_exact && c->process.objects->generation &&
+            c->process.framework &&
             c->process.framework->is_game_thread && c->session && c->session->snapshot) {
             c->engine = std::make_unique<Engine>(c->process, std::move(resource), registry);
             c->studio = std::make_unique<Studio>(*c->engine);
@@ -275,7 +266,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
             require(c->process.names && c->process.names->resolve_utf8 &&
                     c->process.names->resolve_ftext_utf8, "ue5.names");
             require(c->process.objects && c->process.objects->find_exact &&
-                    c->process.objects->snapshot_at && c->process.objects->snapshot_by_handle,
+                    c->process.objects->generation,
                     "ue5.objects");
             require(c->process.framework && c->process.framework->is_game_thread, "ue5.framework");
             require(c->session && c->session->snapshot, "nte.session");

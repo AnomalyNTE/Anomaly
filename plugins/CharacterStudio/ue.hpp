@@ -49,8 +49,7 @@ struct Process {
     virtual std::string ResolveName(std::uint32_t index) = 0;
     virtual std::string ResolveText(Address address) = 0;
     virtual Handle Find(std::string_view path) = 0;
-    virtual Handle At(std::uint32_t index) = 0;
-    virtual bool Valid(Handle object) = 0;
+    virtual std::uint64_t Generation() = 0;
     virtual bool Invoke(Address object, Address function, void* data, std::size_t size) = 0;
 };
 
@@ -106,31 +105,26 @@ public:
         return object && Derived(Class(object), type);
     }
     Address Resolve(Handle handle) {
-        if (!handle.id || !static_cast<std::uint32_t>(handle.id) || !process_.Valid(handle))
+        if (!handle.id || !static_cast<std::uint32_t>(handle.id) ||
+            !handle.generation || handle.generation != process_.Generation())
             return 0;
         const auto index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
-        const auto count = Layout<std::int32_t>(registry_, "objects.countOffset");
-        const auto chunks_count = Layout<std::int32_t>(registry_, "objects.numChunksOffset");
-        const auto chunk_size = Offset("objects.chunkSize");
-        if (count <= 0 || index >= static_cast<std::uint32_t>(count) || !chunk_size ||
-            chunks_count <= 0 || index / chunk_size >= static_cast<std::size_t>(chunks_count))
-            return 0;
-        const auto chunks = Layout<Address>(registry_, "objects.itemsOffset");
-        const auto chunk = Read<Address>(chunks + (index / chunk_size) * sizeof(Address));
-        const auto slot = chunk + (index % chunk_size) * Offset("objects.itemStride");
-        const auto serial = Layout<std::uint32_t>(slot, "objects.serialOffset");
-        if (serial != ANOMALY_UE5_OBJECT_HANDLE_SERIAL(handle)) return 0;
-        const auto object = Layout<Address>(slot, "objects.objectOffset");
-        if (!object || Layout<std::int32_t>(object, "object.internalIndex") !=
-                           static_cast<std::int32_t>(index)) return 0;
+        std::uint32_t serial{};
+        const auto object = ObjectAt(index, serial);
+        if (!object || serial != ANOMALY_UE5_OBJECT_HANDLE_SERIAL(handle) ||
+            Layout<std::int32_t>(object, "object.internalIndex") !=
+                static_cast<std::int32_t>(index)) return 0;
         return object;
     }
     Handle Pin(Address object) {
         if (!object) return {};
+        const auto generation = process_.Generation();
+        if (!generation) return {};
         const auto index = Layout<std::int32_t>(object, "object.internalIndex");
         if (index < 0) return {};
-        const auto handle = process_.At(static_cast<std::uint32_t>(index));
-        return Resolve(handle) == object ? handle : Handle{};
+        std::uint32_t serial{};
+        if (ObjectAt(static_cast<std::uint32_t>(index), serial) != object) return {};
+        return {(std::uint64_t(serial) << 32) | (std::uint64_t(index) + 1), generation};
     }
     Address Find(std::string_view path) {
         auto object = Resolve(process_.Find(path));
@@ -329,6 +323,21 @@ public:
     }
     void Reset() { functions_.clear(); }
 private:
+    Address ObjectAt(std::uint32_t index, std::uint32_t& serial) {
+        // Spawning/loading can grow GUObjectArray within this Game callback.
+        // Host snapshots still use the count sampled at the start of the tick.
+        const auto count = Layout<std::int32_t>(registry_, "objects.countOffset");
+        const auto chunks_count = Layout<std::int32_t>(registry_, "objects.numChunksOffset");
+        const auto chunk_size = Offset("objects.chunkSize");
+        if (count <= 0 || index >= static_cast<std::uint32_t>(count) || !chunk_size ||
+            chunks_count <= 0 || index / chunk_size >= static_cast<std::size_t>(chunks_count))
+            return 0;
+        const auto chunks = Layout<Address>(registry_, "objects.itemsOffset");
+        const auto chunk = Read<Address>(chunks + (index / chunk_size) * sizeof(Address));
+        const auto slot = chunk + (index % chunk_size) * Offset("objects.itemStride");
+        serial = Layout<std::uint32_t>(slot, "objects.serialOffset");
+        return Layout<Address>(slot, "objects.objectOffset");
+    }
     Process& process_;
     Json resource_;
     Address registry_{};
