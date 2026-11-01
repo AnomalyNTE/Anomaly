@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "locale": "en-US",
+  "messages": {
+    "plugin.name": "NaiLong Costume",
+    "plugin.description": "NaiLong 1.8.7: engine-native replacement with 36-bone source-rig skinning; both the player and nearby NPCs can wear the model.",
+    "window.title": "NaiLong · native model replacement",
+    "option.player": "Replace the controlled player (follows pawn switches)",
+    "option.bone_follow": "Bone follow / BetterPose MMD",
+    "option.nearby_npcs": "Dress nearby NPCs as NaiLong too",
+    "option.npc_radius": "NPC radius (m)",
+    "option.pose_fps": "Skinning update FPS",
+    "option.height": "Model height (m)",
+    "option.offset": "Foot offset (cm)",
+    "option.yaw": "Facing correction (deg)",
+    "action.restore": "Restore player and NPCs, remove NaiLong",
+    "status.npc_scan": "NPC scan",
+    "status.npc_count": "Nearby NPCs"
+  }
+}

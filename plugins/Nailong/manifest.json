@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 2,
+  "id": "com.nailong.costume",
+  "name": "奶龙换装",
+  "description": "UE 原生玩家与附近 NPC 模型替换；36 骨源蒙皮，离开范围自动恢复，动物不参与。",
+  "author": "yi621yi",
+  "license": "AGPL-3.0-only",
+  "audience": "user",
+  "version": "1.7.7",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.actors",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1,
+      "optional": true
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "memory-read",
+    "ue5-objects",
+    "ue5-names",
+    "game-events",
+    "nte-actor-snapshot",
+    "interop-signature",
+    "memory-write",
+    "nte-player-snapshot"
+  ]
+}
