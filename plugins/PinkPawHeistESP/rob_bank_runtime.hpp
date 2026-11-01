@@ -97,11 +97,16 @@ public:
     // Normal game requests, only on the Game thread. Entry data is loaded by
     // the RobBank row name, never by the table's display index or a saved FName.
     [[nodiscard]] AnomalyStatusV1 EnterBank() noexcept;
-    [[nodiscard]] AnomalyStatusV1 Evacuate(std::uint64_t extraction_entity_id) noexcept;
     // Skips the observed bank intro through its active dialogue window's game
     // handler; reports dispatched requests, not confirmed playback completion.
     [[nodiscard]] AnomalyStatusV1 SkipCutscenes(std::uint32_t& requests_sent) noexcept;
     void ResetCutsceneSkipping() noexcept;
+    // Requests the bank evacuation with an empty id, the way the game's own settlement flow
+    // does. No extraction marker is read or required.
+    [[nodiscard]] AnomalyStatusV1 RequestEvacuation() noexcept;
+    // Leaves the clone scene through the PlayerState's own exit RPC, for a settlement the
+    // evacuation request did not close by itself.
+    [[nodiscard]] AnomalyStatusV1 ExitClone() noexcept;
     [[nodiscard]] bool Available() const noexcept;
     [[nodiscard]] bool CanInspect() const noexcept;
     [[nodiscard]] bool DiscoveryPending() const noexcept;

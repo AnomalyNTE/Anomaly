@@ -38,7 +38,7 @@ template <typename Entries, typename IsTarget, typename IsAttempted>
             result.has_unattempted_targets |= !is_attempted(entry.rob_bank.entity);
             // Cards are supporting interactions, not value-filtered loot.
             // Try each once to unlock loot, but a persistent zero-value card
-            // actor must not prevent evacuation after the valued loot is gone.
+            // actor must not block evacuation once the valued loot is gone.
             if (!entry.rob_bank.is_access_card) {
                 ++result.target_count;
                 result.has_targets = true;
