@@ -5,6 +5,8 @@
 #include "camera_blur_fix_profile.hpp"
 
 #include <atomic>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -24,12 +26,33 @@ struct HookSlot final {
   std::uintptr_t target{};
 };
 
+struct CameraLayout final {
+  std::uintptr_t manager_class{};
+  std::uint32_t game_instance{}, local_players{}, controller{}, manager{};
+  // Fade/hide distance squared and the normal-camera fade/hide targets.
+  std::array<std::uint32_t, 4> floats{};
+  std::uint32_t pitch_curve{};
+  bool ready{};
+};
+
+struct SavedCamera final {
+  AnomalyGenerationHandleV1 handle{};
+  std::uintptr_t address{};
+  std::array<float, 4> floats{};
+  std::uintptr_t pitch_curve{};
+  bool applied{};
+};
+
 struct Context final {
   const AnomalyCoreServiceV1 *core{};
   const AnomalySignatureServiceV1 *signature{};
   const AnomalyUe5ObjectsServiceV1 *objects{};
   const AnomalyHookServiceV1 *hook{};
+  const AnomalyUe5NamesServiceV1 *names{};
+  CameraLayout camera_layout{};
+  SavedCamera saved_camera{};
   std::uintptr_t registry{};
+  std::uintptr_t g_world_address{};
   std::int64_t trace[8]{};
   HookSlot mask{};
   HookSlot fade{};
@@ -62,9 +85,9 @@ const Service *Query(const AnomalyHostApiV1 *host, const char *id,
 
 bool CoreReady(const AnomalyCoreServiceV1 *service) noexcept {
   return HasField<AnomalyCoreServiceV1,
-                  decltype(AnomalyCoreServiceV1::read_memory)>(
-             service, offsetof(AnomalyCoreServiceV1, read_memory)) &&
-         service->read_memory != nullptr;
+                  decltype(AnomalyCoreServiceV1::write_memory)>(
+             service, offsetof(AnomalyCoreServiceV1, write_memory)) &&
+         service->read_memory != nullptr && service->write_memory != nullptr;
 }
 
 bool SignatureReady(const AnomalySignatureServiceV1 *service) noexcept {
@@ -78,7 +101,14 @@ bool ObjectsReady(const AnomalyUe5ObjectsServiceV1 *service) noexcept {
   return HasField<AnomalyUe5ObjectsServiceV1,
                   decltype(AnomalyUe5ObjectsServiceV1::find_exact)>(
              service, offsetof(AnomalyUe5ObjectsServiceV1, find_exact)) &&
-         service->find_exact != nullptr;
+         service->find_exact != nullptr && service->snapshot_at != nullptr;
+}
+
+bool CameraServicesReady(const Context &context) noexcept {
+  return HasField<AnomalyUe5NamesServiceV1,
+                  decltype(AnomalyUe5NamesServiceV1::resolve_utf8)>(
+             context.names, offsetof(AnomalyUe5NamesServiceV1, resolve_utf8)) &&
+         context.names->resolve_utf8 != nullptr;
 }
 
 bool HookReady(const AnomalyHookServiceV1 *service) noexcept {
@@ -102,6 +132,15 @@ bool Read(Context &context, const std::uintptr_t address, T &value) noexcept {
   AnomalyMutableByteSpanV1 destination{
       reinterpret_cast<std::uint8_t *>(&value), sizeof(value)};
   return context.core->read_memory(context.core->user, address, destination)
+             .code == ANOMALY_STATUS_V1_OK;
+}
+
+template <typename T>
+bool Write(Context &context, const std::uintptr_t address,
+           const T &value) noexcept {
+  return context.core->write_memory(
+             context.core->user, address,
+             {reinterpret_cast<const std::uint8_t *>(&value), sizeof(value)})
              .code == ANOMALY_STATUS_V1_OK;
 }
 
@@ -201,6 +240,25 @@ bool ResolveRegistry(Context &context) noexcept {
   return true;
 }
 
+bool ResolveGWorld(Context &context) noexcept {
+  if (context.g_world_address != 0) return true;
+  std::uintptr_t instruction{};
+  if (context.signature->resolve(
+          context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
+          anomaly::sdk::StringView(".text"),
+          anomaly::sdk::StringView(kGWorldPattern), &instruction)
+          .code != ANOMALY_STATUS_V1_OK || instruction == 0)
+    return false;
+  std::int32_t displacement{};
+  if (!Read(context, instruction + kRipDisplacementOffset, displacement))
+    return false;
+  const auto address = static_cast<std::intptr_t>(instruction) +
+                       kRipInstructionSize + displacement;
+  if (address <= 0) return false;
+  context.g_world_address = static_cast<std::uintptr_t>(address);
+  return true;
+}
+
 bool ObjectFromHandle(Context &context, const AnomalyGenerationHandleV1 handle,
                       std::uintptr_t &object) noexcept {
   object = 0;
@@ -234,6 +292,184 @@ bool ObjectFromHandle(Context &context, const AnomalyGenerationHandleV1 handle,
     return false;
   object = candidate;
   return true;
+}
+
+bool NameEquals(Context &context, const std::uintptr_t address,
+                const std::string_view expected) noexcept {
+  std::uint32_t id{};
+  char name[128]{};
+  std::size_t size = sizeof(name);
+  return Read(context, address, id) &&
+         context.names->resolve_utf8(context.names->user, id, name, &size).code ==
+             ANOMALY_STATUS_V1_OK &&
+         size == expected.size() + 1 &&
+         std::string_view(name, expected.size()) == expected;
+}
+
+bool FindType(Context &context, const std::string_view path,
+              std::uintptr_t &address) noexcept {
+  AnomalyGenerationHandleV1 handle{};
+  return context.objects->find_exact(context.objects->user,
+                                    anomaly::sdk::StringView(path), &handle).code ==
+             ANOMALY_STATUS_V1_OK &&
+         ObjectFromHandle(context, handle, address);
+}
+
+// Validate the reflected field's type and size before using its offset.
+bool FindCameraField(Context &context, const std::uintptr_t type,
+                     const std::string_view name,
+                     const std::string_view field_type,
+                     const std::int32_t size, std::uint32_t &offset) noexcept {
+  std::uintptr_t field{};
+  // Match the host reflection query's Profile-backed PropertyLink/FField chain.
+  if (!Read(context, type + kUStructPropertyLinkOffset, field)) return false;
+  for (unsigned count{}; field != 0 && count < 2048; ++count) {
+    if (NameEquals(context, field + kFFieldNameOffset, name)) {
+      std::uintptr_t field_class{};
+      std::int32_t field_size{}, field_offset{};
+      if (!Read(context, field + kFFieldClassOffset, field_class) ||
+          !NameEquals(context, field_class, field_type) ||
+          !Read(context, field + kFPropertyElementSizeOffset, field_size) ||
+          field_size != size ||
+          !Read(context, field + kFPropertyOffsetOffset, field_offset) ||
+          field_offset < 0)
+        return false;
+      offset = static_cast<std::uint32_t>(field_offset);
+      return true;
+    }
+    if (!Read(context, field + kFFieldNextOffset, field)) return false;
+  }
+  return false;
+}
+
+bool ResolveCameraLayout(Context &context) noexcept {
+  if (context.camera_layout.ready) return true;
+  if (!CameraServicesReady(context)) return false;
+  CameraLayout layout{};
+  std::uintptr_t world{}, instance{}, player{}, controller{}, settings{}, instant{};
+  if (!FindType(context, "/Script/Engine.World", world) ||
+      !FindType(context, "/Script/Engine.GameInstance", instance) ||
+      !FindType(context, "/Script/Engine.Player", player) ||
+      !FindType(context, "/Script/Engine.PlayerController", controller) ||
+      !FindType(context, "/Script/HTGame.HTPlayerCameraManager",
+                layout.manager_class) ||
+      !FindType(context, "/Script/HTGame.CameraSettings", settings) ||
+      !FindType(context, "/Script/HTGame.CameraInstantSetting", instant))
+    return false;
+  std::uint32_t normal{}, fade{}, hide{}, target{};
+  if (!FindCameraField(context, world, "OwningGameInstance", "ObjectProperty", 8,
+                       layout.game_instance) ||
+      !FindCameraField(context, instance, "LocalPlayers", "ArrayProperty", 16,
+                       layout.local_players) ||
+      !FindCameraField(context, player, "PlayerController", "ObjectProperty", 8,
+                       layout.controller) ||
+      !FindCameraField(context, controller, "PlayerCameraManager", "ObjectProperty",
+                       8, layout.manager) ||
+      !FindCameraField(context, layout.manager_class, "PlayerFadeDistanceSquare",
+                       "FloatProperty", 4, layout.floats[0]) ||
+      !FindCameraField(context, layout.manager_class, "PlayerHideDistanceSquare",
+                       "FloatProperty", 4, layout.floats[1]) ||
+      !FindCameraField(context, layout.manager_class, "PlayerPitchFadeCurve",
+                       "ObjectProperty", 8, layout.pitch_curve) ||
+      !FindCameraField(context, layout.manager_class, "NormalCameraSettings",
+                       "StructProperty", 0x570, normal) ||
+      !FindCameraField(context, settings, "PlayerFadeDistance", "StructProperty", 8,
+                       fade) ||
+      !FindCameraField(context, settings, "PlayerHideDistance", "StructProperty", 8,
+                       hide) ||
+      !FindCameraField(context, instant, "TargetValue", "FloatProperty", 4, target))
+    return false;
+  layout.floats[2] = normal + fade + target;
+  layout.floats[3] = normal + hide + target;
+  layout.ready = true;
+  context.camera_layout = layout;
+  Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+      "anti-blur player camera layout validated through reflection");
+  return true;
+}
+
+bool RestoreCamera(Context &context) noexcept {
+  auto &saved = context.saved_camera;
+  if (saved.address == 0) return true;
+  std::uintptr_t live{};
+  // A camera from a previous world can already have been collected.
+  if (!ObjectFromHandle(context, saved.handle, live) || live != saved.address) {
+    saved = {};
+    return true;
+  }
+  bool ok = true;
+  for (std::size_t i{}; i < saved.floats.size(); ++i)
+    ok = Write(context, live + context.camera_layout.floats[i], saved.floats[i]) &&
+         ok;
+  ok = Write(context, live + context.camera_layout.pitch_curve,
+             saved.pitch_curve) && ok;
+  if (ok) saved = {};
+  return ok;
+}
+
+bool ApplyCamera(Context &context) noexcept {
+  const auto &layout = context.camera_layout;
+  if (!layout.ready) return false;
+  std::uintptr_t world{}, instance{}, players{}, player{}, controller{}, manager{};
+  std::int32_t player_count{};
+  if (!ResolveGWorld(context) ||
+      !Read(context, context.g_world_address, world) || world == 0 ||
+      !Read(context, world + layout.game_instance, instance) || instance == 0 ||
+      !Read(context, instance + layout.local_players, players) || players == 0 ||
+      !Read(context, instance + layout.local_players + 8, player_count) ||
+      player_count <= 0 || !Read(context, players, player) || player == 0 ||
+      !Read(context, player + layout.controller, controller) || controller == 0 ||
+      !Read(context, controller + layout.manager, manager) || manager == 0) {
+    return RestoreCamera(context);
+  }
+  std::int32_t index{};
+  AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+  std::uintptr_t live{};
+  if (!Read(context, manager + kObjectInternalIndexOffset, index) || index < 0 ||
+      context.objects->snapshot_at(context.objects->user,
+                                   static_cast<std::uint32_t>(index),
+                                   &snapshot).code != ANOMALY_STATUS_V1_OK ||
+      !ObjectFromHandle(context, snapshot.handle, live) || live != manager)
+    return false;
+  auto &saved = context.saved_camera;
+  if (saved.handle.id != snapshot.handle.id ||
+      saved.handle.generation != snapshot.handle.generation) {
+    if (!RestoreCamera(context)) return false;
+    std::uintptr_t type{};
+    if (!Read(context, manager + kObjectClassOffset, type)) return false;
+    unsigned depth{};
+    while (type != 0 && type != layout.manager_class && depth++ < 64)
+      if (!Read(context, type + kUStructSuperOffset, type)) return false;
+    if (type != layout.manager_class) return false;
+    SavedCamera next{};
+    for (std::size_t i{}; i < next.floats.size(); ++i)
+      if (!Read(context, manager + layout.floats[i], next.floats[i]) ||
+          !std::isfinite(next.floats[i]))
+        return false;
+    if (!Read(context, manager + layout.pitch_curve, next.pitch_curve))
+      return false;
+    next.address = manager;
+    next.handle = snapshot.handle;
+    saved = next;
+  }
+  // Restore the old player path alongside the NPC hooks. Clear the source
+  // targets too, or normal-camera updates can repopulate the distance caches.
+  bool ok = true;
+  for (const auto offset : layout.floats)
+    ok = Write(context, manager + offset, 0.0F) && ok;
+  ok = Write(context, manager + layout.pitch_curve, std::uintptr_t{}) && ok;
+  if (ok && !saved.applied) {
+    char message[256]{};
+    std::snprintf(
+        message, sizeof(message),
+        "anti-blur player camera applied manager=0x%llX fade=0 hide=0 pitch=null "
+        "offsets=0x%X,0x%X,0x%X,0x%X,0x%X; fade speed unchanged",
+        static_cast<unsigned long long>(manager), layout.floats[0],
+        layout.floats[1], layout.floats[2], layout.floats[3], layout.pitch_curve);
+    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, message);
+    saved.applied = true;
+  }
+  return ok;
 }
 
 bool LooksLikeFunction(const std::uintptr_t address) noexcept {
@@ -342,7 +578,7 @@ bool HooksInstalled(const Context &context) noexcept {
 }
 
 // Locates both setters and hooks them.  Runs at Start and, if a target is
-// missing, on a slow retry: no frame work is done once both are live.
+// missing, on a slow retry. Player camera settings are maintained separately.
 void EnsureHooks(Context &context) noexcept {
   if (HooksInstalled(context)) return;
   std::uintptr_t mask_target{};
@@ -367,7 +603,8 @@ void EnsureHooks(Context &context) noexcept {
     if (!context.logged_ready) {
       char message[192]{};
       std::snprintf(message, sizeof(message),
-                    "anti-blur forced mask=1.0 mask=0x%llX fade=0x%llX",
+                    "anti-blur forced mask=%.1f mask=0x%llX fade=0x%llX",
+                    static_cast<double>(kVisibleMask),
                     static_cast<unsigned long long>(context.mask.target),
                     static_cast<unsigned long long>(context.fade.target));
       Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, message);
@@ -396,11 +633,14 @@ AnomalyStatusV1 Load(const AnomalyHostApiV1 *host, void **plugin_context) {
       ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
   context->hook = Query<AnomalyHookServiceV1>(
       host, ANOMALY_HOOK_SERVICE_V1_ID, ANOMALY_HOOK_SERVICE_V1_VERSION);
+  context->names = Query<AnomalyUe5NamesServiceV1>(
+      host, ANOMALY_UE5_NAMES_SERVICE_V1_ID, 1);
   if (!CoreReady(context->core) || !SignatureReady(context->signature) ||
-      !ObjectsReady(context->objects) || !HookReady(context->hook)) {
+      !ObjectsReady(context->objects) || !HookReady(context->hook) ||
+      !CameraServicesReady(*context)) {
     delete context;
     return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                  "core, signature, objects and hook services are required");
+                  "core, signature, objects, hook and names services are required");
   }
   *plugin_context = context;
   return anomaly::sdk::Ok();
@@ -410,9 +650,12 @@ AnomalyStatusV1 Start(void *plugin_context) noexcept {
   auto *context = static_cast<Context *>(plugin_context);
   if (context == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   context->registry = 0;
+  context->g_world_address = 0;
   context->mask = HookSlot{};
   context->fade = HookSlot{};
-  context->retry_elapsed = 0.0;
+  context->camera_layout = {};
+  context->saved_camera = {};
+  context->retry_elapsed = kRetrySeconds;
   context->logged_ready = false;
   context->logged_retry = false;
   g_active.store(context, std::memory_order_release);
@@ -427,6 +670,9 @@ AnomalyStatusV1 Stop(void *plugin_context, std::uint32_t) noexcept {
   g_active.store(nullptr, std::memory_order_release);
   ReleaseHook(*context, context->mask);
   ReleaseHook(*context, context->fade);
+  if (!RestoreCamera(*context))
+    Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+        "anti-blur could not restore player camera settings");
   return anomaly::sdk::Ok();
 }
 
@@ -439,13 +685,20 @@ void Unload(void *plugin_context) noexcept {
 
 void Update(void *plugin_context, double delta_seconds) noexcept {
   auto *context = static_cast<Context *>(plugin_context);
-  if (context == nullptr || HooksInstalled(*context)) return;
+  if (context == nullptr) return;
   try {
-    if (delta_seconds > 0.0 && delta_seconds < 1.0)
-      context->retry_elapsed += delta_seconds;
-    if (context->retry_elapsed < kRetrySeconds) return;
-    context->retry_elapsed = 0.0;
-    EnsureHooks(*context);
+    if (!HooksInstalled(*context) || !context->camera_layout.ready) {
+      if (delta_seconds > 0.0 && delta_seconds < 1.0)
+        context->retry_elapsed += delta_seconds;
+      if (context->retry_elapsed >= kRetrySeconds) {
+        context->retry_elapsed = 0.0;
+        EnsureHooks(*context);
+        if (!ResolveCameraLayout(*context))
+          Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+              "anti-blur player camera layout unavailable; NPC hooks remain active");
+      }
+    }
+    static_cast<void>(ApplyCamera(*context));
   } catch (...) {
   }
 }
@@ -462,7 +715,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
       anomaly::sdk::StringView("anomaly.local.nte.camera-blur-fix"),
       anomaly::sdk::StringView("\xE5\x8F\x8D\xE8\x99\x9A\xE5\x8C\x96"),
       anomaly::sdk::StringView("Anomaly"),
-      anomaly::sdk::StringView("1.3.0"), Load, Start, Stop, Unload, Update,
+      anomaly::sdk::StringView("1.3.2"), Load, Start, Stop, Unload, Update,
       nullptr};
   return anomaly::sdk::Ok();
 }

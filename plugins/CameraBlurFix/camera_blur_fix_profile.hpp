@@ -6,12 +6,9 @@
 
 namespace camera_blur_fix_profile {
 
-// Character camera fade, all of it: the game writes the "OpacityMaskVal" mask
-// that decides how transparent an actor is drawn through two native setters.
-// Forcing the mask argument to 1.0 inside those two functions removes the fade
-// for the view target, NPCs, monsters and the crowd at once, and costs nothing
-// per frame.  Both functions are located through reflection, so no actor scan
-// and no offset hunting happens here.
+// Keep the NPC/crowd mask setters from ea22766. The local player's independent
+// distance-hide and pitch-fade settings also need disabling; a material mask
+// alone cannot prevent the camera manager from hiding that player.
 inline constexpr std::string_view kMaskSetterPath =
     "/Script/HTGame.HTAbilityCharacter.UpdateOpacityMaskVal";
 inline constexpr std::string_view kFadeSetterPath =
@@ -21,6 +18,23 @@ inline constexpr std::uint16_t kMaskSetterParamBytes = 4;
 inline constexpr std::uint32_t kFadeSetterNumParams = 2;
 inline constexpr std::uint16_t kFadeSetterParamBytes = 8;
 inline constexpr float kVisibleMask = 1.0F;
+
+// Same validated GWorld signature as the active NTE profile. A world-service
+// handle identifies a lifecycle generation, not a GObjects slot.
+inline constexpr std::string_view kGWorldPattern =
+    "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
+
+// Existing UE5 reflection metadata layout from the active profile. Game-specific
+// camera offsets are resolved by property name/type, not copied from the dump.
+inline constexpr std::uint32_t kObjectInternalIndexOffset = 0xC;
+inline constexpr std::uint32_t kObjectClassOffset = 0x10;
+inline constexpr std::uint32_t kUStructSuperOffset = 0x40;
+inline constexpr std::uint32_t kUStructPropertyLinkOffset = 0x70;
+inline constexpr std::uint32_t kFFieldClassOffset = 0x8;
+inline constexpr std::uint32_t kFFieldNextOffset = 0x18;
+inline constexpr std::uint32_t kFFieldNameOffset = 0x20;
+inline constexpr std::uint32_t kFPropertyElementSizeOffset = 0x34;
+inline constexpr std::uint32_t kFPropertyOffsetOffset = 0x44;
 
 // UE5 reflection layout: UFunction::Func and the {numParms, parmsSize} pair.
 inline constexpr std::uint32_t kUFunctionExecOffset = 0xD8;
@@ -45,8 +59,7 @@ inline constexpr std::uint32_t kObjectItemPointerOffset = 0;
 inline constexpr std::uint32_t kObjectItemSerialOffset = 16;
 inline constexpr std::uint32_t kMaximumObjectCount = 16U * 1024U * 1024U;
 
-// Hook installation is retried at this interval while a target is missing,
-// which is the only work the plugin does once its hooks are live.
+// Retry missing hook targets or camera reflection metadata at a slow interval.
 inline constexpr double kRetrySeconds = 5.0;
 inline constexpr std::size_t kMaximumPathBytes = 128;
 
