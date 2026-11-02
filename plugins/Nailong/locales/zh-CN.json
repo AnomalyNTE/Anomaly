@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.description": "奶龙 1.8.7：UE 原生模型替换、36 骨源蒙皮；玩家与附近 NPC 均可换成奶龙。",
+    "window.title": "奶龙",
+    "option.player": "替换当前可控角色（切换自动跟随）",
+    "option.bone_follow": "骨骼跟随 / BetterPose MMD",
+    "option.nearby_npcs": "附近 NPC 也换上奶龙",
+    "option.npc_radius": "NPC 范围（米）",
+    "option.pose_fps": "蒙皮更新 FPS",
+    "option.height": "奶龙高度（米）",
+    "option.offset": "脚底偏移（cm）",
+    "option.yaw": "朝向修正（度）",
+    "action.restore": "恢复玩家与 NPC 并移除奶龙",
+    "status.npc_scan": "NPC 扫描",
+    "status.npc_count": "附近 NPC"
+  }
+}
