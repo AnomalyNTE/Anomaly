@@ -185,6 +185,11 @@ bool pending_rebind=false;ue::Ref previous_actor{};
 
 bool model_loaded=false;
 
+// Title-bar close state. Reset to open on every load so a fresh generation shows
+// the panel; the Host owns the value after that and toggles it when the user
+// reopens the window from the plugin list.
+int context_window_open=1;
+
 AnomalyStringViewV1 Sv(const char* s){return {s,std::strlen(s)};}
 
 AnomalyStatusV1 Ok(){return {ANOMALY_STATUS_V1_OK,0,{}};}
@@ -1789,7 +1794,19 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
 
     ui->set_next_window_size(ui->user,420,330,4);
 
-    if(ui->begin_window(ui->user,Sv("奶龙"),nullptr,0)){
+    // The Host draws the title-bar close button only when it is handed a writable
+    // flag, and writes the click back into it; a null pointer makes the button
+    // inert ("This window cannot be closed"). Keep the state here and let the Host
+    // set it back to 1 when the window is reopened from the plugin list.
+    int open=context_window_open;
+
+    const int visible=ui->begin_window(ui->user,Sv("奶龙"),&open,0);
+
+    // Written unconditionally: the click that closes the window returns 0 here,
+    // and committing only on the open branch would reopen the panel next frame.
+    context_window_open=open;
+
+    if(visible!=0){
 
         std::lock_guard lock(state_mutex);
 
@@ -1852,6 +1869,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* h,void** context){
     // A previous run may have stopped while actors were still dressed; the file
     // is replayed from Update() as soon as the Game domain is live.
     LoadDeferredRestore();
+
+    context_window_open=1;
 
     model_loaded=LoadModel();*context=&settings;return Ok();
 
