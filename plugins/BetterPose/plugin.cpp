@@ -269,6 +269,39 @@ struct RuntimeState {
   std::vector<std::uint32_t> pose_descendants{};
 };
 
+// The selected runtime target is transient: switching to a Character Studio
+// actor tears down RuntimeState for the previous mesh.  Keep the player's
+// animation stop state separately so editing an external target does not
+// resume the player's gameplay animation.
+struct PlayerFreezeState {
+  std::uintptr_t mesh{};
+  bool active{};
+  bool pause_saved{};
+  bool mode_saved{};
+  std::uint8_t original_animation_flags{};
+  std::uint8_t original_animation_mode{};
+};
+
+struct EntityPoseState {
+  std::vector<std::array<double, 3>> angles;
+  std::vector<std::array<double, 12>> base_locals;
+  std::vector<std::int32_t> bone_parents;
+  std::array<double, 3> root_offset{};
+  bool override_enabled{};
+  bool pause_saved{};
+  std::uint8_t original_animation_flags{};
+  bool animation_mode_saved{};
+  bool animation_mode_applied{};
+  std::uint8_t original_animation_mode{};
+};
+
+struct PoseTickHook {
+  AnomalyGenerationHandleV1 handle{};
+  std::uintptr_t original{};
+  std::uintptr_t target{};
+  std::vector<std::uintptr_t> meshes;
+};
+
 struct ObjectRegistry {
   std::uintptr_t items{};
   std::uint32_t count{};
@@ -855,6 +888,11 @@ struct Context final {
   std::mutex pose_angles_mutex;
   RenderSnapshot snapshot;
   RuntimeState runtime;
+  PlayerFreezeState player_freeze;
+  // Session-local pose cache.  A mesh switch must not make the currently
+  // edited entity borrow or lose another entity's sliders before storage I/O
+  // has a chance to complete.
+  std::map<std::uintptr_t, EntityPoseState> entity_pose_states;
   AnomalyGenerationHandleV1 settings_schema{};
   std::vector<std::array<double, 3>> bone_angles;
   std::vector<std::array<double, 12>> pose_base_locals;
@@ -916,9 +954,8 @@ struct Context final {
   std::atomic_bool rate_override_enabled{};
   std::atomic_bool root_motion_override_enabled{};
   std::atomic_bool pose_override_enabled{};
-  AnomalyGenerationHandleV1 tick_hook{};
-  std::uintptr_t tick_original{};
-  std::uintptr_t tick_target{};
+  std::mutex tick_hooks_mutex;
+  std::vector<PoseTickHook> tick_hooks;
   std::atomic<std::uint32_t> reflection_action_requested{0};
   std::atomic<float> requested_rate_scale{1.0F};
   std::atomic<float> requested_root_motion_scale{1.0F};
@@ -1543,6 +1580,22 @@ bool DropExtraMeshes(Context &context) noexcept;
 void BindRuntimeCharacter(Context &context, std::uintptr_t character,
                           std::uintptr_t mesh,
                           bool external_target = false) noexcept;
+void CapturePlayerFreeze(Context &context) noexcept;
+bool ApplyPlayerFreeze(Context &context) noexcept;
+bool ReleasePlayerFreeze(Context &context) noexcept;
+void SeedPlayerFreezeRuntime(Context &context,
+                             std::uintptr_t mesh) noexcept;
+void CaptureEntityPose(Context &context, std::uintptr_t mesh) noexcept;
+bool RestoreEntityPose(Context &context, std::uintptr_t mesh) noexcept;
+void SeedEntityAnimationRuntime(Context &context,
+                                std::uintptr_t mesh) noexcept;
+bool ApplyCachedEntityPose(Context &context,
+                           std::uintptr_t mesh) noexcept;
+bool MaintainParkedEntityPose(Context &context,
+                               std::uintptr_t mesh,
+                               EntityPoseState &saved) noexcept;
+void SyncEntityAnimationState(Context &context) noexcept;
+void RestoreParkedEntityAnimations(Context &context) noexcept;
 bool ReadArrayHeader(Context &context, std::uintptr_t array_address,
                      std::uintptr_t &data, std::uint32_t &count) noexcept;
 
@@ -3096,6 +3149,118 @@ void ResetPoseValues(Context &context) noexcept {
   context.requested_root_offset[2].store(0.0, std::memory_order_release);
 }
 
+void CaptureEntityPose(Context &context, const std::uintptr_t mesh) noexcept {
+  if (mesh == 0)
+    return;
+
+  try {
+    EntityPoseState captured;
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      captured.angles = context.bone_angles;
+      if (context.pose_base_ready && context.pose_base_mesh == mesh)
+        captured.base_locals = context.pose_base_locals;
+      if (captured.base_locals.empty() &&
+          context.ref_locals.size() == context.runtime.local_space_count)
+        captured.base_locals = context.ref_locals;
+    }
+    if (context.bone_parents_ready && context.bone_parents_mesh == mesh)
+      captured.bone_parents = context.bone_parents;
+    if (captured.bone_parents.empty() &&
+        context.bone_parents.size() == context.runtime.local_space_count)
+      captured.bone_parents = context.bone_parents;
+    if (context.runtime.bound_mesh == mesh) {
+      captured.pause_saved = context.runtime.saved_pause;
+      captured.original_animation_flags =
+          context.runtime.original_animation_flags;
+      captured.animation_mode_saved = context.runtime.saved_animation_mode;
+      captured.animation_mode_applied = context.runtime.animation_mode_applied;
+      captured.original_animation_mode = context.runtime.original_animation_mode;
+    }
+    for (std::size_t axis{}; axis != 3; ++axis)
+      captured.root_offset[axis] =
+          context.requested_root_offset[axis].load(std::memory_order_acquire);
+    captured.override_enabled =
+        context.pose_override_enabled.load(std::memory_order_acquire);
+    context.entity_pose_states[mesh] = std::move(captured);
+  } catch (...) {
+  }
+}
+
+bool HasCachedPoseEffect(const EntityPoseState &saved) noexcept {
+  if (!saved.override_enabled)
+    return false;
+  if (saved.base_locals.empty() ||
+      saved.bone_parents.size() != saved.base_locals.size())
+    return false;
+  if (saved.root_offset[0] != 0.0 || saved.root_offset[1] != 0.0 ||
+      saved.root_offset[2] != 0.0)
+    return true;
+  for (const auto &angle : saved.angles) {
+    if (angle[0] != 0.0 || angle[1] != 0.0 || angle[2] != 0.0)
+      return true;
+  }
+  return false;
+}
+
+bool HasCachedEntityPose(Context &context) noexcept {
+  for (const auto &entry : context.entity_pose_states) {
+    if (entry.first != context.runtime.mesh && HasCachedPoseEffect(entry.second))
+      return true;
+  }
+  return false;
+}
+
+void SeedEntityAnimationRuntime(Context &context,
+                                const std::uintptr_t mesh) noexcept {
+  const auto found = context.entity_pose_states.find(mesh);
+  if (found == context.entity_pose_states.end())
+    return;
+  RuntimeState &state = context.runtime;
+  const EntityPoseState &saved = found->second;
+  state.saved_pause = saved.pause_saved;
+  state.original_animation_flags = saved.original_animation_flags;
+  state.saved_animation_mode = saved.animation_mode_saved;
+  state.animation_mode_applied = saved.animation_mode_applied;
+  state.original_animation_mode = saved.original_animation_mode;
+}
+
+bool RestoreEntityPose(Context &context, const std::uintptr_t mesh) noexcept {
+  if (mesh == 0)
+    return false;
+  const auto found = context.entity_pose_states.find(mesh);
+  if (found == context.entity_pose_states.end())
+    return false;
+
+  try {
+    const EntityPoseState &saved = found->second;
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      context.bone_angles = saved.angles;
+      if (!saved.base_locals.empty()) {
+        context.pose_base_locals = saved.base_locals;
+        context.pose_base_mesh = mesh;
+        context.pose_base_ready = true;
+      }
+    }
+    if (!saved.bone_parents.empty()) {
+      context.bone_parents = saved.bone_parents;
+      context.bone_parents_mesh = mesh;
+      context.bone_parents_count =
+          static_cast<std::uint32_t>(saved.bone_parents.size());
+      context.bone_parents_ready = true;
+    }
+    for (std::size_t axis{}; axis != 3; ++axis)
+      context.requested_root_offset[axis].store(saved.root_offset[axis],
+                                                std::memory_order_release);
+    context.pose_override_enabled.store(saved.override_enabled,
+                                        std::memory_order_release);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 better_pose::history::PoseState CapturePoseState(Context &context) {
   better_pose::history::PoseState state;
   {
@@ -3888,9 +4053,9 @@ bool ApplyPose(Context &context, const bool enabled, const std::uint32_t bone,
   return true;
 }
 
-bool ResolvePoseTickTarget(Context &context, std::uintptr_t &target) noexcept {
+bool ResolvePoseTickTarget(Context &context, const std::uintptr_t mesh,
+                           std::uintptr_t &target) noexcept {
   target = 0;
-  const auto mesh = context.runtime.mesh;
   if (mesh == 0)
     return false;
   std::uintptr_t vtable{};
@@ -3968,34 +4133,63 @@ void DestroyStalePoseableComponent(Context &context,
                                    std::uintptr_t component) noexcept;
 
 bool ReleasePoseTickHook(Context &context) noexcept {
-  if (!HookReady(context.hook) || context.tick_hook.id == 0)
+  if (!HookReady(context.hook))
     return true;
-  const auto status =
-      context.hook->release(context.hook->user, context.tick_hook);
-  if (status.code != ANOMALY_STATUS_V1_OK) {
-    return false;
+  std::vector<PoseTickHook> records;
+  {
+    std::lock_guard<std::mutex> lock(context.tick_hooks_mutex);
+    records = context.tick_hooks;
   }
-  context.tick_hook = {};
-  context.tick_original = 0;
-  context.tick_target = 0;
-  g_active.store(nullptr, std::memory_order_release);
-  return true;
+  if (records.empty())
+    return true;
+  bool released = true;
+  for (const auto &record : records) {
+    if (record.handle.id == 0)
+      continue;
+    const auto status =
+        context.hook->release(context.hook->user, record.handle);
+    if (status.code != ANOMALY_STATUS_V1_OK)
+      released = false;
+  }
+  if (released) {
+    std::lock_guard<std::mutex> lock(context.tick_hooks_mutex);
+    context.tick_hooks.clear();
+    g_active.store(nullptr, std::memory_order_release);
+  }
+  return released;
 }
 
 bool EnsurePoseTickHook(Context &context) noexcept {
   if (!HookReady(context.hook))
     return false;
-  std::uintptr_t target{};
-  if (!ResolvePoseTickTarget(context, target))
-    return false;
-  if (context.tick_hook.id != 0 && context.tick_target == target &&
-      context.tick_original != 0)
-    return true;
-  if (context.tick_hook.id != 0) {
-    if (!ReleasePoseTickHook(context))
-      return false;
+  std::uintptr_t hook_mesh = context.runtime.mesh;
+  // When the player is selected again, a previously edited Character Studio
+  // mesh still needs the post-tick writeback. Prefer the parked entity when
+  // the player itself is not driving a motion track.
+  if (hook_mesh == context.local_mesh &&
+      !context.motion_loaded.load(std::memory_order_acquire)) {
+    for (const auto &entry : context.entity_pose_states) {
+      if (entry.first != hook_mesh && HasCachedPoseEffect(entry.second)) {
+        hook_mesh = entry.first;
+        break;
+      }
+    }
   }
-  g_active.store(&context, std::memory_order_release);
+  std::uintptr_t target{};
+  if (!ResolvePoseTickTarget(context, hook_mesh, target))
+    return false;
+  {
+    std::lock_guard<std::mutex> lock(context.tick_hooks_mutex);
+    if (context.tick_hooks.size() == 1 &&
+        context.tick_hooks.front().target == target &&
+        context.tick_hooks.front().handle.id != 0 &&
+        context.tick_hooks.front().original != 0)
+      return true;
+  }
+  // Keep a single stable MinHook detour. Releasing/reinstalling several
+  // function targets while the game is ticking is not safe.
+  if (!ReleasePoseTickHook(context))
+    return false;
   AnomalyHookRequestV1 request{sizeof(request)};
   request.kind = ANOMALY_HOOK_V1_FUNCTION;
   request.target = target;
@@ -4005,16 +4199,18 @@ bool EnsurePoseTickHook(Context &context) noexcept {
   AnomalyGenerationHandleV1 handle{};
   const auto status =
       context.hook->create(context.hook->user, &request, &original, &handle);
-  if (status.code != ANOMALY_STATUS_V1_OK || handle.id == 0 || original == 0) {
+  if (status.code != ANOMALY_STATUS_V1_OK || handle.id == 0 ||
+      original == 0) {
     g_active.store(nullptr, std::memory_order_release);
-    context.tick_hook = {};
-    context.tick_original = 0;
-    context.tick_target = 0;
     return false;
   }
-  context.tick_hook = handle;
-  context.tick_original = original;
-  context.tick_target = target;
+  {
+    std::lock_guard<std::mutex> lock(context.tick_hooks_mutex);
+    context.tick_hooks.clear();
+    context.tick_hooks.push_back(
+        PoseTickHook{handle, original, target, {hook_mesh}});
+  }
+  g_active.store(&context, std::memory_order_release);
   return true;
 }
 
@@ -4027,19 +4223,42 @@ void ANOMALY_CALL SkeletalMeshTickDetour(void *object, float delta_seconds,
   AnomalyGenerationHandleV1 lease{};
   bool leased = false;
   SkeletalMeshTickFn original = nullptr;
+  PoseTickHook hook_record{};
+  bool have_hook_record = false;
   try {
-    if (context != nullptr && context->tick_hook.id != 0 &&
-        HookReady(context->hook)) {
-      leased = context->hook
-                   ->begin_callback(context->hook->user, context->tick_hook,
-                                    &lease)
-                   .code == ANOMALY_STATUS_V1_OK;
-      original = reinterpret_cast<SkeletalMeshTickFn>(context->tick_original);
+    if (context != nullptr && HookReady(context->hook)) {
+      const auto address = reinterpret_cast<std::uintptr_t>(object);
+      {
+        std::lock_guard<std::mutex> lock(context->tick_hooks_mutex);
+        const auto found = std::find_if(
+            context->tick_hooks.begin(), context->tick_hooks.end(),
+            [address](const PoseTickHook &record) {
+              return std::find(record.meshes.begin(), record.meshes.end(),
+                               address) != record.meshes.end();
+            });
+        if (found != context->tick_hooks.end()) {
+          hook_record = *found;
+          have_hook_record = true;
+        } else if (context->tick_hooks.size() == 1) {
+          // A UE virtual tick hook is shared by every instance using that
+          // vtable function. Use the sole trampoline without probing memory
+          // from inside the detour.
+          hook_record = context->tick_hooks.front();
+          have_hook_record = true;
+        }
+      }
+      if (have_hook_record) {
+        leased = context->hook
+                     ->begin_callback(context->hook->user,
+                                      hook_record.handle, &lease)
+                     .code == ANOMALY_STATUS_V1_OK;
+        original = reinterpret_cast<SkeletalMeshTickFn>(
+            hook_record.original);
+      }
     }
   } catch (...) {
-    original = context == nullptr
-                   ? nullptr
-                   : reinterpret_cast<SkeletalMeshTickFn>(context->tick_original);
+    if (have_hook_record)
+      original = reinterpret_cast<SkeletalMeshTickFn>(hook_record.original);
   }
 
   try {
@@ -4049,14 +4268,19 @@ void ANOMALY_CALL SkeletalMeshTickDetour(void *object, float delta_seconds,
   }
 
   try {
-    if (context != nullptr &&
-        (context->motion_loaded.load(std::memory_order_acquire) ||
-         context->pose_override_enabled.load(std::memory_order_acquire)) &&
-        object == reinterpret_cast<void *>(context->runtime.mesh)) {
-      if (context->motion_loaded.load(std::memory_order_acquire))
+    if (context != nullptr) {
+      const auto address = reinterpret_cast<std::uintptr_t>(object);
+      const bool active_target =
+          address == context->runtime.mesh &&
+          (context->motion_loaded.load(std::memory_order_acquire) ||
+           context->pose_override_enabled.load(std::memory_order_acquire));
+      if (active_target &&
+          context->motion_loaded.load(std::memory_order_acquire))
         ApplyMotionPoseDirect(*context);
-      else
+      else if (active_target)
         ApplyPoseOverridesDirect(*context);
+      else if (address != context->runtime.mesh)
+        static_cast<void>(ApplyCachedEntityPose(*context, address));
     }
   } catch (...) {
   }
@@ -5319,6 +5543,116 @@ void ApplyPoseOverridesDirect(Context &context) noexcept {
                                byte_count));
   WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+}
+
+bool ApplyCachedEntityPose(Context &context,
+                           const std::uintptr_t mesh) noexcept {
+  const auto found = context.entity_pose_states.find(mesh);
+  if (found == context.entity_pose_states.end() ||
+      !HasCachedPoseEffect(found->second))
+    return false;
+  const EntityPoseState &saved = found->second;
+  const std::uint32_t count =
+      static_cast<std::uint32_t>(saved.base_locals.size());
+  if (count == 0 || saved.bone_parents.size() != count ||
+      saved.angles.size() < count)
+    return false;
+
+  std::uintptr_t bone_data{};
+  std::uintptr_t component_data{};
+  std::uint32_t bone_count{};
+  std::uint32_t component_count{};
+  const bool authoritative =
+      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
+                      bone_data, bone_count) &&
+      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer1Offset,
+                      component_data, component_count) &&
+      bone_data != 0 && component_data != 0 && bone_count == count &&
+      component_count == count;
+  if (!authoritative) {
+    if (!ReadArrayHeader(context, mesh + kMeshCachedBoneSpaceTransformsOffset,
+                         bone_data, bone_count) ||
+        !ReadArrayHeader(context, mesh + kMeshCachedComponentSpaceTransformsOffset,
+                         component_data, component_count) ||
+        bone_data == 0 || component_data == 0 || bone_count != count ||
+        component_count != count)
+      return false;
+  }
+
+  std::vector<Transformd> locals(count);
+  bool any_override = false;
+  for (std::uint32_t bone{}; bone != count; ++bone) {
+    const auto &raw = saved.base_locals[bone];
+    locals[bone].rotation = Quatd{raw[0], raw[1], raw[2], raw[3]};
+    locals[bone].translation = Vec3d{raw[4], raw[5], raw[6]};
+    locals[bone].scale = Vec3d{raw[8], raw[9], raw[10]};
+    const auto &angle = saved.angles[bone];
+    if (angle[0] == 0.0 && angle[1] == 0.0 && angle[2] == 0.0)
+      continue;
+    any_override = true;
+    locals[bone].rotation =
+        QuatMultiply(RotatorToQuat(angle[0], angle[1], angle[2]),
+                     locals[bone].rotation);
+  }
+  const bool has_root_offset =
+      saved.root_offset[0] != 0.0 || saved.root_offset[1] != 0.0 ||
+      saved.root_offset[2] != 0.0;
+  if (!any_override && !has_root_offset)
+    return false;
+
+  std::vector<Transformd> components(count);
+  std::vector<std::uint8_t> marks(count, 0);
+  for (std::uint32_t bone{}; bone != count; ++bone)
+    static_cast<void>(ComputeBoneComponent(bone, locals, saved.bone_parents,
+                                           components, marks));
+
+  std::vector<PackedTransform> packed(count);
+  for (std::uint32_t bone{}; bone != count; ++bone) {
+    PackTransform(components[bone], packed[bone]);
+    packed[bone].translation[0] += saved.root_offset[0];
+    packed[bone].translation[1] += saved.root_offset[1];
+    packed[bone].translation[2] += saved.root_offset[2];
+  }
+  const auto *bytes = reinterpret_cast<const std::uint8_t *>(packed.data());
+  const auto byte_count = packed.size() * sizeof(PackedTransform);
+  return WriteBytes(context, component_data, bytes, byte_count) &&
+         WriteBytes(context, bone_data, bytes, byte_count) &&
+         ForceMeshObjectUpdate(context, mesh);
+}
+
+bool MaintainParkedEntityPose(Context &context, const std::uintptr_t mesh,
+                              EntityPoseState &saved) noexcept {
+  if (!HasCachedPoseEffect(saved))
+    return false;
+
+  bool ok = ApplyCachedEntityPose(context, mesh);
+  std::uint8_t flags{};
+  if (Read(context, mesh + kMeshAnimationFlagsOffset, flags)) {
+    if (!saved.pause_saved) {
+      saved.pause_saved = true;
+      saved.original_animation_flags = flags;
+    }
+    const std::uint8_t paused = static_cast<std::uint8_t>(
+        flags | static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit));
+    if (paused != flags)
+      ok = Write(context, mesh + kMeshAnimationFlagsOffset, paused) && ok;
+  } else {
+    ok = false;
+  }
+
+  std::uint8_t mode{};
+  if (Read(context, mesh + kMeshAnimationModeOffset, mode)) {
+    if (!saved.animation_mode_saved) {
+      saved.animation_mode_saved = true;
+      saved.original_animation_mode = mode;
+    }
+    if (mode != kAnimationModeCustom)
+      ok = Write(context, mesh + kMeshAnimationModeOffset,
+                 kAnimationModeCustom) && ok;
+  } else {
+    ok = false;
+  }
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -11768,15 +12102,20 @@ void ExecutePoseFileAction(Context &context) noexcept {
                                              : "pose import queued");
 }
 void EnsureActiveCharacterProfile(Context &context) noexcept {
-  if (context.runtime.mesh == 0 || !StorageReady(context.storage))
+  if (context.runtime.mesh == 0)
     return;
   const std::string profile_id = Hex(context.runtime.mesh);
   if (profile_id.empty() || profile_id == context.active_character_id)
     return;
   const bool first_profile = !context.character_profiles_initialized;
   context.active_character_id = profile_id;
-  const int loaded = LoadCharacterPoseProfile(context, profile_id);
-  if (loaded <= 0 && !first_profile)
+  const bool cached = RestoreEntityPose(context, context.runtime.mesh);
+  const int loaded = cached
+                         ? 0
+                         : StorageReady(context.storage)
+                               ? LoadCharacterPoseProfile(context, profile_id)
+                               : -1;
+  if (loaded <= 0 && !cached && !first_profile)
     ResetPoseValues(context);
   context.character_profiles_initialized = true;
   context.pose_settings_dirty.store(true, std::memory_order_release);
@@ -13437,6 +13776,19 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   }
   const bool force_ok = ApplyMultiThreadedUpdate(context, pose_enabled);
   const bool pose_requested = pose_enabled && pose_available;
+  const bool cached_pose_requested = HasCachedEntityPose(context);
+  bool player_freeze_ok = true;
+  if (context.runtime.mesh != context.local_mesh) {
+    // The selected mesh is an external Character Studio actor.  Keep the
+    // player's own animation stopped independently of the selected target.
+    const bool keep_player_frozen =
+        context.player_freeze.active ||
+        context.pose_override_enabled.load(std::memory_order_acquire) ||
+        freeze_enabled;
+    player_freeze_ok = keep_player_frozen
+                           ? ApplyPlayerFreeze(context)
+                           : ReleasePlayerFreeze(context);
+  }
   // Two very different things can put the plugin in charge of the camera. Follow mode is a camera
   // mode of its own: it has no timeline and nothing to play, so it takes the camera the moment it
   // is switched on -- which is what makes its sliders do something and the mouse stop turning the
@@ -13471,7 +13823,8 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   }
   // The camera write rides the same mesh tick as the pose, so the hook is installed for it
   // too: that tick is the one that lands after the game has computed its own camera.
-  const bool hook_ok = !pose_requested || EnsurePoseTickHook(context);
+  const bool hook_ok =
+      !(pose_requested || cached_pose_requested) || EnsurePoseTickHook(context);
   if (context.motion_loaded.load(std::memory_order_acquire)) {
     const std::uint64_t now = GetTickCount64();
     const std::uint64_t last =
@@ -13531,10 +13884,18 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   const bool rate_ok = ApplyRate(context, rate_enabled, rate);
   const bool root_ok = ApplyRootMotion(context, root_enabled, root);
   const bool mode_ok = EnsurePoseAnimationMode(context, pose_requested);
+  SyncEntityAnimationState(context);
   if (!pose_requested) {
     static_cast<void>(RestorePose(context));
     static_cast<void>(RestoreExtraMeshes(context));
-    static_cast<void>(ReleasePoseTickHook(context));
+    if (!cached_pose_requested)
+      static_cast<void>(ReleasePoseTickHook(context));
+    // When returning to the player, RuntimeState owns the same pause/mode
+    // values seeded from player_freeze.  Release the separate hold after the
+    // normal per-target restoration has completed.
+    if (context.runtime.mesh == context.local_mesh &&
+        context.player_freeze.active && !freeze_enabled)
+      player_freeze_ok = ReleasePlayerFreeze(context) && player_freeze_ok;
   }
   if (pose_requested) {
     if (motion_active)
@@ -13542,6 +13903,15 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     else
       ApplyPoseOverridesDirect(context);
     ResyncExtraMeshes(context);
+  }
+  // Parked Character Studio meshes are not selected, so their tick is not
+  // intercepted by the active-target hook.  Reapply their cached pose from
+  // the game-thread update while their animation state is held paused.
+  for (auto &entry : context.entity_pose_states) {
+    if (entry.first != context.runtime.mesh &&
+        HasCachedPoseEffect(entry.second))
+      static_cast<void>(
+          MaintainParkedEntityPose(context, entry.first, entry.second));
   }
   if (context.motion_loaded.load(std::memory_order_acquire)) {
     const double seconds =
@@ -13577,6 +13947,8 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     PublishSnapshot(context, "failed to force pose LOD 0");
   } else if (pose_requested && !mode_ok) {
     PublishSnapshot(context, "failed to switch animation mode to custom");
+  } else if (!player_freeze_ok) {
+    PublishSnapshot(context, "failed to keep player animation paused");
   } else if (!freeze_ok) {
     PublishSnapshot(context, "failed to apply animation pause flag");
   } else if (!rate_ok) {
@@ -13598,6 +13970,149 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     PublishSnapshot(context, "pose settings save failed");
   } else {
     PublishSnapshot(context, "ok");
+  }
+}
+
+void CapturePlayerFreeze(Context &context) noexcept {
+  RuntimeState &state = context.runtime;
+  const auto previous_mesh = state.bound_mesh;
+  if (state.external_target || previous_mesh == 0 || context.local_mesh == 0 ||
+      previous_mesh != context.local_mesh ||
+      (!state.saved_pause && !state.animation_mode_applied))
+    return;
+
+  PlayerFreezeState &player = context.player_freeze;
+  player.mesh = previous_mesh;
+  player.active = false;
+  player.pause_saved = false;
+  player.mode_saved = false;
+  if (state.saved_pause) {
+    player.active = true;
+    player.pause_saved = true;
+    player.original_animation_flags = state.original_animation_flags;
+  }
+  if (state.saved_animation_mode) {
+    player.active = true;
+    player.mode_saved = true;
+    player.original_animation_mode = state.original_animation_mode;
+  }
+}
+
+bool ApplyPlayerFreeze(Context &context) noexcept {
+  PlayerFreezeState &player = context.player_freeze;
+  if (!player.active || player.mesh == 0)
+    return true;
+
+  if (player.pause_saved) {
+    std::uint8_t flags{};
+    if (!Read(context, player.mesh + kMeshAnimationFlagsOffset, flags))
+      return false;
+    const std::uint8_t pause_bit =
+        static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit);
+    if ((flags & pause_bit) == 0 &&
+        !Write(context, player.mesh + kMeshAnimationFlagsOffset,
+               static_cast<std::uint8_t>(flags | pause_bit)))
+      return false;
+  }
+
+  // Use the same light-weight property write as EnsurePoseAnimationMode's
+  // fallback.  Calling SetAnimationMode here every tick would reinitialize the
+  // player's AnimInstance while another entity is selected.
+  if (player.mode_saved) {
+    std::uint8_t mode{};
+    if (!Read(context, player.mesh + kMeshAnimationModeOffset, mode))
+      return false;
+    if (mode != kAnimationModeCustom &&
+        !Write(context, player.mesh + kMeshAnimationModeOffset,
+               kAnimationModeCustom))
+      return false;
+  }
+  return true;
+}
+
+bool ReleasePlayerFreeze(Context &context) noexcept {
+  PlayerFreezeState &player = context.player_freeze;
+  if (!player.active || player.mesh == 0)
+    return true;
+
+  if (player.pause_saved &&
+      !Write(context, player.mesh + kMeshAnimationFlagsOffset,
+             player.original_animation_flags))
+    return false;
+  if (player.mode_saved &&
+      !Write(context, player.mesh + kMeshAnimationModeOffset,
+             player.original_animation_mode))
+    return false;
+  player = PlayerFreezeState{};
+  return true;
+}
+
+void SeedPlayerFreezeRuntime(Context &context,
+                             const std::uintptr_t mesh) noexcept {
+  const PlayerFreezeState &player = context.player_freeze;
+  if (!player.active || player.mesh != mesh)
+    return;
+  RuntimeState &state = context.runtime;
+  state.saved_pause = player.pause_saved;
+  state.original_animation_flags = player.original_animation_flags;
+  state.saved_animation_mode = player.mode_saved;
+  state.original_animation_mode = player.original_animation_mode;
+  state.animation_mode_applied = player.mode_saved;
+}
+
+void ParkEntityPose(Context &context, const std::uintptr_t mesh) noexcept {
+  const auto found = context.entity_pose_states.find(mesh);
+  if (found == context.entity_pose_states.end() ||
+      !HasCachedPoseEffect(found->second))
+    return;
+  static_cast<void>(ApplyCachedEntityPose(context, mesh));
+
+  EntityPoseState &saved = found->second;
+  std::uint8_t flags{};
+  if (Read(context, mesh + kMeshAnimationFlagsOffset, flags)) {
+    if (!saved.pause_saved) {
+      saved.pause_saved = true;
+      saved.original_animation_flags = flags;
+    }
+    flags |= static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit);
+    static_cast<void>(Write(context, mesh + kMeshAnimationFlagsOffset, flags));
+  }
+  std::uint8_t mode{};
+  if (Read(context, mesh + kMeshAnimationModeOffset, mode) &&
+      !saved.animation_mode_saved) {
+    saved.animation_mode_saved = true;
+    saved.original_animation_mode = mode;
+  }
+  const std::uint8_t custom = kAnimationModeCustom;
+  static_cast<void>(Write(context, mesh + kMeshAnimationModeOffset, custom));
+}
+
+void SyncEntityAnimationState(Context &context) noexcept {
+  if (!context.runtime.external_target || context.runtime.mesh == 0)
+    return;
+  const auto found = context.entity_pose_states.find(context.runtime.mesh);
+  if (found == context.entity_pose_states.end())
+    return;
+  EntityPoseState &saved = found->second;
+  saved.pause_saved = context.runtime.saved_pause;
+  saved.original_animation_flags = context.runtime.original_animation_flags;
+  saved.animation_mode_saved = context.runtime.saved_animation_mode;
+  saved.animation_mode_applied = context.runtime.animation_mode_applied;
+  saved.original_animation_mode = context.runtime.original_animation_mode;
+}
+
+void RestoreParkedEntityAnimations(Context &context) noexcept {
+  for (const auto &entry : context.entity_pose_states) {
+    const std::uintptr_t mesh = entry.first;
+    const EntityPoseState &saved = entry.second;
+    if (mesh == 0)
+      continue;
+    if (saved.pause_saved)
+      static_cast<void>(Write(context, mesh + kMeshAnimationFlagsOffset,
+                              saved.original_animation_flags));
+    if (saved.animation_mode_saved)
+      static_cast<void>(Write(context, mesh + kMeshAnimationModeOffset,
+                              saved.original_animation_mode));
   }
 }
 
@@ -13635,18 +14150,48 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
     return;
   const auto previous_mesh = state.bound_mesh;
   const auto g_world_address = state.g_world_address;
+  // RestoreAll is still required for the old selected entity, but the local
+  // player's pause/custom-mode override must survive while an external entity
+  // is selected.  Capture it before RestoreAll clears the transient state.
+  CaptureEntityPose(context, previous_mesh);
+  CapturePlayerFreeze(context);
+  const auto previous_pose = context.entity_pose_states.find(previous_mesh);
+  const bool preserve_previous_pose =
+      previous_pose != context.entity_pose_states.end() &&
+      HasCachedPoseEffect(previous_pose->second);
+  if (preserve_previous_pose) {
+    state.saved_pause = false;
+    state.saved_animation_mode = false;
+    state.animation_mode_applied = false;
+  }
+  const bool preserve_player_freeze =
+      external_target && !state.external_target && context.player_freeze.active &&
+      context.player_freeze.mesh == previous_mesh;
+  if (preserve_player_freeze) {
+    state.saved_pause = false;
+    state.saved_animation_mode = false;
+    state.animation_mode_applied = false;
+  }
   RestoreAll(context);
+  if (preserve_previous_pose)
+    ParkEntityPose(context, previous_mesh);
   static_cast<void>(DropExtraMeshes(context));
   state = RuntimeState{};
   state.g_world_address = g_world_address;
   state.bound_character = character;
   state.bound_mesh = mesh;
   state.external_target = external_target;
+  if (!external_target)
+    SeedPlayerFreezeRuntime(context, mesh);
+  else
+    SeedEntityAnimationRuntime(context, mesh);
 
   // Converted rotations and offsets belong to one skeleton, even if another
   // character has matching names/counts. Require an explicit load for the new rig.
   if (previous_mesh != 0)
     UnloadMotion(context);
+  if (previous_mesh != 0)
+    ResetPoseValues(context);
   context.main_kawaii_state.store(0, std::memory_order_release);
   context.main_kawaii_springs.store(0, std::memory_order_release);
   context.main_distance_links.store(0, std::memory_order_release);
@@ -18573,8 +19118,11 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   context->t_pose_calibration_request.store(0, std::memory_order_release);
   context->t_pose_session = Context::TPoseCalibrationSession{};
   RestoreAll(*context);
+  RestoreParkedEntityAnimations(*context);
+  static_cast<void>(ReleasePlayerFreeze(*context));
   g_active.store(nullptr, std::memory_order_release);
   context->runtime = RuntimeState{};
+  context->player_freeze = PlayerFreezeState{};
   RenderSnapshot empty{};
   std::scoped_lock lock(context->state_mutex);
   context->snapshot = empty;
@@ -18628,6 +19176,7 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
     }
   } catch (...) {
     RestoreAll(*context);
+    static_cast<void>(ReleasePlayerFreeze(*context));
     PublishSnapshot(*context, "update failed; overrides restored");
   }
 }
