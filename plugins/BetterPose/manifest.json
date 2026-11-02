@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "anomaly.builtin.better-pose",
   "name": "Better Pose",
-  "description": "Adjusts the local player skeletal mesh animation rate, pause state, root-motion scale, and applies best-effort component-space bone pose offsets.",
+  "description": "Adjusts skeletal mesh animation rate, pause state, root-motion scale, and component-space bone pose offsets for the local player and Character Studio models.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "version": "1.0.0",

@@ -41,6 +41,122 @@ typedef struct AnomalyUe5FrameworkServiceV1 {
 
 Provides game-thread anchors: `game_thread_id`, a monotonically increasing `tick_sequence`, and `is_game_thread` (whether the caller is currently on the Game thread).
 
+## `anomaly.ue5.process-event`
+
+- **ID**: `"anomaly.ue5.process-event"` · **version** 1 · **capability** `game-events`
+
+```c
+typedef void (ANOMALY_CALL *AnomalyUe5ProcessEventCallbackV1)(
+    void* user, uintptr_t object, uintptr_t function, void* parameters);
+typedef struct AnomalyUe5ProcessEventServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *subscribe)(
+        void* user, AnomalyUe5ProcessEventCallbackV1 callback,
+        void* callback_user, AnomalyGenerationHandleV1* handle);
+    AnomalyStatusV1 (ANOMALY_CALL *unsubscribe)(
+        void* user, AnomalyGenerationHandleV1 handle);
+    // Appended V1 extension; check struct_size before reading invoke.
+    // Synchronous, Game thread only. Handles come from ue5.objects, not ue5.world.
+    // parameters is a caller-owned in/out buffer with capacity >= UFunction::ParmsSize;
+    // out/return fields are available on return. Null is valid for zero-parameter calls.
+    // The caller supplies an actual UFunction, compatible receiver and initialized UE values.
+    // No function allowlist, parameter schema matching, or FunctionFlags rewriting.
+    AnomalyStatusV1 (ANOMALY_CALL *invoke)(
+        void* user, AnomalyGenerationHandleV1 object,
+        AnomalyGenerationHandleV1 function, void* parameters, size_t parameter_size);
+} AnomalyUe5ProcessEventServiceV1;
+```
+
+| Function | Description |
+| --- | --- |
+| `subscribe` | Subscribes to the host's shared UObject ProcessEvent hook and returns a subscription handle |
+| `unsubscribe` | Closes the subscription and drains admitted callbacks; subscription handles cannot be used with `invoke` |
+| `invoke` | Synchronously calls a UFunction on the Game thread; out/return fields remain in the same buffer |
+
+### Subscription and publication
+
+Subscribers run serially on the **Game thread before the original function** and may edit parameters
+in place. There is no skip-original or post-call callback API. Object/function addresses and the
+parameter buffer are valid only during the callback and must not be retained. Active invocation
+passes through the shared hook and permits nested calls from callbacks; subscribers must prevent
+their own recursive loops.
+
+Publication requires the framework/ProcessEvent hooks and corresponding Profile Features, not the
+optional AHUD reflection binding. A published subscription service does not imply that the invoker,
+object registry, and parameter-size layout needed by `invoke` are ready. Missing prerequisites return
+`UNAVAILABLE` without disabling subscription support.
+
+### Invocation contract
+
+For the local player's Pawn / Controller, obtain compatible object handles through
+[`nte.player.get_object_handles`](nte-services.md#player-object-handles).
+`player.snapshot.handle` identifies a player sample and cannot be used directly as the receiver.
+
+| Parameter | Contract |
+| --- | --- |
+| `user` | Pass the service table's `user` unchanged |
+| `object` | Receiver object handle from `anomaly.ue5.objects` |
+| `function` | UFunction object handle, also from `anomaly.ue5.objects` |
+| `parameters` | Caller-owned writable UE parameter buffer; `NULL` is allowed for zero-parameter functions |
+| `parameter_size` | Buffer capacity, at least the UFunction's Profile-defined `ParmsSize`; larger capacities are accepted |
+
+Obtain object/function handles with `snapshot_at`, `snapshot_by_handle`, or `find_exact`. Do not pass
+independent `ue5.world` handles, subscription handles, or raw addresses cast into handles. Plugins do
+not need to scan the ProcessEvent entry point themselves. Invoke only on the Game thread, such as a
+plugin Game update or ProcessEvent callback, never directly from UI Render, Lifecycle, or Worker
+callbacks. The host does not queue calls or dispatch them across threads.
+
+Checks cover service/invoker/registry availability, thread affinity, handle generation/serial,
+a readable `ParmsSize`, and buffer capacity. There is no function allowlist, owner/per-field schema
+matching, FunctionFlags rewriting, additional 4 KiB buffer cap, or requirement that UFunction data
+addresses be above 4 GiB.
+
+This is a low-level boundary: the caller must provide an actual UFunction, a compatible receiver,
+and correctly construct/destroy UE parameter values such as strings and arrays. Native and Blueprint
+functions follow normal engine dispatch without bypassing engine conditions. Keep the buffer alive
+throughout the call; the host neither copies nor retains it. Read the result from the known return
+field layout; there is no separate return-value argument. `OK` means dispatch returned, not that the
+function's business operation succeeded. Exception isolation does not undo engine side effects.
+
+### Compatible invocation example
+
+`invoke` is appended to the V1 table; version 1 and all previous field offsets remain unchanged.
+After querying with `Host::Query<AnomalyUe5ProcessEventServiceV1>(ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID, 1)`
+or the C Host API, check the table size before reading `invoke` for subscription-only host compatibility.
+This helper accepts already acquired object/function handles and **must run on the Game thread**:
+
+```c
+AnomalyStatusV1 InvokeUFunction(
+    const AnomalyUe5ProcessEventServiceV1* service,
+    AnomalyGenerationHandleV1 object,
+    AnomalyGenerationHandleV1 function,
+    void* parameters, size_t capacity) {
+    if (service == NULL ||
+        service->struct_size < offsetof(AnomalyUe5ProcessEventServiceV1, invoke) +
+            sizeof(service->invoke) || service->invoke == NULL) {
+        AnomalyStatusV1 unavailable = {
+            ANOMALY_STATUS_V1_UNAVAILABLE, 0, {NULL, 0}};
+        return unavailable;
+    }
+    return service->invoke(service->user, object, function, parameters, capacity);
+}
+```
+
+### `invoke` status codes
+
+| Status | Meaning |
+| --- | --- |
+| `OK` | Engine dispatch returned; the caller can inspect out/return fields |
+| `CONFLICT` | The Game thread is not yet known, or this is not the Game thread |
+| `NOT_FOUND` | An object/function handle is stale, or the parameter-size field is unreadable |
+| `INVALID_ARGUMENT` | Null buffer for a nonzero-parameter function |
+| `BUFFER_TOO_SMALL` | Buffer capacity is smaller than `ParmsSize` |
+| `UNAVAILABLE` | Stopped service or unavailable invoker, registry, Feature/layout prerequisites |
+| `FAILED` | The invoker reported failure or the invocation boundary caught an exception |
+
+Cached tables from a stopped generation return only `UNAVAILABLE` and do not reactivate on the next
+Start. Requery the current generation's service and acquire valid object handles again.
+
 ## `anomaly.ue5.ahud`
 
 - **ID**: `"anomaly.ue5.ahud"` · **version** 1 · **capability** `ue5-ahud`

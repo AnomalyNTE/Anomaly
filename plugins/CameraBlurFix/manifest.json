@@ -1,8 +1,8 @@
 {
   "schemaVersion": 2,
   "id": "anomaly.local.nte.camera-blur-fix",
-  "name": "反虚化",
-  "description": "取消角色与 NPC/人群实体的镜头虚化，同时禁用抬头和近距离镜头隐藏",
+  "name": "Camera Blur Fix",
+  "description": "Disables camera-induced fading for the player, NPCs, and crowds, including pitch-based fading and close-range character hiding.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "version": "1.3.2",

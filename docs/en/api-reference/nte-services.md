@@ -308,10 +308,61 @@ typedef struct AnomalyNtePlayerServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *hold_release)(void* user);
     AnomalyStatusV1 (ANOMALY_CALL *hold_snapshot)(void* user,
         AnomalyNtePlayerHoldSnapshotV1* snapshot);
+    // Appended V1 extension; check struct_size; does not require nte-player-hold.
+    AnomalyStatusV1 (ANOMALY_CALL *get_object_handles)(void* user,
+        AnomalyGenerationHandleV1* pawn, AnomalyGenerationHandleV1* controller);
 } AnomalyNtePlayerServiceV1;
 ```
 
 Camera data is available only after the active Profile has validated the optional `nte.player-esp` capability of the Player service. `world` identifies the scene, and `player` identifies the Pawn / Controller that supplied this camera sample; once either generation handle goes stale, the relationship is invalid.
+
+### Player object handles
+
+`snapshot.handle`, `esp_snapshot.handle`, and `camera_snapshot.player` identify an
+`nte.player` sample, not a UObject. Do not pass them directly to `ue5.objects` or
+`ProcessEvent.invoke`. `get_object_handles` returns **`ue5.objects` handles** for
+the Pawn / Controller in the latest player sample. Use these with `snapshot_by_handle`
+or as the receiver of `invoke`; existing snapshot handle semantics do not change.
+
+- **Game thread only.** No task dispatch, player-sample refresh, or object-array scan is performed. Prefer obtaining the handle and invoking within the same Game callback.
+- Supply at least one of `pawn` and `controller`; the other may be `NULL`. Only requested objects are checked. All requested outputs are written only on success.
+- Uses the existing `nte-player-snapshot` capability, not `nte-player-hold`. Invoking also requires `game-events`; querying the objects service also requires `ue5-objects`.
+- `service_version` remains 1 and existing offsets are unchanged. Check that `struct_size` covers the appended field and its function pointer is non-null before use.
+- Handles do not retain engine objects. Reacquire after object destruction/reuse or an object-registry generation change; later object queries and `invoke` still validate generation/serial.
+
+| Status | Meaning |
+| --- | --- |
+| `OK` | Requested Pawn / Controller converted to object handles |
+| `INVALID_ARGUMENT` | Both outputs are `NULL` |
+| `CONFLICT` | Game thread is not established or the caller is on another thread |
+| `UNAVAILABLE` | Service stopped, player sample unavailable, or `ue5.objects` Feature / registry unavailable |
+| `NOT_FOUND` | A requested player object is no longer registered |
+| `FAILED` | An exception was caught at the public call boundary |
+
+Obtain the Pawn in a Game callback, then pass it to [ProcessEvent `invoke`](ue5-services.md#invocation-contract):
+
+```c
+AnomalyStatusV1 InvokeLocalPawn(
+    const AnomalyNtePlayerServiceV1* player,
+    const AnomalyUe5ProcessEventServiceV1* events,
+    AnomalyGenerationHandleV1 function, void* parameters, size_t capacity) {
+    if (player == NULL || events == NULL ||
+        player->struct_size < offsetof(AnomalyNtePlayerServiceV1, get_object_handles) +
+            sizeof(player->get_object_handles) || player->get_object_handles == NULL ||
+        events->struct_size < offsetof(AnomalyUe5ProcessEventServiceV1, invoke) +
+            sizeof(events->invoke) || events->invoke == NULL) {
+        AnomalyStatusV1 unavailable = {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {NULL, 0}};
+        return unavailable;
+    }
+    AnomalyGenerationHandleV1 pawn = {0, 0};
+    AnomalyStatusV1 status = player->get_object_handles(player->user, &pawn, NULL);
+    if (status.code != ANOMALY_STATUS_V1_OK) return status;
+    return events->invoke(events->user, pawn, function, parameters, capacity);
+}
+```
+
+`function` must still be an actual UFunction object handle compatible with the Pawn.
+Parameter construction, capacity, and reading return values follow the `invoke` contract.
 
 ---
 

@@ -466,14 +466,9 @@ bool AddAddress(std::uintptr_t base, std::int64_t offset, std::uintptr_t& result
     void* const parameters,
     const std::size_t parameter_size,
     std::uint32_t* const fault_code = nullptr) noexcept {
-    // Code in the active process is above the 4 GiB boundary, so the function pointer keeps that
-    // floor. Objects are not: the local player controller is allocated low (measured 0x377F2070,
-    // about 931 MB on the current game build). Rejecting it made every pickup-service
-    // TriggerInteract fail while BPCanTryInteract on the same actor - which passes the actor as
-    // the receiver, and that one is above 4 GiB - succeeded, so every pickup-service item
-    // (food, wallet, random items) was skipped. The receiver only needs a sanity floor; the SEH
-    // wrapper below still catches a bad target.
-    if (!invoker || receiver < 0x10000ULL || function < 0x100000000ULL) {
+    // Both arguments are UObject addresses, not executable entry points. Neither
+    // requires a 4 GiB floor; retain only Windows' inaccessible low-address range.
+    if (!invoker || receiver < 0x10000ULL || function < 0x10000ULL) {
         return false;
     }
 #if defined(_MSC_VER)
@@ -14552,6 +14547,37 @@ struct Ue5NteAdapter::State {
         return Status(ANOMALY_STATUS_V1_OK);
     }
 
+    static AnomalyStatusV1 ANOMALY_CALL PlayerObjectHandles(
+        void* user, AnomalyGenerationHandleV1* pawn,
+        AnomalyGenerationHandleV1* controller) {
+        if (pawn == nullptr && controller == nullptr) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        const auto game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (game_thread == 0 || game_thread != GetCurrentThreadId()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                          "player object handles require the Game thread");
+        }
+        std::scoped_lock lock(state.mutex);
+        if (!state.SemanticFeatureRunning("nte.player") || !state.player_available ||
+            !state.resolution.FeatureAvailable("ue5.objects") ||
+            state.object_registry.items == 0) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                          "player object handle prerequisites are unavailable");
+        }
+        AnomalyGenerationHandleV1 pawn_handle{}, controller_handle{};
+        if ((pawn != nullptr && !state.ObjectHandleLocked(state.player_pawn, pawn_handle)) ||
+            (controller != nullptr &&
+             !state.ObjectHandleLocked(state.player_controller, controller_handle))) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                          "player object is no longer registered");
+        }
+        if (pawn != nullptr) *pawn = pawn_handle;
+        if (controller != nullptr) *controller = controller_handle;
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL PlayerEspSnapshot(
         void* user, AnomalyNtePlayerEspSnapshotV1* snapshot) noexcept {
         if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot)) {
@@ -16622,7 +16648,8 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
         player_service = {
             sizeof(AnomalyNtePlayerServiceV1), ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION,
             this, PlayerSnapshotThunk, PlayerEspSnapshotThunk, CameraSnapshotThunk,
-            PlayerHoldEngageThunk, PlayerHoldReleaseThunk, PlayerHoldSnapshotThunk};
+            PlayerHoldEngageThunk, PlayerHoldReleaseThunk, PlayerHoldSnapshotThunk,
+            PlayerObjectHandlesThunk};
         player_teleport_service = {
             sizeof(AnomalyNtePlayerTeleportServiceV1),
             ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION,
@@ -16874,6 +16901,17 @@ private:
         void* user, AnomalyNtePlayerSnapshotV1* snapshot) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::PlayerSnapshot(lease.User(), snapshot) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PlayerObjectHandlesThunk(
+        void* user, AnomalyGenerationHandleV1* pawn,
+        AnomalyGenerationHandleV1* controller) noexcept {
+        try {
+            auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+            return lease ? State::PlayerObjectHandles(lease.User(), pawn, controller) : StoppedStatus();
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "player object handle query failed");
+        }
     }
 
     static AnomalyStatusV1 ANOMALY_CALL PlayerEspSnapshotThunk(
@@ -17942,7 +17980,7 @@ struct Ue5NteAdapter::State::ProcessEventServiceEndpoint final {
         : state_(std::move(state)), generation_(generation == 0 ? 1 : generation) {
         service = {sizeof(AnomalyUe5ProcessEventServiceV1),
                    ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION, this,
-                   SubscribeThunk, UnsubscribeThunk};
+                   SubscribeThunk, UnsubscribeThunk, InvokeThunk};
         subscriptions_snapshot_.store(
             std::make_shared<const SubscriptionList>(), std::memory_order_release);
     }
@@ -18064,6 +18102,63 @@ private:
         return subscription->gate.DrainUntil(std::chrono::steady_clock::time_point::max())
             ? Status(ANOMALY_STATUS_V1_OK)
             : Status(ANOMALY_STATUS_V1_TIMEOUT, "ProcessEvent subscription drain timed out");
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL InvokeThunk(
+        void* user, const AnomalyGenerationHandleV1 object_handle,
+        const AnomalyGenerationHandleV1 function_handle,
+        void* const parameters, const std::size_t parameter_size) noexcept {
+        auto* endpoint = static_cast<ProcessEventServiceEndpoint*>(user);
+        auto lease = endpoint->Acquire();
+        if (!lease) return StoppedStatus();
+        try {
+            auto& state = *lease.StateOwner();
+            const auto game_thread = state.game_thread_id.load(std::memory_order_acquire);
+            if (game_thread == 0 || game_thread != GetCurrentThreadId()) {
+                return Status(ANOMALY_STATUS_V1_CONFLICT,
+                              "ProcessEvent invoke requires the Game thread");
+            }
+            ProcessEventInvoker invoker;
+            std::uintptr_t object{}, function{};
+            std::uint16_t parms_size{};
+            {
+                std::scoped_lock lock(state.mutex);
+                const auto parms_offset = Layout(state.profile, "ufunction.parmsSize");
+                if (!state.started.load(std::memory_order_acquire) ||
+                    !state.process_event_invoker || state.object_registry.items == 0 ||
+                    !state.resolution.FeatureAvailable("ue5.objects") || parms_offset < 0) {
+                    return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                                  "ProcessEvent invocation prerequisites are unavailable");
+                }
+                if (!state.ResolveObjectHandleLocked(object_handle, object) ||
+                    !state.ResolveObjectHandleLocked(function_handle, function)) {
+                    return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                                  "ProcessEvent object or function handle is stale");
+                }
+                std::uintptr_t parms_address{};
+                if (!AddAddress(function, parms_offset, parms_address) ||
+                    !ReadValue(*state.memory, parms_address, parms_size)) {
+                    return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                                  "ProcessEvent function parameter size is unreadable");
+                }
+                if (parms_size != 0 && parameters == nullptr) {
+                    return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                                  "ProcessEvent parameter buffer is required");
+                }
+                if (parameter_size < parms_size) {
+                    return Status(ANOMALY_STATUS_V1_BUFFER_TOO_SMALL,
+                                  "ProcessEvent parameter buffer is too small");
+                }
+                invoker = state.process_event_invoker;
+            }
+            // Engine calls may synchronously re-enter the shared hook and SDK.
+            // Keep the service lease, but never the state lock, across that call.
+            return InvokeProcessEventGuarded(invoker, object, function, parameters, parms_size)
+                ? Status(ANOMALY_STATUS_V1_OK)
+                : Status(ANOMALY_STATUS_V1_FAILED, "ProcessEvent invocation failed");
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "ProcessEvent invocation failed");
+        }
     }
 
     static AnomalyStatusV1 ANOMALY_CALL SubscribeThunk(

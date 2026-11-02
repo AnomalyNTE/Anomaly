@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.name": "木桩训练",
+    "plugin.description": "通过角色自身的召唤路径生成木桩，比把菜单塞进游戏内轮盘更稳定。",
+    "window.title": "木桩训练",
+    "template.title": "模板",
+    "action.spawn": "生成木桩",
+    "action.clear": "清空全部",
+    "action.destroy": "移除",
+    "list.title": "本次生成",
+    "list.empty": "（空）",
+    "status.ready": "世界就绪",
+    "status.not_ready": "世界未就绪",
+    "status.summary": "已生成 {0} 个",
+    "status.pending": "排队中 {0}",
+    "status.failed": "上次失败：{0}"
+  }
+}
