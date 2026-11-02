@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "com.nailong.costume",
-  "name": "奶龙换装",
+  "name": "奶龙",
   "description": "UE 原生玩家与附近 NPC 模型替换；36 骨源蒙皮，离开范围自动恢复，动物不参与。",
   "author": "yi621yi",
   "license": "AGPL-3.0-only",
@@ -58,6 +58,11 @@
       "id": "anomaly.interop.signature",
       "minVersion": 1,
       "optional": true
+    },
+    {
+      "id": "anomaly.plugin-state",
+      "minVersion": 1,
+      "optional": true
     }
   ],
   "capabilities": [
@@ -69,6 +74,7 @@
     "nte-actor-snapshot",
     "interop-signature",
     "memory-write",
-    "nte-player-snapshot"
+    "nte-player-snapshot",
+    "configuration"
   ]
 }

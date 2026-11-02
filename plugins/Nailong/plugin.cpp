@@ -16,9 +16,15 @@
 
 #include <anomaly/sdk/services/ui.h>
 
+#include <anomaly/sdk/services/plugin_state.h>
+
 #include <atomic>
 
 #include <cmath>
+
+#include <cstdio>
+
+#include <filesystem>
 
 #include <mutex>
 
@@ -102,6 +108,39 @@ void ForgetDressed(std::uintptr_t actor){
     if(actor!=0)dressed_actors.erase(actor);
 }
 
+// ---------------------------------------------------------------------------
+// Deferred restore across a plugin stop.
+//
+// on_stop runs on the host's Lifecycle worker, and every UE reflection call is
+// gated on ue::InGame(), which is false outside the Game domain. A stop can
+// therefore never put the original meshes back itself.
+//
+// The previous implementation answered that impossibility with
+// ANOMALY_STATUS_V1_CONFLICT. The host treats a non-OK on_stop as a failed stop
+// and quarantines the generation (src/plugin/plugin_manager.cpp,
+// UnloadIndicesWithDeadline), and quarantined plugins can never be enabled again
+// in that process -- so closing the plugin without pressing the in-panel restore
+// button forced a game restart.
+//
+// Instead of failing, remember which actors are still dressed and finish the job
+// in the Game domain at the next start. The host gives every plugin a durable
+// state directory that survives both a disable and a hot reload.
+// Everything RestoreOne() needs, kept in a flat integer layout so it can be
+// written from the Lifecycle domain and replayed in the Game domain later.
+struct PendingHidden {
+    std::uintptr_t object=0;std::uint32_t index=0,serial=0;
+    bool was_visible=false;std::int32_t tick_offset=-1;
+    std::uint8_t tick_original=0;bool tick_changed=false;
+};
+
+struct PendingRecord {
+    std::uintptr_t actor=0;std::uint32_t actor_index=0,actor_serial=0;
+    std::uintptr_t component=0;std::uint32_t component_index=0,component_serial=0;
+    std::vector<PendingHidden> hidden;
+};
+
+std::vector<PendingRecord> deferred_restore;
+
 std::atomic<std::uint32_t> npc_count{0};
 std::atomic<std::uint32_t> npc_scan_seen{0},npc_scan_range{0},npc_scan_slots{0},npc_scan_class{0},npc_scan_meshes{0},npc_scan_candidates{0};
 std::atomic<double> npc_scan_nearest{0};
@@ -154,11 +193,177 @@ void Log(std::uint32_t level,const std::string& s){if(ue::g_core&&ue::g_core->lo
 
 void Status(const std::string& s){std::lock_guard lock(state_mutex);status=s;}
 
+// Host-owned, per-plugin directory that outlives a disable and a hot reload.
+const AnomalyPluginStateServiceV1* state_dir_service=nullptr;
+
+// The Host refuses plugin-state I/O from the Game and Render domains, so the
+// directory is resolved once during on_load and cached as plain text. Game-domain
+// code then only touches the cache.
+std::string state_directory;
+
+void CacheStateDirectory(){
+
+    state_directory.clear();
+
+    if(!state_dir_service||!state_dir_service->directory)return;
+
+    char dir[1024]{};std::size_t size=sizeof(dir);
+
+    if(!ue::nl_good(state_dir_service->directory(state_dir_service->user,dir,&size)))return;
+
+    state_directory.assign(dir,size>0?size-1:0);
+
+}
+
+bool StateFilePath(const char* name,std::string& out){
+
+    out.clear();
+
+    if(state_directory.empty())return false;
+
+    out=state_directory;out+="/";out+=name;return true;
+
+}
+
+// Called from on_stop (Lifecycle domain): integer file layout only, no UE access.
+void SaveDeferredRestore(){
+
+    std::string path;
+
+    if(!StateFilePath("deferred-restore.bin",path))return;
+
+    FILE* f=nullptr;
+
+    if(fopen_s(&f,path.c_str(),"wb")!=0||!f){Status("待恢复记录不可写");return;}
+
+    const std::uint32_t count=std::uint32_t(deferred_restore.size());
+
+    bool ok=fwrite(&count,sizeof(count),1,f)==1;
+
+    for(const auto& pending:deferred_restore){
+
+        if(!ok)break;
+
+        const std::uint32_t hidden=std::uint32_t(pending.hidden.size());
+
+        ok=fwrite(&pending.actor,sizeof(pending.actor),1,f)==1&&
+           fwrite(&pending.actor_index,sizeof(pending.actor_index),1,f)==1&&
+           fwrite(&pending.actor_serial,sizeof(pending.actor_serial),1,f)==1&&
+           fwrite(&pending.component,sizeof(pending.component),1,f)==1&&
+           fwrite(&pending.component_index,sizeof(pending.component_index),1,f)==1&&
+           fwrite(&pending.component_serial,sizeof(pending.component_serial),1,f)==1&&
+           fwrite(&hidden,sizeof(hidden),1,f)==1;
+
+        for(const auto& item:pending.hidden){
+
+            if(!ok)break;
+
+            ok=fwrite(&item.object,sizeof(item.object),1,f)==1&&
+               fwrite(&item.index,sizeof(item.index),1,f)==1&&
+               fwrite(&item.serial,sizeof(item.serial),1,f)==1&&
+               fwrite(&item.was_visible,sizeof(item.was_visible),1,f)==1&&
+               fwrite(&item.tick_offset,sizeof(item.tick_offset),1,f)==1&&
+               fwrite(&item.tick_original,sizeof(item.tick_original),1,f)==1&&
+               fwrite(&item.tick_changed,sizeof(item.tick_changed),1,f)==1;
+
+        }
+
+    }
+
+    fclose(f);
+
+    if(!ok)Status("待恢复记录写入不完整");
+
+}
+
+// Called from on_load (Lifecycle domain). A missing or truncated file simply
+// means nothing was left dressed.
+void LoadDeferredRestore(){
+
+    deferred_restore.clear();
+
+    std::string path;
+
+    if(!StateFilePath("deferred-restore.bin",path))return;
+
+    FILE* f=nullptr;
+
+    if(fopen_s(&f,path.c_str(),"rb")!=0||!f)return;
+
+    std::uint32_t count=0;
+
+    if(fread(&count,sizeof(count),1,f)!=1||count>4096){fclose(f);return;}
+
+    for(std::uint32_t i=0;i<count;++i){
+
+        PendingRecord pending{};
+
+        std::uint32_t hidden=0;
+
+        if(fread(&pending.actor,sizeof(pending.actor),1,f)!=1||
+           fread(&pending.actor_index,sizeof(pending.actor_index),1,f)!=1||
+           fread(&pending.actor_serial,sizeof(pending.actor_serial),1,f)!=1||
+           fread(&pending.component,sizeof(pending.component),1,f)!=1||
+           fread(&pending.component_index,sizeof(pending.component_index),1,f)!=1||
+           fread(&pending.component_serial,sizeof(pending.component_serial),1,f)!=1||
+           fread(&hidden,sizeof(hidden),1,f)!=1){break;}
+
+        if(hidden>8192)break;
+
+        bool complete=true;
+
+        for(std::uint32_t h=0;h<hidden;++h){
+
+            PendingHidden item{};
+
+            if(fread(&item.object,sizeof(item.object),1,f)!=1||
+               fread(&item.index,sizeof(item.index),1,f)!=1||
+               fread(&item.serial,sizeof(item.serial),1,f)!=1||
+               fread(&item.was_visible,sizeof(item.was_visible),1,f)!=1||
+               fread(&item.tick_offset,sizeof(item.tick_offset),1,f)!=1||
+               fread(&item.tick_original,sizeof(item.tick_original),1,f)!=1||
+               fread(&item.tick_changed,sizeof(item.tick_changed),1,f)!=1){complete=false;break;}
+
+            pending.hidden.push_back(item);
+
+        }
+
+        if(!complete)break;
+
+        if(pending.actor&&pending.actor_serial)deferred_restore.push_back(std::move(pending));
+
+    }
+
+    fclose(f);
+
+    if(!deferred_restore.empty()){
+
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,"NaiLong: "+std::to_string(deferred_restore.size())+
+            " actor(s) were left dressed by the previous run");
+
+    }
+
+}
+
+void DropDeferredRestoreFile(){
+
+    std::string path;
+
+    if(!StateFilePath("deferred-restore.bin",path))return;
+
+    std::error_code ignored;
+
+    std::filesystem::remove(std::filesystem::path(path),ignored);
+
+}
+
 template<typename T> const T* Query(const char* id){const void* p=nullptr;return host&&host->query_service&&ue::nl_good(host->query_service(host->host_context,Sv(id),1,&p))?static_cast<const T*>(p):nullptr;}
 
 void Services(){
 
     if(!ue::g_core)ue::g_core=Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID);
+
+    if(!state_dir_service)state_dir_service=Query<AnomalyPluginStateServiceV1>(ANOMALY_PLUGIN_STATE_SERVICE_V1_ID);
 
     if(!ue::g_signature)ue::g_signature=Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID);
 
@@ -328,6 +533,87 @@ bool RestoreOne(Record& target){
 bool Restore(){const bool ok=RestoreOne(record);SyncActive();mapped_bones.store(record.actor.ptr?std::uint32_t(record.driver.mapped):0);return ok;}
 
 bool RestoreNpcs(){bool ok=true;for(auto& item:npc_records)ok=RestoreOne(item)&&ok;npc_records.erase(std::remove_if(npc_records.begin(),npc_records.end(),[](const Record& r){return r.actor.ptr==0;}),npc_records.end());npc_count.store(std::uint32_t(npc_records.size()));SyncActive();return ok;}
+
+// Game-domain replay of a record left behind by a previous run. Nothing here
+// touches the in-memory `record`/`npc_records`: those describe the current
+// session only, and a replayed record may name a pawn that no longer exists.
+bool RestoreDeferredOne(PendingRecord& pending){
+
+    if(!pending.actor)return true;
+
+    Record target;
+
+    target.actor={pending.actor,pending.actor_index,pending.actor_serial};
+    target.component={pending.component,pending.component_index,pending.component_serial};
+
+    for(const auto& item:pending.hidden){
+
+        Hidden hidden;
+
+        hidden.object={item.object,item.index,item.serial};
+        hidden.was_visible=item.was_visible;
+        hidden.tick_offset=item.tick_offset;
+        hidden.tick_original=item.tick_original;
+        hidden.tick_changed=item.tick_changed;
+
+        target.hidden.push_back(hidden);
+
+    }
+
+    const int alive=ue::Alive(target.actor);
+
+    // A streamed-out or recycled actor has nothing left to un-hide.
+    if(alive==0){ForgetDressed(pending.actor);return true;}
+
+    if(alive<0)return false;
+
+    return RestoreOne(target);
+
+}
+
+// Runs once per loaded generation, on the first Game tick where the UE bridge
+// is usable -- that is the earliest moment a deferred restore can succeed.
+double deferred_retry_time=0;
+
+void ReplayDeferredRestore(double dt){
+
+    deferred_retry_time-=dt;
+
+    if(deferred_retry_time>0)return;
+
+    deferred_retry_time=1.0;
+
+    std::size_t remaining=0;
+
+    for(auto& pending:deferred_restore){
+
+        if(!RestoreDeferredOne(pending)){
+            // Keep the record: a later tick may find the actor alive again.
+            deferred_restore[remaining++]=std::move(pending);
+        }
+
+    }
+
+    deferred_restore.resize(remaining);
+
+    if(deferred_restore.empty()){
+
+        DropDeferredRestoreFile();
+
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,"NaiLong: deferred restore from the previous run completed");
+
+        Status("已自动恢复上次遗留的原模型");
+
+    }else{
+
+        // Re-persist the survivors so a second stop does not lose them.
+        SaveDeferredRestore();
+
+        Status("仍有 "+std::to_string(deferred_restore.size())+" 个角色的原模型待恢复，正在重试");
+
+    }
+
+}
 
 bool Upload(std::uintptr_t component,Record& target,const Settings& cfg,std::uintptr_t material){
 
@@ -1342,9 +1628,15 @@ void ANOMALY_CALL Update(void*,double dt){
             [](const ue::Ref& r){return ue::Alive(r)==0;}),retired_components.end());
     }
 
-    if(!model_loaded||!ue::InGame())return;
+    // A restore left over from the previous run does not need the model assets,
+    // so it runs before the model gate below.
+    if(!ue::InGame())return;
 
     if(!ue::Ready()){Status(ue::last_error.empty()?"等待 UE 反射桥接就绪":ue::last_error);return;}
+
+    if(!deferred_restore.empty())ReplayDeferredRestore(dt);
+
+    if(!model_loaded)return;
 
     if(!cfg.enabled){pending_rebind=false;previous_actor={};Restore();RestoreNpcs();return;}
 
@@ -1497,7 +1789,7 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
 
     ui->set_next_window_size(ui->user,420,330,4);
 
-    if(ui->begin_window(ui->user,Sv("奶龙换装 · 原生模型替换"),nullptr,0)){
+    if(ui->begin_window(ui->user,Sv("奶龙"),nullptr,0)){
 
         std::lock_guard lock(state_mutex);
 
@@ -1543,7 +1835,7 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
         std::string summary="已替换 NPC："+std::to_string(npc_count.load())+" 个（离开范围自动恢复）";
         ui->text(ui->user,{summary.data(),summary.size()});
 
-        ui->text(ui->user,Sv("停用或卸载插件前，请先点击“恢复玩家与 NPC 并移除奶龙”。"));
+        ui->text(ui->user,Sv("可直接停用插件：残留的奶龙会在下次启用时自动还原。"));
 
         if(!status.empty())ui->text(ui->user,{status.data(),status.size()});
 
@@ -1553,23 +1845,131 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
 
 }
 
-AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* h,void** context){host=h;Services();model_loaded=LoadModel();*context=&settings;return Ok();}
+AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* h,void** context){
+
+    host=h;Services();CacheStateDirectory();
+
+    // A previous run may have stopped while actors were still dressed; the file
+    // is replayed from Update() as soon as the Game domain is live.
+    LoadDeferredRestore();
+
+    model_loaded=LoadModel();*context=&settings;return Ok();
+
+}
 
 AnomalyStatusV1 ANOMALY_CALL Start(void*){Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,"NaiLong UE 1.7.7: incremental GObjects fallback for NPCs without entity pages");return Ok();}
 
+// Snapshot everything still dressed into the flat layout that survives a stop.
+// Only plugin-owned memory is touched here: the Game callbacks are already
+// drained, and ue::* calls are unusable from the Lifecycle domain.
+// Merge the current session's dressings into whatever the previous run left
+// unfinished: a stop that happens before a deferred replay succeeds must not
+// drop the older records.
+void CaptureDeferredRestore(){
+
+    std::vector<PendingRecord> merged;
+
+    const auto remember=[&](PendingRecord& pending){
+        const bool known=std::any_of(merged.begin(),merged.end(),
+            [&](const PendingRecord& other){return other.actor==pending.actor;});
+        if(!known)merged.push_back(std::move(pending));
+    };
+
+    for(auto& pending:deferred_restore)remember(pending);
+
+    deferred_restore.clear();
+
+    const auto capture=[&](const Record& source){
+
+        if(!source.actor.ptr)return;
+
+        PendingRecord pending;
+
+        pending.actor=source.actor.ptr;
+
+        pending.actor_index=source.actor.index;
+
+        pending.actor_serial=source.actor.serial;
+
+        pending.component=source.component.ptr;
+
+        pending.component_index=source.component.index;
+
+        pending.component_serial=source.component.serial;
+
+        for(const auto& hidden:source.hidden){
+
+            if(!hidden.object.ptr)continue;
+
+            if(!hidden.was_visible&&!hidden.tick_changed)continue;
+
+            PendingHidden item;
+
+            item.object=hidden.object.ptr;
+
+            item.index=hidden.object.index;
+
+            item.serial=hidden.object.serial;
+
+            item.was_visible=hidden.was_visible;
+
+            item.tick_offset=hidden.tick_offset;
+
+            item.tick_original=hidden.tick_original;
+
+            item.tick_changed=hidden.tick_changed;
+
+            pending.hidden.push_back(item);
+
+        }
+
+        remember(pending);
+
+    };
+
+    capture(record);
+
+    for(const auto& item:npc_records)capture(item);
+
+    deferred_restore=std::move(merged);
+
+}
+
 AnomalyStatusV1 ANOMALY_CALL Stop(void*,std::uint32_t){
 
-    // The host freezes Game callbacks before on_stop (which runs on a lifecycle worker).
+    // The host freezes Game callbacks before on_stop, which runs on a lifecycle
+    // worker, so the original meshes cannot be put back here. Failing the stop
+    // only costs the user the plugin: the host quarantines a plugin whose
+    // on_stop is not OK and then rejects every later enable. Hand the work to
+    // the next start instead, and always report a clean stop.
+    if(!active.load()&&deferred_restore.empty()){DropDeferredRestoreFile();return Ok();}
 
-    // Never call UE Native destruction from that worker or claim restoration was done.
+    CaptureDeferredRestore();
 
-    if(active.load())return {ANOMALY_STATUS_V1_CONFLICT,0,Sv("restore the original player and NPCs in the plugin panel before unloading")};
+    if(deferred_restore.empty()){DropDeferredRestoreFile();return Ok();}
+
+    SaveDeferredRestore();
+
+    Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,"NaiLong: "+std::to_string(deferred_restore.size())+
+        " actor(s) still dressed at stop; restore deferred to the next start");
 
     return Ok();
 
 }
 
-void ANOMALY_CALL Unload(void*){model={};source_rig={};ue::paths.clear();actors=nullptr;player=nullptr;host=nullptr;ue::g_core=nullptr;ue::g_objects=nullptr;ue::g_names=nullptr;ue::g_signature=nullptr;ue::g_framework=nullptr;}
+void ANOMALY_CALL Unload(void*){
+
+    // Do not clear `deferred_restore` here: on_stop may not have run (a hot
+    // reload of the same generation still unloads), and the next Load needs the
+    // list that Stop persisted.
+
+    model={};source_rig={};ue::paths.clear();actors=nullptr;player=nullptr;host=nullptr;
+
+    state_dir_service=nullptr;state_directory.clear();
+
+    ue::g_core=nullptr;ue::g_objects=nullptr;ue::g_names=nullptr;ue::g_signature=nullptr;ue::g_framework=nullptr;
+
+}
 
 }
 
@@ -1579,7 +1979,7 @@ extern "C" __declspec(dllexport) AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntry
 
     d->struct_size=sizeof(*d);d->api_major=ANOMALY_PLUGIN_API_V1_MAJOR;d->api_minor=ANOMALY_PLUGIN_API_V1_MINOR;
 
-    d->id=Sv(kId);d->name=Sv("奶龙换装");d->author=Sv("yi621yi");d->version=Sv(kVersion);
+    d->id=Sv(kId);d->name=Sv("奶龙");d->author=Sv("yi621yi");d->version=Sv(kVersion);
 
     d->on_load=Load;d->on_start=Start;d->on_stop=Stop;d->on_unload=Unload;d->on_update=Update;d->on_draw=Draw;return Ok();
 
