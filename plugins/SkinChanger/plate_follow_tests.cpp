@@ -61,7 +61,7 @@ int main() {
     ui.button = [](void*,AnomalyStringViewV1,float,float) { return 0; };
     ui.checkbox = [](void* user,AnomalyStringViewV1 label,int* value) {
         auto& state = *static_cast<Ui*>(user);
-        if (std::string_view(label.data,label.size) == "应用车牌" && state.change >= 0) {
+        if (std::string_view(label.data,label.size) == "Apply plate" && state.change >= 0) {
             *value = state.change; state.change = -1; return 1;
         }
         return 0;

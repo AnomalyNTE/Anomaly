@@ -45,16 +45,26 @@ inline bool ComposeSelections(std::span<const Name> original, std::span<const It
     }
     return true;
 }
-inline std::string_view Placement(std::string_view type, std::uint8_t part) {
-    if (part == 1 && type == "EYE") return "眼部";
-    if (part == 1 && type == "OverHead") return "头顶";
+// Stable placement keys; the labels live in locales/zh-CN.json.
+inline constexpr std::array<std::string_view, 7> placement_keys{
+    "cosmetic.placement.eye", "cosmetic.placement.overhead", "cosmetic.placement.head",
+    "cosmetic.placement.front", "cosmetic.placement.back", "cosmetic.placement.legs",
+    "cosmetic.placement.unknown"};
+inline constexpr std::array<std::string_view, 7> placement_english{
+    "Eye", "Overhead", "Head", "Front body", "Back", "Legs", "Unknown"};
+inline std::size_t PlacementIndex(std::string_view type, std::uint8_t part) {
+    if (part == 1 && type == "EYE") return 0;
+    if (part == 1 && type == "OverHead") return 1;
     switch (part) {
-    case 1: return "头部";
-    case 2: return "身体前侧";
-    case 3: return "背部";
-    case 4: return "腿部";
-    default: return "未知";
+    case 1: return 2;
+    case 2: return 3;
+    case 3: return 4;
+    case 4: return 5;
+    default: return 6;
     }
+}
+inline std::string_view Placement(std::string_view type, std::uint8_t part) {
+    return placement_keys[PlacementIndex(type, part)];
 }
 
 // Preserve unknown accessories and every other slot. Never mutate the original array.

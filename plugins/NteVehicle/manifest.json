@@ -1,12 +1,12 @@
 {
   "schemaVersion": 2,
   "id": "anomaly.local.nte-vehicle",
-  "name": "载具控制",
-  "description": "载具控制插件：提供普通载具召唤、按车型选择改装并召唤、性能调校、车轮摩擦、当前陆地载具耐久保持满值与诊断。",
+  "name": "Vehicle Control",
+  "description": "Vehicle control: plain vehicle summoning, per-model customized summoning, performance tuning, wheel friction, full durability for the current land vehicle, and diagnostics.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "developer",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -43,6 +43,10 @@
     },
     {
       "id": "anomaly.plugin-state",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
       "minVersion": 1
     }
   ],

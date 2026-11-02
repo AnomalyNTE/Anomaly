@@ -1,5 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
-#include "../common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <algorithm>
 #include <array>
@@ -28,7 +28,7 @@ struct PendingRequest final {
 
 struct Context final {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     std::array<double, 3> destination{};
     PendingRequest pending{};
     std::array<char, kStatusMessageCapacity> result_message{};
@@ -213,7 +213,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.host = host;
-        g_context.localizer = anomaly::plugins::Localizer(host);
+        g_context.localizer = anomaly::sdk::Localizer(host);
         g_context.destination = {};
         g_context.pending = {};
         g_context.result_message.fill('\0');

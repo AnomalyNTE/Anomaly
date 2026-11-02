@@ -1,5 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include "plugins/ModelScale/model_scale_profile.hpp"
 #include "plugins/ModelScale/scale_plan.hpp"
 
@@ -56,7 +56,7 @@ struct Context {
     const AnomalySignatureServiceV1* signatures{};
     const AnomalyUe5AhudServiceV1* ahud{};
     const AnomalyConfigServiceV1* config{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
 
     std::uintptr_t g_world_address{};
     AnomalyGenerationHandleV1 ahud_subscription{};
@@ -585,7 +585,7 @@ void ResetContext() noexcept {
     g_context.signatures = nullptr;
     g_context.ahud = nullptr;
     g_context.config = nullptr;
-    g_context.localizer = anomaly::plugins::Localizer{};
+    g_context.localizer = anomaly::sdk::Localizer{};
     g_context.g_world_address = 0;
     g_context.ahud_subscription = {};
     g_context.config_schema = {};
@@ -632,7 +632,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.ahud = ahud.get();
     g_context.config = sdk_host.Query<AnomalyConfigServiceV1>(
         ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION).get();
-    g_context.localizer = anomaly::plugins::Localizer(host);
+    g_context.localizer = anomaly::sdk::Localizer(host);
 
     if (!CoreReady(g_context.core) || !SignaturesReady(g_context.signatures) ||
         !HasUiFrame(g_context.ui) || !AhudReady(g_context.ahud)) {

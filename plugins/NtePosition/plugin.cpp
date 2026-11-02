@@ -1,5 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <array>
 #include <cstddef>
@@ -12,7 +12,7 @@ namespace {
 
 struct Context {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     std::uint64_t session_cursor{};
 } g_context;
 
@@ -172,7 +172,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
     if (!ui) return ui.status;
     if (!HasUiFrameFunctions(ui.service)) return StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE);
-    g_context = {host, anomaly::plugins::Localizer(host), 0};
+    g_context = {host, anomaly::sdk::Localizer(host), 0};
     *context = &g_context;
     return anomaly::sdk::Ok();
 }

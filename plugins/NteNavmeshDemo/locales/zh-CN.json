@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "寻路",
     "plugin.description": "通过宿主 ABI 启动或终止原生 NTE 寻路。",
     "window.title": "寻路",
     "action.move": "开始寻路",

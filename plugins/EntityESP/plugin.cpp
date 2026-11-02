@@ -1,5 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <algorithm>
 #include <array>
@@ -114,7 +114,7 @@ struct EntityCache final {
 
 struct Context {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     const AnomalyCoreServiceV1* core{};
     const AnomalyConfigServiceV1* config{};
     const AnomalyUe5AhudServiceV1* ahud{};
@@ -1548,7 +1548,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_next_refresh = {};
     g_reconciled_cache_generation = 0;
     g_context.host = host;
-    g_context.localizer = anomaly::plugins::Localizer(host);
+    g_context.localizer = anomaly::sdk::Localizer(host);
     g_context.core = core.get();
     g_context.config = config.get();
     g_context.ahud = ahud.get();

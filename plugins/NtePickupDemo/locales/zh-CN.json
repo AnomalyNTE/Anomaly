@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "周围拾取",
     "plugin.description": "调用框架拾取 ABI 拾取周围物品并显示确认状态。",
     "window.title": "周围拾取",
     "setting.radius": "拾取半径",

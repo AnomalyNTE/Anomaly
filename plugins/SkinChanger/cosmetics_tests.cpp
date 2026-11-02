@@ -7,8 +7,9 @@
 using namespace accessory;
 void Check(bool condition,const char* message){if(!condition){std::cerr<<message<<'\n';std::exit(1);}}
 int main(){
-    Check(Placement("EYE",1)=="眼部"&&Placement("OverHead",1)=="头顶"&&
-          Placement("",3)=="背部","decoration placement mislabeled");
+    Check(Placement("EYE",1)=="cosmetic.placement.eye"&&Placement("OverHead",1)=="cosmetic.placement.overhead"&&
+          Placement("",3)=="cosmetic.placement.back"&&placement_english[PlacementIndex("",3)]=="Back",
+          "decoration placement mislabeled");
     Name eye_type{100,0},top_type{101,0};
     std::array<ItemKey,4> head_catalog{{{{10,0},1,eye_type},{{11,0},1,eye_type},
                                         {{20,0},1,top_type},{{21,0},1,top_type}}};

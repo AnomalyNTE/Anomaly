@@ -36,6 +36,7 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 | --- | --- |
 | 仅 Markdown | `git diff --check`，并检查链接和路径 |
 | 单个实现单元或模块内行为 | 构建直接受影响的 target，并运行对应的独立验证程序或 fixture |
+| 插件文案或本地化目录 | 构建该插件 target，运行 `pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin <名字>` 与相关 fixture |
 | 跨共享模块边界或公共合同 | 构建受影响模块及直接依赖方，运行两侧相关契约与集成验证 |
 | CMake 或构建图 | 重新 configure，构建受影响 target，并运行受影响验证；仅在影响无法界定时扩大范围 |
 | 公开 SDK/ABI | 构建 SDK 直接依赖方，运行 ABI、外部消费者及相关集成验证 |
@@ -58,6 +59,7 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 | `diagnose_nte_profile.ps1`、`rescan_profile_signatures.ps1`、`scan_nte_entities.ps1` | 检查实时 NTE 目标和活动 Profile | 必须有明确请求、正确 PID/Profile；生成数据分享前需审查 |
 | `collect_diagnostics.ps1` | 生成脱敏诊断包 | 用 `pwsh -NoProfile -File` 启动；检查输入 Runtime 和输出路径，dump 必须人工审查 |
 | `package_release.ps1` | staging Runtime、Tools、SDK 三个组件，并覆盖发布输出 | 用 `pwsh -NoProfile -File` 启动；仅在干净标准构建后，且指定明确版本/输出目录时运行 |
+| `check_plugin_i18n.ps1` | 校验插件本地化：key 覆盖、`{N}` 占位符掩码与英文回退一致、残留中文字面量、manifest 回退语言与 `anomaly.localization` 声明 | 只读；`-Plugin A,B` 指定插件，省略则检查 `plugins/` 下全部插件 |
 | `run_stability_suite.ps1` | 显式 opt-in 的 soak 证据；需要先 `build.cmd fixtures` | 用 `pwsh -NoProfile -File` 启动；`-Quick` 只用于脚本冒烟，不是发布证据 |
 
 所有工具脚本默认使用 `.build/windows-vs2022` 和其中的 `RelWithDebInfo` 二进制。只在有意使用

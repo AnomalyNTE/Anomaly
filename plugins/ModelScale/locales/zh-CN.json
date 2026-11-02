@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "角色模型缩放",
     "plugin.description": "按倍率缩放本地角色的模型，不改动移动与碰撞。",
     "window.title": "角色模型缩放",
     "setting.enabled": "启用",

@@ -3,6 +3,7 @@
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/ui_resources.h"
 #include "anomaly/sdk/services/plugin_state.h"
+#include "anomaly/sdk/localization.hpp"
 
 #include <algorithm>
 #include <array>
@@ -34,7 +35,7 @@ struct Snapshot {
     bool friction{true};
     std::uint64_t vehicle_entity_id{};
     std::string vehicle_class_name;
-    std::string vehicle_snapshot_status{"Host 尚未返回当前驾驶载具状态"};
+    std::string vehicle_snapshot_status;
 };
 
 struct CustomizationOption {
@@ -51,6 +52,7 @@ struct Context {
     const AnomalyInputServiceV1* input{};
     const AnomalyWindowServiceV1* window_service{};
     const AnomalyPluginStateServiceV1* plugin_state{};
+    anomaly::sdk::Localizer localizer;
     AnomalyGenerationHandleV1 menu_window_handle{};
     AnomalyGenerationHandleV1 menu_hotkey_handle{};
     std::atomic_bool toggle_menu_requested{};
@@ -58,7 +60,7 @@ struct Context {
     bool player_position_valid{};
     std::mutex mutex;
     Snapshot snapshot{};
-    std::string status{"正在读取游戏进程中的 Vehicle 载具数据"};
+    std::string status;
     std::string selected_vehicle_id{"Vehicle007"};
     std::string pending_vehicle_id;
     // 上次选择持久化：启动/热重载后恢复。
@@ -73,7 +75,8 @@ struct Context {
     bool customization_page{};
     std::string customization_vehicle_id;
     std::string customization_skin_id;
-    std::string customization_status{"尚未读取当前车型的改装数据"};
+    std::string customization_status;
+    bool customization_status_failure{};
     std::vector<CustomizationOption> customization_options;
     std::vector<std::pair<std::uint32_t, std::string>> selected_module_overrides;
     std::uint64_t customization_catalog_tick{};
@@ -105,6 +108,15 @@ bool HasField(const Struct* value, std::size_t offset) noexcept {
 constexpr AnomalyStatusV1 Status(
     std::uint32_t code, std::string_view message = {}) noexcept {
     return {code, 0, {message.data(), message.size()}};
+}
+
+// 本地化后的失败消息要活到 Host 读完返回值，所以缓存在插件自己的缓冲里。
+std::string g_failure_message;
+
+AnomalyStatusV1 FailureStatus(
+    std::uint32_t code, std::string_view key, std::string_view english) {
+    g_failure_message = g_context.localizer.Text(key, english);
+    return Status(code, g_failure_message);
 }
 
 template <typename Service>
@@ -217,16 +229,16 @@ void DrawText(const AnomalyUiServiceV1* ui, std::string_view text) {
 }
 
 std::string StatusDescription(std::string_view prefix, const AnomalyStatusV1& status) {
-    std::string result(prefix);
     if (status.message.data != nullptr && status.message.size != 0) {
-        result += "：";
-        result.append(status.message.data, status.message.size);
-    } else {
-        result += "（Host 状态码 ";
-        result += std::to_string(status.code);
-        result += "）";
+        const std::array arguments{
+            prefix, std::string_view(status.message.data, status.message.size)};
+        return g_context.localizer.Format(
+            "text.status_with_message", "{0}: {1}", arguments);
     }
-    return result;
+    const std::string code = std::to_string(status.code);
+    const std::array arguments{prefix, std::string_view(code)};
+    return g_context.localizer.Format(
+        "text.status_with_code", "{0} (host status code {1})", arguments);
 }
 
 void SetLastSummon(std::string text) {
@@ -239,7 +251,8 @@ void RefreshCatalogOnGameThread() {
     const auto* vehicle = g_context.vehicle;
     if (!vehicle || !vehicle->catalog_snapshot || !vehicle->vehicle_id_at ||
         !vehicle->catalog_label_at) {
-        SetStatus("目录读取失败：当前 Host 没有发布 Vehicle V3 的目录标签接口");
+        SetStatus(g_context.localizer.Text("status.catalog_interface_missing",
+            "Catalog read failed: this host does not publish the Vehicle V3 catalog label interface."));
         std::scoped_lock lock(g_context.mutex);
         g_context.vehicle_ids.clear();
         g_context.vehicle_labels.clear();
@@ -252,7 +265,9 @@ void RefreshCatalogOnGameThread() {
     if (before_status.code != ANOMALY_STATUS_V1_OK ||
         (before.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
         before.entry_count > 8192U) {
-        SetStatus(StatusDescription("目录读取失败", before_status));
+        SetStatus(StatusDescription(
+            g_context.localizer.Text("status.catalog_read_failed", "Catalog read failed"),
+            before_status));
         std::scoped_lock lock(g_context.mutex);
         g_context.vehicle_ids.clear();
         g_context.vehicle_labels.clear();
@@ -269,7 +284,12 @@ void RefreshCatalogOnGameThread() {
         std::size_t id_size = id_buffer.size();
         const auto id_status = vehicle->vehicle_id_at(vehicle->user, i, id_buffer.data(), &id_size);
         if (id_status.code != ANOMALY_STATUS_V1_OK || id_size <= 1U || id_size > id_buffer.size()) {
-            SetStatus(StatusDescription("读取 RowName 失败（索引 " + std::to_string(i) + "）", id_status));
+            const std::string index = std::to_string(i);
+            const std::array arguments{std::string_view(index)};
+            SetStatus(StatusDescription(
+                g_context.localizer.Format("status.row_name_read_failed",
+                    "Row name read failed (index {0})", arguments),
+                id_status));
             std::scoped_lock lock(g_context.mutex);
             g_context.vehicle_ids.clear();
             g_context.vehicle_labels.clear();
@@ -281,7 +301,12 @@ void RefreshCatalogOnGameThread() {
             vehicle->user, i, label_buffer.data(), &label_size);
         if (label_status.code != ANOMALY_STATUS_V1_OK ||
             label_size <= 1U || label_size > label_buffer.size()) {
-            SetStatus(StatusDescription("读取载具显示名称失败（索引 " + std::to_string(i) + "）", label_status));
+            const std::string index = std::to_string(i);
+            const std::array arguments{std::string_view(index)};
+            SetStatus(StatusDescription(
+                g_context.localizer.Format("status.catalog_label_read_failed",
+                    "Display name read failed (index {0})", arguments),
+                label_status));
             std::scoped_lock lock(g_context.mutex);
             g_context.vehicle_ids.clear();
             g_context.vehicle_labels.clear();
@@ -290,7 +315,8 @@ void RefreshCatalogOnGameThread() {
         ids.emplace_back(id_buffer.data(), id_size - 1U);
         labels.emplace_back(label_buffer.data(), label_size - 1U);
         if (ids.back().empty() || labels.back().empty()) {
-            SetStatus("目录读取失败：存在空 RowName 或显示标签");
+            SetStatus(g_context.localizer.Text("status.catalog_empty_entry",
+                "Catalog read failed: an empty RowName or display label was returned."));
             std::scoped_lock lock(g_context.mutex);
             g_context.vehicle_ids.clear();
             g_context.vehicle_labels.clear();
@@ -304,7 +330,10 @@ void RefreshCatalogOnGameThread() {
     if (after_status.code != ANOMALY_STATUS_V1_OK ||
         (after.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
         after.sequence != before.sequence || after.entry_count != ids.size()) {
-        SetStatus(StatusDescription("读取目录期间 DataTable 发生变化", after_status));
+        SetStatus(StatusDescription(
+            g_context.localizer.Text("status.catalog_changed",
+                "The DataTable changed while the catalog was being read"),
+            after_status));
         std::scoped_lock lock(g_context.mutex);
         g_context.vehicle_ids.clear();
         g_context.vehicle_labels.clear();
@@ -323,8 +352,10 @@ void RefreshCatalogOnGameThread() {
                 ? std::string{} : g_context.vehicle_ids.front();
         }
         selected_id = g_context.selected_vehicle_id;
-        g_context.status = "已读取 " + std::to_string(g_context.vehicle_ids.size()) +
-            " 条 DT_VehicleData 记录";
+        const std::string count = std::to_string(g_context.vehicle_ids.size());
+        const std::array arguments{std::string_view(count)};
+        g_context.status = g_context.localizer.Format(
+            "status.catalog_loaded", "Loaded {0} DT_VehicleData records.", arguments);
     }
 
     // Always synchronize the current UI selection with Host state. Otherwise the
@@ -333,7 +364,10 @@ void RefreshCatalogOnGameThread() {
         const auto selected_status = vehicle->set_summon_vehicle_id(
             vehicle->user, anomaly::sdk::StringView(selected_id));
         if (selected_status.code != ANOMALY_STATUS_V1_OK)
-            SetStatus(StatusDescription("目录已读取，但 Host 未接受当前 RowName", selected_status));
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.catalog_selection_rejected",
+                    "The catalog was read, but the host did not accept the current RowName"),
+                selected_status));
     }
 }
 
@@ -361,8 +395,11 @@ void RefreshCustomizationCatalogOnGameThread() {
         g_context.customization_skin_id.clear();
         g_context.selected_module_overrides.clear();
         g_context.customization_status = selected_id.empty()
-            ? "请先从召唤清单中选择车型"
-            : "当前 Core 未发布 V7 改装目录接口；请更新 Runtime";
+            ? g_context.localizer.Text("status.customization_pick_vehicle",
+                "Select a vehicle from the summon list first.")
+            : g_context.localizer.Text("status.customization_interface_missing",
+                "This core does not publish the V7 customization catalog interface; update the runtime.");
+        g_context.customization_status_failure = false;
         return;
     }
 
@@ -378,7 +415,11 @@ void RefreshCustomizationCatalogOnGameThread() {
         g_context.customization_vehicle_id = selected_id;
         g_context.customization_skin_id.clear();
         g_context.selected_module_overrides.clear();
-        g_context.customization_status = StatusDescription("读取当前车型改装目录失败", before_status);
+        g_context.customization_status = StatusDescription(
+            g_context.localizer.Text("status.customization_catalog_read_failed",
+                "Could not read the customization catalog for this vehicle"),
+            before_status);
+        g_context.customization_status_failure = true;
         return;
     }
 
@@ -396,8 +437,13 @@ void RefreshCustomizationCatalogOnGameThread() {
             g_context.customization_vehicle_id = selected_id;
             g_context.customization_skin_id.clear();
             g_context.selected_module_overrides.clear();
+            const std::string index_text = std::to_string(index);
+            const std::array arguments{std::string_view(index_text)};
             g_context.customization_status = StatusDescription(
-                "读取改装目录选项失败（索引 " + std::to_string(index) + "）", option_status);
+                g_context.localizer.Format("status.customization_option_read_failed",
+                    "Could not read customization catalog option (index {0})", arguments),
+                option_status);
+            g_context.customization_status_failure = true;
             return;
         }
         const auto id_end = std::find(
@@ -418,7 +464,10 @@ void RefreshCustomizationCatalogOnGameThread() {
             g_context.customization_vehicle_id = selected_id;
             g_context.customization_skin_id.clear();
             g_context.selected_module_overrides.clear();
-            g_context.customization_status = "改装目录包含无效 ID、类型或未终止的 ABI 字符串";
+            g_context.customization_status = g_context.localizer.Text(
+                "status.customization_option_invalid",
+                "The customization catalog contains an invalid ID, kind, or unterminated ABI string.");
+            g_context.customization_status_failure = true;
             return;
         }
         CustomizationOption option{};
@@ -445,8 +494,10 @@ void RefreshCustomizationCatalogOnGameThread() {
         g_context.customization_vehicle_id = selected_id;
         g_context.customization_skin_id.clear();
         g_context.selected_module_overrides.clear();
-        g_context.customization_status =
-            "读取改装目录期间车型数据发生变化；请重新打开「改装载具清单」";
+        g_context.customization_status = g_context.localizer.Text(
+            "status.customization_catalog_changed",
+            "The vehicle data changed while the customization catalog was being read; reopen the customization list.");
+        g_context.customization_status_failure = false;
         return;
     }
 
@@ -478,15 +529,28 @@ void RefreshCustomizationCatalogOnGameThread() {
             g_context.customization_options, [](const CustomizationOption& option) {
                 return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN;
             });
-        g_context.customization_status = "已读取该车型实时改装选项：模块 " +
-            std::to_string(module_count) + " 项，涂装 " + std::to_string(skin_count) +
-            " 项；未选择的模块槽位沿用游戏数据表默认配置";
+        const std::string module_text = std::to_string(module_count);
+        const std::string skin_text = std::to_string(skin_count);
+        const std::array arguments{
+            std::string_view(module_text), std::string_view(skin_text)};
+        g_context.customization_status = g_context.localizer.Format(
+            "status.customization_loaded",
+            "Loaded live customization options for this vehicle: {0} modules, {1} skins; "
+            "unselected module slots keep the game data table defaults.",
+            arguments);
+        g_context.customization_status_failure = false;
         if (used_fallback_skin) {
-            g_context.customization_status += "；该车型没有标记默认涂装，已暂选首个有效涂装，可在下方更改";
+            g_context.customization_status += g_context.localizer.Text(
+                "status.customization_skin_fallback",
+                "; this vehicle has no default skin, so the first valid skin is preselected and can be changed below");
         } else if (g_context.customization_skin_id.empty() && skin_count == 0) {
-            g_context.customization_status += "；该车型没有可用涂装选项，改装召唤将保留游戏生成车辆原涂装";
+            g_context.customization_status += g_context.localizer.Text(
+                "status.customization_no_skins",
+                "; this vehicle has no skin options, so customized summoning keeps the game-generated paint");
         } else if (g_context.customization_skin_id.empty()) {
-            g_context.customization_status += "；该车型没有标记默认涂装，请在下方选择涂装";
+            g_context.customization_status += g_context.localizer.Text(
+                "status.customization_choose_skin",
+                "; this vehicle has no default skin, choose one below");
         }
     }
 }
@@ -499,7 +563,10 @@ void Update() {
         const auto toggle_status = g_context.window_service->toggle(
             g_context.window_service->user, g_context.menu_window_handle);
         if (toggle_status.code != ANOMALY_STATUS_V1_OK) {
-            SetStatus(StatusDescription("K 快捷键切换载具菜单失败", toggle_status));
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.menu_toggle_failed",
+                    "The K hotkey could not toggle the vehicle menu"),
+                toggle_status));
         }
     }
 
@@ -518,11 +585,15 @@ void Update() {
         if (durability_status.code != ANOMALY_STATUS_V1_OK &&
             durability_status.code != ANOMALY_STATUS_V1_NOT_FOUND &&
             previous_code != durability_status.code) {
-            SetStatus(StatusDescription("当前载具耐久保持满值失败", durability_status));
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.durability_hold_failed",
+                    "Keeping the current vehicle durability full failed"),
+                durability_status));
         } else if (durability_status.code == ANOMALY_STATUS_V1_OK &&
                    previous_code != ANOMALY_STATUS_V1_OK &&
                    previous_code != ANOMALY_STATUS_V1_NOT_FOUND) {
-            SetStatus("当前陆地载具耐久保护已恢复");
+            SetStatus(g_context.localizer.Text("status.durability_restored",
+                "Durability protection for the current land vehicle recovered."));
         }
     }
 
@@ -530,7 +601,8 @@ void Update() {
     // instead of rescanning UObject/DataTable every frame.
     if (g_context.refresh_catalog_requested.exchange(false, std::memory_order_acq_rel)) {
         if (!g_context.vehicle->refresh_catalog) {
-            SetStatus("目录刷新失败：Host 没有发布 Vehicle V3 refresh_catalog 接口");
+            SetStatus(g_context.localizer.Text("status.catalog_refresh_interface_missing",
+                "Catalog refresh failed: this host does not publish the Vehicle V3 refresh_catalog interface."));
         } else {
             const auto refresh_status = g_context.vehicle->refresh_catalog(g_context.vehicle->user);
             if (refresh_status.code == ANOMALY_STATUS_V1_OK) {
@@ -541,7 +613,10 @@ void Update() {
                     g_context.vehicle_ids.clear();
                     g_context.vehicle_labels.clear();
                 }
-                SetStatus(StatusDescription("目录刷新失败", refresh_status));
+                SetStatus(StatusDescription(
+                    g_context.localizer.Text("status.catalog_refresh_failed",
+                        "Catalog refresh failed"),
+                    refresh_status));
             }
         }
     }
@@ -578,7 +653,9 @@ void Update() {
             {
                 std::scoped_lock lock(g_context.mutex);
                 g_context.selected_vehicle_id = pending_vehicle_id;
-                g_context.status = "已选择载具：" + pending_vehicle_id;
+                const std::array arguments{std::string_view(pending_vehicle_id)};
+                g_context.status = g_context.localizer.Format(
+                    "status.vehicle_selected", "Selected vehicle: {0}", arguments);
                 if (g_context.customization_page) {
                     g_context.customization_vehicle_id.clear();
                     g_context.customization_options.clear();
@@ -591,7 +668,10 @@ void Update() {
             // 记住当前选择，下次启动/热重载后恢复。
             SaveSelection(pending_vehicle_id);
         } else {
-            SetStatus(StatusDescription("载具选择失败", status));
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.vehicle_select_failed",
+                    "Vehicle selection failed"),
+                status));
         }
     }
 
@@ -641,8 +721,13 @@ void Update() {
                 g_context.vehicle_ids.clear();
                 g_context.vehicle_labels.clear();
             }
-            SetStatus(StatusDescription("载具目录失效", catalog_status) +
-                "；请点击「重新整理」重试");
+            const std::string invalid_text = StatusDescription(
+                g_context.localizer.Text("status.catalog_invalid",
+                    "The vehicle catalog is invalid"),
+                catalog_status);
+            const std::array invalid_arguments{std::string_view(invalid_text)};
+            SetStatus(g_context.localizer.Format("status.catalog_invalid_retry",
+                "{0}; click \"Refresh\" to retry", invalid_arguments));
         }
     }
 
@@ -669,8 +754,10 @@ void Update() {
         }
         g_context.apply_speed.store(true, std::memory_order_release);
         SetStatus(status.code == ANOMALY_STATUS_V1_OK
-            ? "已恢复默认载具设置；车速倍率已恢复为 1.0x"
-            : "恢复失败；仍将重新应用默认车速倍率 1.0x");
+            ? g_context.localizer.Text("status.reset_applied",
+                  "Default vehicle settings restored; the speed ratio is back to 1.0x.")
+            : g_context.localizer.Text("status.reset_failed_reapplied",
+                  "Reset failed; the default 1.0x speed ratio is still reapplied."));
     }
 
     if (g_context.apply_speed.exchange(false, std::memory_order_acq_rel)) {
@@ -684,11 +771,20 @@ void Update() {
         const auto status = g_context.vehicle->set_top_speed_ratio(
             g_context.vehicle->user, ratio);
         if (status.code == ANOMALY_STATUS_V1_OK) {
-            SetStatus("当前车速与最高车速上限均已应用：" + std::to_string(ratio) + "x");
+            const std::string ratio_text = std::to_string(ratio);
+            const std::array arguments{std::string_view(ratio_text)};
+            SetStatus(g_context.localizer.Format("status.speed_applied",
+                "Current speed and top speed cap applied: {0}x", arguments));
         } else if (status.message.data != nullptr && status.message.size != 0) {
-            SetStatus("车速倍率应用失败：" + std::string(status.message.data, status.message.size));
+            const std::array arguments{
+                std::string_view(status.message.data, status.message.size)};
+            SetStatus(g_context.localizer.Format("status.speed_apply_failed",
+                "Applying the speed ratio failed: {0}", arguments));
         } else {
-            SetStatus("车速倍率应用失败，Host 状态码 " + std::to_string(status.code));
+            const std::string code = std::to_string(status.code);
+            const std::array arguments{std::string_view(code)};
+            SetStatus(g_context.localizer.Format("status.speed_apply_failed_code",
+                "Applying the speed ratio failed, host status code {0}", arguments));
         }
     }
 
@@ -705,18 +801,26 @@ void Update() {
                     offsetof(AnomalyNteVehicleServiceV1, set_engine_torque_ratio)) &&
             g_context.vehicle->set_engine_torque_ratio != nullptr;
         if (!has_torque_ratio_service) {
-            SetStatus("发动机扭矩倍率不可用：当前 Host Runtime 未发布该扩展接口");
+            SetStatus(g_context.localizer.Text("status.torque_interface_missing",
+                "The engine torque ratio is unavailable: this host runtime does not publish that extension interface."));
         } else {
             const auto status = g_context.vehicle->set_engine_torque_ratio(
                 g_context.vehicle->user, ratio);
             if (status.code == ANOMALY_STATUS_V1_OK) {
-                SetStatus("发动机扭矩倍率已应用：" + std::to_string(ratio) + "x");
+                const std::string ratio_text = std::to_string(ratio);
+                const std::array arguments{std::string_view(ratio_text)};
+                SetStatus(g_context.localizer.Format("status.torque_applied",
+                    "Engine torque ratio applied: {0}x", arguments));
             } else if (status.message.data != nullptr && status.message.size != 0) {
-                SetStatus("发动机扭矩倍率应用失败：" +
-                    std::string(status.message.data, status.message.size));
+                const std::array arguments{
+                    std::string_view(status.message.data, status.message.size)};
+                SetStatus(g_context.localizer.Format("status.torque_apply_failed",
+                    "Applying the engine torque ratio failed: {0}", arguments));
             } else {
-                SetStatus("发动机扭矩倍率应用失败，Host 状态码 " +
-                    std::to_string(status.code));
+                const std::string code = std::to_string(status.code);
+                const std::array arguments{std::string_view(code)};
+                SetStatus(g_context.localizer.Format("status.torque_apply_failed_code",
+                    "Applying the engine torque ratio failed, host status code {0}", arguments));
             }
         }
     }
@@ -736,12 +840,16 @@ void Update() {
                     offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_min_speed_ratio)) &&
             g_context.vehicle->set_other_vehicles_min_speed_ratio != nullptr;
         if (!floor_available) {
-            SetStatus("非玩家车辆最低车速倍率不可用：Host Runtime 未发布扩展接口");
+            SetStatus(g_context.localizer.Text("status.other_min_speed_interface_missing",
+                "The non-player vehicle minimum speed ratio is unavailable: the host runtime does not publish that extension interface."));
         } else {
             const auto floor_status = g_context.vehicle->set_other_vehicles_min_speed_ratio(
                 g_context.vehicle->user, floor_ratio);
             if (floor_status.code != ANOMALY_STATUS_V1_OK) {
-                SetStatus(StatusDescription("非玩家车辆最低车速倍率设置失败", floor_status));
+                SetStatus(StatusDescription(
+                    g_context.localizer.Text("status.other_min_speed_failed",
+                        "Setting the non-player vehicle minimum speed ratio failed"),
+                    floor_status));
             } else {
                 const bool available =
                     HasField<AnomalyNteVehicleServiceV1,
@@ -750,13 +858,20 @@ void Update() {
                             offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) &&
                     g_context.vehicle->set_other_vehicles_top_speed_ratio != nullptr;
                 if (!available) {
-                    SetStatus("非玩家车辆速率倍率不可用：Host Runtime 未发布 Vehicle V4 接口");
+                    SetStatus(g_context.localizer.Text("status.other_speed_interface_missing",
+                        "The non-player vehicle speed ratio is unavailable: the host runtime does not publish the Vehicle V4 interface."));
                 } else {
                     const auto status = g_context.vehicle->set_other_vehicles_top_speed_ratio(
                         g_context.vehicle->user, ratio);
                     SetStatus(status.code == ANOMALY_STATUS_V1_OK
-                        ? StatusDescription("非玩家车辆速率与下限修改完成", status)
-                        : StatusDescription("非玩家车辆速率修改未完全成功", status));
+                        ? StatusDescription(
+                              g_context.localizer.Text("status.other_speed_applied",
+                                  "Non-player vehicle speed and floor updated"),
+                              status)
+                        : StatusDescription(
+                              g_context.localizer.Text("status.other_speed_partial",
+                                  "Non-player vehicle speed update did not fully succeed"),
+                              status));
                 }
             }
         }
@@ -775,13 +890,20 @@ void Update() {
                     offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_engine_torque_ratio)) &&
             g_context.vehicle->set_other_vehicles_engine_torque_ratio != nullptr;
         if (!available) {
-            SetStatus("非玩家车辆扭矩倍率不可用：Host Runtime 未发布 Vehicle V4 接口");
+            SetStatus(g_context.localizer.Text("status.other_torque_interface_missing",
+                "The non-player vehicle torque ratio is unavailable: the host runtime does not publish the Vehicle V4 interface."));
         } else {
             const auto status = g_context.vehicle->set_other_vehicles_engine_torque_ratio(
                 g_context.vehicle->user, ratio);
             SetStatus(status.code == ANOMALY_STATUS_V1_OK
-                ? StatusDescription("非玩家车辆扭矩修改完成", status)
-                : StatusDescription("非玩家车辆扭矩修改未完全成功", status));
+                ? StatusDescription(
+                      g_context.localizer.Text("status.other_torque_applied",
+                          "Non-player vehicle torque updated"),
+                      status)
+                : StatusDescription(
+                      g_context.localizer.Text("status.other_torque_partial",
+                          "Non-player vehicle torque update did not fully succeed"),
+                      status));
         }
     }
 
@@ -831,7 +953,9 @@ void Update() {
         std::string validation_error;
         if (summon_customized_requested) {
             if (customization_vehicle_id != selected_id) {
-                validation_error = "改装召唤失败：改造清单与当前选择的车型不一致，请重新打开清单";
+                validation_error = g_context.localizer.Text(
+                    "status.customization_vehicle_mismatch",
+                    "Customized summon failed: the customization list does not match the selected vehicle, reopen the list.");
             } else {
                 request.flags |= ANOMALY_NTE_VEHICLE_SUMMON_V1_APPLY_CUSTOM_CONFIGURATION;
                 if (!selected_skin_id.empty()) {
@@ -859,8 +983,10 @@ void Update() {
             SetLastSummon(validation_error);
         } else if (!position_valid || !catalog_has_selection) {
             const std::string reason = !position_valid
-                ? "召唤失败：玩家坐标当前无效"
-                : "召唤失败：当前选择未同步到 Host 载具目录";
+                ? g_context.localizer.Text("status.summon_position_invalid",
+                      "Summon failed: the player position is currently invalid.")
+                : g_context.localizer.Text("status.summon_selection_unsynced",
+                      "Summon failed: the current selection is not synchronized with the host vehicle catalog.");
             SetStatus(reason);
             SetLastSummon(reason);
         } else {
@@ -871,27 +997,45 @@ void Update() {
                 const std::string detail = status.message.data != nullptr && status.message.size != 0
                     ? std::string(status.message.data, status.message.size)
                     : std::string{};
-                constexpr std::string_view verified_prefix = "召唤已实际生成并通过后置验证：";
+                // Mirrors the post-condition marker the Core appends to its summon message
+                // (src/game/ue5/ue5_nte_adapter.cpp); it is a host protocol marker, not copy.
+                constexpr std::string_view verified_prefix =
+                    "\u53ec\u5524\u5df2\u5b9e\u9645\u751f\u6210\u5e76\u901a\u8fc7"
+                    "\u540e\u7f6e\u9a8c\u8bc1\uff1a";
                 const bool postcondition_verified =
                     !detail.empty() && detail.find(verified_prefix) == 0;
                 std::string result;
                 if (postcondition_verified && summon_customized_requested) {
-                    result = "改装载具召唤成功：" + detail;
+                    const std::array arguments{std::string_view(detail)};
+                    result = g_context.localizer.Format("status.summon_customized_ok",
+                        "Customized vehicle summoned: {0}", arguments);
                     SetStatus(result);
                     SetLastSummon(result);
                 } else if (postcondition_verified) {
                     SetStatus({});
                     SetLastSummon({});
                 } else {
-                    result = "召唤状态未验证：" + label + " (" + selected_id +
-                        ")；Host 返回 OK，但没有明确的实际生成/后置验证标记";
-                    if (!detail.empty()) result += "；Host 信息：" + detail;
+                    const std::array arguments{
+                        std::string_view(label), std::string_view(selected_id)};
+                    result = g_context.localizer.Format("status.summon_unverified",
+                        "Summon state unverified: {0} ({1}); the host returned OK but without an "
+                        "explicit spawn or post-check marker",
+                        arguments);
+                    if (!detail.empty()) {
+                        const std::array detail_arguments{std::string_view(detail)};
+                        result += g_context.localizer.Format("status.summon_unverified_detail",
+                            "; host message: {0}", detail_arguments);
+                    }
                     SetStatus(result);
                     SetLastSummon(result);
                 }
             } else {
                 const auto reason = StatusDescription(
-                    summon_customized_requested ? "改装载具召唤失败" : "召唤失败", status);
+                    summon_customized_requested
+                        ? g_context.localizer.Text("status.summon_customized_failed",
+                              "Customized vehicle summon failed")
+                        : g_context.localizer.Text("status.summon_failed", "Summon failed"),
+                    status);
                 SetStatus(reason);
                 SetLastSummon(reason);
             }
@@ -909,9 +1053,12 @@ void Update() {
         if (status.code == ANOMALY_STATUS_V1_OK) {
             std::scoped_lock lock(g_context.mutex);
             g_context.friction_enabled = enabled;
-            g_context.status = enabled ? "车轮摩擦已开启" : "车轮摩擦已关闭";
+            g_context.status = enabled
+                ? g_context.localizer.Text("status.friction_enabled", "Wheel friction enabled.")
+                : g_context.localizer.Text("status.friction_disabled", "Wheel friction disabled.");
         } else {
-            SetStatus("车轮摩擦切换失败");
+            SetStatus(g_context.localizer.Text("status.friction_toggle_failed",
+                "Toggling wheel friction failed."));
         }
     }
 
@@ -943,10 +1090,15 @@ void Update() {
         g_context.snapshot.flags = 0;
         g_context.snapshot.vehicle_entity_id = 0;
         g_context.snapshot.vehicle_class_name.clear();
-        g_context.snapshot.vehicle_snapshot_status =
-            status.message.data != nullptr && status.message.size != 0
-                ? std::string(status.message.data, status.message.size)
-                : "Host 载具快照状态码 " + std::to_string(status.code);
+        if (status.message.data != nullptr && status.message.size != 0) {
+            g_context.snapshot.vehicle_snapshot_status =
+                std::string(status.message.data, status.message.size);
+        } else {
+            const std::string code = std::to_string(status.code);
+            const std::array arguments{std::string_view(code)};
+            g_context.snapshot.vehicle_snapshot_status = g_context.localizer.Format(
+                "status.snapshot_status_code", "Host vehicle snapshot status code {0}", arguments);
+        }
     }
 }
 
@@ -996,106 +1148,115 @@ bool UiFieldAvailable(const AnomalyUiServiceV1* ui, std::size_t offset, std::siz
 }
 
 // 载具显示名对照表：键为内部 VehicleID，顺序与游戏目录一致。
-std::string_view VehicleDisplayName(std::string_view vehicle_id) {
-    static constexpr std::pair<std::string_view, std::string_view> kNames[] = {
-{"Vehicle002Combat", "Griffin"},
-        {"Vehicle002_q110116", "教练车AE86（藤原任务）"},
-        {"Vehicle003Combat", "G3原色"},
-        {"Vehicle003Scaled", "G3原色"},
-        {"Vehicle003_oneoff", "G3卡其色"},
-        {"Vehicle004_oneoff", "GriffinVolante"},
-        {"Vehicle004_q110320", "教练车AE86（藤原任务）"},
-        {"Vehicle005", "Vehicle005(报错未测试成功）"},
-        {"Vehicle005_Player", "公交车"},
-        {"Vehicle005a", "Vehicle005a(报错未测试成功）"},
-        {"Vehicle006Combat", "面包车"},
-        {"Vehicle007", "C2000"},
-        {"Vehicle007Combat", "C2000"},
-        {"Vehicle007_drivingschool", "教练车（驾校）"},
-        {"Vehicle007_oneoff", "C2000白色"},
-        {"Vehicle007_s111601", "C2000白色"},
-        {"Vehicle007_s111601_race", "C2000（NPC代驾）"},
-        {"Vehicle007_v2", "C2000白色"},
-        {"Vehicle007a", "C2000金色"},
-        {"Vehicle007c", "出租TAXI"},
-        {"Vehicle008Combat", "M1000"},
-        {"Vehicle008_K111801", "M1000"},
-        {"Vehicle008_oneoff", "M1000红色"},
-        {"Vehicle008fish", "M1000金色"},
-        {"Vehicle009", "皮卡货车"},
-        {"Vehicle009a", "集装箱货车"},
-        {"Vehicle009a_toq", "集装箱货车"},
-        {"Vehicle009b", "蓝色运输皮卡"},
-        {"Vehicle009c", "工程队运输皮卡"},
-        {"Vehicle010_q110328", "ST-X950摩托"},
-        {"Vehicle012", "Dominus-S"},
-        {"Vehicle014", "小游艇"},
-        {"Vehicle015", "电瓶车"},
-        {"Vehicle015A", "电瓶车绿色"},
-        {"Vehicle016Combat", "LaVelox"},
-        {"Vehicle017Combat", "Pursuit-V8"},
-        {"Vehicle018Combat", "ST79(AE86)"},
-        {"Vehicle018_K110000", "ST79(AE86)豆腐店车"},
-        {"Vehicle018_K110027", "ST79(AE86)车神任务"},
-        {"Vehicle018_K110045", "ST79(AE86)车神任务-落后"},
-        {"Vehicle018_Quest_K110000", "ST79(AE86)豆腐店车"},
-        {"Vehicle018ghost", "幽灵AE86"},
-        {"Vehicle020Combat", "Enforcer"},
-        {"Vehicle020Police", "C2000"},
-        {"Vehicle021Combat", "Pendragon"},
-        {"Vehicle024_Mods", "暴雪V4（机车）"},
-        {"Vehicle027", "商务车"},
-        {"Vehicle031_toq", "大运皮卡"},
-        {"Vehicle033", "压路机"},
-        {"Vehicle034", "叉车"},
-        {"Vehicle035", "铲车"},
-        {"Vehicle036", "挖掘机"},
-        {"Vehicle040", "零售车"},
-        {"Vehicle041", "零售车2"},
-        {"Vehicle044", "冲浪艇"},
-        {"Vehicle044Collect", "摩托艇"},
-        {"Vehicle044Motorboatrace", "摩托艇"},
-        {"Vehicle044TestDrive", "摩托艇（紫配色）"},
-        {"Vehicle054", "宝宝巴士"},
-        {"Vehicle055", "划向明天"},
-        {"Vehicle066", "泰坦尼克"},
-        {"Vehicle_010_Mods", "ST-X950摩托"},
-        {"Vehicle_013_Hight_WJ106501", "旧时光"},
-        {"Vehicle_015_Hight_WJ100105", "电瓶车"},
-        {"vehicle002", "Griffin"},
-        {"vehicle002_oneoff", "橙色griffin"},
-        {"vehicle003", "G3绿色"},
-        {"vehicle004", "GriffinVolante（和Griffin相同）"},
-        {"vehicle006", "B100玫红色"},
-        {"vehicle008", "M1000"},
-        {"vehicle010", "ST-X950摩托"},
-        {"vehicle013", "旧时光"},
-        {"vehicle016", "LaVelox"},
-        {"vehicle017", "Pursuit-V8"},
-        {"vehicle018", "ST79"},
-        {"vehicle020", "Enforcer"},
-        {"vehicle021", "Pendragon"},
-        {"vehicle023", "K01卡丁车"},
-        {"vehicle024", "暴雪V4（机车）"},
-        {"vehicle026", "Porsche918Spyder（保时捷918）"},
-        {"vehicle030", "轮椅"},
-        {"vehicle031", "大运皮卡"},
-        {"vehicle032", "水泥车"},
-        {"vehicle037", "Porsche911Turbo（保时捷911）"},
-        {"vehicle038", "PorscheTaycanTurboGT(电车保时捷）"},
-        {"vehicle039", "Draco（变形摩托）"},
-        {"vehicle043", "小越野车"},
+struct VehicleNameRow {
+    std::string_view id;
+    std::string_view key;
+    std::string_view english;
+};
+
+std::string VehicleDisplayName(std::string_view vehicle_id) {
+    static constexpr VehicleNameRow kNames[] = {
+        {"Vehicle002Combat", "vehicle.name.griffin", "Griffin"},
+        {"Vehicle002_q110116", "vehicle.name.ae86_fujiwara", "Driving school AE86 (Fujiwara job)"},
+        {"Vehicle003Combat", "vehicle.name.g3_stock", "G3 stock"},
+        {"Vehicle003Scaled", "vehicle.name.g3_stock", "G3 stock"},
+        {"Vehicle003_oneoff", "vehicle.name.g3_khaki", "G3 khaki"},
+        {"Vehicle004_oneoff", "vehicle.name.griffin_volante", "GriffinVolante"},
+        {"Vehicle004_q110320", "vehicle.name.ae86_fujiwara", "Driving school AE86 (Fujiwara job)"},
+        {"Vehicle005", "vehicle.name.vehicle005_untested", "Vehicle005 (error, untested)"},
+        {"Vehicle005_Player", "vehicle.name.city_bus", "City bus"},
+        {"Vehicle005a", "vehicle.name.vehicle005a_untested", "Vehicle005a (error, untested)"},
+        {"Vehicle006Combat", "vehicle.name.van", "Van"},
+        {"Vehicle007", "vehicle.name.c2000", "C2000"},
+        {"Vehicle007Combat", "vehicle.name.c2000", "C2000"},
+        {"Vehicle007_drivingschool", "vehicle.name.driving_school", "Driving school car"},
+        {"Vehicle007_oneoff", "vehicle.name.c2000_white", "C2000 white"},
+        {"Vehicle007_s111601", "vehicle.name.c2000_white", "C2000 white"},
+        {"Vehicle007_s111601_race", "vehicle.name.c2000_npc", "C2000 (NPC driver)"},
+        {"Vehicle007_v2", "vehicle.name.c2000_white", "C2000 white"},
+        {"Vehicle007a", "vehicle.name.c2000_gold", "C2000 gold"},
+        {"Vehicle007c", "vehicle.name.taxi", "Taxi"},
+        {"Vehicle008Combat", "vehicle.name.m1000", "M1000"},
+        {"Vehicle008_K111801", "vehicle.name.m1000", "M1000"},
+        {"Vehicle008_oneoff", "vehicle.name.m1000_red", "M1000 red"},
+        {"Vehicle008fish", "vehicle.name.m1000_gold", "M1000 gold"},
+        {"Vehicle009", "vehicle.name.pickup_truck", "Pickup truck"},
+        {"Vehicle009a", "vehicle.name.container_truck", "Container truck"},
+        {"Vehicle009a_toq", "vehicle.name.container_truck", "Container truck"},
+        {"Vehicle009b", "vehicle.name.blue_pickup", "Blue transport pickup"},
+        {"Vehicle009c", "vehicle.name.crew_pickup", "Work crew transport pickup"},
+        {"Vehicle010_q110328", "vehicle.name.st_x950", "ST-X950 bike"},
+        {"Vehicle012", "vehicle.name.dominus_s", "Dominus-S"},
+        {"Vehicle014", "vehicle.name.small_yacht", "Small yacht"},
+        {"Vehicle015", "vehicle.name.e_scooter", "E-scooter"},
+        {"Vehicle015A", "vehicle.name.e_scooter_green", "Green e-scooter"},
+        {"Vehicle016Combat", "vehicle.name.lavelox", "LaVelox"},
+        {"Vehicle017Combat", "vehicle.name.pursuit_v8", "Pursuit-V8"},
+        {"Vehicle018Combat", "vehicle.name.st79", "ST79(AE86)"},
+        {"Vehicle018_K110000", "vehicle.name.st79_tofu", "ST79(AE86) tofu shop car"},
+        {"Vehicle018_K110027", "vehicle.name.st79_legend", "ST79(AE86) racing legend job"},
+        {"Vehicle018_K110045", "vehicle.name.st79_legend_trailing",
+            "ST79(AE86) racing legend job - trailing"},
+        {"Vehicle018_Quest_K110000", "vehicle.name.st79_tofu", "ST79(AE86) tofu shop car"},
+        {"Vehicle018ghost", "vehicle.name.ghost_ae86", "Ghost AE86"},
+        {"Vehicle020Combat", "vehicle.name.enforcer", "Enforcer"},
+        {"Vehicle020Police", "vehicle.name.c2000", "C2000"},
+        {"Vehicle021Combat", "vehicle.name.pendragon", "Pendragon"},
+        {"Vehicle024_Mods", "vehicle.name.blizzard_v4", "Blizzard V4 (bike)"},
+        {"Vehicle027", "vehicle.name.business_van", "Business van"},
+        {"Vehicle031_toq", "vehicle.name.dayun_pickup", "Dayun pickup"},
+        {"Vehicle033", "vehicle.name.road_roller", "Road roller"},
+        {"Vehicle034", "vehicle.name.forklift", "Forklift"},
+        {"Vehicle035", "vehicle.name.wheel_loader", "Wheel loader"},
+        {"Vehicle036", "vehicle.name.excavator", "Excavator"},
+        {"Vehicle040", "vehicle.name.retail_truck", "Retail truck"},
+        {"Vehicle041", "vehicle.name.retail_truck_2", "Retail truck 2"},
+        {"Vehicle044", "vehicle.name.surf_boat", "Surf boat"},
+        {"Vehicle044Collect", "vehicle.name.motorboat", "Motorboat"},
+        {"Vehicle044Motorboatrace", "vehicle.name.motorboat", "Motorboat"},
+        {"Vehicle044TestDrive", "vehicle.name.motorboat_purple", "Motorboat (purple)"},
+        {"Vehicle054", "vehicle.name.baby_bus", "Baby bus"},
+        {"Vehicle055", "vehicle.name.row_to_tomorrow", "Row to Tomorrow"},
+        {"Vehicle066", "vehicle.name.titanic", "Titanic"},
+        {"Vehicle_010_Mods", "vehicle.name.st_x950", "ST-X950 bike"},
+        {"Vehicle_013_Hight_WJ106501", "vehicle.name.old_times", "Old Times"},
+        {"Vehicle_015_Hight_WJ100105", "vehicle.name.e_scooter", "E-scooter"},
+        {"vehicle002", "vehicle.name.griffin", "Griffin"},
+        {"vehicle002_oneoff", "vehicle.name.orange_griffin", "Orange Griffin"},
+        {"vehicle003", "vehicle.name.g3_green", "G3 green"},
+        {"vehicle004", "vehicle.name.griffin_volante_same", "GriffinVolante (same as Griffin)"},
+        {"vehicle006", "vehicle.name.b100_rose", "B100 rose red"},
+        {"vehicle008", "vehicle.name.m1000", "M1000"},
+        {"vehicle010", "vehicle.name.st_x950", "ST-X950 bike"},
+        {"vehicle013", "vehicle.name.old_times", "Old Times"},
+        {"vehicle016", "vehicle.name.lavelox", "LaVelox"},
+        {"vehicle017", "vehicle.name.pursuit_v8", "Pursuit-V8"},
+        {"vehicle018", "vehicle.name.st79_plain", "ST79"},
+        {"vehicle020", "vehicle.name.enforcer", "Enforcer"},
+        {"vehicle021", "vehicle.name.pendragon", "Pendragon"},
+        {"vehicle023", "vehicle.name.k01_kart", "K01 kart"},
+        {"vehicle024", "vehicle.name.blizzard_v4", "Blizzard V4 (bike)"},
+        {"vehicle026", "vehicle.name.porsche_918", "Porsche918Spyder (Porsche 918)"},
+        {"vehicle030", "vehicle.name.wheelchair", "Wheelchair"},
+        {"vehicle031", "vehicle.name.dayun_pickup", "Dayun pickup"},
+        {"vehicle032", "vehicle.name.cement_truck", "Cement truck"},
+        {"vehicle037", "vehicle.name.porsche_911", "Porsche911Turbo (Porsche 911)"},
+        {"vehicle038", "vehicle.name.taycan_gt", "PorscheTaycanTurboGT (electric Porsche)"},
+        {"vehicle039", "vehicle.name.draco", "Draco (transforming bike)"},
+        {"vehicle043", "vehicle.name.offroader", "Small off-roader"},
     };
     for (const auto& entry : kNames) {
-        if (entry.first == vehicle_id) return entry.second;
+        if (entry.id == vehicle_id) {
+            return g_context.localizer.Text(entry.key, entry.english);
+        }
     }
     return {};
 }
 
 // 优先使用对照表里的名称；缺失时退回 Host 标签并去掉 " (VehicleID)"。
 std::string VehicleShownName(const std::string& vehicle_id, const std::string& host_label) {
-    const std::string_view mapped = VehicleDisplayName(vehicle_id);
-    if (!mapped.empty()) return std::string(mapped);
+    const std::string mapped = VehicleDisplayName(vehicle_id);
+    if (!mapped.empty()) return mapped;
     std::string label = host_label.empty() ? vehicle_id : host_label;
     if (!label.empty() && label.back() == ')') {
         const std::size_t suffix = label.rfind(" (");
@@ -1111,8 +1272,11 @@ std::string VehicleDedupeKey(const std::string& name) {
     for (char c : name) {
         key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     }
+    // 匹配 Host 标签里的中文备注/配色后缀，以及本地化目录里的英文等价写法。
     static constexpr std::string_view kSuffixes[] = {
-        "（和griffin相同）", "（紫配色）", "（相同）", "(相同)"};
+        "\uff08\u548cgriffin\u76f8\u540c\uff09", "\uff08\u7d2b\u914d\u8272\uff09",
+        "\uff08\u76f8\u540c\uff09", "(\u76f8\u540c)",
+        " (same as griffin)", " (purple)", " (same)"};
     for (const auto suffix : kSuffixes) {
         if (key.size() >= suffix.size() &&
             key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0) {
@@ -1120,8 +1284,11 @@ std::string VehicleDedupeKey(const std::string& name) {
         }
     }
     static constexpr std::string_view kColorTokens[] = {
-        "玫红色", "卡其色", "紫配色", "原色", "绿色", "红色", "金色", "白色",
-        "橙色", "蓝色", "紫色", "黑色", "银色", "灰色"};
+        "\u73ab\u7ea2\u8272", "\u5361\u5176\u8272", "\u7d2b\u914d\u8272", "\u539f\u8272",
+        "\u7eff\u8272", "\u7ea2\u8272", "\u91d1\u8272", "\u767d\u8272", "\u6a59\u8272",
+        "\u84dd\u8272", "\u7d2b\u8272", "\u9ed1\u8272", "\u94f6\u8272", "\u7070\u8272",
+        "rose red", "khaki", "stock", "green", "red", "gold", "white", "orange",
+        "blue", "black", "silver", "gray"};
     for (const auto token : kColorTokens) {
         std::size_t pos = 0;
         while ((pos = key.find(token, pos)) != std::string::npos) {
@@ -1129,7 +1296,7 @@ std::string VehicleDedupeKey(const std::string& name) {
         }
     }
     while (true) {
-        const std::size_t pos = key.find("（）");
+        const std::size_t pos = key.find("\uff08\uff09");
         if (pos == std::string::npos) break;
         key.erase(pos, 6);
     }
@@ -1150,7 +1317,11 @@ void DrawSummonTab(
         return VehicleShownName(ids[i], host_label);
     };
     const bool has_selected = std::ranges::find(ids, selected) != ids.end();
-    if (!last_summon.empty()) DrawText(ui, "上次召唤：" + last_summon);
+    if (!last_summon.empty()) {
+        const std::array arguments{std::string_view(last_summon)};
+        DrawText(ui, g_context.localizer.Format(
+            "text.last_summon", "Last summon: {0}", arguments));
+    }
 
     std::string current_filter;
     {
@@ -1198,9 +1369,10 @@ void DrawSummonTab(
     }
 
     if (ids.empty()) {
-        DrawText(ui, "载具清单为空。");
+        DrawText(ui, g_context.localizer.Text("text.catalog_empty",
+            "The vehicle catalog is empty."));
     } else if (filtered.empty()) {
-        DrawText(ui, "没有匹配项。");
+        DrawText(ui, g_context.localizer.Text("text.no_matches", "No matching entries."));
     } else {
         // 每辆载具本身就是可点击的按钮，不再单独渲染“选择”列。
         for (const std::size_t index : visible_indices) {
@@ -1237,8 +1409,10 @@ void DrawSummonTab(
     const std::size_t filter_length = (std::min)(current_filter.size(), filter_buffer.size() - 1U);
     std::copy_n(current_filter.data(), filter_length, filter_buffer.data());
     if (has_input_text) {
-        DrawText(ui, "筛选");
-        if (ui->input_text(ui->user, anomaly::sdk::StringView("搜索载具名称或编号"),
+        DrawText(ui, g_context.localizer.Text("label.filter", "Filter"));
+        const auto search_hint = g_context.localizer.Text(
+            "hint.search_placeholder", "Search vehicle name or ID");
+        if (ui->input_text(ui->user, anomaly::sdk::StringView(search_hint),
                 filter_buffer.data(), filter_buffer.size(), 0U)) {
             std::string updated_filter(filter_buffer.data());
             if (updated_filter != current_filter) {
@@ -1255,20 +1429,33 @@ void DrawSummonTab(
     page_count = filtered.empty()
         ? 1U : (filtered.size() + kVehiclesPerPage - 1U) / kVehiclesPerPage;
     if (current_page >= page_count) current_page = page_count - 1U;
-    DrawText(ui, "匹配 " + std::to_string(filtered.size()) + " 项 / 共 " +
-        std::to_string(ids.size()) + " 辆");
-    if (DrawButtonEnabled(ui, "上一页", current_page > 0U)) --current_page;
+    const std::string match_count = std::to_string(filtered.size());
+    const std::string total_count = std::to_string(ids.size());
+    const std::array match_arguments{
+        std::string_view(match_count), std::string_view(total_count)};
+    DrawText(ui, g_context.localizer.Format(
+        "text.match_summary", "{0} matches / {1} vehicles", match_arguments));
+    const auto previous_label =
+        g_context.localizer.Text("action.previous_page", "Previous page");
+    if (DrawButtonEnabled(ui, previous_label, current_page > 0U)) --current_page;
     DrawInlineGap(ui);
-    if (DrawButtonEnabled(ui, "下一页", current_page + 1U < page_count)) ++current_page;
-    DrawText(ui, "第 " + std::to_string(current_page + 1U) + " / " +
-        std::to_string(page_count) + " 页");
+    const auto next_label = g_context.localizer.Text("action.next_page", "Next page");
+    if (DrawButtonEnabled(ui, next_label, current_page + 1U < page_count)) ++current_page;
+    const std::string page_text = std::to_string(current_page + 1U);
+    const std::string page_total = std::to_string(page_count);
+    const std::array page_arguments{
+        std::string_view(page_text), std::string_view(page_total)};
+    DrawText(ui, g_context.localizer.Format("text.page_of", "Page {0} / {1}", page_arguments));
 
     const bool can_summon = player_position_valid && has_selected;
-    if (DrawButtonEnabled(ui, "召唤", can_summon)) {
+    const auto summon_label = g_context.localizer.Text("action.summon", "Summon");
+    if (DrawButtonEnabled(ui, summon_label, can_summon)) {
         g_context.summon.store(true, std::memory_order_release);
     }
     DrawInlineGap(ui);
-    if (DrawButtonEnabled(ui, "改装载具清单", has_selected)) {
+    const auto customization_label =
+        g_context.localizer.Text("action.customization_list", "Customize vehicles");
+    if (DrawButtonEnabled(ui, customization_label, has_selected)) {
         {
             std::scoped_lock lock(g_context.mutex);
             g_context.customization_page = true;
@@ -1276,11 +1463,17 @@ void DrawSummonTab(
             g_context.customization_options.clear();
             g_context.customization_skin_id.clear();
             g_context.selected_module_overrides.clear();
-            g_context.customization_status = "正在读取 " + selected + " 的实时改装目录";
+            const std::array arguments{std::string_view(selected)};
+            g_context.customization_status = g_context.localizer.Format(
+                "status.customization_reading",
+                "Reading the live customization catalog for {0}", arguments);
+            g_context.customization_status_failure = false;
         }
         g_context.refresh_customization_requested.store(true, std::memory_order_release);
     }
-    DrawText(ui, "进入改装载具清单后，可按类别选择模块和涂装；未覆盖的模块槽位保留游戏默认配置。");
+    DrawText(ui, g_context.localizer.Text("hint.customization_usage",
+        "Pick modules and skins by category in the customization list; slots you do not "
+        "override keep the game defaults."));
 }
 
 void DrawCustomizationDetail(
@@ -1293,6 +1486,7 @@ void DrawCustomizationDetail(
     const std::string& customization_vehicle_id,
     const std::string& skin_id,
     const std::string& customization_status,
+    bool customization_status_failure,
     const std::string& last_summon,
     bool player_position_valid) {
     const auto selected_index = std::ranges::find(ids, selected);
@@ -1303,41 +1497,64 @@ void DrawCustomizationDetail(
         selected_label = VehicleShownName(selected,
             index < labels.size() ? labels[index] : std::string{});
     }
-    DrawText(ui, "改装载具清单 / " + selected_label);
-    if (DrawButtonEnabled(ui, "重新读取改装数据", true)) {
+    const std::array title_arguments{std::string_view(selected_label)};
+    DrawText(ui, g_context.localizer.Format(
+        "text.customization_title", "Customize / {0}", title_arguments));
+    const auto reload_label =
+        g_context.localizer.Text("action.reload_customization", "Reload customization data");
+    if (DrawButtonEnabled(ui, reload_label, true)) {
         {
             std::scoped_lock lock(g_context.mutex);
             g_context.customization_vehicle_id.clear();
             g_context.customization_options.clear();
             g_context.customization_skin_id.clear();
             g_context.selected_module_overrides.clear();
-            g_context.customization_status = "正在重新读取所选车型的改装目录";
+            g_context.customization_status = g_context.localizer.Text(
+                "status.customization_rereading",
+                "Re-reading the customization catalog of the selected vehicle.");
+            g_context.customization_status_failure = false;
         }
         g_context.refresh_customization_requested.store(true, std::memory_order_release);
     }
     // 只在出错时显示状态文本；正常流程不占用界面。
-    if (customization_status.find("失败") != std::string::npos ||
-        customization_status.find("无效") != std::string::npos) {
+    if (customization_status_failure) {
         DrawText(ui, customization_status);
     }
     if (!has_selected) {
-        DrawText(ui, "当前车型不在已读取的载具目录中，无法应用改装。");
+        DrawText(ui, g_context.localizer.Text("text.customization_vehicle_missing",
+            "The current vehicle is not in the loaded vehicle catalog, so customization "
+            "cannot be applied."));
         return;
     }
     if (customization_vehicle_id != selected) {
         return;
     }
     if (options.empty()) {
-        DrawText(ui, "没有取得可用的改装选项。请重新读取；若仍失败，请查看 Core 返回的目录校验诊断。");
+        DrawText(ui, g_context.localizer.Text("text.customization_no_options",
+            "No usable customization options were returned. Read again; if it still fails, "
+            "check the catalog validation diagnostics returned by the core."));
         return;
     }
 
-    static constexpr std::array<std::string_view, 27> kModuleTypeNames{
-        "无", "发动机", "变速箱", "制动", "悬挂", "车身颜色模块",
-        "前包围", "侧裙", "后包围", "尾翼", "贴花", "轮毂",
-        "引擎盖", "车牌", "车顶", "轮胎", "附件", "限滑差速器 LSD",
-        "车身刚度", "Skin 模块", "内饰皮革颜色", "内饰缝线颜色",
-        "车辆铭牌", "轮胎烟雾", "轮胎痕迹", "拖钩", "ECU"
+    static constexpr std::array<std::string_view, 27> module_type_keys{
+        "label.module.none", "label.module.engine", "label.module.gearbox",
+        "label.module.brake", "label.module.suspension", "label.module.body_color",
+        "label.module.front_bumper", "label.module.side_skirt", "label.module.rear_bumper",
+        "label.module.rear_wing", "label.module.decal", "label.module.wheel",
+        "label.module.hood", "label.module.plate", "label.module.roof",
+        "label.module.tire", "label.module.accessory", "label.module.lsd",
+        "label.module.stiffness", "label.module.skin", "label.module.interior_leather",
+        "label.module.interior_stitch", "label.module.vehicle_badge",
+        "label.module.tire_smoke", "label.module.tire_track", "label.module.tow_hook",
+        "label.module.ecu"
+    };
+    static constexpr std::array<std::string_view, 27> module_type_english{
+        "None", "Engine", "Gearbox", "Brakes", "Suspension", "Body color module",
+        "Front bumper", "Side skirt", "Rear bumper", "Rear wing", "Decal", "Wheels",
+        "Hood", "License plate", "Roof", "Tires", "Accessories",
+        "Limited-slip differential LSD", "Body rigidity", "Skin module",
+        "Interior leather color", "Interior stitching color", "Vehicle badge",
+        "Tire smoke", "Tire tracks", "Tow hook", "ECU"
     };
     const auto override_for_type = [&](const std::uint32_t module_type) -> std::string_view {
         const auto found = std::ranges::find_if(module_overrides,
@@ -1393,7 +1610,7 @@ void DrawCustomizationDetail(
         return enabled && ui->button(ui->user, view, width, 0.0F) != 0;
     };
     const auto draw_skin_options = [&]() {
-        DrawText(ui, "选择涂装");
+        DrawText(ui, g_context.localizer.Text("section.skins", "Choose a skin"));
         bool has_default_skin = false;
         for (const auto& option : options) {
             if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN) continue;
@@ -1404,12 +1621,19 @@ void DrawCustomizationDetail(
             if (ui->button(ui->user, anomaly::sdk::StringView(label), list_width, 0.0F)) {
                 std::scoped_lock lock(g_context.mutex);
                 g_context.customization_skin_id = option.id;
-                g_context.customization_status = "已选择涂装：" +
-                    (option.label.empty() ? option.id : option.label) + " (" + option.id + ")";
+                const std::string& skin_label = option.label.empty() ? option.id : option.label;
+                const std::array arguments{
+                    std::string_view(skin_label), std::string_view(option.id)};
+                g_context.customization_status = g_context.localizer.Format(
+                    "status.skin_selected", "Skin selected: {0} ({1})", arguments);
+                g_context.customization_status_failure = false;
             }
         }
         if (has_default_skin && !skin_id.empty()) {
-            if (DrawButtonEnabled(ui, "恢复默认涂装##custom-reset-skin", true)) {
+            const std::string reset_skin_label =
+                g_context.localizer.Text("action.reset_skin", "Restore default skin") +
+                "##custom-reset-skin";
+            if (DrawButtonEnabled(ui, reset_skin_label, true)) {
                 const auto found = std::ranges::find_if(options, [](const CustomizationOption& option) {
                     return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
                         option.is_default;
@@ -1417,14 +1641,18 @@ void DrawCustomizationDetail(
                 if (found != options.end()) {
                     std::scoped_lock lock(g_context.mutex);
                     g_context.customization_skin_id = found->id;
-                    g_context.customization_status = "已恢复游戏默认涂装：" +
-                        (found->label.empty() ? found->id : found->label);
+                    const std::string& skin_label =
+                        found->label.empty() ? found->id : found->label;
+                    const std::array arguments{std::string_view(skin_label)};
+                    g_context.customization_status = g_context.localizer.Format(
+                        "status.skin_reset", "Restored the game default skin: {0}", arguments);
+                    g_context.customization_status_failure = false;
                 }
             }
         }
     };
     const auto draw_module_options = [&](const std::uint32_t type) {
-        DrawText(ui, "可选项目");
+        DrawText(ui, g_context.localizer.Text("section.options", "Available options"));
         bool has_default = false;
         for (const auto& option : options) {
             if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE ||
@@ -1449,21 +1677,31 @@ void DrawCustomizationDetail(
                     if (found == overrides.end()) overrides.emplace_back(type, option.id);
                     else found->second = option.id;
                 }
-                g_context.customization_status = "已更新 " +
-                    std::string(kModuleTypeNames[type]) + " 的选择";
+                const std::string category = g_context.localizer.Text(
+                    module_type_keys[type], module_type_english[type]);
+                const std::array arguments{std::string_view(category)};
+                g_context.customization_status = g_context.localizer.Format(
+                    "status.module_updated", "Updated the {0} selection", arguments);
+                g_context.customization_status_failure = false;
             }
         }
         const std::string_view selected_option_id = override_for_type(type);
         if (has_default && !selected_option_id.empty()) {
+            const std::string category = g_context.localizer.Text(
+                module_type_keys[type], module_type_english[type]);
             const std::string reset_label =
-                "恢复此类别默认配置##custom-reset-module-" + std::to_string(type);
+                g_context.localizer.Text("action.reset_module",
+                    "Restore this category's default") +
+                "##custom-reset-module-" + std::to_string(type);
             if (DrawButtonEnabled(ui, reset_label, true)) {
                 std::scoped_lock lock(g_context.mutex);
                 std::erase_if(g_context.selected_module_overrides, [type](const auto& entry) {
                     return entry.first == type;
                 });
-                g_context.customization_status = "已恢复 " +
-                    std::string(kModuleTypeNames[type]) + " 的游戏默认配置";
+                const std::array arguments{std::string_view(category)};
+                g_context.customization_status = g_context.localizer.Format(
+                    "status.module_reset", "Restored the game default of {0}", arguments);
+                g_context.customization_status_failure = false;
             }
         }
     };
@@ -1476,14 +1714,16 @@ void DrawCustomizationDetail(
     std::array<std::uint32_t, 28> categories{};
     std::size_t category_count = 0;
     categories[category_count++] = 0;   // 涂装
-    for (std::uint32_t type = 1; type < kModuleTypeNames.size(); ++type) {
+    for (std::uint32_t type = 1; type < module_type_keys.size(); ++type) {
         if (has_options_for_type(type)) categories[category_count++] = type;
     }
     static std::size_t active_category = 0;
     if (active_category >= category_count) active_category = 0;
 
     const auto category_label = [&](const std::uint32_t type) -> std::string {
-        return type == 0 ? std::string("涂装") : std::string(kModuleTypeNames[type]);
+        return type == 0
+            ? g_context.localizer.Text("section.paint", "Paint")
+            : g_context.localizer.Text(module_type_keys[type], module_type_english[type]);
     };
     for (std::size_t row_begin = 0; row_begin < category_count; row_begin += kCategoryColumns) {
         const std::size_t row_end = (std::min)(category_count, row_begin + kCategoryColumns);
@@ -1509,16 +1749,25 @@ void DrawCustomizationDetail(
 
     const bool can_summon_customized = has_selected &&
         customization_vehicle_id == selected && !options.empty();
-    if (draw_wide_enabled_button("召唤改装车辆", can_summon_customized, section_width)) {
-        SetStatus("已提交改装召唤请求");
-        SetLastSummon("改装召唤请求已提交");
+    const auto summon_customized_label =
+        g_context.localizer.Text("action.summon_customized", "Summon customized vehicle");
+    if (draw_wide_enabled_button(summon_customized_label, can_summon_customized, section_width)) {
+        SetStatus(g_context.localizer.Text("status.customized_submitted",
+            "Customized summon request submitted."));
+        SetLastSummon(g_context.localizer.Text("text.customized_submitted",
+            "Customized summon request submitted"));
         g_context.summon_customized.store(true, std::memory_order_release);
     } else if (customization_vehicle_id != selected) {
-        DrawText(ui, "当前车型的改装目录尚未就绪；请重新读取改装数据。");
+        DrawText(ui, g_context.localizer.Text("text.customization_not_ready",
+            "The customization catalog for this vehicle is not ready; reload the "
+            "customization data."));
     }
 
     DrawDivider(ui);
-    DrawText(ui, "改装清单 / " + category_label(categories[active_category]));
+    const std::string heading = category_label(categories[active_category]);
+    const std::array heading_arguments{std::string_view(heading)};
+    DrawText(ui, g_context.localizer.Format(
+        "text.customization_heading", "Customization / {0}", heading_arguments));
     bool child_visible = true;
     if (child_api_available) {
         child_visible = ui->begin_child(ui->user,
@@ -1542,10 +1791,12 @@ void DrawVehicleListColumn(
     const std::string& selected,
     const std::vector<std::string>& ids,
     const std::vector<std::string>& labels) {
-    DrawText(ui, "载具清单");
-    DrawText(ui, "选择车型后，右侧显示该车型的改装选项");
+    DrawText(ui, g_context.localizer.Text("section.vehicle_list", "Vehicle list"));
+    DrawText(ui, g_context.localizer.Text("hint.customization_column",
+        "Select a vehicle to show its customization options on the right."));
     if (ids.empty()) {
-        DrawText(ui, "载具清单为空。");
+        DrawText(ui, g_context.localizer.Text("text.catalog_empty",
+            "The vehicle catalog is empty."));
         return;
     }
 
@@ -1628,6 +1879,7 @@ void DrawCustomizationTab(
     const std::string& customization_vehicle_id,
     const std::string& skin_id,
     const std::string& customization_status,
+    bool customization_status_failure,
     const std::string& last_summon,
     bool player_position_valid) {
     const bool child_api_available =
@@ -1636,8 +1888,8 @@ void DrawCustomizationTab(
         ui->begin_child && ui->end_child;
     if (!child_api_available) {
         DrawCustomizationDetail(ui, selected, ids, labels, options, module_overrides,
-            customization_vehicle_id, skin_id, customization_status, last_summon,
-            player_position_valid);
+            customization_vehicle_id, skin_id, customization_status,
+            customization_status_failure, last_summon, player_position_valid);
         return;
     }
     float window_width = 0.0F;
@@ -1675,15 +1927,19 @@ void DrawCustomizationTab(
         detail_width, column_height, 0U) != 0;
     if (detail_visible) {
         DrawCustomizationDetail(ui, selected, ids, labels, options, module_overrides,
-            customization_vehicle_id, skin_id, customization_status, last_summon,
-            player_position_valid);
+            customization_vehicle_id, skin_id, customization_status,
+            customization_status_failure, last_summon, player_position_valid);
     }
     ui->end_child(ui->user);
 
     DrawDivider(ui);
-    DrawText(ui, "仅手动选择的模块槽位会覆盖默认值；其他槽位使用游戏数据表的默认模块。");
+    DrawText(ui, g_context.localizer.Text("hint.module_override",
+        "Only module slots you pick by hand override the defaults; other slots keep the "
+        "game data table default modules."));
     if (!player_position_valid) {
-        DrawText(ui, "当前玩家位置快照无效；可以提交请求，但 Host 会拒绝未验证坐标的召唤。");
+        DrawText(ui, g_context.localizer.Text("hint.position_invalid",
+            "The current player position snapshot is invalid; you can still submit the "
+            "request, but the host rejects summons with unverified coordinates."));
     }
 }
 
@@ -1693,22 +1949,38 @@ void DrawPerformanceTab(
     float speed_ratio, float torque_ratio, float other_speed_ratio,
     float other_speed_floor_ratio, float other_torque_ratio) {
     if ((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) == 0) {
-        DrawText(ui, "当前驾驶载具：未识别");
+        DrawText(ui, g_context.localizer.Text("text.current_vehicle_none",
+            "Current vehicle: not identified"));
     } else {
-        DrawText(ui, "当前驾驶载具 / " +
-            (snap.vehicle_class_name.empty() ? std::string("未知类名") : snap.vehicle_class_name) +
-            " (" + (snap.vehicle_entity_id != 0
-                ? "#" + std::to_string(snap.vehicle_entity_id) : std::string("#编号未知")) + ")");
+        const std::string class_name = snap.vehicle_class_name.empty()
+            ? g_context.localizer.Text("text.unknown_class", "Unknown class name")
+            : snap.vehicle_class_name;
+        const std::string entity_id = snap.vehicle_entity_id != 0
+            ? "#" + std::to_string(snap.vehicle_entity_id)
+            : g_context.localizer.Text("text.unknown_entity_id", "#ID unknown");
+        const std::array vehicle_arguments{
+            std::string_view(class_name), std::string_view(entity_id)};
+        DrawText(ui, g_context.localizer.Format(
+            "text.current_vehicle", "Current vehicle / {0} ({1})", vehicle_arguments));
         const double display_speed = std::isfinite(snap.speed_kmh)
             ? std::floor(std::fabs(snap.speed_kmh)) : 0.0;
-        DrawText(ui, "当前速度 / " +
-            std::to_string(static_cast<std::uint64_t>(display_speed)) + " km/h");
-        DrawText(ui, "当前最高速倍率 / " + std::to_string(snap.top_speed_ratio) + "x");
+        const std::string speed_text =
+            std::to_string(static_cast<std::uint64_t>(display_speed));
+        const std::array speed_arguments{std::string_view(speed_text)};
+        DrawText(ui, g_context.localizer.Format(
+            "text.current_speed", "Current speed / {0} km/h", speed_arguments));
+        const std::string ratio_text = std::to_string(snap.top_speed_ratio);
+        const std::array ratio_arguments{std::string_view(ratio_text)};
+        DrawText(ui, g_context.localizer.Format(
+            "text.current_top_speed_ratio", "Current top speed ratio / {0}x", ratio_arguments));
     }
 
     DrawDivider(ui);
-    DrawText(ui, "当前载具车速倍率（拖动后立即应用，范围 0.0x–100.0x）");
-    if (ui->slider_float(ui->user, anomaly::sdk::StringView("车速倍率"),
+    DrawText(ui, g_context.localizer.Text("hint.speed_slider",
+        "Speed ratio of the current vehicle (applied right after dragging, 0.0x-100.0x)"));
+    const auto speed_ratio_label =
+        g_context.localizer.Text("label.speed_ratio", "Speed ratio");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(speed_ratio_label),
                          &speed_ratio, kMinimumSpeedRatio, kMaximumSpeedRatio)) {
         {
             std::scoped_lock lock(g_context.mutex);
@@ -1719,59 +1991,83 @@ void DrawPerformanceTab(
     }
 
     DrawDivider(ui);
-    DrawText(ui, "当前陆地载具耐久：自动保持满值（默认启用）");
-    DrawText(ui, "依赖 Dump 已校验的 RepairSelf(true)；当前 Dump 未确认水上载具的等价修复入口。");
+    DrawText(ui, g_context.localizer.Text("text.durability_note",
+        "Current land vehicle durability: kept full automatically (enabled by default)"));
+    DrawText(ui, g_context.localizer.Text("text.durability_detail",
+        "Relies on the RepairSelf(true) already verified by the dump; the current dump does "
+        "not confirm an equivalent repair entry point for water vehicles."));
 
     DrawDivider(ui);
-    DrawText(ui, "发动机外部扭矩倍率");
-    if (ui->slider_float(ui->user, anomaly::sdk::StringView("发动机扭矩倍率"),
+    DrawText(ui, g_context.localizer.Text("text.torque_heading",
+        "Engine external torque ratio"));
+    const auto torque_ratio_label =
+        g_context.localizer.Text("label.torque_ratio", "Engine torque ratio");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(torque_ratio_label),
                          &torque_ratio, 0.05F, 20.0F)) {
         std::scoped_lock lock(g_context.mutex);
         g_context.engine_torque_ratio = torque_ratio;
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("应用扭矩倍率"), 0.0F, 0.0F)) {
+    const auto apply_torque_label =
+        g_context.localizer.Text("action.apply_torque", "Apply torque ratio");
+    if (ui->button(ui->user, anomaly::sdk::StringView(apply_torque_label), 0.0F, 0.0F)) {
         g_context.apply_torque.store(true, std::memory_order_release);
     }
 
     DrawDivider(ui);
-    DrawText(ui, "其他载具实例");
-    DrawText(ui, "目标最高速 = 70 km/h × 速度因子");
-    if (ui->slider_float(ui->user, anomaly::sdk::StringView("其他车辆速度倍率"),
+    DrawText(ui, g_context.localizer.Text("section.other_vehicles", "Other vehicle instances"));
+    DrawText(ui, g_context.localizer.Text("text.other_speed_formula",
+        "Target top speed = 70 km/h x speed factor"));
+    const auto other_speed_label =
+        g_context.localizer.Text("label.other_speed_ratio", "Other vehicle speed ratio");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(other_speed_label),
                          &other_speed_ratio, 0.05F, 10.0F)) {
         std::scoped_lock lock(g_context.mutex);
         g_context.other_speed_ratio = other_speed_ratio;
     }
-    if (ui->slider_float(ui->user, anomaly::sdk::StringView("其他车辆最低车速倍率"),
+    const auto other_speed_floor_label = g_context.localizer.Text(
+        "label.other_speed_floor", "Other vehicle minimum speed ratio");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(other_speed_floor_label),
                          &other_speed_floor_ratio, 0.05F, 10.0F)) {
         std::scoped_lock lock(g_context.mutex);
         g_context.other_speed_floor_ratio = other_speed_floor_ratio;
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("应用其他车辆倍率与下限"), 0.0F, 0.0F)) {
+    const auto apply_other_speed_label = g_context.localizer.Text(
+        "action.apply_other_speed", "Apply other vehicle ratio and floor");
+    if (ui->button(ui->user, anomaly::sdk::StringView(apply_other_speed_label), 0.0F, 0.0F)) {
         g_context.apply_other_speed.store(true, std::memory_order_release);
     }
 
     DrawDivider(ui);
-    DrawText(ui, "非玩家车辆发动机外部扭矩倍率");
-    if (ui->slider_float(ui->user, anomaly::sdk::StringView("其他车辆扭矩倍率"),
+    DrawText(ui, g_context.localizer.Text("text.other_torque_heading",
+        "Non-player vehicle engine external torque ratio"));
+    const auto other_torque_label = g_context.localizer.Text(
+        "label.other_torque_ratio", "Other vehicle torque ratio");
+    if (ui->slider_float(ui->user, anomaly::sdk::StringView(other_torque_label),
                          &other_torque_ratio, 0.05F, 20.0F)) {
         std::scoped_lock lock(g_context.mutex);
         g_context.other_torque_ratio = other_torque_ratio;
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("应用其他车辆扭矩倍率"), 0.0F, 0.0F)) {
+    const auto apply_other_torque_label = g_context.localizer.Text(
+        "action.apply_other_torque", "Apply other vehicle torque ratio");
+    if (ui->button(ui->user, anomaly::sdk::StringView(apply_other_torque_label), 0.0F, 0.0F)) {
         g_context.apply_other_torque.store(true, std::memory_order_release);
     }
 
     DrawDivider(ui);
-    if (ui->button(ui->user,
-            anomaly::sdk::StringView("恢复默认设置 / 车速倍率 1.0x"), 0.0F, 0.0F)) {
+    const auto reset_label = g_context.localizer.Text(
+        "action.reset_defaults", "Restore defaults / speed ratio 1.0x");
+    if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 0.0F, 0.0F)) {
         g_context.reset.store(true, std::memory_order_release);
     }
 }
 
 void DrawChassisTab(const AnomalyUiServiceV1* ui, bool friction) {
-    DrawText(ui, "车轮摩擦");
+    DrawText(ui, g_context.localizer.Text("section.wheel_friction", "Wheel friction"));
     DrawInlineGap(ui);
-    if (ui->button(ui->user, anomaly::sdk::StringView(friction ? "关闭" : "开启"), 0.0F, 0.0F)) {
+    const auto friction_label = friction
+        ? g_context.localizer.Text("action.disable", "Disable")
+        : g_context.localizer.Text("action.enable", "Enable");
+    if (ui->button(ui->user, anomaly::sdk::StringView(friction_label), 0.0F, 0.0F)) {
         g_context.friction_toggle.store(true, std::memory_order_release);
     }
 }
@@ -1780,40 +2076,92 @@ void DrawDebugPanel(
     const AnomalyUiServiceV1* ui, const Snapshot& snap,
     const std::string& status, const std::string& selected,
     std::size_t catalog_size, bool player_position_valid) {
-    DrawText(ui, "构建标记：NTE Vehicle 0.10.5 / 2026-10-21-clickable-display-names");
-    DrawText(ui, "构建标记：manifest schema v2 / Plugin API v1 / Vehicle service v8");
-    DrawText(ui, "Plugin ID：anomaly.local." + std::string("nte-vehicle"));
-    DrawText(ui, "Manifest：schemaVersion=2 / entry=plugin.dll / loadPhase=game-ready / games=nte / builds=nte-*");
-    DrawText(ui, "Required services：anomaly.ui v1 / anomaly.input v1 / anomaly.window v1 / anomaly.nte.vehicle v8 / anomaly.nte.player v1");
-    DrawText(ui, "Capabilities：ui / input / nte-vehicle / nte-player-snapshot / per-vehicle-customization-catalog / selected-modification-summon");
-    DrawText(ui, "创建日期：2026-10-14");
-    DrawText(ui, "修改状态：独立 K 菜单、改装车辆召唤、0–10 倍车速滑块与当前陆地载具自动满耐久；游戏内结果待实测");
-    DrawText(ui, "Host 状态：" + (status.empty() ? std::string("暂无状态消息") : status));
+    DrawText(ui, g_context.localizer.Text("detail.build_marker",
+        "Build marker: NTE Vehicle 0.10.6 / 2026-10-21-clickable-display-names"));
+    DrawText(ui, g_context.localizer.Text("detail.build_marker_abi",
+        "Build marker: manifest schema v2 / Plugin API v1 / Vehicle service v8"));
+    const std::array plugin_id_arguments{
+        std::string_view("anomaly.local.nte-vehicle")};
+    DrawText(ui, g_context.localizer.Format("detail.plugin_id", "Plugin ID: {0}",
+        plugin_id_arguments));
+    DrawText(ui, g_context.localizer.Text("detail.manifest",
+        "Manifest: schemaVersion=2 / entry=plugin.dll / loadPhase=game-ready / games=nte "
+        "/ builds=nte-*"));
+    DrawText(ui, g_context.localizer.Text("detail.required_services",
+        "Required services: anomaly.ui v1 / anomaly.input v1 / anomaly.window v1 / "
+        "anomaly.localization v1 / anomaly.nte.vehicle v8 / anomaly.nte.player v1"));
+    DrawText(ui, g_context.localizer.Text("detail.capabilities",
+        "Capabilities: ui / input / nte-vehicle / nte-player-snapshot "
+        "/ per-vehicle-customization-catalog / selected-modification-summon"));
+    DrawText(ui, g_context.localizer.Text("detail.created", "Created: 2026-10-14"));
+    DrawText(ui, g_context.localizer.Text("detail.status_note",
+        "Modification state: standalone K menu, customized vehicle summon, 0-10x speed "
+        "sliders and automatic full durability for the current land vehicle; in-game "
+        "results still pending."));
+    const std::string status_text = status.empty()
+        ? g_context.localizer.Text("text.no_status_message", "No status message yet")
+        : status;
+    const std::array status_arguments{std::string_view(status_text)};
+    DrawText(ui, g_context.localizer.Format("detail.host_status", "Host status: {0}",
+        status_arguments));
     // An empty diagnostic string means the Host snapshot callback returned OK.
-    // Do not label this success path as "Host 未提供快照状态"; use the validity flag
+    // Do not label this success path as a missing snapshot status; use the validity flag
     // to distinguish a valid current vehicle from a successful-but-empty snapshot.
     const std::string snapshot_status = !snap.vehicle_snapshot_status.empty()
         ? snap.vehicle_snapshot_status
         : (((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
-            ? std::string("Host 快照正常：已识别当前驾驶载具")
-            : std::string("Host 快照调用成功，但当前未识别驾驶载具"));
-    DrawText(ui, "载具快照状态：" + snapshot_status);
-    DrawText(ui, "驾驶载具对象：" +
-        (((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
-            ? (snap.vehicle_class_name.empty() ? std::string("已识别，类名未知") : snap.vehicle_class_name)
-            : std::string("未识别")));
-    DrawText(ui, "驾驶载具 Entity ID：" + (snap.vehicle_entity_id != 0
-        ? std::to_string(snap.vehicle_entity_id) : std::string("不可用")));
-    DrawText(ui, "VehicleID：" + (selected.empty() ? std::string("不可用") : selected));
-    DrawText(ui, "TopSpeedRatio：" +
-        (((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
-            ? std::to_string(snap.top_speed_ratio) : std::string("不可用")));
-    DrawText(ui, "玩家位置快照：" + std::string(player_position_valid ? "VALID" : "INVALID"));
-    DrawText(ui, "载具目录：" + std::to_string(catalog_size) + " 项；当前选项：" +
-        (selected.empty() ? std::string("无") : selected));
+            ? g_context.localizer.Text("text.snapshot_ok_identified",
+                  "Host snapshot OK: the current vehicle was identified")
+            : g_context.localizer.Text("text.snapshot_ok_unidentified",
+                  "Host snapshot call succeeded, but no vehicle is identified right now"));
+    const std::array snapshot_arguments{std::string_view(snapshot_status)};
+    DrawText(ui, g_context.localizer.Format("detail.snapshot_status",
+        "Vehicle snapshot status: {0}", snapshot_arguments));
+    const std::string driving_object =
+        ((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
+            ? (snap.vehicle_class_name.empty()
+                ? g_context.localizer.Text("text.identified_unknown_class",
+                      "Identified, class name unknown")
+                : snap.vehicle_class_name)
+            : g_context.localizer.Text("text.not_identified", "Not identified");
+    const std::array object_arguments{std::string_view(driving_object)};
+    DrawText(ui, g_context.localizer.Format("detail.driving_object",
+        "Driving vehicle object: {0}", object_arguments));
+    const std::string entity_text = snap.vehicle_entity_id != 0
+        ? std::to_string(snap.vehicle_entity_id)
+        : g_context.localizer.Text("text.unavailable", "Unavailable");
+    const std::array entity_arguments{std::string_view(entity_text)};
+    DrawText(ui, g_context.localizer.Format("detail.entity_id",
+        "Driving vehicle entity ID: {0}", entity_arguments));
+    const std::string selected_text = selected.empty()
+        ? g_context.localizer.Text("text.unavailable", "Unavailable")
+        : selected;
+    const std::array selected_arguments{std::string_view(selected_text)};
+    DrawText(ui, g_context.localizer.Format("detail.vehicle_id", "VehicleID: {0}",
+        selected_arguments));
+    const std::string top_speed_text =
+        ((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
+            ? std::to_string(snap.top_speed_ratio)
+            : g_context.localizer.Text("text.unavailable", "Unavailable");
+    const std::array top_speed_arguments{std::string_view(top_speed_text)};
+    DrawText(ui, g_context.localizer.Format("detail.top_speed_ratio",
+        "TopSpeedRatio: {0}", top_speed_arguments));
+    const std::array position_arguments{
+        std::string_view(player_position_valid ? "VALID" : "INVALID")};
+    DrawText(ui, g_context.localizer.Format("detail.player_position",
+        "Player position snapshot: {0}", position_arguments));
+    const std::string catalog_count = std::to_string(catalog_size);
+    const std::string catalog_selection = selected.empty()
+        ? g_context.localizer.Text("text.none", "None")
+        : selected;
+    const std::array catalog_arguments{
+        std::string_view(catalog_count), std::string_view(catalog_selection)};
+    DrawText(ui, g_context.localizer.Format("detail.catalog",
+        "Vehicle catalog: {0} entries; current selection: {1}", catalog_arguments));
 
     DrawDivider(ui);
-    DrawText(ui, "车速倍率：0.0x–100.0x；拖动滑块后自动应用");
+    DrawText(ui, g_context.localizer.Text("detail.speed_ratio_note",
+        "Speed ratio: 0.0x-100.0x; drag the slider to apply it automatically"));
 }
 
 void DrawContents(const AnomalyUiServiceV1* ui) {
@@ -1837,6 +2185,7 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
     float other_torque_ratio;
     bool friction;
     bool player_position_valid{};
+    bool customization_status_failure{};
     {
         std::scoped_lock lock(g_context.mutex);
         snap = g_context.snapshot;
@@ -1857,11 +2206,13 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
         other_torque_ratio = g_context.other_torque_ratio;
         friction = g_context.friction_enabled;
         player_position_valid = g_context.player_position_valid;
+        customization_status_failure = g_context.customization_status_failure;
     }
 
     static int active_tab = 0;
 
-    DrawText(ui, "K：打开/关闭载具菜单；按住 Alt 呼出游戏原生光标。");
+    DrawText(ui, g_context.localizer.Text("hint.menu_keys",
+        "K: open or close the vehicle menu; hold Alt to show the native game cursor."));
 
     const auto nav_button = [&](std::string_view label, int tab) {
         const std::string shown = active_tab == tab
@@ -1870,21 +2221,25 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
             active_tab = tab;
         DrawInlineGap(ui);
     };
-    nav_button("改装载具", 0);
-    nav_button("性能调校", 1);
-    nav_button("车轮摩擦", 2);
+    nav_button(g_context.localizer.Text("action.tab_customization", "Customize vehicles"), 0);
+    nav_button(g_context.localizer.Text("action.tab_performance", "Performance tuning"), 1);
+    nav_button(g_context.localizer.Text("action.tab_chassis", "Wheel friction"), 2);
 
-    nav_button("诊断", 3);
-    if (ui->button(ui->user, anomaly::sdk::StringView("刷新载具列表"), 0.0F, 0.0F)) {
+    nav_button(g_context.localizer.Text("action.tab_diagnostics", "Diagnostics"), 3);
+    const auto refresh_label =
+        g_context.localizer.Text("action.refresh_catalog", "Refresh vehicle list");
+    if (ui->button(ui->user, anomaly::sdk::StringView(refresh_label), 0.0F, 0.0F)) {
         g_context.refresh_catalog_requested.store(true, std::memory_order_release);
-        SetStatus("已请求重新整理载具目录");
+        SetStatus(g_context.localizer.Text("status.catalog_refresh_requested",
+            "Vehicle catalog refresh requested."));
     }
     DrawDivider(ui);
 
     if (active_tab == 0) {
         DrawCustomizationTab(ui, selected, ids, labels, customization_options,
             module_overrides, customization_vehicle_id, customization_skin_id,
-            customization_status, last_summon, player_position_valid);
+            customization_status, customization_status_failure, last_summon,
+            player_position_valid);
     } else if (active_tab == 1) {
         DrawPerformanceTab(ui, snap, speed_ratio, torque_ratio, other_speed_ratio,
             other_speed_floor_ratio, other_torque_ratio);
@@ -1908,19 +2263,26 @@ void Draw(const AnomalyUiServiceV1* ui) {
     const auto begin_status = g_context.window_service->begin(
         g_context.window_service->user, g_context.menu_window_handle, 0U, &visible);
     if (begin_status.code != ANOMALY_STATUS_V1_OK) {
-        SetStatus(StatusDescription("载具菜单窗口打开失败", begin_status));
+        SetStatus(StatusDescription(
+            g_context.localizer.Text("status.menu_window_open_failed",
+                "Opening the vehicle menu window failed"),
+            begin_status));
         return;
     }
     if (visible != 0) DrawContents(ui);
     const auto end_status = g_context.window_service->end(
         g_context.window_service->user, g_context.menu_window_handle);
     if (end_status.code != ANOMALY_STATUS_V1_OK) {
-        SetStatus(StatusDescription("载具菜单窗口收尾失败", end_status));
+        SetStatus(StatusDescription(
+            g_context.localizer.Text("status.menu_window_close_failed",
+                "Finishing the vehicle menu window failed"),
+            end_status));
     }
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) {
     if (!host || !plugin_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+    g_context.localizer = anomaly::sdk::Localizer(host);
     const auto* vehicle = QueryService<AnomalyNteVehicleServiceV1>(
         host, ANOMALY_NTE_VEHICLE_SERVICE_V1_ID, ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION);
     const auto* player = QueryService<AnomalyNtePlayerServiceV1>(
@@ -1932,8 +2294,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     const auto* plugin_state = QueryService<AnomalyPluginStateServiceV1>(
         host, ANOMALY_PLUGIN_STATE_SERVICE_V1_ID, ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION);
     if (!vehicle || !player || !InputReady(input) || !WindowReady(window_service)) {
-        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-            "载具菜单需要 anomaly.input 与 anomaly.window 服务");
+        return FailureStatus(ANOMALY_STATUS_V1_UNAVAILABLE, "status.services_missing",
+            "The vehicle menu requires the anomaly.input and anomaly.window services.");
     }
 
     if (!vehicle->snapshot || !vehicle->set_top_speed_ratio ||
@@ -1979,7 +2341,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     window_spec.struct_size = sizeof(window_spec);
     window_spec.flags = ANOMALY_WINDOW_V1_NO_COLLAPSE;
     window_spec.id = anomaly::sdk::StringView("nte-vehicle-independent-menu");
-    window_spec.title = anomaly::sdk::StringView("载具控制");
+    const std::string window_title =
+        g_context.localizer.Text("window.title", "Vehicle Control");
+    window_spec.title = anomaly::sdk::StringView(window_title);
     window_spec.initial_width = 1000.0F;
     window_spec.initial_height = 780.0F;
     window_spec.minimum_width = 860.0F;
@@ -1991,8 +2355,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         window_service->user, &window_spec, &g_context.menu_window_handle);
     if (window_status.code != ANOMALY_STATUS_V1_OK || g_context.menu_window_handle.id == 0) {
         g_context.menu_window_handle = {};
-        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-            "无法注册独立载具菜单窗口");
+        return FailureStatus(ANOMALY_STATUS_V1_UNAVAILABLE, "status.window_register_failed",
+            "Could not register the standalone vehicle menu window.");
     }
 
     g_context.vehicle = vehicle;
@@ -2037,6 +2401,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.friction_enabled = true;
 
     g_context.snapshot = {};
+    g_context.snapshot.vehicle_snapshot_status = g_context.localizer.Text(
+        "status.snapshot_pending",
+        "The host has not returned the current driving vehicle state yet.");
     g_context.selected_vehicle_id = "Vehicle007";
     g_context.saved_vehicle_id = LoadSavedSelection();
     g_context.saved_selection_pending = !g_context.saved_vehicle_id.empty();
@@ -2050,12 +2417,16 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.customization_page = true;
     g_context.customization_vehicle_id.clear();
     g_context.customization_skin_id.clear();
-    g_context.customization_status = "尚未读取当前车型的改装数据";
+    g_context.customization_status = g_context.localizer.Text(
+        "status.customization_not_loaded",
+        "The customization data of the current vehicle has not been read yet.");
+    g_context.customization_status_failure = false;
     g_context.customization_options.clear();
     g_context.selected_module_overrides.clear();
     g_context.customization_catalog_tick = 0;
     g_context.last_summon.clear();
-    g_context.status = "正在读取 Host 验证的运行时 Vehicle 目录";
+    g_context.status = g_context.localizer.Text("status.catalog_reading",
+        "Reading the host-verified runtime Vehicle catalog.");
     g_context.player_position_valid = false;
     g_context.player_snapshot = {};
     g_context.catalog_tick = 0;
@@ -2067,7 +2438,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     if (!InputReady(g_context.input) || !WindowReady(g_context.window_service) ||
         g_context.menu_window_handle.id == 0) {
-        return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "载具菜单窗口或输入服务不可用");
+        return FailureStatus(ANOMALY_STATUS_V1_UNAVAILABLE, "status.window_unavailable",
+            "The vehicle menu window or the input service is unavailable.");
     }
 
     ReleaseMenuHotkey(g_context);
@@ -2083,9 +2455,10 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
     if (hotkey_status.code != ANOMALY_STATUS_V1_OK ||
         g_context.menu_hotkey_handle.id == 0) {
         g_context.menu_hotkey_handle = {};
-        return Status(hotkey_status.code == ANOMALY_STATUS_V1_OK
+        return FailureStatus(hotkey_status.code == ANOMALY_STATUS_V1_OK
                 ? ANOMALY_STATUS_V1_FAILED : hotkey_status.code,
-            "无法注册 K 菜单快捷键");
+            "status.hotkey_register_failed",
+            "Could not register the K menu hotkey.");
     }
 
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
@@ -2146,7 +2519,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.local.nte-vehicle"),
-        anomaly::sdk::StringView("载具控制"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.10.3"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
+        anomaly::sdk::StringView("0.10.6"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }

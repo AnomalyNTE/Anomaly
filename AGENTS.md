@@ -84,6 +84,35 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 
 完整的模块、线程和变更影响图见 `.agents/architecture.md`。
 
+## 插件文案与本地化（强制）
+
+每个插件都必须走 i18n。新增插件、修改插件文案、审查插件 PR 时按下面执行；接口与目录格式以
+`docs/api-reference/lifecycle-and-core.md#anomalylocalization` 为准。
+
+- **每个插件都要有本地化路径**：带任何用户可见文本的插件，包目录里必须有 `locales/zh-CN.json`
+  （`schemaVersion: 1`、`locale: "zh-CN"`、`messages`），并在 `manifest.json` 的 `services` 声明
+  `{"id": "anomaly.localization", "minVersion": 1}`（capability 仍是共用的 `ui`）。没有 UI 的纯诊断
+  插件可以不带目录，但同样禁止任何中文字符串字面量。
+- **不许硬编码文案**：所有用户可见文本经 `anomaly.localization` 取，C++ 用 SDK 的
+  `anomaly::sdk::Localizer`（`include/anomaly/sdk/localization.hpp`）；C++ 字面量一律写成英文回退，
+  中文只存在于 `locales/<locale>.json`。中文注释可以保留，受约束的只有字符串字面量。
+- **manifest 交英文回退**：`name` / `description` 写英文，中文显示名放目录的 `window.title`、中文简介
+  放 `plugin.description`——宿主用这两个 key 渲染管理界面，缺失时才回退到 manifest。
+- **单一 Localizer 来源**：在 `Load(host, …)` 里从 host 查一次并保存，不得新增第二个实例，也不得在
+  静态初始化阶段调用本地化服务；语言在进程内固定，文案可以在产生它的位置解析。
+- **占位符必须与英文回退逐字对齐**：只允许 `{0}`..`{7}`，字面花括号写 `{{` / `}}`；集合不一致时宿主
+  静默回退英文，不报错——所以 `+` 拼接数值一律改成 `Format` 加 `{N}`。
+- **目录整体生效**：任何一条不合规（key 字符集/长度、空消息、花括号未转义）都会让整个目录失效、该插件
+  全部回退英文。改完必须整体校验 key 覆盖、占位符掩码、残留中文字面量、manifest 回退语言——统一用
+  `pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin <名字>`（省略 `-Plugin` 则检查全部插件），
+  它必须全绿。
+- **游戏数据不是文案**：DataTable 行名、游戏对话框原文、外部格式的原始标识（如 MMD 骨骼/表情名）必须与
+  运行时数据逐字匹配，不参与本地化；保持原样或写成 `\uXXXX` 转义，并就地注明它是数据。判断标准是
+  「改变它会不会破坏匹配」。
+- **打包时机**：`anomaly_add_plugin` 在 configure 期决定是否镜像 `locales/`。新增本地化目录后必须重新
+  configure 再构建，否则包目录里不会出现 `zh-CN.json`；manifest 与目录是 POST_BUILD 拷贝，改完要重建对应
+  target 才会更新构建树里的包。
+
 ## 构建与测试约定
 
 主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建预设。
@@ -115,6 +144,7 @@ ABI/线程/回调最外层 `catch (...)`、Dispatcher 锁外销毁 callback 等�
 | Runtime 启动与生命周期 | `src/bootstrap/dwmapi/proxy_main.cpp`、`src/runtime/core_main.cpp`、`src/runtime/runtime_session.cpp` |
 | 服务与所有权 | `src/runtime/service_graph.cpp`、`src/runtime/runtime_dispatchers.cpp` |
 | 插件 ABI 与热重载 | `include/anomaly/sdk/`、`src/plugin/`、`examples/` |
+| 插件文案与本地化 | `include/anomaly/sdk/localization.hpp`、`plugins/*/locales/`、`tools/check_plugin_i18n.ps1` |
 | UE5/NTE 兼容 | `src/game/ue5/`、`src/game/nte/`、`profiles/nte/` |
 | 渲染与 UI | `src/render/dx12/`、`src/ui/` |
 | 验证与发布门禁 | `CMakeLists.txt`、`.agents/tooling.md` |

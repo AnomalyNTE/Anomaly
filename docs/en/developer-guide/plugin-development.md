@@ -150,6 +150,46 @@ See [Manifest and capabilities](../api-reference/manifest-and-capabilities.md) a
 - `builds` is the build compatibility declaration, and it accepts either `nte-*` or an exact fingerprint. The current production Runtime does not compute fingerprints and does not use this field to block plugins on load, so it is not a runtime safety check.
 - `license` is a single SPDX identifier (required for public distribution).
 
+### Localized text
+
+User-visible text goes through [`anomaly.localization`](../api-reference/lifecycle-and-core.md#anomalylocalization) (it shares the `ui` capability). The SDK ships `anomaly::sdk::Localizer` as the C++ wrapper:
+
+```cpp
+#include "anomaly/sdk/localization.hpp"
+
+anomaly::sdk::Localizer localizer;  // without the service every lookup returns the English fallback
+
+// Query it once in on_load:
+localizer = anomaly::sdk::Localizer(host);
+
+const std::string title = localizer.Text("window.title", "My Plugin");
+const std::array arguments{std::string_view(std::to_string(count))};
+const std::string status =
+    localizer.Format("status.cached", "Cached {0} entries", arguments);
+```
+
+The messages come from `locales/<locale>.json` inside the package directory, next to `manifest.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "我的插件",
+    "plugin.description": "展示当前玩家与会话诊断。",
+    "status.cached": "已缓存 {0} 条"
+  }
+}
+```
+
+- A `key` may only use `[a-z0-9._-]` and is at most 255 bytes; a message may not be empty.
+- The `{0}`..`{7}` placeholders of a localized message must match the English fallback exactly, otherwise the host silently serves the fallback; escape literal braces as `{{` and `}}`.
+- The host uses `window.title` as the management-UI display name and `plugin.description` as the blurb, falling back to the manifest `name`/`description` only when they are missing. Keep those two manifest fields English and put the Chinese in the catalog.
+- Declare `{"id": "anomaly.localization", "minVersion": 1}` in `manifest.services`.
+- The active language is fixed for the lifetime of the process and changing it requires a game restart, so text can be resolved where it is produced instead of at draw time.
+- The repository ships a checker that validates key coverage, placeholder masks, leftover Chinese literals and the manifest fallback language in one run:
+  `pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin <name>` (omit `-Plugin` to check every plugin).
+
 ## 6. Capabilities and authorization
 
 **Every non-optional required service must declare the matching capability**, otherwise the package is rejected before the DLL is mapped. Declaring an unknown capability, or having a required service that is not mapped / has no matching capability, makes the package unloadable. `anomaly.core` itself needs no capability.

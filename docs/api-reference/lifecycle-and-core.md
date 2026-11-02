@@ -122,7 +122,40 @@ typedef struct AnomalyLocalizationServiceV1 {
 | 函数 | 说明 |
 | --- | --- |
 | `locale(destination, inout_size)` | 当前 locale（如 `zh-CN`），两段式缓冲协议 |
-| `translate(key, english_fallback, arguments, argument_count, destination, inout_size)` | 按 `key` 翻译，缺失时用 `english_fallback`；`arguments` 是位置参数数组 |
+| `translate(key, english_fallback, arguments, argument_count, destination, inout_size)` | 按 `key` 翻译，缺失时用 `english_fallback`；`arguments` 是位置参数数组（≤8）。`destination = NULL` 时按两段式缓冲协议只回报所需字节数（含结尾 NUL），status 为 `OK` 或 `BUFFER_TOO_SMALL` |
 
 > [!NOTE]
 > `anomaly.localization` 与 `anomaly.ui` 共用 `ui` capability。
+
+### 文案目录
+
+插件用它自己的包目录里的 `locales/<locale>.json` 提供翻译（与 `manifest.json` 同级，文件名即 locale 名）：
+
+```json
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "我的插件",
+    "plugin.description": "展示当前玩家与会话诊断。",
+    "status.cached": "已缓存 {0} 条"
+  }
+}
+```
+
+| 约束 | 说明 |
+| --- | --- |
+| `schemaVersion` | 必须是 `1` |
+| `locale` | 必须与请求的 locale 名一致 |
+| key | 只允许 `[a-z0-9._-]`，长度 ≤255 |
+| 消息 | 非空字符串 |
+| 占位符 | 只允许 `{0}`..`{7}`，字面花括号写 `{{` / `}}`；**中文条目的占位符集合必须与英文回退完全一致**，否则该条静默回退英文 |
+| 体积 | 文件 ≤1 MiB，条目 ≤4096 |
+
+**目录是整体生效的**：只要有一条不合规（key 非法、消息为空、花括号未转义、占位符写法错误等），整个目录会被判为无效，该插件的每一次 `translate` 都退回英文，日志里只留一条 `plugin localization fallback`。新增条目后要整体校验，不要指望单条容错。
+
+宿主另外从同一个目录读两个固定 key 用于管理界面：`window.title` 作显示名、`plugin.description` 作简介，缺失时才回退到 manifest 的 `name` / `description`。因此这两个 manifest 字段应写英文回退值，中文放进目录。
+
+当前语言在进程生命周期内固定，切换语言需重启游戏进程，所以文案可以在产生它的位置直接解析，不必推迟到绘制。
+
+C++ 侧直接用 SDK 的 `anomaly::sdk::Localizer`（`include/anomaly/sdk/localization.hpp`），它封装 `Text` / `Format` / `Label` 与超长消息的两段式重试；用法见 [插件开发 · 文本本地化](../developer-guide/plugin-development.md#文本本地化)。

@@ -13,7 +13,7 @@ struct VisualBackup {
 std::vector<VisualBackup> visual_backups;
 Clock::time_point next_visual{};
 struct View {
-    std::string status{"等待本地角色背包。"}; size_t owned{}, changed{}, processed{}, rejected{}, already{};
+    std::string status{localizer.Text("status.inventory_waiting", "Waiting for the local character inventory.")}; size_t owned{}, changed{}, processed{}, rejected{}, already{};
     bool ready{}, active{}, busy{}, restore_failed{};
 };
 std::atomic<std::shared_ptr<const View>> published;
@@ -345,7 +345,7 @@ void Publish() {
     data->busy = !initial_complete && cursor < queue.size();
     data->restore_failed = restore_failed;
     if (!result.empty()) data->status = result;
-    else if (data->ready) data->status = "已读取全部已持有角色。";
+    else if (data->ready) data->status = localizer.Text("status.inventory_ready","All owned characters were read.");
     published.store(std::move(data));
 }
 void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
@@ -357,7 +357,7 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     int off = 2;
     if (requested.compare_exchange_strong(off,0)) {
         restore_failed = !Restore(r,objects,true);
-        result = restore_failed ? "部分角色恢复未完成，请重试。" : "已恢复全部角色原觉醒。";
+        result = restore_failed ? localizer.Text("status.restore_partial","Some characters were not fully restored; try again.") : localizer.Text("status.restore_done","All characters' original awakening was restored.");
         Publish(); return;
     }
     if (Clock::now() >= next_inventory) {
@@ -366,7 +366,7 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
         const auto handle = inventory ? Handle(r,objects,inventory) : AnomalyGenerationHandleV1{};
         if (inventory_handle.id && inventory_handle.id != handle.id) {
             restore_failed = !Restore(r,objects,false);
-            result = restore_failed ? "原觉醒恢复未完成。" : "角色背包已变更，已恢复原觉醒。";
+            result = restore_failed ? localizer.Text("status.restore_incomplete","Original awakening restore did not finish.") : localizer.Text("status.restore_after_inventory_change","The character inventory changed, so the original awakening was restored.");
             owned.clear(); ui_handle = {}; ui_scan_index = 0;
         }
         inventory_handle = handle;
@@ -385,15 +385,17 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     if (const auto command = requested.exchange(0)) {
         if (command == 2) {
             restore_failed = !Restore(r,objects,true);
-            result = restore_failed ? "部分角色恢复未完成，请重试。" : "已恢复全部角色原觉醒。";
+            result = restore_failed ? localizer.Text("status.restore_partial","Some characters were not fully restored; try again.") : localizer.Text("status.restore_done","All characters' original awakening was restored.");
         }
         else if (command == 1 && !owned.empty()) {
-            enabled = true; initial_complete=false; restore_failed = false; queue = owned; cursor = rejected = already = 0; result = "正在分批预览全部已持有角色。";
+            enabled = true; initial_complete=false; restore_failed = false; queue = owned; cursor = rejected = already = 0; result = localizer.Text("status.preview_running","Previewing all owned characters in batches.");
         }
     }
     if (enabled && cursor < queue.size()) {
         Apply(r,objects,queue[cursor++]);
-        if (cursor == queue.size()) {initial_complete=true;result = rejected ? "部分角色未通过校验，未修改。" : "全部角色的觉醒节点已解锁（本机预览）。";}
+        if (cursor == queue.size()) {initial_complete=true;result = rejected ?
+            localizer.Text("status.preview_partial","Some characters did not pass validation and were left unchanged."):
+            localizer.Text("status.preview_done","Every character's awakening nodes are unlocked (local preview).");}
     }
     // A selected page is refreshed once; no continuous rewriting or RPCs.
     if (enabled) {
@@ -425,10 +427,10 @@ void Draw(const AnomalyUiServiceV1* ui) {
     const auto data = published.load(); if (!data) return;
     const auto command = requested.load();
     int checked = command ? command == 1 : data->active;
-    if (ui->checkbox && ui->checkbox(ui->user,StringView("解锁觉醒"),&checked)) requested = checked ? 1 : 2;
-    if (data->restore_failed) ui->text(ui->user,StringView("恢复未完成，请关闭开关重试。"));
-    else if (!data->ready) ui->text(ui->user,StringView("等待角色加载…"));
-    else if (data->busy) ui->text(ui->user,StringView("正在开启…"));
-    else if (data->active && data->rejected) ui->text(ui->user,StringView("部分角色未能开启。"));
+    if (ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Text("option.unlock_awakening","Unlock awakening")),&checked)) requested = checked ? 1 : 2;
+    if (data->restore_failed) ui->text(ui->user,StringView(localizer.Text("status.restore_failed_retry","The restore did not finish; turn the switch off and on to retry.")));
+    else if (!data->ready) ui->text(ui->user,StringView(localizer.Text("status.character_loading","Waiting for the character to load...")));
+    else if (data->busy) ui->text(ui->user,StringView(localizer.Text("status.enabling","Enabling...")));
+    else if (data->active && data->rejected) ui->text(ui->user,StringView(localizer.Text("status.enable_partial","Some characters could not be enabled.")));
 }
 }

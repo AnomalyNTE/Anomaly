@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include "plugins/HiFiVehicleMusic/audio_engine.hpp"
 #include "plugins/HiFiVehicleMusic/hifi_vehicle_music_profile.hpp"
 
@@ -273,7 +273,7 @@ struct Context final {
     // Kept so the AHUD service can be looked up again: it is published only after
     // the game's reflection gate opens, which is after a boot-time load.
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     AnomalyGenerationHandleV1 settings_schema{};
     AudioEngine engine;
 
@@ -4109,7 +4109,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         context->ahud = host_view.Query<AnomalyUe5AhudServiceV1>(
             ANOMALY_UE5_AHUD_SERVICE_V1_ID, ANOMALY_UE5_AHUD_SERVICE_V1_VERSION).get();
         if (!AhudReady(context->ahud)) context->ahud = nullptr;
-        context->localizer = anomaly::plugins::Localizer(host);
+        context->localizer = anomaly::sdk::Localizer(host);
         if (!CoreReady(context->core) || !ConfigReady(context->config) ||
             !SignatureReady(context->signature) || !HookReady(context->hook) ||
             !NamesReady(context->names) || !SchedulerReady(context->scheduler)) {
@@ -4319,7 +4319,7 @@ void StartFolderPicker(Context& context) {
 }
 
 std::string HookStateText(const Context& context) {
-    const anomaly::plugins::Localizer& l10n = context.localizer;
+    const anomaly::sdk::Localizer& l10n = context.localizer;
     const std::array<std::string_view, 1> args{context.hook_detail};
     switch (context.hook_state) {
     case HookState::Waiting:
@@ -4336,7 +4336,7 @@ std::string HookStateText(const Context& context) {
     return {};
 }
 
-std::string EngineStatusText(const anomaly::plugins::Localizer& l10n,
+std::string EngineStatusText(const anomaly::sdk::Localizer& l10n,
     const hifi_vehicle_music::EngineSnapshot& snapshot) {
     const std::array<std::string_view, 1> args{snapshot.detail};
     switch (snapshot.status) {
@@ -4367,7 +4367,7 @@ std::string EngineStatusText(const anomaly::plugins::Localizer& l10n,
 // Called from Draw with the context mutex held.
 void DrawStatus(Context& context, const AnomalyUiServiceV1* ui,
     const hifi_vehicle_music::EngineSnapshot& snapshot) {
-    const anomaly::plugins::Localizer& l10n = context.localizer;
+    const anomaly::sdk::Localizer& l10n = context.localizer;
     Text(ui, HookStateText(context));
     Text(ui, EngineStatusText(l10n, snapshot));
     {
@@ -4429,7 +4429,7 @@ std::string PlaylistId(const std::string_view input) {
 // The Meting section: search, playlist import and the current song list. A song
 // plays when picked in the game's "Meting" album or with its button here.
 void DrawMeting(Context& context, const AnomalyUiServiceV1* ui) {
-    const anomaly::plugins::Localizer& l10n = context.localizer;
+    const anomaly::sdk::Localizer& l10n = context.localizer;
     Text(ui, l10n.Text("meting.title", "Meting library (memory playback, no audio cache)"));
     const bool busy = context.meting_busy.load(std::memory_order_acquire);
     ui->input_text(ui->user, anomaly::sdk::StringView(l10n.Label("meting.search", "Search songs", "meting-query")),
@@ -4509,7 +4509,7 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         : context == nullptr ? nullptr : context->ui;
     if (context == nullptr || !UiReady(ui)) return;
     try {
-        const anomaly::plugins::Localizer& l10n = context->localizer;
+        const anomaly::sdk::Localizer& l10n = context->localizer;
         int open = 1;
         anomaly::sdk::UiWindow window(ui, l10n.Label("window.title", "HiFi Vehicle Music",
             "hifi-vehicle-music"), &open);

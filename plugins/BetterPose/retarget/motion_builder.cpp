@@ -1180,11 +1180,11 @@ VmdCompatibilityReport AnalyzeParsedVmdCompatibility(
   int scores[3] = {};
   if (report.upper_body_3) {
     scores[2] += 6;
-    add_reason("three-section spine (上半身3)");
+    add_reason("three-section spine (upper-body 3)");
   } else if (report.upper_body_2) {
     scores[1] += 1;
     scores[0] += 1;
-    add_reason("two-section spine (上半身2)");
+    add_reason("two-section spine (upper-body 2)");
   } else {
     scores[0] += 3;
     add_reason("single-section spine");

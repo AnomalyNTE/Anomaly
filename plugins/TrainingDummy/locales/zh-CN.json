@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "木桩训练",
     "plugin.description": "通过角色自身的召唤路径生成木桩，比把菜单塞进游戏内轮盘更稳定。",
     "window.title": "木桩训练",
     "template.title": "模板",

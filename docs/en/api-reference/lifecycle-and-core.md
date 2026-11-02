@@ -122,7 +122,40 @@ typedef struct AnomalyLocalizationServiceV1 {
 | Function | Description |
 | --- | --- |
 | `locale(destination, inout_size)` | Current locale (for example `zh-CN`), two-phase buffer protocol |
-| `translate(key, english_fallback, arguments, argument_count, destination, inout_size)` | Translate by `key`, falling back to `english_fallback` when the key is missing; `arguments` is an array of positional arguments |
+| `translate(key, english_fallback, arguments, argument_count, destination, inout_size)` | Translate by `key`, falling back to `english_fallback` when the key is missing; `arguments` is an array of positional arguments (at most 8). With `destination = NULL` it follows the two-phase buffer protocol and only reports the required byte count (including the trailing NUL), with status `OK` or `BUFFER_TOO_SMALL` |
 
 > [!NOTE]
 > `anomaly.localization` and `anomaly.ui` share the `ui` capability.
+
+### Message catalog
+
+A plugin supplies its translations in `locales/<locale>.json` inside its own package directory (next to `manifest.json`; the file name is the locale name):
+
+```json
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "我的插件",
+    "plugin.description": "展示当前玩家与会话诊断。",
+    "status.cached": "已缓存 {0} 条"
+  }
+}
+```
+
+| Constraint | Description |
+| --- | --- |
+| `schemaVersion` | Must be `1` |
+| `locale` | Must equal the requested locale name |
+| key | Only `[a-z0-9._-]`, at most 255 bytes |
+| message | A non-empty string |
+| placeholders | Only `{0}`..`{7}`; escape literal braces as `{{` / `}}`. **A localized message must declare exactly the placeholders of its English fallback**, otherwise that entry silently falls back to English |
+| size | File at most 1 MiB, at most 4096 entries |
+
+**The catalog is all-or-nothing**: one invalid entry (illegal key, empty message, unescaped brace, malformed placeholder) invalidates the whole file, so every `translate` of that plugin serves English and a single `plugin localization fallback` line is logged. Validate the file as a whole after adding entries instead of expecting per-entry tolerance.
+
+The host also reads two fixed keys from the same file for the management UI: `window.title` as the display name and `plugin.description` as the blurb, falling back to the manifest `name` / `description` only when they are missing. Keep those two manifest fields English and put the Chinese in the catalog.
+
+The active language is fixed for the lifetime of the process and changing it requires a game restart, so text can be resolved wherever it is produced instead of at draw time.
+
+On the C++ side use the SDK's `anomaly::sdk::Localizer` (`include/anomaly/sdk/localization.hpp`); it wraps `Text` / `Format` / `Label` and the two-phase retry for long messages. See [Plugin development · Localized text](../developer-guide/plugin-development.md#localized-text).

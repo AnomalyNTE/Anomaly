@@ -4,6 +4,7 @@
 #include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/nte.h"
+#include "anomaly/sdk/localization.hpp"
 
 // 共享自动战斗状态机（plugins/common/combat）：怪物识别、选靶、接近/攻击、
 // 「见过怪之后连续 5 秒无怪」的完成判据与清空后的掉落拾取都由模块持有。
@@ -122,17 +123,41 @@ struct EntryDisplay {
 };
 
 constexpr EntryDisplay kDisplays[] = {
-    {1, "资源副本", {{"角色经验",3},{"弧盘经验",4},{"甲硬币",5}}, 3, 1, 6},
-    {2, "异能材料副本", {{"小心鸽子",0},{"扑克茶会",1},{"惊喜派对",2},{"心电感应",3},{"越狱艺术",4}}, 5, 1, 7},
-    {3, "弧盘突破副本", {{"苹果核",0},{"螺旋乐",1},{"液态梦",2},{"冷甜点",3},{"戏剧芯",4}}, 5, 1, 7},
-    {4, "空暮副本", {{"失落光芒和迪亚波",0},{"恶魔之血和街头拳王",1},{"森林萤火和真红",2},{"缇娅和守卫王国",3},{"音速蓝刺猬和静谧山庄",4},{"影之信条和小小大冒险",5}}, 6, 1, 6},
-    {5, "周本墨菲克斯", {{"",0}}, 1, 1, 7},
-    {6, "周本永不谢幕", {{"",0}}, 1, 1, 7},
-    {9, "抢银行", {{"",0}}, 1, 1, 1},
-    {13, "周本讨债人", {{"",0}}, 1, 1, 7},
+    {1, "Resource dungeon", {{"Character EXP",3},{"Disc EXP",4},{"Armor coin",5}}, 3, 1, 6},
+    {2, "Ability material dungeon", {{"Careful, pigeons",0},{"Poker tea party",1},{"Surprise party",2},{"Telepathy",3},{"Escape artistry",4}}, 5, 1, 7},
+    {3, "Disc breakthrough dungeon", {{"Apple core",0},{"Spiral tune",1},{"Liquid dream",2},{"Cold dessert",3},{"Drama core",4}}, 5, 1, 7},
+    {4, "Hollow dusk dungeon", {{"Lost light and Diablo",0},{"Demon blood and the street king",1},{"Forest fireflies and Crimson",2},{"Tia and the guardian kingdom",3},{"Blue hedgehog and the quiet manor",4},{"Creed of shadow and the tiny adventure",5}}, 6, 1, 6},
+    {5, "Weekly: Morphix", {{"",0}}, 1, 1, 7},
+    {6, "Weekly: the show never ends", {{"",0}}, 1, 1, 7},
+    {9, "Bank heist", {{"",0}}, 1, 1, 1},
+    {13, "Weekly: debt collector", {{"",0}}, 1, 1, 7},
 };
 
 constexpr std::size_t kDisplayCount = sizeof(kDisplays) / sizeof(kDisplays[0]);
+
+// 副本名与子节点名经 localization 服务解析：英文回退留在上面的表里，目录 key 按下标
+// 并列（子节点只覆盖有多个子节点的副本），中文文案在 locales/zh-CN.json。
+constexpr std::array<std::string_view, kDisplayCount> entry_name_keys{
+    "text.entry.resource", "text.entry.skill_material", "text.entry.disc_breakthrough",
+    "text.entry.empty_dusk", "text.entry.weekly_morphix", "text.entry.weekly_never_ends",
+    "text.entry.bank_heist", "text.entry.weekly_debt_collector"};
+constexpr std::array<std::string_view, 19> sub_name_keys{
+    "text.sub.character_exp", "text.sub.disc_exp", "text.sub.armor_coin",
+    "text.sub.careful_pigeons", "text.sub.poker_tea_party", "text.sub.surprise_party",
+    "text.sub.telepathy", "text.sub.escape_artistry",
+    "text.sub.apple_core", "text.sub.spiral_tune", "text.sub.liquid_dream",
+    "text.sub.cold_dessert", "text.sub.drama_core",
+    "text.sub.lost_light_and_diablo", "text.sub.demon_blood_and_street_king",
+    "text.sub.forest_fireflies_and_crimson", "text.sub.tia_and_guardian_kingdom",
+    "text.sub.blue_hedgehog_and_quiet_manor", "text.sub.creed_of_shadow_and_tiny_adventure"};
+
+constexpr std::size_t SubNameBase(const std::size_t row) {
+    std::size_t base = 0;
+    for (std::size_t i = 0; i < row; ++i) {
+        base += kDisplays[i].sub_count > 1U ? kDisplays[i].sub_count : 0;
+    }
+    return base;
+}
 
 struct Context {
     const AnomalyHostApiV1* host{};
@@ -153,6 +178,7 @@ struct Context {
     const AnomalyNteNavigationServiceV1* navigation{};
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
     const AnomalyNtePickupServiceV1* pickup{};
+    anomaly::sdk::Localizer localizer;
     std::string cache_path;
     // 战斗状态机（plugins/common/combat）持有的状态：目标与选靶缓存、尸体拉黑、
     // 玩家/世界/GObjects 解析缓存、怪物类名缓存、「见过怪后连续 5 秒无怪」的完成判据。
@@ -287,9 +313,9 @@ struct Context {
     std::uint64_t auto_claim_clone_id{};
     std::int32_t auto_claim_phase{0};
     std::int32_t auto_claim_retries{0};
-    // 领取流程的时限按"采样次数"计，而不是墙钟：状态机靠被调用推进，
+    // 领取流程的时限按「采样次数」计，而不是墙钟：状态机靠被调用推进，
     // 游戏 tick 一旦停摆（失焦/加载/卡顿），墙钟 deadline 会在恢复调用的第一刻
-    // 立刻判超时，于是变成概率性失败。按次数计则等价于"观察够 N 次才放弃"。
+    // 立刻判超时，于是变成概率性失败。按次数计则等价于「观察够 N 次才放弃」。
     std::uint32_t auto_claim_polls{0};
     std::uint32_t auto_claim_deadline_polls{0};
     std::uint32_t auto_claim_limit_polls{0};
@@ -408,8 +434,8 @@ bool ValidHotkey(const std::uint32_t key) noexcept {
         !(key >= VK_LBUTTON && key <= VK_XBUTTON2));
 }
 
-std::string HotkeyName(const std::uint32_t key) {
-    if (key == 0) return "未设置";
+std::string HotkeyName(const anomaly::sdk::Localizer& localizer, const std::uint32_t key) {
+    if (key == 0) return localizer.Text("text.hotkey_unset", "Not set");
     if (key >= '0' && key <= '9') return std::string(1, static_cast<char>(key));
     if (key >= 'A' && key <= 'Z') return std::string(1, static_cast<char>(key));
     if (key >= VK_F1 && key <= VK_F24) return "F" + std::to_string(key - VK_F1 + 1U);
@@ -3992,7 +4018,7 @@ bool ActivateSkillByInputId(Context& context, std::int32_t input_id) noexcept {
         !HasField<AnomalyNteSkillInvocationServiceV1, decltype(AnomalyNteSkillInvocationServiceV1::activate)>(
             context.skill_invocation, offsetof(AnomalyNteSkillInvocationServiceV1, activate)) ||
         context.skill_invocation->activate == nullptr) {
-        context.combat_status = "等待框架技能服务";
+        context.combat_status = context.localizer.Text("status.skill_service_waiting", "Waiting for the framework skill service");
         return false;
     }
     AnomalyNteCombatantSnapshotV1 combatant{sizeof(combatant)};
@@ -4004,7 +4030,7 @@ bool ActivateSkillByInputId(Context& context, std::int32_t input_id) noexcept {
         (frame.flags & ANOMALY_NTE_SNAPSHOT_V1_VALID) == 0 ||
         combatant.character.id != frame.character.id ||
         combatant.character.generation != frame.character.generation) {
-        context.combat_status = "等待框架角色技能快照";
+        context.combat_status = context.localizer.Text("status.skill_snapshot_waiting", "Waiting for the framework character skill snapshot");
         return false;
     }
     std::array<AnomalyNteSkillSnapshotV1, 64> skills{};
@@ -4019,7 +4045,7 @@ bool ActivateSkillByInputId(Context& context, std::int32_t input_id) noexcept {
         AnomalyNteSkillPageResultV1 page{sizeof(page)};
         if (context.skills->page(context.skills->user, &page_request, skills.data(), &page).code != ANOMALY_STATUS_V1_OK ||
             page.generation != frame.generation || page.returned > skills.size()) {
-            context.combat_status = "框架技能快照已变化，等待刷新";
+            context.combat_status = context.localizer.Text("status.skill_snapshot_changed", "The framework skill snapshot changed; waiting for the refresh");
             return false;
         }
         for (std::uint32_t i = 0; i < page.returned; ++i) {
@@ -4035,7 +4061,10 @@ bool ActivateSkillByInputId(Context& context, std::int32_t input_id) noexcept {
             AnomalyNteSkillInvocationResultV1 result{sizeof(result)};
             const auto status = context.skill_invocation->activate(context.skill_invocation->user, &request, &result);
             if (status.code != ANOMALY_STATUS_V1_OK) {
-                context.combat_status = "框架技能调用失败：" + std::to_string(status.code);
+                const std::string call_code = std::to_string(status.code);
+                const std::array<std::string_view, 1> call_arguments{call_code};
+                context.combat_status = context.localizer.Format("status.skill_call_failed",
+                    "The framework skill call failed: {0}", call_arguments);
                 return false;
             }
             if (result.accepted != 0) return true;
@@ -4043,8 +4072,12 @@ bool ActivateSkillByInputId(Context& context, std::int32_t input_id) noexcept {
         if (page.next_offset <= offset) break;
         offset = page.next_offset;
     }
-    context.combat_status = matched ? "框架技能未接受本次施放" :
-        "框架未找到技能 ID " + std::to_string(input_id);
+    const std::string input_text = std::to_string(input_id);
+    const std::array<std::string_view, 1> input_arguments{input_text};
+    context.combat_status = matched ? context.localizer.Text("status.skill_rejected",
+        "The framework skill did not accept this cast") :
+        context.localizer.Format("status.skill_id_missing",
+            "The framework has no skill with ID {0}", input_arguments);
     return false;
 }
 
@@ -4082,7 +4115,7 @@ bool InputFieldOffset(Context& context, std::uintptr_t owner,
 
 bool ResolveNormalAttackInput(Context& context) {
     if (!GetPlayerState(context)) {
-        context.combat_status = "普攻输入：等待玩家";
+        context.combat_status = context.localizer.Text("status.attack_input_wait_player", "Normal attack input: waiting for the player");
         return false;
     }
     // 普攻绑定缓存现在由战斗模块的 State 持有：测试普攻（TestAttackTick）与模块的
@@ -4097,7 +4130,7 @@ bool ResolveNormalAttackInput(Context& context) {
     Read(reinterpret_cast<const void*>(state.controller + kObjectClassOffset), cls);
     if (!FindFunction(context.names, cls, "ActivateAbilityFromID", 2, 8, next.triggered) ||
         !FindFunction(context.names, cls, "ReleaseAbilityFromID", 2, 8, next.completed)) {
-        context.combat_status = "普攻输入：未找到配对的能力输入函数";
+        context.combat_status = context.localizer.Text("status.attack_input_no_functions", "Normal attack input: no matching ability input functions");
         return false;
     }
     const auto table = FindWidgetProperty(context, state.controller, "DT_AbilityInput");
@@ -4109,7 +4142,7 @@ bool ResolveNormalAttackInput(Context& context) {
         !InputFieldOffset(context, row_struct, "Param", "IntProperty", 4, param_offset) ||
         !InputFieldOffset(context, row_struct, "InputAction", "ObjectProperty", 8, action_offset) ||
         !ReadDataTable(context, table, rows)) {
-        context.combat_status = "普攻输入：角色输入绑定表不可用";
+        context.combat_status = context.localizer.Text("status.attack_input_table_unavailable", "Normal attack input: the character input binding table is unavailable");
         return false;
     }
     bool found{};
@@ -4120,13 +4153,13 @@ bool ResolveNormalAttackInput(Context& context) {
             ObjectName(context.names, action) != "IA_MeleeAttack" ||
             !Read(reinterpret_cast<const void*>(row + id_offset), next.input_id) ||
             !Read(reinterpret_cast<const void*>(row + param_offset), next.input_param)) {
-            context.combat_status = "普攻输入：普通攻击绑定不兼容";
+            context.combat_status = context.localizer.Text("status.attack_input_binding_incompatible", "Normal attack input: the normal attack binding is incompatible");
             return false;
         }
         found = true;
     }
     if (!found) {
-        context.combat_status = "普攻输入：未找到普通攻击绑定";
+        context.combat_status = context.localizer.Text("status.attack_input_binding_missing", "Normal attack input: no normal attack binding found");
         return false;
     }
     for (const bool pressed : {false, true}) {
@@ -4134,7 +4167,7 @@ bool ResolveNormalAttackInput(Context& context) {
         auto& value = pressed ? next.pressed_value : next.released_value;
         if (!InputFieldOffset(context, fn, "InputID", "ByteProperty", 1, id_offset, 8) ||
             !InputFieldOffset(context, fn, "Param", "IntProperty", 4, param_offset, 8)) {
-            context.combat_status = "普攻输入：能力输入参数不兼容";
+            context.combat_status = context.localizer.Text("status.attack_input_params_incompatible", "Normal attack input: the ability input parameters are incompatible");
             return false;
         }
         value[id_offset] = next.input_id;
@@ -4156,7 +4189,7 @@ bool InvokeNormalAttack(Context& context) {
         reinterpret_cast<void*>(binding.triggered), pressed_value.data());
     const bool released = Invoke(reinterpret_cast<void*>(binding.controller),
         reinterpret_cast<void*>(binding.completed), released_value.data());
-    if (!pressed || !released) context.combat_status = "普攻输入调用异常，已停止";
+    if (!pressed || !released) context.combat_status = context.localizer.Text("status.attack_input_fault", "The normal attack input call failed; stopped");
     return pressed && released;
 }
 
@@ -4561,7 +4594,7 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
                 " ambiguous=" + std::to_string(result.ambiguous));
         } else if (!result.complete && now >= context.next_reward_scan_diag) {
             // 这条路径是按 500ms 轮询的，失败是概率性的：按 2 秒节流留一条线索，
-            // 否则"找不到领奖窗口"只能看到结论、看不到原因。
+            // 否则「找不到领奖窗口」只能看到结论、看不到原因。
             context.next_reward_scan_diag = now + std::chrono::seconds(2);
             LogRewardDiagnostic(context, "reward-window scan incomplete: " + std::string(reason) +
                 " scanned=" + std::to_string(result.scanned) +
@@ -4643,8 +4676,8 @@ RewardWindows FindRewardWindows(Context& context, bool diagnose = false) {
             result.award_double_button = "Button_Double";
         }
     }
-    // 有条目读失败时不能断言"没有窗口"：标记为不完整，让调用方下一轮重试，
-    // 而不是把一次瞬时读取失败变成"未发现领奖窗口"。
+    // 有条目读失败时不能断言「没有窗口」：标记为不完整，让调用方下一轮重试，
+    // 而不是把一次瞬时读取失败变成「未发现领奖窗口」。
     if (result.award == 0 && result.settlement == 0 && result.skipped != 0) {
         return finish("skipped unreadable registry entries");
     }
@@ -4738,12 +4771,13 @@ const char* SelectRewardButton(Context& context, const RewardWindows& windows, b
         if (button == 0) continue;
         bool visible{};
         if (!RewardButtonVisible(context, button, visible)) {
-            context.combat_status = "领取按钮可见状态读取失败：" + std::string(name);
+            context.combat_status = context.localizer.Format("status.reward_button_visibility_failed",
+                "Reward button visibility could not be read: {0}", std::array<std::string_view, 1>{name});
             return nullptr;
         }
         if (visible) return name;
     }
-    context.combat_status = "等待领取按钮显示";
+    context.combat_status = context.localizer.Text("status.reward_button_waiting", "Waiting for the reward button to appear");
     return nullptr;
 }
 
@@ -4791,24 +4825,28 @@ RewardClickResult ClickRewardButton(Context& context, std::uintptr_t window,
                                     std::string_view property_name) noexcept {
     const auto button = FindWidgetProperty(context, window, property_name);
     if (button == 0) {
-        context.combat_status = "未找到按钮字段：" + std::string(property_name);
+        context.combat_status = context.localizer.Format("status.reward_button_field_missing",
+            "Button field not found: {0}", std::array<std::string_view, 1>{property_name});
         return RewardClickResult::Unavailable;
     }
     bool visible{}, enabled{}, interactable{};
     if (!QueryWidgetBool(context, button, "IsVisible", visible) ||
         !QueryWidgetBool(context, button, "GetIsEnabled", enabled) ||
         !QueryWidgetBool(context, button, "IsInteractionEnabled", interactable)) {
-        context.combat_status = "按钮状态查询不可用：" + std::string(property_name);
+        context.combat_status = context.localizer.Format("status.reward_button_state_unavailable",
+            "Button state query unavailable: {0}", std::array<std::string_view, 1>{property_name});
         return RewardClickResult::Unavailable;
     }
     if (!visible || !enabled || !interactable) {
-        context.combat_status = "按钮尚不可点击：" + std::string(property_name);
+        context.combat_status = context.localizer.Format("status.reward_button_disabled",
+            "Button is not clickable yet: {0}", std::array<std::string_view, 1>{property_name});
         return RewardClickResult::Waiting;
     }
     bool rejected{};
     const auto bound = FindBoundButtonClick(context, window, property_name, rejected);
     if (rejected) {
-        context.combat_status = "按钮蓝图点击事件不唯一或参数不兼容，已停止";
+        context.combat_status = context.localizer.Text("status.reward_button_event_ambiguous",
+            "The button Blueprint click event is not unique or its parameters are incompatible; stopped");
         return RewardClickResult::Unavailable;
     }
     std::uintptr_t receiver = window, fn = bound;
@@ -4818,7 +4856,7 @@ RewardClickResult ClickRewardButton(Context& context, std::uintptr_t window,
         std::uintptr_t cls{};
         Read(reinterpret_cast<const void*>(button + kObjectClassOffset), cls);
         if (!FindFunction(context.names, cls, "HandleButtonClicked", 0, 0, fn)) {
-            context.combat_status = "按钮没有可用的点击事件";
+            context.combat_status = context.localizer.Text("status.reward_button_event_missing", "The button has no usable click event");
             return RewardClickResult::Unavailable;
         }
         receiver = button;
@@ -4826,10 +4864,11 @@ RewardClickResult ClickRewardButton(Context& context, std::uintptr_t window,
     }
     // The bound Blueprint event runs the game action without depending on pointer/release animation state.
     if (!Invoke(reinterpret_cast<void*>(receiver), reinterpret_cast<void*>(fn), parameters)) {
-        context.combat_status = "按钮点击调用异常，已停止";
+        context.combat_status = context.localizer.Text("status.reward_click_fault", "The button click call failed; stopped");
         return RewardClickResult::Fault;
     }
-    context.combat_status = "已调用按钮：" + std::string(property_name) + "，等待界面变化";
+    context.combat_status = context.localizer.Format("status.reward_button_clicked",
+        "Clicked {0}; waiting for the UI to change", std::array<std::string_view, 1>{property_name});
     LogRewardDiagnostic(context, "reward-click dispatched field=" + std::string(property_name) +
         " button=" + ObjectName(context.names, button) + " handler=" + ObjectName(context.names, fn));
     return RewardClickResult::Invoked;
@@ -4838,7 +4877,7 @@ RewardClickResult ClickRewardButton(Context& context, std::uintptr_t window,
 void ExitSettlement(Context& context) noexcept {
     const std::uintptr_t ui_obj = FindSettlementUI(context);
     if (ui_obj == 0) {
-        context.combat_status = "未找到唯一的当前结算窗口";
+        context.combat_status = context.localizer.Text("status.settlement_window_missing", "No single current settlement window was found");
         return;
     }
     static_cast<void>(ClickRewardButton(context, ui_obj, "Button_Exit"));
@@ -4848,15 +4887,16 @@ void ExitSettlement(Context& context) noexcept {
 void ClaimReward(Context& context, std::int32_t index) noexcept {
     const auto windows = FindRewardWindows(context, true);
     if (!windows.complete) {
-        context.combat_status = "领奖窗口扫描未完成：" + std::string(windows.reason);
+        context.combat_status = context.localizer.Format("status.reward_scan_incomplete",
+            "The reward window scan did not finish: {0}", std::array<std::string_view, 1>{windows.reason});
         return;
     }
     if (windows.ambiguous) {
-        context.combat_status = "存在多个活动领奖/结算窗口，已停止";
+        context.combat_status = context.localizer.Text("status.reward_windows_ambiguous", "Several reward or settlement windows are active; stopped");
         return;
     }
     if (windows.award == 0) {
-        context.combat_status = "当前未发现已打开的领奖窗口";
+        context.combat_status = context.localizer.Text("status.reward_window_missing", "No open reward window was found");
         return;
     }
     const auto button = SelectRewardButton(context, windows, index != 1);
@@ -5769,17 +5809,17 @@ void GetEffectiveClaimPos(const Context& context, std::int32_t& x, std::int32_t&
 
 
 void RecordMousePos(Context& context) noexcept {
-    if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
+    if (!GetPlayerState(context)) { context.combat_status = context.localizer.Text("status.no_player", "No player"); return; }
     std::uintptr_t cc{};
     Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
     if (!FindFunction(context.names, cc, "GetMousePosition", 3, 9, fn)) {
-        context.combat_status = "未找到GetMousePosition"; return;
+        context.combat_status = context.localizer.Text("status.mouse_position_fn_missing", "GetMousePosition was not found"); return;
     }
     std::uint8_t p[9]{};
     if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                 reinterpret_cast<void*>(fn), p)) {
-        context.combat_status = "GetMousePosition失败"; return;
+        context.combat_status = context.localizer.Text("status.mouse_position_failed", "GetMousePosition failed"); return;
     }
     float x{}, y{};
     std::memcpy(&x, p + 0, 4);
@@ -5788,25 +5828,28 @@ void RecordMousePos(Context& context) noexcept {
     context.click_y = static_cast<std::int32_t>(y);
     GetClientSize(context.click_client_width, context.click_client_height);
     SaveClickConfig(context);
-    context.combat_status = "已记录副本领取按钮位置 " + std::to_string(context.click_x) + "," +
-        std::to_string(context.click_y) + " 分辨率" +
-        std::to_string(context.click_client_width) + "x" +
-        std::to_string(context.click_client_height);
+    const std::string point_x = std::to_string(context.click_x);
+    const std::string point_y = std::to_string(context.click_y);
+    const std::string client_width = std::to_string(context.click_client_width);
+    const std::string client_height = std::to_string(context.click_client_height);
+    context.combat_status = context.localizer.Format("status.claim_button_recorded",
+        "Recorded the dungeon reward button position {0},{1} at resolution {2}x{3}",
+        std::array<std::string_view, 4>{point_x, point_y, client_width, client_height});
 }
 
 
 void RecordExitPos(Context& context) noexcept {
-    if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
+    if (!GetPlayerState(context)) { context.combat_status = context.localizer.Text("status.no_player", "No player"); return; }
     std::uintptr_t cc{};
     Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
     if (!FindFunction(context.names, cc, "GetMousePosition", 3, 9, fn)) {
-        context.combat_status = "未找到GetMousePosition"; return;
+        context.combat_status = context.localizer.Text("status.mouse_position_fn_missing", "GetMousePosition was not found"); return;
     }
     std::uint8_t p[9]{};
     if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                 reinterpret_cast<void*>(fn), p)) {
-        context.combat_status = "GetMousePosition失败"; return;
+        context.combat_status = context.localizer.Text("status.mouse_position_failed", "GetMousePosition failed"); return;
     }
     float x{}, y{};
     std::memcpy(&x, p + 0, 4);
@@ -5819,8 +5862,10 @@ void RecordExitPos(Context& context) noexcept {
         std::fprintf(fp, "%d %d\n", context.exit_click_x, context.exit_click_y);
         std::fclose(fp);
     }
-    context.combat_status = "记录退出位置 " + std::to_string(context.exit_click_x) + "," +
-        std::to_string(context.exit_click_y);
+    const std::string point_x = std::to_string(context.exit_click_x);
+    const std::string point_y = std::to_string(context.exit_click_y);
+    context.combat_status = context.localizer.Format("status.exit_position_recorded",
+        "Recorded the exit position {0},{1}", std::array<std::string_view, 2>{point_x, point_y});
 }
 
 
@@ -5859,17 +5904,17 @@ void LoadExitConfig(Context& context) noexcept {
 
 
 void RecordWeeklyPos(Context& context) noexcept {
-    if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
+    if (!GetPlayerState(context)) { context.combat_status = context.localizer.Text("status.no_player", "No player"); return; }
     std::uintptr_t cc{};
     Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
     if (!FindFunction(context.names, cc, "GetMousePosition", 3, 9, fn)) {
-        context.combat_status = "未找到GetMousePosition"; return;
+        context.combat_status = context.localizer.Text("status.mouse_position_fn_missing", "GetMousePosition was not found"); return;
     }
     std::uint8_t p[9]{};
     if (!Invoke(reinterpret_cast<void*>(context.combat_state.controller),
                 reinterpret_cast<void*>(fn), p)) {
-        context.combat_status = "GetMousePosition失败"; return;
+        context.combat_status = context.localizer.Text("status.mouse_position_failed", "GetMousePosition failed"); return;
     }
     float x{}, y{};
     std::memcpy(&x, p + 0, 4);
@@ -5882,8 +5927,10 @@ void RecordWeeklyPos(Context& context) noexcept {
         std::fprintf(fp, "%d %d\n", context.weekly_click_x, context.weekly_click_y);
         std::fclose(fp);
     }
-    context.combat_status = "记录周本领取位置 " + std::to_string(context.weekly_click_x) + "," +
-        std::to_string(context.weekly_click_y);
+    const std::string point_x = std::to_string(context.weekly_click_x);
+    const std::string point_y = std::to_string(context.weekly_click_y);
+    context.combat_status = context.localizer.Format("status.weekly_position_recorded",
+        "Recorded the weekly reward position {0},{1}", std::array<std::string_view, 2>{point_x, point_y});
 }
 
 
@@ -5943,7 +5990,7 @@ void SendKeyF(bool down) noexcept {
 
 
 void SimulateClick(Context& context) noexcept {
-    if (!GetPlayerState(context)) { context.combat_status = "无玩家"; return; }
+    if (!GetPlayerState(context)) { context.combat_status = context.localizer.Text("status.no_player", "No player"); return; }
     std::uintptr_t cc{};
     Read(reinterpret_cast<const void*>(context.combat_state.controller + kObjectClassOffset), cc);
     std::uintptr_t fn{};
@@ -5961,7 +6008,7 @@ void SimulateClick(Context& context) noexcept {
         context.click_phase = 1;
         context.click_deadline = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(400);
-        context.combat_status = "鼠标已到位，400ms后按下";
+        context.combat_status = context.localizer.Text("status.click_cursor_ready", "Cursor in place; pressing in 400 ms");
         return;
     }
     if (context.click_phase == 1) {
@@ -5972,13 +6019,15 @@ void SimulateClick(Context& context) noexcept {
         context.click_phase = 2;
         context.click_deadline = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(120);
-        context.combat_status = "已按下，120ms后松开";
+        context.combat_status = context.localizer.Text("status.click_pressed", "Pressed; releasing in 120 ms");
         return;
     }
     SendMouseButton(false);
     context.click_phase = 0;
-    context.combat_status = "已模拟点击 (" + std::to_string(context.click_x) + "," +
-        std::to_string(context.click_y) + ")";
+    const std::string point_x = std::to_string(context.click_x);
+    const std::string point_y = std::to_string(context.click_y);
+    context.combat_status = context.localizer.Format("status.click_simulated",
+        "Simulated click at ({0},{1})", std::array<std::string_view, 2>{point_x, point_y});
 }
 
 
@@ -5986,7 +6035,7 @@ void StopAutoClaim(Context& context, const std::string& reason) noexcept {
     context.auto_claim_active = false;
     context.auto_claim_succeeded = false;
     context.combat_status = reason;
-    // 临时诊断：自动领取终止只写 UI 状态，日志里只剩"没打开窗口"这个结论。
+    // 临时诊断：自动领取终止只写 UI 状态，日志里只剩「没打开窗口」这个结论。
     LogRewardDiagnostic(context, "autoclaim stop: " + reason);
 }
 
@@ -6003,7 +6052,7 @@ void StartAutoClaim(Context& context) noexcept {
     context.auto_claim_poll = {};
     context.auto_claim_nav_issue = {};
     context.auto_claim_nav_deadline = {};
-    context.combat_status = "自动领取：开始";
+    context.combat_status = context.localizer.Text("status.auto_claim_started", "Auto claim: started");
 }
 
 bool TriggerRewardChest(Context& context, std::uintptr_t chest,
@@ -6049,11 +6098,11 @@ void OpenRewardWindow(Context& context) {
     auto host = MakeCombatHost(context);
     combat::Reset(host, context.combat_state);
     if (!GetPlayerState(context)) {
-        context.combat_status = "打开领奖窗口：等待玩家";
+        context.combat_status = context.localizer.Text("status.open_reward_wait_player", "Opening the reward window: waiting for the player");
         return;
     }
     const auto windows = FindRewardWindows(context);
-    // 这条路径原本失败时只写 UI 状态，"打开窗口失败"就查不出原因。按 2 秒节流记录分支。
+    // 这条路径原本失败时只写 UI 状态，「打开窗口失败」就查不出原因。按 2 秒节流记录分支。
     const auto report_failure = [&context](const std::string& text) {
         const auto now = std::chrono::steady_clock::now();
         if (now < context.next_reward_open_diag) return;
@@ -6061,7 +6110,7 @@ void OpenRewardWindow(Context& context) {
         LogRewardDiagnostic(context, "open-reward-window failed: " + text);
     };
     if (!windows.complete || windows.ambiguous) {
-        context.combat_status = "打开领奖窗口：窗口状态不可用";
+        context.combat_status = context.localizer.Text("status.open_reward_state_unavailable", "Opening the reward window: the window state is unavailable");
         report_failure("window state unavailable complete=" +
             std::to_string(windows.complete ? 1 : 0) + " ambiguous=" +
             std::to_string(windows.ambiguous ? 1 : 0) + " reason=" + windows.reason +
@@ -6070,29 +6119,33 @@ void OpenRewardWindow(Context& context) {
         return;
     }
     if (windows.award != 0 || windows.settlement != 0) {
-        context.combat_status = "领奖或结算窗口已打开";
+        context.combat_status = context.localizer.Text("status.reward_window_already_open", "The reward or settlement window is already open");
         return;
     }
     double chest_position[3]{}, player_position[3]{};
     const auto chest = FindChestActor(context, chest_position);
     if (chest == 0) {
-        context.combat_status = "打开领奖窗口：未找到宝箱";
+        context.combat_status = context.localizer.Text("status.open_reward_chest_missing", "Opening the reward window: the chest was not found");
         report_failure("chest actor not found in the entity snapshot");
         return;
     }
-    std::string distance = "距离未知";
+    std::string distance = context.localizer.Text("text.distance_unknown", "Distance unknown");
     if (SnapshotPlayerPosition(context, player_position)) {
         const double metres = std::sqrt(CombatDistanceSquared(player_position, chest_position)) / 100.0;
         if (std::isfinite(metres)) {
             char text[64]{};
-            std::snprintf(text, sizeof(text), "距宝箱 %.1f 米", metres);
-            distance = text;
+            std::snprintf(text, sizeof(text), "%.1f", metres);
+            distance = context.localizer.Format("text.chest_distance", "{0} m from the chest",
+                std::array<std::string_view, 1>{text});
         }
     }
     const char* reason = "not attempted";
     const bool triggered = TriggerRewardChest(context, chest, &reason);
     context.combat_status = triggered
-        ? "已请求打开领奖窗口，" + distance : "宝箱交互调用失败，" + distance;
+        ? context.localizer.Format("status.reward_window_requested",
+            "Reward window requested, {0}", std::array<std::string_view, 1>{distance})
+        : context.localizer.Format("status.reward_window_request_failed",
+            "The chest interaction call failed, {0}", std::array<std::string_view, 1>{distance});
     if (!triggered) report_failure("chest interaction failed: " + std::string(reason));
 }
 
@@ -6144,18 +6197,21 @@ constexpr std::uint32_t kAutoClaimWaitPolls = 25;
 void AutoClaimTick(Context& context) noexcept {
     if (!context.auto_claim_active) return;
     const auto now = std::chrono::steady_clock::now();
-    // 时限按采样次数判定：游戏 tick 停摆时不会把"没被调用"算成"等待超时"。
+    // 时限按采样次数判定：游戏 tick 停摆时不会把「没被调用」算成「等待超时」。
     if (context.auto_claim_polls >= context.auto_claim_limit_polls) {
-        StopAutoClaim(context, "自动领取停止：等待玩家/窗口超时");
+        StopAutoClaim(context, context.localizer.Text("status.auto_claim_timeout", "Auto claim stopped: the wait for the player or the window timed out"));
         return;
     }
     if (context.auto_claim_phase != 0 &&
         context.auto_claim_polls >= context.auto_claim_deadline_polls) {
         StopAutoClaim(context, context.auto_claim_phase == 3 ?
-            "自动领取停止：退出后未确认离开副本" : "自动领取停止：未观察到预期的领奖/结算窗口");
+            context.localizer.Text("status.auto_claim_exit_unconfirmed",
+                "Auto claim stopped: leaving the dungeon was not confirmed") :
+            context.localizer.Text("status.auto_claim_window_missing",
+                "Auto claim stopped: the expected reward or settlement window did not appear"));
         return;
     }
-    if (!GetPlayerState(context)) { context.combat_status = "自动领取：等待玩家"; return; }
+    if (!GetPlayerState(context)) { context.combat_status = context.localizer.Text("status.auto_claim_wait_player", "Auto claim: waiting for the player"); return; }
     if (now < context.auto_claim_poll) return;
     context.auto_claim_poll = now + std::chrono::seconds(1);
     ++context.auto_claim_polls;
@@ -6166,17 +6222,17 @@ void AutoClaimTick(Context& context) noexcept {
         if (context.combat_state.cached_world != context.auto_claim_world || left_clone) {
             context.auto_claim_active = false;
             context.auto_claim_succeeded = true;
-            context.combat_status = "领奖并退出完成";
+            context.combat_status = context.localizer.Text("status.auto_claim_done", "Rewards claimed and the dungeon left");
         }
         return;
     }
     const auto windows = FindRewardWindows(context);
     if (!windows.complete) {
-        context.combat_status = "自动领取：等待窗口数据";
+        context.combat_status = context.localizer.Text("status.auto_claim_wait_window", "Auto claim: waiting for the window data");
         return;
     }
     if (windows.ambiguous) {
-        StopAutoClaim(context, "自动领取停止：存在多个活动领奖/结算窗口");
+        StopAutoClaim(context, context.localizer.Text("status.auto_claim_ambiguous", "Auto claim stopped: several reward or settlement windows are active"));
         return;
     }
     switch (context.auto_claim_phase) {
@@ -6195,9 +6251,9 @@ void AutoClaimTick(Context& context) noexcept {
             ++context.auto_claim_retries;
             if (context.auto_claim_retries < 20) {
                 context.auto_claim_deadline_polls = context.auto_claim_polls;
-                context.combat_status = "自动领取：等待宝箱加载";
+                context.combat_status = context.localizer.Text("status.auto_claim_wait_chest", "Auto claim: waiting for the chest to load");
             } else {
-                StopAutoClaim(context, "自动领取：找不到宝箱");
+                StopAutoClaim(context, context.localizer.Text("status.auto_claim_no_chest", "Auto claim: the chest was not found"));
                 context.auto_claim_retries = 0;
             }
             return;
@@ -6213,15 +6269,15 @@ void AutoClaimTick(Context& context) noexcept {
                     const double dz = chest_pos[2] - player_pos[2];
                     const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
                     // 开发者模式：交互前一律先传送到宝箱，不按距离判断。
-                    // 实测"只是靠近"不够 —— 玩家距宝箱约 1 米时交互调用照样返回成功
-                    // 但游戏不开窗；同一批 10 次成功全部是"刚传送过去再交互"。
+                    // 实测「只是靠近」不够 —— 玩家距宝箱约 1 米时交互调用照样返回成功
+                    // 但游戏不开窗；同一批 10 次成功全部是「刚传送过去再交互」。
                     // 插件算出的距离用的是包围盒中心，并不等于到可交互点的真实距离，
                     // 所以不能用它决定要不要传送。
                     if (context.developer_mode.load(std::memory_order_acquire) &&
                         context.auto_claim_approach_polls < 5 &&
                         TeleportToPosition(context, chest_pos)) {
                         ++context.auto_claim_approach_polls;
-                        context.combat_status = "自动领取：传送到宝箱";
+                        context.combat_status = context.localizer.Text("status.auto_claim_teleporting", "Auto claim: teleporting to the chest");
                         // 不 return：本轮紧接着交互，保持实测有效的先后顺序。
                     } else if (dist > kAutoClaimApproachRangeCm &&
                                context.auto_claim_approach_polls < 5) {
@@ -6244,7 +6300,7 @@ void AutoClaimTick(Context& context) noexcept {
                                         now + std::chrono::seconds(10);
                                 }
                             }
-                            context.combat_status = "自动领取：移动向宝箱";
+                            context.combat_status = context.localizer.Text("status.auto_claim_moving", "Auto claim: moving to the chest");
                             context.auto_claim_deadline_polls = context.auto_claim_polls;
                             return;
                         }
@@ -6259,8 +6315,8 @@ void AutoClaimTick(Context& context) noexcept {
                 chest_cls != 0 ? ObjectName(context.names, chest_cls) : std::string();
             context.auto_claim_is_weekly =
                 chest_cls_name.find("Weekly") != std::string::npos;
-            // 临时诊断：交互时玩家离宝箱多远，是区分"距离不够导致游戏忽略交互"与
-            // "宝箱本身不可交互"的关键数据。
+            // 临时诊断：交互时玩家离宝箱多远，是区分「距离不够导致游戏忽略交互」与
+            // 「宝箱本身不可交互」的关键数据。
             double log_chest[3]{}, log_player[3]{};
             const bool have_chest = FindChestPos(context, log_chest);
             const bool have_player = SnapshotPlayerPosition(context, log_player);
@@ -6280,14 +6336,15 @@ void AutoClaimTick(Context& context) noexcept {
         context.auto_claim_chest = chest;
         const char* chest_reason = "not attempted";
         if (!TriggerRewardChest(context, chest, &chest_reason)) {
-            StopAutoClaim(context,
-                "自动领取停止：宝箱交互调用失败（" + std::string(chest_reason) + "）");
+            StopAutoClaim(context, context.localizer.Format("status.auto_claim_interact_failed",
+                "Auto claim stopped: the chest interaction call failed ({0})",
+                std::array<std::string_view, 1>{chest_reason}));
             return;
         }
         context.auto_claim_phase = 1;
         context.auto_claim_poll = now + std::chrono::milliseconds(2500);
         context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
-        context.combat_status = "自动领取：打开窗口中";
+        context.combat_status = context.localizer.Text("status.auto_claim_opening", "Auto claim: opening the window");
         return;
     }
     case 1: {
@@ -6302,13 +6359,14 @@ void AutoClaimTick(Context& context) noexcept {
             const auto click = ClickRewardButton(context, windows.award, button);
             if (click == RewardClickResult::Waiting) return;
             if (click != RewardClickResult::Invoked) {
-                StopAutoClaim(context, "自动领取停止：" + context.combat_status);
+                StopAutoClaim(context, context.localizer.Format("status.auto_claim_stopped", "Auto claim stopped: {0}", std::array<std::string_view, 1>{context.combat_status}));
                 return;
             }
             context.auto_claim_phase = 2;
             context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
             context.combat_status = std::string_view(button) == windows.award_double_button
-                ? "已调用双倍领取，等待奖励列表" : "已调用普通领取，等待奖励列表";
+                ? context.localizer.Text("status.reward_double_called", "Double reward claimed; waiting for the reward list")
+                : context.localizer.Text("status.reward_single_called", "Reward claimed; waiting for the reward list");
             return;
         }
         // 两个窗口都不在：交互调用虽然被接受，游戏却可能没真的开窗（UI 未生效时会吞掉这次交互，
@@ -6321,7 +6379,7 @@ void AutoClaimTick(Context& context) noexcept {
         if (context.auto_claim_chest != 0 && left_polls > 0 &&
             context.auto_claim_polls % 3 == 0) {
             // 窗口没出现时不要只重发交互：先把玩家重新贴回宝箱再交互。
-            // 游戏很可能按"玩家是否在交互范围内"决定是否真的响应。
+            // 游戏很可能按「玩家是否在交互范围内」决定是否真的响应。
             double again_chest[3]{}, again_player[3]{};
             const bool again_have_chest = FindChestPos(context, again_chest);
             const bool again_have_player = SnapshotPlayerPosition(context, again_player);
@@ -6351,12 +6409,12 @@ void AutoClaimTick(Context& context) noexcept {
             const auto click = ClickRewardButton(context, windows.settlement, "Button_Exit");
             if (click == RewardClickResult::Waiting) return;
             if (click != RewardClickResult::Invoked) {
-                StopAutoClaim(context, "自动领取停止：" + context.combat_status);
+                StopAutoClaim(context, context.localizer.Format("status.auto_claim_stopped", "Auto claim stopped: {0}", std::array<std::string_view, 1>{context.combat_status}));
                 return;
             }
             context.auto_claim_phase = 3;
             context.auto_claim_deadline_polls = context.auto_claim_polls + kAutoClaimWaitPolls;
-            context.combat_status = "已显示奖励并调用退出，等待离开副本";
+            context.combat_status = context.localizer.Text("status.reward_exit_called", "Rewards shown and the exit clicked; waiting to leave the dungeon");
         }
         return;
     }
@@ -6370,14 +6428,14 @@ constexpr std::uint32_t kOneKeyNoMonsterSeconds = 5;
 
 void OneKeyTick(Context& context) noexcept {
     if (!context.one_key_active) return;
-    if (!GetPlayerState(context)) { context.combat_status = "一键副本：无玩家"; return; }
+    if (!GetPlayerState(context)) { context.combat_status = context.localizer.Text("status.one_key_no_player", "One-key run: no player"); return; }
     const auto now = std::chrono::steady_clock::now();
     switch (context.one_key_phase) {
     case 0: {
         context.enter_pending.store(true, std::memory_order_release);
         context.one_key_phase = 1;
         context.one_key_deadline = now + std::chrono::seconds(90);
-        context.combat_status = "一键副本：进副本中";
+        context.combat_status = context.localizer.Text("status.one_key_entering", "One-key run: entering the dungeon");
         return;
     }
     case 1: {
@@ -6407,11 +6465,11 @@ void OneKeyTick(Context& context) noexcept {
             context.one_key_phase = 2;
             context.one_key_deadline = now +
                 std::chrono::seconds(context.one_key_enter_wait);
-            context.combat_status = "一键副本：等待开场动画";
+            context.combat_status = context.localizer.Text("status.one_key_wait_intro", "One-key run: waiting for the intro");
             return;
         }
         if (now >= context.one_key_deadline) {
-            context.combat_status = "一键副本失败：进副本超时";
+            context.combat_status = context.localizer.Text("status.one_key_enter_timeout", "One-key run failed: entering the dungeon timed out");
             context.one_key_active = false;
         }
         return;
@@ -6422,19 +6480,20 @@ void OneKeyTick(Context& context) noexcept {
         // 「见过怪之后连续 5 秒无怪」由战斗模块统计（state.met_monster /
         // state.no_monster_seconds）：这里只读结果，不再自己计数。
         if (!context.combat_state.scan_valid) {
-            context.combat_status = "一键副本：等待目标数据";
+            context.combat_status = context.localizer.Text("status.one_key_wait_target", "One-key run: waiting for the target data");
             return;
         }
         if (!context.combat_state.target_valid && context.combat_state.met_monster) {
-            context.combat_status = "一键副本：无怪 " +
-                std::to_string(context.combat_state.no_monster_seconds) + "s";
+            const std::string seconds = std::to_string(context.combat_state.no_monster_seconds);
+            context.combat_status = context.localizer.Format("status.one_key_no_monster",
+                "One-key run: no monsters for {0} s", std::array<std::string_view, 1>{seconds});
             if (context.combat_state.no_monster_seconds >= kOneKeyNoMonsterSeconds) {
                 context.auto_attack.store(false, std::memory_order_release);
                 auto host = MakeCombatHost(context);
                 combat::Reset(host, context.combat_state);
                 context.one_key_phase = 3;
                 context.one_key_deadline = now + std::chrono::seconds(90);
-                context.combat_status = "一键副本：领取中";
+                context.combat_status = context.localizer.Text("status.one_key_claiming", "One-key run: claiming the rewards");
                 StartAutoClaim(context);
                 std::FILE* fp = std::fopen("D:\\rpc-diag.txt", "a");
                 if (fp != nullptr) {
@@ -6456,20 +6515,24 @@ void OneKeyTick(Context& context) noexcept {
                 context.one_key_phase = 4;
                 context.one_key_deadline = now +
                     std::chrono::seconds(context.one_key_exit_wait);
-                context.combat_status = "一键副本：第 " +
-                    std::to_string(context.one_key_loop_done + 1) + "/" +
-                    std::to_string(context.one_key_loop_count) + " 轮，等待退出";
+                const std::string round_text = std::to_string(context.one_key_loop_done + 1);
+                const std::string rounds_text = std::to_string(context.one_key_loop_count);
+                context.combat_status = context.localizer.Format("status.one_key_round_wait_exit",
+                    "One-key run: round {0}/{1}, waiting to leave",
+                    std::array<std::string_view, 2>{round_text, rounds_text});
             } else {
-                context.combat_status = "一键副本完成（" +
-                    std::to_string(context.one_key_loop_done) + "/" +
-                    std::to_string(context.one_key_loop_count) + " 轮）";
+                const std::string rounds_done = std::to_string(context.one_key_loop_done);
+                const std::string rounds_total = std::to_string(context.one_key_loop_count);
+                context.combat_status = context.localizer.Format("status.one_key_complete",
+                    "One-key run complete ({0}/{1} rounds)",
+                    std::array<std::string_view, 2>{rounds_done, rounds_total});
                 context.one_key_active = false;
                 context.one_key_loop_done = 0;
             }
             return;
         }
         if (now >= context.one_key_deadline) {
-            StopAutoClaim(context, "一键副本失败：领取超时");
+            StopAutoClaim(context, context.localizer.Text("status.one_key_claim_timeout", "One-key run failed: claiming the rewards timed out"));
             context.one_key_active = false;
         }
         return;
@@ -6488,7 +6551,7 @@ void OneKeyTick(Context& context) noexcept {
             }
             if (now >= context.one_key_deadline) {
                 context.one_key_phase = 0;
-                context.combat_status = "一键副本：回到主世界，开始下一轮";
+                context.combat_status = context.localizer.Text("status.one_key_next_round", "One-key run: back in the main world, starting the next round");
             }
             return;
         }
@@ -6513,7 +6576,8 @@ void TestAttackTick(Context& context) noexcept {
     ++context.test_attack_phase;
     context.test_attack_waiting = context.test_attack_phase < 5;
     context.test_attack_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(333);
-    context.combat_status = "普通攻击输入 " + std::to_string(context.test_attack_phase) + "/5";
+    context.combat_status = context.localizer.Format("status.test_attack_progress", "Normal attack input {0}/5",
+        std::array<std::string_view, 1>{std::to_string(context.test_attack_phase)});
     LogRewardDiagnostic(context, "normal-attack ability-input id=" + std::to_string(context.combat_state.normal_attack.input_id) +
         " param=" + std::to_string(context.combat_state.normal_attack.input_param) + " tap=" + std::to_string(context.test_attack_phase));
 }
@@ -6528,6 +6592,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     auto* context = new (std::nothrow) Context{};
     if (!context) return {ANOMALY_STATUS_V1_FAILED, 0, {nullptr, 0}};
     context->host = host;
+    context->localizer = anomaly::sdk::Localizer(host);
     {
         std::FILE* fp = std::fopen("D:\\rpc-diag.txt", "a");
         if (fp != nullptr) {
@@ -6893,7 +6958,8 @@ void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
     if (context.test_skill_pending.exchange(false, std::memory_order_acq_rel)) {
         const bool ok = ActivateSkillByInputId(
             context, static_cast<std::int32_t>(context.test_input_id));
-        context.combat_status = ok ? "技能已激活" : "技能未找到";
+        context.combat_status = ok ? context.localizer.Text("status.skill_activated", "Skill activated")
+            : context.localizer.Text("status.skill_not_found", "Skill not found");
     }
     if (context.claim_reward_pending.exchange(false, std::memory_order_acq_rel)) {
         ClaimReward(context, 1);
@@ -6920,14 +6986,14 @@ void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
         context.one_key_direct_enter = false;
         context.one_key_enter_pos_valid = false;
         if (context.one_key_loop_count < 1) context.one_key_loop_count = 1;
-        context.combat_status = "一键副本：开始";
+        context.combat_status = context.localizer.Text("status.one_key_started", "One-key run: started");
     }
     if (context.test_attack_pending.exchange(false, std::memory_order_acq_rel)) {
         context.test_attack_waiting = true;
         context.test_attack_phase = 0;
         context.test_attack_deadline = std::chrono::steady_clock::now() +
             std::chrono::seconds(3);
-        context.combat_status = "3秒后开始普攻连击测试";
+        context.combat_status = context.localizer.Text("status.test_attack_pending", "The normal attack combo test starts in 3 seconds");
     }
     if (context.chest_choices_pending.exchange(false, std::memory_order_acq_rel)) {
         DumpChestChoices(context);
@@ -6966,27 +7032,27 @@ void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
         context.record_waiting = true;
         context.record_deadline = std::chrono::steady_clock::now() +
             std::chrono::seconds(3);
-        context.combat_status = "3秒后记录副本领取按钮位置：请把鼠标移到按钮上";
+        context.combat_status = context.localizer.Text("status.record_claim_pending", "Recording the dungeon reward button in 3 seconds; move the mouse onto the button");
     }
     if (context.record_exit_pending.exchange(false, std::memory_order_acq_rel)) {
         context.record_waiting = true;
         context.record_deadline = std::chrono::steady_clock::now() +
             std::chrono::seconds(3);
-        context.combat_status = "3秒后记录退出位置";
+        context.combat_status = context.localizer.Text("status.record_exit_pending", "Recording the exit position in 3 seconds");
         context.record_exit_mode = true;
     }
     if (context.record_weekly_pending.exchange(false, std::memory_order_acq_rel)) {
         context.record_waiting = true;
         context.record_deadline = std::chrono::steady_clock::now() +
             std::chrono::seconds(3);
-        context.combat_status = "3秒后记录周本领取位置";
+        context.combat_status = context.localizer.Text("status.record_weekly_pending", "Recording the weekly reward position in 3 seconds");
         context.record_weekly_mode = true;
     }
     if (context.simulate_click_pending.exchange(false, std::memory_order_acq_rel)) {
         context.click_waiting = true;
         context.click_deadline = std::chrono::steady_clock::now() +
             std::chrono::seconds(3);
-        context.combat_status = "3秒后模拟点击";
+        context.combat_status = context.localizer.Text("status.record_click_pending", "Simulating a click in 3 seconds");
     }
     if (context.record_waiting &&
         std::chrono::steady_clock::now() >= context.record_deadline) {
@@ -7032,7 +7098,7 @@ void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
         context.auto_claim_active = false;
         context.auto_attack.store(false, std::memory_order_release);
         ExitClone(context);
-        context.combat_status = "已退出副本";
+        context.combat_status = context.localizer.Text("status.left_dungeon", "Left the dungeon");
     }
     if (context.auto_attack.load(std::memory_order_acquire)) {
         const auto now = std::chrono::steady_clock::now();
@@ -7081,16 +7147,18 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     // 开发者模式仅在 on_draw/on_update 期间可查询，这里缓存供 Update 的自动领取使用。
     context.developer_mode.store(DeveloperModeEnabled(ui), std::memory_order_release);
     int open = 1;
-    anomaly::sdk::UiWindow window(ui, "自动副本", &open);
+    const auto title = context.localizer.Text("window.title", "Clone Enter");
+    anomaly::sdk::UiWindow window(ui, title, &open);
     if (!window) return;
 
     std::size_t cur_di = context.display_index;
     if (cur_di >= kDisplayCount) cur_di = 0;
     if (ui->begin_menu != nullptr && ui->end_menu != nullptr) {
-        const std::string cur_name = kDisplays[cur_di].name;
+        const std::string cur_name = context.localizer.Text(entry_name_keys[cur_di], kDisplays[cur_di].name);
         if (ui->begin_menu(ui->user, anomaly::sdk::StringView(cur_name), 1)) {
             for (std::size_t i = 0; i < kDisplayCount; ++i) {
-                if (ui->button(ui->user, anomaly::sdk::StringView(kDisplays[i].name), 0.0F, 0.0F) != 0) {
+                const std::string entry_name = context.localizer.Text(entry_name_keys[i], kDisplays[i].name);
+                if (ui->button(ui->user, anomaly::sdk::StringView(entry_name), 0.0F, 0.0F) != 0) {
                     context.display_index = static_cast<std::uint32_t>(i);
                     context.sub_choice_index = 0;
                     context.level_index = 1;
@@ -7102,10 +7170,12 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         if (disp.sub_count > 1) {
             std::size_t sci = context.sub_choice_index;
             if (sci >= disp.sub_count) sci = 0;
-            const std::string sub_name = disp.subs[sci].name;
+            const std::string sub_name = context.localizer.Text(sub_name_keys[SubNameBase(cur_di) + sci], disp.subs[sci].name);
             if (ui->begin_menu(ui->user, anomaly::sdk::StringView(sub_name), 1)) {
                 for (std::uint32_t i = 0; i < disp.sub_count; ++i) {
-                    if (ui->button(ui->user, anomaly::sdk::StringView(disp.subs[i].name), 0.0F, 0.0F) != 0) {
+                    const std::string sub_entry_name = context.localizer.Text(
+                        sub_name_keys[SubNameBase(cur_di) + i], disp.subs[i].name);
+                    if (ui->button(ui->user, anomaly::sdk::StringView(sub_entry_name), 0.0F, 0.0F) != 0) {
                         context.sub_choice_index = i;
                         context.level_index = 1;
                     }
@@ -7115,47 +7185,51 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         }
     }
     if (ui->input_uint32 != nullptr) {
-        ui->input_uint32(ui->user, anomaly::sdk::StringView("难度"),
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(context.localizer.Text("label.difficulty", "Difficulty")),
                          &context.level_index, 1, 1);
         std::uint32_t min_lv = kDisplays[cur_di].min_level;
         std::uint32_t max_lv = kDisplays[cur_di].max_level;
         if (context.level_index < min_lv) context.level_index = min_lv;
         if (context.level_index > max_lv) context.level_index = max_lv;
-        ui->input_uint32(ui->user, anomaly::sdk::StringView("传送后等待(秒)"),
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(context.localizer.Text("label.wait_after_teleport", "Wait after teleport (s)")),
                          &context.wait_seconds, 1, 1);
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("进副本"), 0.0F, 0.0F) != 0) {
+    if (ui->button(ui->user, anomaly::sdk::StringView(context.localizer.Text("action.enter_dungeon", "Enter dungeon")), 0.0F, 0.0F) != 0) {
         context.enter_pending.store(true, std::memory_order_release);
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("退出副本"), 0.0F, 0.0F) != 0) {
+    if (ui->button(ui->user, anomaly::sdk::StringView(context.localizer.Text("action.exit_dungeon", "Exit dungeon")), 0.0F, 0.0F) != 0) {
         context.exit_pending.store(true, std::memory_order_release);
     }
     if (context.capturing_exit_hotkey.load(std::memory_order_acquire)) {
-        if (ui->button(ui->user, anomaly::sdk::StringView("按下新的退出键..."), 0.0F, 0.0F) != 0) {
+        if (ui->button(ui->user, anomaly::sdk::StringView(context.localizer.Text("action.press_new_exit_key", "Press the new exit key...")), 0.0F, 0.0F) != 0) {
             context.capturing_exit_hotkey.store(false, std::memory_order_release);
         }
     } else {
-        const std::string label = "退出快捷键：" +
-            HotkeyName(context.exit_hotkey_key.load(std::memory_order_acquire));
+        const std::string hotkey = HotkeyName(
+            context.localizer, context.exit_hotkey_key.load(std::memory_order_acquire));
+        const std::string label = context.localizer.Format("label.exit_hotkey", "Exit hotkey: {0}",
+            std::array<std::string_view, 1>{hotkey});
         if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F) != 0) {
             context.capturing_exit_hotkey.store(true, std::memory_order_release);
         }
     }
     if (ui->input_uint32 != nullptr) {
-        ui->input_uint32(ui->user, anomaly::sdk::StringView("进本等待(秒)"),
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(context.localizer.Text("label.enter_wait", "Wait before entering (s)")),
                          &context.one_key_enter_wait, 1, 1);
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("一键副本"), 0.0F, 0.0F) != 0) {
+    if (ui->button(ui->user, anomaly::sdk::StringView(context.localizer.Text("action.one_key_run", "One-key run")), 0.0F, 0.0F) != 0) {
         context.one_key_pending.store(true, std::memory_order_release);
     }
     if (ui->input_uint32 != nullptr) {
-        ui->input_uint32(ui->user, anomaly::sdk::StringView("循环次数"),
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(context.localizer.Text("label.loop_count", "Loop count")),
                          &context.one_key_loop_count, 1, 1);
-        ui->input_uint32(ui->user, anomaly::sdk::StringView("退出后等待(秒)"),
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(context.localizer.Text("label.exit_wait", "Wait after exit (s)")),
                          &context.one_key_exit_wait, 1, 1);
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView(
-                       context.auto_attack.load() ? "自动攻击:开" : "自动攻击:关"), 0.0F, 0.0F) != 0) {
+    const std::string attack_label = context.auto_attack.load()
+        ? context.localizer.Text("action.auto_attack_on", "Auto attack: on")
+        : context.localizer.Text("action.auto_attack_off", "Auto attack: off");
+    if (ui->button(ui->user, anomaly::sdk::StringView(attack_label), 0.0F, 0.0F) != 0) {
         const bool next = !context.auto_attack.load();
         context.auto_attack.store(next);
         if (next) {
@@ -7165,21 +7239,23 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     }
     if (ui->input_uint32 != nullptr) {
         auto radius = context.combat_search_radius_m.load(std::memory_order_acquire);
-        if (ui->input_uint32(ui->user, anomaly::sdk::StringView("搜索半径(米)"),
+        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(context.localizer.Text("label.search_radius", "Search radius (m)")),
                 &radius, 5, 25) != 0) {
             context.combat_search_radius_m.store(std::clamp(radius, 1U, 1000U), std::memory_order_release);
         }
-        ui->input_uint32(ui->user, anomaly::sdk::StringView("自动攻击技能ID"),
+        ui->input_uint32(ui->user, anomaly::sdk::StringView(context.localizer.Text("label.attack_skill_id", "Auto attack skill ID")),
                          &context.test_input_id, 1, 1);
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView(
-                       context.melee_mode ? "平A模式:开" : "平A模式:关"), 0.0F, 0.0F) != 0) {
+    const std::string melee_label = context.melee_mode
+        ? context.localizer.Text("action.melee_mode_on", "Melee mode: on")
+        : context.localizer.Text("action.melee_mode_off", "Melee mode: off");
+    if (ui->button(ui->user, anomaly::sdk::StringView(melee_label), 0.0F, 0.0F) != 0) {
         context.melee_mode = !context.melee_mode;
     }
     if (ui->text != nullptr && !context.combat_status.empty()) {
         ui->text(ui->user, anomaly::sdk::StringView(context.combat_status));
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("打开领奖窗口"), 0.0F, 0.0F) != 0) {
+    if (ui->button(ui->user, anomaly::sdk::StringView(context.localizer.Text("action.open_reward_window", "Open reward window")), 0.0F, 0.0F) != 0) {
         context.open_reward_pending.store(true, std::memory_order_release);
     }
 }
@@ -7194,7 +7270,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("local.clone-enter"),
         anomaly::sdk::StringView("Clone Enter"),
         anomaly::sdk::StringView("CCYellowStar"),
-        anomaly::sdk::StringView("0.2.13"),
+        anomaly::sdk::StringView("0.2.14"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

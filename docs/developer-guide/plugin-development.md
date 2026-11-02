@@ -154,6 +154,46 @@ if (!config) { /* 该服务不可用，降级处理 */ }
 - `builds` 是 build 兼容性声明，可以写 `nte-*` 或精确 fingerprint。当前生产 Runtime 不计算 fingerprint，加载时也不用该字段拦截插件，因此不能把它当作运行时安全检查。
 - `license` 是单个 SPDX identifier（公开分发时必填）。
 
+### 文本本地化
+
+插件的用户可见文案走 [`anomaly.localization`](../api-reference/lifecycle-and-core.md#anomalylocalization)（共用 `ui` capability），SDK 提供 C++ 封装 `anomaly::sdk::Localizer`：
+
+```cpp
+#include "anomaly/sdk/localization.hpp"
+
+anomaly::sdk::Localizer localizer;  // 未查询到服务时一律返回英文回退
+
+// on_load 里查询一次：
+localizer = anomaly::sdk::Localizer(host);
+
+const std::string title = localizer.Text("window.title", "My Plugin");
+const std::array arguments{std::string_view(std::to_string(count))};
+const std::string status =
+    localizer.Format("status.cached", "Cached {0} entries", arguments);
+```
+
+文案源是与 `manifest.json` 同级的包目录里的 `locales/<locale>.json`：
+
+```json
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "我的插件",
+    "plugin.description": "展示当前玩家与会话诊断。",
+    "status.cached": "已缓存 {0} 条"
+  }
+}
+```
+
+- `key` 只允许 `[a-z0-9._-]`、长度 ≤255，消息不得为空。
+- 中文消息里的 `{0}`..`{7}` 占位符必须与英文回退**完全一致**，否则宿主静默回退英文；字面花括号写 `{{` 与 `}}`。
+- 宿主用 `window.title` 作管理界面的显示名、`plugin.description` 作简介，缺失时才回退到 manifest 的 `name`/`description`。所以这两个 manifest 字段写英文回退值，中文放进目录。
+- `manifest.services` 里要声明 `{"id": "anomaly.localization", "minVersion": 1}`。
+- 当前语言在进程生命周期内固定，切换语言需重启游戏；因此文案可以在产生它的位置直接取，不必推迟到绘制。
+- 仓库自带的校验脚本会一次性检查 key 覆盖、占位符掩码、残留中文字面量和 manifest 回退语言：
+  `pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin <插件名>`（省略 `-Plugin` 检查全部插件）。
+
 ## 6. Capability 与授权
 
 **每个非可选 required service 必须声明对应 capability**，否则包在 DLL 映射前被拒绝。声明未知 capability，或某个 required service 没有映射 / 没有对应 capability，都会导致包不可加载。`anomaly.core` 本身不需要 capability。

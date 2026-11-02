@@ -2,12 +2,17 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "打怪资源点",
     "plugin.description": "打怪资源点：打怪宝箱（xx点的赠礼）读表传送，异像家具材料（6个异像怪）硬编码传送，打完后标记并本地缓存。",
     "window.title": "打怪资源点",
     "type.combat": "打怪宝箱（xx点的赠礼）",
     "type.vision": "异像家具材料",
     "sub.all": "全部",
+    "sub.sad_bear": "伤心英熊",
+    "sub.cursed_blade": "妖刀",
+    "sub.vending_spirit": "贩售机附电灵",
+    "sub.skywhirl_banner": "洄天鱼幡",
+    "sub.paperwing": "纸翼战队",
+    "sub.pop": "波普",
     "status.combat_hint": "正在读表...",
     "action.read_table": "读表",
     "action.teleport": "传送",
@@ -42,6 +47,7 @@
     "status.no_points": "没有可用的点",
     "status.stopped": "已停止",
     "status.done_count": "已打完 {0}/{1}",
-    "status.no_controller": "无法获取玩家控制器"
+    "status.no_controller": "无法获取玩家控制器",
+    "status.services_missing": "战斗服务缺失: {0}"
   }
 }

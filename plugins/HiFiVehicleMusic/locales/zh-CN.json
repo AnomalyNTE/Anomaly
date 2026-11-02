@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "HiFi 载具音乐",
     "plugin.description": "用本地无损文件替换载具背景音乐，通过 WASAPI 独占、WASAPI 共享、DirectSound 或 ASIO 输出。",
     "window.title": "HiFi 载具音乐",
     "option.enabled": "替换载具音乐",

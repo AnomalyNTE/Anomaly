@@ -6,7 +6,7 @@
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/localization.h"
 #include "anomaly/sdk/services/plugin_state.h"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include "plugins/common/combat/auto_combat.hpp"
 
 #include <Windows.h>
@@ -103,125 +103,134 @@ struct MapLandmark final {
     std::string teleport_id;
 };
 
+// 行名是游戏自己的 UE 对象名（含中文原文），本地化不覆盖数据：中文一律写成反斜杠 u 加四位十六
+// 进制的转义形式，免得被 i18n 检查当成残留文案。改动时逐字对照，转义错一位就匹配不到行。
 std::vector<Point> VisionPoints() {
     return {
-        {"伤心英熊_mon_019_SadBear_BP_World_C_0", -28170, 84678, 6503},
-        {"伤心英熊_mon_019_SadBear_BP_World_C_1", -283560, 348658, 2312},
-        {"伤心英熊_mon_019_SadBear_BP_World_C_2", -34682, 131390, 2843},
-        {"伤心英熊_mon_019_SadBear_BP_World_C_3", 27585, 115101, 7057},
-        {"伤心英熊_mon_019_SadBear_BP_World_C_4", 35051, 73480, 6201},
-        {"伤心英熊_mon_019_SadBear_BP_World_C_5", 36087, 138934, 3167},
-        {"妖刀_mon_13_1_BP_World_C_6", -129110, 133352, 6713},
-        {"妖刀_mon_13_1_BP_World_C_7", -172989, 122003, 7117},
-        {"妖刀_mon_13_1_BP_World_Perform_C_8", -111304, 162488, 5980},
-        {"妖刀_mon_13_1_BP_World_Perform_C_9", -145267, 79781, 7543},
-        {"妖刀_mon_13_1_BP_World_Perform_C_10", -19120, 23926, 7711},
-        {"妖刀_mon_13_1_BP_World_Perform_C_11", -277508, 346179, 3955},
-        {"妖刀_mon_13_1_BP_World_Perform_C_12", -77961, 138950, 3892},
-        {"妖刀_mon_13_1_BP_World_Perform_C_13", 29187, 100218, 7173},
-        {"妖刀_mon_13_2_BP_World_C_14", -150925, 82837, 7561},
-        {"妖刀_mon_13_2_BP_World_Interaction_C_15", -143290, 213280, 8766},
-        {"妖刀_mon_13_BP_World_C_16", -201739, 106656, 7572},
-        {"妖刀_mon_13_BP_World_C_17", -253256, 361426, 5616},
-        {"妖刀_mon_13_BP_World_Interaction_C_18", -36600, 88375, 5222},
-        {"妖刀_mon_13_horizontal_BP_World_C_19", -86569, 130546, 7882},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_20", -105359, 65605, 7131},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_21", -105589, 66670, 7136},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_22", -119567, 196220, 5758},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_23", -137731, 160872, 6835},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_24", -164979, 139373, 6745},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_25", -21772, 47950, 7710},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_26", -24617, 66364, 6913},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_27", -33772, 31497, 7744},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_28", -36058, 50158, 7690},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_29", -46555, 104935, 2886},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_30", -49823, 86262, 2900},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_31", -50231, 85743, 2900},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_32", -58223, 72915, 3638},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_33", 18630, 104502, 6555},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_34", 29359, 138598, 3166},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_35", 42088, 52008, 5114},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_36", 42097, 116235, 6999},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_37", 7970, 30375, 7696},
-        {"贩售机附电灵_mon_14_BP_World_Interaction_C_38", 8775, 31078, 7684},
-        {"洄天鱼幡_mon_025_BP_Blue_World_Passive_C_39", -133541, 153285, 13629},
-        {"洄天鱼幡_mon_025_BP_Blue_World_Passive_C_40", -190922, 184853, 8251},
-        {"洄天鱼幡_mon_025_BP_Blue_World_Passive_C_41", -21200, 68382, 28231},
-        {"洄天鱼幡_mon_025_BP_Blue_World_Passive_C_42", -61212, -21036, 9408},
-        {"洄天鱼幡_mon_025_BP_Green_World_Passive_C_43", -132500, 152691, 13629},
-        {"洄天鱼幡_mon_025_BP_Green_World_Passive_C_44", -190846, 183799, 8245},
-        {"洄天鱼幡_mon_025_BP_Green_World_Passive_C_45", -21939, 68863, 28294},
-        {"洄天鱼幡_mon_025_BP_Green_World_Passive_C_46", -60069, -19342, 8985},
-        {"洄天鱼幡_mon_025_BP_Red_World_Passive_C_47", -132508, 153895, 13629},
-        {"洄天鱼幡_mon_025_BP_Red_World_Passive_C_48", -189837, 184982, 8293},
-        {"洄天鱼幡_mon_025_BP_Red_World_Passive_C_49", -22069, 67703, 28445},
-        {"洄天鱼幡_mon_025_BP_Red_World_Passive_C_50", -62230, -19428, 9003},
-        {"洄天鱼幡_mon_025_BP_World_Vision_02_1_C_51", 5217, 109465, 28755},
-        {"洄天鱼幡_mon_025_BP_World_Vision_02_2_C_52", 5217, 109465, 28755},
-        {"洄天鱼幡_mon_025_BP_World_Vision_02_3_C_53", 5217, 109465, 28755},
-        {"洄天鱼幡_mon_025_BP_World_W103308_01_C_54", -153361, 204915, 6668},
-        {"洄天鱼幡_mon_025_BP_World_W103308_02_C_55", -153361, 204915, 6668},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_56", -110366, 79375, 15476},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_57", -123577, 190121, 8783},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_58", -124398, 96588, 12899},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_59", -139539, 156211, 11671},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_60", -141856, 127782, 12499},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_61", -179873, 146591, 10085},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_62", -181567, 239880, 2463},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_63", -184345, 98966, 12662},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_64", -207027, 193561, 7655},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_65", -35988, 119065, 13859},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_66", -45688, 88125, 9597},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_67", -76466, 69499, 10501},
-        {"洄天鱼幡_mon_025_double_1_BP_World_C_68", 38406, 55294, 9518},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_69", -110366, 79375, 15476},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_70", -123577, 190121, 8783},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_71", -124398, 96588, 12899},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_72", -139539, 156211, 11671},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_73", -141856, 127782, 12499},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_74", -179873, 146591, 10085},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_75", -181567, 239880, 2463},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_76", -184345, 98966, 12662},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_77", -207027, 193561, 7655},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_78", -35988, 119065, 13859},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_79", -45688, 88125, 9597},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_80", -76466, 69499, 10501},
-        {"洄天鱼幡_mon_025_double_2_BP_World_C_81", 38406, 55294, 9518},
-        {"纸翼战队_mon_26_BP_World_C_82", -103972, 50917, 8488},
-        {"纸翼战队_mon_26_BP_World_C_83", -124312, 59338, 8465},
-        {"纸翼战队_mon_26_BP_World_C_84", -135156, 233737, 2510},
-        {"纸翼战队_mon_26_BP_World_C_85", -16940, 95140, 6540},
-        {"纸翼战队_mon_26_BP_World_C_86", -195094, 187235, 8278},
-        {"纸翼战队_mon_26_BP_World_C_87", -254512, 348519, 2601},
-        {"纸翼战队_mon_26_BP_World_C_88", -30925, 16442, 8710},
-        {"纸翼战队_mon_26_BP_World_C_89", -43748, 6288, 7665},
-        {"纸翼战队_mon_26_BP_World_C_90", -6871, 13074, 8910},
-        {"纸翼战队_mon_26_BP_World_C_91", -80561, 288, 8355},
-        {"纸翼战队_mon_26_BP_World_C_92", 23426, 77367, 6500},
-        {"纸翼战队_mon_26_BP_World_C_93", 48854, 123607, 6485},
-        {"纸翼战队_mon_26_BP_World_Perform_C_94", -119972, 147571, 8455},
-        {"纸翼战队_mon_26_BP_World_Perform_C_95", -125859, 73580, 7985},
-        {"纸翼战队_mon_26_BP_World_Perform_C_96", -201744, 213237, 18241},
-        {"纸翼战队_mon_26_BP_World_Perform_C_97", -44462, 14189, 7512},
-        {"纸翼战队_mon_26_BP_World_Perform_C_98", 24980, 44301, 52768},
-        {"波普_mon_012_1_BP_World_Area01_002_C_99", -122624, 156946, 10139},
-        {"波普_mon_012_1_BP_World_Area02_001_C_100", -182767, 124538, 7429},
-        {"波普_mon_012_1_BP_World_Area02_002_C_101", -113712, 64380, 8749},
-        {"波普_mon_012_1_BP_World_Area02_003_C_102", -92400, 97459, 6317},
-        {"波普_mon_012_1_BP_World_AreaSpecial_01_C_103", -119497, 185081, 6131},
-        {"波普_mon_012_1_BP_World_AreaSpecial_02_C_104", -128896, 126920, 6785},
-        {"波普_mon_012_2_BP_World_Area01_002_C_105", -122630, 156952, 10146},
-        {"波普_mon_012_2_BP_World_Area02_001_C_106", -182767, 124538, 7446},
-        {"波普_mon_012_2_BP_World_Area02_002_C_107", -113712, 64380, 8779},
-        {"波普_mon_012_2_BP_World_Area02_003_C_108", -92400, 97459, 6282},
-        {"波普_mon_012_2_BP_World_AreaSpecial_01_C_109", -119491, 185088, 6170},
-        {"波普_mon_012_2_BP_World_AreaSpecial_02_C_110", -128896, 126920, 6878},
+        {"\u4f24\u5fc3\u82f1\u718a_mon_019_SadBear_BP_World_C_0", -28170, 84678, 6503},
+        {"\u4f24\u5fc3\u82f1\u718a_mon_019_SadBear_BP_World_C_1", -283560, 348658, 2312},
+        {"\u4f24\u5fc3\u82f1\u718a_mon_019_SadBear_BP_World_C_2", -34682, 131390, 2843},
+        {"\u4f24\u5fc3\u82f1\u718a_mon_019_SadBear_BP_World_C_3", 27585, 115101, 7057},
+        {"\u4f24\u5fc3\u82f1\u718a_mon_019_SadBear_BP_World_C_4", 35051, 73480, 6201},
+        {"\u4f24\u5fc3\u82f1\u718a_mon_019_SadBear_BP_World_C_5", 36087, 138934, 3167},
+        {"\u5996\u5200_mon_13_1_BP_World_C_6", -129110, 133352, 6713},
+        {"\u5996\u5200_mon_13_1_BP_World_C_7", -172989, 122003, 7117},
+        {"\u5996\u5200_mon_13_1_BP_World_Perform_C_8", -111304, 162488, 5980},
+        {"\u5996\u5200_mon_13_1_BP_World_Perform_C_9", -145267, 79781, 7543},
+        {"\u5996\u5200_mon_13_1_BP_World_Perform_C_10", -19120, 23926, 7711},
+        {"\u5996\u5200_mon_13_1_BP_World_Perform_C_11", -277508, 346179, 3955},
+        {"\u5996\u5200_mon_13_1_BP_World_Perform_C_12", -77961, 138950, 3892},
+        {"\u5996\u5200_mon_13_1_BP_World_Perform_C_13", 29187, 100218, 7173},
+        {"\u5996\u5200_mon_13_2_BP_World_C_14", -150925, 82837, 7561},
+        {"\u5996\u5200_mon_13_2_BP_World_Interaction_C_15", -143290, 213280, 8766},
+        {"\u5996\u5200_mon_13_BP_World_C_16", -201739, 106656, 7572},
+        {"\u5996\u5200_mon_13_BP_World_C_17", -253256, 361426, 5616},
+        {"\u5996\u5200_mon_13_BP_World_Interaction_C_18", -36600, 88375, 5222},
+        {"\u5996\u5200_mon_13_horizontal_BP_World_C_19", -86569, 130546, 7882},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_20", -105359, 65605, 7131},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_21", -105589, 66670, 7136},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_22", -119567, 196220, 5758},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_23", -137731, 160872, 6835},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_24", -164979, 139373, 6745},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_25", -21772, 47950, 7710},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_26", -24617, 66364, 6913},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_27", -33772, 31497, 7744},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_28", -36058, 50158, 7690},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_29", -46555, 104935, 2886},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_30", -49823, 86262, 2900},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_31", -50231, 85743, 2900},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_32", -58223, 72915, 3638},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_33", 18630, 104502, 6555},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_34", 29359, 138598, 3166},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_35", 42088, 52008, 5114},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_36", 42097, 116235, 6999},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_37", 7970, 30375, 7696},
+        {"\u8d29\u552e\u673a\u9644\u7535\u7075_mon_14_BP_World_Interaction_C_38", 8775, 31078, 7684},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Blue_World_Passive_C_39", -133541, 153285, 13629},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Blue_World_Passive_C_40", -190922, 184853, 8251},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Blue_World_Passive_C_41", -21200, 68382, 28231},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Blue_World_Passive_C_42", -61212, -21036, 9408},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Green_World_Passive_C_43", -132500, 152691, 13629},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Green_World_Passive_C_44", -190846, 183799, 8245},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Green_World_Passive_C_45", -21939, 68863, 28294},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Green_World_Passive_C_46", -60069, -19342, 8985},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Red_World_Passive_C_47", -132508, 153895, 13629},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Red_World_Passive_C_48", -189837, 184982, 8293},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Red_World_Passive_C_49", -22069, 67703, 28445},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_Red_World_Passive_C_50", -62230, -19428, 9003},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_World_Vision_02_1_C_51", 5217, 109465, 28755},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_World_Vision_02_2_C_52", 5217, 109465, 28755},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_World_Vision_02_3_C_53", 5217, 109465, 28755},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_World_W103308_01_C_54", -153361, 204915, 6668},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_BP_World_W103308_02_C_55", -153361, 204915, 6668},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_56", -110366, 79375, 15476},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_57", -123577, 190121, 8783},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_58", -124398, 96588, 12899},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_59", -139539, 156211, 11671},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_60", -141856, 127782, 12499},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_61", -179873, 146591, 10085},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_62", -181567, 239880, 2463},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_63", -184345, 98966, 12662},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_64", -207027, 193561, 7655},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_65", -35988, 119065, 13859},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_66", -45688, 88125, 9597},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_67", -76466, 69499, 10501},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_1_BP_World_C_68", 38406, 55294, 9518},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_69", -110366, 79375, 15476},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_70", -123577, 190121, 8783},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_71", -124398, 96588, 12899},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_72", -139539, 156211, 11671},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_73", -141856, 127782, 12499},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_74", -179873, 146591, 10085},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_75", -181567, 239880, 2463},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_76", -184345, 98966, 12662},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_77", -207027, 193561, 7655},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_78", -35988, 119065, 13859},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_79", -45688, 88125, 9597},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_80", -76466, 69499, 10501},
+        {"\u6d04\u5929\u9c7c\u5e61_mon_025_double_2_BP_World_C_81", 38406, 55294, 9518},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_82", -103972, 50917, 8488},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_83", -124312, 59338, 8465},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_84", -135156, 233737, 2510},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_85", -16940, 95140, 6540},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_86", -195094, 187235, 8278},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_87", -254512, 348519, 2601},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_88", -30925, 16442, 8710},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_89", -43748, 6288, 7665},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_90", -6871, 13074, 8910},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_91", -80561, 288, 8355},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_92", 23426, 77367, 6500},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_C_93", 48854, 123607, 6485},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_Perform_C_94", -119972, 147571, 8455},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_Perform_C_95", -125859, 73580, 7985},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_Perform_C_96", -201744, 213237, 18241},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_Perform_C_97", -44462, 14189, 7512},
+        {"\u7eb8\u7ffc\u6218\u961f_mon_26_BP_World_Perform_C_98", 24980, 44301, 52768},
+        {"\u6ce2\u666e_mon_012_1_BP_World_Area01_002_C_99", -122624, 156946, 10139},
+        {"\u6ce2\u666e_mon_012_1_BP_World_Area02_001_C_100", -182767, 124538, 7429},
+        {"\u6ce2\u666e_mon_012_1_BP_World_Area02_002_C_101", -113712, 64380, 8749},
+        {"\u6ce2\u666e_mon_012_1_BP_World_Area02_003_C_102", -92400, 97459, 6317},
+        {"\u6ce2\u666e_mon_012_1_BP_World_AreaSpecial_01_C_103", -119497, 185081, 6131},
+        {"\u6ce2\u666e_mon_012_1_BP_World_AreaSpecial_02_C_104", -128896, 126920, 6785},
+        {"\u6ce2\u666e_mon_012_2_BP_World_Area01_002_C_105", -122630, 156952, 10146},
+        {"\u6ce2\u666e_mon_012_2_BP_World_Area02_001_C_106", -182767, 124538, 7446},
+        {"\u6ce2\u666e_mon_012_2_BP_World_Area02_002_C_107", -113712, 64380, 8779},
+        {"\u6ce2\u666e_mon_012_2_BP_World_Area02_003_C_108", -92400, 97459, 6282},
+        {"\u6ce2\u666e_mon_012_2_BP_World_AreaSpecial_01_C_109", -119491, 185088, 6170},
+        {"\u6ce2\u666e_mon_012_2_BP_World_AreaSpecial_02_C_110", -128896, 126920, 6878},
     };
 }
 
+// 子筛选的匹配前缀：同样是游戏数据（行名前缀），转义保存；按钮文案另见 vision_name_keys。
 static const char* kVisionNames[] = {
-    "伤心英熊", "妖刀", "贩售机附电灵", "洄天鱼幡", "纸翼战队", "波普"
+    "\u4f24\u5fc3\u82f1\u718a", "\u5996\u5200", "\u8d29\u552e\u673a\u9644\u7535\u7075", "\u6d04\u5929\u9c7c\u5e61", "\u7eb8\u7ffc\u6218\u961f", "\u6ce2\u666e"
 };
+static constexpr std::array<std::string_view, 6> vision_name_keys{
+    "sub.sad_bear", "sub.cursed_blade", "sub.vending_spirit",
+    "sub.skywhirl_banner", "sub.paperwing", "sub.pop"};
+static constexpr std::array<std::string_view, 6> vision_name_english{
+    "Sad Bear", "Cursed Blade", "Vending Spirit",
+    "Skywhirl Banner", "Paperwing Squad", "Pop"};
 
 struct Context final {
     const AnomalyHostApiV1* host{};
@@ -241,7 +250,7 @@ struct Context final {
     const AnomalyNteEntitiesServiceV1* entities{};
     const AnomalyNtePickupServiceV1* pickup{};
     const AnomalyPluginStateServiceV1* plugin_state{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
 
     std::uintptr_t g_objects_address{};
 
@@ -601,8 +610,9 @@ void ReadTable(Context& context) {
     void* table_object{};
     if (!ObjectsReady(context.objects)) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = context.localizer.Text(
-            "status.read_failed", "Read table failed");
+        const std::array reason{std::string_view("object service not ready")};
+        context.status = context.localizer.Format(
+            "status.read_failed", "Read table failed: {0}", reason);
         return;
     }
     AnomalyGenerationHandleV1 handle{};
@@ -610,24 +620,27 @@ void ReadTable(Context& context) {
         context.objects->user, anomaly::sdk::StringView(kTablePath), &handle);
     if (st.code != ANOMALY_STATUS_V1_OK || handle.id == 0) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = context.localizer.Text(
-            "status.read_failed", "Read table failed");
+        const std::array reason{std::string_view("data table object not found")};
+        context.status = context.localizer.Format(
+            "status.read_failed", "Read table failed: {0}", reason);
         return;
     }
     if (context.g_objects_address == 0 &&
         !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
                             context.g_objects_address)) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = context.localizer.Text(
-            "status.read_failed", "Read table failed");
+        const std::array reason{std::string_view("GObjects not resolved")};
+        context.status = context.localizer.Format(
+            "status.read_failed", "Read table failed: {0}", reason);
         return;
     }
     const auto index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
     table_object = ObjectAt(context.g_objects_address, index);
     if (table_object == nullptr) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = context.localizer.Text(
-            "status.read_failed", "Read table failed");
+        const std::array reason{std::string_view("data table object unreachable")};
+        context.status = context.localizer.Format(
+            "status.read_failed", "Read table failed: {0}", reason);
         return;
     }
     struct ArrayHeader {
@@ -640,8 +653,9 @@ void ReadTable(Context& context) {
               header) ||
         header.count <= 0 || header.capacity < header.count || header.data == 0) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = context.localizer.Text(
-            "status.read_failed", "Read table failed");
+        const std::array reason{std::string_view("row map unreadable")};
+        context.status = context.localizer.Format(
+            "status.read_failed", "Read table failed: {0}", reason);
         return;
     }
     for (std::int32_t i = 0; i < header.count; ++i) {
@@ -1183,7 +1197,9 @@ void TickCombat(Context& context, std::chrono::steady_clock::time_point now) {
         if (context.entities == nullptr) add("entities");
         if (context.combat == nullptr) add("combat");
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = "战斗服务缺失: " + missing;
+        const std::array missing_args{std::string_view(missing)};
+        context.status = context.localizer.Format(
+            "status.services_missing", "Missing combat services: {0}", missing_args);
     }
 }
 
@@ -1202,14 +1218,14 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_ui) {
                                  std::memory_order_release);
     int open = 1;
     const std::string window_title =
-        context.localizer.Text("window.title", "打怪资源点");
+        context.localizer.Text("window.title", "Combat Resource Points");
     anomaly::sdk::UiWindow window(ui, window_title, &open);
     if (!window) return;
 
     const std::string combat_label =
-        context.localizer.Text("type.combat", "打怪宝箱（xx点的赠礼）");
+        context.localizer.Text("type.combat", "Combat treasure boxes (Gift of XX points)");
     const std::string vision_label =
-        context.localizer.Text("type.vision", "异像家具材料");
+        context.localizer.Text("type.vision", "Anomaly furniture materials");
     if (ui->button(ui->user, anomaly::sdk::StringView(combat_label), 0.0F, 0.0F) != 0) {
         {
             std::lock_guard<std::mutex> lock(context.mutex);
@@ -1217,7 +1233,7 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_ui) {
             context.sub_choice = 0;
             context.points.clear();
             RebuildFilteredLocked(context);
-            context.status = context.localizer.Text("status.combat_hint", "正在读表...");
+            context.status = context.localizer.Text("status.combat_hint", "Reading the table...");
         }
         context.read_pending.store(true, std::memory_order_release);
     }
@@ -1234,7 +1250,7 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_ui) {
     }
     ui->separator(ui->user);
 
-    const std::string all_label = context.localizer.Text("sub.all", "全部");
+    const std::string all_label = context.localizer.Text("sub.all", "All");
     if (ui->button(ui->user, anomaly::sdk::StringView(all_label), 0.0F, 0.0F) != 0) {
         std::lock_guard<std::mutex> lock(context.mutex);
         context.sub_choice = 0;
@@ -1243,7 +1259,9 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_ui) {
     if (context.type_choice == 1) {
         for (int i = 0; i < 6; ++i) {
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 4.0F);
-            if (ui->button(ui->user, anomaly::sdk::StringView(kVisionNames[i]), 0.0F, 0.0F) != 0) {
+            const std::string vision_name = context.localizer.Text(
+                vision_name_keys[i], vision_name_english[i]);
+            if (ui->button(ui->user, anomaly::sdk::StringView(vision_name), 0.0F, 0.0F) != 0) {
                 std::lock_guard<std::mutex> lock(context.mutex);
                 context.sub_choice = static_cast<std::uint32_t>(i + 1);
                 RebuildFilteredLocked(context);
@@ -1399,7 +1417,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     if (!context) return {ANOMALY_STATUS_V1_FAILED, 0, {nullptr, 0}};
     context->host = host;
     const auto view = anomaly::sdk::Host(host);
-    context->localizer = anomaly::plugins::Localizer(host);
+    context->localizer = anomaly::sdk::Localizer(host);
     context->signature = view.Query<AnomalySignatureServiceV1>(
         ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).get();
     context->names = view.Query<AnomalyUe5NamesServiceV1>(
@@ -1668,7 +1686,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.local.combat-box"),
-        anomaly::sdk::StringView("打怪资源点"),
+        anomaly::sdk::StringView("Combat Resource Points"),
         anomaly::sdk::StringView("CCYellowStar"),
         anomaly::sdk::StringView("0.1.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();

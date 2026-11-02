@@ -12,12 +12,12 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include "access.hpp"
 #include "model.hpp"
 namespace {
 // English fallbacks live in the code; the zh-CN catalog is plugins/SceneLoader/locales/zh-CN.json.
-anomaly::plugins::Localizer localizer;
+anomaly::sdk::Localizer localizer;
 std::string T(const char* key,const char* fallback) {return localizer.Text(key,fallback);}
 std::string T(const scene::Text& text) {return text.key?localizer.Text(text.key,text.fallback):std::string{};}
 std::string F(const char* key,const char* fallback,std::initializer_list<std::string_view> arguments) {
@@ -521,7 +521,7 @@ bool EnsureWindow() {
     return windows->register_window(windows->user,&spec,&window).code==0 && window.id;
 }
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host,void** context) noexcept {
-    api=host;localizer=anomaly::plugins::Localizer(host);core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
+    api=host;localizer=anomaly::sdk::Localizer(host);core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
     names=Host(host).Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID,2).get();
     objects=Host(host).Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get();
     framework=Host(host).Query<AnomalyUe5FrameworkServiceV1>(ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID).get();

@@ -5,7 +5,7 @@
 #include <anomaly/sdk/services/ui.h>
 #include <anomaly/sdk/services/ue5.h>
 
-#include "../common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <array>
 #include <atomic>
@@ -107,7 +107,7 @@ struct DummyRecord {
 
 struct Context {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     const AnomalyUiServiceV1* ui{};
     const AnomalyCoreServiceV1* core{};
     const AnomalyUe5ObjectsServiceV1* objects{};
@@ -799,7 +799,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 
     g_context.host = host;
     g_context.ui = ui.get();
-    g_context.localizer = anomaly::plugins::Localizer(host);
+    g_context.localizer = anomaly::sdk::Localizer(host);
     ResetState();
     *context = &g_context;
     return anomaly::sdk::Ok();

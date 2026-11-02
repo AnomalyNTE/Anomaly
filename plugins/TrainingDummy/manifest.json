@@ -26,6 +26,10 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
       "id": "anomaly.core",
       "minVersion": 1
     },

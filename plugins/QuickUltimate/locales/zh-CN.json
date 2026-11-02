@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "快捷大招",
     "plugin.description": "按住 Alt+1 至 Alt+4 切换到对应角色自动释放极轨终结",
     "window.title": "快捷大招",
     "hotkeys.bindings": "固定快捷键：Alt+1 / Alt+2 / Alt+3 / Alt+4",

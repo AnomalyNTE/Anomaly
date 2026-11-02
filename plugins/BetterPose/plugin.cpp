@@ -38,7 +38,7 @@ using Microsoft::WRL::ComPtr;
 #include "joint_limits.hpp"
 #include "pose_document.hpp"
 #include "retarget/motion_builder.hpp"
-#include "../common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <atomic>
 #include <algorithm>
@@ -109,32 +109,32 @@ int ControlTrackPriority(const std::string_view name) {
   const auto has = [&lower](const std::string_view needle) {
     return lower.find(needle) != std::string::npos;
   };
-  if (has("握") || has("拳") || has("grip"))
+  if (has("握") || has("拳") || has("grip"))  // i18n-data: MMD control-track keyword, matched against VMD data
     return 100;
-  if (has("張") || has("张") || has("开手") || has("開手") ||
+  if (has("張") || has("张") || has("开手") || has("開手") ||  // i18n-data: MMD control-track keyword, matched against VMD data
       has("spread"))
     return 95;
   if (has("hand") || has("finger") || has("controller") ||
       has("control_") || has("ctrl"))
     return 70;
-  if (has("手") || has("指")) {
-    if (has("手首") || has("手先") || has("手捩") || has("手指") ||
-        has("親指") || has("人指") || has("人差指") || has("中指") ||
-        has("薬指") || has("小指"))
+  if (has("手") || has("指")) {  // i18n-data: MMD control-track keyword, matched against VMD data
+    if (has("手首") || has("手先") || has("手捩") || has("手指") ||  // i18n-data: MMD control-track keyword, matched against VMD data
+        has("親指") || has("人指") || has("人差指") || has("中指") ||  // i18n-data: MMD control-track keyword, matched against VMD data
+        has("薬指") || has("小指"))  // i18n-data: MMD control-track keyword, matched against VMD data
       return 0;
     return 45;
   }
-  if (has("腕ik") || has("arm_ik") || has("arm ik") || has("視線") ||
-      has("视线"))
+  if (has("腕ik") || has("arm_ik") || has("arm ik") || has("視線") ||  // i18n-data: MMD control-track keyword, matched against VMD data
+      has("视线"))  // i18n-data: MMD control-track keyword, matched against VMD data
     return 60;
   return 0;
 }
 
 bool IsStructuralControlTrack(const std::string_view name) {
   static constexpr std::string_view kNames[] = {
-      "腰", "肩", "足", "ひざ", "足首", "つま先", "首", "頭", "胸",
-      "腕", "ひじ", "捩", "補助", "キャンセル", "IK", "操作中心",
-      "両目", "左目", "右目"};
+      "腰", "肩", "足", "ひざ", "足首", "つま先", "首", "頭", "胸",  // i18n-data: MMD control-track keyword, matched against VMD data
+      "腕", "ひじ", "捩", "補助", "キャンセル", "IK", "操作中心",  // i18n-data: MMD control-track keyword, matched against VMD data
+      "両目", "左目", "右目"};  // i18n-data: MMD control-track keyword, matched against VMD data
   for (const auto value : kNames)
     if (name.find(value) != std::string_view::npos)
       return true;
@@ -582,7 +582,7 @@ class AtomicSecondaryTuning final {
 
 struct Context final {
   const AnomalyHostApiV1 *host{};
-  anomaly::plugins::Localizer localizer;
+  anomaly::sdk::Localizer localizer;
   const AnomalyCoreServiceV1 *core{};
   const AnomalySignatureServiceV1 *signature{};
   const AnomalyUe5NamesServiceV1 *names{};
@@ -1796,15 +1796,22 @@ void ANOMALY_CALL LibraryTask(void *user, AnomalyGenerationHandleV1) noexcept {
       const bool read = StorageReadFile(context.storage, better_pose::library::kIndexPath,
                                         result.document, &missing, &code);
       result.ok = read || missing;
+      const std::string code_text = std::to_string(code);
+      const std::array<std::string_view, 1> code_arguments{code_text};
       result.status = missing ? std::string("__empty_library__")
                               : result.ok ? std::string{}
-                                          : "库索引读取失败（状态码 " + std::to_string(code) + "）";
+                                          : context.localizer.Format(
+                                                "library.error.index_read",
+                                                "Library index read failed (status {0})",
+                                                code_arguments);
     } else if (result.request.operation == 1 || result.request.operation == 3) {
       const auto kind = result.request.operation == 1 ? better_pose::library::Kind::Pose
                                                        : better_pose::library::Kind::Motion;
       if (result.request.name.empty() || entries.size() >= better_pose::library::kMaximumEntries ||
           better_pose::library::HasName(entries, kind, result.request.name)) {
-        result.status = "名称无效、重复或库已满";
+        result.status = context.localizer.Text(
+            "library.error.name_invalid",
+            "The name is invalid, duplicated, or the library is full");
       } else {
         better_pose::library::Entry entry{NewLibraryId(kind), result.request.name, kind, 1};
         const std::uint32_t entry_code = StorageWriteFile(
@@ -1813,45 +1820,78 @@ void ANOMALY_CALL LibraryTask(void *user, AnomalyGenerationHandleV1) noexcept {
           entries.push_back(entry);
           const std::uint32_t index_code = write_index();
           result.ok = index_code == ANOMALY_STATUS_V1_OK;
-          result.status = result.ok ? "已保存：" + entry.name
-                                    : "保存库索引失败（状态码 " + std::to_string(index_code) + "）";
+          const std::string name_text = entry.name;
+          const std::array<std::string_view, 1> name_arguments{name_text};
+          const std::string index_text = std::to_string(index_code);
+          const std::array<std::string_view, 1> index_arguments{index_text};
+          result.status =
+              result.ok ? context.localizer.Format("library.saved", "Saved {0}", name_arguments)
+                        : context.localizer.Format("library.error.index_write",
+                                                   "Library index write failed (status {0})",
+                                                   index_arguments);
           if (!result.ok)
             static_cast<void>(StorageRemoveFile(context.storage, better_pose::library::PathFor(entry)));
         } else {
-          result.status = "保存库文件失败（状态码 " + std::to_string(entry_code) + "）";
+          const std::string entry_text = std::to_string(entry_code);
+          const std::array<std::string_view, 1> entry_arguments{entry_text};
+          result.status = context.localizer.Format(
+              "library.error.entry_write", "Library file write failed (status {0})",
+              entry_arguments);
         }
       }
     } else {
       auto it = found();
       if (it == entries.end()) {
-        result.status = "库条目不存在";
+        result.status = context.localizer.Text(
+            "library.error.entry_missing", "Library entry not found");
       } else if (result.request.operation == 2 || result.request.operation == 4) {
         std::uint32_t code{};
         result.ok = StorageReadFile(context.storage, better_pose::library::PathFor(*it),
                                     result.document, nullptr, &code);
-        result.status = result.ok ? std::string{}
-                                  : "库条目读取失败（状态码 " + std::to_string(code) + "）";
+        const std::string code_text = std::to_string(code);
+        const std::array<std::string_view, 1> code_arguments{code_text};
+        result.status =
+            result.ok ? std::string{}
+                      : context.localizer.Format("library.error.entry_read",
+                                                 "Library entry read failed (status {0})",
+                                                 code_arguments);
       } else if (result.request.operation == 5) {
         if (result.request.name.empty() || better_pose::library::HasName(
                                                   entries, it->kind, result.request.name, it->id)) {
-          result.status = "名称为空或已存在";
+          result.status = context.localizer.Text(
+              "library.error.rename_invalid", "The name is empty or already in use");
         } else {
           it->name = result.request.name;
           const std::uint32_t code = write_index();
           result.ok = code == ANOMALY_STATUS_V1_OK;
-          result.status = result.ok ? "已重命名：" + it->name
-                                    : "重命名失败（状态码 " + std::to_string(code) + "）";
+          const std::string name_text = it->name;
+          const std::array<std::string_view, 1> name_arguments{name_text};
+          const std::string code_text = std::to_string(code);
+          const std::array<std::string_view, 1> code_arguments{code_text};
+          result.status =
+              result.ok
+                  ? context.localizer.Format("library.renamed", "Renamed to {0}", name_arguments)
+                  : context.localizer.Format("library.error.rename_failed",
+                                             "Rename failed (status {0})", code_arguments);
         }
       } else if (result.request.operation == 6) {
         const auto old_entry = *it;
         if (!StorageRemoveFile(context.storage, better_pose::library::PathFor(old_entry))) {
-          result.status = "删除库文件失败";
+          result.status = context.localizer.Text(
+              "library.error.delete_failed", "Library file delete failed");
         } else {
           entries.erase(it);
           const std::uint32_t code = write_index();
           result.ok = code == ANOMALY_STATUS_V1_OK;
-          result.status = result.ok ? "已删除：" + old_entry.name
-                                    : "保存库索引失败（状态码 " + std::to_string(code) + "）";
+          const std::string name_text = old_entry.name;
+          const std::array<std::string_view, 1> name_arguments{name_text};
+          const std::string code_text = std::to_string(code);
+          const std::array<std::string_view, 1> code_arguments{code_text};
+          result.status =
+              result.ok ? context.localizer.Format("library.deleted", "Deleted {0}", name_arguments)
+                        : context.localizer.Format("library.error.index_write",
+                                                   "Library index write failed (status {0})",
+                                                   code_arguments);
         }
       }
     }
@@ -1859,7 +1899,8 @@ void ANOMALY_CALL LibraryTask(void *user, AnomalyGenerationHandleV1) noexcept {
       result.entries = std::move(entries);
   } catch (...) {
     result.ok = false;
-    result.status = "库文件操作失败";
+    result.status = context.localizer.Text(
+        "library.error.storage", "Library file operation failed");
   }
   std::lock_guard<std::mutex> lock(context.library_io_mutex);
   context.library_io_results.push_back(std::move(result));
@@ -9096,8 +9137,8 @@ void AppendKawaiiLimits(
 
 void ResyncExtraMeshes(Context &context) noexcept {
   // Log the *state* even when this returns early: a silent no-op is what made the
-  // previous test unreadable ("还是没有" told us nothing about which precondition
-  // was missing).
+  // previous test unreadable (a bare "still nothing" told us nothing about which
+  // precondition was missing).
   const std::uint32_t parent_offset = context.attach_parent_offset;
   if (parent_offset == 0)
     return;
@@ -11406,8 +11447,8 @@ void StepMusic(Context &context, const double delta_seconds) noexcept {
 }
 
 // A track sitting next to the motion is almost always the right one, so offer it: the exact
-// basename first, then the same basename ignoring spaces (motions and songs are often named
-// "爱言叶4.vmd" / "爱言叶4 .mp3").
+// basename first, then the same basename ignoring spaces (a motion and its song are often
+// the same title with a stray space in one of the two names).
 std::string FindSiblingAudio(const std::string &motion_path) {
   std::error_code ec;
   const std::filesystem::path motion = std::filesystem::path(Utf8ToWide(motion_path));
@@ -13347,15 +13388,19 @@ void StepLibrary(Context &context) noexcept {
       context.library_entries = std::move(result.entries);
     }
     if (result.request.operation == 7 && result.status == "__empty_library__") {
+      const std::string empty_status =
+          context.localizer.Text("library.empty", "The library is empty; save a pose or a motion");
       std::lock_guard<std::mutex> lock(context.library_mutex);
       context.library_entries.clear();
-      context.library_status = "库为空，可以保存姿态或动作";
+      context.library_status = empty_status;
       continue;
     }
     if (!result.ok && result.request.operation == 7) {
+      const std::string empty_status =
+          context.localizer.Text("library.empty", "The library is empty; save a pose or a motion");
       std::lock_guard<std::mutex> lock(context.library_mutex);
       context.library_entries.clear();
-      context.library_status = "库为空，可以保存姿态或动作";
+      context.library_status = empty_status;
       continue;
     }
     if (!result.ok) {
@@ -13368,7 +13413,8 @@ void StepLibrary(Context &context) noexcept {
       if (!root.is_object() || root.value("format", std::string()) != "betterpose-library" ||
           root.value("version", 0U) != 1U || !root.contains("entries") ||
           !root["entries"].is_array()) {
-        SetLibraryStatus(context, "库索引损坏");
+        SetLibraryStatus(context, context.localizer.Text("library.error.index_corrupt",
+                                                         "The library index is corrupt"));
         continue;
       }
       for (const auto &item : root["entries"]) {
@@ -13396,23 +13442,29 @@ void StepLibrary(Context &context) noexcept {
       const auto root = nlohmann::json::parse(result.document, nullptr, false);
       if (!root.is_object() || root.value("format", std::string()) != "betterpose-library-pose" ||
           !ApplyPoseDocument(context, root)) {
-        SetLibraryStatus(context, "姿态库条目格式错误");
+        SetLibraryStatus(context, context.localizer.Text("library.error.pose_format",
+                                                         "The pose entry has an invalid format"));
         continue;
       }
       if (root.contains("morphs") && !ApplyLibraryExpression(context, root["morphs"])) {
-        SetLibraryStatus(context, "姿态表情数据损坏");
+        SetLibraryStatus(context, context.localizer.Text("library.error.pose_expression",
+                                                         "The pose expression data is corrupt"));
         continue;
       }
       context.pose_edit_held.store(false, std::memory_order_release);
       context.keyframe_auto_user_state_valid = false;
       context.keyframe_applied_frame = context.keyframe_frame.load(std::memory_order_acquire);
-      SetLibraryStatus(context, "已应用姿态：" + result.request.name);
+      const std::string pose_name = result.request.name;
+      const std::array<std::string_view, 1> pose_arguments{pose_name};
+      SetLibraryStatus(context, context.localizer.Format(
+                                   "library.applied_pose", "Applied pose: {0}", pose_arguments));
     } else if (result.request.operation == 4) {
       std::vector<better_pose::keyframes::Key> keys;
       std::uint32_t length{};
       std::size_t skipped{};
       if (!keyframe_impl::ParseDocument(result.document, keys, length, skipped)) {
-        SetLibraryStatus(context, "动作库条目格式错误");
+        SetLibraryStatus(context, context.localizer.Text("library.error.motion_format",
+                                                         "The motion entry has an invalid format"));
         continue;
       }
       {
@@ -13429,7 +13481,11 @@ void StepLibrary(Context &context) noexcept {
       context.keyframe_selected.store(-1, std::memory_order_release);
       context.keyframe_applied_frame = 0.0;
       context.keyframe_auto_user_state_valid = false;
-      SetLibraryStatus(context, "已加载动作：" + result.request.name);
+      const std::string motion_name = result.request.name;
+      const std::array<std::string_view, 1> motion_arguments{motion_name};
+      SetLibraryStatus(context,
+                       context.localizer.Format("library.loaded_motion", "Loaded motion: {0}",
+                                                motion_arguments));
     } else {
       SetLibraryStatus(context, result.status);
     }
@@ -13455,13 +13511,13 @@ void StepLibrary(Context &context) noexcept {
       io.kind = request == 1 ? better_pose::library::Kind::Pose
                              : better_pose::library::Kind::Motion;
       if (name.empty()) {
-        fail("名称不能为空");
+        fail(context.localizer.Text("library.error.name_empty", "The name cannot be empty"));
         return;
       }
       if (request == 1) {
         auto pose = nlohmann::json::parse(BuildPoseDocument(context), nullptr, false);
         if (!pose.is_object()) {
-          fail("姿态快照失败");
+          fail(context.localizer.Text("library.error.pose_snapshot", "The pose snapshot failed"));
           return;
         }
         pose["format"] = "betterpose-library-pose";
@@ -13475,18 +13531,20 @@ void StepLibrary(Context &context) noexcept {
       std::lock_guard<std::mutex> lock(context.library_mutex);
       const auto *entry = better_pose::library::FindById(context.library_entries, id);
       if (entry == nullptr) {
-        fail("库条目不存在");
+        fail(context.localizer.Text("library.error.entry_missing", "Library entry not found"));
         return;
       }
       io.name = entry->name;
       io.kind = entry->kind;
     }
     if (!QueueLibraryTask(context, std::move(io)))
-      fail("后台存储任务启动失败");
+      fail(context.localizer.Text("library.error.task_start",
+                                  "The background storage task could not start"));
     return;
 
   } catch (...) {
-    fail("库请求准备失败");
+    fail(context.localizer.Text("library.error.request",
+                                "The library request could not be prepared"));
   }
 }
 
@@ -17884,9 +17942,11 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
                  kTimelinePlayhead, true,
                  hot(layout.play_button));
   TimelineButton(frame, layout.stop_button, "|<", kTimelinePlayhead, true, hot(layout.stop_button));
-  TimelineButton(frame, layout.delete_button, "删除关键帧", kTimelineDelete, has_selected_key,
-                 hot(layout.delete_button));
-  TimelineButton(frame, layout.record_button, "记录关键帧", kTimelineRecord,
+  TimelineButton(frame, layout.delete_button,
+                 context.localizer.Text("keyframe.overlay.delete", "Delete key"), kTimelineDelete,
+                 has_selected_key, hot(layout.delete_button));
+  TimelineButton(frame, layout.record_button,
+                 context.localizer.Text("keyframe.overlay.record", "Record key"), kTimelineRecord,
                  !motion_export_timeline,
                  hot(layout.record_button));
   TimelineButton(frame, layout.export_button,
@@ -17895,8 +17955,9 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
                  true, hot(layout.export_button));
   // Usable only when zoomed in; the accent is the playhead's, like the other
   // view/playback buttons.
-  TimelineButton(frame, layout.fit_button, "显示全部", kTimelinePlayhead, zoomed,
-                 hot(layout.fit_button));
+  TimelineButton(frame, layout.fit_button,
+                 context.localizer.Text("keyframe.overlay.fit", "Fit all"), kTimelinePlayhead,
+                 zoomed, hot(layout.fit_button));
   const float key_y = lane_y[1];
   std::array<float, 3> lane_last_x{-1.0e9F, -1.0e9F, -1.0e9F};
   for (std::size_t i{}; i != layout.keys.size(); ++i) {
@@ -17966,7 +18027,10 @@ void DrawKeyframeOverlay(Context &context, const AnomalyUe5AhudFrameV1 *frame) n
       std::abs(context.keyframe_applied_frame - current_frame) < 0.5 &&
       current_key == key_count && key_count != 0;
   if (unsaved)
-    frame->draw_text(frame->user, anomaly::sdk::StringView("*未记录"), layout.track.left,
+    frame->draw_text(frame->user,
+                     anomaly::sdk::StringView(
+                         context.localizer.Text("keyframe.overlay.unsaved", "*unsaved")),
+                     layout.track.left,
                      layout.panel.bottom - 18.0F, kTimelineUnsaved, 0.85F);
   else
     frame->draw_text(frame->user,
@@ -19137,7 +19201,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
   if (context == nullptr)
     return Status(ANOMALY_STATUS_V1_FAILED);
   context->host = host;
-  context->localizer = anomaly::plugins::Localizer(host);
+  context->localizer = anomaly::sdk::Localizer(host);
   context->core = Query<AnomalyCoreServiceV1>(host, ANOMALY_CORE_SERVICE_V1_ID,
                                               ANOMALY_CORE_SERVICE_V1_VERSION);
   context->signature =
@@ -19191,11 +19255,13 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
     return Status(ANOMALY_STATUS_V1_FAILED,
                   "character pose settings are invalid");
   }
-  context->library_status = "正在读取库索引…";
+  context->library_status =
+      context->localizer.Text("library.loading", "Reading the library index...");
   Context::LibraryIoRequest library_load;
   library_load.operation = 7;  // load index
   if (!QueueLibraryTask(*context, std::move(library_load)))
-    context->library_status = "库索引读取任务启动失败";
+    context->library_status = context->localizer.Text("library.error.load_start",
+                                                      "The library index read task did not start");
   *plugin_context = context;
   return anomaly::sdk::Ok();
 }
@@ -20686,13 +20752,13 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
                decltype(AnomalyUiServiceV1::end_tab_bar)>(
           ui, offsetof(AnomalyUiServiceV1, end_tab_bar));
   const std::string target_tab_label =
-      context->localizer.Text("tab.target", "选择骨骼");
+      context->localizer.Text("tab.target", "Skeleton");
   const std::string mmd_tab_label =
       context->localizer.Text("tab.mmd", "MMD motion");
   const std::string pose_tab_label =
       context->localizer.Text("tab.pose", "Joint pose");
   const std::string library_tab_label =
-      context->localizer.Text("tab.library", "库");
+      context->localizer.Text("tab.library", "Library");
   const bool use_tabs =
       can_tabs &&
       ui->begin_tab_bar(ui->user,
@@ -23582,7 +23648,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       changed_angle();
     ui->same_line(ui->user, 0.0F, 4.0F);
     const std::string pitch_reset =
-        context->localizer.Label("pose.reset.pitch", "重置", "reset-pitch");
+        context->localizer.Label("pose.reset.pitch", "Reset", "reset-pitch");
     if (ui->button(ui->user, anomaly::sdk::StringView(pitch_reset), 42.0F,
                    0.0F) != 0) {
       pitch = 0.0F;
@@ -23596,7 +23662,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       changed_angle();
     ui->same_line(ui->user, 0.0F, 4.0F);
     const std::string yaw_reset =
-        context->localizer.Label("pose.reset.yaw", "重置", "reset-yaw");
+        context->localizer.Label("pose.reset.yaw", "Reset", "reset-yaw");
     if (ui->button(ui->user, anomaly::sdk::StringView(yaw_reset), 42.0F,
                    0.0F) != 0) {
       yaw = 0.0F;
@@ -23610,7 +23676,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       changed_angle();
     ui->same_line(ui->user, 0.0F, 4.0F);
     const std::string roll_reset =
-        context->localizer.Label("pose.reset.roll", "重置", "reset-roll");
+        context->localizer.Label("pose.reset.roll", "Reset", "reset-roll");
     if (ui->button(ui->user, anomaly::sdk::StringView(roll_reset), 42.0F,
                    0.0F) != 0) {
       roll = 0.0F;
@@ -23625,7 +23691,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       changed_root_offset();
     ui->same_line(ui->user, 0.0F, 4.0F);
     const std::string body_x_reset =
-        context->localizer.Label("pose.reset.body.x", "重置", "reset-body-x");
+        context->localizer.Label("pose.reset.body.x", "Reset", "reset-body-x");
     if (ui->button(ui->user, anomaly::sdk::StringView(body_x_reset), 42.0F,
                    0.0F) != 0) {
       root_x = 0.0F;
@@ -23639,7 +23705,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       changed_root_offset();
     ui->same_line(ui->user, 0.0F, 4.0F);
     const std::string body_y_reset =
-        context->localizer.Label("pose.reset.body.y", "重置", "reset-body-y");
+        context->localizer.Label("pose.reset.body.y", "Reset", "reset-body-y");
     if (ui->button(ui->user, anomaly::sdk::StringView(body_y_reset), 42.0F,
                    0.0F) != 0) {
       root_y = 0.0F;
@@ -23653,7 +23719,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       changed_root_offset();
     ui->same_line(ui->user, 0.0F, 4.0F);
     const std::string body_z_reset =
-        context->localizer.Label("pose.reset.body.z", "重置", "reset-body-z");
+        context->localizer.Label("pose.reset.body.z", "Reset", "reset-body-z");
     if (ui->button(ui->user, anomaly::sdk::StringView(body_z_reset), 42.0F,
                    0.0F) != 0) {
       root_z = 0.0F;
@@ -24157,19 +24223,19 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       return enabled && ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F) != 0;
     };
     if (can_input) {
-      text(context->localizer.Text("library.name", "名称"));
+      text(context->localizer.Text("library.name", "Name"));
       ui->same_line(ui->user, 0.0F, 6.0F);
       ui->input_text(ui->user, anomaly::sdk::StringView("##library-name"),
                      context->library_name_input.data(), context->library_name_input.size(), 0);
     }
     ui->same_line(ui->user, 0.0F, 6.0F);
-    if (library_button(context->localizer.Text("library.save_pose", "保存当前姿态"))) {
+    if (library_button(context->localizer.Text("library.save_pose", "Save current pose"))) {
       std::lock_guard<std::mutex> lock(context->library_mutex);
       context->library_request_name = context->library_name_input.data();
       context->library_request.store(1, std::memory_order_release);
     }
     ui->same_line(ui->user, 0.0F, 6.0F);
-    if (library_button(context->localizer.Text("library.save_motion", "保存当前动作"))) {
+    if (library_button(context->localizer.Text("library.save_motion", "Save current motion"))) {
       std::lock_guard<std::mutex> lock(context->library_mutex);
       context->library_request_name = context->library_name_input.data();
       context->library_request.store(3, std::memory_order_release);
@@ -24209,7 +24275,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       library_status = context->library_status;
     }
     ui->separator(ui->user);
-    text(context->localizer.Text("library.poses", "姿态库"));
+    text(context->localizer.Text("library.poses", "Poses"));
     for (const auto &entry : entries) {
       if (entry.kind != better_pose::library::Kind::Pose)
         continue;
@@ -24217,14 +24283,14 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       if (library_button(pose_button_id))
         request_entry(2, entry);
       ui->same_line(ui->user, 0.0F, 4.0F);
-      if (library_button("重命名##" + entry.id))
+      if (library_button(context->localizer.Text("library.rename", "Rename") + "##" + entry.id))
         request_entry(5, entry);
       ui->same_line(ui->user, 0.0F, 4.0F);
-      if (library_button("删除##" + entry.id))
+      if (library_button(context->localizer.Text("library.delete", "Delete") + "##" + entry.id))
         confirm_entry(6, entry);
     }
     ui->separator(ui->user);
-    text(context->localizer.Text("library.motions", "动作库"));
+    text(context->localizer.Text("library.motions", "Motions"));
     for (const auto &entry : entries) {
       if (entry.kind != better_pose::library::Kind::Motion)
         continue;
@@ -24232,10 +24298,10 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       if (library_button(motion_button_id))
         confirm_entry(4, entry);
       ui->same_line(ui->user, 0.0F, 4.0F);
-      if (library_button("重命名##" + entry.id))
+      if (library_button(context->localizer.Text("library.rename", "Rename") + "##" + entry.id))
         request_entry(5, entry);
       ui->same_line(ui->user, 0.0F, 4.0F);
-      if (library_button("删除##" + entry.id))
+      if (library_button(context->localizer.Text("library.delete", "Delete") + "##" + entry.id))
         confirm_entry(6, entry);
     }
     if (!library_status.empty())
@@ -24247,10 +24313,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         if (ui->begin_popup_modal(ui->user, anomaly::sdk::StringView(popup), &open, 0U) != 0) {
           const int request = popup == "library-delete-confirm" ? 6 : 4;
           const std::string prompt = request == 6
-              ? context->localizer.Text("library.confirm_delete", "确定删除这个库条目？")
-              : context->localizer.Text("library.confirm_motion", "确定替换当前关键帧动作？");
+              ? context->localizer.Text("library.confirm_delete", "Delete this library entry?")
+              : context->localizer.Text("library.confirm_motion",
+                                        "Replace the current keyframe motion?");
           text(prompt);
-          if (library_button(context->localizer.Text("library.confirm_yes", "确定"))) {
+          if (library_button(context->localizer.Text("library.confirm_yes", "OK"))) {
             std::string id;
             {
               std::lock_guard<std::mutex> lock(context->library_mutex);
@@ -24266,7 +24333,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
             ui->close_current_popup(ui->user);
           }
           ui->same_line(ui->user, 0.0F, 6.0F);
-          if (library_button(context->localizer.Text("library.confirm_cancel", "取消")))
+          if (library_button(context->localizer.Text("library.confirm_cancel", "Cancel")))
             ui->close_current_popup(ui->user);
           ui->end_popup(ui->user);
         }

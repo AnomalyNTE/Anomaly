@@ -28,13 +28,15 @@ struct Appearance {
     std::vector<Part> parts;
     Address idle{};
     float duration{};
-    std::string animation{"参考姿势：资源中没有兼容的待机序列"};
+    // Stable marker ("pose" / "loop"): the panel localizes it, records never hold text.
+    std::string animation{"pose"};
 };
 
 // Game-domain owner. Render sees copies of Character/Model, never UE addresses.
 class Studio {
 public:
-    explicit Studio(Engine& engine) : ue_(engine) {}
+    explicit Studio(Engine& engine, const anomaly::sdk::Localizer& l10n)
+        : ue_(engine), localizer(l10n) {}
     const std::vector<Character>& characters() const { return characters_; }
     const std::vector<Model>& models() const { return models_; }
     Handle world() const { return world_; }
@@ -50,14 +52,20 @@ public:
         ue_.Reset();
     }
     void Catalog() {
-        if (!ue_.Resolve(world_)) throw std::runtime_error("等待大世界就绪");
+        if (!ue_.Resolve(world_))
+            throw std::runtime_error(
+                localizer.Text("error.world_pending", "The world is not ready yet"));
         const auto library = ue_.Find("/Script/HTGame.Default__HTGameData");
         const auto data = ue_.Call("/Script/HTGame.HTGameData.GetGameData", library)
                               .Get<Address>("ReturnValue");
-        if (!ue_.IsA(data, "HTGameData")) throw std::runtime_error("角色数据服务尚未就绪");
+        if (!ue_.IsA(data, "HTGameData"))
+            throw std::runtime_error(localizer.Text("error.character_data_not_ready",
+                "The character data service is not ready yet"));
         const auto table = ue_.ObjectField(data, "CharacterDataTable");
         const auto rows = ue_.Rows(table, "StaticItemData");
-        if (rows.rows.empty()) throw std::runtime_error("角色数据表尚未加载，请刷新完整角色目录");
+        if (rows.rows.empty())
+            throw std::runtime_error(localizer.Text("error.character_table_not_loaded",
+                "The character data table is not loaded; refresh the complete catalog"));
         const auto text = ue_.Expect(rows.type, "ItemName", "TextProperty", 16);
         // A whole catalog is published atomically. No inventory, ownership, unlock,
         // IsCharacterShow, time-gate, or loaded-Blueprint filter is applied.
@@ -70,7 +78,7 @@ public:
             item.code = ue_.Spelling(item.id);
             item.chinese = ue_.Text(row + text.offset);
             item.named = !item.chinese.empty();
-            if (!item.named) item.chinese = "中文名待加载";
+            if (!item.named) item.chinese = localizer.Text("label.name_pending", "Name not loaded");
             next.push_back(std::move(item));
         }
         std::sort(next.begin(), next.end(), [](const Character& a, const Character& b) {
@@ -78,26 +86,33 @@ public:
         });
         const auto character_handle = ue_.Pin(table);
         if (!character_handle.id)
-            throw std::runtime_error("角色目录对象身份校验失败");
+            throw std::runtime_error(localizer.Text("error.catalog_handle_invalid",
+                "The character catalog object failed identity validation"));
         character_table_ = character_handle;
         default_table_ = appearance_table_ = {};
         characters_ = std::move(next);
     }
     std::uint64_t Spawn(Name character, Vector position, double yaw) {
         if (!position.finite() || !std::isfinite(yaw))
-            throw std::runtime_error("坐标与角度必须是有限数值");
+            throw std::runtime_error(localizer.Text("error.transform_not_finite",
+                "The position and angle must be finite numbers"));
         const auto chosen = std::find_if(characters_.begin(), characters_.end(),
             [&](const Character& item) { return item.id == character; });
-        if (chosen == characters_.end()) throw std::runtime_error("角色目录已刷新，请重新选择");
+        if (chosen == characters_.end())
+            throw std::runtime_error(localizer.Text("error.catalog_refreshed",
+                "The catalog was refreshed, so select the character again"));
         const auto world = ue_.Resolve(world_);
-        if (!world) throw std::runtime_error("世界已失效");
+        if (!world)
+            throw std::runtime_error(
+                localizer.Text("error.world_stale", "The world is no longer valid"));
         // All resource loading and all function validation precede allocation.
         const auto appearance = ReadAppearance(character);
         Preflight();
         const auto cls = ue_.Find("/Script/Engine.SkeletalMeshActor");
         const auto statics = ue_.Find("/Script/Engine.Default__GameplayStatics");
         if (!ue_.Derived(cls, "SkeletalMeshActor"))
-            throw std::runtime_error("模型 Actor 类校验失败");
+            throw std::runtime_error(localizer.Text("error.model_class_invalid",
+                "The model actor class failed validation"));
         // Reserve before spawning so an allocation failure cannot lose a live actor.
         if (models_.size() == models_.capacity())
             models_.reserve(std::max(models_.size() + 1, models_.capacity() * 2));
@@ -115,10 +130,14 @@ public:
                 p.Put("TransformScaleMethod", std::uint8_t{0});
             });
         const auto actor = begin.Get<Address>("ReturnValue");
-        if (!actor) throw std::runtime_error("引擎未创建模型");
+        if (!actor)
+            throw std::runtime_error(
+                localizer.Text("error.spawn_rejected", "The engine did not create the model"));
         try {
             record.actor = ue_.Pin(actor);
-            if (!record.actor.id) throw std::runtime_error("新模型身份校验失败");
+            if (!record.actor.id)
+                throw std::runtime_error(localizer.Text("error.new_model_handle_invalid",
+                    "The new model failed identity validation"));
             // Engine-owned expiry is safe even after Host freezes Game callbacks for stop.
             // There is no plugin function pointer, timer delegate, or detour on the actor.
             ue_.Set(actor, "Actor.SetLifeSpan", "InLifespan", LeaseSeconds);
@@ -133,13 +152,14 @@ public:
                     p.Put("TransformScaleMethod", std::uint8_t{0});
                 });
             if (finish.Get<Address>("ReturnValue") != actor)
-                throw std::runtime_error("模型构建未完成");
+                throw std::runtime_error(localizer.Text("error.spawn_incomplete",
+                    "Model construction did not complete"));
             const auto body = ue_.ObjectField(actor, "SkeletalMeshComponent");
             Configure(body, appearance.parts.front().mesh);
             Playback playback{ue_.Pin(body), 0, appearance.duration};
             if (appearance.idle) {
                 StartIdle(body, appearance.idle);
-                record.animation = "循环待机：" + ue_.ObjectName(appearance.idle);
+                record.animation = "loop";
             } else {
                 record.animation = appearance.animation;
             }
@@ -156,7 +176,9 @@ public:
                         p.Put("RelativeTransform", part.transform);
                         p.Put("bDeferredFinish", false);
                     }).Get<Address>("ReturnValue");
-                if (!added) throw std::runtime_error("模型附属网格创建失败");
+                if (!added)
+                    throw std::runtime_error(localizer.Text("error.attached_mesh_failed",
+                        "Creating an attached model mesh failed"));
                 Configure(added, part.mesh);
                 const auto attached = ue_.Call(
                     "/Script/Engine.SceneComponent.K2_AttachToComponent", added,
@@ -168,7 +190,9 @@ public:
                         p.Put("ScaleRule", std::uint8_t{0});
                         p.Put("bWeldSimulatedBodies", false);
                     }).Get<bool>("ReturnValue");
-                if (!attached) throw std::runtime_error("模型附属网格挂接失败");
+                if (!attached)
+                    throw std::runtime_error(localizer.Text("error.attached_mesh_attach_failed",
+                        "Attaching an attached model mesh failed"));
                 Relative(added, part.transform);
                 if (part.leader || (!part.socket.index &&
                     ue_.ObjectField(part.mesh, "Skeleton") ==
@@ -191,7 +215,8 @@ public:
                 .Get<Vector>("ReturnValue");
             if (!std::isfinite(facing.y) ||
                 std::abs(std::remainder(facing.y - yaw, 360.0)) > 0.05)
-                throw std::runtime_error("模型身体朝向回读不一致");
+                throw std::runtime_error(localizer.Text("error.facing_mismatch",
+                    "The model body facing does not match after reading it back"));
             if (appearance.idle) playback_.emplace(record.id, playback);
             models_.push_back(std::move(record)); // no allocation after reserve above
             return next_id_++;
@@ -204,7 +229,9 @@ public:
         const auto found = std::find_if(models_.begin(), models_.end(),
             [&](const Model& model) { return model.id == id; });
         if (found == models_.end()) return false;
-        if (!Same(found->world, world_)) throw std::runtime_error("模型属于其他世界");
+        if (!Same(found->world, world_))
+            throw std::runtime_error(localizer.Text("error.model_other_world",
+                "The model belongs to another world"));
         if (const auto actor = ue_.Resolve(found->actor)) {
             ue_.Call("/Script/Engine.Actor.K2_DestroyActor", actor);
         }
@@ -221,13 +248,17 @@ public:
     }
     void Move(std::uint64_t id, Vector position, double yaw) {
         if (!position.finite() || !std::isfinite(yaw))
-            throw std::runtime_error("坐标与角度必须是有限数值");
+            throw std::runtime_error(localizer.Text("error.transform_not_finite",
+                "The position and angle must be finite numbers"));
         auto found = std::find_if(models_.begin(), models_.end(),
             [&](const Model& model) { return model.id == id; });
         if (found == models_.end() || !Same(found->world, world_))
-            throw std::runtime_error("模型不存在或世界已变更");
+            throw std::runtime_error(localizer.Text("error.model_missing",
+                "The model does not exist or the world changed"));
         const auto actor = ue_.Resolve(found->actor);
-        if (!actor) throw std::runtime_error("模型已销毁");
+        if (!actor)
+            throw std::runtime_error(
+                localizer.Text("error.model_destroyed", "The model was already destroyed"));
         const auto moved = ue_.Call(
             "/Script/Engine.Actor.K2_SetActorLocationAndRotation", actor,
             [&](Engine::Parameters& p) {
@@ -236,7 +267,9 @@ public:
                 p.Put("bSweep", false);
                 p.Put("bTeleport", true);
             }).Get<bool>("ReturnValue");
-        if (!moved) throw std::runtime_error("引擎拒绝移动模型");
+        if (!moved)
+            throw std::runtime_error(
+                localizer.Text("error.move_rejected", "The engine rejected moving the model"));
         VerifyLocation(actor, position);
         found->position = position;
         found->yaw = yaw;
@@ -298,7 +331,8 @@ private:
             library, [&](Engine::Parameters& p) { p.Put("Asset", reference); })
             .Get<Address>("ReturnValue");
         if (!ue_.IsA(asset, "HTPlayerAppearance"))
-            throw std::runtime_error("该角色没有可用的本地外观资源");
+            throw std::runtime_error(localizer.Text("error.appearance_unavailable",
+                "This character has no usable local appearance asset"));
         return asset;
     }
     Appearance ReadAppearance(Name id) {
@@ -310,7 +344,8 @@ private:
                                   .Get<Address>("ReturnValue");
             const auto asset = ue_.ObjectField(data, "CharacterDataAsset");
             if (!ue_.IsA(asset, "CharacterDataAsset"))
-                throw std::runtime_error("外观资源尚未就绪，角色目录仍可浏览");
+                throw std::runtime_error(localizer.Text("error.appearance_not_ready",
+                    "Appearance assets are not ready; the catalog can still be browsed"));
             default_table_ = ue_.Pin(ue_.ObjectField(asset, "DefaultAppearanceDataTable"));
             appearance_table_ = ue_.Pin(ue_.ObjectField(asset, "AppearanceDataTable"));
         }
@@ -325,10 +360,13 @@ private:
             const auto character_table = ue_.Resolve(character_table_);
             const auto appearance_table = ue_.Resolve(appearance_table_);
             if (!character_table || !appearance_table)
-                throw std::runtime_error("角色资源表已失效，请刷新");
+                throw std::runtime_error(localizer.Text("error.character_tables_stale",
+                    "The character resource tables are no longer valid; refresh"));
             const auto rows = ue_.Rows(character_table, "StaticItemData");
             const auto item = rows.rows.find(Key(id));
-            if (item == rows.rows.end()) throw std::runtime_error("角色不在资源目录");
+            if (item == rows.rows.end())
+                throw std::runtime_error(localizer.Text("error.character_missing",
+                    "The character is not in the resource catalog"));
             const auto character = ue_.Instanced(item->second, rows.type,
                                                  "ElementData", "CharacterItemData");
             const auto fashion = ue_.Value<Name>(character.data, character.type,
@@ -336,10 +374,13 @@ private:
             const auto fashions = ue_.Rows(appearance_table, "StaticAppearanceData");
             const auto row = fashions.rows.find(Key(fashion));
             if (!fashion.index || row == fashions.rows.end())
-                throw std::runtime_error("角色默认外观缺失，未生成空模型");
+                throw std::runtime_error(localizer.Text("error.default_appearance_missing",
+                    "The character's default appearance is missing, so no empty model was created"));
             const auto actual = ue_.Value<Name>(row->second, fashions.type,
                                                 "CharacterID", "NameProperty");
-            if (actual != id) throw std::runtime_error("外观与角色 ID 不一致");
+            if (actual != id)
+                throw std::runtime_error(localizer.Text("error.appearance_id_mismatch",
+                    "The appearance does not match the character id"));
             const auto data = ue_.Instanced(row->second, fashions.type,
                                             "AppearanceData", "FashionData");
             appearance = LoadAppearance(data.data, data.type, "PlayerAppearanceAsset");
@@ -352,7 +393,8 @@ private:
         body.mesh = ue_.Value<Address>(appearance + mesh_data.offset, mesh_data.structure,
                                        "CharacterMesh", "ObjectProperty");
         if (!ue_.IsA(body.mesh, "SkeletalMesh"))
-            throw std::runtime_error("角色主网格缺失，未生成空模型");
+            throw std::runtime_error(localizer.Text("error.body_mesh_missing",
+                "The character's main mesh is missing, so no empty model was created"));
         recipe.parts.push_back(body);
         ReadIdle(appearance + mesh_data.offset, mesh_data.structure, body.mesh, recipe);
         const auto attached = ue_.Expect(type, "ArrayFashionAttachedMeshData", "ArrayProperty", 16);
@@ -366,14 +408,16 @@ private:
         if (!inner_type || ue_.ObjectName(inner_type) != "AttachedMeshData" ||
             stride <= 0 || stride > 65536 || count < 0 || count > 4096 ||
             capacity < count || (count && !data))
-            throw std::runtime_error("附属网格数组布局不匹配");
+            throw std::runtime_error(localizer.Text("error.attached_array_layout",
+                "The attached mesh array layout does not match"));
         for (std::int32_t i = 0; i < count; ++i) {
             const auto item = data + std::size_t(i) * stride;
             Part part;
             part.mesh = ue_.Value<Address>(item, inner_type, "CharacterMesh", "ObjectProperty");
             if (!part.mesh) continue; // Authored optional component.
             if (!ue_.IsA(part.mesh, "SkeletalMesh"))
-                throw std::runtime_error("附属资源不是骨骼网格");
+                throw std::runtime_error(localizer.Text("error.attached_not_skeletal",
+                    "The attached asset is not a skeletal mesh"));
             part.socket = ue_.Value<Name>(item, inner_type, "SocketName", "NameProperty");
             part.transform = At(
                 ue_.Value<Vector>(item, inner_type, "RelativeLocation", "StructProperty"), 0);
@@ -383,7 +427,9 @@ private:
             part.transform.scale = ue_.Value<Vector>(item, inner_type,
                                                      "RelativeScale3D", "StructProperty");
             if (!part.transform.translation.finite() || !rotation.finite() ||
-                !part.transform.scale.finite()) throw std::runtime_error("附属网格变换不合法");
+                !part.transform.scale.finite())
+                throw std::runtime_error(localizer.Text("error.attached_transform_invalid",
+                    "An attached mesh transform is not valid"));
             recipe.parts.push_back(part);
         }
         // Facial/secondary meshes are authored as a separate sparse map.
@@ -394,7 +440,8 @@ private:
                                            "CharacterMesh", "ObjectProperty");
             if (!part.mesh) continue;
             if (!ue_.IsA(part.mesh, "SkeletalMesh"))
-                throw std::runtime_error("子网格资源类型不匹配");
+                throw std::runtime_error(localizer.Text("error.child_mesh_type",
+                    "The child mesh asset type does not match"));
             part.leader = true;
             recipe.parts.push_back(part);
         }
@@ -414,7 +461,8 @@ private:
     }
     void Configure(Address component, Address mesh) {
         if (!ue_.IsA(component, "SkeletalMeshComponent"))
-            throw std::runtime_error("模型组件类型不匹配");
+            throw std::runtime_error(localizer.Text("error.component_type",
+                "The model component type does not match"));
         ue_.Set(component, "PrimitiveComponent.SetSimulatePhysics", "bSimulate", false);
         ue_.Set(component, "PrimitiveComponent.SetCollisionEnabled", "NewType", std::uint8_t{0});
         // Neither the mesh's post-process BP nor a game UHTAnimInstance may run
@@ -429,7 +477,9 @@ private:
         ue_.Set(component, "SkeletalMeshComponent.SetSkeletalMeshAsset", "NewMesh", mesh);
         const auto got = ue_.Call("/Script/Engine.SkeletalMeshComponent.GetSkeletalMeshAsset",
                                   component).Get<Address>("ReturnValue");
-        if (got != mesh) throw std::runtime_error("网格构建后校验失败");
+        if (got != mesh)
+            throw std::runtime_error(localizer.Text("error.mesh_verify_failed",
+                "The mesh failed validation after construction"));
     }
     Address ClassDefault(Address type, std::string_view base) {
         if (!type || !ue_.Derived(type, base)) return 0;
@@ -503,13 +553,15 @@ private:
         const auto instance = ue_.Call("/Script/Engine.SkeletalMeshComponent.GetAnimInstance",
                                        component).Get<Address>("ReturnValue");
         if (!ue_.IsA(instance, "AnimSingleNodeInstance"))
-            throw std::runtime_error("待机初始化失败：没有有效的 SingleNode 实例");
+            throw std::runtime_error(localizer.Text("error.idle_instance_missing",
+                "Idle initialization failed: no valid SingleNode instance"));
         ue_.Set(instance, "AnimSingleNodeInstance.SetPlaying", "bIsPlaying", false);
         ue_.Set(instance, "AnimSingleNodeInstance.SetLooping", "bIsLooping", true);
         ue_.Set(instance, "AnimSingleNodeInstance.SetPlayRate", "InPlayRate", 1.0f);
         if (ue_.Call("/Script/Engine.AnimSingleNodeInstance.GetAnimationAsset", instance)
                 .Get<Address>("ReturnValue") != sequence)
-            throw std::runtime_error("待机初始化失败：实例未接受该角色动画");
+            throw std::runtime_error(localizer.Text("error.idle_rejected",
+                "Idle initialization failed: the instance did not accept this character's animation"));
         Position(component, 0);
     }
     void Position(Address component, float time) {
@@ -532,7 +584,8 @@ private:
                                 .Get<Vector>("ReturnValue");
         if (!actual.finite() || std::abs(actual.x - expected.x) > 0.05 ||
             std::abs(actual.y - expected.y) > 0.05 || std::abs(actual.z - expected.z) > 0.05)
-            throw std::runtime_error("模型位置回读不一致");
+            throw std::runtime_error(localizer.Text("error.location_mismatch",
+                "The model position does not match after reading it back"));
     }
     Engine& ue_;
     Handle world_{}, character_table_{}, default_table_{}, appearance_table_{};
@@ -540,5 +593,6 @@ private:
     std::vector<Model> models_;
     std::map<std::uint64_t, Playback> playback_;
     std::uint64_t next_id_{1};
+    const anomaly::sdk::Localizer& localizer;
 };
 } // namespace character_studio

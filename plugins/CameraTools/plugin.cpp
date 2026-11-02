@@ -1,4 +1,4 @@
-#include "../common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include "anomaly/sdk/cpp.hpp"
 #include "camera_tools_profile.hpp"
 
@@ -66,7 +66,7 @@ using PlayerInputKeyFn = bool(ANOMALY_CALL *)(void *, const void *);
 
 struct Context final {
   const AnomalyHostApiV1 *host{};
-  anomaly::plugins::Localizer localizer;
+  anomaly::sdk::Localizer localizer;
   const AnomalyCoreServiceV1 *core{};
   const AnomalyConfigServiceV1 *config{};
   const AnomalyInputServiceV1 *input{};
@@ -1325,7 +1325,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
   auto *context = new (std::nothrow) Context();
   if (context == nullptr)
     return Status(ANOMALY_STATUS_V1_FAILED);
-  context->localizer = anomaly::plugins::Localizer(host);
+  context->localizer = anomaly::sdk::Localizer(host);
   context->host = host;
   context->core = Query<AnomalyCoreServiceV1>(host, ANOMALY_CORE_SERVICE_V1_ID,
                                               ANOMALY_CORE_SERVICE_V1_VERSION);

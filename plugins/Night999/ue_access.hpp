@@ -7,7 +7,7 @@ namespace {
 struct UeFName {
     std::uint32_t id{}, number{};
 };
-static_assert(sizeof(UeFName) == 8, "UE FName 必须是 8 字节");
+static_assert(sizeof(UeFName) == 8, "UE FName must be 8 bytes");
 
 // 对象注册表特征码：mov rax,[rip+disp] 之后按 index 查块。
 constexpr std::string_view kUeObjectsPattern =

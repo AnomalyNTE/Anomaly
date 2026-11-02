@@ -1,4 +1,4 @@
-#include "../common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include "anomaly/sdk/cpp.hpp"
 #include "sequence.hpp"
 
@@ -39,7 +39,7 @@ enum class LastResult : std::uint8_t {
 };
 
 struct Context final {
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     const AnomalyInputServiceV1* input{};
     const AnomalyUiServiceV1* ui{};
     std::array<AnomalyGenerationHandleV1, kSlotCount> hotkeys{};
@@ -275,7 +275,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(
     if (!context) return Status(ANOMALY_STATUS_V1_FAILED);
 
     const anomaly::sdk::Host sdk_host(host);
-    context->localizer = anomaly::plugins::Localizer(host);
+    context->localizer = anomaly::sdk::Localizer(host);
     const auto input = sdk_host.Query<AnomalyInputServiceV1>(
         ANOMALY_INPUT_SERVICE_V1_ID, ANOMALY_INPUT_SERVICE_V1_VERSION);
     const auto ui = sdk_host.Query<AnomalyUiServiceV1>(

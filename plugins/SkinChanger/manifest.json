@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "id": "b1ank.skin-changer",
-  "name": "换肤器 Lite",
-  "description": "角色配饰、滑翔翼、觉醒外观、自定义车牌与载具外观。",
+  "name": "Skin Changer Lite",
+  "description": "Character accessories, gliders, awakening appearance, custom plates and vehicle appearance.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.1.41",
+  "version": "0.1.42",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -14,6 +14,7 @@
   "services": [
     {"id": "anomaly.core", "minVersion": 1},
     {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
     {"id": "anomaly.window", "minVersion": 1, "optional": true},
     {"id": "anomaly.ue5.names", "minVersion": 1},
     {"id": "anomaly.ue5.objects", "minVersion": 1},

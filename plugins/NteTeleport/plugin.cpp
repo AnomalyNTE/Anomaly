@@ -1,7 +1,7 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/interop.h"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <Windows.h>
 #include <shobjidl.h>
@@ -194,7 +194,7 @@ struct LandingMonitor {
 
 struct Context {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     const AnomalyConfigServiceV1* config{};
     const AnomalyInputServiceV1* input{};
     const AnomalyJsonServiceV1* json{};
@@ -2023,7 +2023,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.host = host;
-        g_context.localizer = anomaly::plugins::Localizer(host);
+        g_context.localizer = anomaly::sdk::Localizer(host);
         g_context.config = config.service;
         g_context.input = InputMethodsAvailable(input.service) ? input.service : nullptr;
         g_context.json = JsonMethodsAvailable(json.service) ? json.service : nullptr;

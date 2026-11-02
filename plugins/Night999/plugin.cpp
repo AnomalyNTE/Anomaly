@@ -5,7 +5,7 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 // 共享自动战斗状态机（静态库 anomaly_plugin_combat）。必须放在匿名命名空间之外包含。
 #include "plugins/common/combat/auto_combat.hpp"
 
@@ -27,7 +27,7 @@
 
 namespace {
 
-using anomaly::plugins::Localizer;
+using anomaly::sdk::Localizer;
 using anomaly::sdk::Ok;
 using anomaly::sdk::StringView;
 using anomaly::sdk::UiWindow;
@@ -189,9 +189,15 @@ constexpr const char* kPointIds[kPointCount][3] = {
     {"##night999-fight2-x", "##night999-fight2-y", "##night999-fight2-z"},
 };
 // 界面上显示的名字。
-constexpr const char* kPointNames[kPointCount] = {"营地", "战斗点1", "战斗点2"};
-constexpr const char* kPointCaptureLabels[kPointCount] = {
-    "读取当前坐标为营地", "读取当前坐标为1号战斗点", "读取当前坐标为2号战斗点"};
+constexpr std::array<std::string_view, kPointCount> point_keys{
+    "points.camp", "points.fight1", "points.fight2"};
+constexpr std::array<std::string_view, kPointCount> point_english{
+    "Camp", "Fight point 1", "Fight point 2"};
+constexpr std::array<std::string_view, kPointCount> capture_keys{
+    "action.capture_camp", "action.capture_fight1", "action.capture_fight2"};
+constexpr std::array<std::string_view, kPointCount> capture_english{
+    "Capture the current position as camp", "Capture the current position as fight point 1",
+    "Capture the current position as fight point 2"};
 
 // 置位后由渲染线程把设置里的值刷进上面的输入缓冲。
 std::atomic_bool g_text_stale{true};
@@ -505,7 +511,7 @@ void FieldInputText(
 
 // 一行：「标签 + 输入框」
 void LabeledField(
-    const AnomalyUiServiceV1* ui, const char* label, const char* id, char* buffer,
+    const AnomalyUiServiceV1* ui, const std::string_view label, const char* id, char* buffer,
     const std::size_t capacity) {
     ui->text(ui->user, StringView(label));
     AlignAt(ui, kLabelColumn);
@@ -603,18 +609,20 @@ void LastTeleportWarning(const AnomalyUiServiceV1* ui) {
     }
     // 只报「失败」这一类关键信息；成功不必占地方。
     if (!has_result || result_code == ANOMALY_STATUS_V1_OK) return;
-    std::string line = std::string("上次传送失败：") + StatusName(result_code);
+    const std::array<std::string_view, 1> arguments{StatusName(result_code)};
+    std::string line = g_context.localizer.Format("status.teleport_failed",
+                                                  "Last teleport failed: {0}", arguments);
     if (result_message[0] != '\0') line.append(" - ").append(result_message);
     DrawText(ui, line);
 }
 
 // 一个传送点占三行：`营地 X` / `营地 Y` / `营地 Z`，各自一个输入框。
 void PointFields(const AnomalyUiServiceV1* ui, const int slot) {
-    const char* name = kPointNames[slot];
+    const std::string name = g_context.localizer.Text(point_keys[slot], point_english[slot]);
     static constexpr const char* kAxis[3] = {"X", "Y", "Z"};
     for (int axis = 0; axis != 3; ++axis) {
         char label[48]{};
-        std::snprintf(label, sizeof(label), "%s %s", name, kAxis[axis]);
+        std::snprintf(label, sizeof(label), "%s %s", name.c_str(), kAxis[axis]);
         LabeledField(ui, label, kPointIds[slot][axis], g_point_text[slot][axis].data(),
                      kCoordinateTextCapacity);
     }
@@ -630,29 +638,36 @@ bool TabsAvailable(const AnomalyUiServiceV1* ui) {
 
 // 「开始」页：地图提示、循环次数、开始/停止按钮与实时状态行。
 void ContentStart(const AnomalyUiServiceV1* ui) {
-    DrawText(ui, g_context.localizer.Text("note.map", "此脚本适用于999夜赤龙古堡地图"));
+    DrawText(ui, g_context.localizer.Text(
+                     "note.map",
+                     "This script is for the Night 999 Crimson Dragon Castle map"));
     if (ui->separator != nullptr) ui->separator(ui->user);
 
-    DrawText(ui, g_context.localizer.Text("script.title", "脚本循环"));
+    DrawText(ui, g_context.localizer.Text("script.title", "Script loop"));
     if (ui->input_uint32 != nullptr) {
-        ui->text(ui->user, StringView("循环次数"));
+        const std::string loop_label = g_context.localizer.Text("label.loop_count", "Rounds");
+        ui->text(ui->user, StringView(loop_label));
         AlignAt(ui, kLabelColumn);
         std::uint32_t count = g_script_loop_count.load();
         if (ui->input_uint32(ui->user, StringView("##night999-loop"), &count, 1, 10) != 0) {
             g_script_loop_count.store(count);
         }
-        DrawText(ui, "（0 = 无限循环）");
+        DrawText(ui, g_context.localizer.Text("hint.loop_unlimited", "(0 = unlimited)"));
     }
     if (ui->button != nullptr) {
         const bool running = g_script_running.load();
+        const std::string start_label =
+            g_context.localizer.Text("action.start_script", "Start script");
+        const std::string stop_label =
+            g_context.localizer.Text("action.stop_script", "Stop script");
         const int start = ui->button_enabled != nullptr
-            ? ui->button_enabled(ui->user, StringView("开始脚本"), 0.0F, 0.0F, running ? 0 : 1)
-            : ui->button(ui->user, StringView("开始脚本"), 0.0F, 0.0F);
+            ? ui->button_enabled(ui->user, StringView(start_label), 0.0F, 0.0F, running ? 0 : 1)
+            : ui->button(ui->user, StringView(start_label), 0.0F, 0.0F);
         if (start != 0) g_script_start_requested.store(true);
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
         const int stop = ui->button_enabled != nullptr
-            ? ui->button_enabled(ui->user, StringView("停止脚本"), 0.0F, 0.0F, running ? 1 : 0)
-            : ui->button(ui->user, StringView("停止脚本"), 0.0F, 0.0F);
+            ? ui->button_enabled(ui->user, StringView(stop_label), 0.0F, 0.0F, running ? 1 : 0)
+            : ui->button(ui->user, StringView(stop_label), 0.0F, 0.0F);
         if (stop != 0) g_script_stop_requested.store(true);
     }
     DrawText(ui, ScriptStatusText());
@@ -660,17 +675,18 @@ void ContentStart(const AnomalyUiServiceV1* ui) {
 
 // 「设置」页：三个传送点、预载参数与自动战斗参数。
 void ContentSettings(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
-    DrawText(ui, g_context.localizer.Text("points.title", "传送点"));
+    DrawText(ui, g_context.localizer.Text("points.title", "Teleport points"));
     for (int slot = 0; slot != kPointCount; ++slot) {
         PointFields(ui, slot);
-        if (ui->button != nullptr &&
-            ui->button(ui->user, StringView(kPointCaptureLabels[slot]), 0.0F, 0.0F) != 0) {
+        const std::string capture =
+            g_context.localizer.Text(capture_keys[slot], capture_english[slot]);
+        if (ui->button != nullptr && ui->button(ui->user, StringView(capture), 0.0F, 0.0F) != 0) {
             CaptureCurrentPosition(host, slot);
         }
     }
-    LabeledField(ui, "预载延迟(秒)", "##night999-preload", g_preload_text.data(),
-                 g_preload_text.size());
-    DrawText(ui, "（0 = 立即传送）");
+    LabeledField(ui, g_context.localizer.Text("label.preload_delay", "Preload delay (s)"),
+                 "##night999-preload", g_preload_text.data(), g_preload_text.size());
+    DrawText(ui, g_context.localizer.Text("hint.preload_immediate", "(0 = instant teleport)"));
     LastTeleportWarning(ui);
 
     if (ui->separator != nullptr) ui->separator(ui->user);
@@ -697,8 +713,8 @@ void Content(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
     };
     if (ui->begin_tab_bar(ui->user, StringView("##night999-tabs"),
                           ANOMALY_UI_TAB_BAR_V1_NONE) != 0) {
-        tab(g_context.localizer.Text("tab.start", "开始"), [ui] { ContentStart(ui); });
-        tab(g_context.localizer.Text("tab.settings", "设置"),
+        tab(g_context.localizer.Text("tab.start", "Start"), [ui] { ContentStart(ui); });
+        tab(g_context.localizer.Text("tab.settings", "Settings"),
             [host, ui] { ContentSettings(host, ui); });
         ui->end_tab_bar(ui->user);
     }
@@ -770,7 +786,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     UeStop();
     CombatShutdown();
     ScriptShutdown();
-    CombatPublish("自动战斗：未开始");
+    CombatPublish(g_context.localizer.Text("combat.status.idle", "Combat: not started"));
     {
         std::scoped_lock lock(g_context.mutex);
         // 刻意不落盘：每次启用都回到默认值，调参调坏了重载即可复位。
@@ -844,7 +860,7 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) {
         }
         int open = 1;
         const std::string title =
-            g_context.localizer.Label("window.title", "999夜脚本", "night999");
+            g_context.localizer.Label("window.title", "Night 999", "night999");
         UiWindow window(ui, title, &open);
         if (!window) return;
         Content(host, ui);
@@ -862,7 +878,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("anomaly.local.nte.night999"),
-        StringView("999夜脚本"), StringView("WawMew"), StringView("0.21.0"),
+        StringView("Night 999"), StringView("WawMew"), StringView("0.21.0"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

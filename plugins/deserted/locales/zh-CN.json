@@ -3,6 +3,20 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "空无一人",
-    "plugin.description": "空无一人：勾选后，人流和车流都不再生成，但不影响站桩NPC"
+    "plugin.description": "空无一人：勾选后，人流和车流都不再生成，但不影响站桩NPC",
+    "option.empty_streets": "空无一人",
+    "label.hotkey": "快捷键：{0}",
+    "action.rebind_hotkey": "改键",
+    "hint.capture_hotkey": "请按下新快捷键…（Backspace 解除绑定 / Esc 取消）",
+    "text.hotkey_unbound": "未绑定",
+    "text.key_space": "空格",
+    "text.key_enter": "回车",
+    "status.deserted": "当前状态：空无一人",
+    "status.normal": "当前状态：正常",
+    "status.locating_spawners": "正在定位人群生成器…",
+    "status.signature_unavailable": "签名服务不可用",
+    "status.gobjects_signature_missing": "未命中对象表签名（游戏版本可能变了）",
+    "status.gobjects_address_invalid": "对象表符号地址非法",
+    "status.registry_unavailable": "对象表/名字服务不可用"
   }
 }

@@ -28,6 +28,7 @@
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/platform.h"
 #include "anomaly/sdk/services/ui.h"
+#include "anomaly/sdk/localization.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdarg>
@@ -39,6 +40,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -168,12 +170,12 @@ enum RoleV1 {
     kRoleEnemy = 3,
 };
 
-const char* RoleLabel(const int role) {
+std::string RoleLabel(const anomaly::sdk::Localizer& localizer, const int role) {
     switch (role) {
-        case kRoleLocal: return "我";
-        case kRoleParty: return "队友";
-        case kRoleEnemy: return "敌人";
-        default: return "未识别";
+        case kRoleLocal: return localizer.Text("label.me", "Me");
+        case kRoleParty: return localizer.Text("label.party", "Party");
+        case kRoleEnemy: return localizer.Text("label.enemy", "Enemy");
+        default: return localizer.Text("label.unknown_role", "Unknown");
     }
 }
 
@@ -333,6 +335,7 @@ struct Settings {
 // 唯一跨回调的状态。
 struct Context {
     const AnomalyHostApiV1* host{};
+    anomaly::sdk::Localizer localizer;
     anomaly::sdk::ServiceRef<AnomalyNteCombatServiceV1> combat;
     anomaly::sdk::ServiceRef<AnomalyNteSessionServiceV1> session;
     anomaly::sdk::ServiceRef<AnomalyJsonServiceV1> json;
@@ -487,6 +490,7 @@ struct Context {
 
     void Reset() {
         host = nullptr;
+        localizer = {};
         combat = {};
         session = {};
         json = {};
@@ -843,7 +847,7 @@ constexpr const char* kConfigSchemaId = "damage-dashboard.settings";
 constexpr const char* kPluginId = "anomaly.local.damage-dashboard";
 constexpr const char* kPluginAuthor = "Haaland-a";
 // 版本号在日志里输出，升版本时这里和 manifest.json 一起改。
-constexpr const char* kPluginVersion = "2.7.0";
+constexpr const char* kPluginVersion = "2.7.1";
 // v4：删掉 windowFitContent（高度改由内容决定），所以升版本让旧配置走迁移。
 constexpr std::uint32_t kConfigSchemaVersion = 4;
 
@@ -1011,8 +1015,10 @@ void PushBattleHistory() {
         best = character.battle_out_final;
         record.top_character = character.name_resolved && !character.name.empty()
                                    ? character.name
-                                   : (character.is_local ? std::string("我")
-                                                        : std::string("未识别角色"));
+                                   : (character.is_local
+                                          ? g.localizer.Text("label.me", "Me")
+                                          : g.localizer.Text("label.unknown_character",
+                                                             "Unknown character"));
         record.top_character_damage = best;
     }
     g.battle_history.insert(g.battle_history.begin(), record);
@@ -1398,20 +1404,20 @@ void OnCombatEvent(const AnomalyNteCombatEventV1& event, const double now_second
     hit.incoming = target_is_mine;
     hit.outgoing = source_is_mine;
     if (event.source.id == 0) {
-        hit.source = "环境";
+        hit.source = g.localizer.Text("label.environment", "Environment");
     } else {
         const auto found = g.characters.find(ParticipantCacheKey(event.source));
         hit.source = found != g.characters.end() && !found->second.name.empty()
                          ? found->second.name
-                         : std::string("未知");
+                         : g.localizer.Text("label.unknown", "Unknown");
     }
     if (event.target.id == 0) {
-        hit.target = "环境";
+        hit.target = g.localizer.Text("label.environment", "Environment");
     } else {
         const auto found = g.characters.find(ParticipantCacheKey(event.target));
         hit.target = found != g.characters.end() && !found->second.name.empty()
                          ? found->second.name
-                         : std::string("未知");
+                         : g.localizer.Text("label.unknown", "Unknown");
     }
     hit.name = event_name;
     g.recent_hits.push_back(std::move(hit));
@@ -1514,7 +1520,7 @@ void RefreshBuffNames() {
                 buff.target_name = cached->second;
                 buff.target_resolved = true;
             } else {
-                buff.target_name = RoleLabel(kRoleUnknown);
+                buff.target_name = RoleLabel(g.localizer, kRoleUnknown);
             }
         }
     }
@@ -1633,15 +1639,22 @@ void UpdateCombatant() {
         // 战斗服务不可用：只在「刚变成不可用」时提醒一次，避免每帧刷屏。
         if (g.combat_service_ready) {
             g.combat_service_ready = false;
-            LogWarning("nte.combat 服务丢失，统计暂停（通常表示已离开战斗场景）");
-            Notify(ANOMALY_NOTIFICATION_V1_WARNING, "伤害仪表盘",
-                   "战斗服务不可用，统计暂停。进入关卡后会自动恢复。");
+            LogWarning("nte.combat service lost; statistics paused "
+                       "(usually means the combat scene was left)");
+            const std::string notify_title =
+                g.localizer.Text("window.title", "NTE Damage Dashboard");
+            const std::string notify_body = g.localizer.Text(
+                "status.combat_unavailable",
+                "Combat service unavailable; statistics paused, resumes after entering "
+                "a level.");
+            Notify(ANOMALY_NOTIFICATION_V1_WARNING, notify_title.c_str(),
+                   notify_body.c_str());
         }
         return;
     }
     if (!g.combat_service_ready) {
         g.combat_service_ready = true;
-        LogInfo("nte.combat 服务已就绪，开始采集战斗事件");
+        LogInfo("nte.combat service ready; collecting combat events");
     }
 
     AnomalyNteCombatantSnapshotV1 snapshot{};
@@ -1653,7 +1666,8 @@ void UpdateCombatant() {
         g.combatant_valid = false;
         if (g.combatant_invalid_reported) return;
         g.combatant_invalid_reported = true;
-        LogWarningF("current_combatant 返回无效（status=%u），可能尚未进入关卡",
+        LogWarningF("current_combatant returned invalid (status=%u); "
+                    "the level may not be entered yet",
                     static_cast<unsigned>(status.code));
         return;
     }
@@ -1708,7 +1722,7 @@ void OnUpdate(void* plugin_context, const double delta_seconds) {
     if (!g.load_banner_logged && g.core) {
         g.load_banner_logged = true;
         g.core_deferred = false;
-        LogInfoF("NTE 伤害仪表盘 %s 已装载完成（core 就绪，日志开始记录）",
+        LogInfoF("NTE Damage Dashboard %s loaded (core ready, logging starts now)",
                  kPluginVersion);
     }
 
@@ -1921,7 +1935,9 @@ RenderSnapshot CaptureSnapshot() {
     for (const auto& record : g.battle_history) {
         if (!record.valid) continue;
         RenderSnapshot::Row row;
-        row.name = record.top_character.empty() ? std::string("未识别角色") : record.top_character;
+        row.name = record.top_character.empty()
+                       ? g.localizer.Text("label.unknown_character", "Unknown character")
+                       : record.top_character;
         row.total = record.top_character_damage;
         row.hits = record.hits;
         row.max_hit = record.out_final;
@@ -1969,8 +1985,8 @@ RenderSnapshot CaptureSnapshot() {
                 RenderSnapshot::Row row;
                 row.name = character.name_resolved && !character.name.empty()
                                ? character.name
-                               : std::string("未识别敌人");
-                row.role = RoleLabel(role);
+                               : g.localizer.Text("label.unknown_enemy", "Unknown enemy");
+                row.role = RoleLabel(g.localizer, role);
                 row.hits = g.battle_active ? character.battle_in_hits : character.in_hits;
                 row.total = taken;
                 row.max_hit = character.battle_in_final;
@@ -1983,8 +1999,8 @@ RenderSnapshot CaptureSnapshot() {
         RenderSnapshot::Row row;
         row.name = character.name_resolved && !character.name.empty()
                        ? character.name
-                       : std::string("我");
-        row.role = RoleLabel(role);
+                       : g.localizer.Text("label.me", "Me");
+        row.role = RoleLabel(g.localizer, role);
         row.hits = g.battle_active ? character.battle_out_hits : character.out_hits;
         row.crit = character.out_crit;
         row.crit_known = character.out_crit_known;
@@ -2056,7 +2072,8 @@ RenderSnapshot CaptureSnapshot() {
             }
         }
         if (unresolved_total.hits != 0 || unresolved_total.total != 0) {
-            unresolved_total.name = "未知技能";
+            unresolved_total.name =
+                g.localizer.Text("label.unknown_skill", "Unknown skill");
             unresolved_total.resolved = false;
             merged["\x01unresolved"] = std::move(unresolved_total);
         }
@@ -2108,7 +2125,8 @@ RenderSnapshot CaptureSnapshot() {
                 row.total += total;
             }
             if (character_unresolved.hits != 0 || character_unresolved.total != 0) {
-                character_unresolved.name = "未知技能";
+                character_unresolved.name =
+                    g.localizer.Text("label.unknown_skill", "Unknown skill");
                 character_unresolved.resolved = false;
                 character_merged["\x01unresolved"] = std::move(character_unresolved);
             }
@@ -2116,7 +2134,7 @@ RenderSnapshot CaptureSnapshot() {
             RenderSnapshot::SkillGroup group;
             group.character = character.name_resolved && !character.name.empty()
                                   ? character.name
-                                  : std::string("我");
+                                  : g.localizer.Text("label.me", "Me");
             group.skills.reserve(character_merged.size());
             for (auto& item : character_merged) {
                 group.total += item.second.total;
@@ -2149,9 +2167,11 @@ RenderSnapshot CaptureSnapshot() {
         if (!buff.name_resolved || buff.name.empty() || LooksLikeObjectPath(buff.name)) continue;
         RenderSnapshot::BuffRow row;
         row.name = buff.name;
-        row.owner = buff.target_resolved && !buff.target_name.empty() ? buff.target_name
-                                                                     : std::string("未知");
-        row.owner_role = RoleLabel(g.IsMine(buff.target) ? kRoleLocal : kRoleEnemy);
+        row.owner = buff.target_resolved && !buff.target_name.empty()
+                        ? buff.target_name
+                        : g.localizer.Text("label.unknown", "Unknown");
+        row.owner_role = RoleLabel(g.localizer,
+                                   g.IsMine(buff.target) ? kRoleLocal : kRoleEnemy);
         row.stacks = buff.stacks;
         row.persistent = buff.persistent;
         row.remaining = row.duration > 0.0
@@ -2206,15 +2226,6 @@ void Text(const AnomalyUiServiceV1* ui, const std::string& value) {
     ui->text(ui->user, {value.data(), value.size()});
 }
 
-void TextF(const AnomalyUiServiceV1* ui, const char* format, ...) {
-    char buffer[512]{};
-    va_list args;
-    va_start(args, format);
-    std::vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    ui->text(ui->user, {buffer, std::strlen(buffer)});
-}
-
 // 返回格式化后的字符串（供需要在同一行拼装的场合使用）。
 template <typename... Args>
 std::string TextFmt(const char* format, Args... args) {
@@ -2240,14 +2251,18 @@ std::string FormatCompact(const std::int64_t value) {
     const auto magnitude = value < 0 ? -value : value;
     char buffer[64]{};
     if (magnitude >= 100000000) {
-        std::snprintf(buffer, sizeof(buffer), "%.2f亿",
-                      static_cast<double>(value) / 100000000.0);
-    } else if (magnitude >= 10000) {
-        std::snprintf(buffer, sizeof(buffer), "%.2f万",
-                      static_cast<double>(value) / 10000.0);
-    } else {
-        std::snprintf(buffer, sizeof(buffer), "%lld", static_cast<long long>(value));
+        const std::string scaled =
+            TextFmt("%.2f", static_cast<double>(value) / 100000000.0);
+        const std::array<std::string_view, 1> arguments{std::string_view(scaled)};
+        return g.localizer.Format("text.compact_hundred_million", "{0}B", arguments);
     }
+    if (magnitude >= 10000) {
+        const std::string scaled =
+            TextFmt("%.2f", static_cast<double>(value) / 10000.0);
+        const std::array<std::string_view, 1> arguments{std::string_view(scaled)};
+        return g.localizer.Format("text.compact_ten_thousand", "{0}K", arguments);
+    }
+    std::snprintf(buffer, sizeof(buffer), "%lld", static_cast<long long>(value));
     return buffer;
 }
 
@@ -2258,14 +2273,17 @@ std::string FormatPercent(const double ratio) {
 }
 
 std::string FormatDuration(const double seconds) {
-    char buffer[48]{};
     if (seconds < 60.0) {
-        std::snprintf(buffer, sizeof(buffer), "%.1f 秒", seconds);
-    } else {
-        const auto total = static_cast<long long>(seconds);
-        std::snprintf(buffer, sizeof(buffer), "%lld 分 %lld 秒", total / 60, total % 60);
+        const std::string value = TextFmt("%.1f", seconds);
+        const std::array<std::string_view, 1> arguments{std::string_view(value)};
+        return g.localizer.Format("text.duration_seconds", "{0}s", arguments);
     }
-    return buffer;
+    const auto total = static_cast<long long>(seconds);
+    const std::string minutes = std::to_string(total / 60);
+    const std::string remainder = std::to_string(total % 60);
+    const std::array<std::string_view, 2> arguments{std::string_view(minutes),
+                                                    std::string_view(remainder)};
+    return g.localizer.Format("text.duration_minutes", "{0}m {1}s", arguments);
 }
 
 // 图形条的字形选择（重要）：
@@ -2339,7 +2357,7 @@ std::string Utf8Pad(const std::string& text, const std::size_t width) {
 
 // 分区标题：用 GB2312 里一定存在的制表符号做装饰。
 // 「◆」「■」在 GB2312 符号区内，但为稳妥起见只使用破折号与汉字。
-void SectionTitle(const AnomalyUiServiceV1* ui, const char* title) {
+void SectionTitle(const AnomalyUiServiceV1* ui, const std::string& title) {
     if (ui->separator != nullptr) ui->separator(ui->user);
     std::string line = "— ";
     line += title;
@@ -2352,12 +2370,13 @@ void SectionTitle(const AnomalyUiServiceV1* ui, const char* title) {
 // 指标行：纯文本，一行一个，不再用子窗口做「卡片」。
 // 用户明确要求「把框框去了」：子窗口既带来高度被撑满的渲染问题，
 // 又让内容被塞进滚动区域，滚动时直接崩溃。这里只输出普通文本行。
-void MetricBlock(const AnomalyUiServiceV1* ui, const char* label, const std::string& value,
-                 const char* suffix, const float /*width*/) {
+void MetricBlock(const AnomalyUiServiceV1* ui, const std::string& label,
+                 const std::string& value, const std::string& suffix,
+                 const float /*width*/) {
     std::string line = label;
     line += "  ";
     line += value;
-    if (suffix != nullptr && *suffix != '\0') {
+    if (!suffix.empty()) {
         line += ' ';
         line += suffix;
     }
@@ -2378,12 +2397,16 @@ void BarRow(const AnomalyUiServiceV1* ui, const std::string& name, const std::si
     Text(ui, line);
 }
 
-const char* KindLabel(const std::uint32_t kind) {
+std::string KindLabel(const std::uint32_t kind) {
     switch (kind) {
-        case ANOMALY_NTE_COMBAT_EVENT_V1_DAMAGE: return "伤害";
-        case ANOMALY_NTE_COMBAT_EVENT_V1_HEAL: return "治疗";
-        case ANOMALY_NTE_COMBAT_EVENT_V1_BUFF_ADD: return "增益";
-        case ANOMALY_NTE_COMBAT_EVENT_V1_BUFF_REMOVE: return "增益结束";
+        case ANOMALY_NTE_COMBAT_EVENT_V1_DAMAGE:
+            return g.localizer.Text("type.damage", "Damage");
+        case ANOMALY_NTE_COMBAT_EVENT_V1_HEAL:
+            return g.localizer.Text("type.heal", "Healing");
+        case ANOMALY_NTE_COMBAT_EVENT_V1_BUFF_ADD:
+            return g.localizer.Text("type.buff", "Buff");
+        case ANOMALY_NTE_COMBAT_EVENT_V1_BUFF_REMOVE:
+            return g.localizer.Text("type.buff_end", "Buff ended");
         default: return "?";
     }
 }
@@ -2424,7 +2447,9 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
         ui->set_next_window_size_constraints(ui->user, kDashboardMinimumWidth,
                                              kDashboardMinimumHeight, 0.0f, 0.0f);
     }
-    anomaly::sdk::UiWindow window(ui, "NTE 伤害仪表盘", &context->window_open);
+    const std::string window_title =
+        g.localizer.Text("window.title", "NTE Damage Dashboard");
+    anomaly::sdk::UiWindow window(ui, window_title, &context->window_open);
     if (!window) return;
 
     // 读回宿主真实尺寸，只用来记住用户拖出来的**宽度**。
@@ -2463,18 +2488,48 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     // 拿不到战斗数据时不能只显示「不可用」——那等于让用户对着一句废话干瞪眼。
     // 这里逐条列出到底哪一环断了，用户可以直接把这段读给我或贴进反馈里。
     if (!snapshot.combat_available || !snapshot.combatant_valid) {
-        SectionTitle(ui, "尚未取到战斗数据");
-        TextF(ui, "宿主的 nte.combat 服务：%s",
-              snapshot.combat_available ? "已就绪" : "不可用");
-        TextF(ui, "当前角色快照：%s", snapshot.combatant_valid ? "有效" : "无效");
-        if (!snapshot.combat_available) {
-            Text(ui, "原因：宿主 profile 还在 degraded，或尚未进入关卡世界。");
-        } else {
-            Text(ui, "原因：已连上战斗服务，但 readable 角色快照还没准备好。");
+        SectionTitle(ui, g.localizer.Text("section.no_combat_data",
+                                          "No combat data yet"));
+        const std::string ready = g.localizer.Text("status.ready", "ready");
+        const std::string unavailable = g.localizer.Text("status.unavailable",
+                                                         "unavailable");
+        {
+            const std::string state = snapshot.combat_available ? ready : unavailable;
+            const std::array<std::string_view, 1> arguments{std::string_view(state)};
+            Text(ui, g.localizer.Format("status.combat_service",
+                                        "Host nte.combat service: {0}", arguments));
         }
-        Text(ui, "进入关卡并打出第一下伤害后会自动开始统计。");
-        Text(ui, "详细日志见 Anomaly 诊断页的「日志」标签。");
-        TextF(ui, "插件版本 %s", kPluginVersion);
+        {
+            const std::string state =
+                snapshot.combatant_valid ? g.localizer.Text("status.valid", "valid")
+                                         : g.localizer.Text("status.invalid", "invalid");
+            const std::array<std::string_view, 1> arguments{std::string_view(state)};
+            Text(ui, g.localizer.Format("status.combatant_snapshot",
+                                        "Character snapshot: {0}", arguments));
+        }
+        if (!snapshot.combat_available) {
+            Text(ui, g.localizer.Text(
+                "detail.combat_unavailable",
+                "Reason: the host profile is still degraded, or the level world is "
+                "not entered yet."));
+        } else {
+            Text(ui, g.localizer.Text(
+                "detail.combatant_pending",
+                "Reason: combat is connected, but no readable character snapshot "
+                "yet."));
+        }
+        Text(ui, g.localizer.Text("hint.start_condition",
+                                  "Statistics start automatically once you enter a "
+                                  "level and land the first hit."));
+        Text(ui, g.localizer.Text("hint.diagnostics_log",
+                                  "See the Logs tab of the Anomaly diagnostics page "
+                                  "for details."));
+        {
+            const std::array<std::string_view, 1> arguments{
+                std::string_view(kPluginVersion)};
+            Text(ui, g.localizer.Format("text.plugin_version", "Plugin version {0}",
+                                        arguments));
+        }
         return;
     }
 
@@ -2482,20 +2537,43 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     const bool battle_has_data = battle.hits > 0 || battle.taken_hits > 0 ||
                                  battle.heal_hits > 0;
     if (!battle_has_data && snapshot.total_event_count == 0) {
-        SectionTitle(ui, "等待第一次伤害");
-        TextF(ui, "已连接战斗场景：生命 %.0f / %.0f", snapshot.hp, snapshot.max_hp);
-        Text(ui, "把这一行血量打出来，面板就会开始计数。");
-        TextF(ui, "插件版本 %s", kPluginVersion);
+        SectionTitle(ui, g.localizer.Text("section.waiting_first_hit",
+                                          "Waiting for the first hit"));
+        {
+            const std::string hp = TextFmt("%.0f", snapshot.hp);
+            const std::string max_hp = TextFmt("%.0f", snapshot.max_hp);
+            const std::array<std::string_view, 2> arguments{std::string_view(hp),
+                                                           std::string_view(max_hp)};
+            Text(ui, g.localizer.Format("text.hp_connected",
+                                        "Combat scene connected: HP {0} / {1}",
+                                        arguments));
+        }
+        Text(ui, g.localizer.Text("hint.first_hit",
+                                  "Land a hit on this HP bar and the panel starts "
+                                  "counting."));
+        {
+            const std::array<std::string_view, 1> arguments{
+                std::string_view(kPluginVersion)};
+            Text(ui, g.localizer.Format("text.plugin_version", "Plugin version {0}",
+                                        arguments));
+        }
         return;
     }
 
     if (battle_has_data) {
         // 状态徽标：用方括号 + 汉字做「标签」观感（宿主无彩色文字能力）。
         {
-            std::string state = battle.active ? "战斗进行中" : "上一场已结束";
+            std::string state =
+                battle.active
+                    ? g.localizer.Text("status.battle_active", "Battle in progress")
+                    : g.localizer.Text("status.battle_ended", "Previous battle ended");
             state += "  ";
             state += FormatDuration(battle.duration);
-            SectionTitle(ui, battle.active ? "战斗中 · 实时统计" : "战斗已结束 · 最终统计");
+            SectionTitle(ui, battle.active
+                                 ? g.localizer.Text("section.battle_active",
+                                                    "In battle - live statistics")
+                                 : g.localizer.Text("section.battle_ended",
+                                                    "Battle ended - final statistics"));
             Text(ui, state);
         }
 
@@ -2507,42 +2585,60 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
         // 核心指标改成普通文本行（不再用子窗口）。
         // 用 same_line 排成一行，窗口才不会被撑高。
         if (ui->same_line != nullptr) {
-            MetricBlock(ui, "总伤害", FormatNumber(battle.out_final), "", 0.0f);
+            MetricBlock(ui, g.localizer.Text("label.total_damage", "Total damage"),
+                        FormatNumber(battle.out_final), "", 0.0f);
             ui->same_line(ui->user, 0.0f, 14.0f);
-            MetricBlock(ui, "命中", std::to_string(battle.hits), "次", 0.0f);
+            MetricBlock(ui, g.localizer.Text("label.hits", "Hits"),
+                        std::to_string(battle.hits),
+                        g.localizer.Text("label.hits_unit", "times"), 0.0f);
             ui->same_line(ui->user, 0.0f, 14.0f);
-            MetricBlock(ui, "最高单次", FormatCompact(battle.max_hit), "", 0.0f);
+            MetricBlock(ui, g.localizer.Text("label.max_hit", "Top hit"),
+                        FormatCompact(battle.max_hit), "", 0.0f);
             if (battle.crit_known > 0) {
                 ui->same_line(ui->user, 0.0f, 14.0f);
-                MetricBlock(ui, "暴击率", FormatPercent(crit_rate).c_str(), "", 0.0f);
+                MetricBlock(ui, g.localizer.Text("label.crit_rate", "Crit rate"),
+                            FormatPercent(crit_rate), "", 0.0f);
             }
         } else {
-            TextF(ui, "本场总伤害 %s    命中 %llu    最高单次 %s",
-                  FormatNumber(battle.out_final).c_str(),
-                  static_cast<unsigned long long>(battle.hits),
-                  FormatCompact(battle.max_hit).c_str());
+            const std::string damage = FormatNumber(battle.out_final);
+            const std::string hits = std::to_string(battle.hits);
+            const std::string top_hit = FormatCompact(battle.max_hit);
+            const std::array<std::string_view, 3> arguments{
+                std::string_view(damage), std::string_view(hits),
+                std::string_view(top_hit)};
+            Text(ui, g.localizer.Format("text.battle_summary",
+                                        "Battle damage {0}    hits {1}    top hit {2}",
+                                        arguments));
             if (battle.crit_known > 0) {
-                TextF(ui, "暴击 %llu / %llu（%s）",
-                      static_cast<unsigned long long>(battle.crit),
-                      static_cast<unsigned long long>(battle.crit_known),
-                      FormatPercent(crit_rate).c_str());
+                const std::string crit = std::to_string(battle.crit);
+                const std::string crit_known = std::to_string(battle.crit_known);
+                const std::string rate = FormatPercent(crit_rate);
+                const std::array<std::string_view, 3> crit_arguments{
+                    std::string_view(crit), std::string_view(crit_known),
+                    std::string_view(rate)};
+                Text(ui, g.localizer.Format("text.crit_ratio",
+                                            "Crits {0} / {1} ({2})",
+                                            crit_arguments));
             }
         }
 
         // 生命 / 护盾 / 承受 / 治疗全部用条形表示。
         if (snapshot.max_hp > 0.0) {
             const double hp_ratio = snapshot.hp / snapshot.max_hp;
-            BarRow(ui, "生命", 8, hp_ratio, 20, FormatPercent(hp_ratio),
+            BarRow(ui, g.localizer.Text("label.hp", "HP"), 8, hp_ratio, 20,
+                   FormatPercent(hp_ratio),
                    TextFmt("%.0f / %.0f", snapshot.hp, snapshot.max_hp));
         }
         if (snapshot.shield > 0.0) {
             const double shield_ratio =
                 snapshot.max_hp > 0.0 ? snapshot.shield / snapshot.max_hp : 0.0;
-            BarRow(ui, "护盾", 8, shield_ratio, 20, FormatPercent(shield_ratio),
+            BarRow(ui, g.localizer.Text("label.shield", "Shield"), 8, shield_ratio, 20,
+                   FormatPercent(shield_ratio),
                    TextFmt("%.0f", snapshot.shield));
         }
         if (battle.crit_known > 0) {
-            BarRow(ui, "暴击率", 8, crit_rate, 20, FormatPercent(crit_rate),
+            BarRow(ui, g.localizer.Text("label.crit_rate", "Crit rate"), 8, crit_rate, 20,
+                   FormatPercent(crit_rate),
                    TextFmt("%llu / %llu", static_cast<unsigned long long>(battle.crit),
                            static_cast<unsigned long long>(battle.crit_known)));
         }
@@ -2553,10 +2649,15 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
                     ? static_cast<double>(battle.taken_final) /
                           static_cast<double>(battle.out_final)
                     : 0.0;
-            BarRow(ui, "承受", 8, std::clamp(taken_ratio, 0.0, 1.0), 20,
+            const std::string taken = FormatNumber(battle.taken_final);
+            const std::string taken_hits = std::to_string(battle.taken_hits);
+            const std::array<std::string_view, 2> arguments{
+                std::string_view(taken), std::string_view(taken_hits)};
+            BarRow(ui, g.localizer.Text("label.taken", "Taken"), 8,
+                   std::clamp(taken_ratio, 0.0, 1.0), 20,
                    FormatPercent(std::clamp(taken_ratio, 0.0, 1.0)),
-                   TextFmt("%s（%llu 次）", FormatNumber(battle.taken_final).c_str(),
-                           static_cast<unsigned long long>(battle.taken_hits)));
+                   g.localizer.Format("text.value_with_hits", "{0} ({1} hits)",
+                                      arguments));
         }
         if (battle.heal_total > 0) {
             const double heal_ratio =
@@ -2564,17 +2665,26 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
                     ? static_cast<double>(battle.heal_total) /
                           static_cast<double>(battle.out_final)
                     : 0.0;
-            BarRow(ui, "治疗", 8, std::clamp(heal_ratio, 0.0, 1.0), 20,
+            const std::string healed = FormatNumber(battle.heal_total);
+            const std::string heal_hits = std::to_string(battle.heal_hits);
+            const std::array<std::string_view, 2> arguments{
+                std::string_view(healed), std::string_view(heal_hits)};
+            BarRow(ui, g.localizer.Text("label.healing", "Healing"), 8,
+                   std::clamp(heal_ratio, 0.0, 1.0), 20,
                    FormatPercent(std::clamp(heal_ratio, 0.0, 1.0)),
-                   TextFmt("%s（%llu 次）", FormatNumber(battle.heal_total).c_str(),
-                           static_cast<unsigned long long>(battle.heal_hits)));
+                   g.localizer.Format("text.value_with_hits", "{0} ({1} hits)",
+                                      arguments));
         }
 
-        if (snapshot.local_dead) Text(ui, "状态：已倒下");
+        if (snapshot.local_dead) {
+            Text(ui, g.localizer.Text("status.downed", "Status: downed"));
+        }
 
         // 手动结束本次战斗：只清零面板，不写历史记录。
         if (battle.active && ui->button != nullptr) {
-            if (ui->button(ui->user, Sv("结束本次战斗统计并清零"), 220.0f, 0.0f) != 0) {
+            const std::string end_battle =
+                g.localizer.Text("action.end_battle", "End this battle and reset");
+            if (ui->button(ui->user, Sv(end_battle.c_str()), 220.0f, 0.0f) != 0) {
                 std::scoped_lock lock(*g.mutex);
                 // 直接置为非活动 + ResetBattleScope()，不调 EndBattle()（不存档）。
                 g.battle_active = false;
@@ -2584,20 +2694,26 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     }
 
     {
-        std::string footer = snapshot.session_ready ? "场景：战斗场景内" : "场景：场景外";
-        footer += "    全程累计 伤害 ";
-        footer += FormatCompact(snapshot.total_final);
-        footer += " · 承受 ";
-        footer += FormatCompact(snapshot.taken_final);
-        footer += " · 战斗 ";
-        footer += std::to_string(snapshot.battle_count);
-        footer += " 场 · 事件 ";
-        footer += std::to_string(snapshot.total_event_count);
-        footer += " 条";
+        std::string footer =
+            snapshot.session_ready
+                ? g.localizer.Text("status.scene_in_combat", "Scene: in combat scene")
+                : g.localizer.Text("status.scene_outside", "Scene: outside");
+        const std::string damage = FormatCompact(snapshot.total_final);
+        const std::string taken = FormatCompact(snapshot.taken_final);
+        const std::string battles = std::to_string(snapshot.battle_count);
+        const std::string events = std::to_string(snapshot.total_event_count);
+        const std::array<std::string_view, 4> arguments{
+            std::string_view(damage), std::string_view(taken), std::string_view(battles),
+            std::string_view(events)};
+        footer += g.localizer.Format(
+            "text.session_totals",
+            "    total damage {0} / taken {1} / battles {2} / events {3}", arguments);
         Text(ui, footer);
     }
     if (snapshot.stream_partial) {
-        Text(ui, "* 事件环曾被甩掉，本场统计可能缺失早期数据。");
+        Text(ui, g.localizer.Text("hint.stream_partial",
+                                  "* The event ring was reset, so this battle may miss "
+                                  "early data."));
     }
 
     if (ui->separator != nullptr) ui->separator(ui->user);
@@ -2605,9 +2721,12 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     // ---------------------------------------------------------------------
     // 2. 队伍伤害条形图（四名我操控的角色，各自占比）
     // ---------------------------------------------------------------------
-    SectionTitle(ui, "队伍伤害分布");
+    SectionTitle(ui, g.localizer.Text("section.team_damage",
+                                      "Team damage distribution"));
     if (snapshot.team.empty()) {
-        Text(ui, "  （本场还没有可归属到我的角色的伤害）");
+        Text(ui, g.localizer.Text(
+            "status.team_empty",
+            "  (no damage assignable to my characters this battle)"));
     } else {
         // 名称列宽按最长名字自适应，保证条形左端对齐成一条竖线。
         std::size_t name_width = 4;
@@ -2618,13 +2737,20 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
         for (const auto& row : snapshot.team) {
             std::string label = row.name;
             if (!row.resolved) label += " ?";
+            const std::string total = FormatNumber(row.total);
+            const std::string hits = std::to_string(row.hits);
+            const std::string top_hit = FormatCompact(row.max_hit);
+            const std::array<std::string_view, 3> arguments{
+                std::string_view(total), std::string_view(hits),
+                std::string_view(top_hit)};
             BarRow(ui, label, name_width, row.share, 20, FormatPercent(row.share),
-                   TextFmt("%s  %llu 次 / 最高 %s", FormatNumber(row.total).c_str(),
-                           static_cast<unsigned long long>(row.hits),
-                           FormatCompact(row.max_hit).c_str()));
+                   g.localizer.Format("text.row_stats", "{0}  {1} hits / top {2}",
+                                      arguments));
         }
         if (snapshot.team_total > 0) {
-            TextF(ui, "合计 %s", FormatNumber(snapshot.team_total).c_str());
+            const std::string total = FormatNumber(snapshot.team_total);
+            const std::array<std::string_view, 1> arguments{std::string_view(total)};
+            Text(ui, g.localizer.Format("text.team_total", "Total {0}", arguments));
         }
     }
 
@@ -2632,18 +2758,20 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     // 3. 技能与来源：先按角色分组，每组下面列该角色的技能（同名技能已归并）
     // ---------------------------------------------------------------------
     if (settings.show_skills) {
-        SectionTitle(ui, "技能占比");
+        SectionTitle(ui, g.localizer.Text("section.skills", "Skill share"));
         if (snapshot.skill_groups.empty()) {
-            Text(ui, "  （暂无数据）");
+            Text(ui, g.localizer.Text("status.no_data", "  (no data)"));
         } else {
             for (const auto& group : snapshot.skill_groups) {
                 // 角色分组标题：角色名 + 合计 + 占全队比例。
-                std::string header = group.character;
-                header += "   ";
-                header += FormatNumber(group.total);
-                header += "   占全队 ";
-                header += FormatPercent(group.share);
-                Text(ui, header);
+                const std::string total = FormatNumber(group.total);
+                const std::string share = FormatPercent(group.share);
+                const std::array<std::string_view, 3> header_arguments{
+                    std::string_view(group.character), std::string_view(total),
+                    std::string_view(share)};
+                Text(ui, g.localizer.Format("text.group_header",
+                                            "{0}   {1}   {2} of team",
+                                            header_arguments));
                 std::size_t name_width = 4;
                 for (const auto& row : group.skills) {
                     name_width = std::max(name_width, Utf8Length(row.name));
@@ -2664,10 +2792,12 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
                     line += Utf8Pad(FormatPercent(local_share), 7);
                     line += ' ';
                     line += FormatNumber(row.total);
-                    line += "  ";
-                    line += std::to_string(static_cast<unsigned long long>(row.hits));
-                    line += " 次 / 最高 ";
-                    line += FormatCompact(row.max_hit);
+                    const std::string hits = std::to_string(row.hits);
+                    const std::string top_hit = FormatCompact(row.max_hit);
+                    const std::array<std::string_view, 2> arguments{
+                        std::string_view(hits), std::string_view(top_hit)};
+                    line += g.localizer.Format("text.skill_stats",
+                                               "  {0} hits / top {1}", arguments);
                     Text(ui, line);
                 }
             }
@@ -2678,9 +2808,10 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     // 4. 增益倒计时 / 固定增益
     // ---------------------------------------------------------------------
     if (settings.show_buffs) {
-        SectionTitle(ui, "增益状态");
+        SectionTitle(ui, g.localizer.Text("section.buffs", "Buff status"));
         if (snapshot.buffs.empty()) {
-            Text(ui, "  （当前没有生效中的限时增益）");
+            Text(ui, g.localizer.Text("status.buffs_empty",
+                                      "  (no timed buffs active)"));
         } else {
             std::size_t name_width = 4;
             for (const auto& row : snapshot.buffs) {
@@ -2691,24 +2822,32 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
                 std::string label = row.name;
                 if (row.stacks > 1) label += " x" + std::to_string(row.stacks);
                 if (row.duration > 0.0) {
+                    const std::string remaining = TextFmt("%.1f", row.remaining);
+                    const std::array<std::string_view, 1> arguments{
+                        std::string_view(remaining)};
                     BarRow(ui, label, name_width, row.ratio, 20,
                            FormatPercent(row.ratio),
-                           TextFmt("剩余 %.1f 秒", row.remaining));
+                           g.localizer.Format("text.buff_remaining",
+                                              "{0}s remaining", arguments));
                 } else {
                     BarRow(ui, label, name_width, 0.0, 20, "—",
-                           std::string("持续时间未知"));
+                           g.localizer.Text("text.buff_duration_unknown",
+                                            "Duration unknown"));
                 }
             }
         }
         // 固定增益：战斗前就挂着、或持续被刷新的同一种 buff，只列出不倒数，
         // 由宿主的 BUFF_REMOVE 事件移除。
         if (!snapshot.persistent_buffs.empty()) {
-            Text(ui, "固定增益");
+            Text(ui, g.localizer.Text("label.persistent_buffs", "Persistent buffs"));
             for (const auto& row : snapshot.persistent_buffs) {
                 std::string label = row.name;
                 if (!row.resolved) label += " ?";
                 if (row.stacks > 1) label += " x" + std::to_string(row.stacks);
-                TextF(ui, "%s  于 %s", label.c_str(), row.owner.c_str());
+                const std::array<std::string_view, 2> arguments{
+                    std::string_view(label), std::string_view(row.owner)};
+                Text(ui, g.localizer.Format("text.buff_owner", "{0}  on {1}",
+                                            arguments));
             }
         }
     }
@@ -2717,7 +2856,7 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     // 5. 最近命中
     // ---------------------------------------------------------------------
     if (settings.show_recent && !snapshot.recent.empty()) {
-        SectionTitle(ui, "最近命中");
+        SectionTitle(ui, g.localizer.Text("section.recent_hits", "Recent hits"));
         // 文本对齐版本：来源列与目标列按字符数补空格，比表格更紧凑也更像「日志流」。
         std::size_t source_width = 4;
         std::size_t target_width = 4;
@@ -2729,7 +2868,7 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
         target_width = std::min<std::size_t>(target_width, 10);
         for (const auto& hit : snapshot.recent) {
             std::string detail = hit.name.empty() ? std::string("-") : hit.name;
-            if (hit.critical) detail += " 暴击";
+            if (hit.critical) detail += g.localizer.Text("label.crit_tag", " crit");
             std::string line = Utf8Pad(hit.source, source_width);
             line += "  ";
             line += Utf8Pad(hit.target, target_width);
@@ -2746,29 +2885,43 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     // 6. 设置
     // ---------------------------------------------------------------------
     if (ui->separator != nullptr) ui->separator(ui->user);
-    Text(ui, "设置");
+    Text(ui, g.localizer.Text("section.settings", "Settings"));
     if (ui->checkbox != nullptr && ui->slider_float != nullptr) {
         bool changed = false;
         int show_skills = settings.show_skills ? 1 : 0;
-        changed |= ui->checkbox(ui->user, Sv("显示技能表"), &show_skills) != 0;
+        const std::string show_skills_label =
+            g.localizer.Text("option.show_skills", "Show skills");
+        changed |= ui->checkbox(ui->user, Sv(show_skills_label.c_str()),
+                                &show_skills) != 0;
         settings.show_skills = show_skills != 0;
         int show_buffs = settings.show_buffs ? 1 : 0;
-        changed |= ui->checkbox(ui->user, Sv("显示增益倒计时"), &show_buffs) != 0;
+        const std::string show_buffs_label =
+            g.localizer.Text("option.show_buffs", "Show buff timers");
+        changed |= ui->checkbox(ui->user, Sv(show_buffs_label.c_str()), &show_buffs) != 0;
         settings.show_buffs = show_buffs != 0;
         int show_recent = settings.show_recent ? 1 : 0;
-        changed |= ui->checkbox(ui->user, Sv("显示最近命中"), &show_recent) != 0;
+        const std::string show_recent_label =
+            g.localizer.Text("option.show_recent", "Show recent hits");
+        changed |= ui->checkbox(ui->user, Sv(show_recent_label.c_str()),
+                                &show_recent) != 0;
         settings.show_recent = show_recent != 0;
         auto idle = static_cast<float>(settings.battle_idle_seconds);
-        if (ui->slider_float(ui->user, Sv("战斗结束判定（闲置秒数）"), &idle, 3.0f, 30.0f) != 0) {
+        const std::string idle_label =
+            g.localizer.Text("option.battle_idle", "Battle end idle (seconds)");
+        if (ui->slider_float(ui->user, Sv(idle_label.c_str()), &idle, 3.0f, 30.0f) != 0) {
             settings.battle_idle_seconds = std::clamp(static_cast<double>(idle), 3.0, 30.0);
             changed = true;
         }
         auto rows = static_cast<float>(settings.max_rows);
-        if (ui->slider_float(ui->user, Sv("技能表最多行数"), &rows, 4.0f, 24.0f) != 0) {
+        const std::string rows_label =
+            g.localizer.Text("option.max_rows", "Skill rows limit");
+        if (ui->slider_float(ui->user, Sv(rows_label.c_str()), &rows, 4.0f, 24.0f) != 0) {
             settings.max_rows = static_cast<std::uint32_t>(rows + 0.5f);
             changed = true;
         }
-        if (ui->button(ui->user, Sv("恢复默认宽度"), 130.0f, 0.0f) != 0) {
+        const std::string reset_width_label =
+            g.localizer.Text("action.reset_width", "Reset width");
+        if (ui->button(ui->user, Sv(reset_width_label.c_str()), 130.0f, 0.0f) != 0) {
             std::scoped_lock lock(*g.mutex);
             g.settings.window_width = 0.0;
             g.settings.window_height = 0.0;
@@ -2788,19 +2941,27 @@ void OnDraw(void* plugin_context, const AnomalyUiServiceV1* ui) {
     // 7. 承受伤害 · 来自敌人（放在整个面板最下面，不夹在队伍表中间）
     // ---------------------------------------------------------------------
     if (!snapshot.enemies.empty()) {
-        SectionTitle(ui, "承受伤害 · 来自敌人");
+        SectionTitle(ui, g.localizer.Text("section.taken_from_enemies",
+                                          "Damage taken - from enemies"));
         std::size_t enemy_name_width = 4;
         for (const auto& row : snapshot.enemies) {
             enemy_name_width = std::max(enemy_name_width, Utf8Length(row.name));
         }
         enemy_name_width = std::min<std::size_t>(enemy_name_width, 12);
         for (const auto& row : snapshot.enemies) {
-            BarRow(ui, row.name, enemy_name_width, row.share, 20, FormatPercent(row.share),
-                   TextFmt("%s  %llu 次", FormatNumber(row.total).c_str(),
-                           static_cast<unsigned long long>(row.hits)));
+            const std::string total = FormatNumber(row.total);
+            const std::string hits = std::to_string(row.hits);
+            const std::array<std::string_view, 2> arguments{
+                std::string_view(total), std::string_view(hits)};
+            BarRow(ui, row.name, enemy_name_width, row.share, 20,
+                   FormatPercent(row.share),
+                   g.localizer.Format("text.enemy_row", "{0}  {1} hits", arguments));
         }
         if (snapshot.enemy_total > 0) {
-            TextF(ui, "承受合计 %s", FormatNumber(snapshot.enemy_total).c_str());
+            const std::string total = FormatNumber(snapshot.enemy_total);
+            const std::array<std::string_view, 1> arguments{std::string_view(total)};
+            Text(ui, g.localizer.Format("text.taken_total", "Taken total {0}",
+                                        arguments));
         }
     }
 }
@@ -2935,9 +3096,10 @@ AnomalyStatusV1 OnLoad(const AnomalyHostApiV1* host, void** plugin_context) {
         ANOMALY_DIAGNOSTICS_SERVICE_V1_ID, ANOMALY_DIAGNOSTICS_SERVICE_V1_VERSION);
     g.notifications = facade.Query<AnomalyNotificationsServiceV1>(
         ANOMALY_NOTIFICATIONS_SERVICE_V1_ID, ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION);
+    g.localizer = anomaly::sdk::Localizer(host);
 
     // 首次拿到 core 后立刻留一条装载记录，方便在「诊断 → 日志」里定位版本。
-    LogInfoF("NTE 伤害仪表盘 %s 装载中（core=%s config=%s diagnostics=%s）",
+    LogInfoF("NTE Damage Dashboard %s loading (core=%s config=%s diagnostics=%s)",
              kPluginVersion,
              g.core ? "ok" : "missing",
              g.config ? "ok" : "missing",
@@ -2959,17 +3121,20 @@ AnomalyStatusV1 OnLoad(const AnomalyHostApiV1* host, void** plugin_context) {
             &g.config_schema);
         g.config_schema_registered = status.code == ANOMALY_STATUS_V1_OK;
         if (!g.config_schema_registered) {
-            LogErrorF("配置 schema 注册失败（status=%u），设置将无法持久化",
+            LogErrorF("config schema registration failed (status=%u); settings will not "
+                      "persist",
                       static_cast<unsigned>(status.code));
         }
     } else {
-        LogWarning("anomaly.config 不可用，设置不会保存");
+        LogWarning("anomaly.config unavailable; settings will not be saved");
     }
     if (!g.diagnostics) {
-        LogWarning("anomaly.diagnostics 不可用，自检条目不会出现在诊断页");
+        LogWarning("anomaly.diagnostics unavailable; the self-test entry will not appear "
+                   "on the diagnostics page");
     }
     if (!g.notifications) {
-        LogWarning("anomaly.notifications 不可用，插件无法在游戏内弹提示");
+        LogWarning("anomaly.notifications unavailable; the plugin cannot post in-game "
+                   "notifications");
     }
     return anomaly::sdk::Ok();
 }
@@ -3020,13 +3185,15 @@ AnomalyStatusV1 OnStart(void* plugin_context) {
             &SelfTestCallback, nullptr, &context->self_test_handle);
         context->self_test_registered = status.code == ANOMALY_STATUS_V1_OK;
         if (context->self_test_registered) {
-            LogInfoF("诊断自检已注册：%s", self_test_id.c_str());
+            LogInfoF("diagnostics self-test registered: %s", self_test_id.c_str());
         } else {
-            LogWarningF("诊断自检注册失败（status=%u）", static_cast<unsigned>(status.code));
+            LogWarningF("diagnostics self-test registration failed (status=%u)",
+                        static_cast<unsigned>(status.code));
         }
     }
 
-    LogInfoF("伤害仪表盘已启动：combat=%s session=%s（未进战斗场景时 combat 为缺失属正常）",
+    LogInfoF("damage dashboard started: combat=%s session=%s (missing combat before "
+             "entering a combat scene is normal)",
              context->combat ? "ok" : "missing",
              context->session ? "ok" : "missing");
     return anomaly::sdk::Ok();
@@ -3117,7 +3284,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     if (descriptor == nullptr || descriptor->struct_size < sizeof(*descriptor)) {
         return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
     }
-    constexpr const char* kName = "NTE \xE4\xBC\xA4\xE5\xAE\xB3\xE4\xBB\xAA\xE8\xA1\xA8\xE7\x9B\x98";
+    constexpr const char* kName = "NTE Damage Dashboard";
     descriptor->api_major = ANOMALY_PLUGIN_API_V1_MAJOR;
     descriptor->api_minor = ANOMALY_PLUGIN_API_V1_MINOR;
     descriptor->id = {kPluginId, std::strlen(kPluginId)};

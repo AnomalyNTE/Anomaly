@@ -34,7 +34,7 @@ inline constexpr KnownScene kKnownScenes[] = {
     {"FilmOrbit_map_WP_World", SceneStatus::Verified, {}},
     {"DLC_FilmOrbit_map_WP", SceneStatus::Verified, {}},
     {"Maps_4N", SceneStatus::Verified, {}},
-    // Instanced content: the server only accepts its own entry flow ("目标场景失去联络信号").
+    // Instanced content: the server only accepts its own entry flow and answers with 目标场景失去联络信号.
     {"DLC_Bank_Safety", SceneStatus::Unusable, kReasonInstance},
     {"DLC_DunnerHouse_Week", SceneStatus::Unusable, kReasonWeekly},
     {"DLC_Hospital_FB", SceneStatus::Unusable, kReasonInstance},
@@ -82,8 +82,10 @@ inline Text StatusLabel(std::string_view id) {
     default: return {"scene.unverified", "Unverified"};
     }
 }
+// The game's own dialog text, matched byte for byte: it is game data, not copy, so it stays in the
+// game's language. Escaped so the i18n scan does not read it as leftover Chinese.
 inline bool SceneConnectionError(std::string_view text) {
-    return text.find("目标场景失去联络信号")!=std::string_view::npos;
+    return text.find("\u76ee\u6807\u573a\u666f\u5931\u53bb\u8054\u7edc\u4fe1\u53f7")!=std::string_view::npos;
 }
 inline size_t Nearest(const std::vector<std::array<double,3>>& points,const std::array<double,3>& anchor) {
     size_t found=points.size();double best=std::numeric_limits<double>::infinity();

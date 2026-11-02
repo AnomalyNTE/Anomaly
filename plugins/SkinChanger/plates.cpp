@@ -5,6 +5,7 @@
 #include "plates.hpp"
 #include "profile.hpp"
 #include "plate_animation.hpp"
+#include "localization.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -18,6 +19,7 @@
 #include "plate_access.hpp"
 
 namespace {
+anomaly::sdk::Localizer& localizer = skin_change::Localizer();
 struct Field { uintptr_t type{}; std::string name; int32_t size{}, offset{-1}; };
 std::vector<Field> fields;
 int32_t Offset(const Reader& r, uintptr_t type, const char* name, int32_t size) {
@@ -87,7 +89,7 @@ std::atomic_bool dynamic{};
 std::atomic_bool restart_animation{};
 std::atomic<float> interval{0.15F};
 std::atomic<std::shared_ptr<const std::string>> pending;
-struct View { std::string status{"开启后自动应用到你乘坐的载具。"}; size_t width{7}; bool enabled{}; };
+struct View { std::string status{localizer.Text("status.plate_idle", "Once enabled, it applies to the vehicle you ride in.")}; size_t width{7}; bool enabled{}; };
 std::atomic<std::shared_ptr<const View>> published;
 std::string status;
 size_t width = 7;
@@ -269,19 +271,19 @@ void FollowVehicle(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     }),vehicles.end());
     Vehicle candidate;
     if (!Select(r,objects,candidate)) {
-        status = vehicles.empty() ? "已开启，等待上车。" : "已开启，自动跟随上车。"; return;
+        status = vehicles.empty() ? localizer.Text("status.plate_waiting_board","Enabled; waiting to board a vehicle.") : localizer.Text("status.plate_following","Enabled; following the vehicle automatically."); return;
     }
     auto found = std::find_if(vehicles.begin(),vehicles.end(),[&](const Vehicle& v){return v.actor.id == candidate.actor.id;});
     if (found == vehicles.end()) {
-        if (!RefreshVehicle(r,objects,candidate)) { status = "该载具车牌暂未就绪，正在等待。"; return; }
+        if (!RefreshVehicle(r,objects,candidate)) { status = localizer.Text("status.plate_not_ready","This vehicle's plate is not ready yet; waiting."); return; }
         width = candidate.width; vehicles.push_back(std::move(candidate));
     } else {
         if (found->component.id != candidate.component.id) { found->meshes.clear(); found->last_frame.clear(); }
         found->component = candidate.component; found->original = std::move(candidate.original);
-        if (!RefreshVehicle(r,objects,*found)) { status = "车牌模型刷新中，正在等待。"; return; }
+        if (!RefreshVehicle(r,objects,*found)) { status = localizer.Text("status.plate_refreshing","The plate mesh is refreshing; waiting."); return; }
         width = found->width;
     }
-    status = "已开启，自动跟随上车。";
+    status = localizer.Text("status.plate_following","Enabled; following the vehicle automatically.");
 }
 
 }
@@ -323,14 +325,16 @@ void Update() noexcept {
                         applied = previous;
                     }
                 }
-                status = Restore(r,objects) ? "已关闭，恢复原车牌。" : "恢复失败，请重试。";
+                status = Restore(r,objects) ?
+                    localizer.Text("status.plate_restored","Disabled; the original plate was restored.") :
+                    localizer.Text("status.plate_restore_failed","Restore failed; try again.");
             } else if (command == 1) {
                 const auto text = pending.exchange({});
                 const auto normalized = text ? plate_animation::Normalize(Wide(*text),width) : std::nullopt;
                 if (normalized) {
                     applied = *normalized; enabled = true; epoch = Clock::now(); next_probe = next_frame = {};
                     for (auto& vehicle : vehicles) { vehicle.last_frame.clear(); vehicle.reapply_at = {}; }
-                } else status = "字符不支持或超出车牌长度。";
+                } else status = localizer.Text("status.plate_invalid_text","Unsupported character, or the plate text is too long.");
             }
         }
         if (restart_animation.exchange(false)) {
@@ -364,23 +368,25 @@ void Update() noexcept {
             }
         }
         Publish();
-    } catch (...) { status = "车牌暂未就绪，正在等待。"; Publish(); }
+    } catch (...) { status = localizer.Text("status.plate_pending","The plate is not ready yet; waiting."); Publish(); }
 }
 void Draw(const AnomalyUiServiceV1* ui) noexcept {
     const auto view = published.load(); if (!view || !ui || !ui->input_text || !ui->text || !ui->checkbox) return;
-    ui->text(ui->user,StringView("仅修改本机车牌外观。"));
-    const bool edited = ui->input_text(ui->user,StringView("车牌文字"),editor.data(),editor.size(),0) != 0;
-    ui->text(ui->user,StringView("最多 "+std::to_string(view->width)+" 个字符：A-Z、0-9、·、-、空格、♥"));
+    ui->text(ui->user,StringView(localizer.Text("hint.plate_local_only","Only this vehicle's plate appearance is modified.")));
+    const bool edited = ui->input_text(ui->user,StringView(localizer.Text("label.plate_text","Plate text")),editor.data(),editor.size(),0) != 0;
+    const auto width_text = std::to_string(view->width);
+    const std::array width_arguments{std::string_view(width_text)};
+    ui->text(ui->user,StringView(localizer.Format("hint.plate_characters","Up to {0} characters: A-Z, 0-9, ·, -, space, ♥",width_arguments)));
     const auto command = requested.load();
     int use = command ? command == 1 : view->enabled;
-    if (ui->checkbox && ui->checkbox(ui->user,StringView("应用车牌"),&use)) {
+    if (ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Text("option.apply_plate","Apply plate")),&use)) {
         if (use) { pending.store(std::make_shared<const std::string>(editor.data())); requested = 1; }
         else requested = 2;
     } else if (edited && use) { pending.store(std::make_shared<const std::string>(editor.data())); requested = 1; }
     int motion = dynamic.load();
-    if (ui->checkbox && ui->checkbox(ui->user,StringView("动态车牌"),&motion)) { dynamic = motion != 0; restart_animation = true; }
+    if (ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Text("option.dynamic_plate","Dynamic plate")),&motion)) { dynamic = motion != 0; restart_animation = true; }
     if (motion && ui->slider_float) { float seconds = interval.load();
-        if (ui->slider_float(ui->user,StringView("滚动间隔（秒）"),&seconds,0.05F,1.0F)) interval = seconds;
+        if (ui->slider_float(ui->user,StringView(localizer.Text("label.scroll_interval","Scroll interval (s)")),&seconds,0.05F,1.0F)) interval = seconds;
     }
     ui->text(ui->user,StringView(view->status));
 }

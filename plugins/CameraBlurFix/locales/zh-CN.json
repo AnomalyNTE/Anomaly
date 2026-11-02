@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "反虚化",
+    "window.title": "反虚化",
     "plugin.description": "取消角色与 NPC/人群实体的镜头虚化，同时禁用抬头和近距离镜头隐藏"
   }
 }
