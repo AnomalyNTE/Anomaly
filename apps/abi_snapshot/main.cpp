@@ -1789,7 +1789,8 @@ std::string BuildSnapshot() {
          {"camera_snapshot", offsetof(AnomalyNtePlayerServiceV1, camera_snapshot)},
          {"hold_engage", offsetof(AnomalyNtePlayerServiceV1, hold_engage)},
          {"hold_release", offsetof(AnomalyNtePlayerServiceV1, hold_release)},
-         {"hold_snapshot", offsetof(AnomalyNtePlayerServiceV1, hold_snapshot)}},
+         {"hold_snapshot", offsetof(AnomalyNtePlayerServiceV1, hold_snapshot)},
+         {"get_object_handles", offsetof(AnomalyNtePlayerServiceV1, get_object_handles)}},
         false);
     AppendStruct(
         output,

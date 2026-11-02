@@ -14547,6 +14547,37 @@ struct Ue5NteAdapter::State {
         return Status(ANOMALY_STATUS_V1_OK);
     }
 
+    static AnomalyStatusV1 ANOMALY_CALL PlayerObjectHandles(
+        void* user, AnomalyGenerationHandleV1* pawn,
+        AnomalyGenerationHandleV1* controller) {
+        if (pawn == nullptr && controller == nullptr) {
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        }
+        auto& state = *static_cast<State*>(user);
+        const auto game_thread = state.game_thread_id.load(std::memory_order_acquire);
+        if (game_thread == 0 || game_thread != GetCurrentThreadId()) {
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                          "player object handles require the Game thread");
+        }
+        std::scoped_lock lock(state.mutex);
+        if (!state.SemanticFeatureRunning("nte.player") || !state.player_available ||
+            !state.resolution.FeatureAvailable("ue5.objects") ||
+            state.object_registry.items == 0) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                          "player object handle prerequisites are unavailable");
+        }
+        AnomalyGenerationHandleV1 pawn_handle{}, controller_handle{};
+        if ((pawn != nullptr && !state.ObjectHandleLocked(state.player_pawn, pawn_handle)) ||
+            (controller != nullptr &&
+             !state.ObjectHandleLocked(state.player_controller, controller_handle))) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                          "player object is no longer registered");
+        }
+        if (pawn != nullptr) *pawn = pawn_handle;
+        if (controller != nullptr) *controller = controller_handle;
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL PlayerEspSnapshot(
         void* user, AnomalyNtePlayerEspSnapshotV1* snapshot) noexcept {
         if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot)) {
@@ -16617,7 +16648,8 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
         player_service = {
             sizeof(AnomalyNtePlayerServiceV1), ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION,
             this, PlayerSnapshotThunk, PlayerEspSnapshotThunk, CameraSnapshotThunk,
-            PlayerHoldEngageThunk, PlayerHoldReleaseThunk, PlayerHoldSnapshotThunk};
+            PlayerHoldEngageThunk, PlayerHoldReleaseThunk, PlayerHoldSnapshotThunk,
+            PlayerObjectHandlesThunk};
         player_teleport_service = {
             sizeof(AnomalyNtePlayerTeleportServiceV1),
             ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION,
@@ -16869,6 +16901,17 @@ private:
         void* user, AnomalyNtePlayerSnapshotV1* snapshot) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::PlayerSnapshot(lease.User(), snapshot) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PlayerObjectHandlesThunk(
+        void* user, AnomalyGenerationHandleV1* pawn,
+        AnomalyGenerationHandleV1* controller) noexcept {
+        try {
+            auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+            return lease ? State::PlayerObjectHandles(lease.User(), pawn, controller) : StoppedStatus();
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "player object handle query failed");
+        }
     }
 
     static AnomalyStatusV1 ANOMALY_CALL PlayerEspSnapshotThunk(

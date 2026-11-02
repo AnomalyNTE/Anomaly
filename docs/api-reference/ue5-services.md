@@ -85,6 +85,9 @@ typedef struct AnomalyUe5ProcessEventServiceV1 {
 
 ### 主动调用合同
 
+本地玩家的 Pawn / Controller 可通过 [`nte.player.get_object_handles`](nte-services.md#玩家对象句柄)
+取得兼容对象句柄。`player.snapshot.handle` 是玩家样本身份，不能直接作为接收对象传入。
+
 | 参数 | 合同 |
 | --- | --- |
 | `user` | 原样回传服务表中的 `user` |

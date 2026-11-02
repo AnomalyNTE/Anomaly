@@ -1484,7 +1484,7 @@
       }
     },
     "AnomalyNtePlayerServiceV1": {
-      "size": 64,
+      "size": 72,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -1495,7 +1495,8 @@
         "camera_snapshot": 32,
         "hold_engage": 40,
         "hold_release": 48,
-        "hold_snapshot": 56
+        "hold_snapshot": 56,
+        "get_object_handles": 64
       }
     },
     "AnomalyNtePlayerTeleportRequestV1": {

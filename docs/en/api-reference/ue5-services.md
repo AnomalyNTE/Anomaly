@@ -88,6 +88,10 @@ object registry, and parameter-size layout needed by `invoke` are ready. Missing
 
 ### Invocation contract
 
+For the local player's Pawn / Controller, obtain compatible object handles through
+[`nte.player.get_object_handles`](nte-services.md#player-object-handles).
+`player.snapshot.handle` identifies a player sample and cannot be used directly as the receiver.
+
 | Parameter | Contract |
 | --- | --- |
 | `user` | Pass the service table's `user` unchanged |
