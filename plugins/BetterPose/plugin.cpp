@@ -922,6 +922,16 @@ struct Context final {
   std::atomic<int> manual_calibration_issue{};
   std::uintptr_t automatic_calibration_mesh{};
   std::atomic_bool pose_settings_dirty{};
+  // State/config writes are forbidden from game and render callbacks.  Keep the
+  // serialized snapshot on the game thread, then perform the actual writes on a
+  // scheduler worker.
+  struct PoseSettingsSaveRequest {
+    std::string document;
+    std::string character_id;
+  };
+  std::atomic_bool pose_settings_save_queued{};
+  std::atomic_bool pose_settings_save_failed{};
+  std::atomic<std::uint64_t> pose_settings_retry_after_ms{};
   std::atomic<std::uint64_t> pose_settings_save_error_log_ms{};
   std::uintptr_t g_objects_address{};
   ObjectRegistry object_registry{};
@@ -3003,6 +3013,63 @@ bool WriteDirectPoseProfile(const std::string &character_id,
   }
 }
 
+bool WritePoseSettingsDocument(Context &context, const std::string &document,
+                               const std::string &character_id,
+                               std::string &error) noexcept {
+  try {
+    if (!ConfigReady(context.config)) {
+      error = "config service unavailable";
+      return false;
+    }
+    if (document.size() > kMaximumPoseSettingsBytes) {
+      error = "document too large";
+      return false;
+    }
+    const auto config_status = context.config->write_atomic(
+        context.config->user, anomaly::sdk::StringView(kPoseSettingsSchemaId),
+        kPoseSettingsSchemaVersion, Bytes(document));
+    if (config_status.code != ANOMALY_STATUS_V1_OK) {
+      error = "config write code=" + std::to_string(config_status.code) +
+              " id=" + character_id;
+      return false;
+    }
+
+    // Only a known character has a per-character profile to write.  The
+    // config document above remains the authoritative global fallback.
+    bool profile_attempted = false;
+    bool profile_ok = character_id.empty();
+    AnomalyStatusV1 profile_status = anomaly::sdk::Ok();
+    std::string direct_error;
+    if (!character_id.empty() && StorageReady(context.storage)) {
+      profile_attempted = true;
+      const std::string path = PoseProfilePath(character_id);
+      profile_status = context.storage->write_atomic(
+          context.storage->user, anomaly::sdk::StringView(path), Bytes(document));
+      profile_ok = profile_status.code == ANOMALY_STATUS_V1_OK;
+    }
+    if (!profile_ok && !character_id.empty())
+      profile_ok = WriteDirectPoseProfile(character_id, document, direct_error);
+    if (!profile_ok) {
+      error = profile_attempted
+                  ? "character profile write code=" +
+                        std::to_string(profile_status.code)
+                  : "character profile storage unavailable";
+      if (!direct_error.empty())
+        error += "; direct=" + direct_error;
+      error += " id=" + character_id;
+      return false;
+    }
+    error.clear();
+    return true;
+  } catch (const std::exception &exception) {
+    error = std::string("exception: ") + exception.what();
+    return false;
+  } catch (...) {
+    error = "unknown exception";
+    return false;
+  }
+}
+
 bool PersistPoseSettings(Context &context) noexcept {
   const auto fail = [&context](const std::string &reason) {
     const std::uint64_t now = GetTickCount64();
@@ -3015,52 +3082,11 @@ bool PersistPoseSettings(Context &context) noexcept {
     }
     return false;
   };
-  if (!ConfigReady(context.config))
-    return fail("config service unavailable");
   try {
     const std::string document = BuildPoseDocument(context);
-    if (document.size() > kMaximumPoseSettingsBytes)
-      return fail("document too large");
-    const auto config_status = context.config->write_atomic(
-        context.config->user, anomaly::sdk::StringView(kPoseSettingsSchemaId),
-        kPoseSettingsSchemaVersion, Bytes(document));
-    // The settings document itself is what this function is for: a rejected write is a
-    // failure even when the per-character profile below happens to land.
-    if (config_status.code != ANOMALY_STATUS_V1_OK) {
-      return fail("config write code=" + std::to_string(config_status.code) +
-                  " id=" + context.active_character_id);
-    }
-    // Only a known character has a per-character profile to write, and at load time there
-    // is none yet. Counting that as a failed save made every fresh install refuse to
-    // activate the plugin, so an empty id means "nothing to write", not "write failed".
-    bool profile_attempted = false;
-    bool profile_ok = context.active_character_id.empty();
-    AnomalyStatusV1 profile_status = anomaly::sdk::Ok();
-    std::string direct_error;
-    if (!context.active_character_id.empty() && StorageReady(context.storage)) {
-      profile_attempted = true;
-      const std::string path = PoseProfilePath(context.active_character_id);
-      const std::string profile = BuildPoseDocument(context);
-      profile_status =
-          context.storage
-              ->write_atomic(context.storage->user,
-                             anomaly::sdk::StringView(path), Bytes(profile));
-      profile_ok = profile_status.code == ANOMALY_STATUS_V1_OK;
-    }
-    if (!profile_ok && !context.active_character_id.empty())
-      profile_ok = WriteDirectPoseProfile(context.active_character_id,
-                                          BuildPoseDocument(context),
-                                          direct_error);
-    if (!profile_ok) {
-      std::string reason = profile_attempted
-                               ? "character profile write code=" +
-                                     std::to_string(profile_status.code)
-                               : "character profile storage unavailable";
-      reason += direct_error.empty() ? std::string()
-                                     : "; direct=" + direct_error;
-      reason += " id=" + context.active_character_id;
-      return fail(reason);
-    }
+    std::string error;
+    if (!WritePoseSettingsDocument(context, document, context.active_character_id, error))
+      return fail(error);
     context.pose_settings_save_error_log_ms.store(0,
                                                   std::memory_order_release);
     return true;
@@ -3068,6 +3094,92 @@ bool PersistPoseSettings(Context &context) noexcept {
     return fail(std::string("exception: ") + error.what());
   } catch (...) {
     return fail("unknown exception");
+  }
+}
+
+struct PoseSettingsTaskData {
+  Context *context{};
+  Context::PoseSettingsSaveRequest request;
+};
+
+void ANOMALY_CALL PoseSettingsTask(void *user,
+                                   AnomalyGenerationHandleV1) noexcept {
+  std::unique_ptr<PoseSettingsTaskData> task(
+      static_cast<PoseSettingsTaskData *>(user));
+  if (!task || task->context == nullptr)
+    return;
+  auto &context = *task->context;
+  std::string error;
+  const bool ok = WritePoseSettingsDocument(
+      context, task->request.document, task->request.character_id, error);
+  if (ok) {
+    context.pose_settings_save_failed.store(false, std::memory_order_release);
+    context.pose_settings_save_error_log_ms.store(0,
+                                                  std::memory_order_release);
+    context.pose_settings_retry_after_ms.store(0, std::memory_order_release);
+  } else {
+    context.pose_settings_save_failed.store(true, std::memory_order_release);
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+    const std::uint64_t now = GetTickCount64();
+    context.pose_settings_retry_after_ms.store(now + 2000,
+                                               std::memory_order_release);
+    const std::uint64_t last =
+        context.pose_settings_save_error_log_ms.load(std::memory_order_acquire);
+    if (last == 0 || now - last >= 2000) {
+      context.pose_settings_save_error_log_ms.store(now,
+                                                    std::memory_order_release);
+      LogDiagnostic(context, "betterpose settings save failed: " + error);
+    }
+  }
+  context.pose_settings_save_queued.store(false, std::memory_order_release);
+}
+
+bool QueuePoseSettingsSave(Context &context) noexcept {
+  bool expected = false;
+  if (!context.pose_settings_save_queued.compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel))
+    return true;
+  context.pose_settings_dirty.exchange(false, std::memory_order_acq_rel);
+  const auto fail = [&context](const std::string_view reason) {
+    context.pose_settings_save_queued.store(false, std::memory_order_release);
+    context.pose_settings_save_failed.store(true, std::memory_order_release);
+    context.pose_settings_dirty.store(true, std::memory_order_release);
+    const std::uint64_t now = GetTickCount64();
+    context.pose_settings_retry_after_ms.store(now + 2000,
+                                               std::memory_order_release);
+    const std::uint64_t last =
+        context.pose_settings_save_error_log_ms.load(std::memory_order_acquire);
+    if (last == 0 || now - last >= 2000) {
+      context.pose_settings_save_error_log_ms.store(now,
+                                                    std::memory_order_release);
+      LogDiagnostic(context, "betterpose settings save failed: " +
+                                 std::string(reason));
+    }
+    return false;
+  };
+  if (!SchedulerReady(context.scheduler))
+    return fail("scheduler service unavailable");
+  try {
+    Context::PoseSettingsSaveRequest request;
+    request.document = BuildPoseDocument(context);
+    request.character_id = context.active_character_id;
+    if (request.document.size() > kMaximumPoseSettingsBytes)
+      return fail("document too large");
+    auto *data = new (std::nothrow) PoseSettingsTaskData{
+        &context, std::move(request)};
+    if (data == nullptr)
+      return fail("save task allocation failed");
+    AnomalyGenerationHandleV1 handle{};
+    const auto status = context.scheduler->schedule(
+        context.scheduler->user, 0, PoseSettingsTask, data, &handle);
+    if (status.code != ANOMALY_STATUS_V1_OK || handle.id == 0) {
+      context.pose_settings_save_queued.store(false, std::memory_order_release);
+      delete data;
+      return fail("save task scheduling failed");
+    }
+    return true;
+  } catch (...) {
+    return fail("save task preparation failed");
   }
 }
 
@@ -13929,14 +14041,17 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
                 "joints active: %u fx %u", static_cast<unsigned>(active_joints),
                 static_cast<unsigned>(context.extra_resync_count));
 
-  bool settings_saved = true;
+  bool settings_saved =
+      !context.pose_settings_save_failed.load(std::memory_order_acquire);
   if (!context.t_pose_calibration_active.load(std::memory_order_acquire)) {
-    const bool settings_dirty =
-        context.pose_settings_dirty.exchange(false, std::memory_order_acquire);
-    if (settings_dirty) {
-      settings_saved = PersistPoseSettings(context);
-      if (!settings_saved)
-        context.pose_settings_dirty.store(true, std::memory_order_release);
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t retry_after =
+        context.pose_settings_retry_after_ms.load(std::memory_order_acquire);
+    if (context.pose_settings_dirty.load(std::memory_order_acquire) &&
+        !context.pose_settings_save_queued.load(std::memory_order_acquire) &&
+        now >= retry_after) {
+      if (!QueuePoseSettingsSave(context))
+        settings_saved = false;
     }
   }
 
