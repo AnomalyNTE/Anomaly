@@ -82,6 +82,15 @@ typedef struct AnomalyUe5ProcessEventServiceV1 {
         void* callback_user, AnomalyGenerationHandleV1* handle);
     AnomalyStatusV1 (ANOMALY_CALL *unsubscribe)(
         void* user, AnomalyGenerationHandleV1 handle);
+    // Appended V1 extension; check struct_size before reading invoke.
+    // Synchronous, Game thread only. Handles come from ue5.objects, not ue5.world.
+    // parameters is a caller-owned in/out buffer with capacity >= UFunction::ParmsSize;
+    // out/return fields are available on return. Null is valid for zero-parameter calls.
+    // The caller supplies an actual UFunction, compatible receiver and initialized UE values.
+    // No function allowlist, parameter schema matching, or FunctionFlags rewriting.
+    AnomalyStatusV1 (ANOMALY_CALL *invoke)(
+        void* user, AnomalyGenerationHandleV1 object,
+        AnomalyGenerationHandleV1 function, void* parameters, size_t parameter_size);
 } AnomalyUe5ProcessEventServiceV1;
 typedef struct AnomalyUe5NamesServiceV1 {
     uint32_t struct_size; uint32_t service_version; void* user;

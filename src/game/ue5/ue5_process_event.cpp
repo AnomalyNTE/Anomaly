@@ -184,7 +184,7 @@ Ue5ProcessEventInvoker CreateUe5ProcessEventInvoker(
                const std::uintptr_t function,
                void* const parameters,
                const std::size_t parameter_size) {
-        if (object == 0 || function == 0 || parameter_size > 4096U ||
+        if (object == 0 || function == 0 ||
             (parameter_size != 0 && parameters == nullptr)) {
             return false;
         }

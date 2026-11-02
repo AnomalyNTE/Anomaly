@@ -1571,6 +1571,18 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyUe5ProcessEventServiceV1",
+        sizeof(AnomalyUe5ProcessEventServiceV1),
+        alignof(AnomalyUe5ProcessEventServiceV1),
+        {{"struct_size", offsetof(AnomalyUe5ProcessEventServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyUe5ProcessEventServiceV1, service_version)},
+         {"user", offsetof(AnomalyUe5ProcessEventServiceV1, user)},
+         {"subscribe", offsetof(AnomalyUe5ProcessEventServiceV1, subscribe)},
+         {"unsubscribe", offsetof(AnomalyUe5ProcessEventServiceV1, unsubscribe)},
+         {"invoke", offsetof(AnomalyUe5ProcessEventServiceV1, invoke)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyUe5FrameworkServiceV1",
         sizeof(AnomalyUe5FrameworkServiceV1),
         alignof(AnomalyUe5FrameworkServiceV1),
@@ -2539,6 +2551,8 @@ std::string BuildSnapshot() {
     AppendService(
         output, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION, "AnomalyUe5FrameworkServiceV1", false);
+    AppendService(output, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
+        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION, "AnomalyUe5ProcessEventServiceV1", false);
     AppendService(output, ANOMALY_UE5_NAMES_SERVICE_V1_ID,
         ANOMALY_UE5_NAMES_SERVICE_V1_VERSION, "AnomalyUe5NamesServiceV1", false);
     AppendService(
