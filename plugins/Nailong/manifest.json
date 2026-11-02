@@ -1,8 +1,8 @@
 {
   "schemaVersion": 2,
   "id": "com.nailong.costume",
-  "name": "奶龙",
-  "description": "UE 原生玩家与附近 NPC 模型替换；36 骨源蒙皮，离开范围自动恢复，动物不参与。",
+  "name": "NaiLong",
+  "description": "Engine-native model replacement for the controlled player and nearby NPCs; 36-bone source-rig skinning, automatic restore on range exit, animals excluded.",
   "author": "yi621yi",
   "license": "AGPL-3.0-only",
   "audience": "user",

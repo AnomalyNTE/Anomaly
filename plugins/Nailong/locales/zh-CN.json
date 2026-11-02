@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "奶龙",
     "plugin.description": "奶龙 1.8.7：UE 原生模型替换、36 骨源蒙皮；玩家与附近 NPC 均可换成奶龙。",
     "window.title": "奶龙",
     "option.player": "替换当前可控角色（切换自动跟随）",
