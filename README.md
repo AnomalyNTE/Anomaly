@@ -95,7 +95,7 @@ qq交流群: 1037114140
 | **UI Buttons** | 列出可点击的游戏 UI 按钮，并可通过界面服务执行点击 |
 | **Jelly** | 让镜头内的人物、载具与动态模型持续挤压拉伸，可调强度、频率、停止间隔与自转 |
 
-开发者模式还会显示 **Teleport**、**DLL Loader** 与 **Time Accel** 等调试插件；完整包目录见
+开发者模式还会显示 **Teleport**、**DLL Loader**、**Time Accel** 与 **Memory Dump** 等调试插件；完整包目录见
 [`plugins/README.md`](plugins/README.md)。
 
 ### 🌐 第三方插件

@@ -1298,6 +1298,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/EntityESP/manifest.json
         PACKAGE_NAME EntityESP
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/EntityESP")
+    anomaly_add_plugin(anomaly_builtin_memory_dump
+        SOURCES plugins/MemoryDump/plugin.cpp
+        MANIFEST plugins/MemoryDump/manifest.json
+        PACKAGE_NAME MemoryDump
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/MemoryDump")
+    target_compile_options(anomaly_builtin_memory_dump PRIVATE /utf-8)
 
     anomaly_add_plugin(anomaly_builtin_training_dummy
         SOURCES plugins/TrainingDummy/plugin.cpp
@@ -1730,7 +1736,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
         anomaly_builtin_model_scale anomaly_builtin_autofish anomaly_builtin_character_studio
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
-        anomaly_builtin_npc_summon anomaly_builtin_training_dummy)
+        anomaly_builtin_npc_summon anomaly_builtin_training_dummy
+        anomaly_builtin_memory_dump)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1823,6 +1830,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_deserted Deserted)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_hifi_vehicle_music HiFiVehicleMusic)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_jelly Jelly)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_memory_dump MemoryDump)
 
 if(TARGET anomaly-platform-preview)
     add_custom_command(TARGET anomaly-platform-preview POST_BUILD
