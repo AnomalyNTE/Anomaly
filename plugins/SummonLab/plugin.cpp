@@ -8,6 +8,7 @@
 
 #include "anomaly/sdk/localization.hpp"
 #include "attribute_catalog.hpp"
+#include "blueprint_names.hpp"
 
 #include <algorithm>
 #include <array>
@@ -144,8 +145,9 @@ struct PendingOp {
 };
 
 struct ClassEntry {
-    std::string name;
+    std::string label;
     std::string path;
+    std::string search_text;
 };
 
 struct AttributeValue {
@@ -435,7 +437,12 @@ bool LoadCatalog() {
             const std::string name = item.value("n", std::string{});
             const std::string package = item.value("p", std::string{});
             if (name.empty() || package.empty()) continue;
-            parsed.push_back(ClassEntry{name, prefix + package + "." + name});
+            const auto names = summon_lab::ResolveBlueprintNames(name, g_context.localizer);
+            const std::string& display_name = names.specific.empty() ? names.family : names.specific;
+            const std::string label = display_name.empty() ? name : display_name + " | " + name;
+            const std::string class_path = prefix + package + "." + name;
+            parsed.push_back(ClassEntry{label, class_path,
+                                        label + "\n" + class_path + "\n" + names.family});
         }
     }
 
@@ -2035,7 +2042,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
     } else {
         // 过滤 + 匹配统计放在同一行
         if (ui->input_text != nullptr) {
-            const std::string filter_label = localizer.Text("catalog.filter", "Filter");
+            const std::string filter_label = localizer.Text("catalog.filter", "Search");
             {
                 std::scoped_lock lock(g_context.mutex);
                 if (ui->input_text(ui->user, anomaly::sdk::StringView(filter_label),
@@ -2058,8 +2065,8 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
                     keep = ui->filter_match != nullptr
                                ? ui->filter_match(ui->user,
                                                   anomaly::sdk::StringView(g_context.catalog_filter),
-                                                  anomaly::sdk::StringView(entry.name)) != 0
-                               : entry.name.find(g_context.catalog_filter) != std::string::npos;
+                                                  anomaly::sdk::StringView(entry.search_text)) != 0
+                               : entry.search_text.find(g_context.catalog_filter) != std::string::npos;
                 }
                 if (keep) ++matched;
             }
@@ -2072,8 +2079,8 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
                     keep = ui->filter_match != nullptr
                                ? ui->filter_match(ui->user,
                                                   anomaly::sdk::StringView(g_context.catalog_filter),
-                                                  anomaly::sdk::StringView(entry.name)) != 0
-                               : entry.name.find(g_context.catalog_filter) != std::string::npos;
+                                                  anomaly::sdk::StringView(entry.search_text)) != 0
+                               : entry.search_text.find(g_context.catalog_filter) != std::string::npos;
                 }
                 if (!keep) continue;
                 if (seen >= page * kPageSize) {
@@ -2127,7 +2134,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
         }
         if (child_open) {
             for (const auto& entry : visible) {
-                const std::string label = entry.name + "###blueprint-" + entry.path;
+                const std::string label = entry.label + "###blueprint-" + entry.path;
                 if (ActionButton(ui, label.c_str(), true, -1.0F)) {
                     std::scoped_lock lock(g_context.mutex);
                     std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s",
