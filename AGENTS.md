@@ -113,6 +113,25 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
   configure 再构建，否则包目录里不会出现 `zh-CN.json`；manifest 与目录是 POST_BUILD 拷贝，改完要重建对应
   target 才会更新构建树里的包。
 
+## 内建插件注册
+
+内建插件的一切构建信息都写在**仓库根 `CMakeLists.txt`** 的 `if(ANOMALY_BUILD_BUILTIN_PLUGINS)` 块内。
+插件目录里**不放**自己的 `CMakeLists.txt`——那是 SDK 独立消费者的入口（`find_package(AnomalySDK)`），
+放进 `plugins/<名字>/` 会被误当成独立工程。
+
+新增一个内建插件必须在根 `CMakeLists.txt` 登记**三处**，缺任意一处都会在构建或打包阶段出问题：
+
+| # | 位置 | 作用 | 漏掉的后果 |
+| --- | --- | --- | --- |
+| 1 | `anomaly_add_plugin(<target> SOURCES … MANIFEST … PACKAGE_NAME … OUTPUT_DIRECTORY …)` | 定义 target、产出 `plugin.dll`、POST_BUILD 镜像 `locales/`/`assets/`、install 进 `Anomaly/plugins/<包名>` | 插件根本不存在 |
+| 2 | `target_compile_options(<target> PRIVATE /utf-8)` 等 target 级设置 | 仅在该 target 需要的选项；`UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX` 与源码根 include **不要**在这里写 | 重复定义或缺失编译选项 |
+| 3 | `set(ANOMALY_BUILTIN_PLUGIN_TARGETS …)` 列表 | `foreach` 统一给每个插件加源码根 include 与 Win32 宏；`anomaly_test_host`、`anomaly-platform-preview` 也依赖这份列表 | 缺 include/宏，或 preview 镜像因 target 未构建而 stage 失败 |
+
+- **测试包**用 `TEST_PLUGIN` 标记：默认不构建，只在 `ANOMALY_BUILD_TEST_PLUGINS=ON` 时构建并装进
+  `TestPlugins` 组件，同时加入第 3 处列表的 `list(APPEND …)` 分支，而不是主 `set(…)`。
+- **只在开发者模式展示**靠 manifest 的 `"audience": "developer"`，与 `TEST_PLUGIN` 无关：前者决定
+  管理界面是否列出，后者决定是否随发布包产出。
+
 ## 构建与测试约定
 
 主仓库统一使用 `windows-vs2022` 配置预设与 `windows-relwithdebinfo` 构建预设。
