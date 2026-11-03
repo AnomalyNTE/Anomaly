@@ -111,6 +111,8 @@ Use the CLI `ue` command or **Diagnostics > Developer > NTE Compatibility** to i
 
 - Confirm that `--pid` is the PID of the **game process** (see `anomaly-runtime.log`).
 - The pipe is restricted by the current user's ACL: the CLI must run as the **same Windows user**.
+- An ordinary console is enough; when the game runs elevated, the Runtime publishes the diagnostics pipe with a medium integrity label, so an administrator console is no longer required.
+- With `pipe connection failed: 5` and a correct PID: confirm the CLI and the pipe belong to the same Windows user, then check the executable's own integrity label — an exe carrying a low integrity label runs at low integrity and is refused by a medium-integrity pipe. Normalise it with `icacls <path>\anomaly-cli.exe /setintegritylevel Medium` and retry.
 - Confirm that `[Analyzer] PipePrefix` matches expectations.
 
 ### A command returns error
