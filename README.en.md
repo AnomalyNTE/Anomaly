@@ -78,6 +78,7 @@ The runtime package contains the following common built-in plugins (see [built-i
 | **NTE Vehicle (developer mode)** | Inspect, summon, and tune the current vehicle: vehicle catalog, display name, speed, torque, wheel friction, and non-player vehicle control |
 | **999 Nights Script** | Loops enemy farming in Red Dragon Castle in 999 Nights for a set number of runs: camp respawn and automatic combat at two combat points |
 | **NTE Damage Dashboard** | Live statistics for player damage, hits, crits, team and skill distribution, and recent hit records |
+| **Summon Lab** | Spawns entities from blueprints with preset levels and attributes, hostile or pet modes, paginated management, attribute inspection, and cleanup |
 | **Custom UID** | Sets a custom UID for the client UI |
 | **Skin Swapper Lite** | Character accessories, glider, awakened appearance previews, and custom license plates |
 | **Camera Tools** | Increases draw distance, adjusts view FOV and the free camera view, and optionally loads the scene at the free camera position |

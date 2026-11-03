@@ -24,6 +24,7 @@
 - `Jelly`
 - `Night999`
 - `NpcSummon`
+- `SummonLab`
 - `DamageDashboard`
 - `Deserted`
 

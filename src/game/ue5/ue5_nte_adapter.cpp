@@ -586,6 +586,26 @@ bool ReadObjectSlot(
         ReadValue(memory, object_address, object) && ReadValue(memory, serial_address, serial);
 }
 
+bool ReadObjectChunkSignature(
+    const SymbolMemory& memory,
+    const ObjectRegistryState& registry,
+    const std::uint32_t object_count,
+    std::uint64_t& signature) noexcept {
+    const std::uint64_t required_chunks = object_count == 0 ? 0 :
+        (static_cast<std::uint64_t>(object_count) + registry.chunk_size - 1U) /
+            registry.chunk_size;
+    constexpr std::uint64_t kFnvOffset = 1469598103934665603ULL;
+    constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
+    signature = kFnvOffset;
+    for (std::uint32_t page = 0; page < required_chunks; ++page) {
+        std::uintptr_t chunk{};
+        if (!ReadObjectChunk(memory, registry, page, chunk)) return false;
+        signature ^= static_cast<std::uint64_t>(chunk);
+        signature *= kFnvPrime;
+    }
+    return true;
+}
+
 bool LoadObjectRegistry(
     const BuildProfile& profile,
     const SymbolMemory& memory,
@@ -661,15 +681,7 @@ bool LoadObjectRegistry(
         (static_cast<std::uint64_t>(next.count) + next.chunk_size - 1U) / next.chunk_size;
     if (required_chunks > next.num_chunks) return false;
 
-    constexpr std::uint64_t kFnvOffset = 1469598103934665603ULL;
-    constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
-    next.chunk_signature = kFnvOffset;
-    for (std::uint32_t page = 0; page < required_chunks; ++page) {
-        std::uintptr_t chunk{};
-        if (!ReadObjectChunk(memory, next, page, chunk)) return false;
-        next.chunk_signature ^= static_cast<std::uint64_t>(chunk);
-        next.chunk_signature *= kFnvPrime;
-    }
+    if (!ReadObjectChunkSignature(memory, next, next.count, next.chunk_signature)) return false;
     if (next.count != 0) {
         std::uintptr_t ignored_object{};
         std::uint32_t ignored_serial{};
@@ -2896,11 +2908,20 @@ struct Ue5NteAdapter::State {
             }
             return;
         }
+        bool same_chunks = next.chunk_signature == object_registry.chunk_signature;
+        if (!same_chunks && object_registry.items != 0 && next.count > object_registry.count) {
+            // Appending chunks does not replace existing slots. Compare the old
+            // prefix so a spawn cannot invalidate its caller's object handles.
+            std::uint64_t previous_chunk_signature{};
+            same_chunks = ReadObjectChunkSignature(
+                *memory, next, object_registry.count, previous_chunk_signature) &&
+                previous_chunk_signature == object_registry.chunk_signature;
+        }
         if (object_registry.items == 0 || next.items != object_registry.items ||
             next.count < object_registry.count || next.max_count != object_registry.max_count ||
             next.max_chunks != object_registry.max_chunks ||
             next.num_chunks < object_registry.num_chunks ||
-            next.chunk_signature != object_registry.chunk_signature) {
+            !same_chunks) {
             ++object_generation;
             teleport = {};
             map_landmark_binding = {};
@@ -13241,6 +13262,12 @@ struct Ue5NteAdapter::State {
         if (!state.ServiceAvailableForPublication(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID)) {
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "UE5 objects service is unavailable");
         }
+        if (expected_serial == nullptr && index >= state.object_registry.count &&
+            state.game_thread_id.load(std::memory_order_acquire) == GetCurrentThreadId()) {
+            // A synchronous engine call may append UObjects after this tick's
+            // snapshot. Resolve its returned object without waiting for another tick.
+            state.RefreshObjects();
+        }
         if (state.object_registry.items == 0) {
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "object registry is unavailable");
         }
@@ -13356,14 +13383,13 @@ struct Ue5NteAdapter::State {
                     Layout(state.profile, "object.internalIndex"),
                     index_address) ||
                 !ReadValue(*state.memory, index_address, internal_index) ||
-                internal_index < 0 ||
-                static_cast<std::uint64_t>(internal_index) >=
-                    state.object_registry.count) {
+                internal_index < 0) {
                 return Status(
                     ANOMALY_STATUS_V1_NOT_FOUND,
                     "exact object has no valid registry index");
             }
             const auto index = static_cast<std::uint32_t>(internal_index);
+            if (index >= state.object_registry.count) state.RefreshObjects();
             std::uintptr_t slot_object{};
             std::uint32_t serial{};
             if (!ReadObjectSlot(

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "symbol": "FActiveGameplayEffectsContainer.SetAttributeBaseValue",
+  "pattern": "F3 0F 11 54 24 18 53 56 57 48 81 EC 90 00 00 00 48 8B B1 08 01 00 00 48 8B FA 48 8B D9 48 85 F6",
+  "validator": "gas-base-input-v1",
+  "layout": {
+    "attributeProperty": 16,
+    "objectOuter": 32,
+    "containerOwner": 264,
+    "spawnedAttributes": 4272
+  },
+  "unavailable": "Reject custom attribute spawns; do not fall back to post-spawn memory writes.",
+  "provenance": "Supplied UE5 SDK SpawnedAttributes +0x10B0; elevated anomaly-cli PID 31332 on 2026-11-02: unique .text entry 0x1450B5330; live disassembly confirms NewBaseValue in XMM2, Owner ASC +0x108, base storage and aggregator update before notifications. PreAttributeChange-only overrides reproduced HPCurrent 666 -> 434856 while MaxHP/MaxHPTemp remained 436870."
+}

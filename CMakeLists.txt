@@ -1310,6 +1310,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/TrainingDummy/manifest.json
         PACKAGE_NAME TrainingDummy
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/TrainingDummy")
+    anomaly_add_plugin(anomaly_builtin_summon_lab
+        SOURCES plugins/SummonLab/plugin.cpp
+        MANIFEST plugins/SummonLab/manifest.json
+        PACKAGE_NAME SummonLab
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SummonLab")
+    target_link_libraries(anomaly_builtin_summon_lab PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(anomaly_builtin_summon_lab PRIVATE /utf-8)
     anomaly_add_plugin(anomaly_builtin_pink_paw_heist_esp
         SOURCES
             plugins/PinkPawHeistESP/plugin.cpp
@@ -1737,7 +1744,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_model_scale anomaly_builtin_autofish anomaly_builtin_character_studio
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon anomaly_builtin_training_dummy
-        anomaly_builtin_memory_dump)
+        anomaly_builtin_summon_lab anomaly_builtin_memory_dump)
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
