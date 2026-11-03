@@ -56,28 +56,6 @@ bool IsTextMessage(UINT message) noexcept {
     }
 }
 
-bool IsImeMessage(UINT message) noexcept {
-    switch (message) {
-    case WM_IME_SETCONTEXT:
-    case WM_IME_NOTIFY:
-    case WM_IME_CONTROL:
-    case WM_IME_COMPOSITIONFULL:
-    case WM_IME_SELECT:
-    case WM_IME_CHAR:
-    case WM_IME_REQUEST:
-    case WM_IME_STARTCOMPOSITION:
-    case WM_IME_ENDCOMPOSITION:
-    case WM_IME_COMPOSITION:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool IsImeTextMessage(UINT message) noexcept {
-    return message == WM_IME_CHAR || message == WM_IME_COMPOSITION;
-}
-
 bool IsClipboardMessage(UINT message) noexcept {
     switch (message) {
     case WM_PASTE:
@@ -295,40 +273,14 @@ anomaly::InputUiCaptureState CurrentUiCapture() noexcept {
     return capture;
 }
 
-// WM_IME_COMPOSITION carries committed text separately from WM_CHAR on some
-// IMEs. Queue the result string so an active ImGui InputText receives it even
-// when the game window's original procedure does not translate the message.
-void QueueImeResult(HWND window, LPARAM lparam, ImGuiIO& io) noexcept {
-    try {
-        if ((static_cast<std::uintptr_t>(lparam) & GCS_RESULTSTR) == 0) return;
-
-        HIMC context = ImmGetContext(window);
-        if (context == nullptr) return;
-        const LONG byte_count = ImmGetCompositionStringW(context, GCS_RESULTSTR, nullptr, 0);
-        if (byte_count <= 0 || byte_count > 64 * 1024 ||
-            (byte_count % static_cast<LONG>(sizeof(wchar_t))) != 0) {
-            ImmReleaseContext(window, context);
-            return;
-        }
-
-        std::wstring utf16(static_cast<std::size_t>(byte_count) / sizeof(wchar_t), L'\0');
-        const LONG copied = ImmGetCompositionStringW(
-            context, GCS_RESULTSTR, utf16.data(), byte_count);
-        ImmReleaseContext(window, context);
-        if (copied != byte_count || utf16.empty()) return;
-
-        const int utf8_size = WideCharToMultiByte(
-            CP_UTF8, 0, utf16.data(), static_cast<int>(utf16.size()), nullptr, 0, nullptr, nullptr);
-        if (utf8_size <= 0) return;
-        std::string utf8(static_cast<std::size_t>(utf8_size), '\0');
-        if (WideCharToMultiByte(
-                CP_UTF8, 0, utf16.data(), static_cast<int>(utf16.size()), utf8.data(), utf8_size,
-                nullptr, nullptr) == utf8_size) {
-            io.AddInputCharactersUTF8(utf8.c_str());
-        }
-    } catch (...) {
-        // Input delivery must never turn an allocation failure into a host crash.
-    }
+void SetEmbeddedImeData(
+    ImGuiContext*, ImGuiViewport* viewport, ImGuiPlatformImeData* data) {
+    auto* state = g_state.load(std::memory_order_acquire);
+    if (state == nullptr || viewport->PlatformHandleRaw != state->window) return;
+    const POINT position{
+        static_cast<LONG>(data->InputPos.x - viewport->Pos.x),
+        static_cast<LONG>(data->InputPos.y - viewport->Pos.y)};
+    state->ime.Request(data->WantVisible, position);
 }
 
 void QueueClipboardText(ImGuiIO& io) noexcept {
@@ -346,15 +298,6 @@ void QueueUnicodeCharacter(WPARAM wparam, ImGuiIO& io) noexcept {
         io.AddInputCharacter(static_cast<unsigned int>(wparam));
     } catch (...) {
         // A rejected character is preferable to unwinding through WndProc.
-    }
-}
-
-void QueueImeCharacter(WPARAM wparam, ImGuiIO& io) noexcept {
-    if (wparam == UNICODE_NOCHAR || wparam == 0 || wparam > 0xffff) return;
-    try {
-        io.AddInputCharacterUTF16(static_cast<ImWchar16>(wparam));
-    } catch (...) {
-        // A rejected IME code unit is preferable to unwinding through WndProc.
     }
 }
 
@@ -376,6 +319,14 @@ LRESULT ForwardToGameWindowProc(
 
 LRESULT CALLBACK EmbeddedWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* state = g_state.load(std::memory_order_acquire);
+    if (state != nullptr && window == state->window) {
+        // Restoration also runs while Render is stopping, before this subclass
+        // and the ImGui context are released.
+        if (state->ime.Message() != 0 && message == state->ime.Message())
+            return state->ime.Apply(!anomaly::HostUiMenusCollapsed()) ? TRUE : FALSE;
+        if (IsFocusLossMessage(message, wparam)) state->ime.Reset(false);
+        else if (message == WM_SETFOCUS) state->ime.RequestApply();
+    }
     if (state != nullptr && state->renderer.load() == RendererLifecycle::Ready) {
         RecordEmbeddedInputMessage(*state, message, wparam, lparam);
     }
@@ -384,6 +335,7 @@ LRESULT CALLBACK EmbeddedWindowProc(HWND window, UINT message, WPARAM wparam, LP
         // A locked window remains visible while menus are collapsed, but it
         // never owns input. The menu gate therefore precedes all ImGui flags.
         const bool menus_expanded = !anomaly::HostUiMenusCollapsed();
+        if (!menus_expanded) state->ime.Reset();
         const ImGuiIO& io = ImGui::GetIO();
         const bool capture_mouse = anomaly::HostUiMenusCaptureMouse();
         const bool capture_keyboard = menus_expanded && io.WantCaptureKeyboard;
@@ -396,7 +348,6 @@ LRESULT CALLBACK EmbeddedWindowProc(HWND window, UINT message, WPARAM wparam, LP
         const bool raw_mouse = message == WM_INPUT && IsRawMouseInput(lparam);
         const bool keyboard_message = IsKeyboardMessage(message);
         const bool text_message = IsTextMessage(message);
-        const bool ime_message = IsImeMessage(message);
         const bool clipboard_message = IsClipboardMessage(message);
         const bool focus_message = IsFocusMessage(message);
 
@@ -424,28 +375,21 @@ LRESULT CALLBACK EmbeddedWindowProc(HWND window, UINT message, WPARAM wparam, LP
         const bool forward_keyboard = keyboard_message &&
             ((menus_expanded && capture_keyboard) || IsKeyboardReleaseMessage(message));
         const bool forward_text = text_message && capture_text;
-        const bool forward_ime = ime_message && menus_expanded;
         const bool forward_clipboard = clipboard_message && capture_text;
-        if (forward_keyboard || forward_text || forward_ime || forward_clipboard ||
+        if (forward_keyboard || forward_text || forward_clipboard ||
             focus_message) {
             static_cast<void>(ImGui_ImplWin32_WndProcHandler(
                 window, message, wparam, lparam));
-            if (forward_ime && capture_text && IsImeTextMessage(message) &&
-                message == WM_IME_COMPOSITION) {
-                QueueImeResult(window, lparam, ImGui::GetIO());
-            }
             if (forward_text && message == WM_UNICHAR) {
                 QueueUnicodeCharacter(wparam, ImGui::GetIO());
-            }
-            if (forward_ime && capture_text && message == WM_IME_CHAR) {
-                QueueImeCharacter(wparam, ImGui::GetIO());
             }
             if (forward_clipboard && message == WM_PASTE) QueueClipboardText(ImGui::GetIO());
         }
 
+        LRESULT ime_result{};
+        if (state->ime.HandleMessage(message, wparam, lparam, ime_result)) return ime_result;
         if (capture_keyboard && keyboard_message) return TRUE;
-        if (capture_text && (text_message || clipboard_message ||
-                             (ime_message && IsImeTextMessage(message)))) {
+        if (capture_text && (text_message || clipboard_message)) {
             return TRUE;
         }
     }
@@ -508,6 +452,10 @@ bool InstallEmbeddedInput(EmbeddedState& state) noexcept {
         state.input_install_error = ERROR_INVALID_WINDOW_HANDLE;
         return false;
     }
+    if (!state.ime.Initialize(state.window)) {
+        state.input_install_error = GetLastError();
+        return false;
+    }
     SetLastError(ERROR_SUCCESS);
     const LONG_PTR previous = SetWindowLongPtrW(
         state.window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(EmbeddedWindowProc));
@@ -532,26 +480,30 @@ bool InstallEmbeddedInput(EmbeddedState& state) noexcept {
     }
     state.original_window_proc = reinterpret_cast<WNDPROC>(previous);
     state.input_installed = true;
+    ImGui::GetPlatformIO().Platform_SetImeDataFn = SetEmbeddedImeData;
     return true;
 }
 
-void RestoreEmbeddedInput(EmbeddedState& state) noexcept {
+bool RestoreEmbeddedInput(EmbeddedState& state) noexcept {
     try {
         std::scoped_lock lock(state.input_mailbox.mutex);
         ClearInputMailbox(state.input_mailbox, anomaly::InputResetReason::FocusLost);
     } catch (...) {
     }
-    state.input_installed = false;
     if (state.original_window_proc == nullptr || !IsWindow(state.window)) {
         state.original_window_proc = nullptr;
-        return;
+        state.input_installed = false;
+        return true;
     }
+    if (!state.ime.Release()) return false;
+    state.input_installed = false;
     const auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(state.window, GWLP_WNDPROC));
     if (current == EmbeddedWindowProc) {
         SetWindowLongPtrW(
             state.window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(state.original_window_proc));
     }
     state.original_window_proc = nullptr;
+    return true;
 }
 
 }  // namespace ue5mem::embedded

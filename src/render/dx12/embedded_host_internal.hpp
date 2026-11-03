@@ -2,6 +2,7 @@
 
 #include "platform_host.hpp"
 #include "embedded_d3d12_interop.hpp"
+#include "embedded_ime.hpp"
 #include "shader_resource_descriptor_allocator.hpp"
 #include "smoke_probe_policy.hpp"
 
@@ -281,6 +282,7 @@ struct EmbeddedState {
     HWND window{};
     ImGuiContext* imgui_context{};
     WNDPROC original_window_proc{};
+    EmbeddedImeContext ime;
     // Set when the window procedure could not be exchanged. The overlay still
     // renders in that case, so the reason has to survive for diagnostics.
     unsigned long input_install_error{};
@@ -322,7 +324,7 @@ inline constexpr std::uint64_t kRendererHookGeneration = 1;
 [[nodiscard]] HookTargets DiscoverD3D12HookTargets();
 
 [[nodiscard]] bool InstallEmbeddedInput(EmbeddedState& state) noexcept;
-void RestoreEmbeddedInput(EmbeddedState& state) noexcept;
+[[nodiscard]] bool RestoreEmbeddedInput(EmbeddedState& state) noexcept;
 void RecordEmbeddedInputMessage(
     EmbeddedState& state, UINT message, WPARAM wparam, LPARAM lparam) noexcept;
 // These are called on Render while the existing PluginManager mutex is held.

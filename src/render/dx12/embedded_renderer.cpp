@@ -1288,7 +1288,7 @@ bool ReleaseGraphics(
             state.plugins->SetImGuiContext(nullptr);
         }
     }
-    RestoreEmbeddedInput(state);
+    if (!RestoreEmbeddedInput(state)) return false;
     anomaly::glass::ShutdownRenderer();
     if (state.dx12_initialized) {
         state.shader_descriptors.ReleaseReserved();
