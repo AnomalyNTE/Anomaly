@@ -192,6 +192,22 @@ void CheckKawaiiLimitDecode() {
 
 int main() {
   using namespace fixture;
+  {
+    AnomalyPluginDescriptorV1 legacy{};
+    legacy.struct_size =
+        offsetof(AnomalyPluginDescriptorV1, on_draw) +
+        sizeof(legacy.on_draw);
+    Check(AnomalyPluginEntryV1(&legacy).code == ANOMALY_STATUS_V1_OK &&
+              legacy.on_draw == Draw,
+          "legacy descriptor without on_overlay was rejected");
+
+    AnomalyPluginDescriptorV1 current{};
+    current.struct_size = sizeof(current);
+    Check(AnomalyPluginEntryV1(&current).code == ANOMALY_STATUS_V1_OK &&
+              current.on_draw == Draw &&
+              current.on_overlay == DrawOverlay,
+          "current descriptor did not register the persistent overlay");
+  }
   Check(ControlTrackPriority("左手握り")==100 &&
             ControlTrackPriority("HandSpread")==95 &&
             ControlTrackPriority("HandControl")==70 &&
@@ -304,6 +320,44 @@ int main() {
   ApplyMotionPoseDirect(context);
   Check(std::abs(b.buffer0[0].rotation[2]-.70710678)<1e-6 && std::abs(b.buffer1[0].translation[2]-17)<1e-6,
         "new main skeleton did not receive rotation and root/offset tracks");
+  const auto saved_head_reference = context.ref_locals[0];
+  const auto saved_root_reference = context.ref_locals[1];
+  context.ref_locals[1][6] = 20.0;
+  const std::string blender_document=R"json({
+    "kind":"better-pose-motion","frameCount":1,"fps":30,
+    "bones":{"Root":[[0,0,0,1]],"Bip001-Head":[[0,0,0.70710678,0.70710678]]},
+    "rootBone":"Root","rootTranslationUnit":"cm-delta",
+    "rootTranslation":[[0,0,5]],"boneOffsets":{"Bip001-Head":[[0,0,12]]}
+  })json";
+  Check(LoadMotionDocument(context,blender_document,"motion.bpmotion",context.motion_load_epoch) &&
+        ResolveMotionIndices(context),
+        "Blender cm-delta motion did not load");
+  ApplyMotionPoseDirect(context);
+  Check(std::abs(b.buffer1[0].translation[2]-37)<1e-6,
+        "Blender cm-delta root was not added to the reference root");
+  context.ref_locals[0] = saved_head_reference;
+  context.ref_locals[1] = saved_root_reference;
+  const auto local_pose_document=nlohmann::json::parse(R"json({
+    "bones":[], "rootOffset":[0,0,0],
+    "localPose":{
+      "Root":{"rotation":[0,0,0,1],"translation":[0,0,20],"scale":[1,1,1]},
+      "Bip001-Head":{"rotation":[0,0,0,1],"translation":[0,0,12],"scale":[1,1,1]}
+    }
+  })json");
+  Check(ApplyPoseDocument(context,local_pose_document),
+        "library local-pose document did not load");
+  context.pose_override_enabled.store(true,std::memory_order_release);
+  ApplyPoseOverridesDirect(context);
+  Check(std::abs(b.buffer1[0].translation[2]-32)<1e-6,
+        "library local pose did not preserve exact bone translations");
+  Check(nlohmann::json::parse(BuildPoseDocument(context)).contains("localPose"),
+        "pose profile did not preserve the library local pose");
+  std::map<std::string,std::array<double,12>> captured_pose;
+  std::string capture_error;
+  Check(CaptureCurrentLocalPose(context,captured_pose,capture_error) &&
+        captured_pose.contains("Bip001-Head") &&
+        std::abs(captured_pose["Bip001-Head"][6]-12)<1e-6,
+        "current component pose was not captured as local bone transforms");
   // Character Studio puts attached costume/facial meshes on the same
   // SkeletalMeshActor. They must not become duplicate BetterPose targets.
   {
@@ -804,6 +858,447 @@ int main() {
   CheckExtraAnimationMode();
   CheckNativeCapsuleRuntime();
   CheckKawaiiLimitDecode();
+  {
+    Context motion_slots;
+    motion_slots.runtime.character = a.actor.Address();
+    motion_slots.runtime.mesh = a.mesh.Address();
+    motion_slots.runtime.external_target = true;
+    motion_slots.bone_names = {"Root", "Bip001-Spine", "Bip001-Head"};
+    motion_slots.bone_parents = {-1, 0, 1};
+    motion_slots.bone_parents_ready = true;
+    motion_slots.bone_parents_mesh = a.mesh.Address();
+    motion_slots.bone_parents_count = 3;
+    motion_slots.pose_base_locals.assign(3, {});
+    motion_slots.ref_locals = motion_slots.pose_base_locals;
+    motion_slots.pose_base_ready = true;
+    motion_slots.pose_base_mesh = a.mesh.Address();
+    motion_slots.motion.frame_count = 1;
+    motion_slots.motion_file = "entity-a.betterpose.json";
+    motion_slots.motion_loaded.store(true);
+    ParkCurrentEntityMotion(motion_slots, a.mesh.Address());
+    Check(!motion_slots.motion_loaded.load() &&
+              motion_slots.entity_motion_states.contains(a.mesh.Address()) &&
+              motion_slots.entity_motion_states[a.mesh.Address()].file ==
+                  "entity-a.betterpose.json",
+          "selected entity motion was not parked independently");
+
+    motion_slots.runtime.character = b.actor.Address();
+    motion_slots.runtime.mesh = b.mesh.Address();
+    motion_slots.bone_names = {"Root", "Bip001-Spine", "Bip001-Head"};
+    motion_slots.bone_parents = {-1, 0, 1};
+    motion_slots.bone_parents_ready = true;
+    motion_slots.bone_parents_mesh = b.mesh.Address();
+    motion_slots.bone_parents_count = 3;
+    motion_slots.pose_base_locals.assign(3, {});
+    motion_slots.ref_locals = motion_slots.pose_base_locals;
+    motion_slots.pose_base_ready = true;
+    motion_slots.pose_base_mesh = b.mesh.Address();
+    motion_slots.motion.frame_count = 1;
+    motion_slots.motion_file = "entity-b.betterpose.json";
+    motion_slots.motion_loaded.store(true);
+    ParkCurrentEntityMotion(motion_slots, b.mesh.Address());
+    motion_slots.runtime.character = a.actor.Address();
+    motion_slots.runtime.mesh = a.mesh.Address();
+    Check(RestoreEntityMotion(motion_slots, a.mesh.Address()) &&
+              motion_slots.motion_file == "entity-a.betterpose.json" &&
+              motion_slots.entity_motion_states.contains(b.mesh.Address()),
+          "independent entity motion slots were not restored");
+  }
+  {
+    Context multi_motion;
+    multi_motion.core = &core;
+    multi_motion.objects = &objects;
+    multi_motion.object_registry = context.object_registry;
+    Character selected(reinterpret_cast<std::uintptr_t>(vtable.data()), 0, 0x20,
+                        1, 1, 0);
+    Character first(reinterpret_cast<std::uintptr_t>(vtable.data()), 0, 0x10,
+                    1, 1, 0);
+    Character second(reinterpret_cast<std::uintptr_t>(vtable.data()), 0, 0x10,
+                     1, 1, 0);
+    multi_motion.runtime.character = selected.actor.Address();
+    multi_motion.runtime.mesh = selected.mesh.Address();
+    multi_motion.runtime.external_target = true;
+    multi_motion.local_mesh = 0;
+    multi_motion.bone_names = {"Root", "Bip001-Spine", "Bip001-Head"};
+    multi_motion.bone_parents = {-1, 0, 1};
+    multi_motion.bone_parents_ready = true;
+    multi_motion.bone_parents_mesh = selected.mesh.Address();
+    multi_motion.bone_parents_count = 3;
+    const auto identity_local = [] {
+      std::vector<std::array<double, 12>> result(3);
+      for (auto &value : result) {
+        value[3] = 1.0;
+        value[8] = value[9] = value[10] = 1.0;
+      }
+      return result;
+    };
+    multi_motion.pose_base_locals = identity_local();
+    multi_motion.ref_locals = identity_local();
+    multi_motion.pose_base_ready = true;
+    multi_motion.pose_base_mesh = selected.mesh.Address();
+    const auto add_motion = [&](Character &character, const float angle) {
+      Context::EntityMotionState state;
+      state.runtime.character = character.actor.Address();
+      state.runtime.mesh = character.mesh.Address();
+      state.bone_names = {"Root", "Bip001-Spine", "Bip001-Head"};
+      state.bone_parents = {-1, 0, 1};
+      state.bone_parents_ready = true;
+      state.bone_parents_count = 3;
+      state.pose_base_locals = identity_local();
+      state.ref_locals = identity_local();
+      state.track.fps = 30.0;
+      state.track.frame_count = 1;
+      state.track.bone_count = 1;
+      state.track.bone_names = {"Root"};
+      const float half = angle * 0.5F;
+      state.track.rotations = {
+          0.0F, 0.0F, std::sin(half), std::cos(half)};
+      state.track.bone_indices = {0};
+      state.track.indices_ready = true;
+      state.file = "entity-" + std::to_string(character.mesh.Address());
+      multi_motion.entity_motion_states[character.mesh.Address()] =
+          std::move(state);
+    };
+    add_motion(first, 0.2F);
+    add_motion(second, 0.5F);
+    StepInactiveEntityMotions(multi_motion);
+    Check(std::abs(first.buffer0[0].rotation[2]) > 1e-4 &&
+              std::abs(second.buffer0[0].rotation[2]) > 1e-4 &&
+              std::abs(first.buffer0[0].rotation[2] -
+                       second.buffer0[0].rotation[2]) > 1e-4,
+          "independent inactive entity motions did not both drive their meshes");
+    first.buffer0.fill(PackedTransform{});
+    first.buffer1.fill(PackedTransform{});
+    second.buffer0.fill(PackedTransform{});
+    second.buffer1.fill(PackedTransform{});
+    Check(ApplyInactiveEntityTick(multi_motion, first.mesh.Address()) &&
+              std::abs(first.buffer0[0].rotation[2]) > 1e-4 &&
+              std::abs(first.buffer1[0].rotation[2]) > 1e-4,
+          "a parked entity's post-tick motion was not written back");
+    Check(std::abs(second.buffer0[0].rotation[2]) < 1e-6 &&
+              multi_motion.runtime.mesh == selected.mesh.Address() &&
+              multi_motion.entity_motion_states[first.mesh.Address()]
+                      .track.frame_count == 1,
+          "a single parked entity tick leaked state into the selected entity");
+
+    multi_motion.pose_targets = {
+        {selected.actor.Address(), selected.mesh.Address(), "Selected"},
+        {first.actor.Address(), first.mesh.Address(), "First"},
+        {second.actor.Address(), second.mesh.Address(), "Second"}};
+    multi_motion.requested_camera_follow_target.store(first.mesh.Address());
+    StepCameraFollowTarget(multi_motion);
+    Check(multi_motion.camera_follow_target.load() == first.mesh.Address(),
+          "camera follow target request was not applied");
+    multi_motion.runtime.mesh = second.mesh.Address();
+    StepCameraFollowTarget(multi_motion);
+    Check(multi_motion.camera_follow_target.load() == first.mesh.Address(),
+          "selecting another pose target changed the camera follow target");
+
+    const double applied[3] = {30.0, 40.0, 50.0};
+    const double authored[3] = {60.0, 70.0, 80.0};
+    multi_motion.runtime.mesh = first.mesh.Address();
+    PublishRootOffsets(multi_motion, applied, authored);
+    multi_motion.runtime.mesh = second.mesh.Address();
+    const double other_applied[3] = {1.0, 2.0, 3.0};
+    const double other_authored[3] = {4.0, 5.0, 6.0};
+    PublishRootOffsets(multi_motion, other_applied, other_authored);
+    double camera_applied[3]{};
+    double camera_authored[3]{};
+    ReadCameraRootOffsets(multi_motion, camera_applied, camera_authored);
+    Check(camera_applied[0] == applied[0] &&
+              camera_applied[1] == applied[1] &&
+              camera_applied[2] == applied[2] &&
+              camera_authored[0] == authored[0] &&
+              camera_authored[1] == authored[1] &&
+              camera_authored[2] == authored[2],
+          "another entity overwrote the camera target's root offsets");
+
+    multi_motion.camera.last_frame = 420.0;
+    multi_motion.camera_loaded.store(true);
+    Check(std::abs(SharedEntityMotionDuration(multi_motion) - 14.0) < 1e-6,
+          "the shared motion timeline ignored the camera VMD duration");
+
+    multi_motion.pose_targets.clear();
+    multi_motion.entity_motion_states.erase(first.mesh.Address());
+    multi_motion.runtime.mesh = selected.mesh.Address();
+    StepCameraFollowTarget(multi_motion);
+    Check(multi_motion.camera_follow_target.load() == selected.mesh.Address(),
+          "an invalid camera follow target did not fall back to the selected mesh");
+
+    Context camera_units;
+    const auto set_leg_locals = [&camera_units](const double calf,
+                                                const double foot) {
+      camera_units.bone_names = {"Bip001-L-Calf", "Bip001-L-Foot"};
+      camera_units.ref_locals.assign(2, {});
+      camera_units.ref_locals[0][4] = calf;
+      camera_units.ref_locals[1][5] = foot;
+      camera_units.pose_base_locals = camera_units.ref_locals;
+    };
+    constexpr std::uintptr_t first_camera_mesh = 0x7101;
+    constexpr std::uintptr_t second_camera_mesh = 0x7102;
+    constexpr std::uintptr_t inactive_camera_mesh = 0x7103;
+    camera_units.runtime.mesh = first_camera_mesh;
+    camera_units.camera_follow_target.store(first_camera_mesh);
+    set_leg_locals(40.0, 30.0);
+    RefreshCameraUnit(camera_units);
+    Check(std::abs(camera_units.camera_target_mmd_unit_cm.load() -
+                   70.0 / kReferenceLegUnits) < 1e-6 &&
+              camera_units.camera_unit_mesh.load() == first_camera_mesh,
+          "camera unit was not measured from the first camera target");
+
+    set_leg_locals(48.0, 36.0);
+    InvalidateCameraUnit(camera_units);
+    RefreshCameraUnit(camera_units);
+    Check(std::abs(camera_units.camera_target_mmd_unit_cm.load() -
+                   84.0 / kReferenceLegUnits) < 1e-6,
+          "reloading a camera reused the previous character-height cache");
+
+    camera_units.runtime.mesh = second_camera_mesh;
+    SetCameraFollowTarget(camera_units, second_camera_mesh);
+    set_leg_locals(54.0, 42.0);
+    RefreshCameraUnit(camera_units);
+    Check(std::abs(camera_units.camera_target_mmd_unit_cm.load() -
+                   96.0 / kReferenceLegUnits) < 1e-6 &&
+              camera_units.camera_unit_mesh.load() == second_camera_mesh,
+          "switching camera targets reused the first character's camera unit");
+
+    Context::EntityMotionState inactive_camera_state;
+    inactive_camera_state.bone_names = {"Bip001-L-Calf", "Bip001-L-Foot"};
+    inactive_camera_state.ref_locals.assign(2, {});
+    inactive_camera_state.ref_locals[0][4] = 60.0;
+    inactive_camera_state.ref_locals[1][5] = 50.0;
+    camera_units.entity_motion_states[inactive_camera_mesh] =
+        std::move(inactive_camera_state);
+    SetCameraFollowTarget(camera_units, inactive_camera_mesh);
+    RefreshCameraUnit(camera_units);
+    Check(std::abs(camera_units.camera_target_mmd_unit_cm.load() -
+                   110.0 / kReferenceLegUnits) < 1e-6 &&
+              camera_units.camera_unit_mesh.load() == inactive_camera_mesh,
+          "an independently selected camera target used the selected pose target's unit");
+
+    multi_motion.motion_load_epoch = 7;
+    multi_motion.motion_playing.store(true);
+    multi_motion.motion_seconds.store(2.5);
+    multi_motion.motion_display_seconds.store(2.5);
+    const std::string shared_document =
+        R"({"kind":"better-pose-motion","fps":30,"frameCount":1,"bones":{"Root":[[0,0,0,1]]}})";
+    Check(LoadMotionDocument(multi_motion, shared_document, "shared.json", 7, true),
+          "a shared multiplayer motion document did not load");
+    Check(multi_motion.motion_playing.load() &&
+              std::abs(multi_motion.motion_seconds.load() - 2.5) < 1e-6 &&
+              std::abs(multi_motion.motion_display_seconds.load() - 2.5) < 1e-6,
+          "loading one multiplayer entity reset the shared playback clock");
+
+    Context camera_cut;
+    better_pose::mmd2bip::VmdCameraKey first_key;
+    first_key.frame = 0;
+    first_key.distance = 10.0;
+    first_key.view_angle = 30;
+    better_pose::mmd2bip::VmdCameraKey middle_key = first_key;
+    middle_key.frame = 10;
+    middle_key.position[0] = 10.0;
+    better_pose::mmd2bip::VmdCameraKey last_key = first_key;
+    last_key.frame = 20;
+    last_key.position[0] = 20.0;
+    camera_cut.camera.keys = {first_key, middle_key, last_key};
+    camera_cut.camera.manual_cut_frames = {10};
+    camera_cut.camera_frame.store(5.0);
+    camera_cut.camera_cut_mode.store(2);
+    double camera_position[3]{};
+    double camera_rotation[3]{};
+    double camera_distance{};
+    double camera_fov{};
+    Check(SampleCameraTrack(camera_cut, camera_position, camera_rotation,
+                            &camera_distance, &camera_fov) &&
+              std::abs(camera_position[0]) < 1e-6,
+          "manual camera cut did not hold the previous shot");
+    camera_cut.camera_cut_mode.store(1);
+    Check(SampleCameraTrack(camera_cut, camera_position, camera_rotation,
+                            &camera_distance, &camera_fov) &&
+              camera_position[0] > 0.0 && camera_position[0] < 10.0,
+          "continuous camera mode did not interpolate the cut interval");
+    const double anchor_feet[3] = {100.0, 200.0, 30.0};
+    const double anchor_centre[3] = {100.0, 200.0, 120.0};
+    StoreCameraAnchor(camera_cut, anchor_feet, anchor_centre);
+    Check(camera_cut.camera_anchored.load() &&
+              std::abs(camera_cut.camera_anchor_feet[0].load() - 100.0) <
+                  1e-6 &&
+              std::abs(camera_cut.camera_anchor_feet[2].load() - 30.0) <
+                  1e-6 &&
+              std::abs(camera_cut.camera_anchor_centre[2].load() - 120.0) <
+                  1e-6,
+          "moving the fixed camera origin did not update its world bounds");
+    camera_cut.camera_yaw.store(0.0);
+    camera_cut.camera_origin_follow.store(false);
+    camera_cut.camera_fixed_origin_offset_cm[0].store(10.0);
+    camera_cut.camera_fixed_origin_offset_cm[1].store(20.0);
+    camera_cut.camera_fixed_origin_offset_cm[2].store(30.0);
+    double adjusted_feet[3] = {100.0, 200.0, 30.0};
+    double adjusted_centre[3] = {100.0, 200.0, 120.0};
+    ApplyCameraFixedOriginOffset(camera_cut, adjusted_feet, adjusted_centre);
+    Check(std::abs(adjusted_feet[0] - 110.0) < 1e-6 &&
+              std::abs(adjusted_feet[1] - 230.0) < 1e-6 &&
+              std::abs(adjusted_feet[2] - 50.0) < 1e-6 &&
+              std::abs(adjusted_centre[2] - 140.0) < 1e-6,
+          "fixed origin three-axis adjustment was not applied");
+    double gizmo_centre[3]{};
+    Check(CameraFixedOriginCentre(camera_cut, gizmo_centre) &&
+              std::abs(gizmo_centre[0] - 110.0) < 1e-6 &&
+              std::abs(gizmo_centre[1] - 230.0) < 1e-6 &&
+              std::abs(gizmo_centre[2] - 140.0) < 1e-6,
+          "fixed origin gizmo did not use the adjusted world position");
+  }
+  {
+    Context keyframe_drive;
+    keyframe_drive.core = &core;
+    keyframe_drive.objects = &objects;
+    keyframe_drive.object_registry = context.object_registry;
+    Character selected(reinterpret_cast<std::uintptr_t>(vtable.data()), 0, 0x20,
+                       1, 1, 0);
+    Character parked(reinterpret_cast<std::uintptr_t>(vtable.data()), 0, 0x10,
+                     1, 1, 0);
+    keyframe_drive.runtime.character = selected.actor.Address();
+    keyframe_drive.runtime.mesh = selected.mesh.Address();
+    keyframe_drive.runtime.external_target = true;
+    keyframe_drive.local_mesh = 0;
+    keyframe_drive.bone_names = {"Root", "Bip001-Spine", "Bip001-Head"};
+    keyframe_drive.bone_parents = {-1, 0, 1};
+    keyframe_drive.bone_parents_ready = true;
+    keyframe_drive.bone_parents_mesh = selected.mesh.Address();
+    keyframe_drive.bone_parents_count = 3;
+    const auto identity_local = [] {
+      std::vector<std::array<double, 12>> result(3);
+      for (auto &value : result) {
+        value[3] = 1.0;
+        value[8] = value[9] = value[10] = 1.0;
+      }
+      return result;
+    };
+    keyframe_drive.pose_base_locals = identity_local();
+    keyframe_drive.ref_locals = identity_local();
+    keyframe_drive.pose_base_ready = true;
+    keyframe_drive.pose_base_mesh = selected.mesh.Address();
+
+    Context::EntityMotionState state;
+    state.runtime.character = parked.actor.Address();
+    state.runtime.mesh = parked.mesh.Address();
+    state.bone_names = {"Root", "Bip001-Spine", "Bip001-Head"};
+    state.bone_parents = {-1, 0, 1};
+    state.bone_parents_ready = true;
+    state.bone_parents_count = 3;
+    state.pose_base_locals = identity_local();
+    state.ref_locals = identity_local();
+    better_pose::keyframes::Key key;
+    key.frame = 0;
+    key.has_pose = true;
+    key.bones.push_back({"Bip001-Spine", 0.0, 0.0, 35.0});
+    state.keyframe_track.Set(std::move(key));
+    keyframe_drive.entity_motion_states[parked.mesh.Address()] =
+        std::move(state);
+    keyframe_drive.keyframe_frame.store(0.0);
+
+    Check(ApplyInactiveEntityTick(keyframe_drive, parked.mesh.Address()),
+          "a parked entity keyframe did not reach its post-tick writer");
+    const auto &rotation = parked.buffer0[1].rotation;
+    Check(std::abs(rotation[0]) + std::abs(rotation[1]) +
+                  std::abs(rotation[2]) >
+              1e-4 &&
+              keyframe_drive.runtime.mesh == selected.mesh.Address() &&
+              keyframe_drive.entity_motion_states[parked.mesh.Address()]
+                      .keyframe_track.Size() == 1,
+          "a parked entity keyframe leaked state or lost its track");
+    parked.buffer0.fill(PackedTransform{});
+    parked.buffer1.fill(PackedTransform{});
+    FinalizeEntityPoses(keyframe_drive);
+    const auto &finalized = parked.buffer0[1].rotation;
+    Check(std::abs(finalized[0]) + std::abs(finalized[1]) +
+                  std::abs(finalized[2]) >
+              1e-4,
+          "post-GameTick finalization did not restore an inactive keyframe");
+  }
+  {
+    Context shared;
+    shared.core = &core;
+    shared.shared_entity_pose_enabled.store(true);
+    Character source(reinterpret_cast<std::uintptr_t>(vtable.data()), 0, 0x20,
+                     1, 1, 2);
+    Character target(reinterpret_cast<std::uintptr_t>(vtable.data()), 0, 0x10,
+                     1, 1, 0);
+    shared.runtime.mesh = source.mesh.Address();
+    shared.runtime.external_target = true;
+    shared.local_mesh = 0;
+    shared.pose_targets = {
+        {source.actor.Address(), source.mesh.Address(), "Source"},
+        {target.actor.Address(), target.mesh.Address(), "Target"}};
+    shared.motion_loaded.store(true);
+    Check(SharedEntityPoseRequested(shared),
+          "shared pose was not requested for a second compatible target");
+    shared.shared_entity_pose_source = source.mesh.Address();
+    shared.bone_names = {"Root", "Bip001-Spine", "Bip001-Head"};
+    std::array<PackedTransform, 3> shared_pose{};
+    for (auto &transform : shared_pose)
+      transform.rotation[3] = 1.0;
+    shared_pose[0].rotation[2] = 0.25;
+    shared.shared_entity_pose_count = 3;
+    shared.shared_entity_pose_compatibility[target.mesh.Address()] = true;
+    shared.shared_entity_pose_source_indices[target.mesh.Address()] = {0, 1, 2};
+    shared.shared_entity_pose_bytes.resize(sizeof(shared_pose));
+    std::memcpy(shared.shared_entity_pose_bytes.data(), shared_pose.data(),
+                sizeof(shared_pose));
+    Check(ApplySharedEntityPose(shared, target.mesh.Address()),
+          "shared pose could not be written to the second target");
+    Check(std::abs(target.buffer0[0].rotation[2] - 0.25) < 1e-6 &&
+              std::abs(target.buffer1[0].rotation[2] - 0.25) < 1e-6,
+          "shared pose did not reach both target pose buffers");
+    Check((target.mesh.Get<std::uint8_t>(kMeshAnimationFlagsOffset) &
+           static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit)) != 0 &&
+              target.mesh.Get<std::uint8_t>(kMeshAnimationModeOffset) ==
+                  kAnimationModeCustom,
+          "shared pose did not pause and switch the second target");
+    RestoreSharedEntityPoses(shared);
+    Check(target.mesh.Get<std::uint8_t>(kMeshAnimationFlagsOffset) == 0x10 &&
+              target.mesh.Get<std::uint8_t>(kMeshAnimationModeOffset) == 0,
+          "shared pose did not restore the second target animation state");
+    Character remapped_target(reinterpret_cast<std::uintptr_t>(vtable.data()),
+                              0, 0x10, 1, 1, 0);
+    std::array<PackedTransform, 2> remapped_source{};
+    remapped_source[0].rotation[2] = 0.25;
+    remapped_source[1].rotation[2] = 0.5;
+    shared.bone_names = {"SharedA", "SharedB"};
+    shared.shared_entity_pose_count = 2;
+    shared.shared_entity_pose_bytes.resize(sizeof(remapped_source));
+    std::memcpy(shared.shared_entity_pose_bytes.data(),
+                remapped_source.data(), sizeof(remapped_source));
+    shared.shared_entity_pose_compatibility[remapped_target.mesh.Address()] =
+        true;
+    shared.shared_entity_pose_source_indices[remapped_target.mesh.Address()] =
+        {1, -1, 0};
+    Check(ApplySharedEntityPose(shared, remapped_target.mesh.Address(), false),
+          "name-mapped shared pose was not applied across bone counts");
+    Check(std::abs(remapped_target.buffer0[0].rotation[2] - 0.5) < 1e-6 &&
+              std::abs(remapped_target.buffer0[2].rotation[2] - 0.25) < 1e-6,
+          "name-mapped shared pose used the wrong source bones");
+    shared.runtime.bound_character = source.actor.Address();
+    shared.runtime.bound_mesh = source.mesh.Address();
+    shared.runtime.character = source.actor.Address();
+    shared.runtime.mesh = source.mesh.Address();
+    shared.runtime.external_target = true;
+    shared.motion.indices_ready = true;
+    shared.motion_loaded.store(true);
+    shared.shared_entity_pose_compatibility[target.mesh.Address()] = false;
+    shared.shared_entity_pose_compatibility[target.mesh.Address()] = true;
+    BindRuntimeCharacter(shared, target.actor.Address(),
+                         target.mesh.Address(), true);
+    Check(!shared.motion_loaded.load() &&
+              shared.entity_motion_states.contains(source.mesh.Address()),
+          "external target switch did not park the previous entity MMD");
+    Check(shared.runtime.bound_mesh == target.mesh.Address() &&
+              shared.runtime.external_target,
+          "compatible external target switch did not bind the new target");
+    shared.motion_loaded.store(false);
+    Check(!SharedEntityPoseRequested(shared),
+          "shared pose remained active without motion or timeline data");
+  }
   // Character Studio models are ordinary SkeletalMeshActor bodies. BetterPose
   // must be able to bind one as a pose target without treating its actor as an
   // ACharacter or writing the local pawn's root-motion field.

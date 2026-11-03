@@ -390,6 +390,7 @@ bool SampleTrack(const VmdTrack &track, double frame, double out_rotation[4],
 
 // Samples a camera track, applying its six authored Bezier channels. `keys` must be in
 // ascending frame order.
-VmdCameraPose SampleCameraTrack(const std::vector<VmdCameraKey> &keys, double frame);
+VmdCameraPose SampleCameraTrack(const std::vector<VmdCameraKey> &keys, double frame,
+                                bool adjacent_cut = true);
 
 }  // namespace better_pose::mmd2bip
