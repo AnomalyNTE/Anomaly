@@ -54,7 +54,7 @@ typedef enum AnomalyUiFrameStateV1 {
 typedef enum AnomalyUiTextInputFlagsV1 {
     ANOMALY_UI_TEXT_INPUT_V1_NONE = 0,
     ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1u << 0u,
-    // 密钥等敏感字段使用密码掩码显示，不影响输入缓冲区的实际内容。
+    // Mask secret fields without changing the contents of the input buffer.
     ANOMALY_UI_TEXT_INPUT_V1_PASSWORD = 1u << 1u
 } AnomalyUiTextInputFlagsV1;
 
