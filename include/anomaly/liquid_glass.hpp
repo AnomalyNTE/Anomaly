@@ -76,6 +76,14 @@ struct SurfaceOptions final {
     // shipped panes keep a minimum so text stays readable over nothing; 0 leaves
     // the pane as pure blur.
     float minimum_alpha{-1.0f};
+    // Off drops the specular rim line and the contact hairline.
+    bool rim{true};
+    // Multiplies the variant's edge refraction.
+    float refraction_scale{1.0f};
+    // Widens the anti-aliased edge to this many pixels and calms the refraction
+    // in that band. Zero keeps the classic one-pixel edge; freestanding shapes
+    // over a busy picture (the plugin overlay) read cleaner with about 1.5.
+    float edge_feather{0.0f};
 };
 
 // palette_tint selects the tinted material the shells ship with; a host that
@@ -120,6 +128,12 @@ void DrawThumb(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding, float s
 // carries the selection with it instead of making it chase the new place.
 [[nodiscard]] ImRect AnimateThumb(ImGuiID id, const ImRect& target, ImVec2 origin) noexcept;
 void DrawSurface(ImDrawList* list, ImVec2 min, ImVec2 max, const SurfaceOptions& options) noexcept;
+// The same material shaped as a ring sector around `center`: the band between
+// `inner_radius` and `outer_radius`, from `angle_start` to `angle_end` in
+// radians (0 points right, clockwise). The span must stay below pi; corners are
+// rounded by options.rounding.
+void DrawSectorSurface(ImDrawList* list, ImVec2 center, float inner_radius, float outer_radius,
+    float angle_start, float angle_end, const SurfaceOptions& options) noexcept;
 // Gives the current top-level window a glass body. The surface is inserted at
 // the very start of the window's draw list when the frame is rendered, so it
 // sits under the window's own content, resize grips included. Popups, menus

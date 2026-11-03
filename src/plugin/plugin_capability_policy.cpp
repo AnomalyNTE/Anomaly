@@ -11,7 +11,7 @@ struct ServiceCapabilityMapping {
     std::string_view capability;
 };
 
-constexpr std::array<std::string_view, 45> kKnownCapabilities{
+constexpr std::array<std::string_view, 46> kKnownCapabilities{
     "commands",
     "configuration",
     "diagnostics",
@@ -46,6 +46,7 @@ constexpr std::array<std::string_view, 45> kKnownCapabilities{
     "storage",
     "input",
     "ui-font",
+    "ui-overlay",
     "ui-texture",
     "ui-window",
     "ue5-build",
