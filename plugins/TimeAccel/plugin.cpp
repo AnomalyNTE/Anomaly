@@ -33,9 +33,11 @@
 //      窗口恒开（对齐内建插件），无需回窗热键。
 
 #include "anomaly/sdk/cpp.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <windows.h>
 
+#include <array>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +45,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <string>
+#include <string_view>
 
 namespace {
 
@@ -58,7 +62,7 @@ using anomaly::sdk::StringView;
 
 constexpr std::uint32_t kCondFirstUseEver = 4u;
 
-// 玩家控制器类名：用它当"锚"。控制器几乎每帧都有事件，角色则不一定。
+// 玩家控制器类名：用它当「锚」。控制器几乎每帧都有事件，角色则不一定。
 constexpr char kControllerClassName[] = "BP_PlayerControllerBase_C";
 
 // UObject 布局
@@ -153,6 +157,8 @@ const AnomalyInputServiceV1* g_input{};
 const AnomalyStorageServiceV1* g_storage{};
 const AnomalySchedulerServiceV1* g_scheduler{};
 const AnomalyNtePlayerServiceV1* g_player{};
+// 唯一的本地化来源：Load 时构造，只由界面/诊断文案使用。
+anomaly::sdk::Localizer g_localizer;
 
 AnomalyGenerationHandleV1 g_events_handle{};
 AnomalyGenerationHandleV1 g_hotkey_once{};
@@ -260,8 +266,12 @@ void StopAccel(const char* reason) {
     s.remaining = 0.0;
     if (was_active) {
         if (!RestoreDilation() && reason != nullptr) {
-            SetError("恢复失败（%s）：WorldSettings 地址可能已失效，点「立即恢复 1 倍」重试或重载插件",
-                     reason);
+            const std::array<std::string_view, 1> arguments{std::string_view(reason)};
+            SetError("%s", g_localizer.Format(
+                               "error.restore_failed",
+                               "Restore failed ({0}): the WorldSettings address may be stale; "
+                               "use \"Restore to 1x\" to retry, or reload the plugin",
+                               arguments).c_str());
             return;
         }
     }
@@ -373,7 +383,9 @@ void ResolveControllerClassNameId() {
     if (g_objects == nullptr || g_objects->snapshot_at == nullptr || g_objects->count == nullptr ||
         g_names == nullptr || g_names->resolve_utf8 == nullptr) {
         s.walk_done = 1;
-        SetError("对象表/名字服务不可用，无法解析控制器类名");
+        SetError("%s", g_localizer.Text("error.name_service_unavailable",
+                                        "The object table or name service is unavailable, so the "
+                                        "controller class name cannot be resolved").c_str());
         return;
     }
     if (s.walk_total == 0) s.walk_total = g_objects->count(g_objects->user);
@@ -398,7 +410,12 @@ void ResolveControllerClassNameId() {
     }
     if (s.walk_cursor >= s.walk_total) {
         s.walk_done = 1;
-        SetError("未找到控制器类名 %s（游戏版本可能变了）", kControllerClassName);
+        const std::array<std::string_view, 1> arguments{std::string_view(kControllerClassName)};
+        SetError("%s", g_localizer.Format(
+                           "error.controller_class_missing",
+                           "Controller class name {0} was not found (the game build may have "
+                           "changed)",
+                           arguments).c_str());
     }
 }
 
@@ -544,8 +561,12 @@ void CaptureTick() {
 // 把虚拟键码转成好认的名字（认不出就显示 VK 0xNN）。
 void KeyName(std::uint32_t vk, std::uint32_t modifiers, char* out, std::size_t capacity) {
     char body[48]{};
+    const auto set_body = [&body](const std::string& text) {
+        std::snprintf(body, sizeof(body), "%s", text.c_str());
+    };
     if (vk == 0) {
-        std::snprintf(out, capacity, "未绑定");
+        std::snprintf(out, capacity, "%s",
+                      g_localizer.Text("key.unbound", "Not bound").c_str());
         return;
     }
     if (vk >= '0' && vk <= '9') {
@@ -555,24 +576,26 @@ void KeyName(std::uint32_t vk, std::uint32_t modifiers, char* out, std::size_t c
     } else if (vk >= VK_F1 && vk <= VK_F12) {
         std::snprintf(body, sizeof(body), "F%u", vk - VK_F1 + 1u);
     } else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
-        std::snprintf(body, sizeof(body), "小键盘%u", vk - VK_NUMPAD0);
+        const std::string index = std::to_string(vk - VK_NUMPAD0);
+        const std::array<std::string_view, 1> arguments{std::string_view(index)};
+        set_body(g_localizer.Format("key.numpad", "Numpad {0}", arguments));
     } else {
         switch (vk) {
-            case VK_SPACE: std::snprintf(body, sizeof(body), "空格"); break;
+            case VK_SPACE: set_body(g_localizer.Text("key.space", "Space")); break;
             case VK_TAB: std::snprintf(body, sizeof(body), "Tab"); break;
-            case VK_RETURN: std::snprintf(body, sizeof(body), "回车"); break;
+            case VK_RETURN: set_body(g_localizer.Text("key.enter", "Enter")); break;
             case VK_ESCAPE: std::snprintf(body, sizeof(body), "Esc"); break;
-            case VK_BACK: std::snprintf(body, sizeof(body), "退格"); break;
+            case VK_BACK: set_body(g_localizer.Text("key.backspace", "Backspace")); break;
             case VK_INSERT: std::snprintf(body, sizeof(body), "Insert"); break;
             case VK_DELETE: std::snprintf(body, sizeof(body), "Delete"); break;
             case VK_HOME: std::snprintf(body, sizeof(body), "Home"); break;
             case VK_END: std::snprintf(body, sizeof(body), "End"); break;
             case VK_PRIOR: std::snprintf(body, sizeof(body), "PageUp"); break;
             case VK_NEXT: std::snprintf(body, sizeof(body), "PageDown"); break;
-            case VK_LEFT: std::snprintf(body, sizeof(body), "左方向键"); break;
-            case VK_RIGHT: std::snprintf(body, sizeof(body), "右方向键"); break;
-            case VK_UP: std::snprintf(body, sizeof(body), "上方向键"); break;
-            case VK_DOWN: std::snprintf(body, sizeof(body), "下方向键"); break;
+            case VK_LEFT: set_body(g_localizer.Text("key.left", "Left arrow")); break;
+            case VK_RIGHT: set_body(g_localizer.Text("key.right", "Right arrow")); break;
+            case VK_UP: set_body(g_localizer.Text("key.up", "Up arrow")); break;
+            case VK_DOWN: set_body(g_localizer.Text("key.down", "Down arrow")); break;
             case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
                 std::snprintf(body, sizeof(body), "Shift"); break;
             case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
@@ -694,7 +717,9 @@ void LoadConfig() {
     if (conf_version != kConfVersion) {
         s.multiplier = 3.0;
         s.duration = 10.0;
-        SetError("配置文件版本不符，已回到默认值");
+        SetError("%s", g_localizer.Text("error.config_version_mismatch",
+                                        "The config file version does not match; defaults were "
+                                        "restored").c_str());
     }
     if (s.multiplier < kMinMultiplier) s.multiplier = kMinMultiplier;
     if (s.multiplier > kMaxMultiplier) s.multiplier = kMaxMultiplier;
@@ -705,7 +730,7 @@ void LoadConfig() {
 }
 
 // ------------------------------- 绘制 ---------------------------------------
-void Text(const AnomalyUiServiceV1* ui, const char* utf8) {
+void Text(const AnomalyUiServiceV1* ui, const std::string_view utf8) {
     if (HAS(ui, text)) ui->text(ui->user, StringView(utf8));
 }
 
@@ -720,9 +745,10 @@ double Quantize1(double v) {
 // （宿主 input_double 固定按 "%.17g" 格式化，1.1 会显示成 1.1000000000000001）。
 // step_coarse > 0 时额外渲染一组 ±step_coarse 按钮（粗调）；step 恒为微调步进。
 // 返回 1 表示值被改动（调用方据此置保存请求）。
-bool DecimalField(const AnomalyUiServiceV1* ui, const char* label, const char* hint, const char* id,
-                  char* text, std::size_t capacity, int* refresh, double* value, double lo,
-                  double hi, double step, double step_coarse, float field_width) {
+bool DecimalField(const AnomalyUiServiceV1* ui, const std::string_view label,
+                  const std::string_view hint, const char* id, char* text, std::size_t capacity,
+                  int* refresh, double* value, double lo, double hi, double step,
+                  double step_coarse, float field_width) {
     if (!HAS(ui, input_text) || !HAS(ui, button)) return false;
 
     if (*refresh != 0) {
@@ -822,7 +848,7 @@ bool DecimalField(const AnomalyUiServiceV1* ui, const char* label, const char* h
     }
 
     // 单位/说明放在加减按钮后面。
-    if (hint != nullptr && hint[0] != '\0') {
+    if (!hint.empty()) {
         if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 10.0F);
         Text(ui, hint);
     }
@@ -836,75 +862,107 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
 
     // 非开发者模式下顶部提示；真正拦截在 Update 的 DeveloperModeEnabled 门禁。
     if (!DeveloperModeEnabled()) {
-        Text(ui, "需要开发者模式（平台设置 > 高级 > 开发者模式）才能加速");
+        Text(ui, g_localizer.Text(
+                     "hint.developer_mode",
+                     "Developer mode is required to accelerate (platform settings > advanced > "
+                     "developer mode)"));
         if (HAS(ui, separator)) ui->separator(ui->user);
     }
 
     // ---- 倍率 / 时长（自绘文本输入；倍率含粗调 ±1.0 + 微调 ±0.1，时长步进 1.0）----
     // 改了值就置保存请求；真正落盘在 on_update（on_draw 是 Render 域）。
-    if (DecimalField(ui, "时间倍率", "（1 = 正常，越大越快）", "ta-mul", s.rate_text,
-                     sizeof(s.rate_text), &s.rate_refresh, &s.multiplier, kMinMultiplier,
-                     kMaxMultiplier, 0.1, 1.0, 86.0F)) {
+    if (DecimalField(ui, g_localizer.Text("label.multiplier", "Time multiplier"),
+                     g_localizer.Text("hint.multiplier", "(1 = normal, higher is faster)"),
+                     "ta-mul", s.rate_text, sizeof(s.rate_text), &s.rate_refresh, &s.multiplier,
+                     kMinMultiplier, kMaxMultiplier, 0.1, 1.0, 86.0F)) {
         s.req_save = 1;
     }
-    if (DecimalField(ui, "持续时长", "（秒）", "ta-dur", s.dur_text, sizeof(s.dur_text),
-                     &s.dur_refresh, &s.duration, 0.5, 3600.0, 1.0, 0.0, 86.0F)) {
+    if (DecimalField(ui, g_localizer.Text("label.duration", "Duration"),
+                     g_localizer.Text("hint.duration", "(seconds)"), "ta-dur", s.dur_text,
+                     sizeof(s.dur_text), &s.dur_refresh, &s.duration, 0.5, 3600.0, 1.0, 0.0,
+                     86.0F)) {
         s.req_save = 1;
     }
 
     // 注意：ImGui 用「标签」当控件 ID，同名按钮必须用 ## 后缀区分（## 之后只参与 ID）。
     // ---- 加速一次 ----
-    if (HAS(ui, button) && ui->button(ui->user, StringView("加速一次##ta-once"), 130.0F, 0.0F)) {
+    const std::string once_label = g_localizer.Label("action.once", "Boost once", "ta-once");
+    if (HAS(ui, button) && ui->button(ui->user, StringView(once_label), 130.0F, 0.0F)) {
         if (s.capture_target != 0) CancelCapture();
         s.req_action = 1;
     }
     if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
     KeyName(s.key_once, s.mod_once, key_name, sizeof(key_name));
-    std::snprintf(line, sizeof(line), "快捷键：%s", key_name);
+    const std::array<std::string_view, 1> once_key_arguments{std::string_view(key_name)};
+    std::snprintf(line, sizeof(line), "%s",
+                  g_localizer.Format("label.hotkey", "Hotkey: {0}", once_key_arguments).c_str());
     Text(ui, line);
     if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
-    if (HAS(ui, button) && ui->button(ui->user, StringView("改键##ta-rb-once"), 70.0F, 0.0F)) {
+    const std::string rebind_once_label =
+        g_localizer.Label("action.rebind_once", "Rebind", "ta-rb-once");
+    if (HAS(ui, button) && ui->button(ui->user, StringView(rebind_once_label), 70.0F, 0.0F)) {
         BeginCapture(1);
     }
 
     // ---- 持续加速 ----
     if (HAS(ui, button)) {
         const bool on = (s.infinite != 0);
-        if (ui->button(ui->user,
-                       StringView(on ? "停止持续加速##ta-toggle" : "持续加速##ta-toggle"), 130.0F,
-                       0.0F)) {
+        const std::string toggle_label = on
+            ? g_localizer.Label("action.toggle_off", "Stop continuous accel", "ta-toggle")
+            : g_localizer.Label("action.toggle_on", "Continuous accel", "ta-toggle");
+        if (ui->button(ui->user, StringView(toggle_label), 130.0F, 0.0F)) {
             if (s.capture_target != 0) CancelCapture();
             s.req_action = 2;
         }
     }
     if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
     KeyName(s.key_toggle, s.mod_toggle, key_name, sizeof(key_name));
-    std::snprintf(line, sizeof(line), "快捷键：%s", key_name);
+    const std::array<std::string_view, 1> toggle_key_arguments{std::string_view(key_name)};
+    std::snprintf(line, sizeof(line), "%s",
+                  g_localizer.Format("label.hotkey", "Hotkey: {0}", toggle_key_arguments).c_str());
     Text(ui, line);
     if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
-    if (HAS(ui, button) && ui->button(ui->user, StringView("改键##ta-rb-tgl"), 70.0F, 0.0F)) {
+    const std::string rebind_toggle_label =
+        g_localizer.Label("action.rebind_toggle", "Rebind", "ta-rb-tgl");
+    if (HAS(ui, button) && ui->button(ui->user, StringView(rebind_toggle_label), 70.0F, 0.0F)) {
         BeginCapture(2);
     }
 
     // ---- 立即恢复 ----
-    if (HAS(ui, button) &&
-        ui->button(ui->user, StringView("立即恢复 1 倍##ta-restore"), 130.0F, 0.0F)) {
+    const std::string restore_label =
+        g_localizer.Label("action.restore", "Restore to 1x", "ta-restore");
+    if (HAS(ui, button) && ui->button(ui->user, StringView(restore_label), 130.0F, 0.0F)) {
         if (s.capture_target != 0) CancelCapture();
         s.req_action = 3;
     }
     if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
     KeyName(s.key_restore, s.mod_restore, key_name, sizeof(key_name));
-    std::snprintf(line, sizeof(line), "快捷键：%s", key_name);
+    const std::array<std::string_view, 1> restore_key_arguments{std::string_view(key_name)};
+    std::snprintf(line, sizeof(line), "%s",
+                  g_localizer.Format("label.hotkey", "Hotkey: {0}", restore_key_arguments).c_str());
     Text(ui, line);
     if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
-    if (HAS(ui, button) && ui->button(ui->user, StringView("改键##ta-rb-rst"), 70.0F, 0.0F)) {
+    const std::string rebind_restore_label =
+        g_localizer.Label("action.rebind_restore", "Rebind", "ta-rb-rst");
+    if (HAS(ui, button) && ui->button(ui->user, StringView(rebind_restore_label), 70.0F, 0.0F)) {
         BeginCapture(3);
     }
 
     if (s.capture_target != 0) {
-        Text(ui, s.capture_target == 1   ? "请按下「加速一次」的新快捷键…（Backspace 解除绑定 / Esc 取消）"
-                : s.capture_target == 3 ? "请按下「立即恢复」的新快捷键…（Backspace 解除绑定 / Esc 取消）"
-                                        : "请按下「持续加速」的新快捷键…（Backspace 解除绑定 / Esc 取消）");
+        Text(ui, s.capture_target == 1
+                     ? g_localizer.Text(
+                           "prompt.bind_once",
+                           "Press the new hotkey for \"Boost once\"... (Backspace unbinds, Esc "
+                           "cancels)")
+                     : s.capture_target == 3
+                     ? g_localizer.Text(
+                           "prompt.bind_restore",
+                           "Press the new hotkey for \"Restore to 1x\"... (Backspace unbinds, Esc "
+                           "cancels)")
+                     : g_localizer.Text(
+                           "prompt.bind_toggle",
+                           "Press the new hotkey for \"Continuous accel\"... (Backspace unbinds, "
+                           "Esc cancels)"));
     }
 
     if (HAS(ui, separator)) ui->separator(ui->user);
@@ -916,21 +974,42 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
         if (!(now > 0.0) || now > 1000.0) now = static_cast<double>(s.observed);
         if (!(now > 0.0) || now > 1000.0) now = 1.0;
 
+        char now_text[32]{};
+        std::snprintf(now_text, sizeof(now_text), "%.2f", now);
+        char target_text[32]{};
+        std::snprintf(target_text, sizeof(target_text), "%.2f", s.multiplier);
         if (s.active == 0) {
-            std::snprintf(line, sizeof(line), "状态：未加速（当前 %.2f 倍）", now);
+            const std::array<std::string_view, 1> arguments{std::string_view(now_text)};
+            std::snprintf(line, sizeof(line), "%s",
+                          g_localizer.Format("status.idle",
+                                             "Status: not accelerated (current {0}x)",
+                                             arguments).c_str());
         } else if (s.infinite != 0) {
-            std::snprintf(line, sizeof(line), "状态：持续加速中（当前 %.2f 倍 ／ 目标 %.2f 倍）",
-                          now, s.multiplier);
+            const std::array<std::string_view, 2> arguments{std::string_view(now_text),
+                                                           std::string_view(target_text)};
+            std::snprintf(line, sizeof(line), "%s",
+                          g_localizer.Format("status.continuous",
+                                             "Status: continuous (current {0}x, target {1}x)",
+                                             arguments).c_str());
         } else {
-            std::snprintf(line, sizeof(line),
-                          "状态：加速中（当前 %.2f 倍 ／ 目标 %.2f 倍 ／ 剩余 %.1f 秒）", now,
-                          s.multiplier, s.remaining);
+            char remaining_text[32]{};
+            std::snprintf(remaining_text, sizeof(remaining_text), "%.1f", s.remaining);
+            const std::array<std::string_view, 3> arguments{
+                std::string_view(now_text), std::string_view(target_text),
+                std::string_view(remaining_text)};
+            std::snprintf(line, sizeof(line), "%s",
+                          g_localizer.Format("status.timed",
+                                             "Status: accelerated ({0}x, target {1}x, {2}s left)",
+                                             arguments).c_str());
         }
         // 出错时把原因并进同一行，避免多出第二条信息行（但错误不能看不见）。
         if (s.status[0] != '\0') {
             const std::size_t used = std::strlen(line);
             if (used + 4 < sizeof(line)) {
-                std::snprintf(line + used, sizeof(line) - used, "　／ %s", s.status);
+                const std::array<std::string_view, 1> arguments{std::string_view(s.status)};
+                const std::string suffix =
+                    g_localizer.Format("text.status_suffix", " / {0}", arguments);
+                std::snprintf(line + used, sizeof(line) - used, "%s", suffix.c_str());
             }
         }
         Text(ui, line);
@@ -952,7 +1031,8 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui_v1) {
     // 窗口恒开（对齐内建插件）：open 用局部变量，点关闭按钮下一帧自动重开，无需自备回窗热键。
     // 注意 end_window 仍要无条件调用，即使 begin 返回 0（否则宿主判 unbalanced UI stack）。
     int open = 1;
-    if (ui->begin_window(ui->user, StringView("时间加速 (Time Accel)"), &open, 0u) != 0) {
+    const std::string title = g_localizer.Text("window.title", "Time Accel");
+    if (ui->begin_window(ui->user, StringView(title), &open, 0u) != 0) {
         DrawMain(ui);
     }
     ui->end_window(ui->user);
@@ -1007,6 +1087,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_player = player ? player.get() : nullptr;
 
     g_state = State{};
+    g_localizer = anomaly::sdk::Localizer(host);
     *context = &g_state;
     return anomaly::sdk::Ok();
 }
@@ -1050,6 +1131,7 @@ void ANOMALY_CALL Unload(void* context) {
     g_player = nullptr;
     g_core = nullptr;
     g_ui = nullptr;
+    g_localizer = anomaly::sdk::Localizer();
     g_state = State{};
 }
 
@@ -1087,15 +1169,24 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
         s.req_action = 0;
 
         if (action == 3) {
-            StopAccel("已恢复 1 倍");
+            StopAccel(g_localizer.Text("status.restored", "Restored to 1x").c_str());
         } else if (!DeveloperModeEnabled()) {
-            SetError("需要开发者模式：本插件会写游戏内存，请在平台设置里开启开发者模式");
+            SetError("%s", g_localizer.Text(
+                               "error.developer_mode_required",
+                               "Developer mode is required: this plugin writes game memory, so "
+                               "enable developer mode in the platform settings").c_str());
             s.remaining = 0.0;
         } else if (!PlayerGateOpen()) {
-            SetError("官方 nte.player 报告角色不在世界中（大厅/加载中），已取消");
+            SetError("%s", g_localizer.Text(
+                               "error.player_not_in_world",
+                               "The official nte.player service reports the character is not in "
+                               "the world (lobby/loading), so the request was cancelled").c_str());
             s.remaining = 0.0;
         } else if (s.ws == 0) {
-            SetError("尚未解析到 WorldSettings（指针链未就绪），请稍后再试");
+            SetError("%s", g_localizer.Text(
+                               "error.world_settings_not_resolved",
+                               "WorldSettings has not been resolved yet (the pointer chain is not "
+                               "ready); try again later").c_str());
             s.remaining = 0.0;
         } else if (action == 1) {
             s.infinite = 0;
@@ -1105,12 +1196,16 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
             if (s.last_result == 1) {
                 SetError("");
             } else {
-                SetError("写入失败（WorldSettings 地址可能已失效）");
+                SetError("%s", g_localizer.Text(
+                                   "error.write_failed",
+                                   "Write failed (the WorldSettings address may be stale)").c_str());
                 s.remaining = 0.0;
             }
         } else if (action == 2) {
             if (s.infinite != 0) {
-                StopAccel("已停止持续加速，恢复 1 倍");
+                StopAccel(g_localizer.Text(
+                                      "status.continuous_stopped",
+                                      "Continuous acceleration stopped; restored to 1x").c_str());
             } else {
                 s.last_result = WriteWorldDilation(static_cast<float>(s.multiplier)) ? 1 : 0;
                 s.infinite = (s.last_result == 1) ? 1 : 0;
@@ -1119,7 +1214,10 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
                 if (s.last_result == 1) {
                     SetError("");
                 } else {
-                    SetError("写入失败（WorldSettings 地址可能已失效）");
+                    SetError("%s", g_localizer.Text(
+                                       "error.write_failed",
+                                       "Write failed (the WorldSettings address may be stale)")
+                                       .c_str());
                 }
             }
         }
@@ -1129,7 +1227,9 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
         if (s.infinite == 0) {
             s.remaining -= dt;
             if (s.remaining <= 0.0) {
-                StopAccel("加速时长结束，已恢复 1 倍");
+                StopAccel(g_localizer.Text(
+                                      "status.duration_ended",
+                                      "Acceleration duration ended; restored to 1x").c_str());
                 return;
             }
         }

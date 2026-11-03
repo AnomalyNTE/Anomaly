@@ -29,6 +29,10 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
       "id": "anomaly.ue5.names",
       "minVersion": 1
     },

@@ -86,7 +86,8 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("anomaly.example.my-plugin"),
         anomaly::sdk::StringView("My Plugin"),
         anomaly::sdk::StringView("Me"), anomaly::sdk::StringView("1.0.0"),
-        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw};
+        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw,
+        /*on_overlay*/ nullptr};
     return anomaly::sdk::Ok();
 }
 ```
@@ -99,10 +100,11 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
 | `on_start` | 激活 | Lifecycle |
 | `on_update(delta)` | 每 tick 逻辑更新 | Game |
 | `on_draw(ui)` | 每帧绘制 | Render |
+| `on_overlay(ui)` | 每个渲染帧绘制持久覆盖层，窗口关闭时仍调用 | Render |
 | `on_stop(deadline)` | 停止，提交状态 | Lifecycle |
 | `on_unload` | 卸载前清理 | Lifecycle |
 
-Render 回调必须保持为纯绘制路径。游戏语义服务查询、cursor 推进、分页、名称解析和统计应在 Game 域 `on_update` 完成，并转换为插件自有的不可变展示快照；`on_draw` 仅在短锁内复制快照，锁外调用 UI。[`nte_combat_demo`](../../examples/nte_combat_demo/plugin.cpp) 展示了该边界：新伤害到达时才解析来源与参与者，静止帧不会重复调用 NTE 服务。
+Render 回调必须保持为纯绘制路径。游戏语义服务查询、cursor 推进、分页、名称解析和统计应在 Game 域 `on_update` 完成，并转换为插件自有的不可变展示快照；`on_draw` 和 `on_overlay` 仅在短锁内复制快照，锁外调用 UI。持续存在的世界标记应使用 `on_overlay`，普通插件窗口内容使用 `on_draw`。[`nte_combat_demo`](../../examples/nte_combat_demo/plugin.cpp) 展示了该边界：新伤害到达时才解析来源与参与者，静止帧不会重复调用 NTE 服务。
 
 完整入口 / 描述符定义见 [生命周期与 Core 服务](../api-reference/lifecycle-and-core.md)。
 
@@ -153,6 +155,46 @@ if (!config) { /* 该服务不可用，降级处理 */ }
 - `description` 是管理界面“关于”区域使用的插件简介；插件可通过本地化目录中的 `plugin.description` 提供翻译。
 - `builds` 是 build 兼容性声明，可以写 `nte-*` 或精确 fingerprint。当前生产 Runtime 不计算 fingerprint，加载时也不用该字段拦截插件，因此不能把它当作运行时安全检查。
 - `license` 是单个 SPDX identifier（公开分发时必填）。
+
+### 文本本地化
+
+插件的用户可见文案走 [`anomaly.localization`](../api-reference/lifecycle-and-core.md#anomalylocalization)（共用 `ui` capability），SDK 提供 C++ 封装 `anomaly::sdk::Localizer`：
+
+```cpp
+#include "anomaly/sdk/localization.hpp"
+
+anomaly::sdk::Localizer localizer;  // 未查询到服务时一律返回英文回退
+
+// on_load 里查询一次：
+localizer = anomaly::sdk::Localizer(host);
+
+const std::string title = localizer.Text("window.title", "My Plugin");
+const std::array arguments{std::string_view(std::to_string(count))};
+const std::string status =
+    localizer.Format("status.cached", "Cached {0} entries", arguments);
+```
+
+文案源是与 `manifest.json` 同级的包目录里的 `locales/<locale>.json`：
+
+```json
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "我的插件",
+    "plugin.description": "展示当前玩家与会话诊断。",
+    "status.cached": "已缓存 {0} 条"
+  }
+}
+```
+
+- `key` 只允许 `[a-z0-9._-]`、长度 ≤255，消息不得为空。
+- 中文消息里的 `{0}`..`{7}` 占位符必须与英文回退**完全一致**，否则宿主静默回退英文；字面花括号写 `{{` 与 `}}`。
+- 宿主用 `window.title` 作管理界面的显示名、`plugin.description` 作简介，缺失时才回退到 manifest 的 `name`/`description`。所以这两个 manifest 字段写英文回退值，中文放进目录。
+- `manifest.services` 里要声明 `{"id": "anomaly.localization", "minVersion": 1}`。
+- 当前语言在进程生命周期内固定，切换语言需重启游戏；因此文案可以在产生它的位置直接取，不必推迟到绘制。
+- 仓库自带的校验脚本会一次性检查 key 覆盖、占位符掩码、残留中文字面量和 manifest 回退语言：
+  `pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin <插件名>`（省略 `-Plugin` 检查全部插件）。
 
 ## 6. Capability 与授权
 

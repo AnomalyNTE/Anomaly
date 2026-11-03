@@ -11,7 +11,9 @@ typedef AnomalyStatusV1 (ANOMALY_CALL *AnomalyPluginEntryV1Fn)(
     AnomalyPluginDescriptorV1* descriptor);
 ```
 
-The entry should validate `descriptor->struct_size >= sizeof(*descriptor)`, then fill in every field as is.
+The entry should first verify that `descriptor->struct_size` covers the base fields and `on_draw`, then
+populate those fields. Optional V1 tail fields may be written only when the host-provided `struct_size`
+covers their position, preserving compatibility with older hosts.
 
 ### `AnomalyPluginDescriptorV1`
 
@@ -26,6 +28,7 @@ typedef struct AnomalyPluginDescriptorV1 {
     void (ANOMALY_CALL *on_unload)(void* plugin_context);
     void (ANOMALY_CALL *on_update)(void* plugin_context, double delta_seconds);
     void (ANOMALY_CALL *on_draw)(void* plugin_context, const AnomalyUiServiceV1* ui);
+    void (ANOMALY_CALL *on_overlay)(void* plugin_context, const AnomalyUiServiceV1* ui);
 } AnomalyPluginDescriptorV1;
 ```
 
@@ -39,6 +42,11 @@ typedef struct AnomalyPluginDescriptorV1 {
 | `on_unload` | Clean up before unload |
 | `on_update` | Per-tick logic update (Game domain); may be `NULL` |
 | `on_draw` | Per-frame drawing (Render domain); may be `NULL` |
+| `on_overlay` | Runs every render frame in the Render domain even while the plugin window is closed; use it only for persistent world overlays such as `draw_screen_primitives`; may be `NULL` |
+
+`on_overlay` is an optional tail field in the V1 descriptor. The host calls it only when `struct_size`
+covers the field and the callback is non-null. Plugins that need to run against older hosts can keep a
+fallback drawing path in `on_draw`.
 
 For callback thread domains see [Plugin development · lifecycle](../developer-guide/plugin-development.md#3-lifecycle-and-entry-point).
 
@@ -122,7 +130,40 @@ typedef struct AnomalyLocalizationServiceV1 {
 | Function | Description |
 | --- | --- |
 | `locale(destination, inout_size)` | Current locale (for example `zh-CN`), two-phase buffer protocol |
-| `translate(key, english_fallback, arguments, argument_count, destination, inout_size)` | Translate by `key`, falling back to `english_fallback` when the key is missing; `arguments` is an array of positional arguments |
+| `translate(key, english_fallback, arguments, argument_count, destination, inout_size)` | Translate by `key`, falling back to `english_fallback` when the key is missing; `arguments` is an array of positional arguments (at most 8). With `destination = NULL` it follows the two-phase buffer protocol and only reports the required byte count (including the trailing NUL), with status `OK` or `BUFFER_TOO_SMALL` |
 
 > [!NOTE]
 > `anomaly.localization` and `anomaly.ui` share the `ui` capability.
+
+### Message catalog
+
+A plugin supplies its translations in `locales/<locale>.json` inside its own package directory (next to `manifest.json`; the file name is the locale name):
+
+```json
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "我的插件",
+    "plugin.description": "展示当前玩家与会话诊断。",
+    "status.cached": "已缓存 {0} 条"
+  }
+}
+```
+
+| Constraint | Description |
+| --- | --- |
+| `schemaVersion` | Must be `1` |
+| `locale` | Must equal the requested locale name |
+| key | Only `[a-z0-9._-]`, at most 255 bytes |
+| message | A non-empty string |
+| placeholders | Only `{0}`..`{7}`; escape literal braces as `{{` / `}}`. **A localized message must declare exactly the placeholders of its English fallback**, otherwise that entry silently falls back to English |
+| size | File at most 1 MiB, at most 4096 entries |
+
+**The catalog is all-or-nothing**: one invalid entry (illegal key, empty message, unescaped brace, malformed placeholder) invalidates the whole file, so every `translate` of that plugin serves English and a single `plugin localization fallback` line is logged. Validate the file as a whole after adding entries instead of expecting per-entry tolerance.
+
+The host also reads two fixed keys from the same file for the management UI: `window.title` as the display name and `plugin.description` as the blurb, falling back to the manifest `name` / `description` only when they are missing. Keep those two manifest fields English and put the Chinese in the catalog.
+
+The active language is fixed for the lifetime of the process and changing it requires a game restart, so text can be resolved wherever it is produced instead of at draw time.
+
+On the C++ side use the SDK's `anomaly::sdk::Localizer` (`include/anomaly/sdk/localization.hpp`); it wraps `Text` / `Format` / `Label` and the two-phase retry for long messages. See [Plugin development · Localized text](../developer-guide/plugin-development.md#localized-text).

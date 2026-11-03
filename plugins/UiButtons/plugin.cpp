@@ -7,6 +7,7 @@
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/ui.h"
+#include "anomaly/sdk/localization.hpp"
 
 #include <Windows.h>
 
@@ -45,6 +46,7 @@ struct Row {
 struct LayerRow {
     std::string layer, window, flags;
     bool showing{};
+    bool blocking{};
 };
 
 struct Snapshot {
@@ -81,6 +83,7 @@ struct Context {
     const AnomalyCoreServiceV1* core{};
     const AnomalyUiServiceV1* ui{};
     const AnomalyInputServiceV1* input{};
+    anomaly::sdk::Localizer localizer;
 
     // Game 域独占
     const AnomalyNteUiButtonsServiceV1* buttons{};
@@ -102,7 +105,7 @@ struct Context {
     std::shared_ptr<const Snapshot> snapshot;
     std::shared_ptr<const PickSnapshot> pick;
     std::vector<ClickIntent> clicks;
-    std::string status{"尚未扫描"};
+    std::string status;
     std::string progress;
     std::atomic_bool scan_requested{};
     std::atomic_bool pick_requested{};
@@ -165,53 +168,86 @@ std::string_view KindName(std::uint32_t kind) noexcept {
     }
 }
 
-std::string_view CategoryName(std::uint32_t category) noexcept {
+std::string CategoryName(const anomaly::sdk::Localizer& localizer, std::uint32_t category) {
     switch (category) {
-    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE: return "可点击";
-    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED: return "不可点击";
-    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN: return "隐藏";
+    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE:
+        return localizer.Text("category.clickable", "Clickable");
+    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED:
+        return localizer.Text("category.blocked", "Not clickable");
+    case ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN:
+        return localizer.Text("category.hidden", "Hidden");
     default: return "?";
     }
 }
 
-std::string_view ResultName(std::uint32_t status) noexcept {
+std::string ResultName(const anomaly::sdk::Localizer& localizer, std::uint32_t status) {
     switch (status) {
-    case ANOMALY_STATUS_V1_OK: return "已调用";
-    case ANOMALY_STATUS_V1_CONFLICT: return "不可点击";
-    case ANOMALY_STATUS_V1_NOT_FOUND: return "按钮已失效";
-    case ANOMALY_STATUS_V1_CANCELLED: return "已取消";
-    case ANOMALY_STATUS_V1_UNAVAILABLE: return "服务不可用";
-    case ANOMALY_STATUS_V1_FAILED: return "游戏未接受";
-    default: return "失败";
+    case ANOMALY_STATUS_V1_OK:
+        return localizer.Text("result.ok", "Invoked");
+    case ANOMALY_STATUS_V1_CONFLICT:
+        return localizer.Text("result.conflict", "Not clickable");
+    case ANOMALY_STATUS_V1_NOT_FOUND:
+        return localizer.Text("result.not_found", "Button is stale");
+    case ANOMALY_STATUS_V1_CANCELLED:
+        return localizer.Text("result.cancelled", "Cancelled");
+    case ANOMALY_STATUS_V1_UNAVAILABLE:
+        return localizer.Text("result.unavailable", "Service unavailable");
+    case ANOMALY_STATUS_V1_FAILED:
+        return localizer.Text("result.rejected", "Rejected by the game");
+    default: return localizer.Text("result.failed", "Failed");
     }
 }
 
-std::string DescribeReasons(std::uint32_t reasons) {
-    static constexpr std::array<std::pair<std::uint32_t, const char*>, 13> kNames{{
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_SELF, "自身隐藏"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_ANCESTOR, "父控件隐藏"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_TRANSPARENT, "完全透明"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_INACTIVE_PAGE, "非当前页"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_IN_VIEWPORT, "界面未显示"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_DETACHED, "未挂到界面"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_OCCLUDED, "被其他界面遮挡"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_CLOSING, "界面关闭中"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_HIT_TESTABLE, "不接受点击"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_DISABLED, "禁用"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_INTERACTABLE, "不可交互"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED, "锁定"},
-        {ANOMALY_NTE_UI_BUTTON_REASON_V1_QUERY_FAILED, "查询失败"},
-    }};
+std::string DescribeReasons(const anomaly::sdk::Localizer& localizer, std::uint32_t reasons) {
     std::string text;
-    for (const auto& [bit, name] : kNames) {
-        if ((reasons & bit) == 0) continue;
+    const auto append = [&text](std::string name) {
         if (!text.empty()) text += " / ";
-        text += name;
+        text += std::move(name);
+    };
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_SELF) != 0) {
+        append(localizer.Text("reason.self_hidden", "Hidden itself"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_COLLAPSED_ANCESTOR) != 0) {
+        append(localizer.Text("reason.ancestor_hidden", "Hidden by an ancestor"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_TRANSPARENT) != 0) {
+        append(localizer.Text("reason.transparent", "Fully transparent"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_INACTIVE_PAGE) != 0) {
+        append(localizer.Text("reason.inactive_page", "Not the active page"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_IN_VIEWPORT) != 0) {
+        append(localizer.Text("reason.not_in_viewport", "Window not on screen"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_DETACHED) != 0) {
+        append(localizer.Text("reason.detached", "Not attached to a window"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_OCCLUDED) != 0) {
+        append(localizer.Text("reason.occluded", "Covered by another window"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_CLOSING) != 0) {
+        append(localizer.Text("reason.closing", "Window is closing"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_HIT_TESTABLE) != 0) {
+        append(localizer.Text("reason.not_hit_testable", "Not hit-testable"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_DISABLED) != 0) {
+        append(localizer.Text("reason.disabled", "Disabled"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_NOT_INTERACTABLE) != 0) {
+        append(localizer.Text("reason.not_interactable", "Not interactable"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_LOCKED) != 0) {
+        append(localizer.Text("reason.locked", "Locked"));
+    }
+    if ((reasons & ANOMALY_NTE_UI_BUTTON_REASON_V1_QUERY_FAILED) != 0) {
+        append(localizer.Text("reason.query_failed", "Query failed"));
     }
     return text;
 }
 
-Row MakeRow(const AnomalyNteUiButtonSnapshotV1& button) {
+Row MakeRow(const anomaly::sdk::Localizer& localizer,
+            const AnomalyNteUiButtonSnapshotV1& button) {
     Row row;
     row.button = button.button;
     row.kind = button.kind;
@@ -224,14 +260,21 @@ Row MakeRow(const AnomalyNteUiButtonSnapshotV1& button) {
     }
     row.class_name = button.class_name;
     row.path = button.path;
-    row.reasons = DescribeReasons(button.reasons);
-    if (button.cause[0] != '\0') row.reasons += std::string("（") + button.cause + "）";
+    row.reasons = DescribeReasons(localizer, button.reasons);
+    if (button.cause[0] != '\0') {
+        const std::array<std::string_view, 2> args{std::string_view(row.reasons),
+                                                   std::string_view(button.cause)};
+        row.reasons = localizer.Format("text.reason_with_cause", "{0} ({1})", args);
+    }
     row.search = Lower(row.name + '\n' + row.text + '\n' + row.window + '\n' + row.class_name);
     return row;
 }
 
-std::string Label(const Row& row) {
-    return row.name + (row.text.empty() ? "" : "「" + row.text + "」");
+std::string Label(const anomaly::sdk::Localizer& localizer, const Row& row) {
+    if (row.text.empty()) return row.name;
+    const std::array<std::string_view, 2> args{std::string_view(row.name),
+                                               std::string_view(row.text)};
+    return localizer.Format("label.row_with_text", "{0} \"{1}\"", args);
 }
 
 // 服务可能晚于插件加载才发布，也可能随 Host 代际撤销：每 tick 现查。
@@ -267,11 +310,13 @@ void Submit(Context& context, std::uint32_t kind, std::string label = {},
         result = service->request_click(service->user, &click, &handle);
     }
     if (result.code != ANOMALY_STATUS_V1_OK) {
-        SetStatus(context, "请求被拒绝：" +
-                               std::string(result.message.data == nullptr
-                                               ? std::string_view{}
-                                               : std::string_view(result.message.data,
-                                                                  result.message.size)));
+        const std::string reason(result.message.data == nullptr
+                                     ? std::string_view{}
+                                     : std::string_view(result.message.data,
+                                                        result.message.size));
+        const std::array<std::string_view, 1> args{std::string_view(reason)};
+        SetStatus(context, context.localizer.Format("status.request_rejected",
+                                                    "Request rejected: {0}", args));
         return;
     }
     context.pending.push_back({handle, kind, std::move(label), force});
@@ -306,7 +351,7 @@ void RefreshCatalog(Context& context) {
                 occluded_causes.emplace_back(button.cause);
             }
         }
-        snapshot->rows.push_back(MakeRow(button));
+        snapshot->rows.push_back(MakeRow(context.localizer, button));
     }
     AnomalyNteUiWindowSnapshotV1 window{sizeof(window)};
     for (std::uint32_t i = 0; i < status.window_count; ++i) {
@@ -321,20 +366,34 @@ void RefreshCatalog(Context& context) {
         layer.showing = (window.flags & ANOMALY_NTE_UI_WINDOW_V1_ACTIVE) != 0 &&
             (window.flags & ANOMALY_NTE_UI_WINDOW_V1_VISIBLE) != 0 &&
             (window.flags & ANOMALY_NTE_UI_WINDOW_V1_CLOSING) == 0;
-        const std::array<std::pair<std::uint32_t, const char*>, 7> flags{{
-            {ANOMALY_NTE_UI_WINDOW_V1_ACTIVE, "激活"},
-            {ANOMALY_NTE_UI_WINDOW_V1_CLOSING, "关闭中"},
-            {ANOMALY_NTE_UI_WINDOW_V1_MODAL, "模态"},
-            {ANOMALY_NTE_UI_WINDOW_V1_HIDES_MAIN_FORM, "隐藏主界面"},
-            {ANOMALY_NTE_UI_WINDOW_V1_PAUSES_GAME, "暂停游戏"},
-            {ANOMALY_NTE_UI_WINDOW_V1_MENU_INPUT, "菜单输入"},
-            {ANOMALY_NTE_UI_WINDOW_V1_BLOCKING, "→ 阻挡下层"},
-        }};
-        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_VISIBLE) == 0) layer.flags = "不可见";
-        for (const auto& [bit, name] : flags) {
-            if ((window.flags & bit) == 0) continue;
+        layer.blocking = (window.flags & ANOMALY_NTE_UI_WINDOW_V1_BLOCKING) != 0;
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_VISIBLE) == 0) {
+            layer.flags = context.localizer.Text("flag.not_visible", "Not visible");
+        }
+        const auto append_flag = [&layer](std::string name) {
             if (!layer.flags.empty()) layer.flags += " ";
-            layer.flags += name;
+            layer.flags += std::move(name);
+        };
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_ACTIVE) != 0) {
+            append_flag(context.localizer.Text("flag.active", "Active"));
+        }
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_CLOSING) != 0) {
+            append_flag(context.localizer.Text("flag.closing", "Closing"));
+        }
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_MODAL) != 0) {
+            append_flag(context.localizer.Text("flag.modal", "Modal"));
+        }
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_HIDES_MAIN_FORM) != 0) {
+            append_flag(context.localizer.Text("flag.hides_main_form", "Hides the main UI"));
+        }
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_PAUSES_GAME) != 0) {
+            append_flag(context.localizer.Text("flag.pauses_game", "Pauses the game"));
+        }
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_MENU_INPUT) != 0) {
+            append_flag(context.localizer.Text("flag.menu_input", "Menu input"));
+        }
+        if (layer.blocking) {
+            append_flag(context.localizer.Text("flag.blocking", "→ blocks windows below"));
         }
         snapshot->layers.push_back(std::move(layer));
     }
@@ -343,7 +402,7 @@ void RefreshCatalog(Context& context) {
     // 遮挡判定偶发误判时，日志里要能看到当时是哪些界面在挡、挡住了多少按钮。
     std::string occlusion;
     for (const auto& layer : snapshot->layers) {
-        if (layer.flags.find("阻挡下层") == std::string::npos) continue;
+        if (!layer.blocking) continue;
         occlusion += "\n  blocking: " + layer.layer + " -> " + layer.window + " [" + layer.flags + "]";
     }
     if (occluded != 0) {
@@ -355,20 +414,37 @@ void RefreshCatalog(Context& context) {
                          (occlusion.empty() ? std::string("\n  none") : occlusion));
         context.logged_occlusion = occlusion;
     }
-    char summary[256]{};
-    std::snprintf(summary, sizeof(summary),
-                  "目录 #%llu：对象 %u，界面层 %u，按钮 %u（可点 %u / 不可点 %u / 隐藏 %u），"
-                  "游戏调用 %u 次，%u tick，%u ms%s",
-                  static_cast<unsigned long long>(status.catalog_sequence),
-                  status.objects_scanned, status.window_count, status.button_count,
-                  status.clickable_count, status.blocked_count, status.hidden_count,
-                  status.process_event_calls, status.scan_ticks, status.scan_milliseconds,
-                  (status.flags & ANOMALY_NTE_UI_BUTTONS_STATUS_V1_TRUNCATED) != 0 ? "（已截断）"
-                                                                               : "");
+    const std::string sequence = std::to_string(status.catalog_sequence);
+    const std::string objects = std::to_string(status.objects_scanned);
+    const std::string windows = std::to_string(status.window_count);
+    const std::string buttons = std::to_string(status.button_count);
+    const std::array<std::string_view, 4> catalog_args{
+        std::string_view(sequence), std::string_view(objects), std::string_view(windows),
+        std::string_view(buttons)};
+    const std::string clickable = std::to_string(status.clickable_count);
+    const std::string blocked = std::to_string(status.blocked_count);
+    const std::string hidden = std::to_string(status.hidden_count);
+    const std::string calls = std::to_string(status.process_event_calls);
+    const std::string ticks = std::to_string(status.scan_ticks);
+    const std::string milliseconds = std::to_string(status.scan_milliseconds);
+    const std::array<std::string_view, 6> count_args{
+        std::string_view(clickable), std::string_view(blocked), std::string_view(hidden),
+        std::string_view(calls), std::string_view(ticks), std::string_view(milliseconds)};
+    std::string summary = context.localizer.Format(
+        "progress.catalog", "Catalog #{0}: objects {1}, windows {2}, buttons {3}",
+        catalog_args);
+    summary += "  ";
+    summary += context.localizer.Format(
+        "progress.counts",
+        "clickable {0} / blocked {1} / hidden {2}, {3} game calls, {4} ticks, {5} ms",
+        count_args);
+    if ((status.flags & ANOMALY_NTE_UI_BUTTONS_STATUS_V1_TRUNCATED) != 0) {
+        summary += context.localizer.Text("progress.truncated", " (truncated)");
+    }
     context.shown_catalog = status.catalog_sequence;
     std::scoped_lock lock(context.mutex);
     context.snapshot = std::move(snapshot);
-    context.progress = summary;
+    context.progress = std::move(summary);
 }
 
 void FinishPick(Context& context, const Pending& pending,
@@ -383,26 +459,34 @@ void FinishPick(Context& context, const Pending& pending,
     for (std::uint32_t i = 0; i < done.hit_count; ++i) {
         if (service->pick_hit_at(service->user, pending.handle, i, &hit).code ==
             ANOMALY_STATUS_V1_OK) {
-            pick->hits.push_back(MakeRow(hit));
+            pick->hits.push_back(MakeRow(context.localizer, hit));
         }
     }
     std::string log = "pick: checked " + std::to_string(pick->checked) + " buttons, " +
         std::to_string(pick->hits.size()) + " hovered";
     for (const auto& row : pick->hits) {
-        log += "\n  " + Label(row) + " [" + std::string(CategoryName(row.category)) +
-            (row.reasons.empty() ? "" : "：" + row.reasons) + "] " + row.path +
+        log += "\n  " + Label(context.localizer, row) + " [" +
+            CategoryName(context.localizer, row.category) +
+            (row.reasons.empty() ? "" : ": " + row.reasons) + "] " + row.path +
             " class=" + row.class_name;
     }
     if (!pick->error.empty()) log += " error=" + pick->error;
     Log(context, log);
     if (!pick->error.empty()) {
-        SetStatus(context, "拾取失败：" + pick->error);
+        const std::array<std::string_view, 1> args{std::string_view(pick->error)};
+        SetStatus(context, context.localizer.Format("status.pick_failed", "Pick failed: {0}",
+                                                    args));
     } else if (pick->hits.empty()) {
-        SetStatus(context, "拾取完成：光标下没有找到按钮");
+        SetStatus(context, context.localizer.Text("status.pick_empty",
+                                                  "Pick finished: no button under the cursor"));
     } else {
         const auto& top = pick->hits.front();
-        SetStatus(context, "拾取完成：" + Label(top) + "（" +
-                               std::string(CategoryName(top.category)) + "）");
+        const std::string label = Label(context.localizer, top);
+        const std::string category = CategoryName(context.localizer, top.category);
+        const std::array<std::string_view, 2> args{std::string_view(label),
+                                                   std::string_view(category)};
+        SetStatus(context, context.localizer.Format("status.pick_done",
+                                                    "Pick finished: {0} ({1})", args));
     }
     std::scoped_lock lock(context.mutex);
     context.pick = std::move(pick);
@@ -419,7 +503,8 @@ void PollRequests(Context& context) {
         }
         if (done.state != ANOMALY_NTE_UI_BUTTON_REQUEST_V1_COMPLETE) {
             if (pending.kind == ANOMALY_NTE_UI_BUTTON_REQUEST_V1_PICK) {
-                SetStatus(context, "拾取中：请保持鼠标不动…");
+                SetStatus(context, context.localizer.Text("status.picking",
+                                                          "Picking: keep the mouse still..."));
             }
             remaining.push_back(pending);
             continue;
@@ -428,13 +513,28 @@ void PollRequests(Context& context) {
             FinishPick(context, pending, done);
         } else if (pending.kind == ANOMALY_NTE_UI_BUTTON_REQUEST_V1_SCAN) {
             if (done.status != ANOMALY_STATUS_V1_OK) {
-                SetStatus(context, std::string("扫描失败：") + done.detail);
+                const std::array<std::string_view, 1> args{std::string_view(done.detail)};
+                SetStatus(context, context.localizer.Format("status.scan_failed",
+                                                            "Scan failed: {0}", args));
             }
         } else {
-            std::string message = std::string(ResultName(done.status)) + "：" + pending.label;
-            if (pending.force) message += " [强制]";
-            if (done.detail[0] != '\0') message += std::string("（") + done.detail + "）";
-            if (done.reasons != 0) message += "；" + DescribeReasons(done.reasons);
+            const std::string result = ResultName(context.localizer, done.status);
+            const std::array<std::string_view, 2> result_args{std::string_view(result),
+                                                              std::string_view(pending.label)};
+            std::string message = context.localizer.Format("status.click_result", "{0}: {1}",
+                                                           result_args);
+            if (pending.force) {
+                message += " [" + context.localizer.Text("label.forced", "forced") + "]";
+            }
+            if (done.detail[0] != '\0') {
+                const std::array<std::string_view, 2> detail_args{
+                    std::string_view(message), std::string_view(done.detail)};
+                message = context.localizer.Format("text.reason_with_cause", "{0} ({1})",
+                                                   detail_args);
+            }
+            if (done.reasons != 0) {
+                message += "; " + DescribeReasons(context.localizer, done.reasons);
+            }
             Log(context, "click " + message);
             SetStatus(context, std::move(message));
             if (done.status == ANOMALY_STATUS_V1_OK) {
@@ -459,8 +559,8 @@ bool ValidPickKey(std::uint32_t key) noexcept {
         key != VK_MENU && !(key >= VK_LSHIFT && key <= VK_RMENU);
 }
 
-std::string KeyName(std::uint32_t key) {
-    if (key == 0) return "未设置";
+std::string KeyName(const anomaly::sdk::Localizer& localizer, std::uint32_t key) {
+    if (key == 0) return localizer.Text("label.unset", "Not set");
     if ((key >= '0' && key <= '9') || (key >= 'A' && key <= 'Z')) {
         return std::string(1, static_cast<char>(key));
     }
@@ -496,8 +596,13 @@ void ReleasePickHotkey(Context& context) noexcept {
 
 // 注册拾取快捷键；失败时保留旧键。
 std::string RegisterPickHotkey(Context& context, std::uint32_t key) {
-    if (!InputReady(context.input)) return "输入服务不可用，快捷键无效";
-    if (!ValidPickKey(key)) return "不支持这个键";
+    if (!InputReady(context.input)) {
+        return context.localizer.Text("status.input_unavailable",
+                                      "Input service unavailable, the hotkey does nothing");
+    }
+    if (!ValidPickKey(key)) {
+        return context.localizer.Text("status.key_unsupported", "That key is not supported");
+    }
     if (key == context.pick_hotkey_registered && context.pick_hotkey.id != 0) return {};
     AnomalyHotkeySpecV1 spec{sizeof(spec)};
     spec.virtual_key = key;
@@ -508,9 +613,13 @@ std::string RegisterPickHotkey(Context& context, std::uint32_t key) {
     const auto status = context.input->register_hotkey(context.input->user, &spec, PickHotkey,
                                                        &context, &handle);
     if (status.code != ANOMALY_STATUS_V1_OK || handle.id == 0) {
+        const std::string name = KeyName(context.localizer, key);
+        const std::array<std::string_view, 1> args{std::string_view(name)};
         return status.code == ANOMALY_STATUS_V1_CONFLICT
-            ? KeyName(key) + " 已被其他功能占用"
-            : KeyName(key) + " 注册失败";
+            ? context.localizer.Format("status.key_conflict",
+                                       "{0} is already used by another feature", args)
+            : context.localizer.Format("status.key_register_failed",
+                                       "{0} failed to register", args);
     }
     ReleasePickHotkey(context);
     context.pick_hotkey = handle;
@@ -529,7 +638,8 @@ void CapturePickKey(Context& context) {
     if (context.input->was_pressed(context.input->user, VK_ESCAPE, &pressed).code ==
             ANOMALY_STATUS_V1_OK && pressed != 0) {
         context.capturing_pick_key.store(false, std::memory_order_release);
-        SetStatus(context, "已取消修改拾取快捷键");
+        SetStatus(context, context.localizer.Text("status.pick_key_cancelled",
+                                                  "Pick hotkey unchanged"));
         return;
     }
     for (std::uint32_t key = 1; key < 256U; ++key) {
@@ -541,7 +651,14 @@ void CapturePickKey(Context& context) {
         }
         const auto error = RegisterPickHotkey(context, key);
         context.capturing_pick_key.store(false, std::memory_order_release);
-        SetStatus(context, error.empty() ? "拾取快捷键改为 " + KeyName(key) : error);
+        if (error.empty()) {
+            const std::string name = KeyName(context.localizer, key);
+            const std::array<std::string_view, 1> args{std::string_view(name)};
+            SetStatus(context, context.localizer.Format("status.pick_key_set",
+                                                        "Pick hotkey set to {0}", args));
+        } else {
+            SetStatus(context, error);
+        }
         return;
     }
 }
@@ -561,6 +678,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION).get();
     context->input = view.Query<AnomalyInputServiceV1>(
         ANOMALY_INPUT_SERVICE_V1_ID, ANOMALY_INPUT_SERVICE_V1_VERSION).get();
+    context->localizer = anomaly::sdk::Localizer(host);
+    context->status = context->localizer.Text("status.not_scanned", "Not scanned yet");
     if (!UI_HAS(context->ui, end_window) || !UI_HAS(context->ui, text) ||
         !UI_HAS(context->ui, button)) {
         return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "UI buttons requires the UI service");
@@ -574,7 +693,11 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
     if (context == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     // 快捷键是可选功能：注册失败不阻止插件启动，面板里给出原因。
     const auto error = RegisterPickHotkey(*context, context->pick_key.load(std::memory_order_acquire));
-    if (!error.empty()) SetStatus(*context, "拾取快捷键：" + error);
+    if (!error.empty()) {
+        const std::array<std::string_view, 1> args{std::string_view(error)};
+        SetStatus(*context, context->localizer.Format("status.pick_key_error",
+                                                      "Pick hotkey: {0}", args));
+    }
     return anomaly::sdk::Ok();
 }
 
@@ -609,7 +732,9 @@ void ANOMALY_CALL Update(void* plugin_context, double) {
     if (context->delayed_pick_requested.exchange(false, std::memory_order_acq_rel)) {
         context->pick_at = now + kDelayedPick;
         context->delayed_pick_pending = true;
-        SetStatus(*context, "3 秒后拾取：把鼠标移到游戏里的按钮上");
+        SetStatus(*context, context->localizer.Text(
+                                "status.delayed_pick",
+                                "Picking in 3 seconds: move the mouse over the in-game button"));
     }
     if (context->delayed_pick_pending && now >= context->pick_at) {
         context->delayed_pick_pending = false;
@@ -618,7 +743,10 @@ void ANOMALY_CALL Update(void* plugin_context, double) {
 
     if (!EnsureService(*context)) {
         context->pending.clear();
-        SetStatus(*context, "anomaly.nte.ui-buttons 服务不可用（Profile 或游戏状态未就绪）");
+        SetStatus(*context, context->localizer.Text(
+                                "status.service_unavailable",
+                                "anomaly.nte.ui-buttons service unavailable (profile or game "
+                                "state not ready)"));
         return;
     }
     PollRequests(*context);
@@ -681,7 +809,7 @@ void QueueClick(Context& context, const Row& row) {
     ClickIntent intent;
     intent.button = row.button;
     intent.force = context.force != 0;
-    intent.label = Label(row);
+    intent.label = Label(context.localizer, row);
     std::scoped_lock lock(context.mutex);
     context.clicks.push_back(std::move(intent));
 }
@@ -706,7 +834,8 @@ void DrawRows(Context& context, const AnomalyUiServiceV1* ui, const Snapshot& sn
         ++matched;
         if (shown >= kMaxRowsPerTab) continue;
         ++shown;
-        const std::string label = "点击##" + std::to_string(index);
+        const std::string label = context.localizer.Label(
+            "action.click", "Click", "ui-buttons-click" + std::to_string(index));
         if (in_table) {
             ui->table_next_row(ui->user);
             ui->table_next_column(ui->user);
@@ -729,10 +858,16 @@ void DrawRows(Context& context, const AnomalyUiServiceV1* ui, const Snapshot& sn
     }
     if (in_table) ui->end_table(ui->user);
     if (matched > shown) {
-        Text(ui, "仅显示前 " + std::to_string(shown) + " 条（共 " + std::to_string(matched) +
-                     " 条匹配），请用过滤缩小范围");
+        const std::string shown_text = std::to_string(shown);
+        const std::string matched_text = std::to_string(matched);
+        const std::array<std::string_view, 2> args{std::string_view(shown_text),
+                                                   std::string_view(matched_text)};
+        Text(ui, context.localizer.Format(
+                     "text.rows_truncated",
+                     "Showing the first {0} of {1} matches, narrow the filter to see the rest",
+                     args));
     } else if (matched == 0) {
-        Text(ui, "（无）");
+        Text(ui, context.localizer.Text("text.none", "(none)"));
     }
 }
 
@@ -756,17 +891,23 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
 
     if (UI_HAS(ui, set_next_window_size)) ui->set_next_window_size(ui->user, 980.0F, 620.0F, 4U);
     int open = 1;
-    anomaly::sdk::UiWindow window(ui, "UI 按钮###ui-buttons", &open);
+    const std::string title = context->localizer.Label("window.title", "UI Buttons", "ui-buttons");
+    anomaly::sdk::UiWindow window(ui, title, &open);
     if (!window) return;
 
-    if (Button(ui, "扫描按钮")) context->scan_requested.store(true, std::memory_order_release);
+    const std::string scan_label = context->localizer.Text("action.scan", "Scan buttons");
+    if (Button(ui, scan_label)) context->scan_requested.store(true, std::memory_order_release);
     SameLine(ui);
     int auto_refresh = context->auto_refresh.load(std::memory_order_acquire) ? 1 : 0;
-    Checkbox(ui, "自动刷新", auto_refresh);
+    const std::string auto_refresh_label =
+        context->localizer.Text("option.auto_refresh", "Auto refresh");
+    Checkbox(ui, auto_refresh_label, auto_refresh);
     context->auto_refresh.store(auto_refresh != 0, std::memory_order_release);
     if (UI_HAS(ui, input_uint32)) {
         SameLine(ui);
-        if (ui->input_uint32(ui->user, anomaly::sdk::StringView("间隔(ms)"),
+        const std::string interval_label =
+            context->localizer.Text("option.interval", "Interval (ms)");
+        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(interval_label),
                              &context->interval_input, 100, 1000) != 0) {
             context->interval_input = std::clamp<std::uint32_t>(context->interval_input, 200,
                                                                 60000);
@@ -775,31 +916,53 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         }
     }
 
-    Text(ui, "点击方式：按下 → 抬起 → 点击（由 Host 在点击前重新判定是否可点）");
-    Checkbox(ui, "强制点击（忽略可点击判定，被遮挡的按钮也会点，可能让游戏进入异常状态）",
-             context->force);
-    Checkbox(ui, "显示 UMG 原生按钮", context->show_umg);
+    Text(ui, context->localizer.Text(
+                 "text.click_method",
+                 "Clicking: press → release → click (the host re-checks clickability right "
+                 "before the click)"));
+    const std::string force_label = context->localizer.Text(
+        "option.force_click",
+        "Force click (ignores the clickability check, covered buttons are clicked too, which "
+        "may put the game into a bad state)");
+    Checkbox(ui, force_label, context->force);
+    const std::string show_umg_label =
+        context->localizer.Text("option.show_umg", "Show native UMG buttons");
+    Checkbox(ui, show_umg_label, context->show_umg);
     SameLine(ui);
-    Checkbox(ui, "显示界面层", context->show_layers);
+    const std::string show_layers_label =
+        context->localizer.Text("option.show_layers", "Show UI layers");
+    Checkbox(ui, show_layers_label, context->show_layers);
 
     // 拾取：鼠标停在游戏里的按钮上按快捷键，识别 Slate 认为正悬停的按钮。
-    Text(ui, "按钮拾取：");
+    Text(ui, context->localizer.Text("label.pick_section", "Button picking:"));
     SameLine(ui);
     if (context->capturing_pick_key.load(std::memory_order_acquire)) {
-        if (Button(ui, "按下新的拾取键…（Esc 取消）##pick-key")) {
+        const std::string capture_label = context->localizer.Label(
+            "action.capture_key", "Press the new pick key... (Esc cancels)", "pick-key");
+        if (Button(ui, capture_label)) {
             context->capturing_pick_key.store(false, std::memory_order_release);
         }
-    } else if (Button(ui, "快捷键：" + KeyName(context->pick_key.load(std::memory_order_acquire)) +
-                              "##pick-key")) {
-        context->capturing_pick_key.store(true, std::memory_order_release);
+    } else {
+        const std::string key_name =
+            KeyName(context->localizer, context->pick_key.load(std::memory_order_acquire));
+        const std::array<std::string_view, 1> args{std::string_view(key_name)};
+        const std::string hotkey_label =
+            context->localizer.Format("action.pick_hotkey", "Hotkey: {0}", args) + "###pick-key";
+        if (Button(ui, hotkey_label)) {
+            context->capturing_pick_key.store(true, std::memory_order_release);
+        }
     }
     SameLine(ui);
-    if (Button(ui, "3 秒后拾取##pick-delay")) {
+    const std::string delayed_pick_label =
+        context->localizer.Label("action.delayed_pick", "Pick in 3 seconds", "pick-delay");
+    if (Button(ui, delayed_pick_label)) {
         context->delayed_pick_requested.store(true, std::memory_order_release);
     }
 
     if (UI_HAS(ui, input_text)) {
-        ui->input_text(ui->user, anomaly::sdk::StringView("过滤（名称 / 文本 / 窗口 / 类）"),
+        const std::string filter_label = context->localizer.Text(
+            "option.filter", "Filter (name / text / window / class)");
+        ui->input_text(ui->user, anomaly::sdk::StringView(filter_label),
                        context->filter.data(), context->filter.size(),
                        ANOMALY_UI_TEXT_INPUT_V1_NONE);
     }
@@ -810,48 +973,79 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     Separator(ui);
 
     if (pick) {
-        Text(ui, "拾取结果 #" + std::to_string(pick->sequence) + "（检查 " +
-                     std::to_string(pick->checked) + " 个按钮，游戏调用 " +
-                     std::to_string(pick->calls) + " 次）：");
-        if (!pick->error.empty()) Text(ui, "  失败：" + pick->error);
+        const std::string sequence = std::to_string(pick->sequence);
+        const std::string checked = std::to_string(pick->checked);
+        const std::string calls = std::to_string(pick->calls);
+        const std::array<std::string_view, 3> pick_args{
+            std::string_view(sequence), std::string_view(checked), std::string_view(calls)};
+        Text(ui, context->localizer.Format(
+                     "text.pick_result",
+                     "Pick result #{0} (checked {1} buttons, {2} game calls):", pick_args));
+        if (!pick->error.empty()) {
+            const std::array<std::string_view, 1> args{std::string_view(pick->error)};
+            Text(ui, context->localizer.Format("text.pick_error", "  Failed: {0}", args));
+        }
         if (pick->hits.empty() && pick->error.empty()) {
-            Text(ui, "  光标下没有按钮（或按键时鼠标在插件窗口上）");
+            Text(ui, context->localizer.Text(
+                         "text.pick_none",
+                         "  No button under the cursor (or the mouse was over the panel when "
+                         "the key was pressed)"));
         }
         for (std::size_t i = 0; i < pick->hits.size(); ++i) {
             const auto& row = pick->hits[i];
             const bool enabled =
                 row.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE || context->force != 0;
-            if (Button(ui, "点击##pick" + std::to_string(i), enabled)) QueueClick(*context, row);
+            const std::string click_label = context->localizer.Label(
+                "action.click", "Click", "ui-buttons-pick" + std::to_string(i));
+            if (Button(ui, click_label, enabled)) QueueClick(*context, row);
             SameLine(ui);
-            Text(ui, std::string(i == 0 ? "▶ " : "  ") + Label(row) + "  [" +
-                         std::string(CategoryName(row.category)) +
-                         (row.reasons.empty() ? "" : "：" + row.reasons) + "]");
+            std::string reasons = "[" + CategoryName(context->localizer, row.category);
+            if (!row.reasons.empty()) {
+                const std::array<std::string_view, 1> reason_args{
+                    std::string_view(row.reasons)};
+                reasons += context->localizer.Format("text.reason_suffix", ": {0}", reason_args);
+            }
+            reasons += "]";
+            Text(ui, std::string(i == 0 ? "▶ " : "  ") + Label(context->localizer, row) +
+                         "  " + reasons);
             Text(ui, "      " + row.path + "  (" + std::string(KindName(row.kind)) + " " +
                          row.class_name + ")");
         }
-        if (pick->hits.size() > 1) Text(ui, "  ▶ 为最内层的按钮；其余是外层同样处于悬停的按钮");
+        if (pick->hits.size() > 1) {
+            Text(ui, context->localizer.Text(
+                         "text.innermost_hint",
+                         "  ▶ is the innermost button; the others are outer buttons that are "
+                         "hovered as well"));
+        }
         Separator(ui);
     }
 
     if (!snapshot) {
-        Text(ui, "点「扫描按钮」开始。");
+        Text(ui, context->localizer.Text("text.start_hint",
+                                         "Press \"Scan buttons\" to start."));
         return;
     }
 
     if (context->show_layers != 0) {
-        Text(ui, "界面层（扫描时刻）：");
+        Text(ui, context->localizer.Text("section.layers", "UI layers (at scan time):"));
         for (const auto& layer : snapshot->layers) {
             Text(ui, std::string(layer.showing ? "● " : "○ ") + layer.layer + " → " +
                          layer.window + (layer.flags.empty() ? "" : "  [" + layer.flags + "]"));
         }
-        if (snapshot->layers.empty()) Text(ui, "（没有找到非空的界面层）");
+        if (snapshot->layers.empty()) {
+            Text(ui, context->localizer.Text("text.no_layers",
+                                             "(no non-empty UI layer found)"));
+        }
         Separator(ui);
     }
 
-    const std::array<std::pair<std::uint32_t, std::string_view>, 3> kTabs{{
-        {ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE, "可点击"},
-        {ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED, "不可点击"},
-        {ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN, "隐藏 / 不在屏幕"},
+    const std::array<std::pair<std::uint32_t, std::string>, 3> kTabs{{
+        {ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_CLICKABLE,
+         context->localizer.Text("category.clickable", "Clickable")},
+        {ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_BLOCKED,
+         context->localizer.Text("category.blocked", "Not clickable")},
+        {ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN,
+         context->localizer.Text("category.hidden_offscreen", "Hidden / off-screen")},
     }};
     const bool tabs = UI_HAS(ui, begin_tab_bar) && UI_HAS(ui, begin_tab_item) &&
         UI_HAS(ui, end_tab_item) && UI_HAS(ui, end_tab_bar);

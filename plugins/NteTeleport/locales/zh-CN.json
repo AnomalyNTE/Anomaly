@@ -27,6 +27,7 @@
     "settings.distance.zlift": "Z 偏移",
     "settings.distance.landing_lift": "落地抬升",
     "settings.distance.sink_retries": "沉底重试",
+    "settings.distance.preload_delay": "预载延迟（秒）",
     "import.title": "导入 JSON 点位",
     "import.folder": "点位文件夹：{0}",
     "import.folder.empty": "未选择文件夹",

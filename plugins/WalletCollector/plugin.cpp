@@ -5,7 +5,7 @@
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/ue5.h"
 #include "scanner_profile.hpp"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <algorithm>
 #include <array>
@@ -123,7 +123,7 @@ enum class CollectionMode : std::uint32_t {
 
 struct Context final {
   const AnomalyHostApiV1* host{};
-  anomaly::plugins::Localizer localizer;
+  anomaly::sdk::Localizer localizer;
   const AnomalyCoreServiceV1* core{};
   const AnomalyUiServiceV1* ui{};
   const AnomalyNteSessionServiceV1* session{};
@@ -1667,7 +1667,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
   auto* context = new (std::nothrow) Context();
   if (context == nullptr) return Status(ANOMALY_STATUS_V1_FAILED);
   context->host = host;
-  context->localizer = anomaly::plugins::Localizer(host);
+  context->localizer = anomaly::sdk::Localizer(host);
   context->core = Query<AnomalyCoreServiceV1>(host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
   context->ui = Query<AnomalyUiServiceV1>(host, ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
   context->session = Query<AnomalyNteSessionServiceV1>(host, ANOMALY_NTE_SESSION_SERVICE_V1_ID, ANOMALY_NTE_SESSION_SERVICE_V1_VERSION);

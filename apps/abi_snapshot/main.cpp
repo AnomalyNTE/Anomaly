@@ -911,7 +911,8 @@ std::string BuildSnapshot() {
          {"on_stop", offsetof(AnomalyPluginDescriptorV1, on_stop)},
          {"on_unload", offsetof(AnomalyPluginDescriptorV1, on_unload)},
          {"on_update", offsetof(AnomalyPluginDescriptorV1, on_update)},
-         {"on_draw", offsetof(AnomalyPluginDescriptorV1, on_draw)}},
+         {"on_draw", offsetof(AnomalyPluginDescriptorV1, on_draw)},
+         {"on_overlay", offsetof(AnomalyPluginDescriptorV1, on_overlay)}},
         false);
     AppendStruct(
         output,
@@ -1571,6 +1572,18 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyUe5ProcessEventServiceV1",
+        sizeof(AnomalyUe5ProcessEventServiceV1),
+        alignof(AnomalyUe5ProcessEventServiceV1),
+        {{"struct_size", offsetof(AnomalyUe5ProcessEventServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyUe5ProcessEventServiceV1, service_version)},
+         {"user", offsetof(AnomalyUe5ProcessEventServiceV1, user)},
+         {"subscribe", offsetof(AnomalyUe5ProcessEventServiceV1, subscribe)},
+         {"unsubscribe", offsetof(AnomalyUe5ProcessEventServiceV1, unsubscribe)},
+         {"invoke", offsetof(AnomalyUe5ProcessEventServiceV1, invoke)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyUe5FrameworkServiceV1",
         sizeof(AnomalyUe5FrameworkServiceV1),
         alignof(AnomalyUe5FrameworkServiceV1),
@@ -1777,7 +1790,8 @@ std::string BuildSnapshot() {
          {"camera_snapshot", offsetof(AnomalyNtePlayerServiceV1, camera_snapshot)},
          {"hold_engage", offsetof(AnomalyNtePlayerServiceV1, hold_engage)},
          {"hold_release", offsetof(AnomalyNtePlayerServiceV1, hold_release)},
-         {"hold_snapshot", offsetof(AnomalyNtePlayerServiceV1, hold_snapshot)}},
+         {"hold_snapshot", offsetof(AnomalyNtePlayerServiceV1, hold_snapshot)},
+         {"get_object_handles", offsetof(AnomalyNtePlayerServiceV1, get_object_handles)}},
         false);
     AppendStruct(
         output,
@@ -2539,6 +2553,8 @@ std::string BuildSnapshot() {
     AppendService(
         output, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID,
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION, "AnomalyUe5FrameworkServiceV1", false);
+    AppendService(output, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
+        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION, "AnomalyUe5ProcessEventServiceV1", false);
     AppendService(output, ANOMALY_UE5_NAMES_SERVICE_V1_ID,
         ANOMALY_UE5_NAMES_SERVICE_V1_VERSION, "AnomalyUe5NamesServiceV1", false);
     AppendService(

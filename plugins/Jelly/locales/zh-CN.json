@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "果冻",
     "plugin.description": "开发预览。通过整体三轴缩放，让镜头内的人物和动态模型持续挤压、拉伸，并恢复所有改动过的组件；隐藏、静态、实例化与多部件模型会被跳过并说明原因。",
     "window.title": "果冻",
     "setting.enabled": "启用",

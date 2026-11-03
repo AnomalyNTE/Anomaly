@@ -1201,6 +1201,22 @@ void ANOMALY_CALL ProxySetNextItemWidth(void* user, const float width) {
     }
 }
 
+int ANOMALY_CALL ProxyDrawScreenPrimitives(
+    void* user, const AnomalyUiScreenPrimitiveV1* primitives,
+    const std::size_t count) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return 0;
+    return context != nullptr && context->service != nullptr &&
+            HasUiField<decltype(AnomalyUiServiceV1::draw_screen_primitives)>(
+                context->service,
+                offsetof(AnomalyUiServiceV1, draw_screen_primitives)) &&
+            context->service->draw_screen_primitives != nullptr
+        ? context->service->draw_screen_primitives(
+              context->service->user, primitives, count)
+        : 0;
+}
+
 AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
     AnomalyUiServiceV1 proxy{
         sizeof(AnomalyUiServiceV1), ANOMALY_UI_SERVICE_V1_VERSION,
@@ -1217,6 +1233,7 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         ProxySameLine, ProxySetCursorPosX, ProxyTextLink,
         ProxyBeginTabBar, ProxyBeginTabItem, ProxyEndTabItem, ProxyEndTabBar};
     proxy.set_next_item_width = ProxySetNextItemWidth;
+    proxy.draw_screen_primitives = ProxyDrawScreenPrimitives;
     if (context == nullptr || context->service == nullptr) {
         proxy.struct_size = offsetof(AnomalyUiServiceV1, user) + sizeof(proxy.user);
         return proxy;
@@ -1271,6 +1288,14 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         context->service->set_next_item_width == nullptr) {
         advertised_size = (std::min)(
             advertised_size, offsetof(AnomalyUiServiceV1, set_next_item_width));
+    }
+    if (!HasUiField<decltype(AnomalyUiServiceV1::draw_screen_primitives)>(
+            context->service,
+            offsetof(AnomalyUiServiceV1, draw_screen_primitives)) ||
+        context->service->draw_screen_primitives == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size,
+            offsetof(AnomalyUiServiceV1, draw_screen_primitives));
     }
     proxy.struct_size = static_cast<std::uint32_t>(advertised_size);
     return proxy;
@@ -3563,6 +3588,7 @@ struct PluginManager::LoadedPlugin {
     anomaly::PluginShadowGeneration shadow_generation;
     CallbackMetrics update_metrics;
     CallbackMetrics draw_metrics;
+    CallbackMetrics overlay_metrics;
     UiStackTracker ui_stack;
     PluginServiceContext service_context;
     AnomalyHostApiV1 host_api{};
@@ -4492,6 +4518,12 @@ bool PluginManager::LoadBinary(
                     "exception in ABI v1 plugin entry: " + source.string());
             }
         });
+        constexpr std::size_t overlay_field_size =
+            offsetof(AnomalyPluginDescriptorV1, on_overlay) +
+            sizeof(descriptor.on_overlay);
+        const bool has_overlay_callback =
+            descriptor.struct_size >= overlay_field_size &&
+            descriptor.on_overlay != nullptr;
         constexpr std::size_t minimum_size = offsetof(AnomalyPluginDescriptorV1, on_draw) +
             sizeof(descriptor.on_draw);
         const bool valid = entry_status.code == ANOMALY_STATUS_V1_OK &&
@@ -4542,6 +4574,10 @@ bool PluginManager::LoadBinary(
         if (plugin->view.visibility_control) {
             static_cast<void>(plugin->scope->Register(
                 anomaly::PluginResourceKind::Ui, "plugin.draw"));
+        }
+        if (has_overlay_callback) {
+            static_cast<void>(plugin->scope->Register(
+                anomaly::PluginResourceKind::Ui, "plugin.overlay"));
         }
         plugin->ui_proxy_context.service = ui_service_;
         plugin->ui_proxy_context.ui_stack = &plugin->ui_stack;
@@ -5552,71 +5588,103 @@ void PluginManager::ApplyQueuedEnablementReload() {
 }
 
 void PluginManager::Draw(void* imgui_context) {
+    (void)imgui_context;
     const ScopedLogThreadDomain log_domain(anomaly::LogThreadDomain::Render);
+    const auto invoke_render_callback = [&](LoadedPlugin& plugin,
+                                            const AnomalyPluginRenderCallbackV1 callback,
+                                            const PluginCallbackEvidenceKind kind,
+                                            const bool allow_close) {
+        auto callback_lease = plugin.scope != nullptr
+            ? plugin.scope->AcquireCallback(plugin.view.generation)
+            : anomaly::PluginScope::CallbackLease{};
+        if (plugin.scope != nullptr && !callback_lease) return false;
+        ScopedPluginCallback callback_scope(
+            plugin.scope, plugin.view.generation, false);
+        const auto started = std::chrono::steady_clock::now();
+        bool fault{};
+        plugin.ui_proxy_context.close_requested = false;
+        try {
+            callback(
+                plugin.plugin_context,
+                reinterpret_cast<const AnomalyUiServiceV1*>(&plugin.ui_proxy));
+            if (allow_close && plugin.ui_proxy_context.close_requested) {
+                plugin.view.visible = false;
+                if (ui_resources_->WindowGroupState(plugin.scope).window_count == 0) {
+                    SetPersistentPluginWindowVisibility(plugin.view.id, false);
+                }
+            }
+        } catch (...) {
+            fault = true;
+            plugin.faulted = true;
+            plugin.view.status_reason =
+                kind == PluginCallbackEvidenceKind::Overlay
+                    ? "Overlay callback raised an exception"
+                    : "Draw callback raised an exception";
+        }
+        const bool ui_stack_fault = RecoverPluginUiStack(
+            plugin.ui_proxy_context, plugin.service_context);
+        if (ui_stack_fault) {
+            fault = true;
+            plugin.faulted = true;
+            plugin.view.status_reason =
+                "Render callback left the UI stack unbalanced";
+        }
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        CallbackMetrics& metrics = kind == PluginCallbackEvidenceKind::Overlay
+            ? plugin.overlay_metrics : plugin.draw_metrics;
+        metrics.Record(elapsed, fault, callback_budgets_.draw_slow_milliseconds);
+        if (callback_evidence_observer_) {
+            try {
+                callback_evidence_observer_({
+                    kind,
+                    plugin.view.id,
+                    plugin.view.generation,
+                    GetCurrentThreadId(),
+                    elapsed * 1000.0,
+                    fault});
+            } catch (...) {
+            }
+        }
+        if (fault) {
+            Log(
+                ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
+                std::string(ui_stack_fault
+                                ? "unbalanced UI stack: "
+                                : kind == PluginCallbackEvidenceKind::Overlay
+                                    ? "exception in ABI v1 overlay: "
+                                    : "exception in ABI v1 draw: ") +
+                    plugin.view.id);
+        }
+        return !fault;
+    };
+
     for (const auto& plugin : plugins_) {
         ReconcileWindowVisibility(*plugin);
-        if (!plugin->view.visible || plugin->faulted) continue;
-        auto callback = plugin->scope != nullptr
-            ? plugin->scope->AcquireCallback(plugin->view.generation)
-            : anomaly::PluginScope::CallbackLease{};
-        if (plugin->scope != nullptr && !callback) continue;
-        ScopedPluginCallback callback_scope(
-            plugin->scope, plugin->view.generation, false);
-        const auto started = std::chrono::steady_clock::now();
-        bool invoked{};
-        bool fault{};
-        if (plugin->started && plugin->descriptor_v1.on_draw != nullptr &&
-            ui_service_ != nullptr) {
-            invoked = true;
-            plugin->ui_proxy_context.close_requested = false;
-            try {
-                plugin->descriptor_v1.on_draw(
-                    plugin->plugin_context,
-                    reinterpret_cast<const AnomalyUiServiceV1*>(&plugin->ui_proxy));
-                if (plugin->ui_proxy_context.close_requested) {
-                    plugin->view.visible = false;
-                    if (ui_resources_->WindowGroupState(plugin->scope).window_count == 0) {
-                        SetPersistentPluginWindowVisibility(plugin->view.id, false);
-                    }
-                }
-            } catch (...) {
-                fault = true;
-                plugin->faulted = true;
-                plugin->view.status_reason = "Draw callback raised an exception";
-            }
-            const bool ui_stack_fault = RecoverPluginUiStack(
-                plugin->ui_proxy_context, plugin->service_context);
-            if (ui_stack_fault) {
-                fault = true;
-                plugin->faulted = true;
-                plugin->view.status_reason = "Draw callback left the UI stack unbalanced";
-            }
-            if (fault) {
-                Log(
-                    ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
-                    std::string(ui_stack_fault ? "unbalanced UI stack: "
-                                               : "exception in ABI v1 draw: ") +
-                        plugin->view.id);
-            }
+        if (plugin->faulted || !plugin->started || ui_service_ == nullptr)
+            continue;
+
+        constexpr std::size_t overlay_field_size =
+            offsetof(AnomalyPluginDescriptorV1, on_overlay) +
+            sizeof(plugin->descriptor_v1.on_overlay);
+        const bool has_overlay =
+            plugin->descriptor_v1.struct_size >= overlay_field_size &&
+            plugin->descriptor_v1.on_overlay != nullptr;
+        if (has_overlay &&
+            !invoke_render_callback(
+                *plugin, plugin->descriptor_v1.on_overlay,
+                PluginCallbackEvidenceKind::Overlay, false)) {
+            ReconcileWindowVisibility(*plugin);
+            continue;
         }
-        if (invoked) {
-            const double elapsed = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - started).count();
-            plugin->draw_metrics.Record(
-                elapsed, fault, callback_budgets_.draw_slow_milliseconds);
-            if (callback_evidence_observer_) {
-                try {
-                    callback_evidence_observer_({
-                        PluginCallbackEvidenceKind::Draw,
-                        plugin->view.id,
-                        plugin->view.generation,
-                        GetCurrentThreadId(),
-                        elapsed * 1000.0,
-                        fault});
-                } catch (...) {
-                }
-            }
-        }
+
+        ReconcileWindowVisibility(*plugin);
+        if (!plugin->view.visible || plugin->faulted ||
+            plugin->descriptor_v1.on_draw == nullptr)
+            continue;
+        static_cast<void>(invoke_render_callback(
+            *plugin, plugin->descriptor_v1.on_draw,
+            PluginCallbackEvidenceKind::Draw, true));
         ReconcileWindowVisibility(*plugin);
     }
 }
@@ -6252,6 +6320,7 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
         }
         view.update_metrics = plugin.update_metrics.View();
         view.draw_metrics = plugin.draw_metrics.View();
+        view.overlay_metrics = plugin.overlay_metrics.View();
         populate_platform_diagnostics(plugin, view);
         snapshot.plugins.push_back(std::move(view));
     };
@@ -6320,6 +6389,7 @@ std::string PluginManager::DiagnosticsJson() const {
             ",\"callbacks\":{\"updateSlow\":" +
                 std::to_string(plugin.update_metrics.slow_calls) +
             ",\"drawSlow\":" + std::to_string(plugin.draw_metrics.slow_calls) +
+            ",\"overlaySlow\":" + std::to_string(plugin.overlay_metrics.slow_calls) +
             ",\"scoped\":{\"calls\":" +
                 std::to_string(platform.scoped_callbacks.calls) +
             ",\"faults\":" + std::to_string(platform.scoped_callbacks.faults) +

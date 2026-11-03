@@ -863,7 +863,7 @@ struct AudioEngine::Impl final {
             snapshot.output = std::move(output);
             snapshot.resampled = resampled;
             snapshot.status = EngineStatus::Playing;
-            snapshot.detail = "内存流";
+            snapshot.detail = "memory stream";
         }
         return true;
     }

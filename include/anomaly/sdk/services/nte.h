@@ -181,6 +181,13 @@ typedef struct AnomalyNtePlayerServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *hold_release)(void* user);
     AnomalyStatusV1 (ANOMALY_CALL *hold_snapshot)(void* user,
         AnomalyNtePlayerHoldSnapshotV1* snapshot);
+    // Appended V1 extension; check struct_size before reading get_object_handles.
+    // Game thread only. Returns ue5.objects handles for the latest local-player sample,
+    // suitable for ue5.objects queries and ProcessEvent invoke. snapshot.handle remains
+    // a player-sample identity, not a UObject handle. Either output may be null, but not
+    // both. Outputs are written only on success; no engine objects are retained.
+    AnomalyStatusV1 (ANOMALY_CALL *get_object_handles)(void* user,
+        AnomalyGenerationHandleV1* pawn, AnomalyGenerationHandleV1* controller);
 } AnomalyNtePlayerServiceV1;
 
 // Requests a teleport from a Host that has published the validated engine-owned teleport bridge.

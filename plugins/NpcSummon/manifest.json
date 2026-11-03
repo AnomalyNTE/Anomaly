@@ -15,6 +15,7 @@
   "services": [
     {"id": "anomaly.core", "minVersion": 1},
     {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
     {"id": "anomaly.window", "minVersion": 1},
     {"id": "anomaly.ue5.objects", "minVersion": 1},
     {"id": "anomaly.ue5.names", "minVersion": 1},

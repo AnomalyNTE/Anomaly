@@ -31,10 +31,106 @@ std::optional<std::string> Utf8(std::wstring_view value) {
     return output;
 }
 
-void Usage() {
-    std::cerr << "usage: anomaly-cli --pid <pid> <command> [arguments...]\n"
-                 "example: anomaly-cli --pid 1234 modules\n";
-}
+// Generated for a caller that has never seen this tool: it states the output contract, the exact
+// command grammar of the runtime, the argument syntax, and what every exit code means.
+constexpr char kUsageText[] =
+    "anomaly-cli - one-shot client for the Anomaly runtime diagnostics pipe\n"
+    "\n"
+    "usage:\n"
+    "  anomaly-cli --pid <pid> <command> [arguments...]\n"
+    "  anomaly-cli --help\n"
+    "\n"
+    "output contract:\n"
+    "  stdout carries exactly one line: the UTF-8 JSON reply of the runtime, for example\n"
+    "    {\"ok\":true,\"pid\":1234}\n"
+    "    {\"ok\":false,\"error\":\"unknown command; use help\"}\n"
+    "  Always parse stdout as JSON and branch on \"ok\". stderr carries client-side failures only\n"
+    "  (argument problems, pipe problems); it is never mixed into the JSON line.\n"
+    "  Arguments are joined with single spaces, so \"scan . .text 48 8B ?? 48 85 C0\" may be quoted\n"
+    "  as one argument or passed as several. Line breaks are rejected, and the request may not\n"
+    "  exceed 64 KiB.\n"
+    "\n"
+    "target:\n"
+    "  --pid <pid>   PID of the game process hosting the Anomaly runtime, usually HTGame.exe.\n"
+    "                The runtime logs its PID and pipe name to Anomaly\\logs\\anomaly-runtime.log.\n"
+    "                The pipe is \\\\.\\pipe\\LOCAL\\Anomaly-<pid>, so [Analyzer] PipePrefix must stay\n"
+    "                \"Anomaly\". An ordinary, non-elevated console is enough.\n"
+    "\n"
+    "commands:\n"
+    "  discovery\n"
+    "    ping                        liveness only: {\"ok\":true,\"pid\":<runtime pid>}\n"
+    "    help                        the runtime's own command list as JSON\n"
+    "    status                      runtime root, profile game id, platform flags, service health\n"
+    "    modules                     loaded modules with name, path, base address and image size\n"
+    "    sections <module|.>         PE sections of a module: base, size, characteristics\n"
+    "    regions <module|.>          memory regions: state, protection, type\n"
+    "\n"
+    "  signatures\n"
+    "    scan <module|.> <section> <pattern>\n"
+    "                                pattern scan inside one section; the pattern is hex bytes with\n"
+    "                                wildcards, e.g. \"48 8B ?? ?? 48 85 C0\" or \"4? ?F\"\n"
+    "    xrefs <module|.> <target>   code references to an absolute target address\n"
+    "\n"
+    "  unreal engine state (depends on the active Profile and its feature gates)\n"
+    "    ue                          active profile, resolved symbols, feature matrix\n"
+    "    ue actors <filter|*> [limit] [cursor]\n"
+    "    ue objects <filter|*> [limit] [cursor]\n"
+    "    ue functions <filter|*> [limit] [cursor]\n"
+    "                                paged lists; filter is a name/class substring or *\n"
+    "    ue fname <id>               resolve an FName id to text\n"
+    "    ue ftext <address>          read the FText living at an address\n"
+    "    ue combat                   combat bridge status\n"
+    "    ue buffs                    buff snapshot\n"
+    "\n"
+    "  reading memory\n"
+    "    read <address> <size>       size <= 1048576; returns the bytes and decoded values\n"
+    "    chain <base> [offset ...]   follow a pointer chain, at most 64 offsets, return the end address\n"
+    "    ptr <address>               read one pointer\n"
+    "    rip <instruction> <disp_offset> <instruction_size>\n"
+    "                                resolve a RIP-relative operand to its absolute target\n"
+    "    f32 <address> [count]       float32 values, count defaults to 3\n"
+    "    f64 <address> [count]       float64 values, count defaults to 3\n"
+    "    snapshot [filename]         write a full JSON snapshot into the Anomaly directory\n"
+    "\n"
+    "  writing memory (mutates the running game)\n"
+    "    write <address> <hex bytes>       write into a page that is already writable\n"
+    "    patch <address> <hex bytes>       switch to RWX, write, flush the instruction cache, restore\n"
+    "    protect <address> <size> <r|rw|x|rx|rwx>\n"
+    "    alloc <size> [protection]         allocate in the target, size <= 268435456, default rw\n"
+    "    free <address>                    release an address returned by alloc\n"
+    "    hex bytes are space separated, e.g. \"90 90\" or \"E9 1B 00 00 00\"; every mutation reply\n"
+    "    includes the bytes that were replaced\n"
+    "\n"
+    "arguments:\n"
+    "  <module>      \".\" is the game main module, otherwise a module name such as HTGame.exe\n"
+    "  <address>     0x-prefixed hex or decimal, e.g. 0x147e40ba0; sizes and offsets use the same\n"
+    "                parser, so 0x10 and 16 are equivalent\n"
+    "  <section>     PE section name, e.g. .text\n"
+    "  <pattern>     hex bytes; ?? is a wildcard byte, 4? fixes the high nibble, ?F the low nibble\n"
+    "  protection    r, rw, x, rx, rwx, or a numeric PAGE_* value\n"
+    "\n"
+    "exit codes:\n"
+    "  0   the runtime answered; read the JSON \"ok\" field to learn the outcome\n"
+    "  2   client-side usage error: missing or malformed --pid, unencodable argument, oversized request\n"
+    "  3   could not connect: 2 = no pipe for that PID, 5 = access denied, 231 = every instance busy\n"
+    "  4   the pipe could not be configured or the request could not be written\n"
+    "  5   the response could not be read, or stdout failed\n"
+    "\n"
+    "typical use:\n"
+    "  anomaly-cli --pid 1234 status\n"
+    "  anomaly-cli --pid 1234 modules\n"
+    "  anomaly-cli --pid 1234 sections .\n"
+    "  anomaly-cli --pid 1234 scan . .text \"48 8B ?? ?? ?? ?? ?? 48 85 C0\"\n"
+    "  anomaly-cli --pid 1234 xrefs . 0x1418aacf0\n"
+    "  anomaly-cli --pid 1234 read 0x14fb292f0 16\n"
+    "  anomaly-cli --pid 1234 ue actors * 20\n"
+    "  anomaly-cli --pid 1234 snapshot\n"
+    "\n"
+    "recommended sequence for an unfamiliar target: status, modules, scan or xrefs, then\n"
+    "read/ptr/chain to confirm a layout before any write/patch/protect/alloc/free.\n";
+
+void Usage(std::ostream& stream) { stream << kUsageText; }
+
 
 bool WriteRequest(const HANDLE pipe, const std::string_view request, DWORD& error) {
     const DWORD request_size = static_cast<DWORD>(request.size());
@@ -61,14 +157,21 @@ bool WriteResponseChunk(const char* data, const DWORD size) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc >= 2) {
+        const std::wstring_view first(argv[1]);
+        if (first == L"--help" || first == L"-h" || first == L"/?" || first == L"help") {
+            Usage(std::cout);
+            return 0;
+        }
+    }
     if (argc < 4 || std::wstring_view(argv[1]) != L"--pid") {
-        Usage();
+        Usage(std::cerr);
         return 2;
     }
     wchar_t* end{};
     const unsigned long pid = wcstoul(argv[2], &end, 10);
     if (pid == 0 || end == argv[2] || *end != L'\0') {
-        Usage();
+        Usage(std::cerr);
         return 2;
     }
 
@@ -94,11 +197,12 @@ int wmain(int argc, wchar_t** argv) {
         request += *argument;
     }
     if (request.empty()) {
-        Usage();
+        Usage(std::cerr);
         return 2;
     }
     request.push_back('\n');
     const std::wstring pipe_name = L"\\\\.\\pipe\\LOCAL\\Anomaly-" + std::to_wstring(pid);
+    const std::string pipe_name_utf8 = Utf8(pipe_name).value_or(std::string{});
     HANDLE pipe = INVALID_HANDLE_VALUE;
     DWORD pipe_error = ERROR_FILE_NOT_FOUND;
     for (int attempt = 0; attempt < 50; ++attempt) {
@@ -116,7 +220,14 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
     if (pipe == INVALID_HANDLE_VALUE) {
-        std::cerr << "pipe connection failed: " << pipe_error << '\n';
+        std::cerr << "pipe connection failed: " << pipe_error << " (" << pipe_name_utf8 << ")\n";
+        if (pipe_error == ERROR_FILE_NOT_FOUND) {
+            std::cerr << "hint: no diagnostics pipe for that PID; confirm the PID is the running "
+                         "game process and that the Anomaly runtime is loaded\n";
+        } else if (pipe_error == ERROR_ACCESS_DENIED) {
+            std::cerr << "hint: access denied; the pipe belongs to a runtime of a higher integrity "
+                         "level, or to another Windows user\n";
+        }
         return 3;
     }
 

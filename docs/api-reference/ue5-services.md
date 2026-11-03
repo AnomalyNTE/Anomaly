@@ -41,6 +41,114 @@ typedef struct AnomalyUe5FrameworkServiceV1 {
 
 提供游戏线程锚点：`game_thread_id`、单调递增的 `tick_sequence`、`is_game_thread`（当前是否在 Game 线程）。
 
+## `anomaly.ue5.process-event`
+
+- **ID**：`"anomaly.ue5.process-event"` · **版本** 1 · **capability** `game-events`
+
+```c
+typedef void (ANOMALY_CALL *AnomalyUe5ProcessEventCallbackV1)(
+    void* user, uintptr_t object, uintptr_t function, void* parameters);
+typedef struct AnomalyUe5ProcessEventServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *subscribe)(
+        void* user, AnomalyUe5ProcessEventCallbackV1 callback,
+        void* callback_user, AnomalyGenerationHandleV1* handle);
+    AnomalyStatusV1 (ANOMALY_CALL *unsubscribe)(
+        void* user, AnomalyGenerationHandleV1 handle);
+    // Appended V1 extension; check struct_size before reading invoke.
+    // Synchronous, Game thread only. Handles come from ue5.objects, not ue5.world.
+    // parameters is a caller-owned in/out buffer with capacity >= UFunction::ParmsSize;
+    // out/return fields are available on return. Null is valid for zero-parameter calls.
+    // The caller supplies an actual UFunction, compatible receiver and initialized UE values.
+    // No function allowlist, parameter schema matching, or FunctionFlags rewriting.
+    AnomalyStatusV1 (ANOMALY_CALL *invoke)(
+        void* user, AnomalyGenerationHandleV1 object,
+        AnomalyGenerationHandleV1 function, void* parameters, size_t parameter_size);
+} AnomalyUe5ProcessEventServiceV1;
+```
+
+| 函数 | 说明 |
+| --- | --- |
+| `subscribe` | 订阅宿主共享的 UObject ProcessEvent Hook，返回订阅 handle |
+| `unsubscribe` | 关闭订阅并排空已进入的回调；订阅 handle 不能用于 `invoke` |
+| `invoke` | 在 Game 线程同步调用指定 UFunction，返回后可读取同一缓冲区内的 out/return 字段 |
+
+### 订阅与发布条件
+
+订阅回调在 **Game 线程、原函数之前**串行执行，可以原地修改参数；没有跳过原调用或调用后回调
+接口。回调中的对象地址、函数地址和参数只在回调期间有效，不得跨回调缓存。主动调用正常经过
+共享 Hook，允许在回调中嵌套调用；订阅者必须避免自行触发的递归循环。
+
+服务在 framework/ProcessEvent Hook 和相应 Profile Feature 可用后发布，不依赖可选 AHUD
+反射绑定。服务已可订阅不代表 `invoke` 的对象注册表、调用器和参数大小布局已经可用；缺少这些
+前置条件时，`invoke` 返回 `UNAVAILABLE`，不影响已有订阅能力。
+
+### 主动调用合同
+
+本地玩家的 Pawn / Controller 可通过 [`nte.player.get_object_handles`](nte-services.md#玩家对象句柄)
+取得兼容对象句柄。`player.snapshot.handle` 是玩家样本身份，不能直接作为接收对象传入。
+
+| 参数 | 合同 |
+| --- | --- |
+| `user` | 原样回传服务表中的 `user` |
+| `object` | 接收调用的对象 handle，必须来自 `anomaly.ue5.objects` |
+| `function` | UFunction 的对象 handle，同样来自 `anomaly.ue5.objects` |
+| `parameters` | 调用者拥有的可写 UE 参数缓冲区；零参数函数允许 `NULL` |
+| `parameter_size` | 缓冲区容量，至少为 Profile 布局中该 UFunction 的 `ParmsSize`，可以更大 |
+
+对象／函数 handle 可由 `snapshot_at`、`snapshot_by_handle` 或 `find_exact` 获得；不能传入
+`ue5.world` 的独立 handle、订阅 handle，或把裸地址强制填进 handle。插件不需要自己扫描
+ProcessEvent 入口。调用仅允许在 Game 线程执行，例如插件 Game update 或 ProcessEvent
+回调，不能直接在 UI Render 回调、Lifecycle 或 Worker 线程调用；宿主不会自动排队或跨线程执行。
+
+校验只覆盖服务与调用器/注册表可用、线程、handle 的 generation/serial、可读的 `ParmsSize`
+和缓冲区容量。不设函数白名单，不做 owner 或逐字段 schema 匹配，不修改 `FunctionFlags`；
+也没有额外的 4 KiB 缓冲区上限或要求 UFunction 地址高于 4 GiB 的限制。
+
+这是低层调用边界：调用者须保证 `function` 确实是 UFunction、receiver 与函数兼容，并正确
+构造/销毁参数中的 UE 类型（如字符串、数组）。原生和蓝图函数均沿引擎正常分派，不绕过引擎条件。
+缓冲区在调用期间须保持有效，宿主不复制或保留它；返回值在已知布局的 return 字段内，没有独立
+返回值参数。`OK` 只表示分派完成，不代表函数内部业务成功。异常隔离不保证撤销已发生的引擎副作用。
+
+### 兼容调用示例
+
+`invoke` 是 V1 表尾扩展，服务版本仍为 1，原有字段偏移不变。使用
+`Host::Query<AnomalyUe5ProcessEventServiceV1>(ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID, 1)`
+或 C Host API 查询服务后，仍须检查表大小再读取 `invoke`，以兼容仅支持订阅的旧宿主。
+以下 helper 使用已经取得的对象／函数 handle，**必须在 Game 线程调用**：
+
+```c
+AnomalyStatusV1 InvokeUFunction(
+    const AnomalyUe5ProcessEventServiceV1* service,
+    AnomalyGenerationHandleV1 object,
+    AnomalyGenerationHandleV1 function,
+    void* parameters, size_t capacity) {
+    if (service == NULL ||
+        service->struct_size < offsetof(AnomalyUe5ProcessEventServiceV1, invoke) +
+            sizeof(service->invoke) || service->invoke == NULL) {
+        AnomalyStatusV1 unavailable = {
+            ANOMALY_STATUS_V1_UNAVAILABLE, 0, {NULL, 0}};
+        return unavailable;
+    }
+    return service->invoke(service->user, object, function, parameters, capacity);
+}
+```
+
+### `invoke` 状态码
+
+| 状态 | 含义 |
+| --- | --- |
+| `OK` | 引擎分派已返回，out/return 字段可由调用者读取 |
+| `CONFLICT` | Game 线程尚未确定，或当前不是 Game 线程 |
+| `NOT_FOUND` | 对象／函数 handle 失效，或参数大小字段不可读 |
+| `INVALID_ARGUMENT` | 非零参数函数传入空缓冲区 |
+| `BUFFER_TOO_SMALL` | 缓冲区容量小于 `ParmsSize` |
+| `UNAVAILABLE` | 服务已停止，或所需调用器、对象注册表、Feature/布局不可用 |
+| `FAILED` | 调用器报告失败，或调用边界捕获异常 |
+
+停止后缓存的服务表只返回 `UNAVAILABLE`，不会在下一次 Start 恢复；须重新查询当前 generation
+的服务并重新取得有效对象 handle。
+
 ## `anomaly.ue5.ahud`
 
 - **ID**：`"anomaly.ue5.ahud"` · **版本** 1 · **capability** `ue5-ahud`

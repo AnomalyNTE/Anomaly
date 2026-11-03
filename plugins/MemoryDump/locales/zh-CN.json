@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.description": "一键导出运行中游戏模块的完整内存映像：原始镜像、节表按虚拟地址重映射的可反汇编副本，以及一份元数据记录。",
+    "window.title": "内存转储",
+    "label.module": "模块",
+    "label.size": "映像大小",
+    "label.output": "导出目录",
+    "label.filename": "文件名前缀",
+    "action.choose_folder": "选择目录",
+    "action.dump": "导出模块映像",
+    "status.idle": "就绪",
+    "status.running": "正在转储：{0}",
+    "status.done": "完成，用时 {0}。原始镜像：{1}",
+    "status.failed": "失败：{0}"
+  }
+}

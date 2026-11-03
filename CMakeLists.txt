@@ -1298,6 +1298,25 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/EntityESP/manifest.json
         PACKAGE_NAME EntityESP
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/EntityESP")
+    anomaly_add_plugin(anomaly_builtin_memory_dump
+        SOURCES plugins/MemoryDump/plugin.cpp
+        MANIFEST plugins/MemoryDump/manifest.json
+        PACKAGE_NAME MemoryDump
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/MemoryDump")
+    target_compile_options(anomaly_builtin_memory_dump PRIVATE /utf-8)
+
+    anomaly_add_plugin(anomaly_builtin_training_dummy
+        SOURCES plugins/TrainingDummy/plugin.cpp
+        MANIFEST plugins/TrainingDummy/manifest.json
+        PACKAGE_NAME TrainingDummy
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/TrainingDummy")
+    anomaly_add_plugin(anomaly_builtin_summon_lab
+        SOURCES plugins/SummonLab/plugin.cpp
+        MANIFEST plugins/SummonLab/manifest.json
+        PACKAGE_NAME SummonLab
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SummonLab")
+    target_link_libraries(anomaly_builtin_summon_lab PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(anomaly_builtin_summon_lab PRIVATE /utf-8)
     anomaly_add_plugin(anomaly_builtin_pink_paw_heist_esp
         SOURCES
             plugins/PinkPawHeistESP/plugin.cpp
@@ -1644,6 +1663,23 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/ModelScale/manifest.json
         PACKAGE_NAME ModelScale
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModelScale")
+    # 奶龙换装：插件用 UE ProceduralMeshComponent 生成原生角色模型，源蒙皮与骨架绑定
+    # 放在插件自己的 assets/mesh 下，由 anomaly_add_plugin 照常同步进包目录并随包安装。
+    # 源码含中文 UI 文本与诊断，需要 /utf-8。
+    anomaly_add_plugin(anomaly_builtin_nailong
+        SOURCES plugins/Nailong/plugin.cpp
+        MANIFEST plugins/Nailong/manifest.json
+        PACKAGE_NAME Nailong
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/Nailong")
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        # 离线夹具：只解析随包模型与骨架绑定，确认顶点、权重和骨数自洽，不需要游戏。
+        add_executable(anomaly_nailong_model_fixture
+            plugins/Nailong/tests/model_contract.cpp)
+        target_compile_features(anomaly_nailong_model_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_nailong_model_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_test(NAME nailong_model_contract COMMAND anomaly_nailong_model_fixture
+            "${CMAKE_CURRENT_SOURCE_DIR}/plugins/Nailong/assets/mesh/lod0_skinned.nlm")
+    endif()
     anomaly_add_plugin(anomaly_builtin_character_studio
         SOURCES plugins/CharacterStudio/plugin.cpp
         MANIFEST plugins/CharacterStudio/manifest.json
@@ -1732,7 +1768,9 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
         anomaly_builtin_model_scale anomaly_builtin_autofish anomaly_builtin_character_studio
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
-        anomaly_builtin_npc_summon)
+        anomaly_builtin_npc_summon anomaly_builtin_training_dummy
+        anomaly_builtin_summon_lab anomaly_builtin_memory_dump anomaly_builtin_nailong)
+
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
             anomaly_builtin_nte_movement_hold
@@ -1761,6 +1799,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_night999 PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_npc_summon PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_nailong PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
     if(TARGET anomaly-platform-preview)
@@ -1825,6 +1864,7 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_deserted Deserted)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_hifi_vehicle_music HiFiVehicleMusic)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_jelly Jelly)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_memory_dump MemoryDump)
 
 if(TARGET anomaly-platform-preview)
     add_custom_command(TARGET anomaly-platform-preview POST_BUILD

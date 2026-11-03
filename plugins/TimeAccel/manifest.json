@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "anomaly.builtin.nte-time-accel",
   "name": "Time Accel",
-  "description": "NTE 时间加速（世界时间膨胀）：给游戏世界设置时间膨胀倍率，整体加速游戏节奏。界面可改键，Backspace 解除绑定。窗口底部显示当前实际生效倍率。注意2倍数以上角色伤害可能会异常。",
+  "description": "NTE time acceleration (world time dilation): sets a time dilation multiplier on the game world so the whole game runs faster. Hotkeys can be rebound in the UI; Backspace unbinds. The bottom line shows the multiplier actually in effect. Character damage may be anomalous at 2x and above.",
   "author": "WawMew",
   "license": "AGPL-3.0-only",
   "audience": "developer",
@@ -23,6 +23,10 @@
   "services": [
     {
       "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
       "minVersion": 1
     },
     {

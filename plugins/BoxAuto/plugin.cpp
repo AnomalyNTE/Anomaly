@@ -5,7 +5,7 @@
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/localization.h"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include "oracle_stone_profile.hpp"
 #include "oracle_stone_runtime.hpp"
 
@@ -200,7 +200,7 @@ struct Context final {
     const AnomalyNteNavigationServiceV1* navigation{};
     const AnomalyNteMapLandmarksServiceV1* map_landmarks{};
     const AnomalyNtePickupServiceV1* pickup{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     std::uintptr_t g_objects_address{};
     std::uintptr_t g_world_address{};
     std::uintptr_t controller{};
@@ -1689,7 +1689,9 @@ void ReadTable(Context& context) {
     void* table_object{};
     if (!ObjectsReady(context.objects)) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = "读表失败：objects 服务不可用";
+        context.status = context.localizer.Text(
+            "status.read_failed_objects",
+            "Read table failed: the objects service is unavailable");
         return;
     }
     AnomalyGenerationHandleV1 handle{};
@@ -1697,22 +1699,32 @@ void ReadTable(Context& context) {
         context.objects->user, anomaly::sdk::StringView(kEnvTablePath), &handle);
     if (st.code != ANOMALY_STATUS_V1_OK || handle.id == 0) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = "读表失败：find_exact code=" + std::to_string(st.code);
+        const std::string code_str = std::to_string(st.code);
+        const std::array code_args{std::string_view(code_str)};
+        context.status = context.localizer.Format(
+            "status.read_failed_find_exact",
+            "Read table failed: find_exact code={0}", code_args);
         return;
     }
     if (context.g_objects_address == 0 &&
         !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
                             context.g_objects_address)) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = "读表失败：GObjects 解析失败";
+        context.status = context.localizer.Text(
+            "status.read_failed_gobjects",
+            "Read table failed: could not resolve GObjects");
         return;
     }
     const auto index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
     table_object = ObjectAt(context.g_objects_address, index);
     if (table_object == nullptr) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = "读表失败：ObjectAt 返回空 handle.id=" +
-            std::to_string(handle.id);
+        const std::string handle_id_str = std::to_string(handle.id);
+        const std::array handle_args{std::string_view(handle_id_str)};
+        context.status = context.localizer.Format(
+            "status.read_failed_object_at",
+            "Read table failed: ObjectAt returned an empty handle (id={0})",
+            handle_args);
         return;
     }
     struct ArrayHeader {
@@ -1725,7 +1737,9 @@ void ReadTable(Context& context) {
               header) ||
         header.count <= 0 || header.capacity < header.count || header.data == 0) {
         std::lock_guard<std::mutex> lock(context.mutex);
-        context.status = "读表失败：RowMap 读取失败";
+        context.status = context.localizer.Text(
+            "status.read_failed_row_map",
+            "Read table failed: could not read the row map");
         return;
     }
     for (std::int32_t i = 0; i < header.count; ++i) {
@@ -2343,7 +2357,8 @@ void Begin(Context& context) {
         !HasShopStealthSkill(context)) {
         context.running = false;
         context.status = context.localizer.Text(
-            "status.shop_requires_zankou", "商店偷取需要使用残虹");
+            "status.shop_requires_zankou",
+            "Shop stealing requires the Zankou skill.");
         return;
     }
     context.status = context.localizer.Text("status.started", "Started");
@@ -2568,7 +2583,9 @@ bool StartShopExitTransfer(Context& context, const Point& target,
     context.shop_exit_ready_at = now + kShopExitRecoverySettle;
     context.teleported = false;
     context.target_actor = 0;
-    context.status = "商店拿取：移到店外恢复隐身";
+    context.status = context.localizer.Text(
+        "status.shop_exit_transfer",
+        "Shop pickup: moving outside the shop to restore stealth");
     LogShop(context, "shop exit transfer attempt=" +
         std::to_string(context.shop_exit_transfer_attempts));
     return true;
@@ -2589,7 +2606,9 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
                 context.shop_stealth_ready = true;
                 context.teleported = false;
                 context.due = now + std::chrono::seconds(1);
-                context.status = "商店拿取：店外隐身成功，返回目标";
+                context.status = context.localizer.Text(
+                    "status.shop_exit_stealth_ok",
+                    "Shop pickup: stealth restored outside, returning to the target");
                 return false;
             }
         }
@@ -2600,7 +2619,9 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
         context.shop_exit_recovery_active = false;
         context.shop_exit_transfer_pending = false;
         context.shop_exit_ready_at = {};
-        context.status = "商店拿取：店外恢复失败，前往固定安全点";
+        context.status = context.localizer.Text(
+            "status.shop_exit_recovery_failed",
+            "Shop pickup: recovery outside failed, heading to the fixed safe point");
     }
     if (context.shop_safe_transfer_pending) {
         double position[3]{};
@@ -2618,7 +2639,9 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
                 context.running = false;
                 context.shop_safe_transfer_pending = false;
                 context.stop_movement_pending = true;
-                context.status = "商店拿取：固定安全点重传次数用尽，已停止";
+                context.status = context.localizer.Text(
+                    "status.shop_safe_exhausted",
+                    "Shop pickup: fixed safe point teleports used up, stopped");
                 context.due = now + std::chrono::seconds(1);
                 return false;
             }
@@ -2627,7 +2650,9 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
                 ++context.shop_safe_transfer_attempts;
                 context.shop_safe_retry_at = now + kShopSafeRetryDelay;
                 context.shop_safe_deadline = now + kShopSafeDeadline;
-                context.status = "商店拿取：安全点未加载，正在重传";
+                context.status = context.localizer.Text(
+                    "status.shop_safe_loading",
+                    "Shop pickup: the safe point is not loaded, teleporting again");
                 LogShop(context, "fixed safe point transfer retry=" + std::to_string(context.shop_safe_transfer_attempts));
             } else {
                 context.shop_safe_retry_at = now + kShopSafeRetryInterval;
@@ -2638,7 +2663,9 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
                 context.running = false;
                 context.shop_safe_transfer_pending = false;
                 context.stop_movement_pending = true;
-                context.status = "商店拿取：固定安全点加载超时，已停止";
+                context.status = context.localizer.Text(
+                    "status.shop_safe_timeout",
+                    "Shop pickup: fixed safe point load timed out, stopped");
             }
             context.due = now + std::chrono::milliseconds(300);
             return false;
@@ -2652,14 +2679,18 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
             context.shop_safe_retry_at = {};
             context.teleported = false;
             context.due = now + std::chrono::seconds(1);
-            context.status = "商店拿取：固定点隐身成功，返回目标";
+            context.status = context.localizer.Text(
+                "status.shop_safe_stealth_ok",
+                "Shop pickup: stealth restored at the fixed point, returning to the target");
             return false;
         }
         if (now >= context.shop_safe_deadline) {
             context.running = false;
             context.shop_safe_transfer_pending = false;
             context.stop_movement_pending = true;
-            context.status = "商店拿取：固定点仍无法开启隐身，已停止";
+            context.status = context.localizer.Text(
+                "status.shop_safe_stealth_failed",
+                "Shop pickup: the fixed point still cannot start stealth, stopped");
         }
         context.due = now + std::chrono::seconds(1);
         return false;
@@ -2673,7 +2704,9 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
     if (!Teleport(context, safe)) {
         context.running = false;
         context.stop_movement_pending = true;
-        context.status = "商店拿取：无法到达固定安全点，已停止";
+        context.status = context.localizer.Text(
+            "status.shop_safe_unreachable",
+            "Shop pickup: cannot reach the fixed safe point, stopped");
         return false;
     }
     context.shop_safe_transfer_pending = true;
@@ -2683,7 +2716,9 @@ bool PrepareShopStealth(Context& context, const Point& target, const std::chrono
     context.shop_safe_retry_at = now + kShopSafeRetryDelay;
     context.teleported = false;
     context.target_actor = 0;
-    context.status = "商店拿取：前往固定安全点";
+    context.status = context.localizer.Text(
+        "status.shop_safe_transfer",
+        "Shop pickup: heading to the fixed safe point");
     LogShop(context, "fixed safe point transfer point=" + target.row_name);
     context.due = now + std::chrono::milliseconds(500);
     return false;
@@ -2905,8 +2940,13 @@ void TickPickup(Context& context, const Point& p,
                 ++context.pickup_retries;
                 context.pickup_started = false;
                 context.due = now + std::chrono::milliseconds(1000);
-                context.status = "等待箱子加载 " + p.row_name +
-                    " (" + std::to_string(context.pickup_retries) + ")";
+                const std::string box_retry_str =
+                    std::to_string(context.pickup_retries);
+                const std::array box_load_args{
+                    std::string_view(box_retry_str), std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.waiting_load", "Waiting box load {0} [{1}]",
+                    box_load_args);
                 return;
             }
             if (context.target_actor == 0) {
@@ -3017,8 +3057,11 @@ void TickPickup(Context& context, const Point& p,
         context.due = now;
         return;
     }
-    context.status = "拾取中 " + p.row_name + " conf=" +
-        std::to_string(snapshot.confirmed);
+    const std::string confirmed_str = std::to_string(snapshot.confirmed);
+    const std::array confirmed_args{
+        std::string_view(p.row_name), std::string_view(confirmed_str)};
+    context.status = context.localizer.Format(
+        "status.picking_confirmed", "Picking {0} conf={1}", confirmed_args);
     context.due = now + std::chrono::milliseconds(300);
 }
 
@@ -3034,8 +3077,13 @@ void TickFoodPickup(Context& context, const Point& p,
             ++context.retry_count;
             if (context.retry_count <= kActorLoadWaitSeconds) {
                 context.due = now + std::chrono::milliseconds(1000);
-                context.status = "等待加载 " + p.row_name + " (" +
-                    std::to_string(context.retry_count) + ")";
+                const std::string actor_retry_str =
+                    std::to_string(context.retry_count);
+                const std::array actor_load_args{
+                    std::string_view(p.row_name), std::string_view(actor_retry_str)};
+                context.status = context.localizer.Format(
+                    "status.waiting_actor_load", "Waiting load {0} ({1})",
+                    actor_load_args);
             } else if (context.teleport_retry == 0) {
                 std::uintptr_t verify_actor =
                     ScanForActor(context, p, ActorPrefixForCategory(p.category));
@@ -3043,16 +3091,23 @@ void TickFoodPickup(Context& context, const Point& p,
                 context.teleported = false;
                 context.retry_count = 0;
                 context.due = now + std::chrono::milliseconds(2000);
+                const std::array unloaded_args{std::string_view(p.row_name)};
                 context.status = verify_actor == 0
-                    ? "箱子未加载，重传 " + p.row_name
-                    : "重传 " + p.row_name;
+                    ? context.localizer.Format(
+                          "status.box_unloaded_reteleport",
+                          "Box not loaded, re-teleport {0}", unloaded_args)
+                    : context.localizer.Format(
+                          "status.reteleport", "Re-teleport [{0}]",
+                          unloaded_args);
             } else {
                 NoteFoodPointEmpty(context, p.row_name);
                 ++context.skipped;
                 ++context.current_index;
                 ResetPointState(context);
                 context.due = now;
-                context.status = "没找到，跳过 " + p.row_name;
+                const std::array not_found_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.not_found_skip", "Not found, skip {0}", not_found_args);
             }
             return;
         }
@@ -3079,13 +3134,17 @@ void TickFoodPickup(Context& context, const Point& p,
                     context.food_approaching = false;
                     context.food_has_last_pos = false;
                     context.due = now + std::chrono::milliseconds(2000);
-                    context.status = "识别偏离，重传 " + p.row_name;
+                    const std::array drift_reteleport_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.actor_drift_reteleport", "Actor drifted, re-teleport {0}", drift_reteleport_args);
                 } else {
                     ++context.skipped;
                     ++context.current_index;
                     ResetPointState(context);
                     context.due = now;
-                    context.status = "识别偏离，跳过 " + p.row_name;
+                    const std::array drift_skip_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.actor_drift_skip", "Actor drifted, skip {0}", drift_skip_args);
                 }
                 return;
             }
@@ -3101,7 +3160,9 @@ void TickFoodPickup(Context& context, const Point& p,
                     ap.z = actor_pos[2];
                     Teleport(context, ap);
                     context.due = now + std::chrono::milliseconds(1000);
-                    context.status = "靠近中(传送) " + p.row_name;
+                    const std::array approach_teleport_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.approaching_teleport", "Approaching (teleport) {0}", approach_teleport_args);
                     return;
                 }
                 if (NavigationReady(context.navigation)) {
@@ -3149,9 +3210,14 @@ void TickFoodPickup(Context& context, const Point& p,
                         context.food_has_last_pos = false;
                     } else {
                         context.due = now + std::chrono::milliseconds(300);
-                        context.status = "靠近中 " +
-                            std::to_string(static_cast<long long>(dist)) + "cm " +
-                            p.row_name;
+                        const std::string approach_distance =
+                            std::to_string(static_cast<long long>(dist));
+                        const std::array approach_distance_args{
+                            std::string_view(approach_distance),
+                            std::string_view(p.row_name)};
+                        context.status = context.localizer.Format(
+                            "status.approaching_distance",
+                            "Approaching {0}cm {1}", approach_distance_args);
                         return;
                     }
                 } else {
@@ -3168,7 +3234,9 @@ void TickFoodPickup(Context& context, const Point& p,
             ++context.current_index;
             ResetPointState(context);
             context.due = now;
-            context.status = "拾取不可用 " + p.row_name;
+            const std::array pickup_unavailable_args{std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                "status.pickup_unavailable_point", "Pickup unavailable {0}", pickup_unavailable_args);
             return;
         }
         {
@@ -3189,14 +3257,18 @@ void TickFoodPickup(Context& context, const Point& p,
                     if (Teleport(context, ap)) {
                         context.due =
                             now + std::chrono::milliseconds(1000);
-                        context.status = "距离过远，传送到物品 " + p.row_name;
+                        const std::array too_far_args{std::string_view(p.row_name)};
+                        context.status = context.localizer.Format(
+                            "status.too_far_teleport", "Too far, teleporting to the item {0}", too_far_args);
                         return;
                     }
                     ++context.skipped;
                     ++context.current_index;
                     ResetPointState(context);
                     context.due = now;
-                    context.status = "距离过远传送失败，跳过 " + p.row_name;
+                    const std::array too_far_failed_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.too_far_skip", "Too far to teleport, skip {0}", too_far_failed_args);
                     return;
                 }
             }
@@ -3209,7 +3281,9 @@ void TickFoodPickup(Context& context, const Point& p,
                 ++context.current_index;
                 ResetPointState(context);
                 context.due = now;
-                context.status = "拾取快照失败 " + p.row_name;
+                const std::array snapshot_failed_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.pickup_snapshot_failed", "Pickup snapshot failed [{0}]", snapshot_failed_args);
                 return;
             }
             AnomalyNtePickupRequestV1 request{sizeof(request)};
@@ -3222,7 +3296,9 @@ void TickFoodPickup(Context& context, const Point& p,
                 ++context.current_index;
                 ResetPointState(context);
                 context.due = now;
-                context.status = "拾取请求失败 " + p.row_name;
+                const std::array request_failed_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.pickup_request_failed", "Pickup request failed [{0}]", request_failed_args);
                 return;
             }
             context.pickup_baseline_sequence = baseline.sequence;
@@ -3231,7 +3307,9 @@ void TickFoodPickup(Context& context, const Point& p,
                 now + std::chrono::milliseconds(
                           static_cast<long long>(kPickupTimeoutSeconds * 1000.0));
             context.due = now;
-            context.status = "拾取中 " + p.row_name;
+            const std::array picking_args{std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                "status.picking", "Picking [{0}]", picking_args);
             return;
         }
         AnomalyNtePickupSnapshotV1 snapshot{sizeof(snapshot)};
@@ -3247,7 +3325,9 @@ void TickFoodPickup(Context& context, const Point& p,
                 ++context.current_index;
                 ResetPointState(context);
                 context.due = now;
-                context.status = "已拾取 " + p.row_name;
+                const std::array picked_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.picked_item", "Picked {0}", picked_args);
                 return;
             }
             if (snapshot.nearby == 0 && snapshot.triggered == 0 &&
@@ -3256,8 +3336,14 @@ void TickFoodPickup(Context& context, const Point& p,
                     ++context.pickup_retries;
                     context.pickup_started = false;
                     context.due = now + std::chrono::milliseconds(1000);
-                    context.status = "等待拾取物 " + p.row_name + " (" +
-                        std::to_string(context.pickup_retries) + ")";
+                    const std::string item_retry_str =
+                        std::to_string(context.pickup_retries);
+                    const std::array item_load_args{
+                        std::string_view(p.row_name),
+                        std::string_view(item_retry_str)};
+                    context.status = context.localizer.Format(
+                        "status.waiting_pickup_item",
+                        "Waiting for pickup {0} ({1})", item_load_args);
                     return;
                 }
                 if (p.category == "prison" && context.target_actor != 0) {
@@ -3267,20 +3353,26 @@ void TickFoodPickup(Context& context, const Point& p,
                             context.interact_verify_deadline =
                                 now + std::chrono::seconds(6);
                             context.due = now + std::chrono::milliseconds(1000);
-                            context.status = "监狱专属交互 " + p.row_name;
+                            const std::array prison_interact_args{std::string_view(p.row_name)};
+                            context.status = context.localizer.Format(
+                                "status.prison_interact", "Prison interaction {0}", prison_interact_args);
                             return;
                         }
                     } else if (now < context.interact_verify_deadline) {
                         TriggerInteractPickup(context, context.target_actor);
                         context.due = now + std::chrono::milliseconds(1000);
-                        context.status = "监狱专属等待 " + p.row_name;
+                        const std::array prison_wait_args{std::string_view(p.row_name)};
+                        context.status = context.localizer.Format(
+                            "status.prison_wait", "Prison wait {0}", prison_wait_args);
                         return;
                     } else {
                         ++context.picked;
                         ++context.current_index;
                         ResetPointState(context);
                         context.due = now;
-                        context.status = "监狱专属拾取 " + p.row_name;
+                        const std::array prison_pickup_args{std::string_view(p.row_name)};
+                        context.status = context.localizer.Format(
+                            "status.prison_pickup", "Prison pickup {0}", prison_pickup_args);
                         return;
                     }
                 }
@@ -3294,21 +3386,27 @@ void TickFoodPickup(Context& context, const Point& p,
                     context.food_approaching = false;
                     context.food_has_last_pos = false;
                     context.due = now + std::chrono::milliseconds(2000);
-                    context.status = "没拾取到，重传 " + p.row_name;
+                    const std::array nothing_reteleport_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.nothing_picked_reteleport", "Nothing picked, re-teleport {0}", nothing_reteleport_args);
                     return;
                 }
                 ++context.skipped;
                 ++context.current_index;
                 ResetPointState(context);
                 context.due = now;
-                context.status = "没拾取到，跳过 " + p.row_name;
+                const std::array nothing_skip_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.nothing_picked_skip", "Nothing picked, skip {0}", nothing_skip_args);
                 return;
             }
             if (context.pickup_retries < kPickupMaximumRetries) {
                 ++context.pickup_retries;
                 context.pickup_started = false;
                 context.due = now + std::chrono::milliseconds(300);
-                context.status = "拾取重试 " + p.row_name;
+                const std::array pickup_retry_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.pickup_retry_point", "Pickup retry {0}", pickup_retry_args);
                 return;
             }
             if (context.teleport_retry == 0) {
@@ -3321,14 +3419,18 @@ void TickFoodPickup(Context& context, const Point& p,
                 context.food_approaching = false;
                 context.food_has_last_pos = false;
                 context.due = now + std::chrono::milliseconds(2000);
-                context.status = "拾取失败，重传 " + p.row_name;
+                const std::array pickup_failed_reteleport_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.pickup_failed_reteleport", "Pickup failed, re-teleport {0}", pickup_failed_reteleport_args);
                 return;
             }
             ++context.skipped;
             ++context.current_index;
             ResetPointState(context);
             context.due = now;
-            context.status = "拾取失败 " + p.row_name;
+            const std::array pickup_failed_args{std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                "status.pickup_failed", "Pickup failed [{0}]", pickup_failed_args);
             return;
         }
         if (now >= context.pickup_deadline) {
@@ -3342,18 +3444,24 @@ void TickFoodPickup(Context& context, const Point& p,
                 context.food_approaching = false;
                 context.food_has_last_pos = false;
                 context.due = now + std::chrono::milliseconds(2000);
-                context.status = "拾取超时，重传 " + p.row_name;
+                const std::array pickup_timeout_reteleport_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.pickup_timeout_reteleport", "Pickup timeout, re-teleport {0}", pickup_timeout_reteleport_args);
                 return;
             }
             ++context.skipped;
             ++context.current_index;
             ResetPointState(context);
             context.due = now;
-            context.status = "拾取超时 " + p.row_name;
+            const std::array pickup_timeout_args{std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                "status.pickup_timeout", "Pickup timeout [{0}]", pickup_timeout_args);
             return;
         }
         context.due = now + std::chrono::milliseconds(300);
-        context.status = "拾取中 " + p.row_name;
+        const std::array picking_args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format(
+            "status.picking", "Picking [{0}]", picking_args);
     }
 }
 
@@ -3756,13 +3864,17 @@ void Tick(Context& context) {
                     context.food_approaching = false;
                     context.food_has_last_pos = false;
                     context.due = now + std::chrono::milliseconds(2000);
-                    context.status = "识别偏离，重传 " + p.row_name;
+                    const std::array drift_reteleport_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.actor_drift_reteleport", "Actor drifted, re-teleport {0}", drift_reteleport_args);
                 } else {
                     ++context.skipped;
                     ++context.current_index;
                     ResetPointState(context);
                     context.due = now;
-                    context.status = "识别偏离，跳过 " + p.row_name;
+                    const std::array drift_skip_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.actor_drift_skip", "Actor drifted, skip {0}", drift_skip_args);
                 }
                 return;
             }
@@ -3778,7 +3890,9 @@ void Tick(Context& context) {
                     ap.z = actor_pos[2];
                     Teleport(context, ap);
                     context.due = now + std::chrono::milliseconds(1000);
-                    context.status = "靠近中(传送) " + p.row_name;
+                    const std::array approach_teleport_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.approaching_teleport", "Approaching (teleport) {0}", approach_teleport_args);
                     return;
                 }
                 if (NavigationReady(context.navigation)) {
@@ -3809,9 +3923,14 @@ void Tick(Context& context) {
                             context.navigation->user, dest);
                     }
                     context.due = now + std::chrono::milliseconds(300);
-                    context.status = "靠近中 " +
-                        std::to_string(static_cast<long long>(dist)) + "cm " +
-                        p.row_name;
+                    const std::string approach_distance =
+                        std::to_string(static_cast<long long>(dist));
+                    const std::array approach_distance_args{
+                        std::string_view(approach_distance),
+                        std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.approaching_distance",
+                        "Approaching {0}cm {1}", approach_distance_args);
                     return;
                 }
                 context.due = now + std::chrono::milliseconds(500);
@@ -3901,7 +4020,7 @@ void Tick(Context& context) {
                         context.due = now + std::chrono::milliseconds(500);
                         context.status = context.localizer.Text(
                             "status.shop_interact_retry",
-                            "隐身有效，等待拾取入口重试");
+                            "Stealth active, waiting for the pickup entry to retry");
                         return;
                     }
                     if (ShopRescanBudgetSpent(context)) {
@@ -3924,7 +4043,7 @@ void Tick(Context& context) {
                     context.due = now + std::chrono::milliseconds(700);
                     context.status = context.localizer.Text(
                         "status.shop_interact_rescan",
-                        "隐身有效，重新扫描拾取目标");
+                        "Stealth active, rescanning the pickup target");
                     return;
                 }
                 if (context.shop_take_retries >= 2) {
@@ -3932,7 +4051,9 @@ void Tick(Context& context) {
                     ++context.current_index;
                     ResetPointState(context);
                     context.due = now;
-                    context.status = "商店拿取失败，跳过 " + p.row_name;
+                    const std::array shop_take_failed_args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.shop_take_failed", "Shop pickup failed, skip {0}", shop_take_failed_args);
                     return;
                 }
                 ++context.shop_take_retries;
@@ -3970,7 +4091,9 @@ void Tick(Context& context) {
                 context.food_approaching = false;
                 context.food_has_last_pos = false;
                 context.due = now + std::chrono::milliseconds(2000);
-                context.status = "交互失败，重传 " + p.row_name;
+                const std::array interact_reteleport_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.interact_failed_reteleport", "Interact failed, re-teleport {0}", interact_reteleport_args);
             } else {
                 const std::array interact_failed_args{std::string_view(p.row_name)};
                 context.status = context.localizer.Format(
@@ -4032,7 +4155,7 @@ void Tick(Context& context) {
                 context.due = now + std::chrono::milliseconds(700);
                 context.status = context.localizer.Text(
                     "status.shop_stealth_wait",
-                    "隐身仍有效，重新扫描拾取目标");
+                    "Stealth still active, rescanning the pickup target");
                 return;
             }
             if (context.shop_take_retries < 2) {
@@ -4122,13 +4245,17 @@ void Tick(Context& context) {
                 context.interact_retry = 0;
                 context.can_interact_retries = 0;
                 context.due = now + std::chrono::milliseconds(2000);
-                context.status = "拾取未确认，重传 " + p.row_name;
+                const std::array unconfirmed_reteleport_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.pickup_unconfirmed_reteleport", "Pickup unconfirmed, re-teleport {0}", unconfirmed_reteleport_args);
             } else {
                 ++context.skipped;
                 ++context.current_index;
                 ResetPointState(context);
                 context.due = now;
-                context.status = "拾取未确认，跳过 " + p.row_name;
+                const std::array unconfirmed_skip_args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.pickup_unconfirmed_skip", "Pickup unconfirmed, skip {0}", unconfirmed_skip_args);
             }
         } else {
             ++context.picked;
@@ -4150,7 +4277,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     if (!context) return {ANOMALY_STATUS_V1_FAILED, 0, {nullptr, 0}};
     context->host = host;
     const auto view = anomaly::sdk::Host(host);
-    context->localizer = anomaly::plugins::Localizer(host);
+    context->localizer = anomaly::sdk::Localizer(host);
     context->signature = view.Query<AnomalySignatureServiceV1>(
         ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).get();
     context->names = view.Query<AnomalyUe5NamesServiceV1>(
@@ -4278,8 +4405,11 @@ void ANOMALY_CALL Update(void* plugin_context, const double delta_seconds) {
                 context.manual_landmark_target[2] = p.z;
                 context.manual_landmark_pending = true;
                 std::lock_guard<std::mutex> lock(context.mutex);
-                context.status = context.localizer.Text(
-                    "status.landmark_transfer", "Fast travel");
+                const std::array manual_landmark_args{
+                    std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.landmark_transfer", "Fast travel [{0}]",
+                    manual_landmark_args);
             } else {
                 context.manual_landmark_target[0] = p.x;
                 context.manual_landmark_target[1] = p.y;
@@ -4459,8 +4589,8 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         context.localizer.Text("type.box_food", "Food Box"),
         context.localizer.Text("type.item_food", "Single Food"),
         context.localizer.Text("type.prison", "Prison Resource"),
-        context.localizer.Text("type.wallet", "钱包"),
-        context.localizer.Text("type.oracle", "乌鸦石头"),
+        context.localizer.Text("type.wallet", "Wallet"),
+        context.localizer.Text("type.oracle", "Oracle Stone"),
         context.localizer.Text("type.shop_steal", "Shop Items"),
     };
     for (std::size_t i = 0; i < type_names.size(); ++i) {
@@ -4486,7 +4616,8 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     }
     if (type_choice == 11) {
         const std::string requirement = context.localizer.Text(
-            "status.shop_requires_zankou", "商店偷取需要使用残虹");
+            "status.shop_requires_zankou",
+            "Shop stealing requires the Zankou skill.");
         ui->text(ui->user, anomaly::sdk::StringView(requirement));
     }
     const bool developer_mode = context.developer_mode.load(std::memory_order_acquire);
@@ -4549,7 +4680,9 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         const std::string total_str = std::to_string(oracle_total);
         const std::array total_args{std::string_view(total_str)};
         ui->text(ui->user, anomaly::sdk::StringView(context.localizer.Format(
-            "oracle.teleport_points", "乌鸦石头传送点 共 {0} 个（只能手动传送）", total_args)));
+            "oracle.teleport_points",
+            "Oracle stone teleport points: {0} in total (manual teleport only)",
+            total_args)));
     } else {
         std::string status;
         std::size_t total{};

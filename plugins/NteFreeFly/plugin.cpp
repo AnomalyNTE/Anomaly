@@ -5,7 +5,7 @@
 // 本插件完全遵守这条线，因此也不需要 memory-read / memory-write / interop-* 任何授权。
 //
 // 实现机制：
-//   * Game 域每 tick 用一个由插件自己维护的"虚拟位置"推进玩家位置，并通过
+//   * Game 域每 tick 用一个由插件自己维护的「虚拟位置」推进玩家位置，并通过
 //     anomaly.nte.player-teleport 落位。宿主以 bSweep=false / bTeleport=true 执行，
 //     位移不经过碰撞检测 —— 这就是穿墙，也是它在空中不会下坠的原因。
 //   * anomaly.nte.player-hold 把角色的重力系数归零、速度清零，角色因此停在插件给的
@@ -16,7 +16,7 @@
 // 线程域：on_update = Game 域（唯一接触游戏服务的地方，也是 teleport / hold 唯一合法的域）；
 //         on_draw   = Render 域（只复制插件自己的展示快照，不做任何游戏查询）。
 
-#include "../common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
@@ -146,8 +146,8 @@ struct Context final {
     Services services{};
 
     // 面板文案。只在 on_draw（Render 域）使用；服务不可用时回退英文原文。
-    anomaly::plugins::Localizer localizer;
-    // 窗口可见性状态：宿主把"点了标题栏的关闭按钮"回写到这里，从插件列表重新打开窗口
+    anomaly::sdk::Localizer localizer;
+    // 窗口可见性状态：宿主把「点了标题栏的关闭按钮」回写到这里，从插件列表重新打开窗口
     // 时又会把它置回 1。只由 on_draw 读写。
     int window_open{1};
 
@@ -160,7 +160,7 @@ struct Context final {
     std::atomic_bool capture_requested{false};
     std::atomic_bool capture_aborted{false};
 
-    // 设置持久化（anomaly.config 不可用时整段降级为"仅本次会话生效"）。
+    // 设置持久化（anomaly.config 不可用时整段降级为「仅本次会话生效」）。
     AnomalyGenerationHandleV1 settings_schema{};
     bool settings_dirty{};
     bool settings_schema_ready{};
@@ -210,7 +210,7 @@ void Log(const Context& context, const std::uint32_t level, const char* message)
 // 只是本次会话结束后回到默认值，插件其余功能不受影响。
 // ---------------------------------------------------------------------------
 
-// 定义在下面的"输入"小节，这里先用，故前置声明。
+// 定义在下面的「输入」小节，这里先用，故前置声明。
 bool IsReservedKey(std::uint32_t key) noexcept;
 void KeyNameForLog(std::uint32_t key, char* out, std::size_t size) noexcept;
 
@@ -501,7 +501,7 @@ void KeyNameForLog(const std::uint32_t key, char* out, const std::size_t size) n
 }
 
 // 面板用（只在 on_draw 调用）：同一个键码走 localization 服务，缺 catalog 时回退英文。
-std::string KeyLabel(const anomaly::plugins::Localizer& localizer, const std::uint32_t key) {
+std::string KeyLabel(const anomaly::sdk::Localizer& localizer, const std::uint32_t key) {
     if ((key >= 0x41U && key <= 0x5AU) || (key >= 0x30U && key <= 0x39U)) {
         return std::string(1, static_cast<char>(key));
     }
@@ -588,7 +588,7 @@ AnomalyStatusV1 SendTeleport(Context& context, const AnomalyGenerationHandleV1 w
     AnomalyNtePlayerTeleportRequestV1 request{sizeof(request)};
     // IMMEDIATE：每 tick 的步长只有几厘米到几十厘米，落点必然已经在已加载区域内。
     // 宿主默认模式（flags = 0）会先流式预载、再冻结角色，那是为一次性跨区传送设计的窗口，
-    // 与"每帧连续控制"互相打架，所以这里明确走同步语义。
+    // 与「每帧连续控制」互相打架，所以这里明确走同步语义。
     request.flags = ANOMALY_NTE_PLAYER_TELEPORT_REQUEST_V1_IMMEDIATE;
     request.world = world;
     request.player = player;
@@ -627,7 +627,7 @@ void EngageHold(Context& context) noexcept {
     }
 
     // 角色被送到空中后引擎会把它置为 MOVE_Falling，hold 的写入在该状态下会被游戏覆盖
-    // （hold_snapshot 的 movement_mode 为 3 就是"被覆盖了"的可观测信号），所以要按固定
+    // （hold_snapshot 的 movement_mode 为 3 就是「被覆盖了」的可观测信号），所以要按固定
     // 间隔持续重申，单次 engage 维持不住。
     context.hold_status = status.code;
     context.hold_engaged = status.code == ANOMALY_STATUS_V1_OK;
@@ -637,7 +637,7 @@ void ReleaseHold(Context& context) noexcept {
     if (!context.hold_engaged) return;
     const auto* hold = context.services.hold;
     const auto* player = context.services.player;
-    // 停用路径必须交还重力，绝不能让角色带着"重力归零"离开本次插件生命周期。
+    // 停用路径必须交还重力，绝不能让角色带着「重力归零」离开本次插件生命周期。
     // 释放要和 engage 走同一个入口，所以顺序保持一致。
     if (HAS_FIELD(player, AnomalyNtePlayerServiceV1, hold_release)) {
         static_cast<void>(player->hold_release(player->user));
@@ -782,7 +782,7 @@ void UpdateFlight(Context& context, const InputState& input, const double delta_
     }
 
     // hold 的只读诊断：movement_mode 为 3（MOVE_Falling）表示游戏仍在报告下落，
-    // 那是"游戏覆盖了 hold 写入"的唯一可观测信号。两个入口都读。
+    // 那是「游戏覆盖了 hold 写入」的唯一可观测信号。两个入口都读。
     context.hold_report_seconds += delta_seconds;
     if (context.hold_report_seconds >= kHoldReportSeconds) {
         context.hold_report_seconds = 0.0;
@@ -873,13 +873,13 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     context->services.input = input.get();
     context->services.config = ConfigMethodsAvailable(config.get()) ? config.get() : nullptr;
     // localization 也是可选的：拿不到服务时面板回退英文原文，功能不受影响。
-    context->localizer = anomaly::plugins::Localizer(host);
+    context->localizer = anomaly::sdk::Localizer(host);
 
     RegisterSettingsSchema(*context);
     LoadSettings(*context);
 
     // NTE 服务由游戏桥接层在玩家存在、Profile 校验通过之后才发布。在这里返回 UNAVAILABLE
-    // 会把插件永久停在"等待服务"状态，所以先加载，运行期再补齐。
+    // 会把插件永久停在「等待服务」状态，所以先加载，运行期再补齐。
     ResolveGameServices(*context);
 
     *plugin_context = context;
@@ -926,7 +926,7 @@ void ANOMALY_CALL Update(void* plugin_context, double delta_seconds) noexcept {
 
         const InputState input = ReadInput(*context);
 
-        // 快捷键捕获：面板点了"修改"之后，在 Game 域等一个可用的按键。
+        // 快捷键捕获：面板点了「修改」之后，在 Game 域等一个可用的按键。
         if (context->capture_aborted.exchange(false, std::memory_order_relaxed)) {
             context->capturing = false;
         }
@@ -972,7 +972,7 @@ void ANOMALY_CALL Update(void* plugin_context, double delta_seconds) noexcept {
 }
 
 // 面板底部的提示行。Game 域只记类别，文字在这里按当前 locale 渲染。
-std::string HintText(const anomaly::plugins::Localizer& localizer, const Hint hint) {
+std::string HintText(const anomaly::sdk::Localizer& localizer, const Hint hint) {
     switch (hint) {
         case Hint::WaitingForSession:
             return localizer.Text(
@@ -1002,6 +1002,15 @@ std::string HintText(const anomaly::plugins::Localizer& localizer, const Hint hi
         "Not active: the game is untouched, exactly as if this plugin were not installed.");
 }
 
+// 面板顶部那一行运行状态。和提示行一样，只在 Render 域按当前 locale 渲染。
+std::string StatusText(const anomaly::sdk::Localizer& localizer, const DisplayState& display) {
+    if (!display.active) return localizer.Text("status.idle", "Not active");
+    if (!display.hold_engaged) {
+        return localizer.Text("status.flying_without_hold", "Flying (character not held)");
+    }
+    return localizer.Text("status.flying", "Flying");
+}
+
 void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) noexcept {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr) return;
@@ -1019,44 +1028,35 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) no
             display = context->display;
         }
 
-        const anomaly::plugins::Localizer& l10n = context->localizer;
+        const anomaly::sdk::Localizer& localizer = context->localizer;
         // open 指针是窗口能被关掉的前提：宿主只在拿到可写指针时才在标题栏画关闭按钮，
-        // 并把"用户点了关闭"回写进来。从插件列表重新打开窗口时，宿主会在调用
+        // 并把「用户点了关闭」回写进来。从插件列表重新打开窗口时，宿主会在调用
         // begin_window 之前把它置回 1，所以窗口关闭状态由宿主驱动。
         int open = context->window_open;
-        const std::string title = l10n.Text("window.title", "Free Fly");
+        const std::string title = localizer.Text("window.title", "Free Fly");
         const int visible = ui->begin_window(ui->user, StringView(title), &open, 0u);
         context->window_open = open;
 
         if (visible != 0) {
-            const std::string toggle_key_label = KeyLabel(l10n, display.toggle_key);
+            const std::string toggle_key_label = KeyLabel(localizer, display.toggle_key);
 
             if (HAS_FIELD(ui, AnomalyUiServiceV1, button) &&
                 HAS_FIELD(ui, AnomalyUiServiceV1, text)) {
-                const char* status_key =
-                    display.active
-                        ? (display.hold_engaged ? "status.flying" : "status.flying_without_hold")
-                        : "status.idle";
-                const char* status_english =
-                    display.active
-                        ? (display.hold_engaged ? "Flying" : "Flying (character not held)")
-                        : "Not active";
-                const std::string status_text = l10n.Text(status_key, status_english);
+                const std::string status_text = StatusText(localizer, display);
                 const std::array<std::string_view, 1> status_arguments{status_text};
                 ui->text(ui->user,
-                         StringView(l10n.Format("status.line", "Status: {0}", status_arguments)));
+                         StringView(localizer.Format("status.line", "Status: {0}", status_arguments)));
 
                 const std::array<std::string_view, 1> guide_arguments{toggle_key_label};
                 ui->text(ui->user,
-                         StringView(l10n.Format("controls.guide",
-                                                "WASD to move · Space to ascend · "
-                                                "Ctrl to descend · {0} to toggle",
+                         StringView(localizer.Format("controls.guide",
+                                                "WASD to move · Space to ascend · Ctrl to descend · {0} to toggle",
                                                 guide_arguments)));
 
                 const std::string toggle_label =
                     display.active
-                        ? l10n.Label("action.disable_flight", "Disable flight", "free-fly-toggle")
-                        : l10n.Label("action.enable_flight", "Enable flight", "free-fly-toggle");
+                        ? localizer.Label("action.disable_flight", "Disable flight", "free-fly-toggle")
+                        : localizer.Label("action.enable_flight", "Enable flight", "free-fly-toggle");
                 if (ui->button(ui->user, StringView(toggle_label), 0.0F, 0.0F) != 0) {
                     context->toggle_requested.store(true, std::memory_order_relaxed);
                 }
@@ -1070,7 +1070,7 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) no
                     const std::array<std::string_view, 3> position_arguments{
                         axes[0].data(), axes[1].data(), axes[2].data()};
                     ui->text(ui->user,
-                             StringView(l10n.Format("status.position",
+                             StringView(localizer.Format("status.position",
                                                     "Position: {0}, {1}, {2}",
                                                     position_arguments)));
 
@@ -1083,7 +1083,7 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) no
                     const std::array<std::string_view, 2> relocation_arguments{
                         relocations.data(), failures.data()};
                     ui->text(ui->user,
-                             StringView(l10n.Format("status.relocations",
+                             StringView(localizer.Format("status.relocations",
                                                     "Relocations: {0} · failures: {1}",
                                                     relocation_arguments)));
 
@@ -1095,47 +1095,46 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) no
                     std::snprintf(mode.data(), mode.size(), "%u", display.movement_mode);
                     const std::string hold_state =
                         display.hold_service_available
-                            ? l10n.Text("status.hold_available", "available")
-                            : l10n.Text("status.hold_unavailable", "unavailable");
+                            ? localizer.Text("status.hold_available", "available")
+                            : localizer.Text("status.hold_unavailable", "unavailable");
                     const std::array<std::string_view, 3> hold_arguments{
                         hold_state, engage.data(), mode.data()};
                     ui->text(ui->user,
-                             StringView(l10n.Format("status.hold",
-                                                    "Gravity hold: service {0} · engage returned "
-                                                    "{1} · movement mode {2}",
+                             StringView(localizer.Format("status.hold",
+                                                    "Gravity hold: service {0} · engage returned {1} · movement mode {2}",
                                                     hold_arguments)));
                 }
 
-                ui->text(ui->user, StringView(HintText(l10n, display.hint)));
+                ui->text(ui->user, StringView(HintText(localizer, display.hint)));
             }
 
             if (HAS_FIELD(ui, AnomalyUiServiceV1, separator)) ui->separator(ui->user);
 
-            // 开关快捷键：点"修改"后进入捕获，在 Game 域取下一个按下的键。
+            // 开关快捷键：点「修改」后进入捕获，在 Game 域取下一个按下的键。
             if (HAS_FIELD(ui, AnomalyUiServiceV1, text) &&
                 HAS_FIELD(ui, AnomalyUiServiceV1, button)) {
                 if (display.capturing) {
                     ui->text(ui->user,
-                             StringView(l10n.Text("capture.prompt",
+                             StringView(localizer.Text("capture.prompt",
                                                   "Press the key to bind… (Esc cancels)")));
                     const std::string cancel_label =
-                        l10n.Label("action.cancel_capture", "Cancel", "free-fly-cancel-capture");
+                        localizer.Label("action.cancel_capture", "Cancel", "free-fly-cancel-capture");
                     if (ui->button(ui->user, StringView(cancel_label), 0.0F, 0.0F) != 0) {
                         context->capture_aborted.store(true, std::memory_order_relaxed);
                     }
                 } else {
                     const std::array<std::string_view, 1> key_arguments{toggle_key_label};
                     ui->text(ui->user,
-                             StringView(l10n.Format("setting.toggle_key", "Toggle key: {0}",
+                             StringView(localizer.Format("setting.toggle_key", "Toggle key: {0}",
                                                     key_arguments)));
-                    const std::string change_label = l10n.Label(
+                    const std::string change_label = localizer.Label(
                         "action.change_toggle_key", "Change key", "free-fly-change-key");
                     if (ui->button(ui->user, StringView(change_label), 0.0F, 0.0F) != 0) {
                         context->capture_requested.store(true, std::memory_order_relaxed);
                     }
                     if (!display.settings_persisted) {
                         ui->text(ui->user,
-                                 StringView(l10n.Text(
+                                 StringView(localizer.Text(
                                      "setting.not_persisted",
                                      "(the configuration service is unavailable, so changes last "
                                      "for this game session only)")));
@@ -1146,7 +1145,7 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) no
             if (HAS_FIELD(ui, AnomalyUiServiceV1, slider_float)) {
                 float value =
                     static_cast<float>(context->horizontal_speed.load(std::memory_order_relaxed));
-                const std::string horizontal_label = l10n.Label(
+                const std::string horizontal_label = localizer.Label(
                     "setting.horizontal_speed", "Horizontal speed (cm/s)",
                     "free-fly-horizontal-speed");
                 static_cast<void>(ui->slider_float(ui->user, StringView(horizontal_label), &value,
@@ -1155,7 +1154,7 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) no
                                                 std::memory_order_relaxed);
 
                 value = static_cast<float>(context->vertical_speed.load(std::memory_order_relaxed));
-                const std::string vertical_label = l10n.Label(
+                const std::string vertical_label = localizer.Label(
                     "setting.vertical_speed", "Vertical speed (cm/s)", "free-fly-vertical-speed");
                 static_cast<void>(ui->slider_float(ui->user, StringView(vertical_label), &value,
                                                    kMinimumSpeed, kMaximumSpeed));

@@ -311,12 +311,13 @@ void UeBeginScan() {
     const auto* objects = g_context.objects;
     if (names == nullptr || names->find_utf8 == nullptr || names->resolve_utf8 == nullptr ||
         objects == nullptr || objects->count == nullptr || objects->snapshot_at == nullptr) {
-        UeFinish("需要 ue5-names（含 find_utf8/resolve_utf8）与 ue5-objects 服务", true);
+        UeFinish("ue5-names (with find_utf8/resolve_utf8) and ue5-objects are required", true);
         return;
     }
     g_ue_total = objects->count(objects->user);
     if (g_ue_total == 0 || g_ue_total > 16u * 1024u * 1024u) {
-        UeFinish("对象注册表计数异常（" + std::to_string(g_ue_total) + "）", true);
+        UeFinish("object registry count is out of range (" + std::to_string(g_ue_total) + ")",
+                 true);
         return;
     }
     static_cast<void>(UeEnsureRegistry());
@@ -333,8 +334,9 @@ void UeBeginScan() {
 
 void UeFinishScan() {
     if (g_ue_matches.empty()) {
-        UeFinish("注册表里没有任何对象名含「" + std::string(kUeRefreshFunction) + "」（共 " +
-                     std::to_string(g_ue_total) + " 个对象）——相关蓝图尚未加载",
+        UeFinish("no object name in the registry contains \"" +
+                     std::string(kUeRefreshFunction) + "\" (" +
+                     std::to_string(g_ue_total) + " objects) - the blueprint is not loaded yet",
                  true);
         return;
     }
@@ -363,12 +365,15 @@ void UeBeginOwnerScan(const UeReader& reader, const std::size_t index) {
     UeLog("select #" + std::to_string(index) + " " + match.name + " owner=" + match.owner_name +
           " parms=" + std::to_string(g_ue_parms_size));
     if (match.object == 0) {
-        UeFinish("无法解析「" + std::string(match.name) + "」的对象地址（注册表基址未就绪）",
+        UeFinish("cannot resolve the object address of \"" + std::string(match.name) +
+                     "\" (the registry base is not ready)",
                  true);
         return;
     }
     if (g_ue_owner_class == 0) {
-        UeFinish("「" + std::string(match.name) + "」没有 Outer，无法定位所属类实例", true);
+        UeFinish("\"" + std::string(match.name) +
+                     "\" has no Outer, cannot locate its class instance",
+                 true);
         return;
     }
     UeResolveInstance(reader);
@@ -401,13 +406,14 @@ void UeOwnerStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objec
 }
 
 void UeFinishOwnerScan(const UeReader& reader) {
-    std::string text = "目标「" + g_ue_target_name + "」→ 类 ";
+    std::string text = "target \"" + g_ue_target_name + "\" -> class ";
     text += g_ue_owner_class != 0 ? reader.NameAt(g_ue_owner_class + kUeObjectNameOffset)
-                                  : std::string("(未知)");
+                                  : std::string("(unknown)");
     text += g_ue_instance != 0
-        ? (g_ue_instance_is_cdo ? "，只有 CDO（没有活实例）" : "，活实例已找到")
-        : "，未找到该类实例（该函数可能只在界面打开时才存在）";
-    text += "，扫描 " + std::to_string(g_ue_cursor) + "/" + std::to_string(g_ue_total);
+        ? (g_ue_instance_is_cdo ? ", only the CDO exists (no live instance)"
+                                : ", live instance found")
+        : ", no instance of that class found (the function may only exist while the UI is open)";
+    text += ", scanned " + std::to_string(g_ue_cursor) + "/" + std::to_string(g_ue_total);
     UeFinish(text, false);
 }
 
@@ -641,7 +647,7 @@ void UeAdvance(const UeReader& reader) {
     if (g_ue_phase != UeProbePhase::scanning && g_ue_phase != UeProbePhase::finding_owner) return;
     const auto* objects = g_context.objects;
     if (objects == nullptr || objects->snapshot_at == nullptr) {
-        UeFinish("ue5-objects 服务已不可用", true);
+        UeFinish("the ue5-objects service is no longer available", true);
         return;
     }
     if (g_ue_phase == UeProbePhase::scanning) {

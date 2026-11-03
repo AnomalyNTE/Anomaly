@@ -205,11 +205,15 @@ CombatResult CombatTakeResult() {
         static_cast<std::int32_t>(CombatResult::none)));
 }
 
-const char* CombatResultName(const CombatResult result) {
+std::string CombatResultName(const CombatResult result) {
     switch (result) {
-    case CombatResult::cleared: return "已清空";
-    case CombatResult::first_contact_timeout: return "首次接敌超时";
-    case CombatResult::stopped: return "已停止";
+    case CombatResult::cleared:
+        return g_context.localizer.Text("combat.result.cleared", "Cleared");
+    case CombatResult::first_contact_timeout:
+        return g_context.localizer.Text("combat.result.first_contact_timeout",
+                                        "First contact timed out");
+    case CombatResult::stopped:
+        return g_context.localizer.Text("combat.result.stopped", "Stopped");
     default: return "";
     }
 }
@@ -223,7 +227,9 @@ void AdvanceCombat() {
         g_combat_started_at = std::chrono::steady_clock::now();
         g_combat_hit_baseline = g_combat_state.last_player_hit_at;
         g_combat_active.store(true);
-        CombatPublish("自动战斗：开始（技能优先，平A 兜底）");
+        CombatPublish(g_context.localizer.Text(
+            "combat.status.started",
+            "Combat: started (skills first, normal attack as fallback)"));
         // 伤害流入口是否随服务发布：缺失是能力问题，齐全却收不到事件才是偏移或句柄问题。
         const bool stream_api = g_context.combat != nullptr &&
             g_context.combat->latest_damage_sequence != nullptr &&
@@ -233,7 +239,8 @@ void AdvanceCombat() {
                 (stream_api ? "present" : "absent"));
     }
     if (g_combat_stop_requested.exchange(false)) {
-        CombatFinish(CombatResult::stopped, "自动战斗：已停止");
+        CombatFinish(CombatResult::stopped,
+                     g_context.localizer.Text("combat.status.stopped", "Combat: stopped"));
         return;
     }
     if (!g_combat_active.load()) return;
@@ -243,7 +250,10 @@ void AdvanceCombat() {
     const Result result = anomaly::plugins::combat::Tick(host, g_combat_state);
 
     if (result == Result::cleared) {
-        CombatFinish(CombatResult::cleared, "自动战斗：已清空（半径内连续 3 秒无怪）");
+        CombatFinish(CombatResult::cleared,
+                     g_context.localizer.Text(
+                         "combat.status.cleared",
+                         "Combat: cleared (no monsters within the radius for 3 seconds)"));
         return;
     }
     // 首次接敌超时：开打至今没遇到过怪 ⇒ 判定这个点没怪。
@@ -251,38 +261,52 @@ void AdvanceCombat() {
     if (!g_combat_state.met_monster &&
         now - g_combat_started_at >
             std::chrono::milliseconds(static_cast<long long>(first_contact * 1000.0))) {
-        char reason[128]{};
-        std::snprintf(reason, sizeof(reason),
-                      "自动战斗：首次接敌超时（%.0f 秒没遇到怪），进入下一步", first_contact);
-        CombatFinish(CombatResult::first_contact_timeout, reason);
+        char seconds[32]{};
+        std::snprintf(seconds, sizeof(seconds), "%.0f", first_contact);
+        const std::array<std::string_view, 1> arguments{std::string_view(seconds)};
+        CombatFinish(CombatResult::first_contact_timeout,
+                     g_context.localizer.Format(
+                         "combat.status.first_contact_timeout",
+                         "Combat: first contact timed out ({0}s without a monster), moving on",
+                         arguments));
     }
 }
 
 void CombatContent(const AnomalyUiServiceV1* ui) {
-    DrawText(ui, g_context.localizer.Text("combat.title", "自动战斗（技能优先，平A 兜底）"));
+    DrawText(ui, g_context.localizer.Text(
+        "combat.title", "Auto combat (skills first, normal attack as fallback)"));
 
     if (ui->checkbox != nullptr) {
         int use_attack = g_combat_use_attack.load() ? 1 : 0;
-        if (ui->checkbox(ui->user, StringView("平A（普攻）"), &use_attack) != 0) {
+        const std::string attack_label =
+            g_context.localizer.Text("combat.option.normal_attack", "Normal attack");
+        if (ui->checkbox(ui->user, StringView(attack_label), &use_attack) != 0) {
             g_combat_use_attack.store(use_attack != 0);
         }
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 14.0F);
         int use_small = g_combat_use_small.load() ? 1 : 0;
-        if (ui->checkbox(ui->user, StringView("小技能（input 2）"), &use_small) != 0) {
+        const std::string small_label =
+            g_context.localizer.Text("combat.option.small_skill", "Small skill (input 2)");
+        if (ui->checkbox(ui->user, StringView(small_label), &use_small) != 0) {
             g_combat_use_small.store(use_small != 0);
         }
         if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 14.0F);
         int use_ultimate = g_combat_use_ultimate.load() ? 1 : 0;
-        if (ui->checkbox(ui->user, StringView("大招（input 3）"), &use_ultimate) != 0) {
+        const std::string ultimate_label =
+            g_context.localizer.Text("combat.option.ultimate", "Ultimate (input 3)");
+        if (ui->checkbox(ui->user, StringView(ultimate_label), &use_ultimate) != 0) {
             g_combat_use_ultimate.store(use_ultimate != 0);
         }
     }
 
     // 单位写进标签：输入框已占掉窗口宽度的 65%，后面挂说明会被挤出窗口。
-    LabeledField(ui, "首次接敌超时(秒)", "##night999-combat-first-contact",
+    LabeledField(ui, g_context.localizer.Text("combat.label.first_contact",
+                                              "First contact timeout (s)"),
+                 "##night999-combat-first-contact",
                  g_combat_first_contact_text.data(), g_combat_first_contact_text.size());
     // 半径就是「打完」的定义：半径内连续 3 秒无怪才收工。
-    LabeledField(ui, "搜索半径(米)", "##night999-combat-radius", g_combat_radius_text.data(),
+    LabeledField(ui, g_context.localizer.Text("combat.label.radius", "Search radius (m)"),
+                 "##night999-combat-radius", g_combat_radius_text.data(),
                  g_combat_radius_text.size());
     // 解析进原子量：on_update 只读原子量，不跨线程读这些 char 缓冲。
     CombatSyncParameters();

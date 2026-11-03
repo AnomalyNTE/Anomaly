@@ -1,6 +1,6 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "fake_uid_profile.hpp"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <Windows.h>
 
@@ -182,7 +182,7 @@ enum class ApplyResult : std::uint8_t {
 
 struct Context final {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     const AnomalyConfigServiceV1* config{};
     const AnomalyCoreServiceV1* core{};
     const AnomalySchedulerServiceV1* scheduler{};
@@ -3254,7 +3254,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(
     if (context == nullptr) return Status(ANOMALY_STATUS_V1_FAILED, "allocation failed");
 
     context->host = host;
-    context->localizer = anomaly::plugins::Localizer(host);
+    context->localizer = anomaly::sdk::Localizer(host);
     context->config = Query<AnomalyConfigServiceV1>(
         host, ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION);
     context->core = Query<AnomalyCoreServiceV1>(

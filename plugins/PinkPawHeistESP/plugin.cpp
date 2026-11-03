@@ -1,5 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include "ahud_geometry.hpp"
 #include "loot_class_cache.hpp"
@@ -237,7 +237,7 @@ struct AutoTeleportPickupState final {
 
 struct Context final {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     const AnomalyConfigServiceV1* config{};
     const AnomalyUe5AhudServiceV1* ahud{};
     const AnomalyWebSocketServiceV1* websocket{};
@@ -3659,7 +3659,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_extraction_snapshot.store({}, std::memory_order_release);
     g_display_settings.store({}, std::memory_order_release);
     g_context.host = host;
-    g_context.localizer = anomaly::plugins::Localizer(host);
+    g_context.localizer = anomaly::sdk::Localizer(host);
     g_context.config = config.get();
     g_context.ahud = ahud.get();
     g_context.websocket = websocket &&

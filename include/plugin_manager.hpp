@@ -103,6 +103,7 @@ struct PluginView {
     std::string status_reason;
     CallbackMetricsView update_metrics;
     CallbackMetricsView draw_metrics;
+    CallbackMetricsView overlay_metrics;
     PluginPlatformDiagnosticsView platform_diagnostics;
 };
 
@@ -124,6 +125,7 @@ struct PluginMaintenanceTiming {
 enum class PluginCallbackEvidenceKind : std::uint8_t {
     Update,
     Draw,
+    Overlay,
 };
 
 struct PluginCallbackEvidence {

@@ -1,5 +1,6 @@
 #include "studio.hpp"
 #include <Windows.h>
+#include <array>
 #include <atomic>
 #include <deque>
 #include <filesystem>
@@ -121,7 +122,10 @@ struct View {
     std::vector<Model> models;
     std::uint64_t queued{};
     bool ready{};
-    std::string status{"等待大世界就绪"};
+    // Language-independent "the last status is a failure" flag: the panel decides what
+    // to show from this, never from the text, which changes with the active locale.
+    bool failed{};
+    std::string status;
 };
 struct RenderState {
     Handle world{};
@@ -138,6 +142,8 @@ struct RenderState {
 };
 struct Context {
     const AnomalyHostApiV1* host{};
+    // 插件唯一的一份本地化来源：Render 域直接用它，Game 域把同一引用交给 Engine/Studio。
+    anomaly::sdk::Localizer localizer;
     LiveProcess process;
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
@@ -152,6 +158,7 @@ struct Context {
     std::shared_ptr<const std::vector<Character>> catalog =
         std::make_shared<const std::vector<Character>>();
     std::string status;
+    bool status_failed{};
     double until_renew{};
     bool needs_catalog{true}, active{}, player_ready{};
     RenderState render;
@@ -165,12 +172,14 @@ void Publish(Context& c, bool ready) {
     view->characters = c.catalog;
     for (const auto& batch : c.batches) view->queued += batch.remaining;
     view->ready = ready;
+    view->failed = c.status_failed;
     view->status = c.status;
     c.view.store(std::move(view));
 }
 void Status(Context& c, std::string text, bool warning = false) {
     if (c.status == text) return;
     c.status = std::move(text);
+    c.status_failed = warning;
     if (c.process.core && c.process.core->log)
         c.process.core->log(c.process.core->user,
             warning ? ANOMALY_CORE_LOG_LEVEL_V1_WARNING : ANOMALY_CORE_LOG_LEVEL_V1_INFO,
@@ -221,6 +230,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
     try {
         auto c = std::make_unique<Context>();
         c->host = host;
+        c->localizer = anomaly::sdk::Localizer(host);
         c->process.core = Query<AnomalyCoreServiceV1>(host, ANOMALY_CORE_SERVICE_V1_ID);
         c->process.names = Query<AnomalyUe5NamesServiceV1>(host,
             ANOMALY_UE5_NAMES_SERVICE_V1_ID, offsetof(AnomalyUe5NamesServiceV1, find_utf8));
@@ -240,7 +250,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
         });
         const std::u8string utf8_path(path.begin(), path.end());
         std::ifstream file(std::filesystem::path(utf8_path) / "layout.json", std::ios::binary);
-        if (!file) throw std::runtime_error("缺少 layout.json");
+        if (!file)
+            throw std::runtime_error(
+                c->localizer.Text("error.layout_missing", "layout.json is missing"));
         auto resource = Json::parse(file);
         const auto registry = ResolveSymbol(*c, signatures, resource.at("symbols").at("ue5.GObjects"));
         c->world_slot = ResolveSymbol(*c, signatures, resource.at("symbols").at("ue5.GWorld"));
@@ -251,9 +263,11 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
             c->process.objects->find_exact && c->process.objects->generation &&
             c->process.framework &&
             c->process.framework->is_game_thread && c->session && c->session->snapshot) {
-            c->engine = std::make_unique<Engine>(c->process, std::move(resource), registry);
-            c->studio = std::make_unique<Studio>(*c->engine);
-            Status(*c, "引擎接口初始化完成，等待大世界更新");
+            c->engine = std::make_unique<Engine>(c->process, std::move(resource), registry,
+                                                 c->localizer);
+            c->studio = std::make_unique<Studio>(*c->engine, c->localizer);
+            Status(*c, c->localizer.Text("status.engine_ready",
+                "Engine interfaces initialized; waiting for a world update"));
         } else {
             std::string missing;
             const auto require = [&](bool available, const char* label) {
@@ -270,13 +284,19 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
                     "ue5.objects");
             require(c->process.framework && c->process.framework->is_game_thread, "ue5.framework");
             require(c->session && c->session->snapshot, "nte.session");
-            Status(*c, "初始化缺少：" + missing + "；请在大世界就绪后重载插件", true);
+            const std::array arguments{std::string_view(missing)};
+            Status(*c, c->localizer.Format("status.init_missing",
+                "Initialization is missing: {0}; reload the plugin once the world is ready",
+                arguments), true);
         }
         Publish(*c, false);
         *output = c.release();
         return anomaly::sdk::Ok();
     } catch (...) {
-        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, StringView("角色模型插件初始化失败：请检查布局资源与日志")};
+        // The status view must outlive this call, so the message stays a fixed literal.
+        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0,
+            StringView("Character Studio failed to initialize: "
+                       "check the layout resource and the log")};
     }
 }
 AnomalyStatusV1 ANOMALY_CALL Start(void* context) noexcept {
@@ -325,7 +345,10 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
             c.needs_catalog = true;
             c.until_renew = 0;
             c.player_ready = false;
-            Status(c, ready ? "正在读取完整角色资源目录" : "等待大世界就绪");
+            Status(c, ready ? c.localizer.Text("status.reading_catalog",
+                                "Reading the complete character catalog")
+                            : c.localizer.Text("status.waiting_world",
+                                "Waiting for the world to be ready"));
             Publish(c, false);
         }
         std::vector<Command> commands;
@@ -334,16 +357,21 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
             commands.swap(c.requests);
         }
         if (!ready) {
-            Status(c, "等待大世界就绪；会话状态=" + std::to_string(session.state));
+            const std::string state = std::to_string(session.state);
+            const std::array arguments{std::string_view(state)};
+            Status(c, c.localizer.Format("status.waiting_world_session",
+                "Waiting for the world to be ready; session state={0}", arguments));
             Publish(c, false);
             return; // Loading commands are discarded, not replayed into a new world.
         }
         const auto native_world = c.engine->Read<Address>(c.world_slot);
         if (!c.engine->IsA(native_world, "World"))
-            throw std::runtime_error("GWorld 尚未提供有效 UWorld，请刷新目录");
+            throw std::runtime_error(c.localizer.Text("error.world_invalid",
+                "GWorld does not expose a valid UWorld yet; refresh the catalog"));
         const auto object_world = c.engine->Pin(native_world);
         if (!object_world.id)
-            throw std::runtime_error("UWorld 对象句柄校验失败，请刷新目录");
+            throw std::runtime_error(c.localizer.Text("error.world_handle_invalid",
+                "The UWorld object handle failed validation; refresh the catalog"));
         if (!Same(object_world, c.studio->world())) {
             c.studio->World(object_world);
             c.needs_catalog = true;
@@ -360,16 +388,25 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
             const auto& movement = c.engine->Bind("/Script/Engine.Actor.K2_SetActorLocationAndRotation");
             if (c.process.core && c.process.core->log)
                 c.process.core->log(c.process.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-                    StringView("Character Studio: K2_SetActorLocationAndRotation 合同已校验，ParmsSize=" +
-                               std::to_string(movement.size)));
-            Status(c, "目录已加载 " + std::to_string(c.catalog->size()) + " 个角色；" +
-                (player_ready ? "可重复生成本地模型" : "玩家位置未就绪，仍可浏览目录"));
+                    StringView("Character Studio: K2_SetActorLocationAndRotation contract "
+                               "validated, ParmsSize=" + std::to_string(movement.size)));
+            const std::string characters = std::to_string(c.catalog->size());
+            const std::string catalog_state = player_ready
+                ? c.localizer.Text("status.spawn_ready", "local models can be spawned repeatedly")
+                : c.localizer.Text("status.player_pending",
+                    "the player position is not ready, browsing stays available");
+            const std::array arguments{std::string_view(characters), std::string_view(catalog_state)};
+            Status(c, c.localizer.Format("status.catalog_loaded",
+                "Catalog loaded: {0} characters; {1}", arguments));
             changed = true;
         }
         if (player_ready != c.player_ready) {
             c.player_ready = player_ready;
-            Status(c, player_ready ? "玩家位置已就绪，可生成角色" :
-                                    "玩家位置未就绪，仍可浏览目录");
+            Status(c, player_ready
+                ? c.localizer.Text("status.player_ready",
+                    "The player position is ready, so characters can be spawned")
+                : c.localizer.Text("status.player_pending",
+                    "the player position is not ready, browsing stays available"));
             changed = true;
         }
         for (const auto& cmd : commands) {
@@ -380,10 +417,12 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
                 break;
             case Action::spawn: {
                 if (!player_ready)
-                    throw std::runtime_error("玩家位置未就绪；角色目录可浏览，请稍后生成");
+                    throw std::runtime_error(c.localizer.Text("error.player_not_ready",
+                        "The player position is not ready; the catalog can be browsed, spawn later"));
                 if (!cmd.count || !cmd.position.finite() || !std::isfinite(cmd.yaw) ||
                     !std::isfinite(cmd.spacing) || cmd.spacing <= 0)
-                    throw std::runtime_error("生成数量、坐标、角度或间距不合法");
+                    throw std::runtime_error(c.localizer.Text("error.spawn_arguments_invalid",
+                        "The count, position, angle or spacing is not valid"));
                 AnomalyNteCameraSnapshotV1 camera{sizeof(camera)};
                 if (!c.player->camera_snapshot ||
                     c.player->camera_snapshot(c.player->user, &camera).code != 0 ||
@@ -391,7 +430,8 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
                     (camera.flags & (ANOMALY_NTE_SNAPSHOT_V1_STALE | ANOMALY_NTE_SNAPSHOT_V1_PARTIAL)) ||
                     !Same(camera.world, world) || !Same(camera.player, player.handle) ||
                     !std::isfinite(camera.rotation[1]))
-                    throw std::runtime_error("玩家视角未就绪，请稍后生成");
+                    throw std::runtime_error(c.localizer.Text("error.camera_not_ready",
+                        "The player camera is not ready; spawn later"));
                 const auto pawn = c.engine->Call(
                     "/Script/Engine.GameplayStatics.GetPlayerPawn",
                     c.engine->Find("/Script/Engine.Default__GameplayStatics"),
@@ -400,17 +440,20 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
                         p.Put("PlayerIndex", std::int32_t{0});
                     }).Get<Address>("ReturnValue");
                 if (!c.engine->IsA(pawn, "Character"))
-                    throw std::runtime_error("玩家角色未就绪，请稍后生成");
+                    throw std::runtime_error(c.localizer.Text("error.pawn_not_ready",
+                        "The player character is not ready; spawn later"));
                 const auto mesh = c.engine->ObjectField(pawn, "Mesh");
                 if (!c.engine->IsA(mesh, "SkeletalMeshComponent"))
-                    throw std::runtime_error("玩家身体模型未就绪，请稍后生成");
+                    throw std::runtime_error(c.localizer.Text("error.player_mesh_not_ready",
+                        "The player body mesh is not ready; spawn later"));
                 // Match the visible mesh, including its rotation relative to the Pawn.
                 // Placement and grid axes below remain camera-relative.
                 const auto facing = c.engine->Call(
                     "/Script/Engine.SceneComponent.K2_GetComponentRotation", mesh)
                     .Get<Vector>("ReturnValue");
                 if (!std::isfinite(facing.y))
-                    throw std::runtime_error("玩家身体朝向未就绪，请稍后生成");
+                    throw std::runtime_error(c.localizer.Text("error.player_facing_not_ready",
+                        "The player body facing is not ready; spawn later"));
                 const auto yaw = std::remainder(
                     std::remainder(facing.y, 360.0) + std::remainder(cmd.yaw, 360.0), 360.0);
                 const auto radians = std::remainder(camera.rotation[1], 360.0) *
@@ -422,25 +465,35 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
                      player.position[2] + cmd.position.z}, yaw,
                     {-sine * cmd.spacing, cosine * cmd.spacing, 0},
                     {cosine * cmd.spacing, sine * cmd.spacing, 0}});
-                c.status = "正在按帧生成；数量不设插件总上限";
+                c.status_failed = false;
+                c.status = c.localizer.Text("status.spawning",
+                    "Spawning frame by frame; the plugin sets no total limit");
                 break;
             }
             case Action::destroy:
                 c.studio->Destroy(cmd.model);
-                c.status = "已请求销毁选中模型";
+                c.status_failed = false;
+                c.status = c.localizer.Text("status.destroy_requested",
+                    "Destruction of the selected model requested");
                 break;
             case Action::clear:
                 c.batches.clear();
                 c.studio->DestroyAll();
-                c.status = "已取消队列并请求销毁全部本插件模型";
+                c.status_failed = false;
+                c.status = c.localizer.Text("status.clear_requested",
+                    "Queue cancelled; destroying every model from this plugin requested");
                 break;
             case Action::move:
                 c.studio->Move(cmd.model, cmd.position, cmd.yaw);
-                c.status = "模型位置已回读确认";
+                c.status_failed = false;
+                c.status = c.localizer.Text("status.move_confirmed",
+                    "Model position read back and confirmed");
                 break;
             case Action::cancel:
                 c.batches.clear();
-                c.status = "已取消待生成队列";
+                c.status_failed = false;
+                c.status = c.localizer.Text("status.cancel_requested",
+                    "Pending spawn queue cancelled");
                 break;
             }
         }
@@ -455,8 +508,12 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
             ++batch.placed;
             if (!--batch.remaining) c.batches.pop_front();
             changed = true;
-            if (c.batches.empty())
-                Status(c, "生成完成：当前 " + std::to_string(c.studio->models().size()) + " 个模型");
+            if (c.batches.empty()) {
+                const std::string models = std::to_string(c.studio->models().size());
+                const std::array arguments{std::string_view(models)};
+                Status(c, c.localizer.Format("status.spawn_done",
+                    "Spawning finished: {0} models present", arguments));
+            }
         }
         c.studio->Animate(delta);
         if (std::isfinite(delta) && delta > 0) c.until_renew -= delta;
@@ -469,13 +526,18 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
     } catch (const std::exception& error) {
         c.batches.clear();
         try {
-            Status(c, "操作失败：" + std::string(error.what()), true);
+            const std::string detail = error.what();
+            const std::array arguments{std::string_view(detail)};
+            Status(c, c.localizer.Format("status.failed", "Operation failed: {0}", arguments),
+                   true);
             Publish(c, !c.catalog->empty() && !c.process.faulted);
         } catch (...) {}
     } catch (...) {
         c.batches.clear();
         try {
-            c.status = "模型操作异常，已取消生成队列";
+            c.status_failed = true;
+            c.status = c.localizer.Text("status.exception",
+                "A model operation raised an exception; the spawn queue was cancelled");
             Publish(c, false);
         } catch (...) {}
     }
@@ -539,7 +601,8 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
             r.window_initialized = true;
         }
         int open = 1;
-        anomaly::sdk::UiWindow window(ui, "角色模型工作室", &open);
+        anomaly::sdk::UiWindow window(ui, c.localizer.Text("window.title", "Character Studio"),
+                                      &open);
         if (!window) return;
         if (!Same(r.world, view->world)) {
             r.world = view->world;
@@ -562,23 +625,28 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                                std::size_t page_size) {
             const auto pages = (count + page_size - 1) / page_size;
             if (page >= pages) page = pages ? pages - 1 : 0;
-            if (enabled_button(std::string("上一页##") + id, page > 0)) --page;
+            if (enabled_button(c.localizer.Text("action.previous_page", "Previous") + "##" + id,
+                               page > 0)) --page;
             same_line();
             Text(ui, std::to_string(pages ? page + 1 : 0) + " / " + std::to_string(pages));
             same_line();
-            if (enabled_button(std::string("下一页##") + id, page + 1 < pages)) ++page;
+            if (enabled_button(c.localizer.Text("action.next_page", "Next") + "##" + id,
+                               page + 1 < pages)) ++page;
         };
         TabBarScope tabs{ui, ui->begin_tab_bar(ui->user, StringView("character-studio-tabs"),
                                              ANOMALY_UI_TAB_BAR_V1_NONE) != 0};
         if (!tabs.open) return;
         {
-            TabItemScope tab{ui, ui->begin_tab_item(ui->user, StringView("生成角色"),
+            TabItemScope tab{ui, ui->begin_tab_item(ui->user,
+                                                   StringView(c.localizer.Text("tab.spawn", "Spawn")),
                                                    nullptr, 0, 1) != 0};
             if (tab.open) {
-                if (ui->input_text(ui->user, StringView("搜索"), r.filter, sizeof(r.filter), 0))
+                if (ui->input_text(ui->user, StringView(c.localizer.Text("label.search", "Search")),
+                                   r.filter, sizeof(r.filter), 0))
                     r.character_page = 0;
                 same_line();
-                if (Button(ui, "刷新")) Request(c, {Action::refresh, view->world});
+                if (Button(ui, c.localizer.Text("action.refresh", "Refresh")))
+                    Request(c, {Action::refresh, view->world});
                 std::vector<const Character*> filtered;
                 const Character* selected{};
                 for (const auto& item : *view->characters) {
@@ -614,25 +682,40 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                         }
                     }
                 }
-                if (filtered.empty()) Text(ui, view->characters->empty() ? "目录暂无角色" : "没有匹配角色");
-                if (selected) Text(ui, "已选：" + selected->chinese);
-                ui->input_uint32(ui->user, StringView("数量"), &r.count, 1, 10);
-                if (enabled_button("生成", view->ready && selected && r.count > 0))
+                if (filtered.empty()) {
+                    Text(ui, view->characters->empty()
+                        ? c.localizer.Text("status.catalog_empty", "The catalog has no characters")
+                        : c.localizer.Text("status.no_match", "No character matches the filter"));
+                }
+                if (selected) {
+                    const std::array arguments{std::string_view(selected->chinese)};
+                    Text(ui, c.localizer.Format("text.selected", "Selected: {0}", arguments));
+                }
+                ui->input_uint32(ui->user, StringView(c.localizer.Text("label.count", "Count")),
+                                 &r.count, 1, 10);
+                if (enabled_button(c.localizer.Text("action.spawn", "Spawn"),
+                                   view->ready && selected && r.count > 0))
                     Request(c, {Action::spawn, view->world, r.character, 0, r.count,
                                 r.offset, r.facing_offset, r.spacing});
                 if (view->queued) {
                     same_line();
-                    if (Button(ui, "取消队列 (" + std::to_string(view->queued) + ")"))
+                    const std::string queued = std::to_string(view->queued);
+                    const std::array arguments{std::string_view(queued)};
+                    if (Button(ui, c.localizer.Format("action.cancel_queue", "Cancel queue ({0})",
+                            arguments)))
                         Request(c, {Action::cancel, view->world});
                 }
             }
         }
         {
-            const auto tab_label = "已生成 (" + std::to_string(view->models.size()) + ")###models";
+            const std::string model_count = std::to_string(view->models.size());
+            const std::array tab_arguments{std::string_view(model_count)};
+            const auto tab_label = c.localizer.Format("tab.models", "Spawned ({0})",
+                tab_arguments) + "###models";
             TabItemScope tab{ui, ui->begin_tab_item(ui->user, StringView(tab_label),
                                                    nullptr, 0, 1) != 0};
             if (tab.open) {
-                if (view->models.empty()) Text(ui, "暂无模型");
+                if (view->models.empty()) Text(ui, c.localizer.Text("status.no_models", "No models yet"));
                 else {
                     const Model* selected{};
                     for (const auto& model : view->models)
@@ -653,43 +736,64 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                                     r.model_yaw = model.yaw;
                                 }
                             }
-                            if (Button(ui, "清空全部")) Request(c, {Action::clear, view->world});
+                            if (Button(ui, c.localizer.Text("action.clear_all", "Clear all")))
+                                Request(c, {Action::clear, view->world});
                         }
                     }
                     same_line();
                     ChildScope editor{ui, ui->begin_child(ui->user,
                         StringView("model-editor"), 0, 0, ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y) != 0};
                     if (editor.open && selected) {
-                        Text(ui, "编辑 #" + std::to_string(selected->id) +
-                            (selected->animation.starts_with("循环待机") ? " · 待机" : " · 参考姿势"));
+                        const std::string model_id = std::to_string(selected->id);
+                        const std::string pose = selected->animation.starts_with("loop")
+                            ? c.localizer.Text("label.idle", " · Idle")
+                            : c.localizer.Text("label.reference_pose", " · Reference pose");
+                        const std::array arguments{std::string_view(model_id),
+                                                   std::string_view(pose)};
+                        Text(ui, c.localizer.Format("text.editing", "Edit #{0}{1}", arguments));
                         ModelCoordinate(ui, "X", r.position.x, 10, 100);
                         ModelCoordinate(ui, "Y", r.position.y, 10, 100);
                         ModelCoordinate(ui, "Z", r.position.z, 10, 100);
-                        ModelCoordinate(ui, "朝向", r.model_yaw, 5, 45);
-                        if (Button(ui, "应用"))
+                        ModelCoordinate(ui, c.localizer.Text("label.facing", "Facing").c_str(),
+                                        r.model_yaw, 5, 45);
+                        if (Button(ui, c.localizer.Text("action.apply", "Apply")))
                             Request(c, {Action::move, view->world, {}, r.selected, 1, r.position, r.model_yaw});
                         same_line();
-                        if (Button(ui, "销毁选中")) Request(c, {Action::destroy, view->world, {}, r.selected});
-                    } else if (editor.open) Text(ui, "选择左侧模型进行编辑");
+                        if (Button(ui, c.localizer.Text("action.destroy_selected", "Destroy selected")))
+                            Request(c, {Action::destroy, view->world, {}, r.selected});
+                    } else if (editor.open) {
+                        Text(ui, c.localizer.Text("hint.select_model",
+                            "Select a model on the left to edit it"));
+                    }
                 }
             }
         }
         {
-            TabItemScope tab{ui, ui->begin_tab_item(ui->user, StringView("设置"),
+            TabItemScope tab{ui, ui->begin_tab_item(ui->user,
+                                                   StringView(c.localizer.Text("tab.settings", "Settings")),
                                                    nullptr, 0, 1) != 0};
             if (tab.open) {
-                Text(ui, "生成位置（相对视角，厘米）");
-                ui->input_double(ui->user, StringView("前后"), &r.offset.x, 10, 100);
-                ui->input_double(ui->user, StringView("左右"), &r.offset.y, 10, 100);
-                ui->input_double(ui->user, StringView("高度"), &r.offset.z, 10, 100);
-                ui->input_double(ui->user, StringView("间距（厘米）"), &r.spacing, 10, 50);
-                Text(ui, "模型身体朝向（默认与玩家同向）");
-                ui->input_double(ui->user, StringView("身体旋转偏移（度）"), &r.facing_offset, 5, 45);
+                Text(ui, c.localizer.Text("section.spawn_position",
+                    "Spawn position (camera relative, centimeters)"));
+                ui->input_double(ui->user, StringView(c.localizer.Text("label.forward_back", "Forward / back")),
+                                 &r.offset.x, 10, 100);
+                ui->input_double(ui->user, StringView(c.localizer.Text("label.left_right", "Left / right")),
+                                 &r.offset.y, 10, 100);
+                ui->input_double(ui->user, StringView(c.localizer.Text("label.height", "Height")),
+                                 &r.offset.z, 10, 100);
+                ui->input_double(ui->user,
+                                 StringView(c.localizer.Text("label.spacing", "Spacing (centimeters)")),
+                                 &r.spacing, 10, 50);
+                Text(ui, c.localizer.Text("section.model_facing",
+                    "Model body facing (matches the player by default)"));
+                ui->input_double(ui->user,
+                                 StringView(c.localizer.Text("label.facing_offset",
+                                                             "Body rotation offset (degrees)")),
+                                 &r.facing_offset, 5, 45);
             }
         }
         tabs.Close();
-        if (!view->ready || view->status.starts_with("操作失败") ||
-            view->status.starts_with("模型操作异常")) Text(ui, view->status);
+        if (!view->ready || view->failed) Text(ui, view->status);
     } catch (...) {
         // SDK callback boundary: no exception may cross into Host rendering.
     }

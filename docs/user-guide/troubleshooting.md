@@ -120,6 +120,8 @@ capability 与 service 的对应关系见[插件开发](../developer-guide/plugi
 
 - 确认 `--pid` 是**游戏进程**的 PID（见 `anomaly-runtime.log`）。
 - 管道受当前用户 ACL 限制：CLI 必须以**同一 Windows 用户**运行。
+- 普通权限终端即可连接；游戏以管理员权限运行时，Runtime 会把诊断管道以中完整性标签发布，不再需要管理员终端。
+- 报 `pipe connection failed: 5` 且 PID 正确时：先确认 CLI 与管道同属一个 Windows 用户，再检查可执行文件的完整性标签——带低完整性标签的 exe 会以低完整性运行，被中完整性的管道拒绝。可用 `icacls <路径>\anomaly-cli.exe /setintegritylevel Medium` 归一化后重试。
 - 确认 `[Analyzer] PipePrefix` 与预期一致。
 
 ### 命令返回 error

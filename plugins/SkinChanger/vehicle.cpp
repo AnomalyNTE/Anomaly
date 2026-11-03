@@ -7,6 +7,7 @@
 #include "profile.hpp"
 #include "vehicle_rules.hpp"
 #include "vehicle_paint.hpp"
+#include "localization.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -20,6 +21,7 @@
 #include "plate_access.hpp"
 
 namespace {
+anomaly::sdk::Localizer& localizer = skin_change::Localizer();
 uint64_t Pack(FName n) {return (uint64_t{n.number}<<32)|n.id;}
 FName Unpack(uint64_t n) {return {static_cast<uint32_t>(n),static_cast<uint32_t>(n>>32)};}
 AnomalyGenerationHandleV1 Handle(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uintptr_t p) {
@@ -85,7 +87,7 @@ bool Current(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,Target& t) {
     return t.actor.id && t.component.id && list>=0 && ReadIds(r,component+list,t.modules);
 }
 struct Entry {vehicle_rules::Row rule;std::string id,label;};
-struct View {std::string status{"坐进驾驶位后读取本车外观。"},vehicle;Target target;std::vector<Entry> rows;bool scanning{};};
+struct View {std::string status{localizer.Text("status.vehicle_idle", "Reading this vehicle's appearance once you sit in the driver seat.")},vehicle;Target target;std::vector<Entry> rows;bool scanning{};};
 std::atomic<std::shared_ptr<const View>> published;
 struct Request {AnomalyGenerationHandleV1 actor{},component{};uint64_t selected{};bool restore{};};
 std::atomic<std::shared_ptr<const Request>> request;
@@ -106,8 +108,17 @@ std::map<uint64_t,Saved> saved;
 uint64_t last_driver{};
 std::string status;
 bool scanning{};
-const char* categories[]{"涂装","附件","轮胎烟雾","车胎痕迹","喷漆"};
-const char* attachment_groups[]{"前铲","后唇","尾翼","车轮","挂钩","悬挂","其他附件"};
+constexpr std::array<const char*,5> category_keys{
+    "label.category_paint","label.category_attachment","label.category_wheel_smoke",
+    "label.category_wheel_mark","label.category_spray"};
+constexpr std::array<const char*,5> category_english{
+    "Paint","Attachments","Tire smoke","Tire marks","Spray paint"};
+constexpr std::array<const char*,7> attachment_group_keys{
+    "label.attachment_front_lip","label.attachment_rear_lip","label.attachment_spoiler",
+    "label.attachment_wheel","label.attachment_hook","label.attachment_suspension",
+    "label.attachment_other"};
+constexpr std::array<const char*,7> attachment_group_english{
+    "Front lip","Rear lip","Spoiler","Wheels","Hook","Suspension","Other attachments"};
 int category{},attachment_group{};uint64_t selected{};char search[128]{};
 
 struct FloatView {const float* data{};int32_t count{};uint32_t padding{};};
@@ -314,7 +325,7 @@ bool Submit(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& ta
     const auto fish_fn=Find(r,o,"/Script/HTGame.HTVehicleModificationComponent.GetCurrentFishHookModule");
     uintptr_t fish{};
     if(!LocalFunction(r,fish_fn,"GetCurrentFishHookModule",1,8) || !r.Property(fish_fn,"ReturnValue",0,8) ||
-       !Invoke(r,component,fish_fn,&fish)) {status="无法读取挂钩显示数据，未应用。";return false;}
+       !Invoke(r,component,fish_fn,&fish)) {status=localizer.Text("status.fish_hook_unreadable","The hook display data could not be read, so nothing was applied.");return false;}
     if(fish) {
         uintptr_t cls{};std::array<uint8_t,20> display{};
         if(!r.IsA(fish,"HTVehicleFishHookActor") || !r.Read(fish+16,cls)) return false;
@@ -444,22 +455,28 @@ void Update() noexcept {
             next_paint_report=Clock::now()+std::chrono::seconds(5);last_paint_report=paint_overrides.load();
             Log("Vehicle appearance: native paint writes preserved="+std::to_string(last_paint_report));
         }
-        if(!driving) {status=saved.empty()?"请坐进陆地车辆驾驶位。":"已保持本车外观；坐入驾驶位可继续修改。";request.store({});Publish(r,{});return;}
+        if(!driving) {status=saved.empty()?
+            localizer.Text("status.vehicle_no_land_driver","Sit in a land vehicle's driver seat."):
+            localizer.Text("status.vehicle_kept","This vehicle's appearance is kept; sit in the driver seat to keep editing.");
+            request.store({});Publish(r,{});return;}
+        const auto catalog_reading=localizer.Text("status.vehicle_catalog_reading","Reading this vehicle's appearance catalog...");
         if(catalog_vehicle!=Pack(target.vehicle) && Clock::now()>=retry_catalog) {
             retry_catalog=Clock::now()+std::chrono::seconds(2);
-            status=StartCatalog(r,o,Pack(target.vehicle))?"正在读取本车外观目录…":"等待车辆外观目录加载。";
+            status=StartCatalog(r,o,Pack(target.vehicle))?catalog_reading:
+                localizer.Text("status.vehicle_catalog_waiting","Waiting for the vehicle appearance catalog to load.");
         }
         CatalogSlice(r,o);
-        if(!scanning && catalog_vehicle==Pack(target.vehicle) && status=="正在读取本车外观目录…") status="选择外观后应用到当前驾驶车辆。";
+        if(!scanning && catalog_vehicle==Pack(target.vehicle) && status==catalog_reading)
+            status=localizer.Text("status.vehicle_catalog_ready","Select an appearance and apply it to the vehicle you are driving.");
         if(auto command=request.exchange({})) {
             if(command->actor.id!=target.actor.id || command->component.id!=target.component.id || scanning || catalog_vehicle!=Pack(target.vehicle)) {
-                status="车辆或目录已变更，请重新选择。";Publish(r,target);return;
+                status=localizer.Text("status.vehicle_changed","The vehicle or catalog changed; select again.");Publish(r,target);return;
             }
             auto found=saved.find(target.actor.id);
-            if(!EnsurePaintHook(r,o)) {status="当前材质保持接口未匹配，未应用。";Publish(r,target);return;}
+            if(!EnsurePaintHook(r,o)) {status=localizer.Text("status.material_interface_unmatched","The material preservation interface did not match, so nothing was applied.");Publish(r,target);return;}
             PublishPaintBindings(r,o,target.actor.id);
             if(command->restore) {
-                if(found==saved.end()) status="本车尚无本次插件运行期间的修改。";
+                if(found==saved.end()) status=localizer.Text("status.vehicle_no_changes","This vehicle has no changes from this plugin run.");
                 else if(Submit(r,o,target,found->second.target.modules,found->second.catalog)) {
                     const auto car=Resolve(r,o,target.actor);uintptr_t cls{};
                     if(car && r.Read(car+16,cls)) {
@@ -468,14 +485,14 @@ void Update() noexcept {
                         if(at>=0 && core->write_memory(core->user,car+at,{reinterpret_cast<const uint8_t*>(&found->second.target.color),4}).code==0)
                             Invoke(r,car,notify,nullptr);
                     }
-                    saved.erase(found);status="已提交恢复本车原外观。";
+                    saved.erase(found);status=localizer.Text("status.vehicle_restore_submitted","The original appearance restore was submitted.");
                 }
-                else status="恢复调用未完成，请重试。";
+                else status=localizer.Text("status.vehicle_restore_incomplete","The restore call did not complete; try again.");
             } else {
                 std::vector<vehicle_rules::Row> catalog;for(const auto& row:entries) catalog.push_back(row.rule);
                 const auto& base=found==saved.end()?target.modules:found->second.desired;
                 const auto plan=vehicle_rules::Replace(base,catalog,Pack(target.vehicle),command->selected);
-                if(!plan) status="所选资源与当前车型不匹配。";
+                if(!plan) status=localizer.Text("status.vehicle_module_mismatch","The selected part does not match this vehicle model.");
                 else if(Submit(r,o,target,*plan,entries)) {
                     if(found==saved.end()) found=saved.emplace(target.actor.id,Saved{target,*plan,entries}).first;
                     else {found->second.desired=*plan;found->second.catalog=entries;}
@@ -486,44 +503,49 @@ void Update() noexcept {
                     }
                     found->second.signature_valid=VisualSignature(r,o,target,found->second.signature);
                     found->second.observe=Clock::now()+std::chrono::seconds(2);found->second.settle=found->second.observe;
-                    status="已提交本地外观，等待模型和特效加载。";
-                } else if(status.find("未应用")==std::string::npos) status="外观调用未完成，请重试。";
+                    status=localizer.Text("status.vehicle_applied","Local appearance submitted; waiting for the model and effects to load.");
+                } else if(status!=localizer.Text("status.fish_hook_unreadable",
+                    "The hook display data could not be read, so nothing was applied."))
+                    status=localizer.Text("status.vehicle_apply_incomplete","The appearance call did not complete; try again.");
             }
         }
         PublishPaintBindings(r,o);
         Publish(r,target);
-    } catch(...) {status="读取载具外观失败，请重新上车后重试。";}
+    } catch(...) {status=localizer.Text("status.vehicle_read_failed","Reading the vehicle appearance failed; get on the vehicle again and retry.");}
 }
 void Draw(const AnomalyUiServiceV1* ui) noexcept {
     try {
         const auto view=published.load();if(!view) return;
-        ui->text(ui->user,StringView(view->status));if(!view->vehicle.empty()) ui->text(ui->user,StringView("当前车型："+view->vehicle));
+        ui->text(ui->user,StringView(view->status));if(!view->vehicle.empty()){const std::array arguments{std::string_view(view->vehicle)};
+            ui->text(ui->user,StringView(localizer.Format("text.vehicle_model","Vehicle model: {0}",arguments)));}
         for(int i=0;i<5;++i) {
-            if(ui->button(ui->user,StringView(categories[i]),0,0)) {category=i;selected=0;}
+            if(ui->button(ui->user,StringView(localizer.Text(category_keys[i],category_english[i])),0,0)) {category=i;selected=0;}
             if(i<4) ui->same_line(ui->user,0,6);
         }
         if(category==1) {
             for(int i=0;i<7;++i) {
-                const auto label=(attachment_group==i?std::string("[ "):std::string{})+attachment_groups[i]+(attachment_group==i?" ]":"")+"##vehicle-attachment-"+std::to_string(i);
+                const auto group=localizer.Text(attachment_group_keys[i],attachment_group_english[i]);
+                const auto label=(attachment_group==i?std::string("[ "):std::string{})+group+(attachment_group==i?" ]":"")+"##vehicle-attachment-"+std::to_string(i);
                 if(ui->button(ui->user,StringView(label),0,0)) {attachment_group=i;selected=0;}
                 if(i<6 && i%4!=3) ui->same_line(ui->user,0,6);
             }
         }
-        ui->input_text(ui->user,StringView("搜索名称或 ID"),search,sizeof(search),0);
+        ui->input_text(ui->user,StringView(localizer.Text("label.search_vehicle","Search name or ID")),search,sizeof(search),0);
         if(ui->begin_child(ui->user,StringView("vehicle-appearance-list"),0,category==1?220.f:260.f,0)) {
             size_t count{};
             for(const auto& row:view->rows) {
                 if(!vehicle_rules::Matches(row.rule.type,category,attachment_group) || (search[0] && row.label.find(search)==std::string::npos && row.id.find(search)==std::string::npos)) continue;
-                ++count;const auto label=(row.label.empty()?row.id:row.label+" ["+row.id+"]")+(selected==row.rule.id?"（已选）":"")+"##vehicle-"+row.id;
+                ++count;const auto label=(row.label.empty()?row.id:row.label+" ["+row.id+"]")+
+                    (selected==row.rule.id?localizer.Text("text.selected","(selected)"):std::string{})+"##vehicle-"+row.id;
                 if(ui->button(ui->user,StringView(label),0,0)) selected=row.rule.id;
             }
-            if(!count && !view->scanning) ui->text(ui->user,StringView("当前车型没有此类可用资源。"));
+            if(!count && !view->scanning) ui->text(ui->user,StringView(localizer.Text("status.vehicle_no_entries","This vehicle model has no available parts in this category.")));
         }
         ui->end_child(ui->user);
         const bool valid=view->target.actor.id && !view->scanning && std::any_of(view->rows.begin(),view->rows.end(),[](const Entry& e){return e.rule.id==selected && vehicle_rules::Matches(e.rule.type,category,attachment_group);});
-        if(ui->button_enabled(ui->user,StringView("应用所选外观"),0,0,valid)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,selected,false}));
+        if(ui->button_enabled(ui->user,StringView(localizer.Text("action.apply_appearance","Apply selected appearance")),0,0,valid)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,selected,false}));
         ui->same_line(ui->user,0,8);
-        if(ui->button_enabled(ui->user,StringView("恢复本车原外观"),0,0,view->target.actor.id && !view->scanning)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,0,true}));
+        if(ui->button_enabled(ui->user,StringView(localizer.Text("action.restore_vehicle","Restore this vehicle's original appearance")),0,0,view->target.actor.id && !view->scanning)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,0,true}));
     } catch(...) {}
 }
 }

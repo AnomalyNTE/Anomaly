@@ -82,7 +82,8 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("anomaly.example.my-plugin"),
         anomaly::sdk::StringView("My Plugin"),
         anomaly::sdk::StringView("Me"), anomaly::sdk::StringView("1.0.0"),
-        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw};
+        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw,
+        /*on_overlay*/ nullptr};
     return anomaly::sdk::Ok();
 }
 ```
@@ -95,10 +96,11 @@ The lifecycle callbacks and their thread affinity:
 | `on_start` | Activation | Lifecycle |
 | `on_update(delta)` | Logic update per tick | Game |
 | `on_draw(ui)` | Drawing each frame | Render |
+| `on_overlay(ui)` | Persistent overlay drawing on every render frame, even when the catalog window is closed | Render |
 | `on_stop(deadline)` | Stop, commit state | Lifecycle |
 | `on_unload` | Cleanup before unloading | Lifecycle |
 
-Render callbacks must stay a pure drawing path. Game-semantic service queries, cursor advancement, paging, name resolution and statistics belong in the Game domain `on_update`, converted into the plugin's own immutable display snapshot; `on_draw` only copies the snapshot under a short lock and calls the UI outside the lock. [`nte_combat_demo`](../../../examples/nte_combat_demo/plugin.cpp) demonstrates that boundary: it resolves sources and participants only when new damage arrives, and idle frames do not call NTE services repeatedly.
+Render callbacks must stay a pure drawing path. Game-semantic service queries, cursor advancement, paging, name resolution and statistics belong in the Game domain `on_update`, converted into the plugin's own immutable display snapshot; `on_draw` and `on_overlay` only copy the snapshot under a short lock and call the UI outside the lock. Use `on_overlay` for persistent world markers and `on_draw` for the regular plugin window. [`nte_combat_demo`](../../../examples/nte_combat_demo/plugin.cpp) demonstrates that boundary: it resolves sources and participants only when new damage arrives, and idle frames do not call NTE services repeatedly.
 
 See [Lifecycle and core services](../api-reference/lifecycle-and-core.md) for the complete entry / descriptor definitions.
 
@@ -149,6 +151,46 @@ See [Manifest and capabilities](../api-reference/manifest-and-capabilities.md) a
 - `description` is the plugin blurb used in the "About" area of the management UI; a plugin can supply translations through `plugin.description` in its localization directory.
 - `builds` is the build compatibility declaration, and it accepts either `nte-*` or an exact fingerprint. The current production Runtime does not compute fingerprints and does not use this field to block plugins on load, so it is not a runtime safety check.
 - `license` is a single SPDX identifier (required for public distribution).
+
+### Localized text
+
+User-visible text goes through [`anomaly.localization`](../api-reference/lifecycle-and-core.md#anomalylocalization) (it shares the `ui` capability). The SDK ships `anomaly::sdk::Localizer` as the C++ wrapper:
+
+```cpp
+#include "anomaly/sdk/localization.hpp"
+
+anomaly::sdk::Localizer localizer;  // without the service every lookup returns the English fallback
+
+// Query it once in on_load:
+localizer = anomaly::sdk::Localizer(host);
+
+const std::string title = localizer.Text("window.title", "My Plugin");
+const std::array arguments{std::string_view(std::to_string(count))};
+const std::string status =
+    localizer.Format("status.cached", "Cached {0} entries", arguments);
+```
+
+The messages come from `locales/<locale>.json` inside the package directory, next to `manifest.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "我的插件",
+    "plugin.description": "展示当前玩家与会话诊断。",
+    "status.cached": "已缓存 {0} 条"
+  }
+}
+```
+
+- A `key` may only use `[a-z0-9._-]` and is at most 255 bytes; a message may not be empty.
+- The `{0}`..`{7}` placeholders of a localized message must match the English fallback exactly, otherwise the host silently serves the fallback; escape literal braces as `{{` and `}}`.
+- The host uses `window.title` as the management-UI display name and `plugin.description` as the blurb, falling back to the manifest `name`/`description` only when they are missing. Keep those two manifest fields English and put the Chinese in the catalog.
+- Declare `{"id": "anomaly.localization", "minVersion": 1}` in `manifest.services`.
+- The active language is fixed for the lifetime of the process and changing it requires a game restart, so text can be resolved where it is produced instead of at draw time.
+- The repository ships a checker that validates key coverage, placeholder masks, leftover Chinese literals and the manifest fallback language in one run:
+  `pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin <name>` (omit `-Plugin` to check every plugin).
 
 ## 6. Capabilities and authorization
 

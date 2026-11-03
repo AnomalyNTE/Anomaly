@@ -1,5 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
-#include "plugins/common/localization.hpp"
+#include "anomaly/sdk/localization.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,7 +22,7 @@ constexpr std::uint32_t kMaximumItemsPerRequest = 128;
 
 struct Context final {
     const AnomalyHostApiV1* host{};
-    anomaly::plugins::Localizer localizer;
+    anomaly::sdk::Localizer localizer;
     const AnomalyCoreServiceV1* core{};
     const AnomalyUiServiceV1* ui{};
     const AnomalyNtePickupServiceV1* pickup{};
@@ -163,7 +163,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(
     auto* context = new (std::nothrow) Context();
     if (context == nullptr) return Status(ANOMALY_STATUS_V1_FAILED, "allocation failed");
     context->host = host;
-    context->localizer = anomaly::plugins::Localizer(host);
+    context->localizer = anomaly::sdk::Localizer(host);
     context->core = Query<AnomalyCoreServiceV1>(
         host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
     context->ui = Query<AnomalyUiServiceV1>(

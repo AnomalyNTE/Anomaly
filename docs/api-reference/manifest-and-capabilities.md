@@ -112,6 +112,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | `anomaly.ue5.build` | `ue5-build` |
 | `anomaly.ue5.ahud` | `ue5-ahud` |
 | `anomaly.ue5.framework` | `game-events` |
+| `anomaly.ue5.process-event` | `game-events` |
 | `anomaly.ue5.names` | `ue5-names` |
 | `anomaly.ue5.objects` | `ue5-objects` |
 | `anomaly.ue5.world` | `ue5-world` |

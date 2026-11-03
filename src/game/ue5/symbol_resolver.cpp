@@ -182,6 +182,8 @@ bool FiniteVector(const std::array<double, 3>& values) noexcept {
 }
 
 bool RuntimeObjectInitializationPending(const std::string_view message) noexcept {
+    // These results depend on game-owned objects which may finish initializing
+    // after the signature and static layout have already been validated.
     return message == "world pointer is null" ||
         message == "world game instance is null" ||
         message == "world persistent level is null" ||
@@ -190,6 +192,11 @@ bool RuntimeObjectInitializationPending(const std::string_view message) noexcept
         message == "object registry is not initialized" ||
         message == "local player chain is incomplete" ||
         message == "actor bounds shape is implausible" ||
+        message == "game instance local players is null" ||
+        message == "level actors is null" ||
+        message == "world levels is null" ||
+        message == "player scene location is not finite" ||
+        message == "world level entry is null" ||
         message.ends_with(" is unreadable");
 }
 
@@ -878,7 +885,7 @@ FeatureValidationResult ValidateNteEntitiesLayout(
         }
         if (class_object == 0) continue;
         if (!ValidatePointer(memory, class_object, "actor class", error)) {
-            return {false, std::move(error)};
+            return FeatureFailure(std::move(error));
         }
         std::int32_t class_index{};
         std::uint32_t class_name{};
@@ -886,7 +893,7 @@ FeatureValidationResult ValidateNteEntitiesLayout(
                     "actor class internal index", error) ||
             !ReadAt(memory, class_object, name_offset, class_name,
                     "actor class name", error)) {
-            return {false, std::move(error)};
+            return FeatureFailure(std::move(error));
         }
         if (!FiniteVector(bounds_origin) || !FiniteVector(bounds_extent) ||
             std::ranges::any_of(bounds_extent, [](double value) {
@@ -1247,10 +1254,13 @@ void ResolveFeatures(
     const BuildProfile& profile,
     ProfileResolutionSnapshot& snapshot,
     const SymbolMemory& memory,
-    const FeatureLayoutValidatorRegistry& layout_validators) {
+    const FeatureLayoutValidatorRegistry& layout_validators,
+    const bool preserve_available = false) {
     enum class VisitState : std::uint8_t { Unvisited, Visiting, Completed };
 
-    snapshot.features.clear();
+    decltype(snapshot.features) previous_features;
+    if (preserve_available) previous_features.swap(snapshot.features);
+    else snapshot.features.clear();
     std::map<std::string, VisitState, std::less<>> visits;
     std::function<void(const std::string&)> resolve_feature;
     resolve_feature = [&](const std::string& id) {
@@ -1261,6 +1271,14 @@ void ResolveFeatures(
         if (visit == VisitState::Visiting) return;
 
         visits[id] = VisitState::Visiting;
+        if (const auto previous = previous_features.find(id);
+            previous != previous_features.end() && previous->second.available) {
+            // A validated capability is stable for this immutable Profile. A later
+            // world transition may temporarily remove its game-owned objects.
+            snapshot.features.emplace(id, previous->second);
+            visits[id] = VisitState::Completed;
+            return;
+        }
         FeatureResolution feature;
         feature.id = id;
         bool validator_failed{};
@@ -1859,7 +1877,7 @@ bool SymbolResolver::RevalidateDeferredCandidates(
     if (profile.features.empty()) {
         if (!changed) return false;
     } else {
-        ResolveFeatures(profile, snapshot, *memory_, feature_layout_validators_);
+        ResolveFeatures(profile, snapshot, *memory_, feature_layout_validators_, true);
     }
     if (!changed && previous_state == snapshot.state &&
         FeatureResolutionsEqual(previous_features, snapshot.features)) {

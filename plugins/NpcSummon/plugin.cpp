@@ -6,6 +6,7 @@
 //   2. 诊断 ProcessEvent 签名:多组 pattern 变体逐一试,看哪一组能命中
 //   3. 用 anomaly.nte.actors 枚举世界里的 actor,统计类名,找出「路人 / 市民」这类可召唤目标
 #include "anomaly/sdk/anomaly_sdk.h"
+#include "anomaly/sdk/localization.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -15,6 +16,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <array>
+#include <string>
 
 #define HAS_FIELD(table, type, field) \
     ((table) != NULL && (table)->struct_size >= offsetof(type, field) + sizeof((table)->field))
@@ -44,6 +48,8 @@ static const AnomalyUe5ObjectsServiceV1* g_objects = NULL;
 static const AnomalyUe5NamesServiceV1* g_names = NULL;
 static const AnomalySignatureServiceV1* g_signature = NULL;
 static const AnomalyNteActorsServiceV1* g_actors = NULL;
+// 本地化:整个插件只保留这一处来源,on_load 里从宿主服务表建好
+static anomaly::sdk::Localizer g_localizer;
 static AnomalyGenerationHandleV1 g_window_handle = {0u, 0u};
 static AnomalyGenerationHandleV1 g_record_window_handle = {0u, 0u};
 
@@ -255,7 +261,7 @@ static NpcRecord* record_ensure(const char* class_name) {
     return r;
 }
 
-// 黑名单:标记为"失败"的类不在主列表里出现
+// 黑名单:标记为「失败」的类不在主列表里出现
 static int record_is_blacklisted(const char* class_name) {
     NpcRecord* r = record_find(class_name);
     return (r != NULL && r->verdict == 2) ? 1 : 0;
@@ -405,7 +411,7 @@ static void whitelist_load(void) {
     loaded = g_whitelist_count;
     {
         char message[120];
-        snprintf(message, sizeof(message), "白名单:已加载 %d 个类", loaded);
+        snprintf(message, sizeof(message), "whitelist: loaded %d classes", loaded);
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(message));
         }
@@ -419,17 +425,17 @@ static void whitelist_save(void) {
     int i;
 
     if (!whitelist_file_path(path, MAX_PATH)) {
-        log_warning("白名单保存失败:定位不到 <游戏目录>\\Anomaly");
+        log_warning("whitelist save failed: <game directory>\\Anomaly was not found");
         return;
     }
     length += snprintf(buffer + length, sizeof(buffer) - (size_t)length,
-        "# npc-summon whitelist v1  每行一个类名\r\n");
+        "# npc-summon whitelist v1  one class name per line\r\n");
     for (i = 0; i < g_whitelist_count && length < (int)sizeof(buffer) - 200; ++i) {
         snprintf(buffer + length, sizeof(buffer) - (size_t)length, "%s\r\n", g_whitelist[i]);
         length = (int)strlen(buffer);
     }
     if (!write_text_atomic(path, buffer, length)) {
-        log_warning("白名单保存失败:<游戏目录>\\Anomaly 不可写");
+        log_warning("whitelist save failed: <game directory>\\Anomaly is not writable");
     }
 }
 
@@ -445,13 +451,13 @@ static void whitelist_toggle(const char* name) {
             snprintf(g_whitelist[i], sizeof(g_whitelist[0]), "%s", g_whitelist[i + 1]);
         }
         g_whitelist_count--;
-        snprintf(message, sizeof(message), "白名单:移除 %s", name);
+        snprintf(message, sizeof(message), "whitelist: removed %s", name);
     } else if (g_whitelist_count < MAX_WHITELIST) {
         snprintf(g_whitelist[g_whitelist_count], sizeof(g_whitelist[0]), "%s", name);
         g_whitelist_count++;
-        snprintf(message, sizeof(message), "白名单:加入 %s", name);
+        snprintf(message, sizeof(message), "whitelist: added %s", name);
     } else {
-        snprintf(message, sizeof(message), "白名单已满(%d 个)", MAX_WHITELIST);
+        snprintf(message, sizeof(message), "whitelist is full (%d entries)", MAX_WHITELIST);
     }
     whitelist_save();
     if (g_core != NULL && g_core->log != NULL) {
@@ -570,7 +576,7 @@ static void settings_load(void) {
     {
         char message[160];
         snprintf(message, sizeof(message),
-            "设置:已加载 NPC=%d 车辆=%d 其它=%d 搜索=\"%s\"",
+            "settings loaded: npc=%d vehicle=%d others=%d search=\"%s\"",
             g_show_npc, g_show_vehicle, g_show_all_classes, g_search);
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(message));
@@ -624,7 +630,7 @@ static void settings_poll(double delta_seconds) {
         g_settings_dirty_elapsed = 0.0;
         if (g_settings_save_failed_logged == 0) {
             g_settings_save_failed_logged = 1;
-            log_warning("设置保存失败:<游戏目录>\\Anomaly 不可写");
+            log_warning("settings save failed: <game directory>\\Anomaly is not writable");
         }
     }
 }
@@ -673,7 +679,7 @@ static void test_mode_load(void) {
     g_test_mode = (value >= 0 && value <= 5) ? value : 0;
 }
 
-// 导出:UTF-8 文本,每行 "类名|verdict|备注|次数"(自己写的简单格式,便于手改)
+// 导出:UTF-8 文本,每行 「类名|verdict|备注|次数」(自己写的简单格式,便于手改)
 static int records_export(void) {
     wchar_t path[MAX_PATH];
     static char buffer[32768];
@@ -683,11 +689,13 @@ static int records_export(void) {
     DWORD written = 0;
 
     if (!records_file_path(path, MAX_PATH)) {
-        snprintf(g_record_status, sizeof(g_record_status), "导出失败:取不到游戏目录");
+        snprintf(g_record_status, sizeof(g_record_status), "%s",
+            g_localizer.Text("status.export_failed_dir",
+                "Export failed: the game directory is unavailable").c_str());
         return 0;
     }
     length += snprintf(buffer + length, sizeof(buffer) - (size_t)length,
-        "# npc-summon records v1  格式:类名|verdict(0未标/1成功/2失败)|备注|生成次数\r\n");
+        "# npc-summon records v1  format: class|verdict(0 unmarked/1 success/2 failed)|note|spawn count\r\n");
     for (i = 0; i < g_record_count && length < (int)sizeof(buffer) - 300; ++i) {
         snprintf(buffer + length, sizeof(buffer) - (size_t)length, "%s|%d|%s|%u\r\n",
             g_records[i].class_name, g_records[i].verdict, g_records[i].note,
@@ -696,14 +704,19 @@ static int records_export(void) {
     }
     file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) {
-        snprintf(g_record_status, sizeof(g_record_status), "导出失败:无法写入文件(错误 %lu)",
-            GetLastError());
+        snprintf(g_record_status, sizeof(g_record_status), "%s",
+            g_localizer.Format("status.export_failed_write",
+                "Export failed: the file could not be written (error {0})",
+                std::array<std::string_view, 1>{
+                    std::to_string(static_cast<unsigned long>(GetLastError()))}).c_str());
         return 0;
     }
     (void)WriteFile(file, buffer, (DWORD)length, &written, NULL);
     CloseHandle(file);
-    snprintf(g_record_status, sizeof(g_record_status),
-        "已导出 %d 条 -> <游戏目录>\\Anomaly\\npc-summon-records.txt", g_record_count);
+    snprintf(g_record_status, sizeof(g_record_status), "%s",
+        g_localizer.Format("status.exported",
+            "Exported {0} records -> <game directory>\\Anomaly\\npc-summon-records.txt",
+            std::array<std::string_view, 1>{std::to_string(g_record_count)}).c_str());
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_record_status));
     }
@@ -720,14 +733,19 @@ static int records_import(void) {
     int imported = 0;
 
     if (!records_file_path(path, MAX_PATH)) {
-        snprintf(g_record_status, sizeof(g_record_status), "导入失败:取不到游戏目录");
+        snprintf(g_record_status, sizeof(g_record_status), "%s",
+            g_localizer.Text("status.import_failed_dir",
+                "Import failed: the game directory is unavailable").c_str());
         return 0;
     }
     file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) {
-        snprintf(g_record_status, sizeof(g_record_status),
-            "导入失败:找不到文件(先导出一次生成模板,错误 %lu)", GetLastError());
+        snprintf(g_record_status, sizeof(g_record_status), "%s",
+            g_localizer.Format("status.import_failed_missing",
+                "Import failed: the file was not found (export once to create the template, error {0})",
+                std::array<std::string_view, 1>{
+                    std::to_string(static_cast<unsigned long>(GetLastError()))}).c_str());
         return 0;
     }
     memset(buffer, 0, sizeof(buffer));
@@ -777,7 +795,9 @@ static int records_import(void) {
         }
         line = next;
     }
-    snprintf(g_record_status, sizeof(g_record_status), "已从文件导入 %d 条记录", imported);
+    snprintf(g_record_status, sizeof(g_record_status), "%s",
+        g_localizer.Format("status.imported", "Imported {0} records from the file",
+            std::array<std::string_view, 1>{std::to_string(imported)}).c_str());
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_record_status));
     }
@@ -787,7 +807,8 @@ static int records_import(void) {
 static int records_clear_all(void) {
     g_record_count = 0;
     memset(g_records, 0, sizeof(g_records));
-    snprintf(g_record_status, sizeof(g_record_status), "已清空全部记录");
+    snprintf(g_record_status, sizeof(g_record_status), "%s",
+        g_localizer.Text("status.records_cleared", "All records cleared").c_str());
     return 1;
 }
 
@@ -841,7 +862,7 @@ static void signature_probe(void) {
     int i;
 
     if (g_signature == NULL || g_signature->resolve == NULL) {
-        pipe_add("链路: interop.signature 不可用");
+        pipe_add("chain: interop.signature is unavailable");
         return;
     }
 
@@ -853,7 +874,7 @@ static void signature_probe(void) {
             (unsigned long long)slot, (unsigned long long)g_gobjects_items,
             (unsigned long long)((slot != 0u) ? slot - 16u : 0u));
     } else {
-        pipe_add("GObjects 签名未命中");
+        pipe_add("GObjects signature not found");
     }
 
     insn = 0u;
@@ -864,7 +885,7 @@ static void signature_probe(void) {
         if (slot != 0u) (void)read_value(slot, &world);
         pipe_add("GWorld slot=0x%llX world=0x%llX", (unsigned long long)slot, (unsigned long long)world);
     } else {
-        pipe_add("GWorld 签名未命中");
+        pipe_add("GWorld signature not found");
     }
 
     for (i = 0; i < kProcessEventPatternCount; ++i) {
@@ -875,14 +896,14 @@ static void signature_probe(void) {
         if (ok(result) && address != 0u) {
             uint8_t head[4] = {0, 0, 0, 0};
             (void)read_bytes(address, head, 4);
-            pipe_add("ProcessEvent 命中[#%d len=%u]=0x%llX head=%02X %02X %02X %02X",
+            pipe_add("ProcessEvent hit[#%d len=%u]=0x%llX head=%02X %02X %02X %02X",
                 i, (unsigned)pattern_length, (unsigned long long)address,
                 head[0], head[1], head[2], head[3]);
             // 只认 #0(profile 里的完整签名)。#1~#5 是通用函数序言,任何同款序言的函数
             // 都会命中,2026-10-18 就是这样拿到了一个假入口(调用后返回值全 0,随后崩溃)。
             if (i == 0 && g_process_event == 0u) g_process_event = address;
         } else {
-            pipe_add("ProcessEvent 未命中[#%d len=%u status=%u]", i, (unsigned)pattern_length, result.code);
+            pipe_add("ProcessEvent miss[#%d len=%u status=%u]", i, (unsigned)pattern_length, result.code);
         }
     }
 }
@@ -1066,7 +1087,7 @@ static void dump_class_catalog(void) {
     char line[420];
     int i;
     if (g_core == NULL || g_core->log == NULL) return;
-    g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv("CLASS-CATALOG 开始"));
+    g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv("CLASS-CATALOG begin"));
     for (i = 0; i < g_class_entry_count; i += 3) {
         int k;
         line[0] = '\0';
@@ -1078,7 +1099,7 @@ static void dump_class_catalog(void) {
         }
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
     }
-    g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv("CLASS-CATALOG 结束"));
+    g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv("CLASS-CATALOG end"));
 }
 
 static void sort_class_entries(void) {
@@ -1121,13 +1142,13 @@ static void actors_probe(void) {
     int i;
 
     if (g_actors == NULL || g_actors->frame == NULL || g_actors->page == NULL) {
-        pipe_add("actors: 服务或 page 接口不可用,跳过 NPC 类发现");
+        pipe_add("actors: the service or page interface is unavailable, skipping NPC class discovery");
         return;
     }
     memset(&frame, 0, sizeof(frame));
     frame.struct_size = sizeof(frame);
     if (!ok(g_actors->frame(g_actors->user, &frame))) {
-        pipe_add("actors.frame 失败(世界可能未就绪)");
+        pipe_add("actors.frame failed (the world may not be ready yet)");
         return;
     }
     pipe_add("actors: count=%u generation=%llu fov=%.1f",
@@ -1136,7 +1157,7 @@ static void actors_probe(void) {
     for (slot = 0; slot < 256; ++slot) page[slot].struct_size = sizeof(AnomalyNteEntitySnapshotV1);
 
     if (g_test_mode == 4) {
-        pipe_add("actors: 模式4 只取 frame,跳过 page 翻页");
+        pipe_add("actors: mode 4 reads frame only, skipping the page walk");
     }
     while (g_test_mode != 4 && guard < 400) {
         guard++;
@@ -1148,7 +1169,7 @@ static void actors_probe(void) {
         memset(&result, 0, sizeof(result));
         result.struct_size = sizeof(result);
         if (!ok(g_actors->page(g_actors->user, &request, page, &result))) {
-            pipe_add("actors.page(offset=%u) 失败", offset);
+            pipe_add("actors.page(offset=%u) failed", offset);
             break;
         }
         for (i = 0; i < (int)result.returned; ++i) {
@@ -1192,7 +1213,7 @@ static void actors_probe(void) {
         }
         offset = result.next_offset;
     }
-    pipe_add("actors 扫描完成: %u 个 actor, %d 个不同类", g_actor_scanned, g_class_count);
+    pipe_add("actors scan done: %u actors, %d distinct classes", g_actor_scanned, g_class_count);
     classify_class_entries();
     sort_class_entries();
     dump_class_catalog();
@@ -1215,20 +1236,20 @@ static void report_top_classes(void) {
         }
     }
 
-    pipe_add("---- 出现最多的 actor 类(前 12) ----");
+    pipe_add("---- most common actor classes (top 12) ----");
     for (i = 0; i < g_class_count && emitted < 12; ++i) {
-        pipe_add("  %-46s x%-4u 例:%s", g_classes[i].name, g_classes[i].count, g_classes[i].sample);
+        pipe_add("  %-46s x%-4u sample:%s", g_classes[i].name, g_classes[i].count, g_classes[i].sample);
         emitted++;
         if (looks_like_npc_class(g_classes[i].name)) npc_like++;
     }
-    pipe_add("---- 关键词像 NPC 的类 ----");
+    pipe_add("---- classes whose name looks like an NPC ----");
     for (i = 0; i < g_class_count; ++i) {
         if (looks_like_npc_class(g_classes[i].name)) {
-            pipe_add("  NPC候选 %-40s x%-4u 例:%s", g_classes[i].name, g_classes[i].count,
+            pipe_add("  NPC candidate %-40s x%-4u sample:%s", g_classes[i].name, g_classes[i].count,
                 g_classes[i].sample);
         }
     }
-    if (npc_like == 0) pipe_add("  (前 22 里没有关键词命中的,全量表见上方)");
+    if (npc_like == 0) pipe_add("  (no keyword hit in the top 22; see the full table above)");
 }
 
 // ---------------------------------------------------------------------------
@@ -1292,7 +1313,7 @@ static int classify_actor(uintptr_t actor, const char* class_name, char* root_ou
     if (actor == 0u) return -1;
     if (!read_value(actor + (uintptr_t)L_actor_rootComponent, &root)) return -1;
     if (root == 0u) {
-        if (root_out != NULL && root_capacity > 0) snprintf(root_out, root_capacity, "空");
+        if (root_out != NULL && root_capacity > 0) snprintf(root_out, root_capacity, "empty");
         return 0;
     }
     if (!object_class_name(root, root_cls, sizeof(root_cls))) return -1;
@@ -1331,7 +1352,7 @@ static void classify_class_entries(void) {
     g_vehicle_class_count = vehicle;
     {
         char line[220];
-        snprintf(line, sizeof(line), "CLASS 分类完成: NPC=%d 车辆=%d 其它=%d(默认不显示)",
+        snprintf(line, sizeof(line), "CLASS classification done: npc=%d vehicle=%d other=%d (hidden by default)",
             npc, vehicle, g_class_entry_count - npc - vehicle);
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
@@ -1353,10 +1374,10 @@ static void classes_report_write(void) {
     if (!anomaly_dir_path(dir, MAX_PATH)) return;
     if (swprintf(path, MAX_PATH, L"%s\\npc-summon-classes.txt", dir) < 0) return;
     length += snprintf(buffer + length, sizeof(buffer) - (size_t)length,
-        "# npc-summon classes v1  类别:NPC / 车辆 / 其它  格式:类名|类别|数量|根组件\r\n");
+        "# npc-summon classes v1  kind: npc / vehicle / other  format: class|kind|count|root component\r\n");
     for (i = 0; i < g_class_entry_count && length < (int)sizeof(buffer) - 300; ++i) {
         const char* kind = (g_class_entries[i].kind == 1) ? "NPC"
-            : ((g_class_entries[i].kind == 2) ? "车辆" : "其它");
+            : ((g_class_entries[i].kind == 2) ? "vehicle" : "other");
         snprintf(buffer + length, sizeof(buffer) - (size_t)length, "%s|%s|%u|%s\r\n",
             g_class_entries[i].name, kind, g_class_entries[i].count,
             g_class_entries[i].root_class);
@@ -1366,7 +1387,7 @@ static void classes_report_write(void) {
     if (file == INVALID_HANDLE_VALUE) return;
     (void)WriteFile(file, buffer, (DWORD)length, &written, NULL);
     CloseHandle(file);
-    pipe_add("classes 清单 -> <游戏目录>\\Anomaly\\npc-summon-classes.txt");
+    pipe_add("classes list -> <game directory>\\Anomaly\\npc-summon-classes.txt");
 }
 
 // 指针是否落在模块代码/数据区(用于筛 Func 候选)
@@ -1400,12 +1421,12 @@ static void fingerprint_scan(uintptr_t object, const char* label) {
         if (value < 0x10000ull || value > 0x7FFFFFFFFFFFull) continue;
         name[0] = '\0';
         if (ffield_or_object_name(value, name, sizeof(name))) {
-            pipe_add("   指纹 %s+0x%X -> 0x%llX 名=%s", label, offset,
+            pipe_add("   fingerprint %s+0x%X -> 0x%llX name=%s", label, offset,
                 (unsigned long long)value, name);
             emitted++;
         }
     }
-    if (emitted == 0) pipe_add("   指纹扫描 %s: 0x28~0x320 无候选", label);
+    if (emitted == 0) pipe_add("   fingerprint scan %s: no candidate in 0x28~0x320", label);
 }
 
 // 沿 SuperStruct 链上溯,每层都看 Children 链;蓝图层通常为空,native 父类才有函数
@@ -1422,7 +1443,7 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
             snprintf(cls_name, sizeof(cls_name), "<?>");
         }
         (void)read_value(cls + (uintptr_t)L_struct_children, &children);
-        pipe_add("%s[%d] 类=%s children=0x%llX", label, depth, cls_name,
+        pipe_add("%s[%d] class=%s children=0x%llX", label, depth, cls_name,
             (unsigned long long)children);
 
         if (children != 0u) {
@@ -1444,7 +1465,7 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
                         (void)read_value(child + (uintptr_t)L_function_numParms, &num_parms);
                         (void)read_value(child + (uintptr_t)L_function_parmsSize, &parms_size);
                         (void)read_value(child + (uintptr_t)L_function_returnValueOffset, &return_offset);
-                        pipe_add("  ★ UFunction=0x%llX 名=%s flags=0x%X native=%d parms=%u size=%u retOff=%u",
+                        pipe_add("  ★ UFunction=0x%llX name=%s flags=0x%X native=%d parms=%u size=%u retOff=%u",
                             (unsigned long long)child, field_name, flags,
                             (flags & FUNC_NATIVE) ? 1 : 0, (unsigned)num_parms,
                             (unsigned)parms_size, (unsigned)return_offset);
@@ -1452,7 +1473,7 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
                             uintptr_t candidate = 0u;
                             if (!read_value(child + (uintptr_t)probe_offset, &candidate)) continue;
                             if (looks_like_module_pointer(candidate)) {
-                                pipe_add("     函数体候选 +0x%X -> 0x%llX", probe_offset,
+                                pipe_add("     body candidate +0x%X -> 0x%llX", probe_offset,
                                     (unsigned long long)candidate);
                             }
                         }
@@ -1461,18 +1482,18 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
                 if (!read_value(child + (uintptr_t)L_field_next, &child)) break;
                 index++;
             }
-            pipe_add("   %s 字段=%d Summon命中=%d", cls_name, index, hits);
+            pipe_add("   %s fields=%d Summon hits=%d", cls_name, index, hits);
             total_summon += hits;
         } else if (depth < 2) {
             fingerprint_scan(cls, cls_name);
         } else {
-            pipe_add("   %s children 为空(仅前两层做指纹扫描)", cls_name);
+            pipe_add("   %s children empty (fingerprint scan on the first two levels only)", cls_name);
         }
 
         if (!read_value(cls + (uintptr_t)L_struct_superStruct, &cls)) break;
         depth++;
     }
-    pipe_add("%s 总计 Summon* 命中=%d", label, total_summon);
+    pipe_add("%s total Summon* hits=%d", label, total_summon);
 }
 
 // 直接按「类路径:函数名」试探(UE 的 UFunction 对外路径格式)
@@ -1493,9 +1514,9 @@ static void function_path_probe(void) {
         AnomalyGenerationHandleV1 handle = {0u, 0u};
         AnomalyStatusV1 result = g_objects->find_exact(g_objects->user, sv(kPaths[i]), &handle);
         if (ok(result)) {
-            pipe_add("func路径命中 %s -> idx=%u", kPaths[i], (uint32_t)handle.id - 1u);
+            pipe_add("func path hit %s -> idx=%u", kPaths[i], (uint32_t)handle.id - 1u);
         } else {
-            pipe_add("func路径 %s -> status=%u", kPaths[i], result.code);
+            pipe_add("func path %s -> status=%u", kPaths[i], result.code);
         }
     }
 }
@@ -1518,12 +1539,12 @@ static void dump_function_layout(const char* path) {
 
     if (g_objects == NULL || g_objects->find_exact == NULL) return;
     if (!ok(g_objects->find_exact(g_objects->user, sv(path), &handle))) {
-        pipe_add("布局 %s: find_exact 未命中", path);
+        pipe_add("layout %s: find_exact missed", path);
         return;
     }
     func = object_by_handle(handle);
     if (func == 0u) {
-        pipe_add("布局 %s: handle 换算地址失败", path);
+        pipe_add("layout %s: resolving the handle to an address failed", path);
         return;
     }
     (void)read_value(func + (uintptr_t)L_function_flags, &flags);
@@ -1545,7 +1566,7 @@ static void dump_function_layout(const char* path) {
         {
             uintptr_t field = candidate;
             int i = 0;
-            pipe_add("  字段链 +0x%X -> 0x%llX 首项=%s", offset,
+            pipe_add("  field chain +0x%X -> 0x%llX first=%s", offset,
                 (unsigned long long)candidate, first_name);
             while (field != 0u && i < 24) {
                 char pname[120];
@@ -1562,7 +1583,7 @@ static void dump_function_layout(const char* path) {
                 }
                 (void)read_value(field + (uintptr_t)L_property_offsetInternal, &p_offset);
                 (void)read_value(field + (uintptr_t)L_property_elementSize, &p_size);
-                pipe_add("    参数[%d] %-24s : %-18s offset=%d size=%d", i, pname, tname,
+                pipe_add("    param[%d] %-24s : %-18s offset=%d size=%d", i, pname, tname,
                     p_offset, p_size);
                 if (!read_value(field + (uintptr_t)L_ffield_next, &field)) break;
                 i++;
@@ -1570,14 +1591,14 @@ static void dump_function_layout(const char* path) {
             chain_found++;
         }
     }
-    if (chain_found == 0) pipe_add("  未定位到参数链(0x28~0x200 内无 FField 候选)");
+    if (chain_found == 0) pipe_add("  parameter chain not found (no FField candidate in 0x28~0x200)");
 
     // 函数体指针候选(native 实现入口)
     for (offset = 0x28; offset < 0x200; offset += 8) {
         uintptr_t candidate = 0u;
         if (!read_value(func + (uintptr_t)offset, &candidate)) continue;
         if (looks_like_module_pointer(candidate)) {
-            pipe_add("    函数体候选 +0x%X -> 0x%llX", offset, (unsigned long long)candidate);
+            pipe_add("    body candidate +0x%X -> 0x%llX", offset, (unsigned long long)candidate);
         }
     }
 }
@@ -1688,23 +1709,23 @@ static uintptr_t find_process_event_by_anchors(char* note, size_t note_size) {
 
     if (note != NULL && note_size > 0u) note[0] = '\0';
     if (base == NULL) {
-        if (note != NULL && note_size > 0u) snprintf(note, note_size, "锚点扫描: 拿不到模块基址");
+        if (note != NULL && note_size > 0u) snprintf(note, note_size, "anchor scan: module base unavailable");
         return 0u;
     }
     dos = (IMAGE_DOS_HEADER*)base;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        if (note != NULL && note_size > 0u) snprintf(note, note_size, "锚点扫描: DOS 头不认");
+        if (note != NULL && note_size > 0u) snprintf(note, note_size, "anchor scan: unrecognized DOS header");
         return 0u;
     }
     nt = (IMAGE_NT_HEADERS64*)(base + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) {
-        if (note != NULL && note_size > 0u) snprintf(note, note_size, "锚点扫描: NT 头不认");
+        if (note != NULL && note_size > 0u) snprintf(note, note_size, "anchor scan: unrecognized NT header");
         return 0u;
     }
     dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
     if (dir->VirtualAddress == 0u || dir->Size < sizeof(RtfEntryV1)) {
         if (note != NULL && note_size > 0u) {
-            snprintf(note, note_size, "锚点扫描: 没有 .pdata(size=%lu),无法按函数起点定位",
+            snprintf(note, note_size, "anchor scan: no .pdata (size=%lu), cannot anchor on function starts",
                 (unsigned long)dir->Size);
         }
         return 0u;
@@ -1732,7 +1753,7 @@ static uintptr_t find_process_event_by_anchors(char* note, size_t note_size) {
         }
     }
     if (note != NULL && note_size > 0u) {
-        snprintf(note, note_size, "锚点扫描: .pdata=%lu 个函数, 命中=%d, 采用=0x%llX",
+        snprintf(note, note_size, "anchor scan: .pdata=%lu functions, hits=%d, chosen=0x%llX",
             (unsigned long)count, hits, (unsigned long long)best);
     }
     return best;
@@ -1763,28 +1784,28 @@ static void process_event_probe(void) {
         g_pe_anchor_done = 1;
         if (note[0] != '\0') pipe_add("%s", note);
     } else {
-        pipe_add("锚点扫描: 复用上次结果 0x%llX", (unsigned long long)g_pe_anchor_cache);
+        pipe_add("anchor scan: reusing the cached result 0x%llX", (unsigned long long)g_pe_anchor_cache);
     }
     scanned = g_pe_anchor_cache;
 
-    pipe_add("模块基址=0x%llX 签名=0x%llX 锚点=0x%llX",
+    pipe_add("module base=0x%llX signature=0x%llX anchor=0x%llX",
         (unsigned long long)base, (unsigned long long)sig, (unsigned long long)scanned);
 
     g_process_event_fn = 0u;
     if (scanned != 0u && pe_candidate_ok(scanned)) {
         g_process_event_fn = scanned;
-        pipe_add("PE: 采用锚点扫描 0x%llX", (unsigned long long)g_process_event_fn);
+        pipe_add("PE: using the anchor scan 0x%llX", (unsigned long long)g_process_event_fn);
     } else if (sig != 0u && pe_candidate_ok(sig)) {
         g_process_event_fn = sig;
-        pipe_add("PE: 采用签名命中 0x%llX(锚点自检通过)", (unsigned long long)g_process_event_fn);
+        pipe_add("PE: using the signature hit 0x%llX (anchor self-check passed)", (unsigned long long)g_process_event_fn);
     } else if (sig != 0u) {
         // 2026-10-18 的崩溃就是这条:签名命中的函数体里没有 ProcessEvent 的锚点
-        pipe_add("PE: 签名命中 0x%llX 但函数体没有 ProcessEvent 锚点 —— 拒绝使用",
+        pipe_add("PE: signature hit 0x%llX but the body has no ProcessEvent anchor - refused",
             (unsigned long long)sig);
     } else {
-        pipe_add("PE: 没有可用入口 —— 本次禁用生成调用(不去调用,避免写坏游戏栈)");
+        pipe_add("PE: no usable entry - spawn calls are disabled this run (never called, to avoid corrupting the game stack)");
     }
-    stage_log("PE 采用=0x%llX mode=%d 签名=0x%llX 锚点=0x%llX",
+    stage_log("PE chosen=0x%llX mode=%d signature=0x%llX anchor=0x%llX",
         (unsigned long long)g_process_event_fn, g_test_mode,
         (unsigned long long)sig, (unsigned long long)scanned);
 }
@@ -1806,7 +1827,7 @@ static void controller_field_dump(void) {
     cls = object_by_handle(handle);
     if (cls == 0u || !read_value(cls + (uintptr_t)L_struct_children, &child) || child == 0u) return;
 
-    pipe_add("---- HTPlayerController 相关字段(供参数取值参考) ----");
+    pipe_add("---- HTPlayerController fields (reference for parameter values) ----");
     while (child != 0u && index < 400 && emitted < 26) {
         char fname[120];
         fname[0] = '\0';
@@ -1818,7 +1839,7 @@ static void controller_field_dump(void) {
                     int32_t p_size = 0;
                     (void)read_value(child + (uintptr_t)L_property_offsetInternal, &p_offset);
                     (void)read_value(child + (uintptr_t)L_property_elementSize, &p_size);
-                    pipe_add("  字段 %-34s offset=%-5d size=%d", fname, p_offset, p_size);
+                    pipe_add("  field %-34s offset=%-5d size=%d", fname, p_offset, p_size);
                     emitted++;
                     break;
                 }
@@ -1827,7 +1848,7 @@ static void controller_field_dump(void) {
         if (!read_value(child + (uintptr_t)L_field_next, &child)) break;
         index++;
     }
-    if (emitted == 0) pipe_add("  (没找到相关字段名)");
+    if (emitted == 0) pipe_add("  (no matching field name found)");
 }
 
 // 在 Game 线程域执行的调用测试:用 ProcessEvent 调一个只读 getter
@@ -1840,42 +1861,42 @@ static int run_call_test(void) {
     uint16_t return_offset = 0u;
 
     if (g_process_event_fn == 0u || g_controller == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "跳过:PE=0x%llX controller=0x%llX",
+        snprintf(g_call_result, sizeof(g_call_result), "skipped: PE=0x%llX controller=0x%llX",
             (unsigned long long)g_process_event_fn, (unsigned long long)g_controller);
         return 0;
     }
     if (g_objects == NULL ||
         !ok(g_objects->find_exact(g_objects->user, sv("/Script/Engine.Actor:K2_GetActorLocation"), &handle))) {
-        snprintf(g_call_result, sizeof(g_call_result), "跳过:找不到 K2_GetActorLocation");
+        snprintf(g_call_result, sizeof(g_call_result), "skipped: K2_GetActorLocation not found");
         return 0;
     }
     func = object_by_handle(handle);
     if (func == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "跳过:函数地址换算失败");
+        snprintf(g_call_result, sizeof(g_call_result), "skipped: function address conversion failed");
         return 0;
     }
     (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
     (void)read_value(func + (uintptr_t)L_function_returnValueOffset, &return_offset);
     if (parms_size == 0u || parms_size > (uint16_t)sizeof(parms)) {
-        snprintf(g_call_result, sizeof(g_call_result), "跳过:parmsSize=%u 不合理", (unsigned)parms_size);
+        snprintf(g_call_result, sizeof(g_call_result), "skipped: parmsSize=%u is out of range", (unsigned)parms_size);
         return 0;
     }
     memset(parms, 0, sizeof(parms));
 
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            sv("CALLTEST 开始:即将调用 ProcessEvent(K2_GetActorLocation)"));
+            sv("CALLTEST begin: about to call ProcessEvent(K2_GetActorLocation)"));
     }
     ((ProcessEventFn)g_process_event_fn)((void*)g_controller, (void*)func, parms);
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            sv("CALLTEST 返回:没有崩溃,已拿到返回值"));
+            sv("CALLTEST returned: no crash, return value captured"));
     }
     memcpy(&x, parms + return_offset, sizeof(x));
     memcpy(&y, parms + return_offset + 8u, sizeof(y));
     memcpy(&z, parms + return_offset + 16u, sizeof(z));
     snprintf(g_call_result, sizeof(g_call_result),
-        "调用成功:controller 坐标 = (%.1f, %.1f, %.1f)", x, y, z);
+        "call succeeded: controller location = (%.1f, %.1f, %.1f)", x, y, z);
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_call_result));
     }
@@ -1914,12 +1935,12 @@ static int run_softclassref_test(void) {
     size_t copy_len;
 
     if (g_process_event_fn == 0u || g_objects == NULL) {
-        snprintf(g_call_result, sizeof(g_call_result), "③ 跳过:前置条件不足");
+        snprintf(g_call_result, sizeof(g_call_result), "③ skipped: preconditions not met");
         return 0;
     }
     if (!ok(g_objects->find_exact(g_objects->user,
             sv("/Script/Engine.KismetSystemLibrary"), &lib_handle))) {
-        snprintf(g_call_result, sizeof(g_call_result), "③ 跳过:拿不到函数库类");
+        snprintf(g_call_result, sizeof(g_call_result), "③ skipped: function library class unavailable");
         return 0;
     }
     lib_class = object_by_handle(lib_handle);
@@ -1929,18 +1950,18 @@ static int run_softclassref_test(void) {
     if (lib_cdo == 0u ||
         !ok(g_objects->find_exact(g_objects->user,
             sv("/Script/Engine.KismetSystemLibrary:MakeSoftClassPath"), &handle))) {
-        snprintf(g_call_result, sizeof(g_call_result), "③ 跳过:MakeSoftClassPath 不可用");
+        snprintf(g_call_result, sizeof(g_call_result), "③ skipped: MakeSoftClassPath unavailable");
         return 0;
     }
     func1 = object_by_handle(handle);
     if (!ok(g_objects->find_exact(g_objects->user,
             sv("/Script/Engine.KismetSystemLibrary:Conv_SoftClassPathToSoftClassRef"), &handle))) {
-        snprintf(g_call_result, sizeof(g_call_result), "③ 跳过:Conv 函数不可用");
+        snprintf(g_call_result, sizeof(g_call_result), "③ skipped: the Conv function is unavailable");
         return 0;
     }
     func2 = object_by_handle(handle);
     if (func1 == 0u || func2 == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "③ 跳过:函数地址换算失败");
+        snprintf(g_call_result, sizeof(g_call_result), "③ skipped: function address conversion failed");
         return 0;
     }
 
@@ -1951,7 +1972,7 @@ static int run_softclassref_test(void) {
     if (size1 == 0u || size2 == 0u || size1 > (uint16_t)sizeof(parms1) ||
         size2 > (uint16_t)sizeof(parms2) || ret1 + 32u > size1) {
         snprintf(g_call_result, sizeof(g_call_result),
-            "③ 跳过:参数尺寸异常 size1=%u ret1=%u size2=%u", (unsigned)size1, (unsigned)ret1,
+            "③ skipped: unexpected parameter sizes size1=%u ret1=%u size2=%u", (unsigned)size1, (unsigned)ret1,
             (unsigned)size2);
         return 0;
     }
@@ -1972,7 +1993,7 @@ static int run_softclassref_test(void) {
 
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            sv("SOFTCLASSREF 第1步:MakeSoftClassPath"));
+            sv("SOFTCLASSREF step 1: MakeSoftClassPath"));
     }
     ((ProcessEventFn)g_process_event_fn)((void*)lib_cdo, (void*)func1, parms1);
 
@@ -1988,7 +2009,7 @@ static int run_softclassref_test(void) {
     }
     {
         char line[400];
-        snprintf(line, sizeof(line), "SOFTCLASSREF 第1步返回: FName#1(0x%X)=%s | FName#2(0x%X)=%s",
+        snprintf(line, sizeof(line), "SOFTCLASSREF step 1 returned: FName#1(0x%X)=%s | FName#2(0x%X)=%s",
             name_id_a, name_a, name_id_b, name_b);
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
@@ -2003,12 +2024,12 @@ static int run_softclassref_test(void) {
 
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            sv("SOFTCLASSREF 第2步:Conv_SoftClassPathToSoftClassRef"));
+            sv("SOFTCLASSREF step 2: Conv_SoftClassPathToSoftClassRef"));
     }
     ((ProcessEventFn)g_process_event_fn)((void*)lib_cdo, (void*)func2, parms2);
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            sv("SOFTCLASSREF 第2步返回:没有崩溃"));
+            sv("SOFTCLASSREF step 2 returned: no crash"));
     }
 
     hex[0] = '\0';
@@ -2018,7 +2039,7 @@ static int run_softclassref_test(void) {
         strncat(hex, part, sizeof(hex) - strlen(hex) - 1u);
     }
     snprintf(g_call_result, sizeof(g_call_result),
-        "③ size1=%u ret1=%u size2=%u ret2=%u 软类引用(40B)=%s",
+        "③ size1=%u ret1=%u size2=%u ret2=%u soft class ref (40B)=%s",
         (unsigned)size1, (unsigned)ret1, (unsigned)size2, (unsigned)ret2, hex);
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_call_result));
@@ -2169,12 +2190,12 @@ static int run_spawn(int do_call) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_ERROR, sv(g_call_result)); } \
         return 0; } while (0)
 
-    if (g_process_event_fn == 0u) SPAWN_FAIL("⑥ 跳过:ProcessEvent 未确认");
-    if (g_objects == NULL) SPAWN_FAIL("⑥ 跳过:ue5.objects 不可用");
+    if (g_process_event_fn == 0u) SPAWN_FAIL("⑥ skipped: ProcessEvent not confirmed");
+    if (g_objects == NULL) SPAWN_FAIL("⑥ skipped: ue5.objects is unavailable");
     pawn = get_pawn();
-    if (pawn == 0u) SPAWN_FAIL("⑥ 跳过:pawn 取不到");
+    if (pawn == 0u) SPAWN_FAIL("⑥ skipped: pawn unavailable");
     lib_cdo = library_cdo("/Script/Engine.GameplayStatics");
-    if (lib_cdo == 0u) SPAWN_FAIL("⑥ 跳过:GameplayStatics CDO 取不到");
+    if (lib_cdo == 0u) SPAWN_FAIL("⑥ skipped: GameplayStatics CDO unavailable");
 
     // 目标类的 UClass:优先从世界里的实例反查(不依赖蓝图对象路径)
     npc_class = find_class_from_world("NPC_Sub_fs_Simple_think");
@@ -2193,7 +2214,7 @@ static int run_spawn(int do_call) {
         }
     }
     if (npc_class == 0u) {
-        SPAWN_FAIL("⑥ 跳过:世界上找不到该类实例,猜的路径也命不中");
+        SPAWN_FAIL("⑥ skipped: no instance of that class in the world and the guessed path missed");
     }
     {
         char cls_name[140];
@@ -2209,7 +2230,7 @@ static int run_spawn(int do_call) {
                 snprintf(outer_name, sizeof(outer_name), "<?>");
             }
         }
-        snprintf(line, sizeof(line), "SPAWN 目标类=0x%llX 名=%s 外层=%s",
+        snprintf(line, sizeof(line), "SPAWN target class=0x%llX name=%s outer=%s",
             (unsigned long long)npc_class, cls_name, outer_name);
         SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
     }
@@ -2217,12 +2238,12 @@ static int run_spawn(int do_call) {
     // pawn 的 transform(96 字节)
     memset(xform, 0, sizeof(xform));
     if (!call_by_path(pawn, "/Script/Engine.Actor:GetTransform", xform, sizeof(xform), &r_xf)) {
-        SPAWN_FAIL("⑥ 失败:读 pawn transform 失败");
+        SPAWN_FAIL("⑥ failed: reading the pawn transform failed");
     }
 
     if (!ok(g_objects->find_exact(g_objects->user,
             sv("/Script/Engine.GameplayStatics:BeginDeferredActorSpawnFromClass"), &cls_handle))) {
-        SPAWN_FAIL("⑥ 跳过:BeginDeferredActorSpawnFromClass 不可用");
+        SPAWN_FAIL("⑥ skipped: BeginDeferredActorSpawnFromClass unavailable");
     }
     func_begin = object_by_handle(cls_handle);
     count = read_function_params(func_begin, params);
@@ -2233,10 +2254,10 @@ static int run_spawn(int do_call) {
             strncat(names, params[i].name, sizeof(names) - strlen(names) - 1u);
             strncat(names, " ", sizeof(names) - strlen(names) - 1u);
         }
-        snprintf(line, sizeof(line), "SPAWN BeginDeferred 参数(%d): %s", count, names);
+        snprintf(line, sizeof(line), "SPAWN BeginDeferred parameters(%d): %s", count, names);
         SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
     }
-    if (count <= 0) SPAWN_FAIL("⑥ 失败:读不到 BeginDeferred 的参数表");
+    if (count <= 0) SPAWN_FAIL("⑥ failed: the BeginDeferred parameter table could not be read");
 
     memset(parms, 0, sizeof(parms));
     {
@@ -2258,31 +2279,31 @@ static int run_spawn(int do_call) {
             &owner_or_instigator, 8);
         (void)set_param_by_name(params, count, parms, sizeof(parms), "Instigator",
             &owner_or_instigator, 8);
-        if (ok_field == 0) SPAWN_FAIL("⑥ 失败:ActorClass 参数没找到,无法指定要生成的类");
+        if (ok_field == 0) SPAWN_FAIL("⑥ failed: no ActorClass parameter, so the class to spawn cannot be set");
     }
 
     if (do_call == 0) {
         snprintf(g_call_result, sizeof(g_call_result),
-            "⑥ 参数表已读出(%d 个),未调用。可点 ⑦ 真正生成", count);
+            "⑥ parameter table read (%d entries), not called. Use ⑦ to actually spawn", count);
         SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, g_call_result);
         return 1;
     }
 
     // 第一步:BeginDeferred...
-    SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN 第1步:BeginDeferredActorSpawnFromClass");
+    SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN step 1: BeginDeferredActorSpawnFromClass");
     if (!call_by_path(lib_cdo,
             "/Script/Engine.GameplayStatics:BeginDeferredActorSpawnFromClass",
             parms, sizeof(parms), &r_begin)) {
-        SPAWN_FAIL("⑥ 失败:BeginDeferred 调用入口不可用");
+        SPAWN_FAIL("⑥ failed: the BeginDeferred call entry is unavailable");
     }
-    SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN 第1步返回:没有崩溃");
+    SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN step 1 returned: no crash");
     memcpy(&spawned, parms + r_begin, 8);
-    snprintf(line, sizeof(line), "SPAWN 第1步结果 actor=0x%llX retOff=%u",
+    snprintf(line, sizeof(line), "SPAWN step 1 result actor=0x%llX retOff=%u",
         (unsigned long long)spawned, (unsigned)r_begin);
     SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
     if (spawned == 0u) {
         snprintf(g_call_result, sizeof(g_call_result),
-            "⑥ BeginDeferred 返回空 —— 引擎拒绝生成(类不可 spawn 或参数不符)");
+            "⑥ BeginDeferred returned null - the engine refused to spawn (class not spawnable or parameters mismatch)");
         SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, g_call_result);
         return 0;
     }
@@ -2301,15 +2322,15 @@ static int run_spawn(int do_call) {
             xform + r_xf, 96);
         (void)set_param_by_name(fparams, fcount, parms, sizeof(parms), "UserSpawnTransform",
             xform + r_xf, 96);
-        SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN 第2步:FinishSpawningActor");
+        SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN step 2: FinishSpawningActor");
         if (call_by_path(lib_cdo, "/Script/Engine.GameplayStatics:FinishSpawningActor",
                 parms, sizeof(parms), &r_finish)) {
-            SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN 第2步返回:没有崩溃");
+            SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SPAWN step 2 returned: no crash");
         }
     }
 
     snprintf(g_call_result, sizeof(g_call_result),
-        "⑦ 生成成功!Actor=0x%llX —— 看画面里有没有出现", (unsigned long long)spawned);
+        "⑦ spawn succeeded! Actor=0x%llX - check whether it shows on screen", (unsigned long long)spawned);
     SPAWN_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, g_call_result);
     return 1;
 
@@ -2372,7 +2393,7 @@ static int read_actor_bottom(uintptr_t actor, uint8_t* buf, size_t capacity, dou
         *out_bottom = oz - ez;
         {
             char line[220];
-            snprintf(line, sizeof(line), "SPAWN 包围盒:用 %s 底部=%.1f (OriginZ=%.1f ExtentZ=%.1f)",
+            snprintf(line, sizeof(line), "SPAWN bounds: using %s bottom=%.1f (OriginZ=%.1f ExtentZ=%.1f)",
                 kPaths[path_index], oz - ez, oz, ez);
             if (g_core != NULL && g_core->log != NULL) {
                 g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
@@ -2436,7 +2457,7 @@ static int actor_looks_alive(uintptr_t actor);
 
 // 贴地修正:把 actor 的「位置」对齐到参考对象(玩家)的「胶囊底部」。
 // 依据(实测得出):这些 NPC 的 mesh 原点在 actor 位置(脚底),而玩家 ActorLocation 是胶囊中心
-// (离地约 82cm),所以正确落点 = 玩家胶囊底部,而不是"两边包围盒底部对齐"。
+// (离地约 82cm),所以正确落点 = 玩家胶囊底部,而不是「两边包围盒底部对齐」。
 static int apply_ground_fix(uintptr_t actor, uintptr_t reference, const char* tag) {
     uint8_t ref_bounds[200];
     uint8_t npc_bounds[200];
@@ -2455,20 +2476,20 @@ static int apply_ground_fix(uintptr_t actor, uintptr_t reference, const char* ta
 
     if (actor == 0u || reference == 0u) return 0;
     if (actor_looks_alive(actor) == 0) {
-        snprintf(line, sizeof(line), "SPAWN %s 贴地:目标 actor 已销毁,跳过", tag);
+        snprintf(line, sizeof(line), "SPAWN %s ground fix: the target actor was destroyed, skipping", tag);
         GROUND_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, line);
         return 0;
     }
     memset(ref_bounds, 0, sizeof(ref_bounds));
     if (read_actor_bottom(reference, ref_bounds, sizeof(ref_bounds), &ref_bottom) == 0) {
-        snprintf(line, sizeof(line), "SPAWN %s 贴地检查不可用(玩家包围盒取不到)", tag);
+        snprintf(line, sizeof(line), "SPAWN %s ground check unavailable (player bounds unreadable)", tag);
         GROUND_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, line);
         return 0;
     }
     memset(npc_loc, 0, sizeof(npc_loc));
     if (!call_by_path(actor, "/Script/Engine.Actor:K2_GetActorLocation",
             npc_loc, sizeof(npc_loc), &r_npc_loc)) {
-        snprintf(line, sizeof(line), "SPAWN %s 贴地检查不可用(NPC 位置读不到)", tag);
+        snprintf(line, sizeof(line), "SPAWN %s ground check unavailable (NPC location unreadable)", tag);
         GROUND_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, line);
         return 0;
     }
@@ -2481,25 +2502,25 @@ static int apply_ground_fix(uintptr_t actor, uintptr_t reference, const char* ta
         have_npc_bounds = 1;
         delta = ref_bottom - npc_bottom;
         snprintf(line, sizeof(line),
-            "SPAWN %s 贴地:玩家底=%.1f NPC底=%.1f NPC位置Z=%.1f 差值=%.1f",
+            "SPAWN %s ground fix: player bottom=%.1f NPC bottom=%.1f NPC Z=%.1f delta=%.1f",
             tag, ref_bottom, npc_bottom, npc_z, delta);
     } else {
         delta = ref_bottom - npc_z;
         snprintf(line, sizeof(line),
-            "SPAWN %s 贴地:NPC 包围盒取不到,退回对齐 actor 位置(玩家底=%.1f NPC位置Z=%.1f 差值=%.1f)",
+            "SPAWN %s ground fix: NPC bounds unreadable, falling back to aligning the actor location (player bottom=%.1f NPC Z=%.1f delta=%.1f)",
             tag, ref_bottom, npc_z, delta);
     }
     GROUND_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
     // 安全阀:异常差值直接放弃,避免把对象抛飞(曾因畸形包围盒把 NPC 抬高 160cm)
     if (delta < -300.0 || delta > 300.0) {
-        snprintf(line, sizeof(line), "SPAWN %s 贴地:差值 %.1f 超出合理范围,放弃修正", tag, delta);
+        snprintf(line, sizeof(line), "SPAWN %s ground fix: delta %.1f is out of range, giving up", tag, delta);
         GROUND_LOG(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, line);
         return 0;
     }
     if (delta > -5.0 && delta < 5.0) return 1;   // 已经到位,不再动
 
     if (move_actor_z(actor, delta) == 0) {
-        snprintf(line, sizeof(line), "SPAWN %s 移动失败(K2_SetActorLocation 不可用)", tag);
+        snprintf(line, sizeof(line), "SPAWN %s move failed (K2_SetActorLocation unavailable)", tag);
         GROUND_LOG(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, line);
         return 0;
     }
@@ -2509,7 +2530,7 @@ static int apply_ground_fix(uintptr_t actor, uintptr_t reference, const char* ta
         memset(verify_bounds, 0, sizeof(verify_bounds));
         if (have_npc_bounds &&
             read_actor_bottom(actor, verify_bounds, sizeof(verify_bounds), &verify_bottom)) {
-            snprintf(line, sizeof(line), "SPAWN %s 修正后 NPC底=%.1f(目标 %.1f)",
+            snprintf(line, sizeof(line), "SPAWN %s after the fix NPC bottom=%.1f (target %.1f)",
                 tag, verify_bottom, ref_bottom);
         } else {
             uint8_t verify_loc[128];
@@ -2519,10 +2540,10 @@ static int apply_ground_fix(uintptr_t actor, uintptr_t reference, const char* ta
             if (call_by_path(actor, "/Script/Engine.Actor:K2_GetActorLocation",
                     verify_loc, sizeof(verify_loc), &r_verify)) {
                 memcpy(&verify_z, verify_loc + r_verify + 16u, 8);
-                snprintf(line, sizeof(line), "SPAWN %s 修正后 NPC位置Z=%.1f(目标 %.1f)",
+                snprintf(line, sizeof(line), "SPAWN %s after the fix NPC Z=%.1f (target %.1f)",
                     tag, verify_z, ref_bottom);
             } else {
-                snprintf(line, sizeof(line), "SPAWN %s 已移动 %.1f,修正后位置读不回", tag, delta);
+                snprintf(line, sizeof(line), "SPAWN %s moved by %.1f, but the corrected location could not be read back", tag, delta);
             }
         }
         GROUND_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
@@ -2572,32 +2593,32 @@ static int spawn_uclass(uintptr_t npc_class) {
     char line[300];
 
     if (g_process_event_fn == 0u || g_objects == NULL || npc_class == 0u) {
-        stage_log("SPAWN 中止:前置不足(pe=0x%llX objects=%p uclass=0x%llX)",
+        stage_log("SPAWN abort: preconditions missing (pe=0x%llX objects=%p uclass=0x%llX)",
             (unsigned long long)g_process_event_fn, (void*)g_objects, (unsigned long long)npc_class);
         return 0;
     }
-    stage_log("SPAWN 1/9 前置 OK pe=0x%llX uclass=0x%llX", (unsigned long long)g_process_event_fn,
+    stage_log("SPAWN 1/9 preconditions OK pe=0x%llX uclass=0x%llX", (unsigned long long)g_process_event_fn,
         (unsigned long long)npc_class);
     pawn = get_pawn();
     if (pawn == 0u) {
-        stage_log("SPAWN 中止:pawn=0(controller=0x%llX)", (unsigned long long)g_controller);
+        stage_log("SPAWN abort: pawn=0 (controller=0x%llX)", (unsigned long long)g_controller);
         return 0;
     }
     stage_log("SPAWN 2/9 pawn=0x%llX", (unsigned long long)pawn);
     lib_cdo = library_cdo("/Script/Engine.GameplayStatics");
     if (lib_cdo == 0u) {
-        stage_log("SPAWN 中止:拿不到 GameplayStatics 的 CDO");
+        stage_log("SPAWN abort: GameplayStatics CDO unavailable");
         return 0;
     }
     stage_log("SPAWN 3/9 lib_cdo=0x%llX", (unsigned long long)lib_cdo);
     memset(xform, 0, sizeof(xform));
-    stage_log("SPAWN 4/9 调 GetTransform(xform 容量 %u)", (unsigned)sizeof(xform));
+    stage_log("SPAWN 4/9 calling GetTransform (xform capacity %u)", (unsigned)sizeof(xform));
     if (!call_by_path(pawn, "/Script/Engine.Actor:GetTransform", xform, sizeof(xform), &r_xf)) {
-        stage_log("SPAWN 中止:GetTransform 调用失败");
+        stage_log("SPAWN abort: the GetTransform call failed");
         return 0;
     }
-    stage_log("SPAWN 5/9 GetTransform OK 返回值偏移=%u", (unsigned)r_xf);
-    // 落点从"脚下"挪到身前 250cm:先在 transform 里按坐标定位 Translation,再沿前向平移
+    stage_log("SPAWN 5/9 GetTransform OK return offset=%u", (unsigned)r_xf);
+    // 落点从「脚下」挪到身前 250cm:先在 transform 里按坐标定位 Translation,再沿前向平移
     {
         uint8_t loc[128];
         uint8_t fwd[128];
@@ -2639,7 +2660,7 @@ static int spawn_uclass(uintptr_t npc_class) {
             double nz = pz + fz * 250.0;
             uint8_t player_bounds[200];
             double ground_z = 0.0;
-            // Z 单独处理:这些 NPC 的 mesh 原点在脚底,落在"玩家胶囊底部"才不会浮空
+            // Z 单独处理:这些 NPC 的 mesh 原点在脚底,落在「玩家胶囊底部」才不会浮空
             memset(player_bounds, 0, sizeof(player_bounds));
             if (read_actor_bottom(pawn, player_bounds, sizeof(player_bounds), &ground_z)) {
                 nz = ground_z;
@@ -2648,26 +2669,26 @@ static int spawn_uclass(uintptr_t npc_class) {
             memcpy(xform + r_xf + translation_offset + 8u, &ny, 8);
             memcpy(xform + r_xf + translation_offset + 16u, &nz, 8);
             snprintf(line, sizeof(line),
-                "SPAWN 落点 Translation+%d -> (%.0f, %.0f, %.0f) 玩家底Z=%.1f",
+                "SPAWN spot Translation+%d -> (%.0f, %.0f, %.0f) player bottom Z=%.1f",
                 translation_offset, nx, ny, nz, ground_z);
             if (g_core != NULL && g_core->log != NULL) {
                 g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
             }
         } else if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-                sv("SPAWN 没能在 transform 里定位 Translation,落点仍是脚下"));
+                sv("SPAWN could not locate Translation inside the transform, the spot stays under the player"));
         }
     }
-    stage_log("SPAWN 6/9 找 BeginDeferredActorSpawnFromClass");
+    stage_log("SPAWN 6/9 looking up BeginDeferredActorSpawnFromClass");
     if (!ok(g_objects->find_exact(g_objects->user,
             sv("/Script/Engine.GameplayStatics:BeginDeferredActorSpawnFromClass"), &handle))) {
-        stage_log("SPAWN 中止:找不到 BeginDeferredActorSpawnFromClass");
+        stage_log("SPAWN abort: BeginDeferredActorSpawnFromClass not found");
         return 0;
     }
     func_begin = object_by_handle(handle);
     count = read_function_params(func_begin, params);
     if (count <= 0) {
-        stage_log("SPAWN 中止:BeginDeferred 参数表读不出(count=%d fn=0x%llX)", count,
+        stage_log("SPAWN abort: the BeginDeferred parameter table could not be read (count=%d fn=0x%llX)", count,
             (unsigned long long)func_begin);
         return 0;
     }
@@ -2680,7 +2701,7 @@ static int spawn_uclass(uintptr_t npc_class) {
                 params[pi].size);
             strncat(line, part, sizeof(line) - strlen(line) - 1u);
         }
-        stage_log("SPAWN 6/9 BeginDeferred 参数表(%d):%s", count, line);
+        stage_log("SPAWN 6/9 BeginDeferred parameters(%d):%s", count, line);
     }
     memset(parms, 0, sizeof(parms));
     {
@@ -2688,7 +2709,7 @@ static int spawn_uclass(uintptr_t npc_class) {
         uint8_t collision = 0;
         (void)set_param_by_name(params, count, parms, sizeof(parms), "WorldContextObject", &pawn, 8);
         if (!set_param_by_name(params, count, parms, sizeof(parms), "ActorClass", &actor_class, 8)) {
-            stage_log("SPAWN 中止:参数表里没有 ActorClass");
+            stage_log("SPAWN abort: the parameter table has no ActorClass");
             return 0;
         }
         (void)set_param_by_name(params, count, parms, sizeof(parms), "SpawnTransform", xform + r_xf, 96);
@@ -2697,15 +2718,15 @@ static int spawn_uclass(uintptr_t npc_class) {
         (void)set_param_by_name(params, count, parms, sizeof(parms), "Owner", &pawn, 8);
         (void)set_param_by_name(params, count, parms, sizeof(parms), "Instigator", &pawn, 8);
     }
-    stage_log("SPAWN 7/9 调 BeginDeferred(parms 容量 %u)", (unsigned)sizeof(parms));
+    stage_log("SPAWN 7/9 calling BeginDeferred (parms capacity %u)", (unsigned)sizeof(parms));
     if (!call_by_path(lib_cdo, "/Script/Engine.GameplayStatics:BeginDeferredActorSpawnFromClass",
             parms, sizeof(parms), &r_begin)) {
-        stage_log("SPAWN 中止:BeginDeferred 调用入口不可用");
+        stage_log("SPAWN abort: the BeginDeferred call entry is unavailable");
         return 0;
     }
     memcpy(&spawned, parms + r_begin, 8);
     if (spawned == 0u) {
-        stage_log("SPAWN 中止:BeginDeferred 返回 actor=0(引擎拒绝)");
+        stage_log("SPAWN abort: BeginDeferred returned actor=0 (engine refused)");
         return 0;
     }
     stage_log("SPAWN 8/9 BeginDeferred OK actor=0x%llX", (unsigned long long)spawned);
@@ -2715,7 +2736,7 @@ static int spawn_uclass(uintptr_t npc_class) {
     }
     if (func_finish == 0u) {
         snprintf(line, sizeof(line),
-            "SPAWN 警告:找不到 FinishSpawningActor —— actor 会停在 deferred 状态(不可见)");
+            "SPAWN warning: FinishSpawningActor not found - the actor stays deferred (invisible)");
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_ERROR, sv(line));
         }
@@ -2738,14 +2759,14 @@ static int spawn_uclass(uintptr_t npc_class) {
         }
         if (!call_by_path(lib_cdo, "/Script/Engine.GameplayStatics:FinishSpawningActor",
                 parms, sizeof(parms), &r_finish)) {
-            snprintf(line, sizeof(line), "SPAWN 警告:FinishSpawningActor 调用入口不可用");
+            snprintf(line, sizeof(line), "SPAWN warning: the FinishSpawningActor call entry is unavailable");
             if (g_core != NULL && g_core->log != NULL) {
                 g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_ERROR, sv(line));
             }
         } else {
             memcpy(&finished, parms + r_finish, 8);
             snprintf(line, sizeof(line),
-                "SPAWN FinishSpawning 完成 返回=0x%llX 参数(%d):%s",
+                "SPAWN FinishSpawning done return=0x%llX parameters(%d):%s",
                 (unsigned long long)finished, fcount, names);
             if (g_core != NULL && g_core->log != NULL) {
                 g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
@@ -2764,16 +2785,16 @@ static int spawn_uclass(uintptr_t npc_class) {
             memcpy(&ax, vloc + r_vloc, 8);
             memcpy(&ay, vloc + r_vloc + 8u, 8);
             memcpy(&az, vloc + r_vloc + 16u, 8);
-            snprintf(line, sizeof(line), "SPAWN 校验:新 actor 世界坐标=(%.0f, %.0f, %.0f)",
+            snprintf(line, sizeof(line), "SPAWN check: new actor world location=(%.0f, %.0f, %.0f)",
                 ax, ay, az);
         } else {
-            snprintf(line, sizeof(line), "SPAWN 校验:读不到新 actor 坐标(对象可能已失效)");
+            snprintf(line, sizeof(line), "SPAWN check: the new actor location could not be read (the object may be stale)");
         }
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
         }
     }
-    // 组件检查:rootComponent 为空、或类名不是 Mesh 组件 → 该 actor 在客户端就是个"空壳"
+    // 组件检查:rootComponent 为空、或类名不是 Mesh 组件 → 该 actor 在客户端就是个「空壳」
     {
         uintptr_t root = 0u;
         char root_cls[120];
@@ -2790,14 +2811,14 @@ static int spawn_uclass(uintptr_t npc_class) {
                 strcmp(root_cls, "BrushComponent") == 0) {
                 g_spawn_has_model = 0;
             }
-            snprintf(line, sizeof(line), "SPAWN 组件检查 root=0x%llX 类=%s%s",
+            snprintf(line, sizeof(line), "SPAWN component check root=0x%llX class=%s%s",
                 (unsigned long long)root, root_cls,
-                (g_spawn_has_model != 0) ? "" : "(没有模型)");
+                (g_spawn_has_model != 0) ? "" : "(no model)");
         } else {
             g_spawn_has_model = 0;
-            snprintf(g_spawn_root_class, sizeof(g_spawn_root_class), "空");
+            snprintf(g_spawn_root_class, sizeof(g_spawn_root_class), "empty");
             snprintf(line, sizeof(line),
-                "SPAWN 组件检查:rootComponent 为空 —— 该 actor 没有实体组件(客户端不可见)");
+                "SPAWN component check: rootComponent is null - the actor has no physical component (invisible on the client)");
         }
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
@@ -2806,20 +2827,20 @@ static int spawn_uclass(uintptr_t npc_class) {
     // 贴地修正:立即来一次,并在 2 秒后(mesh 异步加载完成)再补一次。
     // 没有模型的空壳不做贴地:它们的包围盒恒为 0,修正没有意义,还会多碰一次引擎
     if (g_spawn_has_model != 0) {
-        stage_log("SPAWN 9/9 开始贴地修正(actor=0x%llX)", (unsigned long long)spawned);
-        (void)apply_ground_fix(spawned, pawn, "立即");
+        stage_log("SPAWN 9/9 starting the ground fix (actor=0x%llX)", (unsigned long long)spawned);
+        (void)apply_ground_fix(spawned, pawn, "immediate");
         g_late_fix_actor = spawned;
         g_late_fix_reference = pawn;
         g_late_fix_delay = 2.0;
     } else {
         g_late_fix_actor = 0u;
         g_late_fix_reference = 0u;
-        stage_log("SPAWN 9/9 跳过贴地:根组件 %s 没有模型", g_spawn_root_class);
+        stage_log("SPAWN 9/9 skipping the ground fix: root component %s has no model", g_spawn_root_class);
     }
     if (g_spawned_count < (int)(sizeof(g_spawned) / sizeof(g_spawned[0]))) {
         g_spawned[g_spawned_count++] = spawned;
     }
-    snprintf(line, sizeof(line), "SPAWN OK actor=0x%llX 已记账(%d 个)",
+    snprintf(line, sizeof(line), "SPAWN OK actor=0x%llX recorded (%d total)",
         (unsigned long long)spawned, g_spawned_count);
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
@@ -2831,25 +2852,30 @@ static int run_spawn_class(int index) {
     uintptr_t actor = 0u;
     uintptr_t uclass = 0u;
     if (index < 0 || index >= g_class_entry_count) {
-        snprintf(g_call_result, sizeof(g_call_result), "未选中类");
-        stage_log("SPAWN 请求无效:%s (index=%d 条目=%d)", g_call_result, index, g_class_entry_count);
+        snprintf(g_call_result, sizeof(g_call_result), "%s",
+            g_localizer.Text("text.no_class_selected", "No class selected").c_str());
+        stage_log("SPAWN invalid request: %s (index=%d entries=%d)", g_call_result, index, g_class_entry_count);
         return 0;
     }
-    stage_log("SPAWN 请求 index=%d 类=%s 句柄=%llu", index, g_class_entries[index].name,
+    stage_log("SPAWN request index=%d class=%s handle=%llu", index, g_class_entries[index].name,
         (unsigned long long)g_class_entries[index].sample.id);
     actor = object_by_handle(g_class_entries[index].sample);
     if (actor == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "选中类的实例句柄已失效,请重新探测");
-        stage_log("SPAWN 中止:%s (句柄=%llu)", g_call_result,
+        snprintf(g_call_result, sizeof(g_call_result), "%s",
+            g_localizer.Text("text.handle_stale",
+                "The selected class handle is stale, rescan the scene").c_str());
+        stage_log("SPAWN abort: %s (handle=%llu)", g_call_result,
             (unsigned long long)g_class_entries[index].sample.id);
         return 0;
     }
     if (!read_value(actor + (uintptr_t)L_object_class, &uclass) || uclass == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "读不到选中类的 UClass");
-        stage_log("SPAWN 中止:%s (actor=0x%llX)", g_call_result, (unsigned long long)actor);
+        snprintf(g_call_result, sizeof(g_call_result), "%s",
+            g_localizer.Text("text.uclass_unreadable",
+                "The selected class UClass could not be read").c_str());
+        stage_log("SPAWN abort: %s (actor=0x%llX)", g_call_result, (unsigned long long)actor);
         return 0;
     }
-    stage_log("SPAWN 目标 actor=0x%llX uclass=0x%llX", (unsigned long long)actor,
+    stage_log("SPAWN target actor=0x%llX uclass=0x%llX", (unsigned long long)actor,
         (unsigned long long)uclass);
     if (spawn_uclass(uclass) != 0) {
         NpcRecord* rec = record_ensure(g_class_entries[index].name);   // 记入生成记录
@@ -2857,18 +2883,27 @@ static int run_spawn_class(int index) {
             // 根组件没有模型 → 生成成功但客户端看不见。自动标「失败」进黑名单,
             // 这样它不会再出现在列表里(用户可以到生成记录窗口改回来)
             rec->verdict = 2;
-            snprintf(rec->note, sizeof(rec->note),
-                "根组件 %s:没有模型,生成后看不见(自动加入黑名单)", g_spawn_root_class);
-            snprintf(g_call_result, sizeof(g_call_result),
-                "已生成 %s,但根组件 %s 没有模型 —— 看不见,已自动标记失败",
-                g_class_entries[index].name, g_spawn_root_class);
+            snprintf(rec->note, sizeof(rec->note), "%s",
+                g_localizer.Format("detail.no_model",
+                    "Root component {0}: no model, invisible after spawning (added to the blacklist automatically)",
+                    std::array<std::string_view, 1>{g_spawn_root_class}).c_str());
+            snprintf(g_call_result, sizeof(g_call_result), "%s",
+                g_localizer.Format("text.spawned_no_model",
+                    "Spawned {0}, but its root component {1} has no model - invisible, so it was marked failed",
+                    std::array<std::string_view, 2>{g_class_entries[index].name,
+                        g_spawn_root_class}).c_str());
         } else {
-            snprintf(g_call_result, sizeof(g_call_result), "已生成 %s 到面前(累计 %d 个)",
-                g_class_entries[index].name, g_spawned_count);
+            snprintf(g_call_result, sizeof(g_call_result), "%s",
+                g_localizer.Format("text.spawned_ok",
+                    "Spawned {0} in front of you ({1} total)",
+                    std::array<std::string_view, 2>{g_class_entries[index].name,
+                        std::to_string(g_spawned_count)}).c_str());
         }
     } else {
-        snprintf(g_call_result, sizeof(g_call_result), "生成 %s 失败(引擎拒绝或类不可 spawn)",
-            g_class_entries[index].name);
+        snprintf(g_call_result, sizeof(g_call_result), "%s",
+            g_localizer.Format("text.spawn_failed",
+                "Spawning {0} failed (the engine refused, or the class is not spawnable)",
+                std::array<std::string_view, 1>{g_class_entries[index].name}).c_str());
     }
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_call_result));
@@ -2902,9 +2937,14 @@ static int run_clear(void) {
         g_spawned[i] = 0u;
     }
     g_spawned_count = 0;
-    snprintf(g_call_result, sizeof(g_call_result),
-        "已发送 %d 个销毁请求(K2_DestroyActor;销毁在下一帧生效)%s",
-        destroyed, (already_gone > 0) ? " · 另有对象已自行销毁,已跳过" : "");
+    snprintf(g_call_result, sizeof(g_call_result), "%s",
+        g_localizer.Format("text.clear_sent",
+            "Sent {0} destroy requests (K2_DestroyActor; destruction applies next frame){1}",
+            std::array<std::string_view, 2>{std::to_string(destroyed),
+                (already_gone > 0)
+                    ? g_localizer.Text("text.clear_skipped",
+                        " - other objects were already gone and were skipped")
+                    : std::string()}).c_str());
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_call_result));
     }
@@ -2950,7 +2990,7 @@ static void ANOMALY_CALL on_process_event(
         snprintf(part, sizeof(part), "%02X", buf[i]);
         strncat(hex, part, sizeof(hex) - strlen(hex) - 1u);
     }
-    snprintf(line, sizeof(line), "CAPTURE #%d func=0x%llX obj=0x%llX 参数48B=%s",
+    snprintf(line, sizeof(line), "CAPTURE #%d func=0x%llX obj=0x%llX params 48B=%s",
         g_pe_capture_count, (unsigned long long)function, (unsigned long long)object, hex);
     if (g_pe_line_count < 10) {
         snprintf(g_pe_lines[g_pe_line_count], sizeof(g_pe_lines[0]), "%s", line);
@@ -2981,7 +3021,7 @@ static void remember_summon_addresses(void) {
     }
     if (g_core != NULL && g_core->log != NULL) {
         char line[220];
-        snprintf(line, sizeof(line), "CAPTURE 监听目标: SummonAI=0x%llX ServerSummon=0x%llX Configure=0x%llX",
+        snprintf(line, sizeof(line), "CAPTURE watch targets: SummonAI=0x%llX ServerSummon=0x%llX Configure=0x%llX",
             (unsigned long long)g_func_summon_ai, (unsigned long long)g_func_server_summon,
             (unsigned long long)g_func_configure_summon);
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(line));
@@ -2995,7 +3035,7 @@ static void subscribe_capture(void) {
             &g_pe_sub))) {
         if (g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-                sv("CAPTURE 已订阅 process-event,等待召唤调用出现"));
+                sv("CAPTURE subscribed to process-event, waiting for a summon call"));
         }
     } else {
         g_pe_sub = AnomalyGenerationHandleV1{0u, 0u};
@@ -3025,24 +3065,24 @@ static int call_by_path(
     uint16_t parms_size = 0u;
     char fn_name[120];
     if (g_objects == NULL || g_process_event_fn == 0u || object == 0u) {
-        stage_log("CALL 中止 %s : 前置不足(objects=%p pe=0x%llX obj=0x%llX)", path,
+        stage_log("CALL abort %s : preconditions missing (objects=%p pe=0x%llX obj=0x%llX)", path,
             (void*)g_objects, (unsigned long long)g_process_event_fn, (unsigned long long)object);
         return 0;
     }
     if (!ok(g_objects->find_exact(g_objects->user, sv(path), &handle))) {
-        stage_log("CALL 中止 %s : find_exact 没找到这个 UFunction", path);
+        stage_log("CALL abort %s : find_exact did not find this UFunction", path);
         return 0;
     }
     func = object_by_handle(handle);
     if (func == 0u) {
-        stage_log("CALL 中止 %s : handle 换算不出函数地址", path);
+        stage_log("CALL abort %s : the handle does not resolve to a function address", path);
         return 0;
     }
     // 注意:无参数且无返回值的函数(如 K2_DestroyActor) parmsSize 就是 0,那是合法的。
-    // 早期版本把 0 当失败,导致"清除失效"。
+    // 早期版本把 0 当失败,导致「清除失效」。
     (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
     if (parms_size > (uint16_t)capacity) {
-        stage_log("CALL 中止 %s : parmsSize=%u > capacity=%u", path, (unsigned)parms_size,
+        stage_log("CALL abort %s : parmsSize=%u > capacity=%u", path, (unsigned)parms_size,
             (unsigned)capacity);
         return 0;
     }
@@ -3051,11 +3091,11 @@ static int call_by_path(
     if (!object_name(func, fn_name, sizeof(fn_name))) {
         snprintf(fn_name, sizeof(fn_name), "<?>");
     }
-    stage_log("CALL 进入 %s obj=0x%llX fn=0x%llX fn名=%s parmsSize=%u capacity=%u pe_fn=0x%llX", path,
+    stage_log("CALL enter %s obj=0x%llX fn=0x%llX fn name=%s parmsSize=%u capacity=%u pe_fn=0x%llX", path,
         (unsigned long long)object, (unsigned long long)func, fn_name, (unsigned)parms_size,
         (unsigned)capacity, (unsigned long long)g_process_event_fn);
     ((ProcessEventFn)g_process_event_fn)((void*)object, (void*)func, parms);
-    stage_log("CALL 返回 OK %s", path);
+    stage_log("CALL returned OK %s", path);
     return 1;
 }
 
@@ -3074,7 +3114,7 @@ static uintptr_t library_cdo(const char* class_path) {
         if (!object_name(cdo, nm, sizeof(nm))) {
             snprintf(nm, sizeof(nm), "<?>");
         }
-        stage_log("LIBRARY %s -> cls=0x%llX cdo=0x%llX cdo名=%s", class_path,
+        stage_log("LIBRARY %s -> cls=0x%llX cdo=0x%llX cdo name=%s", class_path,
             (unsigned long long)cls, (unsigned long long)cdo, nm);
     }
     return cdo;
@@ -3156,51 +3196,51 @@ static int run_summon(int do_call) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_ERROR, sv(g_call_result)); } \
         return 0; } while (0)
 
-    if (g_process_event_fn == 0u) SUMMON_FAIL("④ 跳过:ProcessEvent 未确认");
-    if (g_objects == NULL) SUMMON_FAIL("④ 跳过:ue5.objects 不可用");
+    if (g_process_event_fn == 0u) SUMMON_FAIL("④ skipped: ProcessEvent not confirmed");
+    if (g_objects == NULL) SUMMON_FAIL("④ skipped: ue5.objects is unavailable");
 
     pawn = get_pawn();
-    if (pawn == 0u) SUMMON_FAIL("④ 跳过:pawn 取不到(controller+776 是 0)");
+    if (pawn == 0u) SUMMON_FAIL("④ skipped: pawn unavailable (controller+776 is 0)");
     pawn_class[0] = '\0';
     if (!object_class_name(pawn, pawn_class, sizeof(pawn_class))) {
         snprintf(pawn_class, sizeof(pawn_class), "<?>");
     }
-    snprintf(line, sizeof(line), "SUMMON pawn=0x%llX 类=%s",
+    snprintf(line, sizeof(line), "SUMMON pawn=0x%llX class=%s",
         (unsigned long long)pawn, pawn_class);
     SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
 
     lib_cdo = library_cdo("/Script/Engine.KismetSystemLibrary");
-    if (lib_cdo == 0u) SUMMON_FAIL("④ 跳过:函数库 CDO 取不到");
+    if (lib_cdo == 0u) SUMMON_FAIL("④ skipped: function library CDO unavailable");
 
     // 1) AIClass
     if (!build_soft_class_ref(lib_cdo, kTarget, ai_class)) {
-        SUMMON_FAIL("④ 失败:软类引用构造失败(两步链)");
+        SUMMON_FAIL("④ failed: building the soft class ref failed (two-step chain)");
     }
-    SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "SUMMON 第1步 OK:AIClass 40 字节已构造");
+    SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "SUMMON step 1 OK: AIClass 40 bytes built");
 
     // 2) 世界坐标
     memset(loc, 0, sizeof(loc));
     if (!call_by_path(pawn, "/Script/Engine.Actor:K2_GetActorLocation", loc, sizeof(loc), &r_loc)) {
-        SUMMON_FAIL("④ 失败:读坐标失败(K2_GetActorLocation 调用不成功)");
+        SUMMON_FAIL("④ failed: reading the location failed (K2_GetActorLocation did not succeed)");
     }
-    SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "SUMMON 第2步 OK:坐标已读到");
+    SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "SUMMON step 2 OK: location captured");
 
     // 3) transform:逐个候选路径试
     for (i = 0; i < (int)(sizeof(kTransformPaths) / sizeof(kTransformPaths[0])); ++i) {
         memset(xform, 0, sizeof(xform));
         if (call_by_path(pawn, kTransformPaths[i], xform, sizeof(xform), &r_xf)) {
-            snprintf(line, sizeof(line), "SUMMON 第3步 OK:transform 用 %s (retOff=%u)",
+            snprintf(line, sizeof(line), "SUMMON step 3 OK: transform from %s (retOff=%u)",
                 kTransformPaths[i], (unsigned)r_xf);
             SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
             transform_ok = 1;
             break;
         }
-        snprintf(line, sizeof(line), "SUMMON transform 候选不可用: %s", kTransformPaths[i]);
+        snprintf(line, sizeof(line), "SUMMON transform candidate unavailable: %s", kTransformPaths[i]);
         SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, line);
     }
     if (transform_ok == 0) {
         SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            "SUMMON 第3步 全部失败:SpawnTransform 将留空(全 0)继续尝试");
+            "SUMMON step 3 all failed: SpawnTransform stays empty (all zero), continuing");
     }
 
     // 4) 组装参数
@@ -3217,30 +3257,30 @@ static int run_summon(int do_call) {
         memcpy(&px, loc + r_loc, 8);
         memcpy(&py, loc + r_loc + 8u, 8);
         memcpy(&pz, loc + r_loc + 16u, 8);
-        snprintf(line, sizeof(line), "SUMMON 组装完毕 坐标=(%.1f, %.1f, %.1f) transform=%s",
-            px, py, pz, (transform_ok != 0) ? "有" : "空");
+        snprintf(line, sizeof(line), "SUMMON assembled location=(%.1f, %.1f, %.1f) transform=%s",
+            px, py, pz, (transform_ok != 0) ? "yes" : "no");
         SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, line);
     }
     if (do_call == 0) {
         snprintf(g_call_result, sizeof(g_call_result),
-            "④ 已组装完成(未调用)。pawn 类=%s transform=%s",
-            pawn_class, (transform_ok != 0) ? "有" : "空(候选路径都不可用)");
+            "④ assembled (not called). pawn class=%s transform=%s",
+            pawn_class, (transform_ok != 0) ? "yes" : "no (no candidate path worked)");
         SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, g_call_result);
         return 1;
     }
 
     // 5) 真正调用 SummonAI
     SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-        "SUMMON 开始:调用 HTAbilityCharacter.SummonAI");
+        "SUMMON begin: calling HTAbilityCharacter.SummonAI");
     if (!call_by_path(pawn, "/Script/HTGame.HTAbilityCharacter:SummonAI",
             parms, sizeof(parms), &r_sum)) {
-        SUMMON_FAIL("⑤ 失败:SummonAI 调用入口不可用(路径或 parmsSize 有问题)");
+        SUMMON_FAIL("⑤ failed: the SummonAI call entry is unavailable (bad path or parmsSize)");
     }
-    SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SUMMON 返回:没有崩溃");
+    SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SUMMON returned: no crash");
     memcpy(&generated, parms + 200, 8);
     snprintf(g_call_result, sizeof(g_call_result),
-        "⑤ SummonAI 完成:ReturnValue=0x%llX(%s) retOff=%u",
-        (unsigned long long)generated, (generated != 0u) ? "拿到 Actor!" : "为空",
+        "⑤ SummonAI done: ReturnValue=0x%llX(%s) retOff=%u",
+        (unsigned long long)generated, (generated != 0u) ? "actor acquired" : "empty",
         (unsigned)r_sum);
     SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_INFO, g_call_result);
     return 1;
@@ -3271,18 +3311,18 @@ static int run_softclass_test(void) {
     int n;
 
     if (g_process_event_fn == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "② 跳过:ProcessEvent 未确认");
+        snprintf(g_call_result, sizeof(g_call_result), "② skipped: ProcessEvent not confirmed");
         return 0;
     }
     if (g_objects == NULL ||
         !ok(g_objects->find_exact(g_objects->user,
             sv("/Script/Engine.KismetSystemLibrary:MakeSoftClassPath"), &handle))) {
-        snprintf(g_call_result, sizeof(g_call_result), "② 跳过:找不到 MakeSoftClassPath");
+        snprintf(g_call_result, sizeof(g_call_result), "② skipped: MakeSoftClassPath not found");
         return 0;
     }
     func = object_by_handle(handle);
     if (func == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "② 跳过:函数地址换算失败");
+        snprintf(g_call_result, sizeof(g_call_result), "② skipped: function address conversion failed");
         return 0;
     }
     // 蓝图函数库的静态函数:Context 用该类的 CDO
@@ -3293,14 +3333,14 @@ static int run_softclass_test(void) {
         }
     }
     if (lib_cdo == 0u) {
-        snprintf(g_call_result, sizeof(g_call_result), "② 跳过:KismetSystemLibrary CDO 取不到");
+        snprintf(g_call_result, sizeof(g_call_result), "② skipped: KismetSystemLibrary CDO unavailable");
         return 0;
     }
 
     (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
     (void)read_value(func + (uintptr_t)L_function_returnValueOffset, &return_offset);
     if (parms_size == 0u || parms_size > (uint16_t)sizeof(parms)) {
-        snprintf(g_call_result, sizeof(g_call_result), "② 跳过:parmsSize=%u 不合理", (unsigned)parms_size);
+        snprintf(g_call_result, sizeof(g_call_result), "② skipped: parmsSize=%u is out of range", (unsigned)parms_size);
         return 0;
     }
     memset(parms, 0, sizeof(parms));
@@ -3320,12 +3360,12 @@ static int run_softclass_test(void) {
 
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            sv("SOFTCLASSTEST 开始:调用 MakeSoftClassPath"));
+            sv("SOFTCLASSTEST begin: calling MakeSoftClassPath"));
     }
     ((ProcessEventFn)g_process_event_fn)((void*)lib_cdo, (void*)func, parms);
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-            sv("SOFTCLASSTEST 返回:没有崩溃"));
+            sv("SOFTCLASSTEST returned: no crash"));
     }
 
     hex[0] = '\0';
@@ -3335,7 +3375,7 @@ static int run_softclass_test(void) {
         strncat(hex, part, sizeof(hex) - strlen(hex) - 1u);
     }
     snprintf(g_call_result, sizeof(g_call_result),
-        "② parmsSize=%u retOff=%u 返回 40 字节: %s",
+        "② parmsSize=%u retOff=%u returned 40 bytes: %s",
         (unsigned)parms_size, (unsigned)return_offset, hex);
     if (g_core != NULL && g_core->log != NULL) {
         g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_call_result));
@@ -3359,47 +3399,47 @@ static void world_chain_probe(void) {
     char namebuf[120];
 
     if (g_gworld_slot == 0u) {
-        pipe_add("世界链: GWorld slot 未知,跳过");
+        pipe_add("world chain: GWorld slot unknown, skipping");
         return;
     }
     if (!read_value(g_gworld_slot, &g_world) || g_world == 0u) {
-        pipe_add("世界链: GWorld 为空(可能还在主菜单)");
+        pipe_add("world chain: GWorld is null (still in the main menu?)");
         return;
     }
-    pipe_add("世界链: world=0x%llX", (unsigned long long)g_world);
+    pipe_add("world chain: world=0x%llX", (unsigned long long)g_world);
 
     if (!read_value(g_world + (uintptr_t)L_world_gameInstance, &game_instance) || game_instance == 0u) {
-        pipe_add("世界链: gameInstance 读失败(偏移 %d)", L_world_gameInstance);
+        pipe_add("world chain: reading gameInstance failed (offset %d)", L_world_gameInstance);
         return;
     }
     if (!read_value(game_instance + (uintptr_t)L_gameInstance_localPlayers, &players_data) ||
         players_data == 0u) {
-        pipe_add("世界链: localPlayers 数组读失败(偏移 %d)", L_gameInstance_localPlayers);
+        pipe_add("world chain: reading the localPlayers array failed (offset %d)", L_gameInstance_localPlayers);
         return;
     }
     if (!read_value(game_instance + (uintptr_t)L_gameInstance_localPlayers + 8u, &players_num)) {
         players_num = 0u;
     }
-    pipe_add("世界链: gameInstance=0x%llX localPlayers data=0x%llX num=%u",
+    pipe_add("world chain: gameInstance=0x%llX localPlayers data=0x%llX num=%u",
         (unsigned long long)game_instance, (unsigned long long)players_data, players_num);
     if (players_num == 0u) return;
 
     if (!read_value(players_data, &local_player) || local_player == 0u) {
-        pipe_add("世界链: localPlayer[0] 读失败");
+        pipe_add("world chain: reading localPlayer[0] failed");
         return;
     }
     if (!read_value(local_player + (uintptr_t)L_localPlayer_controller, &controller) || controller == 0u) {
-        pipe_add("世界链: controller 读失败(偏移 %d)", L_localPlayer_controller);
+        pipe_add("world chain: reading the controller failed (offset %d)", L_localPlayer_controller);
         return;
     }
     namebuf[0] = '\0';
     if (!object_class_name(controller, namebuf, sizeof(namebuf))) {
-        snprintf(namebuf, sizeof(namebuf), "(类名解析失败)");
+        snprintf(namebuf, sizeof(namebuf), "(class name resolution failed)");
     }
-    pipe_add("世界链: controller=0x%llX 类=%s", (unsigned long long)controller, namebuf);
+    pipe_add("world chain: controller=0x%llX class=%s", (unsigned long long)controller, namebuf);
 
     if (!read_value(controller + (uintptr_t)L_object_class, &controller_class) || controller_class == 0u) {
-        pipe_add("世界链: controller 的 UClass 读失败");
+        pipe_add("world chain: reading the controller UClass failed");
         return;
     }
     g_controller = controller;
@@ -3419,11 +3459,11 @@ static void names_probe(void) {
     int i;
     if (g_names == NULL || !HAS_FIELD(g_names, AnomalyUe5NamesServiceV1, find_utf8) ||
         g_names->find_utf8 == NULL) {
-        pipe_add("names: find_utf8 字段不可用(struct_size=%u, 需要 v2)",
+        pipe_add("names: find_utf8 field unavailable (struct_size=%u, v2 required)",
             (g_names != NULL) ? g_names->struct_size : 0u);
         return;
     }
-    pipe_add("names: struct_size=%u version=%u (find_utf8 字段在)", g_names->struct_size,
+    pipe_add("names: struct_size=%u version=%u (find_utf8 present)", g_names->struct_size,
         g_names->service_version);
     for (i = 0; i < 6; ++i) {
         uint32_t name_id = 0u;
@@ -3479,34 +3519,34 @@ static void pipeline_probe(void) {
     g_world = 0u;
     g_controller = 0u;
 
-    stage_log("PROBE 开始 mode=%d", g_test_mode);
+    stage_log("PROBE begin mode=%d", g_test_mode);
     refresh_services();
 
-    stage_log("PROBE 1/4 signature_probe 开始");
+    stage_log("PROBE 1/4 signature_probe begin");
     signature_probe();        // GObjects / GWorld / ProcessEvent 地址
     stage_flush();
-    stage_log("PROBE 1/4 signature_probe 完成 items=0x%llX gworld_slot=0x%llX",
+    stage_log("PROBE 1/4 signature_probe done items=0x%llX gworld_slot=0x%llX",
         (unsigned long long)g_gobjects_items, (unsigned long long)g_gworld_slot);
 
-    stage_log("PROBE 2/4 process_event_probe 开始");
+    stage_log("PROBE 2/4 process_event_probe begin");
     process_event_probe();    // 确认 ProcessEvent 真身(调用游戏函数要用)
     stage_flush();
-    stage_log("PROBE 2/4 process_event_probe 完成 pe=0x%llX",
+    stage_log("PROBE 2/4 process_event_probe done pe=0x%llX",
         (unsigned long long)g_process_event_fn);
 
-    stage_log("PROBE 3/4 world_chain_probe 开始");
+    stage_log("PROBE 3/4 world_chain_probe begin");
     world_chain_probe();      // 定位玩家 pawn(生成落点参照)
     stage_flush();
-    stage_log("PROBE 3/4 world_chain_probe 完成 world=0x%llX controller=0x%llX",
+    stage_log("PROBE 3/4 world_chain_probe done world=0x%llX controller=0x%llX",
         (unsigned long long)g_world, (unsigned long long)g_controller);
 
     if (g_test_mode == 2) {
-        stage_log("PROBE 4/4 actors_probe 跳过(mode=2)");
+        stage_log("PROBE 4/4 actors_probe skipped (mode=2)");
     } else {
-        stage_log("PROBE 4/4 actors_probe 开始");
+        stage_log("PROBE 4/4 actors_probe begin");
         actors_probe();           // 收集类列表(UI 数据源)
         stage_flush();
-        stage_log("PROBE 4/4 actors_probe 完成 actors=%u 类=%d 条目=%d",
+        stage_log("PROBE 4/4 actors_probe done actors=%u classes=%d entries=%d",
             g_actor_scanned, g_class_count, g_class_entry_count);
     }
 
@@ -3517,7 +3557,7 @@ static void pipeline_probe(void) {
         pipe_add("is_game_thread=%d", g_framework->is_game_thread(g_framework->user));
     }
     stage_flush();
-    stage_log("PROBE 完成");
+    stage_log("PROBE done");
 }
 
 // ---------------------------------------------------------------------------
@@ -3542,12 +3582,13 @@ static AnomalyStatusV1 ANOMALY_CALL plugin_load(
         ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION);
     g_signature = (const AnomalySignatureServiceV1*)fetch_version(ANOMALY_SIGNATURE_SERVICE_V1_ID, 1u);
     g_actors = (const AnomalyNteActorsServiceV1*)fetch_version(ANOMALY_NTE_ACTORS_SERVICE_V1_ID, 1u);
+    g_localizer = anomaly::sdk::Localizer(host);
 
     if (g_core == NULL || g_ui == NULL || g_window == NULL) {
         return mk_status(ANOMALY_STATUS_V1_UNAVAILABLE);
     }
     test_mode_load();
-    stage_log("NPC 召唤 1.1.0 设置持久化版 已加载 mode=%d", g_test_mode);
+    stage_log("NPC Summon 1.1.0 (settings persistence) loaded mode=%d", g_test_mode);
     *plugin_context = (void*)g_probes;
     return mk_status(ANOMALY_STATUS_V1_OK);
 }
@@ -3560,7 +3601,8 @@ static AnomalyStatusV1 ANOMALY_CALL plugin_start(void* plugin_context) {
     }
     spec.struct_size = sizeof(spec);
     spec.id = sv("npc-summon-main");
-    spec.title = sv("NPC 召唤");
+    const std::string title = g_localizer.Text("window.title", "NPC Summon");
+    spec.title = sv(title.c_str());
     spec.initial_width = 820.0F;
     spec.initial_height = 560.0F;
     spec.minimum_width = 520.0F;
@@ -3573,9 +3615,11 @@ static AnomalyStatusV1 ANOMALY_CALL plugin_start(void* plugin_context) {
     // 第二个窗口:生成记录 / 标签 / 黑名单 / 导入导出(默认不打开,需要时在宿主窗口列表里开)
     {
         AnomalyWindowSpecV1 spec2 = {0};
+        const std::string records_title =
+            g_localizer.Text("window.records.title", "Spawn Records");
         spec2.struct_size = sizeof(spec2);
         spec2.id = sv("npc-summon-records");
-        spec2.title = sv("NPC 生成记录");
+        spec2.title = sv(records_title.c_str());
         spec2.initial_width = 640.0F;
         spec2.initial_height = 480.0F;
         spec2.minimum_width = 440.0F;
@@ -3616,6 +3660,7 @@ static void ANOMALY_CALL plugin_unload(void* plugin_context) {
     g_names = NULL;
     g_signature = NULL;
     g_actors = NULL;
+    g_localizer = {};
     g_window_handle = AnomalyGenerationHandleV1{0u, 0u};
     g_record_window_handle = AnomalyGenerationHandleV1{0u, 0u};
 }
@@ -3627,11 +3672,11 @@ static double g_hb_elapsed = 0.0;
 
 static void ANOMALY_CALL plugin_update(void* plugin_context, double delta_seconds) {
     (void)plugin_context;
-    // 心跳:每秒一条,崩溃时能确定"死在哪一刻、插件当时是什么状态"
+    // 心跳:每秒一条,崩溃时能确定「死在哪一刻、插件当时是什么状态」
     g_hb_elapsed += delta_seconds;
     if (g_hb_elapsed >= 1.0) {
         g_hb_elapsed = 0.0;
-        stage_log("HB mode=%d scanned=%u 类=%d 条目=%d 生成=%d 探测次数=%d pe=0x%llX",
+        stage_log("HB mode=%d scanned=%u classes=%d entries=%d spawned=%d probe attempts=%d pe=0x%llX",
             g_test_mode, g_actor_scanned, g_class_count, g_class_entry_count,
             g_spawned_count, g_probe_attempts, (unsigned long long)g_process_event);
     }
@@ -3652,9 +3697,9 @@ static void ANOMALY_CALL plugin_update(void* plugin_context, double delta_second
                 }
             }
             if (still_mine != 0 && actor_looks_alive(late_actor) != 0) {
-                (void)apply_ground_fix(late_actor, late_reference, "延迟");
+                (void)apply_ground_fix(late_actor, late_reference, "late");
             } else {
-                stage_log("SPAWN 延迟 贴地:目标已销毁或不再属于本插件,跳过");
+                stage_log("SPAWN late ground fix: the target was destroyed or no longer belongs to this plugin, skipping");
             }
         }
     }
@@ -3709,7 +3754,7 @@ static void ANOMALY_CALL plugin_update(void* plugin_context, double delta_second
         g_late_fix_actor = 0u;
         test_mode_load();
         if (g_test_mode == 1) {
-            stage_log("PROBE 跳过(重新扫描 mode=1:只加载不探测)");
+            stage_log("PROBE skipped (rescan mode=1: load only, no probing)");
             return;
         }
         refresh_services();
@@ -3740,7 +3785,7 @@ static void ANOMALY_CALL plugin_update(void* plugin_context, double delta_second
         } else {
             (void)run_call_test();
         }
-        // 结果一律写日志,避免"失败分支无痕"这个反复踩的坑
+        // 结果一律写日志,避免「失败分支无痕」这个反复踩的坑
         if (g_call_result[0] != '\0' && g_core != NULL && g_core->log != NULL) {
             g_core->log(g_core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, sv(g_call_result));
         }
@@ -3785,55 +3830,79 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
 
         // ===== 操作按钮放最顶 =====
         if (ui->button_enabled != NULL) {
-            if (ui->button_enabled(ui->user, sv("生成到面前"), 150.0F, 0.0F, has_selected) != 0) {
+            if (ui->button_enabled(ui->user,
+                    sv(g_localizer.Text("action.spawn", "Spawn in front").c_str()),
+                    150.0F, 0.0F, has_selected) != 0) {
                 g_pending_spawn_class = g_selected_class;
             }
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            if (ui->button_enabled(ui->user, sv("清除我生成的"), 150.0F, 0.0F, has_spawned) != 0) {
+            if (ui->button_enabled(ui->user,
+                    sv(g_localizer.Text("action.clear_spawned", "Clear mine").c_str()),
+                    150.0F, 0.0F, has_spawned) != 0) {
                 g_pending_clear = 1;
             }
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            if (ui->button_enabled(ui->user, sv("重新扫描"), 110.0F, 0.0F, 1) != 0) {
+            if (ui->button_enabled(ui->user,
+                    sv(g_localizer.Text("action.rescan", "Rescan").c_str()), 110.0F, 0.0F, 1) != 0) {
                 g_pending_rescan = 1;
             }
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            if (ui->button_enabled(ui->user, sv("生成记录"), 110.0F, 0.0F, 1) != 0) {
+            if (ui->button_enabled(ui->user,
+                    sv(g_localizer.Text("action.open_records", "Spawn records").c_str()),
+                    110.0F, 0.0F, 1) != 0) {
                 g_pending_open_records = 1;
             }
         } else if (ui->button != NULL) {
-            if (ui->button(ui->user, sv("生成到面前"), 150.0F, 0.0F) != 0 && has_selected != 0) {
+            if (ui->button(ui->user,
+                    sv(g_localizer.Text("action.spawn", "Spawn in front").c_str()),
+                    150.0F, 0.0F) != 0 && has_selected != 0) {
                 g_pending_spawn_class = g_selected_class;
             }
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            if (ui->button(ui->user, sv("清除我生成的"), 150.0F, 0.0F) != 0 && has_spawned != 0) {
+            if (ui->button(ui->user,
+                    sv(g_localizer.Text("action.clear_spawned", "Clear mine").c_str()),
+                    150.0F, 0.0F) != 0 && has_spawned != 0) {
                 g_pending_clear = 1;
             }
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            if (ui->button(ui->user, sv("重新扫描"), 110.0F, 0.0F) != 0) {
+            if (ui->button(ui->user,
+                    sv(g_localizer.Text("action.rescan", "Rescan").c_str()), 110.0F, 0.0F) != 0) {
                 g_pending_rescan = 1;
             }
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            if (ui->button(ui->user, sv("生成记录"), 110.0F, 0.0F) != 0) {
+            if (ui->button(ui->user,
+                    sv(g_localizer.Text("action.open_records", "Spawn records").c_str()),
+                    110.0F, 0.0F) != 0) {
                 g_pending_open_records = 1;
             }
         }
         ui->separator(ui->user);
-        snprintf(line, sizeof(line), "NPC %d 个 · 车辆 %d 个 · 白名单 %d 个 · 已生成 %d 个",
-            g_npc_class_count, g_vehicle_class_count, g_whitelist_count, g_spawned_count);
+        snprintf(line, sizeof(line), "%s",
+            g_localizer.Format("status.class_counts",
+                "NPCs {0} · Vehicles {1} · Whitelisted {2} · Spawned {3}",
+                std::array<std::string_view, 4>{std::to_string(g_npc_class_count),
+                    std::to_string(g_vehicle_class_count), std::to_string(g_whitelist_count),
+                    std::to_string(g_spawned_count)}).c_str());
         ui->text(ui->user, sv(line));
 
         // 分类开关:默认只显示 NPC 和车辆;其它类(体积/触发物/空壳)不显示
         if (ui->checkbox != NULL) {
-            ui->checkbox(ui->user, sv("NPC"), &g_show_npc);
+            ui->checkbox(ui->user,
+                sv(g_localizer.Text("option.show_npc", "NPC").c_str()), &g_show_npc);
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            ui->checkbox(ui->user, sv("车辆"), &g_show_vehicle);
+            ui->checkbox(ui->user,
+                sv(g_localizer.Text("option.show_vehicle", "Vehicles").c_str()), &g_show_vehicle);
             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 10.0F);
-            ui->checkbox(ui->user, sv("其它(调试)"), &g_show_all_classes);
+            ui->checkbox(ui->user,
+                sv(g_localizer.Text("option.show_all", "Others (debug)").c_str()),
+                &g_show_all_classes);
         }
 
         // 搜索框:按名字/关键词过滤下面的列表
         if (ui->input_text != NULL) {
-            ui->input_text(ui->user, sv("搜索类名"), g_search, sizeof(g_search), 0u);
+            ui->input_text(ui->user,
+                sv(g_localizer.Text("hint.search", "Search class names").c_str()),
+                g_search, sizeof(g_search), 0u);
         }
 
         // 类列表(可滚动),按 NPC / 车辆 / 其它 分组
@@ -3868,16 +3937,23 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
                         if (match == 0) continue;
                         if (record_is_blacklisted(g_class_entries[i].name) != 0) continue;
                         if (header_drawn == 0) {
-                            ui->text(ui->user, sv(cat == 0 ? "── 白名单 ──"
-                                : (cat == 1 ? "── NPC ──"
-                                : (cat == 2 ? "── 车辆 ──" : "── 其它(调试) ──"))));
+                            ui->text(ui->user, sv(cat == 0
+                                ? g_localizer.Text("section.whitelist", "-- Whitelist --").c_str()
+                                : (cat == 1
+                                    ? g_localizer.Text("section.npc", "-- NPC --").c_str()
+                                    : (cat == 2
+                                        ? g_localizer.Text("section.vehicle", "-- Vehicles --").c_str()
+                                        : g_localizer.Text("section.others", "-- Others (debug) --").c_str()))));
                             header_drawn = 1;
                         }
                         // 白名单开关:点一下加入 / 移出(用文字,避免字体缺 ★ 字形显示成问号)
                         {
                             char star[48];
-                            snprintf(star, sizeof(star), "%s##w%d",
-                                (in_whitelist != 0) ? "移出" : "收藏", i);
+                            snprintf(star, sizeof(star), "%s", (in_whitelist != 0)
+                                ? g_localizer.Label("action.unfavorite", "Remove",
+                                    "w" + std::to_string(i)).c_str()
+                                : g_localizer.Label("action.favorite", "Favorite",
+                                    "w" + std::to_string(i)).c_str());
                             if (ui->button(ui->user, sv(star), 52.0F, 0.0F) != 0) {
                                 AcquireSRWLockExclusive(&g_pending_lock);
                                 snprintf(g_pending_whitelist_name,
@@ -3889,11 +3965,15 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
                             if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 6.0F);
                         }
                         if (i == g_selected_class) {
-                            snprintf(label, sizeof(label), "[已选] %s  (%u)",
-                                g_class_entries[i].name, g_class_entries[i].count);
+                            snprintf(label, sizeof(label), "%s",
+                                g_localizer.Format("label.selected_entry", "[selected] {0}  ({1})",
+                                    std::array<std::string_view, 2>{g_class_entries[i].name,
+                                        std::to_string(g_class_entries[i].count)}).c_str());
                         } else {
-                            snprintf(label, sizeof(label), "        %s  (%u)",
-                                g_class_entries[i].name, g_class_entries[i].count);
+                            snprintf(label, sizeof(label), "%s",
+                                g_localizer.Format("label.entry", "        {0}  ({1})",
+                                    std::array<std::string_view, 2>{g_class_entries[i].name,
+                                        std::to_string(g_class_entries[i].count)}).c_str());
                         }
                         if (ui->button(ui->user, sv(label), 0.0F, 0.0F) != 0) {
                             g_selected_class = i;
@@ -3904,17 +3984,24 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
                 }
                 if (shown == 0) {
                     ui->text(ui->user, sv(g_class_entry_count == 0
-                        ? "(正在扫描场景,请稍候几秒…)"
-                        : "(没有匹配的 NPC / 车辆,换个关键词试试)"));
+                        ? g_localizer.Text("status.scanning",
+                            "(Scanning the scene, this takes a few seconds...)").c_str()
+                        : g_localizer.Text("status.no_match",
+                            "(No matching NPC or vehicle, try another keyword)").c_str()));
                 }
             }
             if (ui->end_child != NULL) ui->end_child(ui->user);
         }
 
         if (has_selected != 0) {
-            snprintf(line, sizeof(line), "已选: %s", g_class_entries[g_selected_class].name);
+            snprintf(line, sizeof(line), "%s",
+                g_localizer.Format("status.selected", "Selected: {0}",
+                    std::array<std::string_view, 1>{
+                        g_class_entries[g_selected_class].name}).c_str());
         } else {
-            snprintf(line, sizeof(line), "未选类 —— 在上面的列表里点一个");
+            snprintf(line, sizeof(line), "%s",
+                g_localizer.Text("status.none_selected",
+                    "No class selected - click one in the list above.").c_str());
         }
         ui->text(ui->user, sv(line));
 
@@ -3922,7 +4009,8 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
         if (g_call_result[0] != '\0') {
             ui->text(ui->user, sv(g_call_result));
         } else {
-            ui->text(ui->user, sv("生成的 NPC 出现在你前方并自动贴地;列表来自世界上真实运行的 actor。"));
+            ui->text(ui->user, sv(g_localizer.Text("hint.spawn",
+                "Spawned NPCs appear in front of you and snap to the ground; the list comes from actors actually running in the world.").c_str()));
         }
     }
 
@@ -3945,25 +4033,35 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
                 char tag_c[60];
                 int r;
 
-                snprintf(line, sizeof(line), "已生成过 %d 个类 · 黑名单(标记失败) %d 个 · 共 %d 个自建 NPC",
-                    g_record_count, records_blacklist_count(), g_spawned_count);
+                snprintf(line, sizeof(line), "%s",
+                    g_localizer.Format("status.record_counts",
+                        "{0} classes spawned · {1} blacklisted (marked failed) · {2} custom NPCs total",
+                        std::array<std::string_view, 3>{std::to_string(g_record_count),
+                            std::to_string(records_blacklist_count()),
+                            std::to_string(g_spawned_count)}).c_str());
                 ui->text(ui->user, sv(line));
 
                 if (ui->button != NULL) {
-                    if (ui->button(ui->user, sv("导出到文件"), 130.0F, 0.0F) != 0) {
+                    if (ui->button(ui->user,
+                            sv(g_localizer.Text("action.export", "Export to file").c_str()),
+                            130.0F, 0.0F) != 0) {
                         g_pending_export = 1;
                     }
                     if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 8.0F);
-                    if (ui->button(ui->user, sv("从文件导入"), 130.0F, 0.0F) != 0) {
+                    if (ui->button(ui->user,
+                            sv(g_localizer.Text("action.import", "Import from file").c_str()),
+                            130.0F, 0.0F) != 0) {
                         g_pending_import = 1;
                     }
                     if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 8.0F);
-                    if (ui->button(ui->user, sv("清空记录"), 110.0F, 0.0F) != 0) {
+                    if (ui->button(ui->user,
+                            sv(g_localizer.Text("action.clear_records", "Clear records").c_str()),
+                            110.0F, 0.0F) != 0) {
                         g_pending_clear_records = 1;
                     }
                 }
-                ui->text(ui->user,
-                    sv("文件位置:<游戏目录>\\Anomaly\\npc-summon-records.txt(可手工编辑后再导入)"));
+                ui->text(ui->user, sv(g_localizer.Text("hint.records_file",
+                    "File: <game directory>\\Anomaly\\npc-summon-records.txt (edit it by hand, then import)").c_str()));
                 if (g_record_status[0] != '\0') {
                     ui->text(ui->user, sv(g_record_status));
                 }
@@ -3974,14 +4072,27 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
                     if (rec_open != 0) {
                         for (r = 0; r < g_record_count; ++r) {
                             NpcRecord* rec = &g_records[r];
-                            snprintf(line, sizeof(line), "%s   (生成 %u 次)   %s", rec->class_name,
-                                rec->spawn_count,
-                                (rec->verdict == 1) ? "[成功]"
-                                                    : ((rec->verdict == 2) ? "[失败/黑名单]" : "[未标记]"));
+                            snprintf(line, sizeof(line), "%s",
+                                g_localizer.Format("text.record_row", "{0}   (spawned {1}x)   {2}",
+                                    std::array<std::string_view, 3>{rec->class_name,
+                                        std::to_string(rec->spawn_count),
+                                        (rec->verdict == 1)
+                                            ? g_localizer.Text("label.verdict_success", "[success]")
+                                            : ((rec->verdict == 2)
+                                                ? g_localizer.Text("label.verdict_failed",
+                                                    "[failed/blacklisted]")
+                                                : g_localizer.Text("label.verdict_unmarked",
+                                                    "[unmarked]"))}).c_str());
                             ui->text(ui->user, sv(line));
-                            snprintf(tag_a, sizeof(tag_a), "未标记##a%d", r);
-                            snprintf(tag_b, sizeof(tag_b), "成功##b%d", r);
-                            snprintf(tag_c, sizeof(tag_c), "失败##c%d", r);
+                            snprintf(tag_a, sizeof(tag_a), "%s",
+                                g_localizer.Label("action.verdict_unmarked", "Unmarked",
+                                    "a" + std::to_string(r)).c_str());
+                            snprintf(tag_b, sizeof(tag_b), "%s",
+                                g_localizer.Label("action.verdict_success", "Success",
+                                    "b" + std::to_string(r)).c_str());
+                            snprintf(tag_c, sizeof(tag_c), "%s",
+                                g_localizer.Label("action.verdict_failed", "Failed",
+                                    "c" + std::to_string(r)).c_str());
                             if (ui->button != NULL) {
                                 if (ui->button(ui->user, sv(tag_a), 84.0F, 0.0F) != 0) rec->verdict = 0;
                                 if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 6.0F);
@@ -3989,7 +4100,9 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
                                 if (ui->same_line != NULL) ui->same_line(ui->user, 0.0F, 6.0F);
                                 if (ui->button(ui->user, sv(tag_c), 74.0F, 0.0F) != 0) rec->verdict = 2;
                             }
-                            snprintf(note_label, sizeof(note_label), "备注##n%d", r);
+                            snprintf(note_label, sizeof(note_label), "%s",
+                                g_localizer.Label("label.note", "Note",
+                                    "n" + std::to_string(r)).c_str());
                             if (ui->input_text != NULL) {
                                 ui->input_text(ui->user, sv(note_label), rec->note,
                                     sizeof(rec->note), 0u);
@@ -3999,7 +4112,8 @@ static void ANOMALY_CALL plugin_draw(void* plugin_context, const AnomalyUiServic
                             ui->separator(ui->user);
                         }
                         if (g_record_count == 0) {
-                            ui->text(ui->user, sv("(还没有生成过任何 NPC;标记为失败的类不会出现在主列表里)"));
+                            ui->text(ui->user, sv(g_localizer.Text("status.records_empty",
+                                "(No NPC spawned yet; classes marked failed are hidden from the main list.)").c_str()));
                         }
                     }
                     if (ui->end_child != NULL) ui->end_child(ui->user);
@@ -4017,7 +4131,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = AnomalyPluginDescriptorV1{
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        sv("local.nte.npc-summon"), sv("NPC 召唤"), sv("OUO"), sv("1.1.0"),
+        sv("local.nte.npc-summon"), sv("NPC Summon"), sv("OUO"), sv("1.1.0"),
         plugin_load, plugin_start, plugin_stop, plugin_unload, plugin_update, plugin_draw};
     return mk_status(ANOMALY_STATUS_V1_OK);
 }

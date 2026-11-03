@@ -16,7 +16,7 @@ For a workflow-oriented walkthrough, see [Plugin development](../developer-guide
 | [Inter-plugin IPC](ipc.md) | `anomaly.ipc` |
 | [WebSocket broadcast](websocket.md) | `anomaly.websocket` |
 | [UI services](ui-services.md) | `anomaly.ui`, `window`, `font`, `texture`, `input` |
-| [UE5 services](ue5-services.md) | `ue5.build`, `ahud`, `framework`, `names`, `objects`, `world` |
+| [UE5 services](ue5-services.md) | `ue5.build`, `ahud`, `framework`, `process-event`, `names`, `objects`, `world` |
 | [NTE services](nte-services.md) | `nte.build`, `session`, `player`, `player-teleport`, `map-landmarks`, `navigation`, `pickup`, `ui-buttons`, `combat`, `skills`, `skill-invocation`, `entities`, `actors`, `metrics` |
 | [Manifest and capabilities](manifest-and-capabilities.md) | Manifest v2 schema, capability mapping, status codes |
 
@@ -84,7 +84,7 @@ uint32_t service_version;  // version of this table
 void*    user;             // passed back as the first argument to every function call
 ```
 
-**Before using a table, a consumer must** validate that `struct_size` covers the fields it is going to call, and confirm that `service_version == 1`. The C++ wrapper `anomaly::sdk::Host::Query<Service>(id, 1)` encapsulates these checks (including the `api_major` validation) and returns an empty `ServiceRef<Service>` on failure. The current ABI provides no legacy service tables or version aliases.
+**Before calling a field**, verify that `struct_size` covers it and `service_version` meets the requested minimum_version. The C++ wrapper `anomaly::sdk::Host::Query<Service>(id, 1)` checks the Host API, common service prefix, and minimum version, returning an empty `ServiceRef<Service>` on failure. It does not guarantee appended fields exist; check `struct_size` separately before using extensions such as `invoke`. The ABI does not provide old service tables or version aliases.
 
 > [!IMPORTANT]
 > A service table belongs to **one Host lifecycle generation**. A cached table from a stopped or replaced generation can only return `UNAVAILABLE` (scalar queries return 0), and it does not recover on a later Start generation. Query again after every lifecycle.
@@ -128,6 +128,7 @@ Many functions that return variable-length data use a signature of the form `(..
 | `anomaly.ue5.build` | 1 | `ue5-build` | [ue5.build](ue5-services.md#anomalyue5build) |
 | `anomaly.ue5.ahud` | 1 | `ue5-ahud` | [ue5.ahud](ue5-services.md#anomalyue5ahud) |
 | `anomaly.ue5.framework` | 1 | `game-events` | [ue5.framework](ue5-services.md#anomalyue5framework) |
+| `anomaly.ue5.process-event` | 1 | `game-events` | [ue5.process-event](ue5-services.md#anomalyue5process-event) |
 | `anomaly.ue5.names` | 1 | `ue5-names` | [ue5.names](ue5-services.md#anomalyue5names) |
 | `anomaly.ue5.objects` | 1 | `ue5-objects` | [ue5.objects](ue5-services.md#anomalyue5objects) |
 | `anomaly.ue5.world` | 1 | `ue5-world` | [ue5.world](ue5-services.md#anomalyue5world) |

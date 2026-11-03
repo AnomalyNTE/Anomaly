@@ -7,6 +7,7 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/platform.h"
+#include "anomaly/sdk/localization.hpp"
 
 #include <windows.h>
 
@@ -138,6 +139,7 @@ const AnomalyStorageServiceV1* g_storage{};
 const AnomalySchedulerServiceV1* g_scheduler{};
 AnomalyGenerationHandleV1 g_hotkey_window{};
 AnomalyGenerationHandleV1 g_hotkey_toggle{};
+anomaly::sdk::Localizer g_localizer;
 
 void SetStatus(const char* text) {
     std::snprintf(g_state.status, sizeof(g_state.status), "%s", (text != nullptr) ? text : "");
@@ -246,7 +248,7 @@ void TryResolveGobjectsSlot() {
     if (s.sig_tried != 0) return;
     s.sig_tried = 1;
     if (g_signature == nullptr || g_signature->resolve == nullptr) {
-        SetStatus("签名服务不可用");
+        SetStatus(g_localizer.Text("status.signature_unavailable", "The signature service is unavailable").c_str());
         return;
     }
     std::uintptr_t match = 0;
@@ -254,14 +256,15 @@ void TryResolveGobjectsSlot() {
                              StringView(kIndexToAddressPattern), &match).code !=
             ANOMALY_STATUS_V1_OK ||
         match == 0) {
-        SetStatus("未命中对象表签名（游戏版本可能变了）");
+        SetStatus(g_localizer.Text("status.gobjects_signature_missing",
+                     "The object table signature did not match (the game version may have changed)").c_str());
         return;
     }
     const std::int32_t disp = static_cast<std::int32_t>(SafeReadU32(match + 3));
     const std::uintptr_t slot =
         match + 7 + static_cast<std::uintptr_t>(static_cast<std::intptr_t>(disp));
     if (!LooksLikePointer(slot)) {
-        SetStatus("对象表符号地址非法");
+        SetStatus(g_localizer.Text("status.gobjects_address_invalid", "The object table symbol address is invalid").c_str());
         return;
     }
     s.gobjects_slot = slot;
@@ -511,7 +514,7 @@ void AdvanceScan() {
     if (g_objects == nullptr || g_objects->snapshot_at == nullptr ||
         g_objects->count == nullptr || g_names == nullptr || g_names->resolve_utf8 == nullptr) {
         s.walk_done = 1;
-        SetStatus("对象表/名字服务不可用");
+        SetStatus(g_localizer.Text("status.registry_unavailable", "The object table or name service is unavailable").c_str());
         return;
     }
     if (s.walk_total == 0) s.walk_total = g_objects->count(g_objects->user);
@@ -680,7 +683,8 @@ void CaptureTick() {
 
 void KeyName(std::uint32_t vk, char* out, std::size_t capacity) {
     if (vk == 0) {
-        std::snprintf(out, capacity, "未绑定");
+        std::snprintf(out, capacity, "%s",
+                      g_localizer.Text("text.hotkey_unbound", "Unbound").c_str());
     } else if (vk >= '0' && vk <= '9') {
         std::snprintf(out, capacity, "%c", static_cast<char>(vk));
     } else if (vk >= 'A' && vk <= 'Z') {
@@ -689,9 +693,15 @@ void KeyName(std::uint32_t vk, char* out, std::size_t capacity) {
         std::snprintf(out, capacity, "F%u", vk - VK_F1 + 1u);
     } else {
         switch (vk) {
-            case VK_SPACE: std::snprintf(out, capacity, "空格"); break;
+            case VK_SPACE:
+                std::snprintf(out, capacity, "%s",
+                              g_localizer.Text("text.key_space", "Space").c_str());
+                break;
             case VK_TAB: std::snprintf(out, capacity, "Tab"); break;
-            case VK_RETURN: std::snprintf(out, capacity, "回车"); break;
+            case VK_RETURN:
+                std::snprintf(out, capacity, "%s",
+                              g_localizer.Text("text.key_enter", "Enter").c_str());
+                break;
             case VK_DELETE: std::snprintf(out, capacity, "Delete"); break;
             case VK_INSERT: std::snprintf(out, capacity, "Insert"); break;
             default: std::snprintf(out, capacity, "VK 0x%02X", vk); break;
@@ -818,9 +828,13 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
     char line[160];
     char key_name[64];
 
-    Text(ui, (s.checked != 0) ? "当前状态：空无一人" : "当前状态：正常");
+    const std::string state_text = (s.checked != 0)
+        ? g_localizer.Text("status.deserted", "Status: deserted")
+        : g_localizer.Text("status.normal", "Status: normal");
+    Text(ui, state_text.c_str());
     if (s.spawner_count == 0) {
-        Text(ui, "正在定位人群生成器…");
+        Text(ui, g_localizer.Text("status.locating_spawners",
+                                 "Locating the crowd spawners...").c_str());
     } else if (s.status[0] != '\0') {
         Text(ui, s.status);
     }
@@ -829,7 +843,9 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
 
     if (HAS(ui, checkbox)) {
         int checked = s.checked;
-        if (ui->checkbox(ui->user, StringView("空无一人##td-empty"), &checked) != 0) {
+        const std::string empty_label =
+            g_localizer.Label("option.empty_streets", "Empty streets", "td-empty");
+        if (ui->checkbox(ui->user, StringView(empty_label), &checked) != 0) {
             s.checked = (checked != 0) ? 1 : 0;
             s.req_toggle = 1;  // 真正的读写与落盘放 on_update（Game 域）
         }
@@ -838,14 +854,19 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
     if (HAS(ui, separator)) ui->separator(ui->user);
 
     KeyName(s.hotkey, key_name, sizeof(key_name));
-    std::snprintf(line, sizeof(line), "快捷键：%s", key_name);
+    const std::string key_text = g_localizer.Format("label.hotkey", "Hotkey: {0}",
+        std::array<std::string_view, 1>{key_name});
+    std::snprintf(line, sizeof(line), "%s", key_text.c_str());
     Text(ui, line);
     if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
-    if (HAS(ui, button) && ui->button(ui->user, StringView("改键##td-rb"), 64.0F, 0.0F)) {
+    const std::string rebind_label =
+        g_localizer.Label("action.rebind_hotkey", "Rebind hotkey", "td-rb");
+    if (HAS(ui, button) && ui->button(ui->user, StringView(rebind_label), 64.0F, 0.0F)) {
         BeginCapture();
     }
     if (s.capturing != 0) {
-        Text(ui, "请按下新快捷键…（Backspace 解除绑定 / Esc 取消）");
+        Text(ui, g_localizer.Text("hint.capture_hotkey",
+                                 "Press the new hotkey... (Backspace unbinds, Esc cancels)").c_str());
     }
 }
 
@@ -861,7 +882,8 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui_v1) {
     if (HAS(ui, set_next_window_size)) {
         ui->set_next_window_size(ui->user, 440.0F, 210.0F, kCondFirstUseEver);
     }
-    if (ui->begin_window(ui->user, StringView("空无一人"), &s.window_open, 0u) != 0) {
+    const std::string title = g_localizer.Text("window.title", "Deserted");
+    if (ui->begin_window(ui->user, StringView(title), &s.window_open, 0u) != 0) {
         DrawMain(ui);
     }
     ui->end_window(ui->user);
@@ -872,6 +894,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     if (context == nullptr) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *context = nullptr;
     const Host view(host);
+    g_localizer = anomaly::sdk::Localizer(host);
 
     const auto ui = view.Query<AnomalyUiServiceV1>(ANOMALY_UI_SERVICE_V1_ID,
                                                    ANOMALY_UI_SERVICE_V1_VERSION);
@@ -951,6 +974,7 @@ void ANOMALY_CALL Unload(void* context) {
     g_storage = nullptr;
     g_scheduler = nullptr;
     g_ui = nullptr;
+    g_localizer = {};
     g_state = State{};
 }
 

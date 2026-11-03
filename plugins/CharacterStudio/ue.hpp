@@ -1,6 +1,7 @@
 #pragma once
 
 #include "anomaly/sdk/cpp.hpp"
+#include "anomaly/sdk/localization.hpp"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -61,11 +62,14 @@ struct Property {
 
 class Engine {
 public:
-    Engine(Process& process, Json resource, Address registry)
-        : process_(process), resource_(std::move(resource)), registry_(registry) {
+    Engine(Process& process, Json resource, Address registry,
+           const anomaly::sdk::Localizer& l10n)
+        : process_(process), resource_(std::move(resource)), registry_(registry),
+          localizer(l10n) {
         if (resource_.at("schema") != "anomaly.plugin.character-studio.layout" ||
             resource_.at("version") != 1 || resource_.at("game") != "nte")
-            throw std::runtime_error("不支持的模型布局资料");
+            throw std::runtime_error(
+                localizer.Text("error.layout_unsupported", "Unsupported model layout data"));
     }
     const Json& resource() const { return resource_; }
     std::size_t Offset(std::string_view key) const {
@@ -74,12 +78,14 @@ public:
     template<class T> T Read(Address address) {
         T value{};
         if (!address || !process_.Read(address, &value, sizeof(value)))
-            throw std::runtime_error("对象内存不可读");
+            throw std::runtime_error(
+                localizer.Text("error.object_memory_unreadable", "Object memory is unreadable"));
         return value;
     }
     void Bytes(Address address, void* data, std::size_t size) {
         if (size && (!address || !process_.Read(address, data, size)))
-            throw std::runtime_error("资源数据不可读");
+            throw std::runtime_error(
+                localizer.Text("error.resource_unreadable", "Resource data is unreadable"));
     }
     template<class T> T Layout(Address object, std::string_view field) {
         return Read<T>(object + Offset(field));
@@ -136,7 +142,11 @@ public:
                 object = Resolve(process_.Find(alternate));
             }
         }
-        if (!object) throw std::runtime_error("未找到反射对象：" + std::string(path));
+        if (!object) {
+            const std::array arguments{std::string_view(path)};
+            throw std::runtime_error(localizer.Format("error.reflection_object_missing",
+                "Reflection object not found: {0}", arguments));
+        }
         return object;
     }
     Property PropertyAt(Address type, std::string_view name) {
@@ -151,15 +161,20 @@ public:
                 result.size = Layout<std::int32_t>(field, "fproperty.elementSize");
                 result.dimension = Layout<std::int32_t>(field, "fproperty.arrayDim");
                 if (result.offset < 0 || result.offset > 1024 * 1024 ||
-                    result.size <= 0 || result.size > 1024 * 1024 || result.dimension != 1)
-                    throw std::runtime_error("属性布局不合法：" + std::string(name));
+                    result.size <= 0 || result.size > 1024 * 1024 || result.dimension != 1) {
+                    const std::array arguments{std::string_view(name)};
+                    throw std::runtime_error(localizer.Format("error.property_layout_invalid",
+                        "Property layout is invalid: {0}", arguments));
+                }
                 if (result.type == "StructProperty")
                     result.structure = Layout<Address>(field, "fstructProperty.struct");
                 return result;
             }
             field = Layout<Address>(field, "fproperty.propertyLinkNext");
         }
-        throw std::runtime_error("未找到属性：" + std::string(name));
+        const std::array arguments{std::string_view(name)};
+        throw std::runtime_error(localizer.Format("error.property_missing",
+            "Property not found: {0}", arguments));
     }
     Property Expect(Address type, std::string_view name, std::string_view kind,
                     std::size_t size, std::string_view structure = {}) {
@@ -168,8 +183,11 @@ public:
         if (kinds.find("|" + field.type + "|") == std::string::npos ||
             static_cast<std::size_t>(field.size) != size ||
             (!structure.empty() && (!field.structure ||
-                 ObjectName(field.structure) != structure)))
-            throw std::runtime_error("属性合同不匹配：" + std::string(name));
+                 ObjectName(field.structure) != structure))) {
+            const std::array arguments{std::string_view(name)};
+            throw std::runtime_error(localizer.Format("error.property_contract_mismatch",
+                "Property contract mismatch: {0}", arguments));
+        }
         return field;
     }
     template<class T> T Value(Address object, Address type, std::string_view name,
@@ -186,8 +204,11 @@ public:
         const auto address = object + field.offset;
         Instance value{Layout<Address>(address, "instancedStruct.scriptStruct"),
                        Layout<Address>(address, "instancedStruct.memory")};
-        if (!value.type || !value.data || !Derived(value.type, expected))
-            throw std::runtime_error("实例化结构不匹配：" + std::string(expected));
+        if (!value.type || !value.data || !Derived(value.type, expected)) {
+            const std::array arguments{std::string_view(expected)};
+            throw std::runtime_error(localizer.Format("error.instanced_struct_mismatch",
+                "Instanced struct mismatch: {0}", arguments));
+        }
         return value;
     }
     // TMap is a sparse array, NOT a packed list. Respect holes and allocation flags.
@@ -202,7 +223,8 @@ public:
         if (count < 0 || count > 65536 || capacity < count || capacity > 65536 ||
             free < 0 || free > count || bits < count || bits > 65536 || maximum < bits ||
             (!flags && bits > 128) || (count && !data))
-            throw std::runtime_error("稀疏资源表布局不合法");
+            throw std::runtime_error(
+                localizer.Text("error.sparse_table_layout", "Sparse table layout is invalid"));
         if (!flags) flags = map + Offset("dataTable.rowMapInlineFlags");
         std::vector<std::uint32_t> allocation((count + 31) / 32);
         Bytes(flags, allocation.data(), allocation.size() * sizeof(std::uint32_t));
@@ -211,7 +233,8 @@ public:
         for (std::int32_t i = 0; i < count; ++i)
             if (allocation[i / 32] & (1u << (i % 32))) result.push_back(data + i * stride);
         if (result.size() != static_cast<std::size_t>(count - free))
-            throw std::runtime_error("资源表分配计数不一致");
+            throw std::runtime_error(
+                localizer.Text("error.table_allocation_count", "Table allocation count does not match"));
         return result;
     }
     struct Table {
@@ -219,17 +242,23 @@ public:
         std::map<std::uint64_t, Address> rows;
     };
     Table Rows(Address table, std::string_view row_type) {
-        if (!IsA(table, "DataTable")) throw std::runtime_error("资源不是 DataTable");
+        if (!IsA(table, "DataTable"))
+            throw std::runtime_error(
+                localizer.Text("error.not_data_table", "The object is not a DataTable"));
         Table result;
         result.type = Layout<Address>(table, "dataTable.rowStruct");
-        if (!result.type || ObjectName(result.type) != row_type)
-            throw std::runtime_error("数据表行类型不匹配：" + std::string(row_type));
+        if (!result.type || ObjectName(result.type) != row_type) {
+            const std::array arguments{std::string_view(row_type)};
+            throw std::runtime_error(localizer.Format("error.row_type_mismatch",
+                "Data table row type mismatch: {0}", arguments));
+        }
         for (auto pair : Sparse(table + Offset("dataTable.rowMap"),
                                 Offset("dataTable.rowMapElementStride"))) {
             const auto key = Read<Name>(pair);
             const auto row = Read<Address>(pair + Offset("dataTable.rowMapRowOffset"));
             if (!key.index || !row || !result.rows.emplace(Key(key), row).second)
-                throw std::runtime_error("角色表包含无效或重复行键");
+                throw std::runtime_error(localizer.Text("error.row_key_invalid",
+                    "The character table contains an invalid or duplicate row key"));
         }
         return result;
     }
@@ -243,7 +272,9 @@ public:
             Resolve(found->second.handle)) return found->second;
         const auto& spec = resource_.at("functions").at(path);
         const auto function = Find(path);
-        if (!IsA(function, "Function")) throw std::runtime_error("目标不是 UFunction");
+        if (!IsA(function, "Function"))
+            throw std::runtime_error(
+                localizer.Text("error.not_ufunction", "The target is not a UFunction"));
         Function result;
         result.handle = Pin(function);
         result.size = spec.at("size").get<std::size_t>();
@@ -259,41 +290,57 @@ public:
                 param.at("offset").get<std::size_t>() + param.at("size").get<std::size_t>());
         if (!result.handle.id || result.size > 1024 || parameter_end > result.size ||
             (size != parameter_end && size != result.size) ||
-            count != spec.at("fields").size() || (flags & 0x40u))
-            throw std::runtime_error("函数 ABI 或本地调用合同不匹配：" + path +
-                "（参数数=" + std::to_string(count) + "/" +
-                std::to_string(spec.at("fields").size()) + "，ParmsSize=" +
-                std::to_string(size) + "，参数末端=" + std::to_string(parameter_end) +
-                "，存储=" + std::to_string(result.size) + "，Flags=" +
-                std::to_string(flags) + "）");
+            count != spec.at("fields").size() || (flags & 0x40u)) {
+            const std::string params = std::to_string(count);
+            const std::string declared = std::to_string(spec.at("fields").size());
+            const std::string parms_size = std::to_string(size);
+            const std::string parameter_tail = std::to_string(parameter_end);
+            const std::string storage = std::to_string(result.size);
+            const std::string function_flags = std::to_string(flags);
+            const std::array<std::string_view, 7> arguments{path, params, declared, parms_size,
+                                                            parameter_tail, storage, function_flags};
+            throw std::runtime_error(localizer.Format("error.function_contract_mismatch",
+                "Function ABI or native call contract mismatch: {0} (params={1}/{2}, ParmsSize={3}, end={4}, storage={5}, flags={6})",
+                arguments));
+        }
         std::uint16_t expected_return = 0xffff;
         for (const auto& param : spec.at("fields")) {
             const auto name = param.at("name").get<std::string>();
             auto field = Expect(function, name, param.at("type").get<std::string>(),
                                 param.at("size").get<std::size_t>());
             if (field.offset != param.at("offset").get<std::int32_t>() ||
-                field.offset + field.size > size)
-                throw std::runtime_error("函数参数偏移不匹配：" + path + "." + name);
+                field.offset + field.size > size) {
+                const std::array arguments{std::string_view(path), std::string_view(name)};
+                throw std::runtime_error(localizer.Format("error.parameter_offset_mismatch",
+                    "Function parameter offset mismatch: {0}.{1}", arguments));
+            }
             if (name == "ReturnValue") expected_return = static_cast<std::uint16_t>(field.offset);
             result.fields.emplace(name, std::move(field));
         }
-        if (ret != expected_return) throw std::runtime_error("返回参数偏移不匹配：" + path);
+        if (ret != expected_return) {
+            const std::array arguments{std::string_view(path)};
+            throw std::runtime_error(localizer.Format("error.return_offset_mismatch",
+                "Return value offset mismatch: {0}", arguments));
+        }
         result.size = size;
         return functions_.insert_or_assign(path, std::move(result)).first->second;
     }
     class Parameters {
     public:
-        explicit Parameters(Function& function) : function_(function) {}
+        Parameters(Function& function, const anomaly::sdk::Localizer& l10n)
+            : function_(function), localizer(l10n) {}
         template<class T> void Put(std::string_view name, const T& value) {
             const auto& f = function_.fields.at(std::string(name));
             if (sizeof(T) != static_cast<std::size_t>(f.size))
-                throw std::runtime_error("参数类型大小不匹配");
+                throw std::runtime_error(
+                    localizer.Text("error.argument_size_mismatch", "Argument type size mismatch"));
             std::memcpy(data.data() + f.offset, &value, sizeof(T));
         }
         template<class T> T Get(std::string_view name) const {
             const auto& f = function_.fields.at(std::string(name));
             if (sizeof(T) != static_cast<std::size_t>(f.size))
-                throw std::runtime_error("返回参数类型大小不匹配");
+                throw std::runtime_error(
+                    localizer.Text("error.return_size_mismatch", "Return type size mismatch"));
             T value{};
             std::memcpy(&value, data.data() + f.offset, sizeof(T));
             return value;
@@ -301,16 +348,20 @@ public:
         alignas(16) std::array<std::uint8_t, 1024> data{};
     private:
         Function& function_;
+        const anomaly::sdk::Localizer& localizer;
     };
     template<class Fill> Parameters Call(const std::string& path, Address object, Fill fill) {
         auto& function = Bind(path);
-        Parameters params(function);
+        Parameters params(function, localizer);
         fill(params);
         const auto receiver = Pin(object);
         const auto target = Resolve(function.handle);
         if (!receiver.id || !Resolve(receiver) || !target ||
-            !process_.Invoke(object, target, params.data.data(), function.size))
-            throw std::runtime_error("本地反射调用失败：" + path);
+            !process_.Invoke(object, target, params.data.data(), function.size)) {
+            const std::array arguments{std::string_view(path)};
+            throw std::runtime_error(localizer.Format("error.reflection_call_failed",
+                "Native reflection call failed: {0}", arguments));
+        }
         return params;
     }
     Parameters Call(const std::string& path, Address object) {
@@ -342,5 +393,6 @@ private:
     Json resource_;
     Address registry_{};
     std::map<std::string, Function, std::less<>> functions_;
+    const anomaly::sdk::Localizer& localizer;
 };
 } // namespace character_studio

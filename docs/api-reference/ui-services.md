@@ -6,7 +6,9 @@
 
 - **ID**：`"anomaly.ui"` · **版本** 1 · **capability** `ui`
 
-`anomaly.ui` 只发布 `AnomalyUiServiceV1`。除 `developer_mode_enabled` 外，表中的 UI 调用仅在当前 `on_draw` 回调内有效；`developer_mode_enabled` 也可在 `on_update` 中调用。
+`anomaly.ui` 只发布 `AnomalyUiServiceV1`。窗口和控件调用仅在当前 `on_draw` 回调内有效；
+`draw_screen_primitives` 也可在 `on_overlay` 中调用。`developer_mode_enabled` 还可在
+`on_update` 中调用。
 
 ### 通用类型
 
@@ -27,7 +29,23 @@ typedef struct AnomalyEspBoxStyleV1 {
     float thickness; float outline_thickness;
 } AnomalyEspBoxStyleV1;
 // AnomalyEspBoxFlagsV1: ANOMALY_ESP_BOX_V1_NONE = 0, ANOMALY_ESP_BOX_V1_OUTLINE = 1<<0
+
+typedef enum AnomalyUiScreenPrimitiveKindV1 {
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE = 1,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT = 2,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_RECT = 3,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_CIRCLE = 4,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_CIRCLE = 5
+} AnomalyUiScreenPrimitiveKindV1;
+
+typedef struct AnomalyUiScreenPrimitiveV1 {
+    uint32_t struct_size; uint32_t kind; uint32_t color_rgba;
+    float x, y, width, height, thickness;
+} AnomalyUiScreenPrimitiveV1;
 ```
+
+`LINE` 的 `x/y` 和 `width/height` 分别是两个端点；矩形以 `x/y` 为左上角、`width/height`
+为尺寸；圆以 `x/y` 为圆心、`width` 为半径。`thickness` 用于线和空心图形。
 
 ### 服务表
 
@@ -78,6 +96,7 @@ typedef struct AnomalyUiServiceV1 {
     int  (ANOMALY_CALL *begin_child_auto_fit_y)(void* user, AnomalyStringViewV1 id, float width, float max_height);
     int  (ANOMALY_CALL *slider_float_enabled)(void* user, AnomalyStringViewV1 label, float* value, float minimum, float maximum, int enabled);
     void (ANOMALY_CALL *set_next_item_width)(void* user, float width);
+    int  (ANOMALY_CALL *draw_screen_primitives)(void* user, const AnomalyUiScreenPrimitiveV1* primitives, size_t count);
 } AnomalyUiServiceV1;
 ```
 
@@ -94,6 +113,7 @@ typedef struct AnomalyUiServiceV1 {
 | `draw_entity_bbox` | 用 Unreal rotator 约定投影一个轴对齐世界盒并在前景绘制；仅当可见时返回 1 |
 | `draw_entity_box3d` | 投影并绘制世界盒的全部 12 条棱 |
 | `draw_entity_label` | 投影盒并在其 2D 边界上方绘制居中标签 |
+| `draw_screen_primitives` | 一次提交一批位于插件窗口下方的屏幕空间线段、矩形或圆形；可在 `on_draw` 或 `on_overlay` 中调用 |
 
 > [!NOTE]
 > `draw_entity_*`（ESP 绘制）需要 `entity-esp` capability。它们仅为 ABI v1 兼容而保留；新插件应使用
@@ -138,6 +158,14 @@ typedef enum AnomalyUiTabItemFlagsV1 {
 `ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT` 让列宽贴合内容，而不是把同一行的列拉伸到可用宽度。
 `same_line(0, spacing)` 可在相邻控件之间使用固定小间隔；`set_cursor_pos_x` 接受窗口本地 X 坐标。
 服务表尾部字段必须先用 `struct_size` 检查后再调用，以兼容尚未提供这些可选控件的 V1 宿主。
+
+`draw_screen_primitives` 是 append-only 的批量绘制入口。插件应先在自有缓冲区构造完整数组再调用一次；
+宿主在调用期间复制绘制数据，不保留数组指针。图元位于插件窗口下方，因此菜单会正常遮住世界标记。
+批量绘制比逐图元调用 AHUD `ProcessEvent` 更适合骨骼点、轨迹和大量调试标记；宿主或插件不支持
+该字段时，应保留已有绘制路径作为降级。
+
+需要在插件窗口关闭后继续显示的覆盖层应通过 `AnomalyPluginDescriptorV1::on_overlay` 提交，而不是依赖
+`on_draw`。`on_overlay` 不参与窗口显示状态，适合骨骼、轨迹和持续存在的调试标记。
 
 `set_next_item_width(width)` 仅影响下一个输入或滑块。负值表示从当前内容区域右边缘保留的距离，例如 `-52` 为右侧标签保留 52 像素，数值输入框占用其余宽度；原生加减按钮保持正常尺寸。调用前检查 `struct_size` 和函数指针。`begin_child` 的 `ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y`（`1u << 5u`）让面板按实际内容计算高度；不要用占满剩余高度的子面板冒充内容高度。
 

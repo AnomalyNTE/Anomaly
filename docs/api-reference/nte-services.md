@@ -357,10 +357,59 @@ typedef struct AnomalyNtePlayerServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *hold_release)(void* user);
     AnomalyStatusV1 (ANOMALY_CALL *hold_snapshot)(void* user,
         AnomalyNtePlayerHoldSnapshotV1* snapshot);
+    // V1 尾部扩展；读取前检查 struct_size；不需要 nte-player-hold capability。
+    AnomalyStatusV1 (ANOMALY_CALL *get_object_handles)(void* user,
+        AnomalyGenerationHandleV1* pawn, AnomalyGenerationHandleV1* controller);
 } AnomalyNtePlayerServiceV1;
 ```
 
 相机数据只在活动 Profile 验证了 Player 服务的可选 `nte.player-esp` capability 后可用。`world` 标识场景，`player` 标识提供该相机样本的 Pawn / Controller；任一 generation handle 变 stale 会使对应关系失效。
+
+### 玩家对象句柄
+
+`snapshot.handle`、`esp_snapshot.handle` 和 `camera_snapshot.player` 是 `nte.player`
+样本身份，不是 UObject handle，不能直接传给 `ue5.objects` 或 `ProcessEvent.invoke`。
+`get_object_handles` 返回最近一次玩家样本对应的 Pawn / Controller 的 **`ue5.objects`
+句柄**，可用作 `snapshot_by_handle` 的输入或 `invoke` 的接收对象；不会改变旧快照 handle 的语义。
+
+- 仅允许在 **Game 线程**调用；不会派发任务、刷新玩家样本或扫描对象数组。建议取到后在同一 Game 回调内调用 `invoke`。
+- `pawn`、`controller` 至少提供一个，另一个可以为 `NULL`；只验证请求的对象。所有请求的输出仅在成功时写入。
+- 仍使用 `nte-player-snapshot` capability，不要求 `nte-player-hold`。调用 `invoke` 另需 `game-events`，查询对象服务另需 `ue5-objects`。
+- `service_version` 仍为 1，旧字段偏移不变；使用前检查 `struct_size` 覆盖新增字段且函数指针非空。
+- 返回的句柄不持有引擎对象。对象销毁／复用或对象注册表 generation 改变后，须重新获取；后续对象查询与 `invoke` 仍执行 generation/serial 校验。
+
+| 状态 | 含义 |
+| --- | --- |
+| `OK` | 请求的 Pawn / Controller 已转换为对象句柄 |
+| `INVALID_ARGUMENT` | 两个输出均为 `NULL` |
+| `CONFLICT` | Game 线程尚未确定，或调用不在 Game 线程 |
+| `UNAVAILABLE` | 服务已停止、玩家样本不可用，或 `ue5.objects` Feature / 注册表不可用 |
+| `NOT_FOUND` | 请求的玩家对象已不在对象注册表中 |
+| `FAILED` | 公开调用边界捕获异常 |
+
+在 Game 回调中获取 Pawn，再交给 [ProcessEvent `invoke`](ue5-services.md#主动调用合同)：
+
+```c
+AnomalyStatusV1 InvokeLocalPawn(
+    const AnomalyNtePlayerServiceV1* player,
+    const AnomalyUe5ProcessEventServiceV1* events,
+    AnomalyGenerationHandleV1 function, void* parameters, size_t capacity) {
+    if (player == NULL || events == NULL ||
+        player->struct_size < offsetof(AnomalyNtePlayerServiceV1, get_object_handles) +
+            sizeof(player->get_object_handles) || player->get_object_handles == NULL ||
+        events->struct_size < offsetof(AnomalyUe5ProcessEventServiceV1, invoke) +
+            sizeof(events->invoke) || events->invoke == NULL) {
+        AnomalyStatusV1 unavailable = {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {NULL, 0}};
+        return unavailable;
+    }
+    AnomalyGenerationHandleV1 pawn = {0, 0};
+    AnomalyStatusV1 status = player->get_object_handles(player->user, &pawn, NULL);
+    if (status.code != ANOMALY_STATUS_V1_OK) return status;
+    return events->invoke(events->user, pawn, function, parameters, capacity);
+}
+```
+
+`function` 仍须是适用于 Pawn 的真实 UFunction 对象句柄；参数构造、容量与返回值读取遵守 `invoke` 合同。
 
 ---
 

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 2,
   "id": "anomaly.local.nte.night999",
-  "name": "999夜脚本",
-  "description": "999夜脚本：全自动刷怪循环——传送到营地 → 刷新怪物 → 传送到1号战斗点 → 自动战斗 → 传送到2号战斗点 → 自动战斗 → 回到营地，按设定次数循环（0 为无限）。",
+  "name": "Night 999",
+  "description": "Night 999 script: a fully automatic monster farming loop - teleport to camp, refresh monsters, teleport to fight point 1, auto combat, teleport to fight point 2, auto combat, back to camp, repeated for the configured number of rounds (0 = unlimited). Intended for the Night 999 Crimson Dragon Castle map; neither refreshing nor combat needs any UI open.",
   "author": "WawMew",
   "license": "AGPL-3.0-only",
   "audience": "user",
@@ -15,6 +15,7 @@
   "services": [
     {"id": "anomaly.core", "minVersion": 1, "optional": true},
     {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
     {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},

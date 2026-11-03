@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.name": "场景加载器",
     "plugin.description": "列出游戏场景，用游戏自己配置的入口切换；可在场景内换入口、强制返回大世界，并开关当前场景的数据层。",
     "window.title": "场景加载器",
 

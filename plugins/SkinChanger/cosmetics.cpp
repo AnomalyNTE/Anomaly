@@ -4,6 +4,7 @@
 #include "profile.hpp"
 #include "cosmetics.hpp"
 #include "cosmetic_profiles.hpp"
+#include "localization.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -21,6 +22,7 @@
 namespace {
 using namespace accessory;
 using anomaly::sdk::StringView;
+anomaly::sdk::Localizer& localizer = skin_change::Localizer();
 using Address = std::uintptr_t;
 using GetFn = bool(__fastcall*)(void*, Appearance*);
 using CopyFn = NameArray*(__fastcall*)(NameArray*, const NameArray*);
@@ -32,6 +34,10 @@ struct Row {
 };
 std::string SlotKey(const Row& row) {
     return std::to_string(row.key.part)+":"+row.type;
+}
+std::string PlacementText(const Row& row) {
+    const auto index=PlacementIndex(row.type,row.key.part);
+    return localizer.Text(placement_keys[index],placement_english[index]);
 }
 enum class Request { None, Apply, Hide, Restore, RestoreSlot, Reapply, Reload };
 enum class CatalogKind { Accessory, Glider };
@@ -55,7 +61,7 @@ struct Context {
     std::vector<Row> gliders;
     Request glider_request{};
     ItemKey glider_requested{};
-    std::string glider_message{"等待滑翔翼目录"};
+    std::string glider_message{localizer.Text("status.glider_catalog_waiting", "Waiting for the glider catalog.")};
     bool glider_ready{};
     std::uint32_t glider_table_name{}, appearance_struct{}, glide_struct{};
     std::atomic<Address> pawn{};
@@ -79,7 +85,7 @@ struct Context {
     std::vector<Row> rows;
     Request request{};
     ItemKey requested{};
-    std::string message{"等待游戏服务"}, player, entity_info;
+    std::string message{localizer.Text("status.waiting_game_services", "Waiting for game services.")}, player, entity_info;
     bool ready{};
     // Fields below are accessed only from Game callbacks.
     std::uint32_t scan_index{}, table_name{}, player_class{}, table_class{}, row_struct{};
@@ -118,7 +124,7 @@ Address Rip(Context& c, Address instruction, int displacement, int length, int a
     std::int32_t rel{};
     return instruction && Read(c,instruction+displacement,rel)?instruction+length+rel+addend:0;
 }
-void Message(Context& c,const char* text) { std::scoped_lock lock(c.mutex);c.message=text; }
+void Message(Context& c,const std::string& text) { std::scoped_lock lock(c.mutex);c.message=text; }
 void LogCosmetics(Context& c,const std::string& text) {
     if(c.core&&c.core->log)c.core->log(c.core->user,ANOMALY_CORE_LOG_LEVEL_V1_INFO,
         StringView("SkinChanger cosmetics: "+text));
@@ -330,10 +336,10 @@ bool Services(Context& c) {
 }
 std::string LocalEntityInfo(Context& c) {
     if(!c.actors||!c.actors->frame||!c.actors->page||!c.actors->class_name_utf8||!c.actors->entity_name_utf8)
-        return "实体信息：Anomaly 实体服务不可用";
+        return localizer.Text("text.entity_service_unavailable","Entity info: the Anomaly entity service is unavailable.");
     AnomalyNteEntityFrameV1 frame{sizeof(frame)};
     if(c.actors->frame(c.actors->user,&frame).code!=ANOMALY_STATUS_V1_OK)
-        return "实体信息：等待实体快照";
+        return localizer.Text("text.entity_waiting_snapshot","Entity info: waiting for the entity snapshot.");
     std::array<AnomalyNteEntitySnapshotV1,4> snapshots{};
     for(auto& snapshot:snapshots)snapshot.struct_size=sizeof(snapshot);
     AnomalyNteEntityPageRequestV1 request{sizeof(request),0,frame.generation,0,
@@ -341,7 +347,7 @@ std::string LocalEntityInfo(Context& c) {
         ANOMALY_NTE_ENTITY_V1_LOCAL_PLAYER,0};
     AnomalyNteEntityPageResultV1 result{sizeof(result)};
     if(c.actors->page(c.actors->user,&request,snapshots.data(),&result).code!=ANOMALY_STATUS_V1_OK||!result.returned)
-        return "实体信息：未找到本地玩家实体";
+        return localizer.Text("text.entity_not_found","Entity info: the local player entity was not found.");
     const auto& entity=snapshots.front();
     char class_name[256]{};std::size_t class_size=sizeof(class_name);
     char entity_name[256]{};std::size_t entity_size=sizeof(entity_name);
@@ -349,10 +355,12 @@ std::string LocalEntityInfo(Context& c) {
         class_name[0]='\0';
     if(c.actors->entity_name_utf8(c.actors->user,entity.entity_id,entity_name,&entity_size).code!=ANOMALY_STATUS_V1_OK)
         entity_name[0]='\0';
-    std::ostringstream text;
-    text<<"实体: "<<(entity_name[0]?entity_name:"未知")<<" #"<<std::dec<<entity.entity_id
-        <<" · 类型: "<<(class_name[0]?class_name:"未知");
-    return text.str();
+    const std::string unknown=localizer.Text("text.unknown","Unknown");
+    const std::string name=entity_name[0]?entity_name:unknown;
+    const std::string id=std::to_string(entity.entity_id);
+    const std::string type=class_name[0]?class_name:unknown;
+    const std::array arguments{std::string_view(name),std::string_view(id),std::string_view(type)};
+    return localizer.Format("text.entity_summary","Entity: {0} #{1} · Type: {2}",arguments);
 }
 void Discover(Context& c) {
     Address table=ObjectAddress(c,c.table);
@@ -428,14 +436,14 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) noexcept {
         if(BindGlider(*c)){
             AnomalyHookRequestV1 glide_request{sizeof(glide_request),ANOMALY_HOOK_V1_FUNCTION,c->glider_spawn,reinterpret_cast<void*>(&GliderDetour),StringView("glider-display-data")};
             auto glider_status=c->hooks->create(c->hooks->user,&glide_request,&c->glider_original,&c->glider_hook);
-            if(glider_status.code!=ANOMALY_STATUS_V1_OK)c->glider_message="滑翔翼切换接口未能启用；配饰功能仍可使用";
-        }else c->glider_message="当前游戏的滑翔翼接口未匹配；配饰功能仍可使用";
+            if(glider_status.code!=ANOMALY_STATUS_V1_OK)c->glider_message=localizer.Text("status.glider_hook_unavailable","The glider swap interface could not be enabled; accessory features still work.");
+        }else c->glider_message=localizer.Text("status.glider_signature_mismatch","The glider interface did not match this game; accessory features still work.");
         return status;
     }catch(...){return Status(ANOMALY_STATUS_V1_FAILED,"Binding failed");}
 }
 void UpdateGlider(Context& c,Address pawn) {
     if(!c.glider_hook.id)return;
-    auto message=[&](const char* text){std::scoped_lock lock(c.mutex);c.glider_message=text;};
+    auto message=[&](const std::string& text){std::scoped_lock lock(c.mutex);c.glider_message=text;};
     Address cls{};
     bool layout=Read(c,pawn+profile::ObjectClass,cls)&&cls;
     if(layout&&cls!=c.glider_validated_class){
@@ -448,12 +456,12 @@ void UpdateGlider(Context& c,Address pawn) {
         request=c.glider_request;selected=c.glider_requested;automatic=c.auto_glider_request;
         c.glider_request=Request::None;c.auto_glider_request=false;
         if(request!=Request::None&&!automatic)c.auto_glider_pending=false;}
-    if(!layout){c.glider_enabled=false;message("当前角色的滑翔翼布局不匹配，未启用替换");return;}
-    if(!table){c.glider_enabled=false;message("等待滑翔翼目录，可打开游戏装扮 → 滑翔翼页面");}
-    if(c.glider_fault.exchange(false)){c.glider_enabled=false;message("滑翔翼资源替换失败，已停止覆盖；请恢复原装滑翔翼");}
+    if(!layout){c.glider_enabled=false;message(localizer.Text("status.glider_layout_mismatch","This character's glider layout does not match, so replacement stays off."));return;}
+    if(!table){c.glider_enabled=false;message(localizer.Text("status.glider_catalog_open_page","Waiting for the glider catalog; open the game's appearance -> glider page."));}
+    if(c.glider_fault.exchange(false)){c.glider_enabled=false;message(localizer.Text("status.glider_replace_failed","Glider replacement failed and overriding stopped; restore the original glider."));}
     if(request==Request::None)return;
     std::uint8_t loading{};
-    if(!Read(c,pawn+profile::GliderLoading,loading)||loading){message("滑翔翼正在加载，请稍后重试");return;}
+    if(!Read(c,pawn+profile::GliderLoading,loading)||loading){message(localizer.Text("status.glider_loading","The glider is loading; try again shortly."));return;}
     if(request==Request::Restore||request==Request::Reload){
         c.glider_enabled=false;
         const bool refreshed=NativeRefresh(c.glider_refresh,pawn);
@@ -467,24 +475,25 @@ void UpdateGlider(Context& c,Address pawn) {
             c.auto_glider_pending=it!=c.profiles.end()&&!it->second.glider.empty();
             c.auto_glider_attempts=0;c.auto_glider_due={};
         }
-        message(refreshed?"已请求恢复原装滑翔翼；展开滑翔翼查看":"恢复滑翔翼失败，请稍后重试");return;
+        message(refreshed?localizer.Text("status.glider_restore_requested","Original glider restore requested; deploy the glider to check."):
+            localizer.Text("status.glider_restore_failed","Restoring the glider failed; try again shortly."));return;
     }
-    if(request!=Request::Apply||!table){message("滑翔翼目录尚未就绪");return;}
+    if(request!=Request::Apply||!table){message(localizer.Text("status.glider_catalog_not_ready","The glider catalog is not ready yet."));return;}
     // Re-read the selected row and own its path bytes before enabling the hook.
     std::vector<Row> rows;
-    if(!ReadCatalog(c,table,rows,CatalogKind::Glider)){message("滑翔翼目录已失效，请重新读取目录");return;}
+    if(!ReadCatalog(c,table,rows,CatalogKind::Glider)){message(localizer.Text("status.glider_catalog_stale","The glider catalog is no longer valid; reload the catalog."));return;}
     auto row=std::find_if(rows.begin(),rows.end(),[&](const Row& x){return x.key.id==selected.id;});
     GliderPath path;
-    if(row==rows.end()||!path.Capture(row->soft_class,[&](Address a,void* data,std::size_t size){return ReadBytes(c,a,data,size);})){message("所选滑翔翼资源无效，没有应用");return;}
+    if(row==rows.end()||!path.Capture(row->soft_class,[&](Address a,void* data,std::size_t size){return ReadBytes(c,a,data,size);})){message(localizer.Text("status.glider_asset_invalid","The selected glider asset is invalid, so nothing was applied."));return;}
     {std::scoped_lock lock(c.mutex);c.glider_path=std::move(path);}
     c.glider_enabled=true;const auto before=c.glider_replacements.load();
     if(!NativeRefresh(c.glider_refresh,pawn)||c.glider_replacements.load()==before){
-        c.glider_enabled=false;message("当前滑翔翼尚未就绪，没有应用；请稍后重试");return;
+        c.glider_enabled=false;message(localizer.Text("status.glider_not_ready","The current glider is not ready, so nothing was applied; try again shortly."));return;
     }
     {std::scoped_lock lock(c.mutex);
         if(!c.active_character.empty())cosmetic_profiles::SetGlider(c.profiles,c.active_character,row->id);
         c.glider_selection=row->key;c.auto_glider_pending=false;}
-    message("已提交滑翔翼外观；等待模型加载后展开查看");
+    message(localizer.Text("status.glider_submitted","Glider appearance submitted; deploy after the model loads to check."));
 }
 void ScheduleCharacterLook(Context& c,Address pawn) {
     const auto now=std::chrono::steady_clock::now();
@@ -497,14 +506,14 @@ void ScheduleCharacterLook(Context& c,Address pawn) {
     if(c.auto_glider_pending&&c.glider_hook.id&&c.glider_table.id&&!c.gliders.empty()&&
        !glider_loading&&c.glider_request==Request::None&&now>=c.auto_glider_due){
         const auto row=std::find_if(c.gliders.begin(),c.gliders.end(),[&](const Row& x){return x.id==look.glider;});
-        if(row==c.gliders.end()){c.auto_glider_pending=false;c.glider_message="保存的滑翔翼不在当前游戏目录中";}
-        else if(c.auto_glider_attempts>=5){c.auto_glider_pending=false;c.glider_message="自动应用滑翔翼失败，请手动重试";}
+        if(row==c.gliders.end()){c.auto_glider_pending=false;c.glider_message=localizer.Text("status.glider_saved_missing","The saved glider is not in the current game catalog.");}
+        else if(c.auto_glider_attempts>=5){c.auto_glider_pending=false;c.glider_message=localizer.Text("status.glider_auto_failed","Applying the glider automatically failed; retry by hand.");}
         else{c.glider_request=Request::Apply;c.glider_requested=row->key;c.auto_glider_request=true;
             c.glider_selection=row->key;c.auto_glider_due=now+std::chrono::seconds(2);++c.auto_glider_attempts;}
     }
     if(c.auto_accessory_pending&&c.table.id&&!c.rows.empty()&&c.request==Request::None&&
        now>=c.auto_accessory_due){
-        if(c.auto_accessory_attempts>=5){c.auto_accessory_pending=false;c.message="自动应用配饰失败，请手动重试";}
+        if(c.auto_accessory_attempts>=5){c.auto_accessory_pending=false;c.message=localizer.Text("status.accessory_auto_failed","Applying accessories automatically failed; retry by hand.");}
         else{
             std::vector<ItemKey> chosen;
             bool complete=true;
@@ -514,7 +523,7 @@ void ScheduleCharacterLook(Context& c,Address pawn) {
                 if(row==c.rows.end()){complete=false;break;}
                 chosen.push_back(row->key);
             }
-            if(!complete){c.auto_accessory_pending=false;c.message="保存的配饰不在当前游戏目录中";}
+            if(!complete){c.auto_accessory_pending=false;c.message=localizer.Text("status.accessory_saved_missing","The saved accessories are not in the current game catalog.");}
             else{c.accessory_choices=std::move(chosen);c.hide_all=look.hidden;
                 c.request=Request::Reapply;c.auto_accessory_request=true;
                 c.auto_accessory_due=now+std::chrono::seconds(2);++c.auto_accessory_attempts;}
@@ -524,7 +533,7 @@ void ScheduleCharacterLook(Context& c,Address pawn) {
 void UpdateImpl(Context& c,double delta) {
     if(!Services(c)){
         c.enabled=false;c.glider_enabled=false;c.pawn=0;c.game_thread=0;
-        std::scoped_lock lock(c.mutex);c.ready=false;c.glider_ready=false;c.message="等待 UE5 服务和外观数据加载";return;
+        std::scoped_lock lock(c.mutex);c.ready=false;c.glider_ready=false;c.message=localizer.Text("status.waiting_ue5","Waiting for UE5 services and appearance data.");return;
     }
     c.game_thread=GetCurrentThreadId();
     c.discovery_time+=delta;
@@ -547,13 +556,17 @@ void UpdateImpl(Context& c,double delta) {
         const auto it=c.profiles.find(character_id);
         c.auto_accessory_pending=it!=c.profiles.end()&&(it->second.hidden||!it->second.accessories.empty());
         c.auto_glider_pending=it!=c.profiles.end()&&!it->second.glider.empty();
-        if(c.glider_hook.id)c.glider_message=c.auto_glider_pending?"正在恢复当前角色的滑翔翼":"请选择滑翔翼并应用到当前角色";
-        c.message=c.auto_accessory_pending?"正在恢复当前角色的配饰":"请选择配饰并应用到当前角色";
+        if(c.glider_hook.id)c.glider_message=c.auto_glider_pending?
+            localizer.Text("status.glider_restoring","Restoring this character's glider."):
+            localizer.Text("status.glider_select","Select a glider and apply it to this character.");
+        c.message=c.auto_accessory_pending?
+            localizer.Text("status.accessory_restoring","Restoring this character's accessories."):
+            localizer.Text("status.accessory_select","Select accessories and apply them to this character.");
     }
-    if(!pawn){Message(c,"未找到有效的本地玩家角色，或角色布局不匹配");return;}
+    if(!pawn){Message(c,localizer.Text("status.no_player","No valid local player character was found, or the character layout does not match."));return;}
     ScheduleCharacterLook(c,pawn);
     UpdateGlider(c,pawn);
-    if(c.callback_fault.exchange(false)){c.enabled=false;Message(c,"配饰替换失败，已停止覆盖；请恢复原装");}
+    if(c.callback_fault.exchange(false)){c.enabled=false;Message(c,localizer.Text("status.accessory_fault","Accessory replacement failed and overriding stopped; restore the original."));}
     Request request;ItemKey selected;bool automatic{};
     {std::scoped_lock lock(c.mutex);request=c.request;selected=c.requested;
         automatic=c.auto_accessory_request;c.request=Request::None;c.auto_accessory_request=false;
@@ -573,9 +586,12 @@ void UpdateImpl(Context& c,double delta) {
     bool ready=ObjectAddress(c,c.table)!=0;
     if(!ready)c.enabled=false;
     {std::scoped_lock lock(c.mutex);c.player=std::move(player);c.ready=ready&&!c.rows.empty();ready=c.ready;
-      if(c.message=="等待游戏服务"||c.message.starts_with("等待 UE5")||c.message.starts_with("未找到有效"))c.message="请选择配饰并应用到当前角色";}
+      if(c.message==localizer.Text("status.waiting_game_services","Waiting for game services.")||
+         c.message==localizer.Text("status.waiting_ue5","Waiting for UE5 services and appearance data.")||
+         c.message==localizer.Text("status.no_player","No valid local player character was found, or the character layout does not match."))
+          c.message=localizer.Text("status.accessory_select","Select accessories and apply them to this character.");}
     if(request==Request::None||request==Request::Reload)return;
-    if(request!=Request::Restore&&!ready){Message(c,"配饰目录尚未就绪，请打开游戏装扮页面后重试");return;}
+    if(request!=Request::Restore&&!ready){Message(c,localizer.Text("status.accessory_catalog_not_ready","The accessory catalog is not ready; open the game's appearance page and try again."));return;}
     std::vector<ItemKey> previous_choices;
     bool previous_hide{},next_enabled{};
     const bool previous_enabled=c.enabled.load();
@@ -584,7 +600,7 @@ void UpdateImpl(Context& c,double delta) {
         if(request==Request::Apply){
             const auto row=std::find_if(c.rows.begin(),c.rows.end(),[&](const Row& x){
                 return x.key.id==selected.id&&SameSlot(x.key,selected);});
-            if(row==c.rows.end()){c.message="所选配饰已失效，请重新选择";return;}
+            if(row==c.rows.end()){c.message=localizer.Text("status.accessory_selection_stale","The selected accessory is no longer valid; select it again.");return;}
             c.accessory_choices.erase(std::remove_if(c.accessory_choices.begin(),c.accessory_choices.end(),
                 [&](ItemKey x){return SameSlot(x,selected);}),c.accessory_choices.end());
             c.accessory_choices.push_back(row->key);c.hide_all=false;
@@ -604,7 +620,7 @@ void UpdateImpl(Context& c,double delta) {
             c.hide_all=previous_hide;c.decoration_snapshot_count=0;c.decoration_snapshot_valid=false;}
         c.enabled=previous_enabled;
         if(refreshed&&previous_enabled)NativeRefresh(c.refresh,pawn);
-        Message(c,"当前角色外观尚未就绪，未应用；请稍后重试");return;
+        Message(c,localizer.Text("status.appearance_not_ready","The current character's appearance is not ready, so nothing was applied; try again shortly."));return;
     }
     c.applied=next_enabled;
     {std::scoped_lock lock(c.mutex);
@@ -627,9 +643,10 @@ void UpdateImpl(Context& c,double delta) {
         else if(request==Request::Apply)c.accessory_selection=selected;
         else if(request==Request::RestoreSlot&&SameSlot(c.accessory_selection,selected))c.accessory_selection={};
     }
-    Message(c,request==Request::Restore?"已恢复原装配饰":
-        request==Request::RestoreSlot?"已恢复所选佩戴位置":
-        request==Request::Reapply?"已恢复当前角色的配饰":"已提交配饰显示数据；等待游戏加载模型");
+    Message(c,request==Request::Restore?localizer.Text("status.accessory_restored","The original accessories were restored."):
+        request==Request::RestoreSlot?localizer.Text("status.slot_restored","The selected slot was restored."):
+        request==Request::Reapply?localizer.Text("status.accessory_reapplied","This character's accessories were restored."):
+        localizer.Text("status.accessory_submitted","Accessory display data submitted; waiting for the game to load the model."));
 }
 void ANOMALY_CALL Update(void* context,double delta) noexcept {
     if(!context)return;auto& c=*static_cast<Context*>(context);
@@ -651,44 +668,59 @@ void DrawCosmetics(void* context,const AnomalyUiServiceV1* ui,int category) noex
             if(saved!=c.profiles.end())saved_look=saved->second;
         }
         ui->text(ui->user,StringView(message));ui->text(ui->user,StringView(player));
-        if(glider&&!saved_look.glider.empty())ui->text(ui->user,StringView("当前角色已保存："+saved_look.glider));
+        if(glider&&!saved_look.glider.empty()){const std::array arguments{std::string_view(saved_look.glider)};
+            ui->text(ui->user,StringView(localizer.Format("text.glider_saved","Saved for this character: {0}",arguments)));}
         if(!glider){
-            if(saved_look.hidden)ui->text(ui->user,StringView("当前角色：已隐藏全部配饰"));
+            if(saved_look.hidden)ui->text(ui->user,StringView(localizer.Text("text.accessories_hidden","This character: all accessories hidden.")));
             for(const auto& [slot,id]:saved_look.accessories){
                 const auto row=std::find_if(rows.begin(),rows.end(),[&](const Row& x){return SlotKey(x)==slot;});
-                if(row!=rows.end())ui->text(ui->user,StringView(std::string(Placement(row->type,row->key.part))+"："+id));
+                if(row!=rows.end()){
+                    const auto placement=PlacementText(*row);
+                    const std::array arguments{std::string_view(placement),std::string_view(id)};
+                    ui->text(ui->user,StringView(localizer.Format("text.saved_slot","{0}: {1}",arguments)));
+                }
             }
         }
         auto queue=[&](Request request,ItemKey item=ItemKey{}){std::scoped_lock lock(c.mutex);
             if(glider){c.glider_request=request;c.glider_requested=item;c.auto_glider_request=false;}
             else{c.request=request;c.requested=item;c.auto_accessory_request=false;}};
-        if(ui->button(ui->user,StringView(glider?"恢复原滑翔翼":"恢复原配饰"),0,0))queue(Request::Restore);
+        if(ui->button(ui->user,StringView(glider?
+            localizer.Text("action.restore_glider","Restore original glider"):
+            localizer.Text("action.restore_accessories","Restore original accessories")),0,0))queue(Request::Restore);
         if(!glider){
             ui->same_line(ui->user,0,-1);
-            if(ui->button_enabled(ui->user,StringView("隐藏全部配饰"),0,0,ready))queue(Request::Hide);
+            if(ui->button_enabled(ui->user,StringView(localizer.Text("action.hide_accessories","Hide all accessories")),0,0,ready))queue(Request::Hide);
         }
         ui->same_line(ui->user,0,-1);
-        if(ui->button(ui->user,StringView("重新读取目录"),0,0))queue(Request::Reload);
+        if(ui->button(ui->user,StringView(localizer.Text("action.reload_catalog","Reload catalog")),0,0))queue(Request::Reload);
         if(!glider){
             for(const auto& [slot,id]:saved_look.accessories){
                 const auto row=std::find_if(rows.begin(),rows.end(),[&](const Row& x){return SlotKey(x)==slot;});
                 if(row!=rows.end()){
-                    const auto label="恢复"+std::string(Placement(row->type,row->key.part))+"##"+slot;
+                    const auto placement=PlacementText(*row);
+                    const std::array arguments{std::string_view(placement)};
+                    const auto label=localizer.Format("action.restore_slot","Restore {0}",arguments)+"##"+slot;
                     if(ui->button(ui->user,StringView(label),0,0))queue(Request::RestoreSlot,row->key);
                 }
             }
         }
         char* filter=glider?c.glider_filter:c.filter;
-        ui->input_text(ui->user,StringView(glider?"搜索滑翔翼 / ID":"搜索配饰 / ID"),filter,128,0);
-        ui->text(ui->user,StringView(glider?"选择后点击应用；展开滑翔翼查看效果。":"选择后点击应用；眼部与头顶可以同时佩戴。"));
-        if(rows.empty())ui->text(ui->user,StringView(glider?"等待游戏滑翔翼目录，可打开游戏装扮页面。":"等待游戏配饰表，可打开游戏装扮页面。"));
+        ui->input_text(ui->user,StringView(glider?
+            localizer.Text("label.search_glider","Search glider / ID"):
+            localizer.Text("label.search_accessory","Search accessory / ID")),filter,128,0);
+        ui->text(ui->user,StringView(glider?
+            localizer.Text("hint.glider_apply","Select an item, then apply it; deploy the glider to check the effect."):
+            localizer.Text("hint.accessory_apply","Select an item, then apply it; eye and overhead accessories can be worn at the same time.")));
+        if(rows.empty())ui->text(ui->user,StringView(glider?
+            localizer.Text("status.glider_list_waiting","Waiting for the game's glider catalog; open the game's appearance page."):
+            localizer.Text("status.accessory_list_waiting","Waiting for the game's accessory table; open the game's appearance page.")));
         auto visible=ui->begin_child(ui->user,StringView(glider?"glider-list":"accessory-list"),0,300,0);
         if(visible){std::string last_group;for(auto& row:rows){
             if(filter[0]&&row.label.find(filter)==std::string::npos&&row.id.find(filter)==std::string::npos)continue;
-            const auto group=glider?std::string{}:std::string(Placement(row.type,row.key.part));
+            const auto group=glider?std::string{}:PlacementText(row);
             if(!glider&&group!=last_group){ui->text(ui->user,StringView(group));last_group=group;}
             std::string label=(glider?"":group+" · ")+row.label+" ["+row.id+"]"+
-                (selection.id==row.key.id?"（已选）":"")+"##"+row.id;
+                (selection.id==row.key.id?localizer.Text("text.selected","(selected)"):std::string{})+"##"+row.id;
             if(ui->button_enabled(ui->user,StringView(label),0,0,ready)){
                 selection=row.key;std::scoped_lock lock(c.mutex);
                 if(glider)c.glider_selection=row.key;else c.accessory_selection=row.key;
@@ -697,7 +729,9 @@ void DrawCosmetics(void* context,const AnomalyUiServiceV1* ui,int category) noex
         const bool valid=std::any_of(rows.begin(),rows.end(),[&](const Row& row){
             return row.key.id==selection.id && row.key.part==selection.part;
         });
-        if(ui->button_enabled(ui->user,StringView(glider?"应用所选滑翔翼":"应用所选配饰"),0,0,ready&&valid))
+        if(ui->button_enabled(ui->user,StringView(glider?
+            localizer.Text("action.apply_glider","Apply selected glider"):
+            localizer.Text("action.apply_accessory","Apply selected accessory")),0,0,ready&&valid))
             queue(Request::Apply,selection);
     }catch(...){}
 }

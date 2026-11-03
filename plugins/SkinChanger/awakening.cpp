@@ -6,6 +6,7 @@
 #include "awakening.hpp"
 #include "awakening_data.hpp"
 #include "awakening_profile.hpp"
+#include "localization.hpp"
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -25,6 +26,7 @@ struct RowArray { uintptr_t data{}; int32_t count{}, capacity{}; };
 static_assert(sizeof(FName) == 8 && sizeof(RowArray) == 16);
 const AnomalyHostApiV1* api{};
 const AnomalyCoreServiceV1* core{};
+anomaly::sdk::Localizer& localizer = skin_change::Localizer();
 uintptr_t registry{};
 Clock::time_point retry_init{};
 void Log(std::string value) {

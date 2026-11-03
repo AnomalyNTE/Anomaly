@@ -160,6 +160,57 @@ private:
     SECURITY_ATTRIBUTES attributes_{};
 };
 
+// An elevated runtime would otherwise stamp the pipe with its own high integrity label, and a
+// normal-privilege console opening it for writing is refused with ERROR_ACCESS_DENIED (5) before the
+// DACL is even consulted, which is why the diagnostics CLI used to require an elevated console.
+// Creating the pipe while impersonating the process's own linked medium token gives the object a
+// medium label instead: an ordinary console connects, an elevated caller still connects because
+// writing down is unrestricted, and no privilege or SACL is involved. A process that is not elevated
+// has no linked token and creates the pipe at its own medium level anyway, so impersonation is
+// skipped there.
+class ClientLevelObjectCreation final {
+public:
+    ClientLevelObjectCreation() noexcept {
+        HANDLE raw_token{};
+        if (OpenProcessToken(
+                GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &raw_token) == FALSE) {
+            return;
+        }
+        UniqueHandle primary(raw_token);
+        TOKEN_ELEVATION_TYPE elevation{};
+        DWORD returned{};
+        if (GetTokenInformation(
+                primary.Get(), TokenElevationType, &elevation, sizeof(elevation), &returned) ==
+                FALSE ||
+            elevation != TokenElevationTypeFull) {
+            return;
+        }
+        DWORD required{};
+        if (GetTokenInformation(primary.Get(), TokenLinkedToken, nullptr, 0, &required) != FALSE ||
+            GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+            return;
+        }
+        TOKEN_LINKED_TOKEN linked{};
+        if (GetTokenInformation(
+                primary.Get(), TokenLinkedToken, &linked, required, &required) == FALSE) {
+            return;
+        }
+        UniqueHandle linked_token(linked.LinkedToken);
+        if (ImpersonateLoggedOnUser(linked_token.Get()) == FALSE) return;
+        impersonating_ = true;
+    }
+
+    ~ClientLevelObjectCreation() {
+        if (impersonating_) static_cast<void>(RevertToSelf());
+    }
+
+    ClientLevelObjectCreation(const ClientLevelObjectCreation&) = delete;
+    ClientLevelObjectCreation& operator=(const ClientLevelObjectCreation&) = delete;
+
+private:
+    bool impersonating_{};
+};
+
 enum class IoStatus {
     Completed,
     Stopped,
@@ -566,15 +617,25 @@ private:
 
     [[nodiscard]] UniqueHandle CreateListener(
         PipeSecurity& security, DWORD& error) const noexcept {
-        HANDLE pipe = CreateNamedPipeW(
-            options_.pipe_name.c_str(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            4,
-            kOutputBufferSize,
-            kInputBufferSize,
-            0,
-            security.Attributes());
+        const auto create = [this, &security] {
+            return CreateNamedPipeW(
+                options_.pipe_name.c_str(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                4,
+                kOutputBufferSize,
+                kInputBufferSize,
+                0,
+                security.Attributes());
+        };
+
+        HANDLE pipe{};
+        {
+            // Impersonation is scoped to object creation: the label is fixed when the pipe is created
+            // and nothing later in this process runs at the lower level.
+            const ClientLevelObjectCreation client_level;
+            pipe = create();
+        }
         if (pipe == INVALID_HANDLE_VALUE) {
             error = GetLastError();
             return UniqueHandle{};

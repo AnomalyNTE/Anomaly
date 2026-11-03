@@ -41,6 +41,30 @@ typedef struct AnomalyEspBoxStyleV1 {
     float outline_thickness;
 } AnomalyEspBoxStyleV1;
 
+typedef enum AnomalyUiScreenPrimitiveKindV1 {
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE = 1,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT = 2,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_RECT = 3,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_CIRCLE = 4,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_CIRCLE = 5
+} AnomalyUiScreenPrimitiveKindV1;
+
+// Batched screen-space game-overlay primitive. It is drawn behind host plugin
+// windows, matching the old AHUD overlay ordering. For LINE, x/y and
+// width/height are the two endpoints. For RECT, x/y is the top-left and
+// width/height is the size. For CIRCLE, x/y is the centre and width is the
+// radius. thickness applies to lines and outlined shapes.
+typedef struct AnomalyUiScreenPrimitiveV1 {
+    uint32_t struct_size;
+    uint32_t kind;
+    uint32_t color_rgba;
+    float x;
+    float y;
+    float width;
+    float height;
+    float thickness;
+} AnomalyUiScreenPrimitiveV1;
+
 typedef enum AnomalyUiFrameStateV1 {
     ANOMALY_UI_FRAME_V1_NONE = 0,
     ANOMALY_UI_FRAME_V1_ITEM_HOVERED = 1u << 0u,
@@ -90,7 +114,8 @@ typedef enum AnomalyUiTabItemFlagsV1 {
 } AnomalyUiTabItemFlagsV1;
 
 // Stable C facade over the host UI implementation. Plugins never exchange C++ UI types.
-// Draw callbacks are valid only during the current on_draw callback unless documented otherwise.
+// Window and widget calls are valid only during on_draw. draw_screen_primitives
+// is also valid during on_overlay.
 typedef struct AnomalyUiServiceV1 {
     uint32_t struct_size;
     uint32_t service_version;
@@ -190,6 +215,10 @@ typedef struct AnomalyUiServiceV1 {
     // Width for the next input/slider only; negative values reserve space at the right edge.
     // A width of -1 fills the remaining content width, leaving one pixel.
     void (ANOMALY_CALL *set_next_item_width)(void* user, float width);
+    // Appends a batch below host plugin windows. Valid during on_draw and on_overlay.
+    int (ANOMALY_CALL *draw_screen_primitives)(
+        void* user, const AnomalyUiScreenPrimitiveV1* primitives,
+        size_t count);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus
