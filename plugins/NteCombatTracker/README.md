@@ -18,14 +18,29 @@ plugins/NteCombatTracker/
   locales/zh-CN.json      中文目录（window.title / plugin.description）
   src/                    插件 DLL、Overlay 与采集引擎的源码
   tests/                  15 个离线夹具，随 -DANOMALY_BUILD_TEST_FIXTURES=ON 构建
-  assets/dict/            运行时名称字典（29 个角色文件 + 623 条怪物 + 属性配色）
-  data/                   字典生成器的输入源（DataTable 快照 + enemies.json）
-  script/                 字典生成与自检脚本
+  assets/                 属性配色与角色属性表（仅用于行配色，不是名称来源）
   cmake/plugin_version.hpp.in
 ```
 
-`assets/dict/` 由 `anomaly_add_plugin` 自动镜像进包目录并随 GameRuntime 组件安装；
-`data/` 只在生成字典时使用，不进包。
+`assets/` 由 `anomaly_add_plugin` 自动镜像进包目录并随 GameRuntime 组件安装。
+
+## 名称来源
+
+**所有用户可见名称都来自宿主 ABI**，插件不再维护本地名称字典：
+
+| 数据 | ABI |
+| --- | --- |
+| 伤害 / 治疗 / Buff 事件名 | `anomaly.nte.combat` → `event_name_utf8` |
+| 参与者名 | `anomaly.nte.combat` → `participant_display_name_utf8` |
+| 技能名（开发者页） | `anomaly.nte.skills` → `ability_display_name_utf8` |
+
+宿主负责 GE→GA→文本、怪物配置→显示名的映射，并在 Game 更新中延后补全；未就绪时
+`NOT_FOUND`，插件退回对象路径或 `#<name_id>` 占位符，并按 64 个事件的节奏重试。
+
+对象路径只作临时标签、**不进名称缓存**，否则真名到位后会被路径长期占位。
+
+`assets/characters.json` 与 `assets/attribute_colors.json` 只提供**行配色**所需的
+角色 id → codename + attribute 映射，不参与任何名称解析。
 
 ## 构建与验证
 
@@ -46,19 +61,15 @@ pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin NteCombatTracker
 ```
 
 ## 角色字典维护
+## 角色属性表维护
 
-`assets/dict/character/*.json` 与 `assets/dict/monster.json` 是从 `data/` 派生的快照，
-**运行时只读 `assets/dict`**，不读 `data/`。
+`assets/characters.json` 只服务行配色：角色 id → codename + attribute。它由字典快照手工
+收敛而来，条目数量少且变化很慢；**显示名不在这里**。
 
-```powershell
-pwsh -NoProfile -File plugins/NteCombatTracker/script/build-dict.ps1 -Write
-pwsh -NoProfile -File plugins/NteCombatTracker/script/build-dict.ps1 -Check
-pwsh -NoProfile -File plugins/NteCombatTracker/script/test-build-dict.ps1
-```
+`assets/attribute_colors.json` 是六个属性的代表色，键必须与游戏数据逐字一致。
 
-更新 `data/datatable/` 或 `data/enemies.json` 后重新生成并提交快照。生成器输出固定为
-UTF-8 无 BOM、两空格缩进、不含生成时间，连续生成不产生无意义差异。
-
+新增角色时在两处各补一行即可，不需要重新生成整棵树。历史上从 DataTable 生成整份字典的
+脚本已随本地名称方案一并移除。
 ## 实现要点
 
 - **双进程**：插件采集并通过宿主 `anomaly.websocket` 发布 JSON 快照；Overlay 以 WinHTTP

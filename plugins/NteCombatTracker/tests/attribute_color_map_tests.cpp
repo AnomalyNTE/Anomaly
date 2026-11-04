@@ -18,7 +18,7 @@ void Check(const bool condition, const char* message) {
 void RepositoryDictionaryProvidesAllAttributeColors() {
     std::string error;
     const auto colors = nte::combat_stats::AttributeColorMap::Load(
-        std::filesystem::path(NTE_TEST_SOURCE_DIR) / "assets/dict/attribute_colors.json",
+        std::filesystem::path(NTE_TEST_SOURCE_DIR) / "assets/attribute_colors.json",
         error);
 
     Check(error.empty(), "the checked-in attribute color dictionary should load");
@@ -36,8 +36,8 @@ void CharacterDictionaryIsUsedOnlyForAttributeColorLookup() {
     const auto root = std::filesystem::path(NTE_TEST_SOURCE_DIR);
     std::string error;
     const auto colors = nte::combat_stats::AttributeColorMap::Load(
-        root / "assets/dict/attribute_colors.json",
-        root / "assets/dict/character", error);
+        root / "assets/attribute_colors.json",
+        root / "assets/characters.json", error);
     Check(error.empty() &&
               colors.FindParticipant("/Game/Player/player_003_Sagiri_C") == 0xD0455EU,
         "participant technical paths should resolve character attribute colors");
@@ -49,8 +49,8 @@ void MissingCharacterDirectoryKeepsColorFallback() {
     const auto root = std::filesystem::path(NTE_TEST_SOURCE_DIR);
     std::string error;
     const auto colors = nte::combat_stats::AttributeColorMap::Load(
-        root / "assets/dict/attribute_colors.json",
-        root / "assets/dict/missing-characters",
+        root / "assets/attribute_colors.json",
+        root / "assets/missing-characters.json",
         error);
     Check(!error.empty(),
         "a missing character dictionary should expose a clear error");

@@ -3,15 +3,15 @@
 #include "app_settings.hpp"
 #include "combat_cursor.hpp"
 #include "developer_diagnostics.hpp"
-#include "event_damage_source_resolver.hpp"
-#include "id_name_export.hpp"
+#include "display_name_origin.hpp"
 #include "log_worker.hpp"
-#include "resource_name_resolver.hpp"
 #include "uid_detector.hpp"
 #include "overlay_publish_policy.hpp"
 #include "overlay_protocol.hpp"
 #include "overlay_control.hpp"
 #include "plugin_version.hpp"
+
+#include <nlohmann/json.hpp>
 #include "sdk_compat.hpp"
 
 #include <anomaly/sdk/anomaly_sdk.h>
@@ -24,6 +24,7 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <limits>
@@ -51,11 +52,27 @@ constexpr std::size_t kMaximumResolvedNameBytes = 4096;
 constexpr std::size_t kMaximumNameCacheEntries = 4096;
 constexpr std::size_t kMaximumServiceGapIntervals = 64;
 constexpr std::size_t kMaximumPathBytes = 32768;
+// 显示名在宿主侧是延后补全的，未命中后隔这么多事件再试，避免每帧重复查询。
+constexpr std::uint64_t kParticipantNameRetrySequenceSpan = 64;
 
 struct NameCacheEntry {
     std::string value;
     std::uint32_t attempts{};
     std::uint64_t retry_after_sequence{};
+};
+
+// 开发者在诊断页观察到的 name_id → 显示名记录。名称由宿主 ABI 提供，
+// 插件只缓存本次运行见到的结果，用于导出和排查。
+struct ObservedNameRecord {
+    std::string id_kind{"combat_name_id"};
+    std::string kind;
+    std::string display_name;
+    std::string source_path;
+    std::uint64_t observed_count{};
+    std::uint64_t first_sequence{};
+    std::uint64_t last_sequence{};
+    std::uint64_t first_tick_sequence{};
+    std::uint64_t last_tick_sequence{};
 };
 
 struct RenderState {
@@ -106,8 +123,6 @@ struct Context {
     const AnomalyHostApiV1* host{};
     const AnomalyUiServiceV1* ui{};
     CombatStatsEngine engine;
-    nte::combat_stats::ResourceNameResolver name_resolver;
-    std::string name_resource_error;
     nte::combat_stats::CombatCursor cursor;
     std::unique_ptr<nte::damage_log::DamageLogWorker> log_worker;
     std::filesystem::path log_root;
@@ -163,8 +178,7 @@ struct Context {
     HANDLE manual_end_event{};
     HANDLE plugin_stopping_event{};
     nte::developer::Diagnostics developer_diagnostics;
-    std::unordered_map<std::uint64_t, nte::combat_stats::RuntimeIdNameExport>
-        runtime_id_names;
+    std::unordered_map<std::uint64_t, ObservedNameRecord> runtime_id_names;
     std::string skill_capture_status{"disabled"};
     std::uint64_t last_skill_generation{};
     std::uint64_t last_skill_frame_sequence{};
@@ -191,19 +205,6 @@ void PublishOverlay(
     bool force);
 std::uint32_t CaptureStatusCode(const NteOverlaySnapshot* snapshot) noexcept;
 std::optional<std::filesystem::path> PluginDirectory();
-
-void EnsureNameResources() {
-    if (!g_context.name_resolver.version().empty() &&
-        g_context.name_resource_error.empty()) return;
-    const auto directory = PluginDirectory();
-    if (!directory) {
-        g_context.name_resource_error = "Plugin directory is unavailable; names fall back to technical paths";
-        g_context.name_resolver = {};
-        return;
-    }
-    g_context.name_resolver = nte::combat_stats::ResourceNameResolver::Load(
-        *directory / "assets" / "dict", g_context.name_resource_error);
-}
 
 bool AppendRange(
     std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges,
@@ -273,6 +274,41 @@ std::string ResolveName(Resolver resolver, const char* fallback) {
     return value.empty() ? fallback : value;
 }
 
+// 宿主把对象路径当成显示名返回时不算解析成功：路径只能当临时标签。
+bool LooksLikeObjectPath(const std::string& value) {
+    return value.starts_with("/Game/") || value.starts_with("/Script/");
+}
+
+// 事件显示名（伤害/治疗/Buff）。宿主自己完成 GE→GA→文本、怪物配置→显示名的映射，
+// 因此这里不需要在插件侧维护任何字典；合法请求尚无缓存名称时返回 NOT_FOUND，
+// 调用方应保留记录并在后续 Game 更新中重试。
+std::string ResolveEventDisplayName(
+    const AnomalyNteCombatServiceV1* service,
+    const AnomalyNteCombatEventV1& event) {
+    if (!nte::sdk_compat::CombatEventNameResolverAvailable(service)) return {};
+    return ResolveName(
+        [service, &event](char* destination, std::size_t* size) {
+            return service->event_name_utf8(
+                service->user, &event, destination, size);
+        }, "");
+}
+
+// 参与者显示名。未就绪时返回空串，由调用方决定退回路径还是占位符。
+std::string ResolveParticipantDisplay(
+    const AnomalyNteCombatServiceV1* service,
+    const AnomalyGenerationHandleV1 participant) {
+    if (participant.id == 0 ||
+        !nte::sdk_compat::ParticipantDisplayNameResolverAvailable(service)) {
+        return {};
+    }
+    const std::string display = ResolveName(
+        [service, participant](char* destination, std::size_t* size) {
+            return service->participant_display_name_utf8(
+                service->user, participant, destination, size);
+        }, "");
+    return LooksLikeObjectPath(display) ? std::string{} : display;
+}
+
 std::string ResolveSource(const AnomalyNteCombatServiceV1* service,
     const std::uint64_t source_id);
 
@@ -285,11 +321,8 @@ void RecordRuntimeIdName(
     std::string source_path;
     if (kind == nte::combat_stats::CombatEventKind::Damage) {
         source_path = ResolveSource(service, event.name_id);
-        const auto resolved =
-            g_context.name_resolver.ResolveDamageSource(source_path);
-        if (resolved.origin != nte::combat_stats::DisplayNameOrigin::Unknown) {
-            display_name = resolved.display_name;
-        }
+        const std::string display = ResolveEventDisplayName(service, event);
+        if (!display.empty()) display_name = display;
     }
 
     auto& record = g_context.runtime_id_names[event.name_id];
@@ -333,6 +366,27 @@ std::string ResolveParticipant(
         }, "Unknown participant");
 }
 
+// 显示名尚未解析时的临时标签：优先对象路径，最后才用占位符。
+std::string ResolveParticipantPath(
+    const AnomalyNteCombatServiceV1* service,
+    const AnomalyGenerationHandleV1 participant) {
+    return ResolveParticipant(service, participant);
+}
+
+// 缓存里已经有值就说明宿主给过显示名；否则这一行只是路径或占位符。
+nte::combat_stats::DisplayNameOrigin ParticipantNameOrigin(
+    const AnomalyGenerationHandleV1 participant) {
+    const Handle handle = ConvertHandle(participant);
+    if (handle.id == 0) return nte::combat_stats::DisplayNameOrigin::Unknown;
+    const auto found = g_context.participant_names.find(handle);
+    if (found != g_context.participant_names.end() && !found->second.value.empty()) {
+        return nte::combat_stats::DisplayNameOrigin::Sdk;
+    }
+    return nte::combat_stats::DisplayNameOrigin::Technical;
+}
+
+// 缓存只保存宿主真正解析出来的显示名。路径查询成功也不算「已解析」，否则真名到位的
+// 那一帧会被路径长期占位，历史行永远停在 /Game/... 上。
 std::string ResolveParticipantCached(
     const AnomalyNteCombatServiceV1* service,
     const AnomalyGenerationHandleV1 participant,
@@ -343,18 +397,21 @@ std::string ResolveParticipantCached(
     if (found != g_context.participant_names.end()) {
         if (!found->second.value.empty()) return found->second.value;
         if (found->second.attempts >= 3 || sequence < found->second.retry_after_sequence) {
-            return "Unknown participant";
+            return ResolveParticipantPath(service, participant);
         }
     } else if (g_context.participant_names.size() >= kMaximumNameCacheEntries) {
-        return "Unknown participant";
+        return ResolveParticipantPath(service, participant);
     } else {
         found = g_context.participant_names.emplace(handle, NameCacheEntry{}).first;
     }
-    const std::string resolved = ResolveParticipant(service, participant);
-    if (!resolved.starts_with("Unknown")) found->second.value = resolved;
+    const std::string display = ResolveParticipantDisplay(service, participant);
+    if (!display.empty()) {
+        found->second.value = display;
+        return display;
+    }
     ++found->second.attempts;
-    found->second.retry_after_sequence = sequence + 64;
-    return resolved;
+    found->second.retry_after_sequence = sequence + kParticipantNameRetrySequenceSpan;
+    return ResolveParticipantPath(service, participant);
 }
 
 std::string ResolveAbilityPath(
@@ -366,6 +423,22 @@ std::string ResolveAbilityPath(
             return service->ability_path_utf8(
                 service->user, ability_class, destination, size);
         }, "Unknown ability");
+}
+
+// 技能显示名。宿主未提供该接口或尚未缓存时返回空串，调用方退回对象路径。
+std::string ResolveAbilityDisplay(
+    const AnomalyNteSkillsServiceV1* service,
+    const AnomalyGenerationHandleV1 ability_class) {
+    if (ability_class.id == 0 ||
+        !nte::sdk_compat::SkillsServiceV18Available(service)) {
+        return {};
+    }
+    const std::string display = ResolveName(
+        [service, ability_class](char* destination, std::size_t* size) {
+            return service->ability_display_name_utf8(
+                service->user, ability_class, destination, size);
+        }, "");
+    return LooksLikeObjectPath(display) ? std::string{} : display;
 }
 
 nte::developer::ParticipantIdentity MakeParticipantIdentity(
@@ -570,15 +643,12 @@ void CollectSkillDiagnostics(const anomaly::sdk::Host& host) {
             snapshot.cooldown_duration_seconds = item.cooldown_duration_seconds;
             if (valid_item) {
                 snapshot.ability_path = ResolveAbilityPath(skills.get(), item.ability_class);
-                const auto ability =
-                    g_context.name_resolver.ResolveAbilityDisplay(
-                        snapshot.ability_path);
-                if (ability.origin ==
-                    nte::combat_stats::DisplayNameOrigin::Unknown) {
-                    snapshot.ability_display_name = snapshot.ability_path;
-                } else {
-                    snapshot.ability_display_name = ability.display_name;
-                }
+                // 技能显示名同样来自宿主，未就绪时退回对象路径。
+                const std::string ability_display =
+                    ResolveAbilityDisplay(skills.get(), item.ability_class);
+                snapshot.ability_display_name = ability_display.empty()
+                    ? snapshot.ability_path
+                    : ability_display;
             }
             observed.skills.push_back(std::move(snapshot));
         }
@@ -679,7 +749,6 @@ bool OpenEncounterLog(
     session.world = world;
     session.report_started = now;
     session.report_started_utc_ms = utc_ms;
-    EnsureNameResources();
     session.encounter_id = nte::damage_log::GenerateUuidV4();
     if (session.encounter_id.empty()) {
         session = {};
@@ -1053,11 +1122,6 @@ bool ExportIdNameMapping(
     std::string& error) {
     error.clear();
     exported_path.clear();
-    const auto plugin_directory = PluginDirectory();
-    if (!plugin_directory) {
-        error = "Plugin directory is unavailable";
-        return false;
-    }
     if (!g_context.export_root) {
         error = "Configure an export directory on the settings page first";
         return false;
@@ -1066,20 +1130,60 @@ bool ExportIdNameMapping(
         return false;
     }
 
-    std::vector<nte::combat_stats::RuntimeIdNameExport> runtime;
-    runtime.reserve(g_context.runtime_id_names.size());
+    // 名称全部来自宿主 ABI，插件不再持有静态字典；这里导出本次运行实际观测到的
+    // name_id → 显示名映射，以及每个 id 的来源路径和出现次数。
+    nlohmann::json names = nlohmann::json::array();
     for (const auto& [id, record] : g_context.runtime_id_names) {
-        auto copy = record;
-        copy.id = std::to_string(id);
-        runtime.push_back(std::move(copy));
+        names.push_back({
+            {"id", std::to_string(id)},
+            {"kind", record.kind},
+            {"display_name", record.display_name},
+            {"source_path", record.source_path},
+            {"observed_count", record.observed_count},
+            {"first_sequence", record.first_sequence},
+            {"last_sequence", record.last_sequence}});
     }
-    const auto document = nte::combat_stats::BuildIdNameExport(
-        *plugin_directory / L"assets" / L"dict", std::move(runtime), error);
-    if (!error.empty()) {
+    std::sort(names.begin(), names.end(),
+        [](const nlohmann::json& left, const nlohmann::json& right) {
+            return left.at("id").get_ref<const std::string&>() <
+                right.at("id").get_ref<const std::string&>();
+        });
+    const nlohmann::json document = {
+        {"format", "nte-combat-id-names"},
+        {"schema_version", 1},
+        {"generated_by", nte::build::kPluginVersion},
+        {"source", "anomaly.nte.combat event_name_utf8"},
+        {"names", std::move(names)}};
+
+    std::error_code filesystem_error;
+    std::filesystem::create_directories(*g_context.export_root, filesystem_error);
+    if (filesystem_error) {
+        error = "Export directory is unavailable: " + filesystem_error.message();
         return false;
     }
-    return nte::combat_stats::WriteIdNameExport(
-        *g_context.export_root, document, exported_path, error);
+    exported_path = *g_context.export_root / "nte-combat-id-names.json";
+    const auto text = document.dump(2) + "\n";
+    const auto staging = exported_path.string() + ".tmp";
+    {
+        std::ofstream stream(staging, std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            error = "Export file could not be opened";
+            return false;
+        }
+        stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+        if (!stream) {
+            error = "Export file could not be written";
+            return false;
+        }
+    }
+    std::filesystem::rename(staging, exported_path, filesystem_error);
+    if (filesystem_error) {
+        std::error_code remove_error;
+        std::filesystem::remove(staging, remove_error);
+        error = "Export file could not be published";
+        return false;
+    }
+    return true;
 }
 
 bool WaitUntilReady(nte::damage_log::DamageLogWorker& worker, std::string& error) {
@@ -1366,7 +1470,6 @@ void Update(void* context, double) {
     }
 
     const bool combat_methods_available = CombatMethodsAvailable(combat.get());
-    EnsureNameResources();
     bool preflight_available{};
     if (combat_methods_available) {
         AnomalyNteCombatantSnapshotV1 preflight{sizeof(preflight)};
@@ -1774,75 +1877,50 @@ void Update(void* context, double) {
                     }
                     normalized.received_utc_ms = utc_ms;
                     normalized.received_offset_us = ReportOffsetMicroseconds(now);
-                    const bool resolve_damage_source =
-                        normalized.kind == nte::combat_stats::CombatEventKind::Damage;
-                    if (resolve_damage_source) {
-                        const auto source_display =
-                            nte::combat_stats::ResolveEventDamageSource(
-                                event.name_id,
-                                [service = combat.get()](
-                                    const std::uint64_t source_id) {
-                                    return ResolveSource(service, source_id);
-                                },
-                                g_context.name_resolver);
-                        if (source_display.origin !=
-                            nte::combat_stats::DisplayNameOrigin::Unknown) {
-                            normalized.source_name = source_display.technical_name;
-                            normalized.source_display_name = source_display.display_name;
+                    // 事件名三级回退：宿主显示名 → 来源标识 → name_id 占位符。
+                    // 显示名由宿主在 Game 更新中延后补全，未就绪时保留记录并让后续事件重试。
+                    {
+                        const std::string display =
+                            ResolveEventDisplayName(combat.get(), event);
+                        if (!display.empty()) {
+                            normalized.source_display_name = display;
+                            normalized.source_name = display;
                             normalized.source_name_origin = std::string(
                                 nte::combat_stats::DisplayNameOriginName(
-                                    source_display.origin));
-                            normalized.name_resource_version = source_display.resource_version;
+                                    nte::combat_stats::DisplayNameOrigin::Sdk));
+                        } else if (event.name_id == 0) {
+                            normalized.source_name = "Unknown event";
+                            normalized.source_display_name = normalized.source_name;
+                            normalized.source_name_origin = std::string(
+                                nte::combat_stats::DisplayNameOriginName(
+                                    nte::combat_stats::DisplayNameOrigin::Unknown));
                         } else {
-                            normalized.source_name = event.name_id == 0
-                                ? "Unknown event"
+                            const std::string source_path =
+                                ResolveSource(combat.get(), event.name_id);
+                            const bool has_path = source_path != "Unknown source";
+                            normalized.source_name = has_path
+                                ? source_path
                                 : "#" + std::to_string(event.name_id);
                             normalized.source_display_name = normalized.source_name;
-                            normalized.source_name_origin = event.name_id == 0
-                                ? "unknown" : "technical";
+                            normalized.source_name_origin = std::string(
+                                nte::combat_stats::DisplayNameOriginName(
+                                    nte::combat_stats::DisplayNameOrigin::Technical));
                         }
-                    } else {
-                        normalized.source_name = event.name_id == 0
-                            ? "Unknown event"
-                            : "#" + std::to_string(event.name_id);
-                        normalized.source_display_name = normalized.source_name;
-                        normalized.source_name_origin = event.name_id == 0
-                            ? "unknown" : "technical";
                     }
                     normalized.attacker_name = ResolveParticipantCached(
                         combat.get(), event.source, event.sequence);
                     normalized.victim_name = ResolveParticipantCached(
                         combat.get(), event.target, event.sequence);
-                    const auto attacker_display =
-                        g_context.name_resolver.ResolveParticipant(
-                            normalized.attacker_name);
-                    const auto victim_display =
-                        g_context.name_resolver.ResolveParticipant(
-                            normalized.victim_name);
-                    normalized.attacker_display_name =
-                        attacker_display.origin ==
-                            nte::combat_stats::DisplayNameOrigin::Unknown
-                        ? normalized.attacker_name
-                        : attacker_display.display_name;
-                    normalized.victim_display_name =
-                        victim_display.origin ==
-                            nte::combat_stats::DisplayNameOrigin::Unknown
-                        ? normalized.victim_name
-                        : victim_display.display_name;
+                    // ResolveParticipantCached 已经优先返回宿主显示名，路径只作为
+                    // 显示名未就绪时的临时标签，因此这两者直接就是最终展示文本。
+                    normalized.attacker_display_name = normalized.attacker_name;
+                    normalized.victim_display_name = normalized.victim_name;
                     normalized.attacker_name_origin = std::string(
                         nte::combat_stats::DisplayNameOriginName(
-                            attacker_display.origin));
+                            ParticipantNameOrigin(event.source)));
                     normalized.victim_name_origin = std::string(
                         nte::combat_stats::DisplayNameOriginName(
-                            victim_display.origin));
-                    if (normalized.name_resource_version.empty() &&
-                        (attacker_display.origin ==
-                             nte::combat_stats::DisplayNameOrigin::Resource ||
-                         victim_display.origin ==
-                             nte::combat_stats::DisplayNameOrigin::Resource)) {
-                        normalized.name_resource_version =
-                            g_context.name_resolver.version();
-                    }
+                            ParticipantNameOrigin(event.target)));
                     const bool player_related = g_context.engine.IsRelevant(
                         normalized.world, normalized.attacker, normalized.victim);
                     const bool starts_encounter = player_related &&

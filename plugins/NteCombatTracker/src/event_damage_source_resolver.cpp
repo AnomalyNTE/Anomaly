@@ -2,13 +2,6 @@
 
 namespace nte::combat_stats {
 
-ResolvedDamageName ResolveEventDamageSource(
-    const std::uint64_t source_id,
-    const DamageSourceNameLookup& lookup,
-    const ResourceNameResolver& resolver) {
-    return resolver.ResolveDamageSource(lookup(source_id));
-}
-
 std::string DamageSourceIdentity(
     const std::uint64_t source_id,
     const std::string_view technical_name) {

@@ -18,7 +18,6 @@ public:
         const std::filesystem::path& color_path,
         const std::filesystem::path& character_path,
         std::string& error);
-
     [[nodiscard]] std::optional<std::uint32_t> Find(
         std::string_view attribute) const;
     [[nodiscard]] std::optional<std::uint32_t> FindParticipant(

@@ -2249,8 +2249,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         const auto executable_root =
             std::filesystem::path(executable_path.data()).parent_path();
         g_app.attribute_colors = nte::combat_stats::AttributeColorMap::Load(
-            executable_root / "assets/dict/attribute_colors.json",
-            executable_root / "assets/dict/character",
+            executable_root / "assets/attribute_colors.json",
+            executable_root / "assets/characters.json",
             g_app.attribute_color_error);
     }
     g_app.port = ParsePort();

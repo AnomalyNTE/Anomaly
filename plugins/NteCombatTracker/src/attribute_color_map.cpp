@@ -92,55 +92,36 @@ AttributeColorMap AttributeColorMap::Load(
 
 AttributeColorMap AttributeColorMap::Load(
     const std::filesystem::path& color_path,
-    const std::filesystem::path& character_directory,
+    const std::filesystem::path& character_path,
     std::string& error) {
     AttributeColorMap result = Load(color_path, error);
     if (!error.empty()) return result;
     try {
-        if (!std::filesystem::is_directory(character_directory)) {
-            throw std::runtime_error("character dictionary directory is unavailable: " +
-                character_directory.string());
+        std::ifstream stream(character_path, std::ios::binary);
+        if (!stream) {
+            throw std::runtime_error("character attribute table is unavailable: " +
+                character_path.string());
         }
-        std::size_t loaded_files{};
-        for (const auto& item :
-            std::filesystem::directory_iterator(character_directory)) {
-            if (!item.is_regular_file() || item.path().extension() != ".json") {
-                continue;
-            }
-            std::ifstream stream(item.path(), std::ios::binary);
-            if (!stream) {
-                throw std::runtime_error("character dictionary file is unavailable: " +
-                    item.path().string());
-            }
-            const auto document = nlohmann::json::parse(stream);
-            if (!document.contains("data") ||
-                !document.at("data").contains("characters")) {
-                ++loaded_files;
-                continue;
-            }
-            for (const auto& [id_text, value] :
-                document.at("data").at("characters").items()) {
-                const auto id = std::stoul(id_text);
-                if (id < 1000 || id > 1999) continue;
-                const std::string codename =
-                    value.at("codename").get<std::string>();
-                const std::string attribute =
-                    value.at("attribute").get<std::string>();
-                if (!result.colors_.contains(attribute)) {
-                    throw std::runtime_error(
-                        "unknown character attribute: " + attribute);
-                }
-                std::ostringstream token;
-                token << "player_" << std::setw(3) << std::setfill('0')
-                      << id - 1000 << '_' << codename;
-                result.participant_attributes_.emplace(
-                    Lower(token.str()), attribute);
-            }
-            ++loaded_files;
+        const auto document = nlohmann::json::parse(stream);
+        if (!document.contains("characters") ||
+            !document.at("characters").is_object()) {
+            throw std::runtime_error("character attribute table has no characters object");
         }
-        if (loaded_files == 0) {
-            throw std::runtime_error(
-                "character dictionary directory contains no JSON files");
+        for (const auto& [id_text, value] : document.at("characters").items()) {
+            const auto id = std::stoul(id_text);
+            if (id < 1000 || id > 1999) continue;
+            const std::string codename = value.at("codename").get<std::string>();
+            const std::string attribute = value.at("attribute").get<std::string>();
+            if (!result.colors_.contains(attribute)) {
+                throw std::runtime_error("unknown character attribute: " + attribute);
+            }
+            std::ostringstream token;
+            token << "player_" << std::setw(3) << std::setfill('0')
+                  << id - 1000 << '_' << codename;
+            result.participant_attributes_.emplace(Lower(token.str()), attribute);
+        }
+        if (result.participant_attributes_.empty()) {
+            throw std::runtime_error("character attribute table contains no characters");
         }
     } catch (const std::exception& exception) {
         result.participant_attributes_.clear();

@@ -1597,9 +1597,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         ${ANOMALY_NTE_COMBAT_DIR}/src/damage_log.cpp
         ${ANOMALY_NTE_COMBAT_DIR}/src/developer_diagnostics.cpp
         ${ANOMALY_NTE_COMBAT_DIR}/src/event_damage_source_resolver.cpp
-        ${ANOMALY_NTE_COMBAT_DIR}/src/id_name_export.cpp
-        ${ANOMALY_NTE_COMBAT_DIR}/src/log_worker.cpp
-        ${ANOMALY_NTE_COMBAT_DIR}/src/resource_name_resolver.cpp)
+        ${ANOMALY_NTE_COMBAT_DIR}/src/log_worker.cpp)
     target_include_directories(anomaly_nte_combat_engine PUBLIC
         "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src"
         "${CMAKE_CURRENT_BINARY_DIR}/generated/nte_combat_tracker")
@@ -1691,10 +1689,6 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             damage_log_tests.cpp nte_damage_log anomaly_nte_combat_engine)
         anomaly_nte_combat_fixture(anomaly_nte_combat_diagnostics_fixture
             developer_diagnostics_tests.cpp nte_developer_diagnostics anomaly_nte_combat_engine)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_id_name_export_fixture
-            id_name_export_tests.cpp nte_id_name_export anomaly_nte_combat_engine)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_name_resolver_fixture
-            resource_name_resolver_tests.cpp nte_resource_name_resolver anomaly_nte_combat_engine)
         anomaly_nte_combat_fixture(anomaly_nte_combat_color_map_fixture
             attribute_color_map_tests.cpp nte_attribute_color_map anomaly_nte_combat_engine)
         anomaly_nte_combat_fixture(anomaly_nte_combat_protocol_fixture
@@ -1712,6 +1706,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         # 这两个夹具直接面对插件 ABI 的形状，需要 SDK 头与宿主声明的 v1.8 尾部。
         anomaly_nte_combat_fixture(anomaly_nte_combat_sdk_compat_fixture
             sdk_compat_tests.cpp nte_sdk_compat Anomaly::sdk)
+        anomaly_nte_combat_fixture(anomaly_nte_combat_display_name_fixture
+            display_name_abi_tests.cpp nte_display_name_abi Anomaly::sdk)
         anomaly_nte_combat_fixture(anomaly_nte_combat_uid_detector_fixture
             uid_detector_tests.cpp nte_uid_detector anomaly_nte_combat_uid)
     endif()

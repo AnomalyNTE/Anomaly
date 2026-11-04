@@ -137,9 +137,9 @@ void ReferenceVisualModelIsDeterministic() {
 void LiveAndHistoricalRowsResolveTheSameAttributeColor() {
     std::string color_error;
     const auto colors = AttributeColorMap::Load(
-        std::filesystem::path(NTE_TEST_SOURCE_DIR) / "assets/dict/attribute_colors.json",
+        std::filesystem::path(NTE_TEST_SOURCE_DIR) / "assets/attribute_colors.json",
         std::filesystem::path(NTE_TEST_SOURCE_DIR) /
-            "assets/dict/character",
+            "assets/characters.json",
         color_error);
     Check(color_error.empty(),
         "repository appearance resources should load for row color resolution");
