@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -14,7 +15,7 @@ struct BattleGraph {
 
     bool Linked(std::uint64_t a, std::uint64_t b) const {
         if (a > b) std::swap(a, b);
-        return std::find(edges.begin(), edges.end(), std::pair{a, b}) != edges.end();
+        return std::binary_search(edges.begin(), edges.end(), std::pair{a, b});
     }
     bool Contains(std::uint64_t id) const {
         return std::any_of(edges.begin(), edges.end(), [id](const auto& edge) {
@@ -25,9 +26,28 @@ struct BattleGraph {
         if (a == 0 || b == 0 || a == b) return;
         if (a > b) std::swap(a, b);
         const auto edge = std::pair{a, b};
+        const auto position = std::lower_bound(edges.begin(), edges.end(), edge);
         if (enabled) {
-            if (!Linked(a, b)) edges.push_back(edge);
-        } else std::erase(edges, edge);
+            if (position == edges.end() || *position != edge) edges.insert(position, edge);
+        } else if (position != edges.end() && *position == edge) edges.erase(position);
+    }
+    void SetBetween(const std::vector<std::uint64_t>& first,
+                    const std::vector<std::uint64_t>& second, bool enabled) {
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> changes;
+        changes.reserve(first.size() * second.size());
+        for (const auto a : first)
+            for (const auto b : second)
+                if (a != 0 && b != 0 && a != b) changes.emplace_back(std::min(a, b), std::max(a, b));
+        std::sort(changes.begin(), changes.end());
+        changes.erase(std::unique(changes.begin(), changes.end()), changes.end());
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
+        if (enabled)
+            std::set_union(edges.begin(), edges.end(), changes.begin(), changes.end(),
+                std::back_inserter(result));
+        else
+            std::set_difference(edges.begin(), edges.end(), changes.begin(), changes.end(),
+                std::back_inserter(result));
+        edges = std::move(result);
     }
     void Remove(std::uint64_t id) {
         std::erase_if(edges, [id](const auto& edge) {
@@ -57,24 +77,37 @@ struct BattleCamp {
 // mutually hostile camps. Prefer existing camps; unused colors are symmetric.
 inline bool AssignBattleCamps(const BattleGraph& graph, const std::vector<std::uint8_t>& palette,
                               std::vector<BattleCamp>& actors) {
+    // Build adjacency once: hundreds of actors must not search the complete
+    // edge list again for every candidate at every coloring step.
+    std::vector<std::vector<std::size_t>> neighbors(actors.size());
+    for (std::size_t a = 0; a < actors.size(); ++a)
+        for (std::size_t b = a + 1; b < actors.size(); ++b)
+            if (graph.Linked(actors[a].id, actors[b].id)) {
+                neighbors[a].push_back(b);
+                neighbors[b].push_back(a);
+            }
     auto solve = [&](auto&& self) -> bool {
         BattleCamp* selected{};
+        std::size_t selected_index{};
         std::size_t best_saturation{}, best_degree{};
-        for (auto& actor : actors) {
+        for (std::size_t i = 0; i < actors.size(); ++i) {
+            auto& actor = actors[i];
             if (actor.assigned >= 0) continue;
-            std::vector<int> neighbors;
-            std::size_t degree{};
-            for (const auto& other : actors) {
-                if (!graph.Linked(actor.id, other.id)) continue;
-                ++degree;
-                if (other.assigned >= 0 &&
-                    std::find(neighbors.begin(), neighbors.end(), other.assigned) == neighbors.end())
-                    neighbors.push_back(other.assigned);
+            bool colors[256]{};
+            std::size_t saturation{};
+            for (const auto index : neighbors[i]) {
+                const auto camp = actors[index].assigned;
+                if (camp >= 0 && !colors[camp]) {
+                    colors[camp] = true;
+                    ++saturation;
+                }
             }
-            if (selected == nullptr || neighbors.size() > best_saturation ||
-                (neighbors.size() == best_saturation && degree > best_degree)) {
+            const auto degree = neighbors[i].size();
+            if (selected == nullptr || saturation > best_saturation ||
+                (saturation == best_saturation && degree > best_degree)) {
                 selected = &actor;
-                best_saturation = neighbors.size();
+                selected_index = i;
+                best_saturation = saturation;
                 best_degree = degree;
             }
         }
@@ -84,11 +117,13 @@ inline bool AssignBattleCamps(const BattleGraph& graph, const std::vector<std::u
         if (previous != choices.end()) std::rotate(choices.begin(), previous, previous + 1);
         bool tried_unused{};
         for (const auto camp : choices) {
-            bool conflict{}, used{};
+            const bool conflict = std::any_of(neighbors[selected_index].begin(),
+                neighbors[selected_index].end(), [&](auto index) { return actors[index].assigned == camp; });
+            bool used{};
             for (const auto& other : actors) {
                 if (other.assigned != camp) continue;
                 used = true;
-                conflict = conflict || graph.Linked(selected->id, other.id);
+                break;
             }
             if (conflict || (!used && tried_unused)) continue;
             if (!used) tried_unused = true;

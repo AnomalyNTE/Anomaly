@@ -26,6 +26,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 
 #include <nlohmann/json.hpp>
@@ -38,12 +39,13 @@ namespace {
 
 // ---------------------------------------------------------------- 常量
 
-constexpr std::size_t kMaxRecords = 24;
+constexpr std::size_t kMaxRecords = 256;
 constexpr std::size_t kManagementPageSize = 10;
 // SummonAI accepts signed 32-bit levels; do not impose a gameplay cap.
 constexpr std::uint32_t kMaxLevel = static_cast<std::uint32_t>(
     std::numeric_limits<std::int32_t>::max());
-constexpr std::size_t kMaxPending = 16;
+// A full summon batch and a full management selection fit alongside single actions.
+constexpr std::size_t kMaxPending = 2 * kMaxRecords + 16;
 constexpr std::size_t kTextCapacity = 256;
 constexpr std::size_t kPathCapacity = 512;
 constexpr std::size_t kAttributeNameCapacity = 96;
@@ -88,13 +90,27 @@ enum class OpKind : std::uint32_t {
     Summon = 1,
     Remove = 2,
     ClearAll = 3,
-    RefreshHP = 4,
     SetBossHpBar = 5,
     SetCollision = 6,
     SetHidden = 7,
     SetBattleEdge = 8,
     StopDuel = 9,
-    SelectAllOpponents = 10
+    SelectAllOpponents = 10,
+    SetGroupBattle = 11,
+    StopGroupBattle = 12,
+    SetAggroSettings = 13
+};
+
+struct SummonBatch;
+
+enum class TargetPolicy { Native, Distributed, Nearest, LowestHealth };
+
+struct AggroSettings {
+    TargetPolicy policy{TargetPolicy::Native};
+    std::uint64_t priority_target{};
+    double chase_distance{}; // Metres between combatants; zero keeps unrestricted pursuit.
+    bool paused{};
+    bool operator==(const AggroSettings&) const = default;
 };
 
 struct PendingOp {
@@ -102,6 +118,10 @@ struct PendingOp {
     std::uint64_t record_id{};
     bool enabled{};
     std::uint64_t target_id{};
+    std::shared_ptr<SummonBatch> batch;
+    std::vector<std::uint64_t> members;
+    std::vector<std::uint64_t> opponents;
+    AggroSettings aggro;
 };
 
 struct ClassEntry {
@@ -134,6 +154,36 @@ struct BirthPreset {
     double value{};
 };
 
+// Captured on submission; later UI edits only affect the next batch.
+struct SummonSettings {
+    std::string class_path;
+    std::string display_name;
+    std::string server_combat_blueprint;
+    std::uint32_t level{}, skill_level{};
+    bool hostile{}, pet{}, aggressive{}, ignore_player{}, compatibility{};
+    std::array<BirthPreset, kBirthAttributeNames.size()> presets{};
+    std::uint32_t count{1};
+    double spacing{5.0};
+};
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324) // The captured native FTransform retains its 16-byte alignment.
+#endif
+struct SummonBatch {
+    SummonSettings settings;
+    // Progress is protected by Context::mutex; placement is Game-thread-only.
+    std::uint32_t completed{};
+    bool stopped{}, in_progress{};
+    summon_lab::Transform origin;
+    summon_lab::Vector rotation{};
+    std::uint32_t next_slot{};
+    std::vector<summon_lab::Vector> occupied;
+};
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
 struct SummonIdentity {
     AnomalyGenerationHandleV1 controller{};
     NativeIdentity leader{};
@@ -148,13 +198,27 @@ struct Record {
     float max_hp{};
     bool pet{};
     SummonIdentity registration;
+    std::string class_path;
     std::string server_combat_source;
     bool battle_tuned{};
     float original_chase_range{};
     std::uint8_t original_leave_battle{};
     bool boss_hp_bar_visible{true};
+    AggroSettings aggro;
+    std::uint64_t current_target_id{};
+    bool target_paused{};
     std::vector<AttributeValue> attributes;
     char label[96]{};
+};
+
+struct ManagementRecord {
+    std::uint64_t id{};
+    float hp{}, max_hp{};
+    bool pet{};
+    std::string class_path;
+    std::array<char, 96> label{};
+    AggroSettings aggro;
+    std::uint64_t current_target_id{};
 };
 
 struct NativeCombatHook {
@@ -211,6 +275,7 @@ struct Context {
 
     std::array<PendingOp, kMaxPending> pending{};
     std::size_t pending_count{};
+    std::shared_ptr<SummonBatch> summon_batch;
 
     bool session_world_ready{};
     std::uint64_t session_event_cursor{};
@@ -233,6 +298,8 @@ struct Context {
     int aggressive{};
     int ignore_player{};
     int ft_compatibility{};
+    std::uint32_t summon_count{1};
+    double summon_spacing{5.0};
 
     // Game-thread-only scratch. Native Conv_StringToText replaces its previous
     // FText through UE's move assignment. Retain the final reference for this
@@ -246,7 +313,11 @@ struct Context {
     bool catalog_loaded{};
     std::uint64_t selected_record_id{};
     std::size_t management_page{};
+    std::string management_blueprint;
     summon_lab::BattleGraph battles;
+    bool show_aggro_editor{};
+    std::vector<std::uint64_t> aggro_edit_members;
+    AggroSettings aggro_edit;
 
     std::array<char, kTextCapacity> last_result{};
     bool last_result_failed{};
@@ -959,8 +1030,13 @@ void ClearSummonedState() {
     g_context.record_count = 0;
     g_context.selected_record_id = 0;
     g_context.management_page = 0;
+    g_context.management_blueprint.clear();
     g_context.battles = {};
+    g_context.aggro_edit_members.clear();
+    g_context.aggro_edit = {};
+    g_context.pending = {};
     g_context.pending_count = 0;
+    g_context.summon_batch.reset();
     g_context.blueprint_config = {};
     g_context.blueprint_check_delay = 0;
     g_pending_hint.store(0, std::memory_order_release);
@@ -1768,6 +1844,7 @@ void RefreshHealth();
 struct SummonResult {
     bool ok{};
     bool pet{};
+    float hp{}, max_hp{};
     AnomalyGenerationHandleV1 handle{};
     std::uintptr_t pointer{};
     std::uintptr_t ability_system{};
@@ -2277,8 +2354,100 @@ std::uintptr_t LoadServerCombatCdo(AnomalyGenerationHandleV1 library, const std:
     return cdo;
 }
 
-SummonResult SummonOne() {
+summon_lab::Vector BatchSpawnOffset(const SummonSettings& settings, std::uint32_t index) {
+    if (settings.count == 1) return {};
+    // Expand a square grid around the first cell. A wall in front must not
+    // send every later attempt farther into that same wall.
+    const auto ring = static_cast<std::int32_t>(std::ceil((std::sqrt(index + 1.0) - 1.0) * 0.5));
+    const auto side = 2 * ring;
+    auto remaining = (side + 1) * (side + 1) - 1 - static_cast<std::int32_t>(index);
+    std::int32_t x = ring, y = -ring;
+    if (remaining < side) x -= remaining;
+    else if ((remaining -= side) < side) { x = -ring; y += remaining; }
+    else if ((remaining -= side) < side) { x = -ring + remaining; y = ring; }
+    else { remaining -= side; y = ring - remaining; }
+    return {(1.0 + x) * settings.spacing * 100.0, y * settings.spacing * 100.0, 0.0};
+}
+
+bool CaptureBatchOrigin(AnomalyGenerationHandleV1 pawn, SummonBatch& batch) {
+    if (!InvokeByPath(pawn, kPathGetTransform, &batch.origin, sizeof(batch.origin))) return false;
+    if (batch.settings.count == 1) return true;
+    if (!InvokeByPath(pawn, "/Script/Engine.Actor:K2_GetActorRotation",
+            &batch.rotation, sizeof(batch.rotation))) return false;
+    batch.occupied.push_back(batch.origin.translation);
+
+    // A second batch may start without moving the player. Reserve the current
+    // positions of managed actors once, outside the Render lock.
+    std::vector<AnomalyGenerationHandleV1> handles;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        for (std::size_t i = 0; i < g_context.record_count; ++i)
+            handles.push_back(g_context.records[i].handle);
+    }
+    for (const auto handle : handles) {
+        summon_lab::Vector location{};
+        if (InvokeByPath(handle, "/Script/Engine.Actor:K2_GetActorLocation", &location, sizeof(location)))
+            batch.occupied.push_back(location);
+    }
+    return true;
+}
+
+bool HasBatchSpacing(const SummonBatch& batch, const summon_lab::Vector& location) {
+    return std::none_of(batch.occupied.begin(), batch.occupied.end(), [&](const auto& occupied) {
+        return std::hypot(location[0] - occupied[0], location[1] - occupied[1], location[2] - occupied[2]) +
+            0.001 < batch.settings.spacing * 100.0;
+    });
+}
+
+void SetBatchSpawnPlacement(SummonBatch& batch, summon_lab::SummonParameters& parms) {
+    parms.transform = batch.origin;
+    if (batch.settings.count == 1) return;
+    const auto yaw = batch.rotation[1] * (std::acos(-1.0) / 180.0);
+    const auto forward = std::cos(yaw), right = std::sin(yaw);
+    do {
+        parms.offset = BatchSpawnOffset(batch.settings, batch.next_slot++);
+        parms.transform.translation = {
+            batch.origin.translation[0] + forward * parms.offset[0] - right * parms.offset[1],
+            batch.origin.translation[1] + right * parms.offset[0] + forward * parms.offset[1],
+            batch.origin.translation[2]};
+    } while (!HasBatchSpacing(batch, parms.transform.translation));
+}
+
+bool FinishBatchPlacement(AnomalyGenerationHandleV1 actor, SummonBatch& batch,
+                          const summon_lab::Transform& transform) {
+    if (batch.settings.count == 1) return true;
+    // SummonAI's offset is a follow-position search: bActiveFollow can skip it,
+    // or navigation can redirect it around the leader. Finalize the grid using
+    // the engine's collision-aware teleport before rebasing any arena points.
+    summon_lab::Vector actual{};
+    if (!InvokeByPath(actor, "/Script/Engine.Actor:K2_GetActorLocation", &actual, sizeof(actual))) return false;
+    // Preserve native ground/capsule adjustments inside the intended cell.
+    // Teleporting back to the player's exact Z can reject an otherwise valid spawn.
+    if (std::hypot(actual[0] - transform.translation[0], actual[1] - transform.translation[1]) <=
+            batch.settings.spacing * 50.0 && HasBatchSpacing(batch, actual)) {
+        batch.occupied.push_back(actual);
+        return true;
+    }
+    summon_lab::SummonParameters placement{};
+    placement.transform = transform;
+    // A blocked cell is expected in a populated scene. Try other cells for this
+    // one actor, with bounded work per Game update, instead of aborting the batch.
+    for (std::uint32_t attempt = 0; attempt < 32; ++attempt) {
+        if (attempt != 0) SetBatchSpawnPlacement(batch, placement);
+        summon_lab::TeleportParameters teleport{placement.transform.translation, batch.rotation};
+        if (!InvokeByPath(actor, "/Script/Engine.Actor:K2_TeleportTo", &teleport, sizeof(teleport))) return false;
+        if (!teleport.result) continue;
+        if (!InvokeByPath(actor, "/Script/Engine.Actor:K2_GetActorLocation", &actual, sizeof(actual))) return false;
+        if (!HasBatchSpacing(batch, actual)) continue;
+        batch.occupied.push_back(actual);
+        return true;
+    }
+    return false;
+}
+
+SummonResult SummonOne(SummonBatch& batch) {
     SummonResult result;
+    const auto& settings = batch.settings;
     {
         std::scoped_lock lock(g_context.mutex);
         if (g_context.record_count >= kMaxRecords) {
@@ -2293,12 +2462,7 @@ SummonResult SummonOne() {
         return result;
     }
 
-    char path[kPathCapacity];
-    {
-        std::scoped_lock lock(g_context.mutex);
-        std::memcpy(path, g_context.class_path.data(), sizeof(path));
-        path[sizeof(path) - 1] = '\0';
-    }
+    const char* path = settings.class_path.c_str();
     if (path[0] == '\0') {
         std::snprintf(result.detail, sizeof(result.detail), "summon: empty class path");
         return result;
@@ -2315,42 +2479,14 @@ SummonResult SummonOne() {
         return result;
     }
 
-    summon_lab::Transform transform{};
-    if (!InvokeByPath(pawn, kPathGetTransform, &transform, sizeof(transform))) {
-        std::snprintf(result.detail, sizeof(result.detail), "summon: GetTransform failed");
+    if (batch.completed == 0 && !CaptureBatchOrigin(pawn, batch)) {
+        std::snprintf(result.detail, sizeof(result.detail), "summon: spawn origin unavailable");
         return result;
     }
 
-    std::uint32_t level{};
-    std::uint32_t skill_level{};
-    bool hostile{};
-    bool pet{};
-    bool aggressive{};
-    bool compatibility{};
-    bool ignore_player{};
-    std::string server_combat_blueprint;
-    std::array<char, kDisplayNameCapacity> display_name{};
-    std::array<BirthPreset, kBirthAttributeNames.size()> presets{};
-    {
-        std::scoped_lock lock(g_context.mutex);
-        level = g_context.level;
-        skill_level = g_context.skill_level;
-        hostile = g_context.hostile != 0;
-        pet = g_context.pet != 0;
-        aggressive = g_context.aggressive != 0;
-        ignore_player = g_context.ignore_player != 0;
-        compatibility = g_context.ft_compatibility != 0 && MonsterConfigName(path).starts_with("FT_");
-        if (compatibility)
-            server_combat_blueprint = g_context.final_tower_combat_blueprint;
-        display_name = g_context.display_name;
-        if (display_name[0] == '\0') {
-            const auto entry = g_context.blueprint_options.find(path);
-            if (entry != g_context.blueprint_options.end())
-                std::snprintf(display_name.data(), display_name.size(), "%s",
-                    entry->second.default_display_name.c_str());
-        }
-        presets = g_context.birth_presets;
-    }
+    const auto& server_combat_blueprint = settings.server_combat_blueprint;
+    const bool compatibility = settings.compatibility;
+    auto presets = settings.presets;
 
     CombatConfigSource combat_config;
     const auto config_state = CheckBlueprintConfig(path, &combat_config, pawn);
@@ -2386,7 +2522,7 @@ SummonResult SummonOne() {
     }
     CombatConfigScope config_scope(combat_config);
     std::int32_t ai_level{};
-    if (!ResolveSummonLevel(pawn, path, level, &ai_level)) {
+    if (!ResolveSummonLevel(pawn, path, settings.level, &ai_level)) {
         const auto message = g_context.localizer.Text("summon.level_unavailable",
             "Default level unavailable; enter a level");
         std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
@@ -2444,19 +2580,16 @@ SummonResult SummonOne() {
 
     summon_lab::SummonParameters parms{};
     parms.uclass = soft_class;
-    parms.pet = pet ? 1 : 0;
-    parms.attack_mode = aggressive ? kAttackAggressive : kAttackDefensive;
+    parms.pet = settings.pet ? 1 : 0;
+    SetBatchSpawnPlacement(batch, parms);
+    parms.attack_mode = settings.aggressive ? kAttackAggressive : kAttackDefensive;
     // A player leader skips the native default-level assignment. Pass the
     // resolved scene level explicitly, before construction and registration.
     parms.level = ai_level;
     // Zero still preserves the blueprint's InheritedSkillLevel.
-    parms.skill_level = static_cast<std::int32_t>(std::min(skill_level, kMaxLevel));
-    parms.transform = transform;
-    parms.same_camp = hostile ? 0 : 1;
+    parms.skill_level = static_cast<std::int32_t>(std::min(settings.skill_level, kMaxLevel));
+    parms.same_camp = settings.hostile ? 0 : 1;
 
-    // Retire dead registrations before SummonAI can reuse their vacant slots.
-    // Keep this at the Game update boundary, outside the registration hook.
-    RefreshHealth();
     bool summoned{};
     {
         // SummonAI itself defers construction, configures level/leader/camp,
@@ -2521,7 +2654,7 @@ SummonResult SummonOne() {
         }
     }
 
-    if (ignore_player) {
+    if (settings.ignore_player) {
         AnomalyGenerationHandleV1 controller{};
         std::uintptr_t controller_pointer{}, player_pointer{}, player_state{}, target{};
         bool ignored = InvokeByPath(pawn, "/Script/Engine.Pawn:GetController",
@@ -2550,6 +2683,14 @@ SummonResult SummonOne() {
         }
     }
 
+    if (!FinishBatchPlacement(ai_handle, batch, parms.transform)) {
+        static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
+        const auto message = g_context.localizer.Text("summon.placement_failed",
+            "No free spawn position nearby; summon removed");
+        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+        return result;
+    }
+
     if (!RebaseWuchaoArena(ai_handle, ai_pointer, birth.actor_class)) {
         static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
         const auto message = g_context.localizer.Text("summon.arena_failed",
@@ -2558,7 +2699,7 @@ SummonResult SummonOne() {
         return result;
     }
 
-    result.pet = pet;
+    result.pet = settings.pet;
     float initial_hp{}, initial_max{};
     if (!ReadHealth(ai_handle, &initial_hp, &initial_max) || !std::isfinite(initial_hp) ||
         !std::isfinite(initial_max) || initial_hp <= 0 || initial_max <= 0) {
@@ -2568,6 +2709,8 @@ SummonResult SummonOne() {
         std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
         return result;
     }
+    result.hp = initial_hp;
+    result.max_hp = initial_max;
     bool birth_ok = true;
     if (!birth.attributes.empty()) {
         birth_ok = birth.actor == ai_pointer && birth.attribute_set == result.attribute_set &&
@@ -2640,9 +2783,9 @@ SummonResult SummonOne() {
     const char* separator = std::strrchr(path, '.');
     if (separator == nullptr) separator = std::strrchr(path, '/');
     const char* name = separator != nullptr ? separator + 1 : path;
-    const bool named = SetSpawnDisplayName(ai_handle, ai_pointer, display_name.data());
+    const bool named = SetSpawnDisplayName(ai_handle, ai_pointer, settings.display_name.c_str());
     std::snprintf(result.label, sizeof(result.label), "%s",
-                  named && display_name[0] != '\0' ? display_name.data() : name);
+                  named && !settings.display_name.empty() ? settings.display_name.c_str() : name);
     if (!named) {
         const auto message = g_context.localizer.Text("summon.name_failed",
             "Summoned, but the name could not be set");
@@ -2692,7 +2835,60 @@ struct DuelActor {
     float original_chase_range{};
     std::uint8_t original_leave_battle{};
     bool boss_hp_bar_visible{true};
+    AggroSettings aggro;
+    float hp{}, max_hp{};
+    summon_lab::Vector location{};
+    bool location_valid{}, target_paused{};
 };
+
+const DuelActor* ChooseBattleTarget(const DuelActor& actor, const std::vector<DuelActor>& actors,
+                                    const summon_lab::BattleGraph& graph) {
+    if (actor.aggro.paused) return nullptr;
+    std::vector<const DuelActor*> choices;
+    const bool needs_distance = actor.aggro.chase_distance > 0 || actor.aggro.policy == TargetPolicy::Nearest;
+    const auto distance = [&](const auto& other) {
+        return std::hypot(actor.location[0] - other.location[0], actor.location[1] - other.location[1],
+            actor.location[2] - other.location[2]);
+    };
+    for (const auto& candidate : actors) {
+        if (!candidate.alive || candidate.pet || !graph.Linked(actor.id, candidate.id)) continue;
+        if (needs_distance && (!actor.location_valid || !candidate.location_valid)) continue;
+        if (actor.aggro.chase_distance > 0 && distance(candidate) > actor.aggro.chase_distance * 100.0) continue;
+        choices.push_back(&candidate);
+    }
+    if (choices.empty()) return nullptr;
+    for (const auto* candidate : choices)
+        if (candidate->id == actor.aggro.priority_target) return candidate;
+    if (actor.aggro.policy == TargetPolicy::Native) {
+        for (const auto* candidate : choices)
+            if (candidate->pointer == actor.previous_target) return candidate;
+    }
+    if (actor.aggro.policy == TargetPolicy::Nearest || actor.aggro.policy == TargetPolicy::LowestHealth) {
+        const auto score = [&](const DuelActor* candidate) {
+            return actor.aggro.policy == TargetPolicy::Nearest ? distance(*candidate) :
+                (candidate->max_hp > 0 ? static_cast<double>(candidate->hp) / candidate->max_hp :
+                    std::numeric_limits<double>::infinity());
+        };
+        return *std::min_element(choices.begin(), choices.end(), [&](const auto* a, const auto* b) {
+            const auto left = score(a), right = score(b);
+            // Keep a valid current target on ties to avoid gratuitous switching.
+            return left < right || (left == right && a->pointer == actor.previous_target &&
+                b->pointer != actor.previous_target);
+        });
+    }
+    return choices[(actor.id - 1) % choices.size()];
+}
+
+void ReadBattleLocations(std::vector<DuelActor>& actors) {
+    const bool needed = std::any_of(actors.begin(), actors.end(), [](const auto& actor) {
+        return actor.aggro.chase_distance > 0 || actor.aggro.policy == TargetPolicy::Nearest;
+    });
+    if (!needed) return;
+    for (auto& actor : actors)
+        if (actor.alive)
+            actor.location_valid = InvokeByPath(actor.handle, "/Script/Engine.Actor:K2_GetActorLocation",
+                &actor.location, sizeof(actor.location));
+}
 
 bool ResolveDuelController(DuelActor& actor) {
     std::uint8_t finding{};
@@ -2730,6 +2926,24 @@ bool PauseDuelActor(const DuelActor& actor) {
     ok = InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:SetForceBattleBehavior",
                        &forced, sizeof(forced)) && ok;
     return ok;
+}
+
+bool ActivateBattleTarget(const DuelActor& actor, const DuelActor& opponent) {
+    std::array<std::uint8_t, 2> resumed{0, 0};
+    std::uint8_t disabled = 0, forced = 1;
+    std::uint8_t searching = actor.aggro.policy == TargetPolicy::Native &&
+        actor.aggro.priority_target == 0 && actor.aggro.chase_distance == 0 ? 1 : 0;
+    struct { std::uintptr_t target; float aggro_percent; } target{opponent.pointer, 1.0F};
+    return InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:ForceSetAttackDisable",
+                       &disabled, sizeof(disabled)) &&
+        InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:SetAggroPaused",
+                       resumed.data(), resumed.size()) &&
+        InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:SetUseFindAggroTarget",
+                       &searching, sizeof(searching)) &&
+        InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:SetForceBattleBehavior",
+                       &forced, sizeof(forced)) &&
+        InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:ForceSetCurrentAggroTarget",
+                       &target, sizeof(target));
 }
 
 bool FindDuelCamps(std::uint8_t player_camp, std::vector<std::uint8_t>& camps) {
@@ -2887,14 +3101,22 @@ bool SetBattleCamp(const DuelActor& actor, std::uint8_t camp) {
 }
 
 void ChangeBattle(const PendingOp& op, bool forgetting = false) {
+    if (forgetting) {
+        // Removing a dead actor cannot invalidate the survivors' camp colors.
+        // Detach its edges once; maintenance retargets/restores survivors.
+        std::scoped_lock lock(g_context.mutex);
+        g_context.battles.Remove(op.record_id);
+        return;
+    }
+    const bool group = op.kind == OpKind::SetGroupBattle || op.kind == OpKind::StopGroupBattle;
     const auto first = op.record_id;
     const auto second = op.target_id;
     const auto fail = [] {
         DuelResult(false, g_context.localizer.Text("duel.failed",
             "Battle unavailable: check that the Bosses are alive and ready"));
     };
-    if (first == 0 || first == second ||
-        (op.kind == OpKind::SetBattleEdge && second == 0)) { fail(); return; }
+    if (group ? op.members.empty() : (first == 0 || first == second ||
+        (op.kind == OpKind::SetBattleEdge && second == 0))) { fail(); return; }
     summon_lab::BattleGraph previous;
     std::vector<DuelActor> actors;
     {
@@ -2907,17 +3129,34 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
             actor.original_chase_range = record.original_chase_range;
             actor.original_leave_battle = record.original_leave_battle;
             actor.boss_hp_bar_visible = record.boss_hp_bar_visible;
+            actor.aggro = record.aggro;
             actors.push_back(actor);
         }
     }
     for (auto& actor : actors) {
-        if (forgetting && actor.id == first) continue;
         float hp{}, max_hp{};
         actor.alive = IsActorAlive(actor.handle, actor.pointer) &&
             ReadHealth(actor.handle, &hp, &max_hp) && hp > 0 && max_hp > 0;
+        actor.hp = hp;
+        actor.max_hp = max_hp;
     }
+    ReadBattleLocations(actors);
     auto next = previous;
-    if (op.kind == OpKind::SelectAllOpponents) {
+    if (op.kind == OpKind::SetGroupBattle) {
+        auto members = op.members;
+        auto opponents = op.opponents;
+        const auto unavailable = [&](auto id) {
+            return std::none_of(actors.begin(), actors.end(), [id](const auto& actor) {
+                return actor.id == id && actor.alive && !actor.pet;
+            });
+        };
+        std::erase_if(members, unavailable);
+        std::erase_if(opponents, unavailable);
+        if (members.empty() || opponents.empty()) { fail(); return; }
+        next.SetBetween(members, opponents, op.enabled);
+    } else if (op.kind == OpKind::StopGroupBattle) {
+        for (const auto id : op.members) next.Remove(id);
+    } else if (op.kind == OpKind::SelectAllOpponents) {
         // Build one graph from the complete management list, independent of
         // pagination. Validate and apply its camp assignment only once.
         for (const auto& actor : actors)
@@ -2927,11 +3166,18 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
     if (next.edges == previous.edges) return;
     auto combined = previous;
     for (const auto& [a, b] : next.edges) combined.Set(a, b, true);
-    const auto component = combined.Component(first);
+    auto component = group ? std::vector<std::uint64_t>{} : combined.Component(first);
+    if (group) {
+        for (const auto id : op.members) {
+            if (!combined.Contains(id)) continue;
+            if (std::find(component.begin(), component.end(), id) != component.end()) continue;
+            const auto connected = combined.Component(id);
+            component.insert(component.end(), connected.begin(), connected.end());
+        }
+    }
     for (auto& actor : actors)
         actor.involved = std::find(component.begin(), component.end(), actor.id) != component.end();
-    // The death path must detach a missing node even when another actor is
-    // unavailable. Pause only validated survivors; unrelated components stay put.
+    // On partial failure, pause only validated survivors in affected components.
     const auto stop_component = [&] {
         for (auto& actor : actors) {
             if (actor.involved && actor.alive && actor.controller.id != 0) {
@@ -2944,12 +3190,16 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         g_context.battles = previous;
         for (auto& record : g_context.records)
             for (const auto& actor : actors)
-                if (record.id == actor.id) record.battle_tuned = actor.battle_tuned;
+                if (record.id == actor.id && actor.involved) {
+                    record.battle_tuned = actor.battle_tuned;
+                    record.current_target_id = 0;
+                    record.target_paused = true;
+                }
     };
     bool ready = g_context.current_chase_range_offset != 0;
     std::vector<summon_lab::BattleCamp> assignments;
     for (auto& actor : actors) {
-        if (!actor.involved || (forgetting && actor.id == first)) continue;
+        if (!actor.involved) continue;
         std::uint8_t role{};
         const bool resolved = actor.alive && !actor.pet &&
             InvokeByPath(actor.handle, "/Script/Engine.Actor:GetLocalRole", &role, sizeof(role)) &&
@@ -2977,7 +3227,6 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         }
     }
     if (!ready) {
-        if (forgetting) stop_component();
         fail();
         return;
     }
@@ -2995,7 +3244,6 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         !HandleFromPointer(player_state_pointer, &player_state) ||
         !ReadCamp(player_pointer, &player_camp) ||
         !FindDuelCamps(player_camp, camps))) {
-        if (forgetting) stop_component();
         fail(); return;
     }
     if (!summon_lab::AssignBattleCamps(next, camps, assignments)) {
@@ -3009,6 +3257,8 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         ok = PauseDuelActor(actor) && DisableLeaderFollowing(actor) && ok;
         if (!next.Contains(actor.id)) {
             ok = RestoreDuelController(actor) && ok;
+            actor.previous_target = 0;
+            actor.target_paused = true;
             continue;
         }
         ok = TuneDuelController(actor) && ok;
@@ -3040,31 +3290,17 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         ok = InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:ForceSetAttackDisable",
                            &disabled, sizeof(disabled));
     }
-    for (const auto& actor : actors) {
+    for (auto& actor : actors) {
         if (!ok) break;
         if (!actor.involved || !next.Contains(actor.id)) continue;
-        const DuelActor* opponent{};
-        for (const auto& candidate : actors) {
-            if (!next.Linked(actor.id, candidate.id)) continue;
-            if (opponent == nullptr || candidate.pointer == actor.previous_target) opponent = &candidate;
-        }
-        std::array<std::uint8_t, 2> resumed{0, 0};
-        std::uint8_t forced = 1, searching = 1;
-        struct { std::uintptr_t target; float aggro_percent; } target{opponent->pointer, 1.0F};
+        const auto* opponent = ChooseBattleTarget(actor, actors, next);
         std::uintptr_t actual_target{};
-        ok = InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:SetAggroPaused",
-                           resumed.data(), resumed.size()) &&
-            // Native skills can temporarily clear a target. Allow the AI to
-            // select it again; the ignored PlayerState remains excluded.
-            InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:SetUseFindAggroTarget",
-                           &searching, sizeof(searching)) &&
-            InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:SetForceBattleBehavior",
-                           &forced, sizeof(forced)) &&
-            InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:ForceSetCurrentAggroTarget",
-                           &target, sizeof(target)) &&
+        ok = opponent ? ActivateBattleTarget(actor, *opponent) &&
             InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
-                           &actual_target, sizeof(actual_target)) && actual_target == opponent->pointer &&
-            (actor.boss_hp_bar_visible ? ShowDuelBossHpBar(actor, player_state) :
+                &actual_target, sizeof(actual_target)) && actual_target == opponent->pointer : PauseDuelActor(actor);
+        actor.previous_target = actual_target;
+        actor.target_paused = opponent == nullptr;
+        ok = ok && (actor.boss_hp_bar_visible ? ShowDuelBossHpBar(actor, player_state) :
                 HideDuelBossHpBar(actor, player_state));
     }
     if (!ok) {
@@ -3078,10 +3314,15 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         g_context.battles = std::move(next);
         for (auto& record : g_context.records)
             for (const auto& actor : actors)
-                if (record.id == actor.id) {
+                if (record.id == actor.id && actor.involved) {
                     record.battle_tuned = actor.battle_tuned;
                     record.original_chase_range = actor.original_chase_range;
                     record.original_leave_battle = actor.original_leave_battle;
+                    record.target_paused = actor.target_paused;
+                    const auto target = std::find_if(actors.begin(), actors.end(), [&](const auto& other) {
+                        return other.pointer != 0 && other.pointer == actor.previous_target;
+                    });
+                    record.current_target_id = target == actors.end() ? 0 : target->id;
                 }
     }
     DuelResult(true, g_context.localizer.Text("duel.updated", "Opponents updated"));
@@ -3121,11 +3362,7 @@ void ForgetRecord(std::uint64_t record_id) {
                 g_context.records[k - 1] = std::move(g_context.records[k]);
             g_context.records[--g_context.record_count] = {};
             if (g_context.selected_record_id == record_id) {
-                const auto next = g_context.record_count == 0 ? 0 :
-                    std::min(i, g_context.record_count - 1);
-                g_context.selected_record_id =
-                    g_context.record_count == 0 ? 0 : g_context.records[next].id;
-                g_context.management_page = next / kManagementPageSize;
+                g_context.selected_record_id = 0;
             }
             break;
         }
@@ -3135,6 +3372,10 @@ void ForgetRecord(std::uint64_t record_id) {
         g_context.pending_count = static_cast<std::size_t>(end - g_context.pending.begin());
         g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count),
                              std::memory_order_release);
+        for (auto& record : g_context.records) {
+            if (record.aggro.priority_target == record_id) record.aggro.priority_target = 0;
+            if (record.current_target_id == record_id) record.current_target_id = 0;
+        }
     }
     if (handle.id != 0) {
         ForgetLocalBirth(handle);
@@ -3271,7 +3512,7 @@ void RefreshHealth() {
     }
 }
 
-void MaintainBattles() {
+bool MaintainBattles(const std::vector<std::uint64_t>& changed = {}) {
     summon_lab::BattleGraph graph;
     std::vector<DuelActor> actors;
     {
@@ -3282,23 +3523,38 @@ void MaintainBattles() {
             if ((!graph.Contains(record.id) && !record.battle_tuned) ||
                 record.hp <= 0 || record.max_hp <= 0) continue;
             DuelActor actor{record.id, record.handle, record.pointer};
+            actor.pet = record.pet;
             actor.battle_tuned = record.battle_tuned;
             actor.original_chase_range = record.original_chase_range;
             actor.original_leave_battle = record.original_leave_battle;
             actor.boss_hp_bar_visible = record.boss_hp_bar_visible;
+            actor.aggro = record.aggro;
+            actor.hp = record.hp;
+            actor.max_hp = record.max_hp;
+            actor.target_paused = record.target_paused;
             actors.push_back(actor);
         }
     }
     for (auto& actor : actors) {
         actor.alive = IsActorAlive(actor.handle, actor.pointer) && ResolveDuelController(actor);
     }
+    ReadBattleLocations(actors);
+    bool applied = true;
     for (auto& actor : actors) {
-        if (!actor.alive || !actor.battle_tuned) continue;
+        const bool reapply = std::find(changed.begin(), changed.end(), actor.id) != changed.end();
+        if (!actor.alive || !actor.battle_tuned) {
+            if (reapply) applied = false;
+            continue;
+        }
         if (!graph.Contains(actor.id)) {
-            if (RestoreDuelController(actor)) {
+            if (PauseDuelActor(actor) && RestoreDuelController(actor)) {
                 std::scoped_lock lock(g_context.mutex);
                 for (auto& record : g_context.records)
-                    if (record.id == actor.id) record.battle_tuned = false;
+                    if (record.id == actor.id) {
+                        record.battle_tuned = false;
+                        record.current_target_id = 0;
+                        record.target_paused = true;
+                    }
             }
             continue;
         }
@@ -3306,53 +3562,158 @@ void MaintainBattles() {
         std::uint8_t leave_battle{};
         if (!ReadValue(actor.controller_pointer + g_context.current_chase_range_offset, &range) ||
             !ReadReflectedValue(actor.controller_pointer, "bUseLeaveBattle", "BoolProperty",
-                                &leave_battle)) continue;
+                                &leave_battle)) { if (reapply) applied = false; continue; }
         if (range < std::max(actor.original_chase_range, kBattleChaseRange) || leave_battle != 0)
-            if (!TuneDuelController(actor)) continue;
-        std::uintptr_t current_target{};
+            if (!TuneDuelController(actor)) { if (reapply) applied = false; continue; }
         if (!InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
-                          &current_target, sizeof(current_target))) continue;
-        const auto linked_target = std::find_if(actors.begin(), actors.end(), [&](const auto& candidate) {
-            return candidate.alive && graph.Linked(actor.id, candidate.id) &&
-                candidate.pointer == current_target;
+                          &actor.previous_target, sizeof(actor.previous_target))) {
+            if (reapply) applied = false;
+            continue;
+        }
+        const auto* opponent = ChooseBattleTarget(actor, actors, graph);
+        const bool retarget = reapply || (opponent ? actor.target_paused ||
+            actor.previous_target != opponent->pointer : !actor.target_paused || actor.previous_target != 0);
+        if (retarget && !(opponent ? ActivateBattleTarget(actor, *opponent) : PauseDuelActor(actor))) {
+            if (reapply) applied = false;
+            continue;
+        }
+        if (retarget && !InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
+                &actor.previous_target, sizeof(actor.previous_target))) {
+            if (reapply) applied = false;
+            continue;
+        }
+        if (reapply && actor.previous_target != (opponent ? opponent->pointer : 0)) applied = false;
+        const auto actual = std::find_if(actors.begin(), actors.end(), [&](const auto& candidate) {
+            return candidate.alive && candidate.pointer != 0 && candidate.pointer == actor.previous_target;
         });
-        if (linked_target != actors.end()) continue;
-        const auto opponent = std::find_if(actors.begin(), actors.end(), [&](const auto& candidate) {
-            return candidate.alive && graph.Linked(actor.id, candidate.id);
-        });
-        if (opponent == actors.end()) continue;
-        std::array<std::uint8_t, 2> resumed{0, 0};
-        std::uint8_t searching = 1, forced = 1;
-        struct { std::uintptr_t target; float aggro_percent; } target{opponent->pointer, 1.0F};
-        const bool retargeted = InvokeByPath(actor.controller,
-                "/Script/HTGame.HTAIController:SetAggroPaused", resumed.data(), resumed.size()) &&
-            InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:SetUseFindAggroTarget",
-                         &searching, sizeof(searching)) &&
-            InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:SetForceBattleBehavior",
-                         &forced, sizeof(forced)) &&
-            InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:ForceSetCurrentAggroTarget",
-                         &target, sizeof(target));
-        if (retargeted && !actor.boss_hp_bar_visible) {
+        {
+            std::scoped_lock lock(g_context.mutex);
+            for (auto& record : g_context.records)
+                if (record.id == actor.id) {
+                    record.current_target_id = actual == actors.end() ? 0 : actual->id;
+                    record.target_paused = opponent == nullptr && actor.previous_target == 0;
+                }
+        }
+        if (retarget && !actor.boss_hp_bar_visible) {
             AnomalyGenerationHandleV1 player_state{};
             if (FindLocalPlayerState(&player_state))
                 static_cast<void>(HideDuelBossHpBar(actor, player_state));
         }
     }
+    return applied;
+}
+
+void ApplyAggroSettings(const PendingOp& op) {
+    if (!std::isfinite(op.aggro.chase_distance) || op.aggro.chase_distance < 0 ||
+        op.aggro.chase_distance > kBattleChaseRange / 100.0) {
+        DuelResult(false, g_context.localizer.Text("aggro.invalid_range", "Chase distance must be between 0 and 10000 m"));
+        return;
+    }
+    std::vector<std::uint64_t> changed;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+            auto& record = g_context.records[i];
+            if (record.pet || record.hp <= 0 || record.max_hp <= 0 ||
+                std::find(op.members.begin(), op.members.end(), record.id) == op.members.end()) continue;
+            record.aggro = op.aggro;
+            changed.push_back(record.id);
+        }
+    }
+    const bool applied = !changed.empty() && MaintainBattles(changed);
+    DuelResult(applied, applied ? g_context.localizer.Text("aggro.applied", "Aggro settings applied") :
+        g_context.localizer.Text("aggro.unavailable", "Aggro settings saved; some entities are unavailable"));
 }
 
 // ---------------------------------------------------------------- 队列
 
+bool SummonBusyLocked() {
+    const auto& batch = g_context.summon_batch;
+    return batch && (batch->in_progress || (!batch->stopped && batch->completed < batch->settings.count));
+}
+
+void CancelSummonsLocked() {
+    if (!SummonBusyLocked()) return;
+    g_context.summon_batch->stopped = true;
+    const auto end = std::remove_if(g_context.pending.begin(),
+        g_context.pending.begin() + g_context.pending_count,
+        [](const PendingOp& op) { return op.kind == OpKind::Summon; });
+    std::fill(end, g_context.pending.begin() + g_context.pending_count, PendingOp{});
+    g_context.pending_count = static_cast<std::size_t>(end - g_context.pending.begin());
+    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count), std::memory_order_release);
+}
+
+bool QueueAvailableLocked(std::size_t count) {
+    if (count <= kMaxPending - g_context.pending_count) return true;
+    const auto message = g_context.localizer.Text("status.queue_full", "Operation queue full");
+    g_context.last_result_failed = true;
+    std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s", message.c_str());
+    return false;
+}
+
+void AppendOpLocked(PendingOp op) {
+    g_context.pending[g_context.pending_count++] = std::move(op);
+    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count), std::memory_order_release);
+}
+
 bool PushOp(const PendingOp& op) {
     std::scoped_lock lock(g_context.mutex);
-    if (g_context.pending_count >= kMaxPending) {
+    if (op.kind == OpKind::ClearAll) CancelSummonsLocked();
+    if (!QueueAvailableLocked(1)) return false;
+    AppendOpLocked(op);
+    return true;
+}
+
+bool PushSelection(OpKind kind, const std::vector<std::uint64_t>& ids, bool enabled = false) {
+    std::scoped_lock lock(g_context.mutex);
+    // Submit the complete selection or nothing; a full queue must not apply
+    // an action to just the first few members of a blueprint group.
+    if (!QueueAvailableLocked(ids.size())) return false;
+    for (const auto id : ids) AppendOpLocked(PendingOp{kind, id, enabled});
+    return true;
+}
+
+bool PushSummon(std::uint32_t count) {
+    std::scoped_lock lock(g_context.mutex);
+    if (SummonBusyLocked()) return false;
+    if (count == 0 || count > kMaxRecords - g_context.record_count) {
+        const auto available = std::to_string(kMaxRecords - g_context.record_count);
+        const std::array<std::string_view, 1> args{available};
+        const auto message = g_context.localizer.Format("summon.capacity", "Available slots: {0}", args);
         g_context.last_result_failed = true;
-        std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s",
-                      "operation queue full");
+        std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s", message.c_str());
         return false;
     }
-    g_context.pending[g_context.pending_count++] = op;
-    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count),
-                         std::memory_order_release);
+    if (!QueueAvailableLocked(count)) return false;
+    auto batch = std::make_shared<SummonBatch>();
+    auto& settings = batch->settings;
+    settings.class_path = g_context.class_path.data();
+    settings.display_name = g_context.display_name.data();
+    if (settings.display_name.empty()) {
+        const auto found = g_context.blueprint_options.find(settings.class_path);
+        if (found != g_context.blueprint_options.end())
+            settings.display_name = found->second.default_display_name;
+    }
+    settings.level = g_context.level;
+    settings.skill_level = g_context.skill_level;
+    settings.hostile = g_context.hostile != 0;
+    settings.pet = g_context.pet != 0;
+    settings.aggressive = g_context.aggressive != 0;
+    settings.ignore_player = g_context.ignore_player != 0;
+    settings.compatibility = g_context.ft_compatibility != 0 &&
+        MonsterConfigName(settings.class_path).starts_with("FT_");
+    if (settings.compatibility) settings.server_combat_blueprint = g_context.final_tower_combat_blueprint;
+    settings.presets = g_context.birth_presets;
+    settings.count = count;
+    settings.spacing = g_context.summon_spacing;
+    g_context.summon_batch = batch;
+    g_context.last_result = {};
+    g_context.last_result_failed = false;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        PendingOp op{OpKind::Summon};
+        op.batch = batch;
+        AppendOpLocked(std::move(op));
+    }
     return true;
 }
 
@@ -3397,7 +3758,7 @@ void ConsumeSpawnRequest() {
         g_context.aggressive = 1;
         g_context.ignore_player = 0;
     }
-    static_cast<void>(PushOp(PendingOp{OpKind::Summon, 0}));
+    static_cast<void>(PushSummon(1));
 }
 
 void DrainOne() {
@@ -3408,17 +3769,18 @@ void DrainOne() {
             g_pending_hint.store(0, std::memory_order_release);
             return;
         }
-        op = g_context.pending[0];
+        op = std::move(g_context.pending[0]);
         for (std::size_t i = 1; i < g_context.pending_count; ++i)
-            g_context.pending[i - 1] = g_context.pending[i];
-        --g_context.pending_count;
+            g_context.pending[i - 1] = std::move(g_context.pending[i]);
+        g_context.pending[--g_context.pending_count] = {};
+        if (op.batch) op.batch->in_progress = true;
         g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count),
                              std::memory_order_release);
     }
 
     switch (op.kind) {
     case OpKind::Summon: {
-        const SummonResult result = SummonOne();
+        auto result = SummonOne(*op.batch);
         if (result.ok) ExcludeNewSummon(result);
         if (g_context.core != nullptr) {
             g_context.core->log(g_context.core->user,
@@ -3435,17 +3797,29 @@ void DrainOne() {
                     record.handle = result.handle;
                     record.pointer = result.pointer;
                     record.pet = result.pet;
+                    record.hp = result.hp;
+                    record.max_hp = result.max_hp;
                     record.registration = result.registration;
+                    record.class_path = op.batch->settings.class_path;
                     record.server_combat_source = result.server_combat_source;
                     record.attributes = std::move(result.attributes);
                     std::snprintf(record.label, sizeof(record.label), "%s", result.label);
-                    g_context.selected_record_id = record.id;
-                    g_context.management_page = (g_context.record_count - 1) / kManagementPageSize;
+                    if (op.batch->completed == 0) {
+                        g_context.selected_record_id = record.id;
+                        g_context.management_blueprint = record.class_path;
+                        const auto group_count = std::count_if(g_context.records.begin(),
+                            g_context.records.begin() + g_context.record_count,
+                            [&](const auto& member) { return member.class_path == record.class_path; });
+                        g_context.management_page = (group_count - 1) / kManagementPageSize;
+                    }
                 }
+                ++op.batch->completed;
                 g_context.last_result_failed = false;
             } else {
                 g_context.last_result_failed = true;
+                CancelSummonsLocked();
             }
+            op.batch->in_progress = false;
             std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s",
                           result.detail);
         }
@@ -3457,10 +3831,6 @@ void DrainOne() {
     case OpKind::ClearAll:
         ClearAll();
         break;
-    case OpKind::RefreshHP:
-        RefreshHealth();
-        MaintainBattles();
-        break;
     case OpKind::SetBossHpBar:
     case OpKind::SetCollision:
     case OpKind::SetHidden:
@@ -3469,7 +3839,12 @@ void DrainOne() {
     case OpKind::SetBattleEdge:
     case OpKind::StopDuel:
     case OpKind::SelectAllOpponents:
+    case OpKind::SetGroupBattle:
+    case OpKind::StopGroupBattle:
         ChangeBattle(op);
+        break;
+    case OpKind::SetAggroSettings:
+        ApplyAggroSettings(op);
         break;
     }
 }
@@ -3523,6 +3898,7 @@ void ResetState() {
     g_context.next_record_id = 1;
     g_context.pending = {};
     g_context.pending_count = 0;
+    g_context.summon_batch.reset();
     g_context.session_world_ready = false;
     g_context.session_event_cursor = 0;
     g_context.frame_counter = 0;
@@ -3556,6 +3932,8 @@ void ResetState() {
     g_context.aggressive = 0;
     g_context.ignore_player = 0;
     g_context.ft_compatibility = 0;
+    g_context.summon_count = 1;
+    g_context.summon_spacing = 5.0;
     g_context.last_result = {};
     g_context.last_result_failed = false;
     g_context.catalog.clear();
@@ -3564,7 +3942,11 @@ void ResetState() {
     g_context.catalog_loaded = false;
     g_context.selected_record_id = 0;
     g_context.management_page = 0;
+    g_context.management_blueprint.clear();
     g_context.battles = {};
+    g_context.show_aggro_editor = false;
+    g_context.aggro_edit_members.clear();
+    g_context.aggro_edit = {};
     std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "idle");
     g_pending_hint.store(0, std::memory_order_release);
 }
@@ -3692,9 +4074,17 @@ void ANOMALY_CALL Update(void* /*context*/, double delta_seconds) {
     RestoreLocalBirthsOnGameThread();
     ConfigureNativeBirthsOnGameThread();
     UpdateBlueprintConfig(delta_seconds);
+    bool spawning{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        spawning = g_context.pending_count != 0 && g_context.pending[0].kind == OpKind::Summon;
+    }
+    const bool refresh = (g_context.frame_counter % kHealthRefreshInterval) == 0;
+    // Retire dead registrations before a spawn can reuse their native slots.
+    // Battle maintenance must also keep running during a long summon batch.
+    if (spawning || refresh) RefreshHealth();
+    if (refresh) MaintainBattles();
     if (g_pending_hint.load(std::memory_order_relaxed) != 0) DrainOne();
-    if ((g_context.frame_counter % kHealthRefreshInterval) == 0)
-        (void)PushOp(PendingOp{OpKind::RefreshHP, 0});
 
 }
 
@@ -4013,6 +4403,7 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
 void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto& localizer = g_context.localizer;
     bool can_summon{};
+    std::uint32_t summon_count{};
     {
         std::scoped_lock lock(g_context.mutex);
         const std::string_view path(g_context.class_path.data());
@@ -4025,6 +4416,22 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
             ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.display_name.data(),
                            g_context.display_name.size(), 0);
         }
+        if (ui->input_uint32 != nullptr) {
+            const auto label = localizer.Text("summon.count", "Count");
+            ui->input_uint32(ui->user, anomaly::sdk::StringView(label), &g_context.summon_count, 0, 0);
+        }
+        summon_count = g_context.summon_count;
+        if (summon_count > 1 && ui->input_double != nullptr) {
+            const auto label = localizer.Text("summon.spacing", "Spacing (m)");
+            ui->input_double(ui->user, anomaly::sdk::StringView(label), &g_context.summon_spacing, 0, 0);
+        }
+        const auto capacity = std::to_string(kMaxRecords - g_context.record_count);
+        const std::array<std::string_view, 1> capacity_args{capacity};
+        WrappedText(ui, localizer.Format("summon.capacity", "Available slots: {0}", capacity_args));
+        const bool spacing_valid = std::isfinite(g_context.summon_spacing) &&
+            g_context.summon_spacing >= 0.0 && g_context.summon_spacing <= 100.0;
+        if (summon_count > 1 && !spacing_valid)
+            WrappedText(ui, localizer.Text("summon.invalid_spacing", "Spacing must be between 0 and 100 m"));
         const std::string level = g_context.level == 0 ? localizer.Text("settings.default", "Default") :
             std::to_string(g_context.level);
         const std::string skill = g_context.skill_level == 0 ? localizer.Text("settings.default", "Default") :
@@ -4072,7 +4479,21 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
         const auto error = BirthPresetError(g_context.birth_presets);
         if (!error.empty()) WrappedText(ui, error);
         can_summon = ready && g_context.class_path[0] != '\0' &&
-            g_context.record_count < kMaxRecords && error.empty();
+            summon_count > 0 && summon_count <= kMaxRecords - g_context.record_count &&
+            (summon_count == 1 || spacing_valid) && !SummonBusyLocked() && error.empty();
+        if (g_context.summon_batch && g_context.summon_batch->settings.count > 1) {
+            const auto& batch = *g_context.summon_batch;
+            const auto done = std::to_string(batch.completed);
+            const auto total = std::to_string(batch.settings.count);
+            const std::array<std::string_view, 2> progress{done, total};
+            WrappedText(ui, batch.stopped
+                ? localizer.Format("summon.batch_stopped", "Stopped: {0} / {1}", progress)
+                : localizer.Format("summon.batch_progress", "Summoned: {0} / {1}", progress));
+        }
+        if (SummonBusyLocked()) {
+            const auto cancel = localizer.Text("summon.cancel", "Cancel remaining");
+            if (ActionButton(ui, cancel.c_str(), true)) CancelSummonsLocked();
+        }
     }
     DrawBlueprintConfig(ui);
     if (!g_context.birth_attributes_ready.load(std::memory_order_acquire)) {
@@ -4082,33 +4503,216 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
     }
     const auto label = localizer.Text("action.summon", "Summon");
     if (ActionButton(ui, label.c_str(), can_summon, -1.0F))
-        (void)PushOp(PendingOp{OpKind::Summon, 0});
+        (void)PushSummon(summon_count);
+}
+
+std::string BlueprintLabel(std::string_view path) {
+    const auto separator = path.find_last_of("/.");
+    const auto name = separator == std::string_view::npos ? path : path.substr(separator + 1);
+    const auto names = summon_lab::ResolveBlueprintNames(name, g_context.localizer);
+    const auto& alias = names.specific.empty() ? names.family : names.specific;
+    return alias.empty() ? std::string(name) : alias + " | " + std::string(name);
+}
+
+void DrawAggroEditor(const AnomalyUiServiceV1* ui, bool ready,
+                     const std::array<ManagementRecord, kMaxRecords>& records, std::size_t count,
+                     const std::vector<std::uint64_t>& members, const summon_lab::BattleGraph& battles) {
+    const auto& localizer = g_context.localizer;
+    bool open{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        open = g_context.show_aggro_editor;
+    }
+    const auto title = localizer.Text("aggro.title", "Advanced aggro");
+    if (ActionButton(ui, (std::string(open ? "v " : "> ") + title).c_str(), true, -1.0F)) {
+        open = !open;
+        std::scoped_lock lock(g_context.mutex);
+        g_context.show_aggro_editor = open;
+    }
+    if (!open) return;
+    std::vector<std::uint64_t> editable;
+    const ManagementRecord* first{};
+    bool mixed{};
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& record = records[i];
+        if (record.pet || record.hp <= 0 || record.max_hp <= 0 ||
+            std::find(members.begin(), members.end(), record.id) == members.end()) continue;
+        editable.push_back(record.id);
+        if (first == nullptr) first = &record;
+        else mixed = mixed || record.aggro != first->aggro;
+    }
+    if (first == nullptr) {
+        WrappedText(ui, localizer.Text("aggro.no_entities", "No available combatants"));
+        return;
+    }
+    AggroSettings draft;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (g_context.aggro_edit_members != editable) {
+            g_context.aggro_edit_members = editable;
+            g_context.aggro_edit = first->aggro;
+        }
+        draft = g_context.aggro_edit;
+    }
+    const auto label_for = [&](std::uint64_t id) {
+        for (std::size_t i = 0; i < count; ++i)
+            if (records[i].id == id) return "#" + std::to_string(id) + " " + records[i].label.data();
+        return localizer.Text("aggro.none", "None");
+    };
+    if (editable.size() == 1) {
+        const auto target = label_for(first->current_target_id);
+        const std::array<std::string_view, 1> args{target};
+        WrappedText(ui, localizer.Format("aggro.current", "Current target: {0}", args));
+    } else {
+        const auto size = std::to_string(editable.size());
+        const std::array<std::string_view, 1> args{size};
+        WrappedText(ui, localizer.Format("aggro.scope", "Apply to {0} entities", args));
+        if (mixed) WrappedText(ui, localizer.Text("aggro.mixed", "Group settings differ"));
+    }
+    const auto policy = [&](const std::string& label, TargetPolicy value) {
+        if (ActionButton(ui, label.c_str(), draft.policy != value)) draft.policy = value;
+    };
+    policy(localizer.Text("aggro.native", "Native selection"), TargetPolicy::Native);
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+    policy(localizer.Text("aggro.distributed", "Distributed lock"), TargetPolicy::Distributed);
+    policy(localizer.Text("aggro.nearest", "Nearest target"), TargetPolicy::Nearest);
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+    policy(localizer.Text("aggro.lowest_hp", "Lowest HP ratio"), TargetPolicy::LowestHealth);
+
+    std::vector<const ManagementRecord*> targets;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& candidate = records[i];
+        if (!candidate.pet && candidate.hp > 0 && candidate.max_hp > 0 &&
+            std::any_of(editable.begin(), editable.end(), [&](auto id) { return battles.Linked(id, candidate.id); }))
+            targets.push_back(&candidate);
+    }
+    if (std::none_of(targets.begin(), targets.end(), [&](const auto* record) { return record->id == draft.priority_target; }))
+        draft.priority_target = 0;
+    const auto automatic = localizer.Text("aggro.automatic", "Automatic");
+    const auto priority = draft.priority_target ? label_for(draft.priority_target) : automatic;
+    const std::array<std::string_view, 1> priority_args{priority};
+    const auto priority_label = localizer.Format("aggro.priority", "Priority target: {0}", priority_args);
+    if (ui->begin_menu != nullptr && ui->end_menu != nullptr) {
+        if (ui->begin_menu(ui->user, anomaly::sdk::StringView(priority_label + "###aggro-priority"), ready)) {
+            if (ActionButton(ui, automatic.c_str(), true)) draft.priority_target = 0;
+            const bool child = ui->begin_child != nullptr && ui->end_child != nullptr;
+            const bool visible = !child || ui->begin_child(ui->user,
+                anomaly::sdk::StringView("##priority-targets"), 320.0F, 180.0F, 0) != 0;
+            if (visible)
+                for (const auto* candidate : targets) {
+                    const auto label = label_for(candidate->id) + "###priority-" + std::to_string(candidate->id);
+                    if (ActionButton(ui, label.c_str(), draft.priority_target != candidate->id, -1.0F))
+                        draft.priority_target = candidate->id;
+                }
+            if (child) ui->end_child(ui->user);
+            ui->end_menu(ui->user);
+        }
+    } else WrappedText(ui, priority_label);
+    if (ui->input_double != nullptr) {
+        const auto label = localizer.Text("aggro.range", "Chase distance (m, 0 = unlimited)");
+        ui->input_double(ui->user, anomaly::sdk::StringView(label), &draft.chase_distance, 0, 0);
+    }
+    if (ui->checkbox != nullptr) {
+        int paused = draft.paused ? 1 : 0;
+        const auto label = localizer.Text("aggro.pause", "Pause aggro (keep opponents)");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &paused)) draft.paused = paused != 0;
+    }
+    const auto reset = localizer.Text("aggro.defaults", "Defaults");
+    if (ActionButton(ui, reset.c_str(), true)) draft = {};
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+    const bool valid = std::isfinite(draft.chase_distance) && draft.chase_distance >= 0 &&
+        draft.chase_distance <= kBattleChaseRange / 100.0;
+    const auto apply = localizer.Text("aggro.apply", "Apply aggro settings");
+    if (ActionButton(ui, apply.c_str(), ready && valid)) {
+        PendingOp op{OpKind::SetAggroSettings};
+        op.members = editable;
+        op.aggro = draft;
+        (void)PushOp(op);
+    }
+    if (!valid) WrappedText(ui, localizer.Text("aggro.invalid_range", "Chase distance must be between 0 and 10000 m"));
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.aggro_edit = draft;
+    }
+}
+
+void DrawGroupActions(const AnomalyUiServiceV1* ui, bool ready,
+                      const std::string& blueprint, const std::vector<std::uint64_t>& ids,
+                      const std::map<std::string, std::vector<std::uint64_t>>& combat_groups,
+                      const summon_lab::BattleGraph& battles) {
+    const auto& localizer = g_context.localizer;
+    WrappedText(ui, blueprint.empty() ? localizer.Text("manage.all", "All blueprints") : BlueprintLabel(blueprint));
+    if (!blueprint.empty()) WrappedText(ui, blueprint);
+    const auto count = std::to_string(ids.size());
+    const std::array<std::string_view, 1> args{count};
+    WrappedText(ui, localizer.Format("manage.group_count", "Group: {0} entities", args));
+    const auto remove = localizer.Text("manage.remove_group", "Remove group");
+    if (ActionButton(ui, remove.c_str(), ready)) {
+        if (blueprint.empty()) (void)PushOp(PendingOp{OpKind::ClearAll});
+        else (void)PushSelection(OpKind::Remove, ids);
+    }
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+    const auto stop = localizer.Text("manage.stop_group", "Stop group battles");
+    const bool fighting = std::any_of(ids.begin(), ids.end(), [&](auto id) { return battles.Contains(id); });
+    if (ActionButton(ui, stop.c_str(), ready && fighting)) {
+        PendingOp op{OpKind::StopGroupBattle};
+        op.members = ids;
+        (void)PushOp(op);
+    }
+    if (ui->separator != nullptr) ui->separator(ui->user);
+    const auto source = combat_groups.find(blueprint);
+    if (source != combat_groups.end() && !source->second.empty()) {
+        WrappedText(ui, localizer.Text("manage.group_opponents", "Enemy blueprints (check to fight)"));
+        for (const auto& [path, opponents] : combat_groups) {
+            if (path == blueprint || opponents.empty()) continue;
+            const std::string label = BlueprintLabel(path) + "###group-battle-" + path;
+            int linked = std::all_of(source->second.begin(), source->second.end(), [&](auto a) {
+                return std::all_of(opponents.begin(), opponents.end(), [&](auto b) { return battles.Linked(a, b); });
+            }) ? 1 : 0;
+            if (ready && ui->checkbox != nullptr &&
+                ui->checkbox(ui->user, anomaly::sdk::StringView(label), &linked)) {
+                PendingOp op{OpKind::SetGroupBattle, 0, linked != 0};
+                op.members = source->second;
+                op.opponents = opponents;
+                (void)PushOp(op);
+            } else if (!ready || ui->checkbox == nullptr) WrappedText(ui, BlueprintLabel(path));
+        }
+        if (ui->separator != nullptr) ui->separator(ui->user);
+    }
+    const auto action = [&](std::string_view label, OpKind kind, bool enabled) {
+        if (ActionButton(ui, std::string(label).c_str(), ready))
+            (void)PushSelection(kind, ids, enabled);
+    };
+    action(localizer.Text("manage.show_hp", "Show boss HP bar"), OpKind::SetBossHpBar, true);
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+    action(localizer.Text("manage.hide_hp", "Hide boss HP bar"), OpKind::SetBossHpBar, false);
+    action(localizer.Text("manage.enable_collision", "Enable collision"), OpKind::SetCollision, true);
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+    action(localizer.Text("manage.disable_collision", "Disable collision"), OpKind::SetCollision, false);
+    action(localizer.Text("manage.hide_model", "Hide model"), OpKind::SetHidden, true);
+    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+    action(localizer.Text("manage.show_model", "Show model"), OpKind::SetHidden, false);
 }
 
 void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto& localizer = g_context.localizer;
-    struct RecordView {
-        std::uint64_t id{};
-        float hp{};
-        float max_hp{};
-        bool pet{};
-        std::array<char, 96> label{};
-    };
-    std::array<RecordView, kMaxRecords> records{};
+    std::array<ManagementRecord, kMaxRecords> records{};
     std::vector<AttributeValue> attributes;
     std::string server_combat_source;
+    std::string blueprint;
+    std::map<std::string, std::vector<std::uint64_t>> groups, combat_groups;
     std::size_t count{};
     std::size_t page{};
     std::size_t page_count{};
+    bool group_ready{};
     summon_lab::BattleGraph battles;
-    const RecordView* selected{};
+    const ManagementRecord* selected{};
     {
         std::scoped_lock lock(g_context.mutex);
         count = g_context.record_count;
-        page_count = (count + kManagementPageSize - 1) / kManagementPageSize;
-        g_context.management_page = page_count == 0 ? 0 :
-            std::min(g_context.management_page, page_count - 1);
+        group_ready = ready && !SummonBusyLocked();
         page = g_context.management_page;
+        blueprint = g_context.management_blueprint;
         battles = g_context.battles;
         for (std::size_t i = 0; i < count; ++i) {
             const auto& source = g_context.records[i];
@@ -4116,6 +4720,12 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
             records[i].hp = source.hp;
             records[i].max_hp = source.max_hp;
             records[i].pet = source.pet;
+            records[i].class_path = source.class_path;
+            records[i].aggro = source.aggro;
+            records[i].current_target_id = source.current_target_id;
+            groups[source.class_path].push_back(source.id);
+            if (!source.pet && source.hp > 0 && source.max_hp > 0)
+                combat_groups[source.class_path].push_back(source.id);
             std::memcpy(records[i].label.data(), source.label, records[i].label.size());
             if (source.id == g_context.selected_record_id) {
                 selected = &records[i];
@@ -4128,6 +4738,22 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
         WrappedText(ui, localizer.Text("list.empty", "No summoned entities"));
         return;
     }
+    const auto select_group = [&](const std::string& path) {
+        blueprint = path;
+        page = 0;
+        selected = nullptr;
+        attributes.clear();
+        server_combat_source.clear();
+        std::scoped_lock lock(g_context.mutex);
+        g_context.management_blueprint = path;
+        g_context.management_page = 0;
+        g_context.selected_record_id = 0;
+    };
+    if (!blueprint.empty() && !groups.contains(blueprint)) select_group({});
+    if (selected != nullptr && !blueprint.empty() && selected->class_path != blueprint)
+        select_group(blueprint);
+    std::vector<std::size_t> filtered;
+    std::vector<std::uint64_t> members;
     const bool has_child = ui->begin_child != nullptr && ui->end_child != nullptr &&
         ui->same_line != nullptr;
     const bool list_visible = !has_child || ui->begin_child(ui->user,
@@ -4138,6 +4764,36 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
         const std::array<std::string_view, 1> count_args{count_text};
         ui->text(ui->user, anomaly::sdk::StringView(localizer.Format(
             "list.header", "Summoned ({0})", count_args)));
+        const bool groups_visible = !has_child || ui->begin_child(ui->user,
+            anomaly::sdk::StringView("##blueprint-groups"), 0.0F, 150.0F, 0) != 0;
+        if (groups_visible) {
+            const auto all = localizer.Text("manage.all", "All blueprints");
+            if (ActionButton(ui, all.c_str(), !blueprint.empty() || selected != nullptr, -1.0F))
+                select_group({});
+            for (const auto& [path, ids] : groups) {
+                const auto size = std::to_string(ids.size());
+                const auto name = BlueprintLabel(path);
+                const std::array<std::string_view, 2> args{name, size};
+                const auto label = localizer.Format("manage.group_label", "{0} ({1})", args) +
+                    "###blueprint-group-" + path;
+                if (ActionButton(ui, label.c_str(), path != blueprint || selected != nullptr, -1.0F))
+                    select_group(path);
+            }
+        }
+        if (has_child) ui->end_child(ui->user);
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!blueprint.empty() && records[i].class_path != blueprint) continue;
+        filtered.push_back(i);
+        members.push_back(records[i].id);
+    }
+    page_count = (filtered.size() + kManagementPageSize - 1) / kManagementPageSize;
+    page = page_count == 0 ? 0 : std::min(page, page_count - 1);
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.management_page = page;
+    }
+    if (list_visible) {
         const auto previous = localizer.Label("page.prev", "<", "entity-prev");
         if (ActionButton(ui, previous.c_str(), page > 0)) {
             std::scoped_lock lock(g_context.mutex);
@@ -4156,8 +4812,8 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
             g_context.management_page = ++page;
         }
         for (std::size_t i = page * kManagementPageSize;
-             i < count && i < (page + 1) * kManagementPageSize; ++i) {
-            const auto& record = records[i];
+             i < filtered.size() && i < (page + 1) * kManagementPageSize; ++i) {
+            const auto& record = records[filtered[i]];
             char line[256]{};
             std::snprintf(line, sizeof(line), "#%llu %s###entity-%llu",
                 static_cast<unsigned long long>(record.id), record.label.data(),
@@ -4172,6 +4828,7 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
                     g_context.selected_record_id = record.id;
                     selected = &record;
                     attributes = g_context.records[k].attributes;
+                    server_combat_source = g_context.records[k].server_combat_source;
                     break;
                 }
             }
@@ -4185,7 +4842,13 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     const bool editor_visible = !has_child || ui->begin_child(ui->user,
         anomaly::sdk::StringView("##summoned-editor"), 0.0F, 0.0F,
         ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y) != 0;
-    if (!editor_visible || selected == nullptr) {
+    if (!editor_visible) {
+        if (has_child) ui->end_child(ui->user);
+        return;
+    }
+    if (selected == nullptr) {
+        DrawGroupActions(ui, group_ready, blueprint, members, combat_groups, battles);
+        DrawAggroEditor(ui, group_ready, records, count, members, battles);
         if (has_child) ui->end_child(ui->user);
         return;
     }
@@ -4194,6 +4857,7 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     ui->text(ui->user, anomaly::sdk::StringView(localizer.Format(
         "manage.selected", "Manage entity #{0}", selected_args)));
     WrappedText(ui, selected->label.data());
+    WrappedText(ui, BlueprintLabel(selected->class_path));
     if (!server_combat_source.empty()) {
         const std::array<std::string_view, 1> source_args{server_combat_source};
         WrappedText(ui, localizer.Format("summon.server_source", "Server combat: {0}", source_args));
@@ -4240,6 +4904,7 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto stop_duel = localizer.Text("duel.stop", "Stop this Boss");
     if (ActionButton(ui, stop_duel.c_str(), ready && battles.Contains(selected->id)))
         (void)PushOp(PendingOp{OpKind::StopDuel, selected->id});
+    DrawAggroEditor(ui, group_ready, records, count, {selected->id}, battles);
     if (ui->separator != nullptr) ui->separator(ui->user);
     const auto action = [&](std::string_view label, OpKind kind, bool enabled) {
         if (ActionButton(ui, std::string(label).c_str(), ready))
@@ -4307,8 +4972,7 @@ void ANOMALY_CALL Draw(void* /*context*/, const AnomalyUiServiceV1* ui) {
         invoke_ready = g_context.has_invoke;
         failed = g_context.last_result_failed;
         last_result = g_context.last_result;
-        for (std::size_t i = 0; i < g_context.pending_count; ++i)
-            if (g_context.pending[i].kind != OpKind::RefreshHP) ++pending;
+        pending = static_cast<std::uint32_t>(g_context.pending_count);
     }
     if (ui->begin_tab_bar(ui->user, anomaly::sdk::StringView("##summon-lab-tabs"),
                          ANOMALY_UI_TAB_BAR_V1_FITTING_POLICY_RESIZE_DOWN)) {
