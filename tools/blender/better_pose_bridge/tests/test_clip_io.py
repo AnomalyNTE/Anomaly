@@ -42,6 +42,36 @@ class ClipIoTests(unittest.TestCase):
         self.assertEqual(clean["bone_position_mode"], "delta")
         self.assertEqual(clean["face_names"], ["smile", "blink"])
 
+    def test_preserves_raw_camera_track(self):
+        doc = _valid_document()
+        curves = [{"x1": 0, "y1": 0, "x2": 1, "y2": 1} for _ in range(6)]
+        doc["camera_track"] = {
+            "kind": "mmd", "fps": 30, "current_time": 0,
+            "keys": [{
+                "frame": 0, "distance": -56.138,
+                "position": [0, 11.875, 0], "rotation": [0, 0, 0],
+                "curves": curves, "view_angle": 30, "perspective": True,
+            }],
+        }
+        clean = read_document(doc)
+        key = clean["camera_track"]["keys"][0]
+        self.assertEqual(key["frame"], 0)
+        self.assertEqual(key["distance"], -56.138)
+        self.assertEqual(key["position"], [0.0, 11.875, 0.0])
+        self.assertEqual(len(key["curves"]), 6)
+
+    def test_accepts_legacy_camera_key_array(self):
+        doc = _valid_document()
+        curves = [{"x1": 0, "y1": 0, "x2": 1, "y2": 1} for _ in range(6)]
+        doc["camera_track"] = [{
+            "frame": 0, "distance": -56.1,
+            "position": [0, 11.8, 0], "rotation": [0, 0, 0],
+            "curves": curves, "view_angle": 30, "perspective": True,
+        }]
+        clean = read_document(doc)
+        self.assertEqual(clean["camera_track"]["kind"], "mmd")
+        self.assertEqual(len(clean["camera_track"]["keys"]), 1)
+
     def test_rejects_non_monotonic_frames(self):
         doc = _valid_document()
         doc["frames"][1]["time"] = 0

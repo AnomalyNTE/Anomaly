@@ -210,11 +210,11 @@ public:
     [[nodiscard]] AnomalyStatusV1 ReleasePatch(
         const ScopedPluginServiceOwner& owner, AnomalyGenerationHandleV1 handle) noexcept;
 
-    // Stops tracked hooks before releasing their outer scope records. PreStop
-    // retains Config schemas so an on_stop lifecycle callback can persist its
-    // final settings; Final revokes every remaining scoped resource before
-    // on_unload. A failed hook drain/removal leaves its record intact so the
-    // caller can quarantine the generation instead of unmapping its DLL.
+    // PreStop is the host fallback after an on_stop lifecycle callback had a
+    // chance to release its own hooks. It releases non-config platform records;
+    // Final revokes every remaining scoped resource before on_unload. A failed
+    // hook drain/removal leaves its record intact so the caller can quarantine
+    // the generation instead of unmapping its DLL.
     [[nodiscard]] bool RevokeScope(
         const ScopedPluginServiceOwner& owner,
         std::chrono::steady_clock::time_point deadline,

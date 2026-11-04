@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.test.hook-lifecycle",
+  "name": "Hook Lifecycle Fixture",
+  "description": "Verifies that plugin lifecycle cleanup owns hook release before host fallback revocation.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "1.0.0",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.interop.hook",
+      "minVersion": 1
+    }
+  ],
+  "capabilities": ["interop-hook"]
+}

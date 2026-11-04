@@ -120,6 +120,57 @@ def _skeleton_metadata(document, bone_count):
     return result
 
 
+def _camera_track(document):
+    source = document.get("camera_track")
+    if source is None:
+        return None
+    if isinstance(source, list):
+        source = {"kind": "mmd", "fps": 30, "current_time": 0,
+                  "keys": source}
+    if not isinstance(source, dict):
+        raise ValueError("原始镜头轨道格式无效")
+    keys = source.get("keys")
+    if not isinstance(keys, list) or not 1 <= len(keys) <= MAX_FRAMES:
+        raise ValueError("原始镜头关键帧数量无效")
+    clean_keys = []
+    previous = -1
+    for item in keys:
+        if not isinstance(item, dict) or type(item.get("frame")) is not int:
+            raise ValueError("原始镜头关键帧格式无效")
+        frame = item["frame"]
+        if frame < 0 or frame <= previous:
+            raise ValueError("原始镜头关键帧必须递增")
+        curves = item.get("curves", [])
+        if not isinstance(curves, list) or len(curves) != 6:
+            raise ValueError("原始镜头贝塞尔曲线无效")
+        clean_curves = []
+        for curve in curves:
+            if not isinstance(curve, dict):
+                raise ValueError("原始镜头贝塞尔曲线无效")
+            clean_curves.append({
+                "x1": _number(curve.get("x1", 0), 0, 1),
+                "y1": _number(curve.get("y1", 0), 0, 1),
+                "x2": _number(curve.get("x2", 1), 0, 1),
+                "y2": _number(curve.get("y2", 1), 0, 1),
+            })
+        clean_keys.append({
+            "frame": frame,
+            "distance": _number(item.get("distance"), -100000, 100000),
+            "position": _vec(item.get("position"), 3, -100000, 100000),
+            "rotation": _vec(item.get("rotation"), 3, -10000, 10000),
+            "curves": clean_curves,
+            "view_angle": _number(item.get("view_angle"), 0, 179),
+            "perspective": bool(item.get("perspective", True)),
+        })
+        previous = frame
+    return {
+        "kind": "mmd",
+        "fps": _number(source.get("fps", 30), 1, 120),
+        "current_time": _number(source.get("current_time", 0), 0, 86400),
+        "keys": clean_keys,
+    }
+
+
 def read(path):
     path = Path(path)
     if path.stat().st_size > MAX_BYTES:
@@ -157,6 +208,9 @@ def read(path):
               "fps": fps, "bone_names": names, "bone_parents": parents,
               "frames": clean_frames, "length": _number(document.get("length", 0), 0, 30 * 60 * 30)}
     result.update(_skeleton_metadata(document, len(names)))
+    raw_camera = _camera_track(document)
+    if raw_camera is not None:
+        result["camera_track"] = raw_camera
     return result
 
 
@@ -198,4 +252,7 @@ def read_document(document):
               "frames": clean_frames,
               "length": _number(document.get("length", 0), 0, 30 * 60 * 30)}
     result.update(_skeleton_metadata(document, len(names)))
+    raw_camera = _camera_track(document)
+    if raw_camera is not None:
+        result["camera_track"] = raw_camera
     return result

@@ -1,4 +1,5 @@
 #include "anomaly/host_ui_service.hpp"
+#include "anomaly/hook_manager.hpp"
 #include "anomaly/plugin_config_watcher.hpp"
 #include "anomaly/plugin_file_watcher.hpp"
 #include "anomaly/plugin_shadow_store.hpp"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -66,6 +68,8 @@ constexpr std::uint64_t kMaxPrivateGrowthBudgetBytes = 4ULL * 1024ULL * 1024ULL 
 
 void Usage() {
     std::cerr << "usage: anomaly-test-host --watcher-fixture | --config-watcher-fixture | "
+                 "--hook-stop-order-fixture "
+                 "--enablement-drain-fixture "
                  "--parallel-stage-fixture | "
                  "--plugin <package-or-root> [--reload N] [--ticks N] "
                  "[--duration-seconds N] [--tick-interval-ms N] [--reload-every-ticks N] "
@@ -371,12 +375,206 @@ bool VerifyEnablementConfigReload(const std::filesystem::path& root) {
     return reloaded;
 }
 
+struct HookStopOrderProbe {
+    std::atomic<int> batch_disable_calls{};
+    std::atomic<int> individual_disable_calls{};
+    std::atomic<int> remove_calls{};
+};
+
+class RejectBatchHookBackend final : public anomaly::HookBackend {
+public:
+    explicit RejectBatchHookBackend(std::shared_ptr<HookStopOrderProbe> probe)
+        : probe_(std::move(probe)) {}
+
+    bool Initialize() noexcept override { return true; }
+    void Uninitialize() noexcept override {}
+
+    bool Create(void* target, void*, void** original) noexcept override {
+        if (target == nullptr || original == nullptr) return false;
+        *original = target;
+        return true;
+    }
+
+    bool Enable(void*) noexcept override { return true; }
+    bool Disable(void*) noexcept override {
+        ++probe_->individual_disable_calls;
+        return true;
+    }
+
+    bool Remove(void*) noexcept override {
+        ++probe_->remove_calls;
+        return true;
+    }
+
+    bool QueueDisable(void*) noexcept override {
+        ++probe_->batch_disable_calls;
+        return false;
+    }
+
+    bool ApplyQueued() noexcept override { return true; }
+
+private:
+    std::shared_ptr<HookStopOrderProbe> probe_;
+};
+
+bool VerifyHookStopOrderFixture(const std::filesystem::path& root) {
+    const auto inline_dispatch = [](
+        std::string, std::uint64_t, std::function<void()> callback) -> bool {
+        if (!callback) return false;
+        callback();
+        return true;
+    };
+    auto probe = std::make_shared<HookStopOrderProbe>();
+    ue5mem::PluginManager manager(
+        root, root, {}, {}, {}, inline_dispatch, inline_dispatch, {},
+        std::make_unique<RejectBatchHookBackend>(probe));
+    manager.LoadAll();
+    auto loaded = manager.Plugins();
+    auto plugin = std::ranges::find_if(loaded, [](const auto& view) {
+        return view.id == "anomaly.test.hook-lifecycle";
+    });
+    if (plugin != loaded.end() && plugin->state == "disabled" &&
+        manager.SetEnabled(plugin->id, true)) {
+        loaded = manager.Plugins();
+        plugin = std::ranges::find_if(loaded, [](const auto& view) {
+            return view.id == "anomaly.test.hook-lifecycle";
+        });
+    }
+    if (plugin == loaded.end() || plugin->state != "active") {
+        std::cerr << "hook stop order fixture plugin did not activate";
+        if (plugin == loaded.end()) {
+            std::cerr << ": missing\n";
+        } else {
+            std::cerr << ": state=" << plugin->state
+                      << " reason=" << plugin->status_reason << '\n';
+        }
+        return false;
+    }
+
+    const bool stopped = manager.StopForRuntime(std::chrono::seconds(1));
+    const bool quarantined = std::ranges::any_of(
+        manager.Plugins(), [](const auto& view) {
+            return view.id == "anomaly.test.hook-lifecycle" &&
+                view.state == "quarantined";
+        });
+    const bool released_from_on_stop =
+        probe->individual_disable_calls.load() == 1 &&
+        probe->remove_calls.load() == 1 &&
+        probe->batch_disable_calls.load() == 0;
+    if (!stopped || quarantined || !released_from_on_stop) {
+        std::cerr
+            << "hook stop order fixture failed: stopped=" << (stopped ? 1 : 0)
+            << " quarantined=" << (quarantined ? 1 : 0)
+            << " batch_disable_calls=" << probe->batch_disable_calls.load()
+            << " individual_disable_calls="
+            << probe->individual_disable_calls.load()
+            << " remove_calls=" << probe->remove_calls.load() << '\n';
+        return false;
+    }
+    std::cout << "ok plugin_hook_stop_order individual_release=1 fallback=0\n";
+    return true;
+}
+
+bool VerifyEnablementDrainFixture(const std::filesystem::path& root) {
+    constexpr wchar_t kHoldVariable[] =
+        L"ANOMALY_HOOK_FIXTURE_HOLD_MS";
+    const DWORD previous_size =
+        GetEnvironmentVariableW(kHoldVariable, nullptr, 0);
+    std::wstring previous;
+    if (previous_size != 0) {
+        previous.resize(previous_size);
+        const DWORD written = GetEnvironmentVariableW(
+            kHoldVariable, previous.data(), previous_size);
+        if (written == 0 || written >= previous_size)
+            previous.clear();
+    }
+    SetEnvironmentVariableW(kHoldVariable, L"1600");
+
+    const auto inline_dispatch = [](
+        std::string, std::uint64_t, std::function<void()> callback) -> bool {
+        if (!callback) return false;
+        callback();
+        return true;
+    };
+    auto probe = std::make_shared<HookStopOrderProbe>();
+    bool valid{};
+    {
+        ue5mem::PluginManager manager(
+            root, root, {}, {}, {}, inline_dispatch, inline_dispatch, {},
+            std::make_unique<RejectBatchHookBackend>(probe));
+        manager.LoadAll();
+        auto loaded = manager.Plugins();
+        auto plugin = std::ranges::find_if(loaded, [](const auto& view) {
+            return view.id == "anomaly.test.hook-lifecycle";
+        });
+        if (plugin != loaded.end() && plugin->state == "disabled" &&
+            manager.SetEnabled(plugin->id, true)) {
+            loaded = manager.Plugins();
+            plugin = std::ranges::find_if(loaded, [](const auto& view) {
+                return view.id == "anomaly.test.hook-lifecycle";
+            });
+        }
+        if (plugin == loaded.end() || plugin->state != "active") {
+            std::cerr << "enablement drain fixture plugin did not activate\n";
+        } else {
+            const auto started = std::chrono::steady_clock::now();
+            const bool disabled = manager.SetEnabled(plugin->id, false);
+            const auto elapsed = std::chrono::duration_cast<
+                std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started);
+            const bool quarantined = std::ranges::any_of(
+                manager.Plugins(), [](const auto& view) {
+                    return view.id == "anomaly.test.hook-lifecycle" &&
+                        view.state == "quarantined";
+                });
+            valid = disabled && !quarantined &&
+                elapsed >= std::chrono::milliseconds(1200) &&
+                probe->individual_disable_calls.load() == 1 &&
+                probe->remove_calls.load() == 1;
+            if (!valid) {
+                wchar_t stage[64]{};
+                GetEnvironmentVariableW(
+                    L"ANOMALY_HOOK_FIXTURE_STAGE", stage,
+                    static_cast<DWORD>(std::size(stage)));
+                std::string stage_utf8;
+                const int stage_size = WideCharToMultiByte(
+                    CP_UTF8, 0, stage, -1, nullptr, 0, nullptr, nullptr);
+                if (stage_size > 1) {
+                    stage_utf8.resize(
+                        static_cast<std::size_t>(stage_size - 1));
+                    static_cast<void>(WideCharToMultiByte(
+                        CP_UTF8, 0, stage, -1, stage_utf8.data(),
+                        stage_size, nullptr, nullptr));
+                }
+                std::cerr
+                    << "enablement drain fixture failed: disabled="
+                    << (disabled ? 1 : 0)
+                    << " quarantined=" << (quarantined ? 1 : 0)
+                    << " elapsed_ms=" << elapsed.count()
+                    << " individual_disable_calls="
+                    << probe->individual_disable_calls.load()
+                    << " remove_calls=" << probe->remove_calls.load()
+                    << " stage=" << stage_utf8
+                    << '\n';
+            }
+        }
+    }
+    SetEnvironmentVariableW(
+        kHoldVariable, previous.empty() ? nullptr : previous.c_str());
+    SetEnvironmentVariableW(L"ANOMALY_HOOK_FIXTURE_STAGE", nullptr);
+    if (valid)
+        std::cout << "ok plugin_enablement_drain timeout=5000 drain=1\n";
+    return valid;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
     std::filesystem::path input;
     bool watcher_fixture{};
     bool config_watcher_fixture{};
+    bool hook_stop_order_fixture{};
+    bool enablement_drain_fixture{};
     bool parallel_stage_fixture{};
     bool enablement_fixture{};
     int reloads = 1;
@@ -389,6 +587,8 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring_view argument(argv[index]);
         if (argument == L"--watcher-fixture") watcher_fixture = true;
         else if (argument == L"--config-watcher-fixture") config_watcher_fixture = true;
+        else if (argument == L"--hook-stop-order-fixture") hook_stop_order_fixture = true;
+        else if (argument == L"--enablement-drain-fixture") enablement_drain_fixture = true;
         else if (argument == L"--parallel-stage-fixture") parallel_stage_fixture = true;
         else if (argument == L"--enablement-fixture") enablement_fixture = true;
         else if (argument == L"--plugin" && index + 1 < argc) input = argv[++index];
@@ -463,6 +663,24 @@ int wmain(int argc, wchar_t** argv) {
             return 12;
         }
         std::cout << "ok enablement_config_reload enable_applied=1\n";
+        return 0;
+    }
+    if (hook_stop_order_fixture) {
+        const bool ok = VerifyHookStopOrderFixture(root);
+        if (!staging.empty()) std::filesystem::remove_all(staging, error);
+        if (!ok) {
+            std::cerr << "plugin hook stop order fixture failed\n";
+            return 13;
+        }
+        return 0;
+    }
+    if (enablement_drain_fixture) {
+        const bool ok = VerifyEnablementDrainFixture(root);
+        if (!staging.empty()) std::filesystem::remove_all(staging, error);
+        if (!ok) {
+            std::cerr << "plugin enablement drain fixture failed\n";
+            return 14;
+        }
         return 0;
     }
     int result = 0;

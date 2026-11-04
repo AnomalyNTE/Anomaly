@@ -86,6 +86,7 @@ inline std::string LocalizeBlenderMessage(const anomaly::sdk::Localizer& localiz
     if (message == "Import Blender motion as MMD") return localizer.Text("blender.message.85", "Import Blender motion as MMD");
     if (message == "Blender controls the pose; edit bones in Blender while connected") return localizer.Text("blender.message.86", "Blender controls the pose; edit bones in Blender while connected");
     if (message == "Import Blender as MMD") return localizer.Text("blender.message.87", "Import Blender as MMD");
+    if (message == "Blender connected; using the current CameraTrack with live corrections") return localizer.Text("blender.message.88", "Blender connected; using the current CameraTrack with live corrections");
     constexpr std::string_view import_prefix = "Blender motion import failed: ";
     if (message.starts_with(import_prefix)) {
         const auto detail = LocalizeBlenderMessage(localizer, message.substr(import_prefix.size()));
