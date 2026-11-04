@@ -57,7 +57,7 @@ using nte::combat_stats::overlay::kWindowClassName;
 using nte::combat_stats::overlay::kWindowTitle;
 using namespace std::chrono_literals;
 
-constexpr wchar_t kMutexName[] = L"Local\\NteCombatOverlay.local.nte.combat-stats";
+constexpr wchar_t kMutexName[] = L"Local\\NteCombatOverlay.local.nte.nte-combat-tracker";
 constexpr UINT kSnapshotMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowMessage = WM_APP + 3;
@@ -2250,7 +2250,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             std::filesystem::path(executable_path.data()).parent_path();
         g_app.attribute_colors = nte::combat_stats::AttributeColorMap::Load(
             executable_root / "assets/attribute_colors.json",
-            executable_root / "assets/characters.json",
             g_app.attribute_color_error);
     }
     g_app.port = ParsePort();

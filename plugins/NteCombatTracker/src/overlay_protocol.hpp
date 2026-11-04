@@ -11,7 +11,7 @@
 namespace nte::combat_stats {
 
 inline constexpr std::string_view kOverlayChannel =
-    "local.nte.combat-stats.overlay";
+    "local.nte.nte-combat-tracker.overlay";
 inline constexpr std::uint32_t kOverlaySchemaVersion = 2;
 inline constexpr std::uint32_t kMetricVersion = 1;
 inline constexpr std::size_t kMaximumOverlayMessageBytes = 64U * 1024U;

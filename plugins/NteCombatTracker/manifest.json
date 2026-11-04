@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
-  "id": "local.nte.combat-stats",
+  "id": "local.nte.nte-combat-tracker",
   "name": "NTE Combat Tracker",
-  "description": "Read-only real-time damage and healing statistics plus a unified-event JSONL combat log and per-encounter JSON export.",
+  "description": "FFXIV-style DPS meter panel.",
   "author": "Shikari",
   "license": "AGPL-3.0-only",
-  "version": "0.4.0-alpha.1",
+  "version": "0.4.0-alpha.2",
   "audience": "user",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
@@ -16,17 +16,17 @@
     {"id": "anomaly.ui", "minVersion": 1},
     {"id": "anomaly.localization", "minVersion": 1},
     {"id": "anomaly.json", "minVersion": 1},
-    {"id": "anomaly.core", "minVersion": 1, "optional": true},
+    {"id": "anomaly.core", "minVersion": 1},
     {"id": "anomaly.runtime-info", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.build", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.combat", "minVersion": 1},
     {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
     {"id": "anomaly.websocket", "minVersion": 1, "optional": true},
-    {"id": "anomaly.interop.signature", "minVersion": 1, "optional": true},
-    {"id": "anomaly.ue5.names", "minVersion": 1, "optional": true},
-    {"id": "anomaly.ue5.objects", "minVersion": 1, "optional": true},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.ue5.objects", "minVersion": 1},
     {"id": "anomaly.ue5.world", "minVersion": 1, "optional": true}
   ],
-  "capabilities": ["ui", "json", "runtime-info", "nte-build", "nte-combat-read", "nte-skills-read", "websocket",
-    "interop-signature", "ue5-names", "ue5-objects", "ue5-world"]
+  "capabilities": ["ui", "json", "memory-read", "runtime-info", "nte-build", "nte-combat-read",
+    "nte-skills-read", "websocket", "interop-signature", "ue5-names", "ue5-objects", "ue5-world"]
 }

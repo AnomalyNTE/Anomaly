@@ -1,4 +1,5 @@
 #include "combat_stats_engine.hpp"
+#include "character_attribute_source.hpp"
 #include "combat_boundary_policy.hpp"
 #include "app_settings.hpp"
 #include "combat_cursor.hpp"
@@ -93,6 +94,10 @@ struct RenderState {
     std::uint64_t event_cursor_sequence{};
     std::string id_name_export_status;
     std::string id_name_export_error;
+    // Empty when the live character attribute table loaded. Surfaced on the
+    // settings page because a silent fallback to identity colours is otherwise
+    // indistinguishable from working attribute colours.
+    std::string character_attribute_error;
 };
 
 enum class LogCaptureState { Idle, Recording, Closing, Failed };
@@ -145,6 +150,11 @@ struct Context {
     std::uint64_t pending_dropped_last_sequence{};
     const AnomalyWebSocketServiceV1* websocket{};
     const AnomalyCoreServiceV1* core{};
+    // Empty when the live character table could not be read; rows then keep
+    // their identity colour instead of an attribute colour.
+    std::string character_attribute_error;
+    bool character_attributes_ready{};
+    TimePoint next_character_attribute_attempt{};
     std::string producer_instance_id;
     std::uint64_t overlay_snapshot_sequence{};
     std::uint64_t local_overlay_drops{};
@@ -569,6 +579,8 @@ void CollectMapDiagnostics(
     }
     g_context.developer_diagnostics.SetCurrentMap(std::move(map));
 }
+
+void LoadCharacterAttributes(const anomaly::sdk::Host& services);
 
 void CollectSkillDiagnostics(const anomaly::sdk::Host& host) {
     if (!g_context.developer_mode) return;
@@ -1911,6 +1923,12 @@ void Update(void* context, double) {
                         combat.get(), event.source, event.sequence);
                     normalized.victim_name = ResolveParticipantCached(
                         combat.get(), event.target, event.sequence);
+                    // The attribute lookup needs the object path, not the display
+                    // name; keep both so one does not starve the other.
+                    normalized.attacker_path = ResolveParticipantPath(
+                        combat.get(), event.source);
+                    normalized.victim_path = ResolveParticipantPath(
+                        combat.get(), event.target);
                     // ResolveParticipantCached 已经优先返回宿主显示名，路径只作为
                     // 显示名未就绪时的临时标签，因此这两者直接就是最终展示文本。
                     normalized.attacker_display_name = normalized.attacker_name;
@@ -2021,6 +2039,7 @@ void Update(void* context, double) {
     CollectMapDiagnostics(host,
         capture_available ? g_context.observed_world : Handle{});
     CollectSkillDiagnostics(host);
+    LoadCharacterAttributes(host);
 
     UpdateServiceGap(capture_available && service_status == ANOMALY_STATUS_V1_OK, now);
 
@@ -2079,6 +2098,7 @@ void Update(void* context, double) {
     next.overlay_enabled = g_context.overlay_policy.enabled();
     next.settings_status = g_context.settings_status;
     next.settings_error = g_context.settings_error;
+    next.character_attribute_error = g_context.character_attribute_error;
     next.developer_available = g_context.developer_access.available();
     next.developer = g_context.developer_diagnostics.BuildSnapshot();
     if (g_context.uid_detector) {
@@ -2504,6 +2524,10 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     if (!render.settings_error.empty()) {
         TextFormat(ui, "Settings error: %s", render.settings_error.c_str());
     }
+    if (!render.character_attribute_error.empty()) {
+        TextFormat(ui, "Character attribute error: %s",
+            render.character_attribute_error.c_str());
+    }
     if (!render.overlay_error.empty()) {
         TextFormat(ui, "Overlay launch error: %s", render.overlay_error.c_str());
     }
@@ -2567,6 +2591,65 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     return anomaly::sdk::Ok();
 }
 
+// Reads the shipped DT_Character rows and installs the resolver. A failure is
+// reported, never fatal: rows simply keep their identity colour.
+//
+// Retried on the Game tick until it succeeds. The table is a content asset, so
+// a plugin that loads before the world finished streaming sees "not loaded";
+// reading once at Start would then lose the attribute for the whole session.
+void LoadCharacterAttributes(const anomaly::sdk::Host& services) {
+    if (g_context.character_attributes_ready) return;
+    const auto now = nte::combat_stats::Clock::now();
+    if (now < g_context.next_character_attribute_attempt) return;
+    g_context.next_character_attribute_attempt = now + std::chrono::seconds(2);
+
+    nte::combat_stats::CharacterAttributeServices resolved;
+    const auto core = services.Query<AnomalyCoreServiceV1>(
+        ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
+    const auto objects = services.Query<AnomalyUe5ObjectsServiceV1>(
+        ANOMALY_UE5_OBJECTS_SERVICE_V1_ID, ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
+    const auto names = services.Query<AnomalyUe5NamesServiceV1>(
+        ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION);
+    // V1 is enough: resolve() is the leading member of both revisions, and the
+    // Host only publishes V2 for an exact minimum_version == 2 request while V1
+    // accepts any minimum. Requesting V1 keeps this working on both.
+    const auto signatures = services.Query<AnomalySignatureServiceV1>(
+        ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
+    resolved.core = core.get();
+    resolved.objects = objects.get();
+    resolved.names = names.get();
+    resolved.signatures = signatures.get();
+
+    std::string error;
+    auto source = std::make_shared<nte::combat_stats::CharacterAttributeSource>(
+        nte::combat_stats::CharacterAttributeSource::Load(resolved, error));
+    g_context.character_attribute_error = error;
+    if (!error.empty()) {
+        // The settings page alone is too easy to miss: a failure here silently
+        // costs every row its attribute colour, so record it in the host log
+        // with the concrete reason.
+        if (resolved.core != nullptr && resolved.core->log != nullptr) {
+            const std::string message = "NteCombatTracker: character attribute table unavailable: " +
+                error;
+            resolved.core->log(resolved.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                anomaly::sdk::StringView(message));
+        }
+        return;
+    }
+
+    g_context.character_attributes_ready = true;
+    if (resolved.core != nullptr && resolved.core->log != nullptr) {
+        const std::string message = "NteCombatTracker: resolved " +
+            std::to_string(source->count()) + " character attributes from DT_Character";
+        resolved.core->log(resolved.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            anomaly::sdk::StringView(message));
+    }
+    g_context.engine.SetAttributeResolver(
+        [source](const std::string& object_path) {
+            return source->FindElementForPath(object_path);
+        });
+}
+
 AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     if (context != &g_context) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     if (g_context.log_worker) {
@@ -2618,6 +2701,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
             g_context.log_root);
         static_cast<void>(g_context.log_worker->Start());
     }
+    LoadCharacterAttributes(anomaly::sdk::Host(g_context.host));
     return anomaly::sdk::Ok();
 }
 
@@ -2685,7 +2769,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("local.nte.combat-stats"),
+        anomaly::sdk::StringView("local.nte.nte-combat-tracker"),
         anomaly::sdk::StringView("NTE Combat Tracker"),
         anomaly::sdk::StringView("Shikari"),
         anomaly::sdk::StringView(nte::build::kPluginVersion),
