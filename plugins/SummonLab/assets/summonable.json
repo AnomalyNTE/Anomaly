@@ -6960,11 +6960,14 @@
       "entries": [
         {
           "n": "mon_nanally_BP_C",
-          "p": "mon_nanally_BP"
+          "p": "mon_nanally_BP",
+          "useCatalogName": true
         },
         {
           "n": "mon_nanally_BP_q110150_C",
-          "p": "mon_nanally_BP_q110150"
+          "p": "mon_nanally_BP_q110150",
+          "useCatalogName": true,
+          "normalCombatBlueprint": "/Game/Blueprints/Character/NPC/NPC_011/Date/mon_nanally_BP_WJ1004.mon_nanally_BP_WJ1004_C"
         }
       ]
     },
@@ -8471,7 +8474,8 @@
         },
         {
           "n": "mon_nanally_BP_WJ1004_C",
-          "p": "mon_nanally_BP_WJ1004"
+          "p": "mon_nanally_BP_WJ1004",
+          "useCatalogName": true
         }
       ]
     },

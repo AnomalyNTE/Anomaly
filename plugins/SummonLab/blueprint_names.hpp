@@ -31,6 +31,8 @@ inline int BlueprintFamilyNumber(std::string_view name, std::string_view prefix)
 
 inline std::string BlueprintFamilyName(std::string_view name,
                                        const anomaly::sdk::Localizer& localizer) {
+    if (name.starts_with("mon_nanally_"))
+        return localizer.Text("catalog.name.nanally", "Nanally");
     switch (BlueprintFamilyNumber(name, "boss_")) {
         case 1: return localizer.Text("catalog.name.boss_01", "Boss 01");
         case 4: return localizer.Text("catalog.name.boss_04", "Boss 04");
