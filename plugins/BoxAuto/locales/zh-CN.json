@@ -130,6 +130,17 @@
     "status.safe_dispatched": "已发送开箱事件 {0}（{1}）",
     "status.safe_verifying": "正在确认保险箱 {0}",
     "status.safe_retry": "保险箱未开，重试 {0}",
-    "status.safe_failed": "保险箱未能打开，跳过 {0}"
+    "status.safe_failed": "保险箱未能打开，跳过 {0}",
+    "type.locker_key": "遗失的储物柜钥匙",
+    "status.key_wait_actor": "等待钥匙加载 {0}（{1}）",
+    "status.key_not_found": "钥匙不存在，跳过 {0}",
+    "status.key_unreachable": "钥匙位置不可达，跳过 {0}",
+    "status.key_approach": "接近钥匙 {0}（{1}cm）",
+    "status.key_interact": "正在拾取钥匙 {0}（交互项 {1}，触发 {2}）",
+    "status.key_already": "钥匙已被取走 {0}",
+    "status.key_picked": "已拾取钥匙 {0}",
+    "status.key_verifying": "正在确认钥匙 {0}",
+    "status.key_reattempt": "钥匙仍在，重新接近 {0}",
+    "status.key_remained_skip": "钥匙仍在，跳过 {0}"
   }
 }
