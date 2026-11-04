@@ -6579,6 +6579,48 @@ bool SampleCameraTrack(Context &context, double position[3], double rotation[3],
                                cut_mode == 0);
 }
 
+bool SampleBlenderCameraAsTrack(Context &context, double position[3],
+                                double rotation[3], double *distance,
+                                double *fov) noexcept {
+  const double unit = CameraUnitCm(context);
+  const double yaw =
+      context.blender_camera_yaw_degrees.load(std::memory_order_acquire) *
+      kCameraDegreesToRadians;
+  const double pitch =
+      context.blender_camera_pitch_degrees.load(std::memory_order_acquire) *
+      kCameraDegreesToRadians;
+  const std::array<double, 3> camera_direction{
+      std::cos(pitch) * std::cos(yaw),
+      std::cos(pitch) * std::sin(yaw),
+      std::sin(pitch),
+  };
+  position[0] =
+      -context.blender_camera_focus_cm[0].load(std::memory_order_acquire) /
+      unit;
+  position[1] =
+      context.blender_camera_focus_cm[2].load(std::memory_order_acquire) /
+      unit;
+  position[2] =
+      -context.blender_camera_focus_cm[1].load(std::memory_order_acquire) /
+      unit;
+  const std::array<double, 3> forward_mmd{
+      -camera_direction[0],
+      camera_direction[2],
+      -camera_direction[1],
+  };
+  rotation[0] = std::asin(std::clamp(-forward_mmd[1], -1.0, 1.0));
+  rotation[1] = std::atan2(forward_mmd[0], forward_mmd[2]);
+  rotation[2] = 0.0;
+  *distance =
+      context.blender_camera_distance_cm.load(std::memory_order_acquire) /
+      unit;
+  *fov = context.blender_camera_fov.load(std::memory_order_acquire);
+  return *distance > 1.0 && *fov > 1.0 && *fov < 179.0 &&
+         std::isfinite(position[0]) && std::isfinite(position[1]) &&
+         std::isfinite(position[2]) && std::isfinite(rotation[0]) &&
+         std::isfinite(rotation[1]);
+}
+
 std::optional<std::uint32_t> CameraCutFrameAtPlayhead(Context &context) noexcept {
   std::lock_guard<std::mutex> lock(context.camera_mutex);
   if (context.camera.keys.empty())
@@ -7094,9 +7136,14 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
           const double game_rotation[3] = {rotation[0], rotation[1], rotation[2]};
           // Follow mode never reads the track, whatever file happens to be loaded.
           const bool sampled =
-              track_mode && SampleCameraTrack(*context, file_position, file_rotation,
-                                              &file_distance, &file_fov);
-          if (!direct_mode && usable && (follow_mode || sampled) &&
+              track_mode
+                  ? SampleCameraTrack(*context, file_position, file_rotation,
+                                      &file_distance, &file_fov)
+                  : direct_mode &&
+                        SampleBlenderCameraAsTrack(
+                            *context, file_position, file_rotation,
+                            &file_distance, &file_fov);
+          if (usable && (follow_mode || sampled) &&
               CharacterBounds(*context, CameraFollowMesh(*context), feet, centre)) {
             // The shot's angle is captured once, from the direction the game's own camera looked at
             // the character: that direction is the way the character faces. The local frame needs a
@@ -7148,364 +7195,7 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               camera_base_written = true;
             }
           }
-          if (direct_mode) {
-            const bool direct_bounds_ready =
-                CharacterBounds(*context, CameraFollowMesh(*context), feet,
-                                centre);
-            const bool relative_ready =
-                context->blender_camera_relative_valid.load(
-                    std::memory_order_acquire) &&
-                direct_bounds_ready;
-            if (relative_ready) {
-              if (!context->camera_anchored.load(
-                      std::memory_order_acquire)) {
-                const bool plausible =
-                    GameCameraReadingIsPlausible(game_location, centre) ||
-                    ++context->camera_anchor_wait > 90;
-                // Anchor the local MMD frame to the character, not to the
-                // current Blender camera azimuth. A camera track can reach the
-                // same character from any side; using that transient camera
-                // direction rotates the whole shot differently depending on
-                // which frame the user happened to connect on.
-                const double dx = centre[0] - game_location[0];
-                const double dy = centre[1] - game_location[1];
-                if (plausible && std::sqrt(dx * dx + dy * dy) > 1.0) {
-                  context->camera_yaw.store(
-                      std::atan2(dy, dx) + 1.5707963267948966,
-                      std::memory_order_release);
-                  StoreCameraAnchor(*context, feet, centre);
-                }
-              }
-              const double target_height =
-                  2.0 * (centre[2] - feet[2]);
-              const double source_height =
-                  context->blender_camera_subject_height.load(
-                      std::memory_order_acquire);
-              const double subject_scale =
-                  target_height > 1.0 && source_height > 1.0
-                      ? std::clamp(target_height / source_height, 0.25, 4.0)
-                      : 1.0;
-              const double local_x =
-                  context->blender_camera_relative_location[0].load(
-                      std::memory_order_acquire) *
-                      subject_scale;
-              const double local_y =
-                  context->blender_camera_relative_location[1].load(
-                      std::memory_order_acquire) *
-                      subject_scale;
-              const double local_z =
-                  context->blender_camera_relative_location[2].load(
-                      std::memory_order_acquire) *
-                      subject_scale;
-              if (!context->blender_camera_anchor_valid.load(
-                      std::memory_order_acquire)) {
-                const double game_x = game_location[0] - feet[0];
-                const double game_y = game_location[1] - feet[1];
-                const double game_z = game_location[2] - feet[2];
-                const double blender_planar =
-                    std::sqrt(local_x * local_x +
-                              local_y * local_y);
-                const double game_planar =
-                    std::sqrt(game_x * game_x + game_y * game_y);
-                const double blender_yaw =
-                    std::atan2(local_y, local_x);
-                const double game_yaw = std::atan2(game_y, game_x);
-                const double basis_yaw =
-                    blender_planar > 1.0 && game_planar > 1.0
-                        ? game_yaw - blender_yaw
-                        : CameraWorldYaw(*context);
-                const double base_scale =
-                    blender_planar > 1.0 && game_planar > 1.0
-                        ? std::clamp(game_planar / blender_planar,
-                                     0.1, 10.0)
-                        : subject_scale;
-                context->blender_camera_base_yaw.store(
-                    basis_yaw, std::memory_order_release);
-                context->blender_camera_base_scale.store(
-                    base_scale, std::memory_order_release);
-                context->blender_camera_base_relative[0].store(
-                    game_x, std::memory_order_release);
-                context->blender_camera_base_relative[1].store(
-                    game_y, std::memory_order_release);
-                context->blender_camera_base_relative[2].store(
-                    game_z, std::memory_order_release);
-                for (int axis{}; axis != 3; ++axis) {
-                  context->blender_camera_base_location[axis].store(
-                      local_x * static_cast<int>(axis == 0) +
-                          local_y * static_cast<int>(axis == 1) +
-                          local_z * static_cast<int>(axis == 2),
-                      std::memory_order_release);
-                  context->blender_camera_base_rotation[axis].store(
-                      game_rotation[axis], std::memory_order_release);
-                  context->blender_camera_base_absolute_rotation[axis].store(
-                      context->blender_camera_absolute_rotation[axis].load(
-                          std::memory_order_acquire),
-                      std::memory_order_release);
-                  context->blender_camera_base_focus_delta_rotation[axis]
-                      .store(
-                          context->blender_camera_focus_delta_rotation[axis]
-                              .load(std::memory_order_acquire),
-                          std::memory_order_release);
-                }
-                float base_fov{};
-                if (Read(*context, fov_address, base_fov) &&
-                    base_fov > 5.0F && base_fov < 170.0F)
-                  context->blender_camera_base_fov.store(
-                      base_fov, std::memory_order_release);
-                context->blender_camera_anchor_valid.store(
-                    true, std::memory_order_release);
-              }
-              const double basis_yaw =
-                  context->blender_camera_base_yaw.load(
-                      std::memory_order_acquire);
-              const double base_scale =
-                  context->blender_camera_base_scale.load(
-                      std::memory_order_acquire);
-              const double delta_x =
-                  (local_x -
-                   context->blender_camera_base_location[0].load(
-                       std::memory_order_acquire)) *
-                  base_scale;
-              const double delta_y =
-                  (local_y -
-                   context->blender_camera_base_location[1].load(
-                       std::memory_order_acquire)) *
-                  base_scale;
-              const double delta_z =
-                  (local_z -
-                   context->blender_camera_base_location[2].load(
-                       std::memory_order_acquire)) *
-                  base_scale;
-              const double cos_yaw = std::cos(basis_yaw);
-              const double sin_yaw = std::sin(basis_yaw);
-              out_location[0] =
-                  feet[0] +
-                  context->blender_camera_base_relative[0].load(
-                      std::memory_order_acquire) +
-                  delta_x * cos_yaw - delta_y * sin_yaw;
-              out_location[1] =
-                  feet[1] +
-                  context->blender_camera_base_relative[1].load(
-                      std::memory_order_acquire) +
-                  delta_x * sin_yaw + delta_y * cos_yaw;
-              out_location[2] =
-                  feet[2] +
-                  context->blender_camera_base_relative[2].load(
-                      std::memory_order_acquire) +
-                  delta_z;
-              for (int axis{}; axis != 3; ++axis)
-                out_rotation[axis] =
-                    context->blender_camera_base_rotation[axis].load(
-                        std::memory_order_acquire);
-              // Rotation is the camera object's absolute orientation change,
-              // not a direction reconstructed from its focus. Moving the
-              // camera therefore cannot acquire look-at behaviour again.
-              for (int axis{}; axis != 3; ++axis) {
-                double delta =
-                    context->blender_camera_absolute_rotation[axis].load(
-                        std::memory_order_acquire) -
-                    context->blender_camera_base_absolute_rotation[axis].load(
-                        std::memory_order_acquire);
-                if (delta > 180.0)
-                  delta -= 360.0;
-                else if (delta < -180.0)
-                  delta += 360.0;
-                out_rotation[axis] += delta;
-              }
-              const std::uint64_t now = GetTickCount64();
-              const std::uint64_t last =
-                  context->blender_camera_direct_log_ms.load(
-                      std::memory_order_acquire);
-              if (last == 0 || now - last >= 1000) {
-                context->blender_camera_direct_log_ms.store(
-                    now, std::memory_order_release);
-                char message[640]{};
-                std::snprintf(
-                    message, sizeof(message),
-                    "betterpose blender direct local=(%.2f,%.2f,%.2f) "
-                    "base_local=(%.2f,%.2f,%.2f) "
-                    "base_relative=(%.2f,%.2f,%.2f) "
-                    "out=(%.2f,%.2f,%.2f) feet=(%.2f,%.2f,%.2f) "
-                    "game=(%.2f,%.2f,%.2f) yaw=%.2f scale=%.3f "
-                    "rotation=(%.2f,%.2f,%.2f)",
-                    local_x, local_y, local_z,
-                    context->blender_camera_base_location[0].load(
-                        std::memory_order_acquire),
-                    context->blender_camera_base_location[1].load(
-                        std::memory_order_acquire),
-                    context->blender_camera_base_location[2].load(
-                        std::memory_order_acquire),
-                    context->blender_camera_base_relative[0].load(
-                        std::memory_order_acquire),
-                    context->blender_camera_base_relative[1].load(
-                        std::memory_order_acquire),
-                    context->blender_camera_base_relative[2].load(
-                        std::memory_order_acquire),
-                    out_location[0], out_location[1], out_location[2],
-                    feet[0], feet[1], feet[2],
-                    game_location[0], game_location[1], game_location[2],
-                    basis_yaw * kCameraRadiansToDegrees, base_scale,
-                    out_rotation[0], out_rotation[1], out_rotation[2]);
-                LogDiagnostic(*context, message);
-              }
-            } else {
-              if (!context->blender_camera_frozen_base_valid.load(
-                      std::memory_order_acquire)) {
-                for (int axis{}; axis != 3; ++axis) {
-                  context->blender_camera_frozen_base_location[axis].store(
-                      game_location[axis], std::memory_order_release);
-                  context->blender_camera_frozen_base_rotation[axis].store(
-                      game_rotation[axis], std::memory_order_release);
-                }
-                float base_fov{};
-                if (Read(*context, fov_address, base_fov) &&
-                    base_fov > 5.0F && base_fov < 170.0F)
-                  context->blender_camera_frozen_base_fov.store(
-                      base_fov, std::memory_order_release);
-                context->blender_camera_frozen_base_valid.store(
-                    true, std::memory_order_release);
-              }
-              const double delta_x =
-                  context->blender_camera_motion_delta_location[0].load(
-                      std::memory_order_acquire);
-              const double delta_y =
-                  context->blender_camera_motion_delta_location[1].load(
-                      std::memory_order_acquire);
-              const double yaw = CameraWorldYaw(*context);
-              const double cos_yaw = std::cos(yaw);
-              const double sin_yaw = std::sin(yaw);
-              out_location[0] =
-                  context->blender_camera_frozen_base_location[0].load(
-                      std::memory_order_acquire) +
-                  delta_x * cos_yaw - delta_y * sin_yaw;
-              out_location[1] =
-                  context->blender_camera_frozen_base_location[1].load(
-                      std::memory_order_acquire) +
-                  delta_x * sin_yaw + delta_y * cos_yaw;
-              out_location[2] =
-                  context->blender_camera_frozen_base_location[2].load(
-                      std::memory_order_acquire) +
-                  context->blender_camera_motion_delta_location[2].load(
-                      std::memory_order_acquire);
-              for (int axis{}; axis != 3; ++axis)
-                out_rotation[axis] =
-                    context->blender_camera_frozen_base_rotation[axis].load(
-                        std::memory_order_acquire) +
-                    context->blender_camera_motion_delta_rotation
-                        [static_cast<std::size_t>(axis)]
-                            .load(std::memory_order_acquire);
-            }
-            const float vertical_fov =
-                context->blender_camera_fov.load(
-                    std::memory_order_acquire);
-            if (vertical_fov > 1.0F && vertical_fov < 179.0F) {
-              const double half =
-                  std::tan(vertical_fov * kCameraDegreesToRadians * 0.5) *
-                  (16.0 / 9.0);
-              const float lens = static_cast<float>(
-                  2.0 * std::atan(half) * kCameraRadiansToDegrees);
-              if (lens > 1.0F && lens < 179.0F) {
-                static_cast<void>(Write(*context, fov_address, lens));
-                context->orbit_fov_restore.store(true,
-                                                  std::memory_order_release);
-              }
-            }
-            if (direct_bounds_ready) {
-              const double unit = CameraUnitCm(*context);
-              const double yaw_radians =
-                  context->blender_camera_yaw_degrees.load(
-                      std::memory_order_acquire) *
-                  kCameraDegreesToRadians;
-              const double pitch_radians =
-                  context->blender_camera_pitch_degrees.load(
-                      std::memory_order_acquire) *
-                  kCameraDegreesToRadians;
-              const std::array<double, 3> camera_direction{
-                  std::cos(pitch_radians) * std::cos(yaw_radians),
-                  std::cos(pitch_radians) * std::sin(yaw_radians),
-                  std::sin(pitch_radians),
-              };
-              const std::array<double, 3> file_position{
-                  -context->blender_camera_focus_cm[0].load(
-                       std::memory_order_acquire) / unit,
-                  context->blender_camera_focus_cm[2].load(
-                      std::memory_order_acquire) / unit,
-                  -context->blender_camera_focus_cm[1].load(
-                      std::memory_order_acquire) / unit,
-              };
-              const std::array<double, 3> forward_mmd{
-                  -camera_direction[0],
-                  camera_direction[2],
-                  -camera_direction[1],
-              };
-              double file_rotation[3]{
-                  std::asin(std::clamp(-forward_mmd[1], -1.0, 1.0)),
-                  std::atan2(forward_mmd[0], forward_mmd[2]),
-                  0.0,
-              };
-              const double file_distance =
-                  context->blender_camera_distance_cm.load(
-                      std::memory_order_acquire) / unit;
-              DriveCameraTrack(
-                  *context, feet, centre, true, game_location,
-                  game_rotation, file_position.data(), file_rotation,
-                  file_distance, vertical_fov, base,
-                  rotation_address, fov_address, location, rotation);
-              // DriveCameraTrack aims a synthetic track at the character. That
-              // is correct for the initial composition, but translating the
-              // Blender camera must not make the game camera re-aim at the
-              // subject. During timeline playback DriveCameraTrack is the
-              // authored source of orientation. While the frame is static,
-              // keep that last generated orientation as the world basis and
-              // add only actual Blender rotation changes afterwards.
-              const double camera_time =
-                  context->blender_camera_frame_time.load(
-                      std::memory_order_acquire);
-              const double previous_hook_time =
-                  context->blender_camera_hook_time.exchange(
-                      camera_time, std::memory_order_acq_rel);
-              const bool timeline_moved =
-                  previous_hook_time < 0.0 ||
-                  std::abs(camera_time - previous_hook_time) > 1e-6;
-              if (timeline_moved ||
-                  !context->blender_camera_base_valid.load(
-                      std::memory_order_acquire)) {
-                for (int axis{}; axis != 3; ++axis) {
-                  context->blender_camera_base_location[axis].store(
-                      out_location[axis], std::memory_order_release);
-                  context->blender_camera_base_rotation[axis].store(
-                      out_rotation[axis], std::memory_order_release);
-                  context->blender_camera_base_absolute_rotation[axis].store(
-                      context->blender_camera_absolute_rotation[axis].load(
-                          std::memory_order_acquire),
-                      std::memory_order_release);
-                }
-                float base_fov{};
-                if (Read(*context, fov_address, base_fov) &&
-                    base_fov > 5.0F && base_fov < 170.0F)
-                  context->blender_camera_base_fov.store(
-                      base_fov, std::memory_order_release);
-                context->blender_camera_base_valid.store(
-                    true, std::memory_order_release);
-              } else {
-                for (int axis{}; axis != 3; ++axis) {
-                  double delta =
-                      context->blender_camera_absolute_rotation[axis].load(
-                          std::memory_order_acquire) -
-                      context->blender_camera_base_absolute_rotation[axis].load(
-                          std::memory_order_acquire);
-                  if (delta > 180.0)
-                    delta -= 360.0;
-                  else if (delta < -180.0)
-                    delta += 360.0;
-                  out_rotation[axis] =
-                      context->blender_camera_base_rotation[axis].load(
-                          std::memory_order_acquire) +
-                      delta;
-                }
-              }
-            }
-          } else if (correction_mode) {
+          if (correction_mode) {
             const bool track_base =
                 context->camera_loaded.load(std::memory_order_acquire);
             if (track_base) {
