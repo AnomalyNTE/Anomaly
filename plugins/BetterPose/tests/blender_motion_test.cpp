@@ -241,12 +241,72 @@ void TestCameraYawCrossesPiWithoutLongSpin() {
           "camera yaw must use the short path across pi");
 }
 
+void TestPrefersRawCameraTrackOverBakedSamples() {
+  const std::string source = R"json({
+    "format": "betterpose-blender-motion",
+    "version": 1,
+    "model": "raw-camera",
+    "fps": 30,
+    "length": 2,
+    "bone_names": ["Bip001"],
+    "bone_parents": [-1],
+    "frames": [
+      {"time": 0, "bones": [], "camera": {"focus": [0, 0, 100], "yaw": 0, "pitch": 0, "distance": 800, "fov": 60}},
+      {"time": 1, "bones": [], "camera": {"focus": [100, 0, 100], "yaw": 90, "pitch": 0, "distance": 400, "fov": 60}},
+      {"time": 2, "bones": [], "camera": {"focus": [200, 0, 100], "yaw": 180, "pitch": 0, "distance": 200, "fov": 60}}
+    ],
+    "camera_track": {
+      "kind": "mmd",
+      "fps": 30,
+      "keys": [{
+        "frame": 0,
+        "distance": -56.0,
+        "position": [1.0, 2.0, 3.0],
+        "rotation": [0.1, 0.2, 0.0],
+        "view_angle": 30,
+        "perspective": false,
+        "curves": [
+          {"x1": 0.1, "y1": 0.2, "x2": 0.8, "y2": 0.9},
+          {"x1": 0.1, "y1": 0.2, "x2": 0.8, "y2": 0.9},
+          {"x1": 0.1, "y1": 0.2, "x2": 0.8, "y2": 0.9},
+          {"x1": 0.1, "y1": 0.2, "x2": 0.8, "y2": 0.9},
+          {"x1": 0.1, "y1": 0.2, "x2": 0.8, "y2": 0.9},
+          {"x1": 0.1, "y1": 0.2, "x2": 0.8, "y2": 0.9}
+        ]
+      }]
+    }
+  })json";
+
+  better_pose::blender_motion::Document parsed;
+  std::string error;
+  std::size_t ignored{};
+  Require(better_pose::blender_motion::Parse(
+              source, {"Fallback"}, parsed, error, ignored) &&
+              parsed.camera_track.has_value(),
+          "raw camera track should parse alongside baked motion frames");
+
+  std::vector<better_pose::blender_motion::MmdCameraKey> camera_keys;
+  Require(better_pose::blender_motion::BuildCameraKeys(
+              parsed, 10.0, camera_keys, error) &&
+              camera_keys.size() == 1,
+          "raw camera track should win over per-frame camera samples");
+  const auto &key = camera_keys.front();
+  Require(key.frame == 0 && std::abs(key.distance + 56.0) < 1e-9 &&
+              key.position == std::array<double, 3>{1.0, 2.0, 3.0} &&
+              key.rotation == std::array<double, 3>{0.1, 0.2, 0.0} &&
+              key.view_angle == 30.0 && !key.perspective &&
+              std::abs(key.curves[0].x1 - 0.1) < 1e-9 &&
+              std::abs(key.curves[5].y2 - 0.9) < 1e-9,
+          "raw camera key should preserve its authored distance, perspective and curves");
+}
+
 }  // namespace
 
 int main() {
   TestBuildsNativeMmdMotion();
   TestRetargetsDeltaBonePositions();
   TestCameraYawCrossesPiWithoutLongSpin();
+  TestPrefersRawCameraTrackOverBakedSamples();
   TestRejectsForeignFormat();
   std::cout << "better pose blender motion import: ok\n";
   return 0;

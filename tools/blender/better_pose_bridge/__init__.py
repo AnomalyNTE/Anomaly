@@ -1,7 +1,7 @@
 bl_info = {
     "name": "BetterPose Blender Bridge",
     "author": "Anomaly",
-    "version": (1, 3, 1),
+    "version": (1, 3, 4),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > BetterPose",
     "category": "Animation",
@@ -259,6 +259,10 @@ def _remap_motion_document(source_document, skeleton_document):
     result["face_names"] = list(dict.fromkeys(
         list(skeleton_document.get("face_names", [])) +
         list(source_document.get("face_names", []))))
+    source_camera = _camera_track_document(
+        source_document.get("camera_track"))
+    if source_camera is not None:
+        result["camera_track"] = source_camera
     return result
 
 
@@ -362,8 +366,9 @@ def _on_begin(result):
         if old:
             old_document = json.loads(old.get("betterpose_document", "{}"))
             if (old_document.get("bone_names") and
-                    len(old_document["bone_names"]) !=
-                    len(document["bone_names"])):
+                    (len(old_document["bone_names"]) !=
+                     len(document["bone_names"]) or
+                     old_document.get("camera_track"))):
                 offline_document = old_document
         armature = _create_armature(document)
         if old:
@@ -485,6 +490,7 @@ def _on_pull_begin(result):
     _pull_next = 0.0
     bones = result.get("bones", [])
     editable = [item for item in bones if item.get("editable", False)]
+    camera_track = _camera_track_document(result.get("camera_track"))
     _pull_document = {"format": clip_io.FORMAT, "version": clip_io.VERSION,
                       "model": result.get("model", ""), "fps": _pull_fps,
                       "length": 0, "bone_names": [item["name"] for item in editable],
@@ -496,7 +502,9 @@ def _on_pull_begin(result):
                       "bone_component_rotations": [_ue_to_blender_quaternion(item.get("q", [0, 0, 0, 1])) for item in editable],
                       "bone_position_space": result.get("bone_position_space", "component"),
                       "game_indices": [item["i"] for item in editable],
-                      "face_names": result.get("faces", []), "frames": []}
+                      "face_names": result.get("faces", []),
+                      "camera_track": camera_track,
+                      "frames": []}
     source_index = {item["i"]: index for index, item in enumerate(editable)}
     for index, item in enumerate(editable):
         parent = item.get("parent", -1)
@@ -677,28 +685,44 @@ def _camera_from_key(camera):
     return position, rotation
 
 
-def _subject_world_focus(armature, depsgraph):
+def _motion_root_world_position(armature, depsgraph):
     if armature is None:
-        return None
+        return Vector((0.0, 0.0, 0.0))
     sampled = armature.evaluated_get(depsgraph)
+    root = next((bone for bone in sampled.pose.bones
+                 if bone.name in {"Root", "root", "Bip001"}), None)
+    if root is None:
+        root = next((bone for bone in sampled.pose.bones
+                     if bone.parent is None), None)
+    return ((sampled.matrix_world @ root.matrix).translation.copy()
+            if root is not None else Vector((0.0, 0.0, 0.0)))
+
+
+def _camera_track_document(value, current_time=0.0):
+    if isinstance(value, list) and value:
+        return {
+            "kind": "mmd",
+            "fps": 30.0,
+            "current_time": max(0.0, float(current_time)),
+            "keys": value,
+        }
+    if isinstance(value, dict) and isinstance(value.get("keys"), list) and value["keys"]:
+        return value
+    return None
+
+
+def _rest_focus_height(armature):
+    if armature is None:
+        return 1.0
     points = []
-    for bone in sampled.pose.bones:
-        points.append(sampled.matrix_world @ bone.head)
-        points.append(sampled.matrix_world @ bone.tail)
+    for bone in armature.data.bones:
+        points.append(armature.matrix_world @ bone.head_local)
+        points.append(armature.matrix_world @ bone.tail_local)
     if not points:
-        return None
-    low = Vector((min(point.x for point in points),
-                  min(point.y for point in points),
-                  min(point.z for point in points)))
-    high = Vector((max(point.x for point in points),
-                   max(point.y for point in points),
-                   max(point.z for point in points)))
-    # A camera framing a standing character aims at the upper chest, not the
-    # geometric center of the bone bounds. The latter sits around the waist and
-    # tilts the generated shot noticeably downward versus an authored MMD camera.
-    return Vector(((low.x + high.x) * 0.5,
-                   (low.y + high.y) * 0.5,
-                   low.z + (high.z - low.z) * 0.8))
+        return 1.0
+    low = min(point.z for point in points)
+    high = max(point.z for point in points)
+    return max(0.5, (high - low) * 0.6)
 
 
 def _camera_key(scene, camera):
@@ -707,18 +731,28 @@ def _camera_key(scene, camera):
     depsgraph = bpy.context.evaluated_depsgraph_get()
     sampled_camera = camera.evaluated_get(depsgraph)
     armature = _armature(scene)
-    configured_focus = scene.get("betterpose_camera_focus")
-    focus = Vector(configured_focus if configured_focus else [0, 0, 0])
-    if not scene.get("betterpose_game_camera_loaded", False):
-        focus = _subject_world_focus(armature, depsgraph) or focus
-    delta = sampled_camera.location - focus
-    distance = max(delta.length, 0.01)
-    direction = delta.normalized()
     matrix = sampled_camera.matrix_world
     sampled_armature = (armature.evaluated_get(depsgraph)
                         if armature else None)
-    relative = (sampled_armature.matrix_world.inverted() @ matrix.translation
-                if armature else matrix.translation)
+    camera_position = matrix.translation
+    configured_focus = scene.get("betterpose_camera_focus")
+    focus = Vector(configured_focus if configured_focus else [0, 0, 0])
+    if not scene.get("betterpose_game_camera_loaded", False):
+        # Camera files are relative to the animated root bone, not the armature
+        # object. The latter commonly carries an import rotation; applying its
+        # inverse rotates the whole shot. Remove only world-space root travel,
+        # then preserve the camera's authored world orientation.
+        root_position = _motion_root_world_position(armature, depsgraph)
+        camera_position = matrix.translation - root_position
+        # Keep the subject centred with a stable upper-chest target. Bone
+        # bounds and imported camera focus curves both move with pose/library
+        # data and produced either jitter or a large pitch offset.
+        focus = Vector((0.0, 0.0, _rest_focus_height(armature)))
+    delta = camera_position - focus
+    distance = max(delta.length, 0.01)
+    direction = delta.normalized()
+    relative = matrix.translation - _motion_root_world_position(
+        armature, depsgraph)
     rotation = matrix.to_quaternion()
     horizontal_fov = math.degrees(sampled_camera.data.angle)
     vertical_fov = math.degrees(2.0 * math.atan(
@@ -739,6 +773,65 @@ def _camera_key(scene, camera):
     packet["motion_delta_position"] = motion_delta["delta_position"]
     packet["motion_delta_rotation"] = motion_delta["delta_rotation"]
     return packet
+
+
+def _camera_track_payload(scene):
+    camera = scene.camera
+    if camera is None:
+        return None
+    original_frame = scene.frame_current
+    original_subframe = scene.frame_subframe
+    armature = _armature(scene)
+    document = _cached_armature_document(armature) if armature else None
+    current_time = ((original_frame - scene.frame_start) /
+                    max(scene.render.fps / scene.render.fps_base, 1.0))
+    source_track = _camera_track_document(
+        document.get("camera_track") if document else None,
+        current_time)
+    if source_track is not None:
+        result = dict(source_track)
+        result["current_time"] = current_time
+        return result
+    frames = []
+    try:
+        for frame in range(int(round(scene.frame_start)),
+                           int(round(scene.frame_end)) + 1):
+            scene.frame_set(frame)
+            bpy.context.view_layer.update()
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            sampled_camera = camera.evaluated_get(depsgraph)
+            matrix = sampled_camera.matrix_world
+            root_position = _motion_root_world_position(armature, depsgraph)
+            camera_position = matrix.translation - root_position
+            forward = matrix.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+            focus = camera_position + forward * 2.0
+            direction = camera_position - focus
+            horizontal_fov = math.degrees(sampled_camera.data.angle)
+            vertical_fov = math.degrees(2.0 * math.atan(
+                math.tan(math.radians(horizontal_fov) * 0.5) /
+                (16.0 / 9.0)))
+            frames.append({
+                "time": (frame - scene.frame_start) /
+                        max(scene.render.fps / scene.render.fps_base, 1.0),
+                "camera": {
+                    "focus": [value * 100.0 for value in focus],
+                    "yaw": math.degrees(math.atan2(direction.y, direction.x)),
+                    "pitch": math.degrees(math.asin(
+                        max(-1.0, min(1.0, direction.z)))),
+                    "distance": 200.0,
+                    "fov": vertical_fov,
+                },
+            })
+    finally:
+        scene.frame_set(original_frame, subframe=original_subframe)
+        bpy.context.view_layer.update()
+    return {
+        "kind": "baked",
+        "fps": 30.0,
+        "current_time": (original_frame - scene.frame_start) /
+                        max(scene.render.fps / scene.render.fps_base, 1.0),
+        "frames": frames,
+    }
 
 
 def _quat_xyzw(value):
@@ -2190,12 +2283,37 @@ def _document_from_scene(scene, armature):
             previous_signature = signature
     if not frames:
         frames = [{"time": 0.0, "root": [0, 0, 0], "bones": [], "faces": {}, "camera": None}]
-    return {"format": clip_io.FORMAT, "version": clip_io.VERSION,
-            "model": scene.get("betterpose_model", ""), "fps": fps,
-            "length": scene.frame_end - scene.frame_start,
-            "bone_names": output_names, "bone_parents": output_parents,
-            "bone_position_mode": "delta",
-            "face_names": face_names, "frames": frames}
+    result = {"format": clip_io.FORMAT, "version": clip_io.VERSION,
+              "model": scene.get("betterpose_model", ""), "fps": fps,
+              "length": scene.frame_end - scene.frame_start,
+              "bone_names": output_names, "bone_parents": output_parents,
+              "bone_position_mode": "delta",
+              "face_names": face_names, "frames": frames}
+    source_camera = _camera_track_document(
+        bridge_document.get("camera_track") if bridge_document else None)
+    if source_camera is not None:
+        result["camera_track"] = source_camera
+    return result
+
+
+def _read_motion_file(path):
+    with Path(path).open("r", encoding="utf-8-sig") as stream:
+        source = json.load(stream)
+    document = clip_io.read_document(source)
+    camera_track = _camera_track_document(source.get("camera_track"))
+    if camera_track is not None:
+        document["camera_track"] = camera_track
+    return document
+
+
+def _write_motion_file(path, document):
+    clean = clip_io.read_document(document)
+    camera_track = _camera_track_document(document.get("camera_track"))
+    if camera_track is not None:
+        clean["camera_track"] = camera_track
+    Path(path).write_text(
+        json.dumps(clean, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8")
 
 
 class BP_OT_import(bpy.types.Operator, ImportHelper):
@@ -2206,7 +2324,7 @@ class BP_OT_import(bpy.types.Operator, ImportHelper):
 
     def execute(self, context):
         try:
-            document = clip_io.read(self.filepath)
+            document = _read_motion_file(self.filepath)
             old = _armature(context.scene)
             if old:
                 bpy.data.objects.remove(old, do_unlink=True)
@@ -2228,7 +2346,12 @@ class BP_OT_connect(bpy.types.Operator):
 
     def execute(self, context):
         try:
-            _transport().request("begin", {}, _on_begin)
+            body = {}
+            if context.scene.camera is not None:
+                camera_track = _camera_track_payload(context.scene)
+                if camera_track is not None:
+                    body["camera_track"] = camera_track
+            _transport().request("begin", body, _on_begin)
             context.scene.bp_status = "正在连接游戏…"
             return {"FINISHED"}
         except Exception as exc:
@@ -2284,7 +2407,7 @@ class BP_OT_export(bpy.types.Operator, ExportHelper):
     def execute(self, context):
         try:
             document = _document_from_scene(context.scene, _armature(context.scene))
-            clip_io.write(self.filepath, document)
+            _write_motion_file(self.filepath, document)
             context.scene.bp_status = "已导出 .bpmotion，可在 BetterPose 的 MMD 页离线载入"
             return {"FINISHED"}
         except Exception as exc:

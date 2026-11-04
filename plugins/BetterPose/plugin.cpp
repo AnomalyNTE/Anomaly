@@ -1034,6 +1034,7 @@ struct Context final {
   std::atomic_bool pose_override_enabled{};
   std::mutex tick_hooks_mutex;
   std::vector<PoseTickHook> tick_hooks;
+  std::atomic_bool stopping{};
   std::atomic<std::uint32_t> reflection_action_requested{0};
   std::atomic<float> requested_rate_scale{1.0F};
   std::atomic<float> requested_root_motion_scale{1.0F};
@@ -1309,6 +1310,11 @@ struct Context final {
   // thread, so the track itself is guarded and only the flags are atomic.
   std::mutex camera_mutex;
   CameraTrack camera;
+  CameraTrack camera_before_blender;
+  std::string camera_file_before_blender;
+  bool camera_loaded_before_blender{};
+  int camera_cut_mode_before_blender{};
+  std::atomic_bool blender_camera_track_active{};
   std::atomic_bool camera_loaded{};
   std::atomic_bool camera_enabled{};
   std::string camera_file;
@@ -1560,6 +1566,11 @@ struct Context final {
   std::atomic_bool camera_manager_resolved{};
   std::atomic_bool camera_hook_ready{};
   std::atomic_bool camera_anchored{};
+  // A pause keeps the authored camera where it is, while Stop ends the
+  // playback session. This must be separate from camera_anchored: an in-flight
+  // POV callback can re-anchor immediately after Stop, and the session flag
+  // prevents that stale anchor from keeping the hook installed.
+  std::atomic_bool camera_session_active{};
   std::atomic<double> camera_logged_second{-1.0};
   // A free-running clock for the drive log's once-a-second throttle. The motion's own frame is the
   // wrong key for it: follow mode has no timeline, so its frame stays 0 and the log printed one
@@ -1960,6 +1971,26 @@ nlohmann::json BlenderScene(Context &context) {
     for (const auto &entry : context.morph_catalog.entries)
       face_names.push_back(entry.name);
   }
+  nlohmann::json camera_track = nullptr;
+  if (context.camera_loaded.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lock(context.camera_mutex);
+    camera_track = nlohmann::json::array();
+    for (const auto &key : context.camera.keys) {
+      auto curves = nlohmann::json::array();
+      for (const auto &curve : key.curves) {
+        curves.push_back({{"x1", curve.x1}, {"y1", curve.y1},
+                          {"x2", curve.x2}, {"y2", curve.y2}});
+      }
+      camera_track.push_back(
+          {{"frame", key.frame},
+           {"distance", key.distance},
+           {"position", key.position},
+           {"rotation", key.rotation},
+           {"curves", std::move(curves)},
+           {"view_angle", key.view_angle},
+           {"perspective", key.perspective}});
+    }
+  }
   return {{"ok", true}, {"protocol", 1},
           {"session", context.blender_session.load(std::memory_order_acquire)},
           {"model", context.blender_model}, {"fps", 30.0}, {"bones", bones},
@@ -1969,6 +2000,7 @@ nlohmann::json BlenderScene(Context &context) {
           {"faces", std::move(face_names)},
           {"camera_loaded", context.camera_loaded.load(std::memory_order_acquire)},
           {"camera_enabled", context.camera_enabled.load(std::memory_order_acquire)},
+          {"camera_track", std::move(camera_track)},
           {"status", context.blender_status}};
 }
 
@@ -2009,6 +2041,209 @@ void ApplyBlenderMorphs(
         std::clamp(weight, 0.0F, 1.0F));
     context.blender_driven_morphs.push_back(name);
   }
+}
+
+double CameraUnitCm(Context &context) noexcept;
+
+void RestoreBlenderCameraTrack(Context &context) {
+  if (!context.blender_camera_track_active.exchange(
+          false, std::memory_order_acq_rel))
+    return;
+  {
+    std::lock_guard<std::mutex> lock(context.camera_mutex);
+    context.camera = std::move(context.camera_before_blender);
+    context.camera_file = std::move(context.camera_file_before_blender);
+    context.camera_before_blender = CameraTrack{};
+    context.camera_file_before_blender.clear();
+    context.camera_loaded.store(context.camera_loaded_before_blender,
+                                std::memory_order_release);
+    context.camera_loaded_before_blender = false;
+    context.camera_cut_mode.store(context.camera_cut_mode_before_blender,
+                                  std::memory_order_release);
+    context.camera_cut_mode_before_blender = 0;
+  }
+  context.camera_anchored.store(false, std::memory_order_release);
+  context.camera_anchor_wait = 0;
+}
+
+bool InstallBlenderCameraTrack(Context &context,
+                               const nlohmann::json &payload,
+                               std::string &error) {
+  CameraTrack track;
+  track.file = "<Blender bridge camera>";
+  if (payload.is_object() && payload.contains("keys") &&
+      payload["keys"].is_array()) {
+    const auto &keys = payload["keys"];
+    if (keys.empty() ||
+        keys.size() > better_pose::blender_motion::kMaximumFrames) {
+      error = "Blender 镜头关键帧数量无效";
+      return false;
+    }
+    track.keys.reserve(keys.size());
+    for (const auto &item : keys) {
+      if (!item.is_object() || !item.contains("frame") ||
+          !item["frame"].is_number_unsigned()) {
+        error = "Blender 镜头关键帧无效";
+        return false;
+      }
+      better_pose::mmd2bip::VmdCameraKey key;
+      key.frame = item["frame"].get<std::uint32_t>();
+      key.distance = item.value("distance", 0.0);
+      std::array<double, 3> position{};
+      std::array<double, 3> rotation{};
+      if (!std::isfinite(key.distance) ||
+          std::abs(key.distance) > 100000.0 ||
+          !BlenderFinite3(item.value("position",
+                                     nlohmann::json::array()),
+                          position) ||
+          !BlenderFinite3(item.value("rotation",
+                                     nlohmann::json::array()),
+                          rotation)) {
+        error = "Blender 镜头关键帧参数无效";
+        return false;
+      }
+      for (std::size_t axis{}; axis != 3; ++axis) {
+        key.position[axis] = position[axis];
+        key.rotation[axis] = rotation[axis];
+      }
+      key.view_angle = static_cast<std::uint32_t>(
+          std::clamp<std::int64_t>(item.value("view_angle", 0LL), 1LL, 179LL));
+      key.perspective = item.value("perspective", true);
+      if (item.contains("curves") && item["curves"].is_array() &&
+          item["curves"].size() == key.curves.size()) {
+        for (std::size_t index{}; index != key.curves.size(); ++index) {
+          const auto &curve = item["curves"][index];
+          if (!curve.is_object())
+            continue;
+          auto &target = key.curves[index];
+          target.x1 = std::clamp(curve.value("x1", target.x1), 0.0, 1.0);
+          target.y1 = std::clamp(curve.value("y1", target.y1), 0.0, 1.0);
+          target.x2 = std::clamp(curve.value("x2", target.x2), 0.0, 1.0);
+          target.y2 = std::clamp(curve.value("y2", target.y2), 0.0, 1.0);
+        }
+      }
+      track.keys.push_back(key);
+    }
+    std::sort(track.keys.begin(), track.keys.end(),
+              [](const auto &left, const auto &right) {
+                return left.frame < right.frame;
+              });
+  } else {
+  if (!payload.is_object() || !payload.contains("frames") ||
+      !payload["frames"].is_array() || payload["frames"].empty()) {
+    error = "Blender 镜头轨道为空";
+    return false;
+  }
+  if (payload["frames"].size() >
+      better_pose::blender_motion::kMaximumFrames) {
+    error = "Blender 镜头轨道过长";
+    return false;
+  }
+  better_pose::blender_motion::Document source;
+  source.fps = payload.value("fps", 30.0);
+  if (!std::isfinite(source.fps) || source.fps <= 0.0) {
+    error = "Blender 镜头轨道帧率无效";
+    return false;
+  }
+  for (const auto &item : payload["frames"]) {
+    if (!item.is_object()) {
+      error = "Blender 镜头轨道包含无效帧";
+      return false;
+    }
+    better_pose::blender_motion::Frame frame;
+    frame.time = item.value("time", -1.0);
+    if (!std::isfinite(frame.time) || frame.time < 0.0) {
+      error = "Blender 镜头轨道的帧时间无效";
+      return false;
+    }
+    if (!item.contains("camera") || !item["camera"].is_object()) {
+      error = "Blender 镜头轨道缺少相机数据";
+      return false;
+    }
+    const auto &camera = item["camera"];
+    better_pose::blender_motion::CameraSample sample;
+    const nlohmann::json *focus = nullptr;
+    if (item.contains("focus"))
+      focus = &item["focus"];
+    else if (camera.contains("focus"))
+      focus = &camera["focus"];
+    if (focus == nullptr || !BlenderFinite3(*focus, sample.focus)) {
+      error = "Blender 镜头轨道的目标点无效";
+      return false;
+    }
+    sample.yaw = item.value("yaw", camera.value("yaw", 0.0));
+    sample.pitch = item.value("pitch", camera.value("pitch", 0.0));
+    sample.distance = item.value("distance", camera.value("distance", 0.0));
+    sample.fov = item.value("fov", camera.value("fov", 0.0));
+    if (!std::isfinite(sample.yaw) || !std::isfinite(sample.pitch) ||
+        !std::isfinite(sample.distance) || sample.distance <= 1.0 ||
+        !std::isfinite(sample.fov) || sample.fov <= 1.0 ||
+        sample.fov >= 179.0) {
+      error = "Blender 镜头轨道的相机参数无效";
+      return false;
+    }
+    frame.camera = sample;
+    source.frames.push_back(std::move(frame));
+  }
+  std::vector<better_pose::blender_motion::MmdCameraKey> built;
+  if (!better_pose::blender_motion::BuildCameraKeys(
+          source, CameraUnitCm(context), built, error) ||
+      built.empty()) {
+    if (error.empty())
+      error = "Blender 镜头轨道没有可用关键帧";
+    return false;
+  }
+  track.keys.reserve(built.size());
+  for (const auto &source_key : built) {
+    better_pose::mmd2bip::VmdCameraKey key;
+    key.frame = source_key.frame;
+    key.distance = source_key.distance;
+    for (std::size_t axis{}; axis != 3; ++axis) {
+      key.position[axis] = source_key.position[axis];
+      key.rotation[axis] = source_key.rotation[axis];
+    }
+    key.view_angle = static_cast<std::uint32_t>(
+        std::clamp(std::llround(source_key.view_angle), 1LL, 179LL));
+    key.perspective = true;
+    track.keys.push_back(key);
+  }
+  }
+  track.first_frame = static_cast<double>(track.keys.front().frame);
+  track.last_frame = static_cast<double>(track.keys.back().frame);
+  const std::size_t imported_key_count = track.keys.size();
+  const char *imported_kind =
+      payload.contains("keys") ? "raw" : "baked";
+
+  RestoreBlenderCameraTrack(context);
+  {
+    std::lock_guard<std::mutex> lock(context.camera_mutex);
+    context.camera_before_blender = context.camera;
+    context.camera_file_before_blender = context.camera_file;
+    context.camera_loaded_before_blender =
+        context.camera_loaded.load(std::memory_order_acquire);
+    context.camera_cut_mode_before_blender =
+        context.camera_cut_mode.load(std::memory_order_acquire);
+    context.camera = std::move(track);
+    context.camera_file = "<Blender bridge camera>";
+  }
+  context.blender_camera_track_active.store(true, std::memory_order_release);
+  context.camera_loaded.store(true, std::memory_order_release);
+  context.camera_cut_mode.store(1, std::memory_order_release);
+  const double current_time =
+      payload.value("current_time", static_cast<double>(track.first_frame) / 30.0);
+  if (std::isfinite(current_time) && current_time >= 0.0)
+    context.camera_frame.store(current_time * 30.0, std::memory_order_release);
+  context.camera_anchored.store(false, std::memory_order_release);
+  context.camera_anchor_wait = 0;
+  LogDiagnostic(context, "betterpose Blender camera track imported kind=" +
+                             std::string(imported_kind) + " keys=" +
+                             std::to_string(imported_key_count));
+  context.blender_status =
+      std::string("Blender 已连接；已导入 ") +
+      (std::strcmp(imported_kind, "raw") == 0 ? "原始" : "烘焙") +
+      " CameraTrack（" + std::to_string(imported_key_count) + " 键）";
+  error.clear();
+  return true;
 }
 
 nlohmann::json BlenderExecute(Context &context, const std::string &path,
@@ -2126,7 +2361,38 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
       context.blender_render_angles.clear();
     }
     context.blender_model = Hex(context.runtime.character);
-    context.blender_status = "Blender 已连接；使用 Blender 时间轴预览";
+    RestoreBlenderCameraTrack(context);
+    if (pull_mode || !body.contains("camera_track")) {
+      context.blender_status = "Blender 已连接；使用 Blender 时间轴预览";
+    } else if (context.camera_loaded.load(std::memory_order_acquire)) {
+      context.blender_status =
+          "Blender 已连接；使用当前 CameraTrack 并叠加 Blender 修正";
+    } else {
+      std::string camera_error;
+      if (!InstallBlenderCameraTrack(context, body["camera_track"],
+                                     camera_error)) {
+        context.blender_active.store(false, std::memory_order_release);
+        if (context.blender_camera_drive_forced.exchange(
+                false, std::memory_order_acq_rel))
+          context.camera_enabled.store(
+              context.blender_camera_drive_was_enabled.load(
+                  std::memory_order_acquire),
+              std::memory_order_release);
+        if (context.blender_resume_motion.exchange(
+                false, std::memory_order_acq_rel) &&
+            context.motion_loaded.load(std::memory_order_acquire)) {
+          const bool resume_playing =
+              context.blender_motion_was_playing.load(
+                  std::memory_order_acquire);
+          context.motion_playing.store(resume_playing,
+                                       std::memory_order_release);
+          if (resume_playing)
+            context.camera_session_active.store(true,
+                                                std::memory_order_release);
+        }
+        return BlenderError("Blender 镜头导入失败：" + camera_error);
+      }
+    }
     if (bones_ready)
       context.pose_override_enabled.store(true, std::memory_order_release);
     return BlenderScene(context);
@@ -2182,6 +2448,7 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
     context.blender_perf_last_log_ms.store(0, std::memory_order_release);
     context.blender_camera_perf_last_log_ms.store(0, std::memory_order_release);
     context.blender_extra_write_last_ms.store(0, std::memory_order_release);
+    RestoreBlenderCameraTrack(context);
     ReleaseBlenderMorphs(context);
     if (context.blender_camera_forced.exchange(false, std::memory_order_acq_rel))
       context.orbit_enabled.store(false, std::memory_order_release);
@@ -2199,10 +2466,16 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
     }
     context.pose_reset_requested.store(true, std::memory_order_release);
     if (context.blender_resume_motion.load(std::memory_order_acquire) &&
-        context.motion_loaded.load(std::memory_order_acquire))
-      context.motion_playing.store(
-          context.blender_motion_was_playing.load(std::memory_order_acquire),
+        context.motion_loaded.load(std::memory_order_acquire)) {
+      const bool resume_playing =
+          context.blender_motion_was_playing.load(
+              std::memory_order_acquire);
+      context.motion_playing.store(resume_playing,
                                    std::memory_order_release);
+      if (resume_playing)
+        context.camera_session_active.store(true,
+                                            std::memory_order_release);
+    }
     context.blender_resume_motion.store(false, std::memory_order_release);
     context.blender_motion_was_playing.store(false, std::memory_order_release);
     context.blender_status = "Blender 已断开，已恢复游戏姿态";
@@ -2752,7 +3025,10 @@ void BlenderServerMain(Context &context) noexcept {
       int no_delay = 1;
       setsockopt(client, IPPROTO_TCP, TCP_NODELAY,
                  reinterpret_cast<const char *>(&no_delay), sizeof(no_delay));
-      DWORD timeout_ms = 3000;
+      // The plugin manager revokes generation-owned platform hooks within a
+      // bounded stop deadline. A keep-alive Blender connection must not leave
+      // this server blocked for seconds after its stop flag is raised.
+      DWORD timeout_ms = 250;
       setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout_ms), sizeof(timeout_ms));
       BlenderServeClient(context, client);
     }
@@ -2798,10 +3074,16 @@ void BlenderStopServer(Context &context) noexcept {
             std::memory_order_acquire),
         std::memory_order_release);
   if (context.blender_resume_motion.load(std::memory_order_acquire) &&
-      context.motion_loaded.load(std::memory_order_acquire))
-    context.motion_playing.store(
-        context.blender_motion_was_playing.load(std::memory_order_acquire),
+      context.motion_loaded.load(std::memory_order_acquire)) {
+    const bool resume_playing =
+        context.blender_motion_was_playing.load(
+            std::memory_order_acquire);
+    context.motion_playing.store(resume_playing,
                                  std::memory_order_release);
+    if (resume_playing)
+      context.camera_session_active.store(true,
+                                          std::memory_order_release);
+  }
   context.blender_resume_motion.store(false, std::memory_order_release);
   context.blender_motion_was_playing.store(false, std::memory_order_release);
   context.blender_applied_sequence.store(0, std::memory_order_release);
@@ -5799,8 +6081,13 @@ bool ReleasePoseTickHook(Context &context) noexcept {
   for (const auto &record : records) {
     if (record.handle.id == 0)
       continue;
-    const auto status =
-        context.hook->release(context.hook->user, record.handle);
+    AnomalyStatusV1 status{};
+    for (int attempt{}; attempt != 25; ++attempt) {
+      status = context.hook->release(context.hook->user, record.handle);
+      if (status.code == ANOMALY_STATUS_V1_OK)
+        break;
+      Sleep(2);
+    }
     if (status.code != ANOMALY_STATUS_V1_OK)
       released = false;
   }
@@ -5813,7 +6100,8 @@ bool ReleasePoseTickHook(Context &context) noexcept {
 }
 
 bool EnsurePoseTickHook(Context &context) noexcept {
-  if (!HookReady(context.hook))
+  if (context.stopping.load(std::memory_order_acquire) ||
+      !HookReady(context.hook))
     return false;
   std::vector<std::uintptr_t> meshes;
   const auto add_mesh = [&meshes](const std::uintptr_t mesh) {
@@ -6278,7 +6566,14 @@ bool ReleaseCameraPovHook(Context &context) noexcept {
     context.camera_pov_target = 0;
     return true;
   }
-  const auto status = context.hook->release(context.hook->user, context.camera_pov_hook);
+  AnomalyStatusV1 status{};
+  for (int attempt{}; attempt != 25; ++attempt) {
+    status =
+        context.hook->release(context.hook->user, context.camera_pov_hook);
+    if (status.code == ANOMALY_STATUS_V1_OK)
+      break;
+    Sleep(2);
+  }
   if (status.code != ANOMALY_STATUS_V1_OK)
     return false;
   context.camera_pov_hook = {};
@@ -6288,7 +6583,8 @@ bool ReleaseCameraPovHook(Context &context) noexcept {
 }
 
 bool EnsureCameraPovHook(Context &context) noexcept {
-  if (!HookReady(context.hook) ||
+  if (context.stopping.load(std::memory_order_acquire) ||
+      !HookReady(context.hook) ||
       !context.camera_manager_resolved.load(std::memory_order_acquire))
     return false;
   const std::uintptr_t target = context.camera_pov_resolved_target;
@@ -6473,6 +6769,27 @@ bool CharacterRootWorld(Context &context, const std::uintptr_t mesh,
          std::isfinite(root[2]);
 }
 
+bool CharacterComponentYaw(Context &context, const std::uintptr_t mesh,
+                           double &yaw) noexcept {
+  Transformd component_world;
+  if (mesh == 0 || !ReadMeshComponentToWorld(context, mesh, component_world))
+    return false;
+  // Skeleton/component local +Y is the character's forward axis. The mesh
+  // component rotation is independent of the currently selected game camera
+  // and of the animation frame where playback or Blender sync starts.
+  const Vec3d forward =
+      QuatRotateVector(component_world.rotation, Vec3d{0.0, 1.0, 0.0});
+  if (std::abs(forward.x) + std::abs(forward.y) < 1e-6)
+    return false;
+  // Component +Y maps to the tracker's local frame after a quarter turn. Keep
+  // this conversion fixed to the component so the camera anchor does not
+  // depend on which game-camera angle happened to be active at capture time.
+  yaw = std::atan2(forward.y, forward.x) - 1.5707963267948966;
+  if (yaw < -3.14159265358979323846)
+    yaw += 2.0 * 3.14159265358979323846;
+  return std::isfinite(yaw);
+}
+
 // The character's feet and the middle of their bounding box, from the mesh's world bounds.
 bool CharacterBounds(Context &context, const std::uintptr_t mesh, double feet[3],
                      double centre[3]) noexcept {
@@ -6551,6 +6868,7 @@ bool SampleCameraTrack(Context &context, double position[3], double rotation[3],
   const double frame =
       context.camera_frame.load(std::memory_order_acquire);
   if (context.blender_active.load(std::memory_order_acquire) &&
+      !context.blender_camera_track_active.load(std::memory_order_acquire) &&
       context.camera_enabled.load(std::memory_order_acquire) &&
       context.blender_camera_valid.load(std::memory_order_acquire))
     return context.camera.Sample(frame, position, rotation, distance, fov,
@@ -6770,8 +7088,12 @@ void DriveCameraTrack(Context &context, const double feet[3], const double centr
   double forward[3]{};
   const bool blender_override =
       context.blender_active.load(std::memory_order_acquire) &&
+      !context.blender_camera_track_active.load(std::memory_order_acquire) &&
       context.camera_enabled.load(std::memory_order_acquire) &&
       context.blender_camera_valid.load(std::memory_order_acquire);
+  const bool synthetic_blender_camera =
+      blender_override &&
+      !context.camera_loaded.load(std::memory_order_acquire);
   MmdCameraBasis(file_rotation, right, up, forward);
   double camera_mmd[3]{};
   const double distance_scale =
@@ -6821,65 +7143,17 @@ void DriveCameraTrack(Context &context, const double feet[3], const double centr
   // is loaded, which leaves the file's placement alone.
   double applied[3]{};
   double authored[3]{};
-  ReadCameraRootOffsets(context, applied, authored);
-  if (!follow_origin) {
-    for (int axis = 0; axis < 3; ++axis)
-      applied[axis] = authored[axis] = 0.0;
-  } else if (context.camera_anchor_root_valid.load(
-                 std::memory_order_acquire) &&
-             context.camera_character_root_valid.load(
-                 std::memory_order_acquire)) {
-    double dx = 0.0;
-    double dy = 0.0;
-    for (int axis{}; axis != 3; ++axis) {
-      const double delta =
-          context.camera_character_root_world[axis].load(
-              std::memory_order_acquire) -
-          context.camera_anchor_root_world[axis].load(
-              std::memory_order_acquire);
-      if (axis == 0)
-        dx = delta;
-      else if (axis == 1)
-        dy = delta;
+  // Camera files are authored around the motion root and must replace that
+  // authored walk with the root actually applied in game. A synthetic Blender
+  // camera already carries its scene-relative placement, so applying the same
+  // correction subtracts the authored offset a second time and lowers/shifts
+  // the shot.
+  if (!synthetic_blender_camera) {
+    ReadCameraRootOffsets(context, applied, authored);
+    if (!follow_origin) {
+      for (int axis = 0; axis < 3; ++axis)
+        applied[axis] = authored[axis] = 0.0;
     }
-    const double character_local_x = dx * cos_yaw + dy * sin_yaw;
-    const double character_local_y = -dx * sin_yaw + dy * cos_yaw;
-    const double target_x =
-        character_local_x -
-        (applied[0] -
-         context.camera_anchor_applied_offset[0].load(
-             std::memory_order_acquire));
-    const double target_y =
-        character_local_y -
-        (applied[1] -
-         context.camera_anchor_applied_offset[1].load(
-             std::memory_order_acquire));
-    if (!context.camera_root_follow_smoothed_valid.exchange(
-            true, std::memory_order_acq_rel)) {
-      context.camera_root_follow_smoothed[0].store(
-          0.0, std::memory_order_release);
-      context.camera_root_follow_smoothed[1].store(
-          0.0, std::memory_order_release);
-    }
-    const double current_x =
-        context.camera_root_follow_smoothed[0].load(
-            std::memory_order_acquire);
-    const double current_y =
-        context.camera_root_follow_smoothed[1].load(
-            std::memory_order_acquire);
-    const double alpha =
-        std::sqrt((target_x - current_x) * (target_x - current_x) +
-                  (target_y - current_y) * (target_y - current_y)) > 8.0
-            ? 0.35
-            : 0.16;
-    const double smoothed_x = current_x + (target_x - current_x) * alpha;
-    const double smoothed_y = current_y + (target_y - current_y) * alpha;
-    context.camera_root_follow_smoothed[0].store(
-        smoothed_x, std::memory_order_release);
-    context.camera_root_follow_smoothed[1].store(
-        smoothed_y, std::memory_order_release);
-    applied[0] += smoothed_x;
-    applied[1] += smoothed_y;
   }
   const double placed_x = x - authored[0] + applied[0];
   const double placed_y = y - authored[1] + applied[1];
@@ -7152,16 +7426,39 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
             // Only a reading that could be a real third-person camera is allowed to anchor the
             // shot, and the attempt is retried every frame until one arrives: anchoring on the
             // placeholder view point a reload leaves behind is what aimed the shot at a wall.
-            if (!context->camera_anchored.load(std::memory_order_acquire)) {
-              const bool plausible =
-                  GameCameraReadingIsPlausible(game_location, centre) ||
-                  ++context->camera_anchor_wait > 90;
-              const double dx = centre[0] - location[0];
-              const double dy = centre[1] - location[1];
-              if (plausible && std::sqrt(dx * dx + dy * dy) > 1.0) {
-                context->camera_yaw.store(std::atan2(dy, dx) + 1.5707963267948966,
+            const bool anchor_allowed =
+                follow_mode ||
+                context->blender_active.load(std::memory_order_acquire) ||
+                context->camera_session_active.load(
+                    std::memory_order_acquire);
+            if (!context->camera_anchored.load(std::memory_order_acquire) &&
+                anchor_allowed) {
+              double anchor_yaw{};
+              const bool component_anchor = CharacterComponentYaw(
+                  *context, CameraFollowMesh(*context), anchor_yaw);
+              bool anchored = component_anchor;
+              if (!anchored) {
+                const bool plausible =
+                    GameCameraReadingIsPlausible(game_location, centre) ||
+                    ++context->camera_anchor_wait > 90;
+                const double dx = centre[0] - location[0];
+                const double dy = centre[1] - location[1];
+                if (plausible && std::sqrt(dx * dx + dy * dy) > 1.0) {
+                  anchor_yaw =
+                      std::atan2(dy, dx) + 1.5707963267948966;
+                  anchored = true;
+                }
+              }
+              if (anchored) {
+                context->camera_yaw.store(anchor_yaw,
                                           std::memory_order_release);
                 StoreCameraAnchor(*context, feet, centre);
+                char anchor_message[160]{};
+                std::snprintf(anchor_message, sizeof(anchor_message),
+                              "betterpose camera anchor yaw=%.2f source=%s",
+                              anchor_yaw * kCameraRadiansToDegrees,
+                              component_anchor ? "component" : "game-camera");
+                LogDiagnostic(*context, anchor_message);
               }
             }
             if (context->camera_anchored.load(std::memory_order_acquire)) {
@@ -7171,6 +7468,8 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               else {
                 const bool follow_origin =
                     (context->blender_active.load(
+                         std::memory_order_acquire) &&
+                     !context->blender_camera_track_active.load(
                          std::memory_order_acquire) &&
                      context->blender_camera_valid.load(
                          std::memory_order_acquire)) ||
@@ -7901,6 +8200,12 @@ void ApplyPoseOverridesDirect(Context &context,
       context.requested_root_offset[0].load(std::memory_order_acquire),
       context.requested_root_offset[1].load(std::memory_order_acquire),
       context.requested_root_offset[2].load(std::memory_order_acquire)};
+  if (context.blender_active.load(std::memory_order_acquire)) {
+    // The live Blender frame is the current authored root as well as the root
+    // being applied. Publishing both keeps the camera track relative to the
+    // moving character instead of treating the walk as an extra camera offset.
+    PublishRootOffsets(context, root_offset.data(), root_offset.data());
+  }
   const bool has_root_offset =
       root_offset[0] != 0.0 || root_offset[1] != 0.0 || root_offset[2] != 0.0;
 
@@ -9925,6 +10230,8 @@ void UnloadMotion(Context &context) noexcept {
       true, std::memory_order_release);
   std::lock_guard<std::mutex> lock(context.motion_mutex);
   ++context.motion_load_epoch;
+  context.camera_session_active.store(false, std::memory_order_release);
+  context.camera_anchored.store(false, std::memory_order_release);
   context.motion_loaded.store(false, std::memory_order_release);
   context.motion_playing.store(false, std::memory_order_release);
   context.motion_secondary_tuning_stale.store(false,
@@ -10122,6 +10429,8 @@ bool LoadMotionDocument(Context &context, const std::string &document,
       return false;
     context.motion = std::move(track);
     if (!preserve_shared_timeline) {
+      context.camera_session_active.store(false, std::memory_order_release);
+      context.camera_anchored.store(false, std::memory_order_release);
       context.motion_playing.store(false, std::memory_order_release);
       context.motion_seconds.store(0.0, std::memory_order_release);
       context.motion_display_seconds.store(0.0, std::memory_order_release);
@@ -14704,7 +15013,13 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
               }
               key.view_angle = static_cast<std::uint32_t>(
                   std::clamp(std::llround(source_key.view_angle), 1LL, 179LL));
-              key.perspective = true;
+              for (std::size_t curve{}; curve != key.curves.size(); ++curve) {
+                key.curves[curve].x1 = source_key.curves[curve].x1;
+                key.curves[curve].y1 = source_key.curves[curve].y1;
+                key.curves[curve].x2 = source_key.curves[curve].x2;
+                key.curves[curve].y2 = source_key.curves[curve].y2;
+              }
+              key.perspective = source_key.perspective;
               context->camera.keys.push_back(key);
             }
             context->camera.first_frame =
@@ -17723,6 +18038,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
       (camera_track_ready &&
        (motion_playing_now || blender_active ||
         (has_motion_content &&
+         context.camera_session_active.load(std::memory_order_acquire) &&
          context.camera_anchored.load(std::memory_order_acquire)))) ||
       orbit_on;
   // Size the camera's MMD world from the current camera target before any
@@ -23256,7 +23572,10 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
       control, motion_loaded, has_keyframes)) {
     case better_pose::timeline::SpaceAction::ToggleMotion: {
       const bool playing = context.motion_playing.load(std::memory_order_acquire);
-      context.motion_playing.store(!playing, std::memory_order_release);
+      const bool next_playing = !playing;
+      context.motion_playing.store(next_playing, std::memory_order_release);
+      if (next_playing)
+        context.camera_session_active.store(true, std::memory_order_release);
       break;
     }
     case better_pose::timeline::SpaceAction::ToggleKeyframes: {
@@ -23443,6 +23762,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
     return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                   "GWorld discovery signature is unavailable");
   }
+  context->stopping.store(false, std::memory_order_release);
   BlenderStartServer(*context);
   UpdateRuntime(*context, 0.0);
   context->reflection_action_requested.store(5, std::memory_order_release);
@@ -23456,6 +23776,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   auto *context = static_cast<Context *>(plugin_context);
   if (context == nullptr)
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+  context->stopping.store(true, std::memory_order_release);
   BlenderStopServer(*context);
   // First: the overlay callback reads runtime, which is reset below.
   UnsubscribeSkeletonOverlay(*context);
@@ -23478,6 +23799,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   context->requested_camera_follow_target.store(
       (std::numeric_limits<std::uintptr_t>::max)(), std::memory_order_release);
   context->camera_anchored.store(false, std::memory_order_release);
+  context->camera_session_active.store(false, std::memory_order_release);
   context->runtime = RuntimeState{};
   context->player_freeze = PlayerFreezeState{};
   RenderSnapshot empty{};
@@ -25114,13 +25436,18 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         motion_playing ? "motion.pause" : "motion.play",
         motion_playing ? "Pause" : "Play");
     if (ui->button(ui->user, anomaly::sdk::StringView(motion_play_label), 60.0F,
-                   0.0F) != 0)
-      context->motion_playing.store(!motion_playing, std::memory_order_release);
+                   0.0F) != 0) {
+      const bool next_playing = !motion_playing;
+      context->motion_playing.store(next_playing, std::memory_order_release);
+      if (next_playing)
+        context->camera_session_active.store(true, std::memory_order_release);
+    }
     ui->same_line(ui->user, 0.0F, 6.0F);
     const std::string motion_stop_label =
         context->localizer.Text("motion.stop", "Stop");
     if (ui->button(ui->user, anomaly::sdk::StringView(motion_stop_label), 55.0F,
                    0.0F) != 0) {
+      context->camera_session_active.store(false, std::memory_order_release);
       context->motion_playing.store(false, std::memory_order_release);
       context->motion_seek.store(0.0, std::memory_order_release);
       context->camera_anchored.store(false, std::memory_order_release);
@@ -27516,6 +27843,8 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
               context->camera_file = WideToUtf8(selected->wstring());
               context->camera_loaded.store(true, std::memory_order_release);
               InvalidateCameraUnit(*context);
+              context->camera_session_active.store(false,
+                                                   std::memory_order_release);
               context->camera_anchored.store(false, std::memory_order_release);
             } else {
               context->camera_loaded.store(false, std::memory_order_release);
