@@ -102,6 +102,7 @@
     "kCoordOffset": 48,
     "kRandomItemCoordOffset": 80,
     "kRandomItemTypeOffset": 32,
+    "kSafeTableCoordOffset": 16,
     "kUStructSuperStructOffset": 64,
     "kUClassDefaultObjectOffset": 272,
     "kUFunctionNumParmsOffset": 180,

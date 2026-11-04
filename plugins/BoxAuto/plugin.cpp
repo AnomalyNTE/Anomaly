@@ -41,6 +41,23 @@ constexpr std::string_view kBigWorldYaHaHaTablePath =
 constexpr std::string_view kRandomItemDropTablePath =
     "/Game/DataAssets/DataAssetSet/RandomItem/DT_RandomItemDrop.DT_RandomItemDrop";
 
+// World safes come from the map's own point table: a safe actor only exists while its level cell is
+// loaded, so the table is what covers the whole map. The row keeps its location at a different
+// offset than the other two tables, and the actor class is BP_WorldSafeBox_lV1_C / _lV2_C.
+constexpr std::string_view kSafeTablePath =
+    "/Game/DataAssets/DataAssetSet/RandomItem/DT_PointTreasureBox.DT_PointTreasureBox";
+constexpr std::string_view kSafeRowPrefix = "HTTargetPoint_Safe_Box";
+constexpr std::string_view kSafeActorPrefix = "WorldSafeBox";
+// The client event chain that opens a world safe; the first event that flips
+// BP_IsTreasureBoxOpened ends it.
+constexpr std::string_view kSafeUnlockSteps[] = {"BP_ClientUnlockTreasureBox",
+                                                 "BP_OpenTreasureBox",
+                                                 "NetMulticast_NotifyTreasureBoxUnlock"};
+
+// Lost locker keys (BP_CabinetKey_*) are interactable actors rather than table rows, so their
+// points come from a GObjects sweep instead of a table.
+constexpr std::string_view kKeyClassNeedle = "CabinetKey";
+
 
 
 
@@ -227,6 +244,15 @@ struct Context final {
     bool teleported{};
     bool moving{};
     bool interacted{};
+    // Safe flow: the unlock chain was dispatched, and the points confirmed as opened so that
+    // every later table read drops them.
+    bool safe_dispatched{};
+    int safe_grace{};
+    std::unordered_set<std::string> safe_opened_points;
+    // Locker key flow: the interact request went out, and the grace ticks spent waiting for the
+    // actor to disappear.
+    bool key_fired{};
+    int key_grace{};
     bool food_approaching{};
     std::chrono::steady_clock::time_point food_approach_deadline{};
     std::chrono::steady_clock::time_point interact_verify_deadline{};
@@ -373,7 +399,8 @@ bool UsesPickupService(const std::string_view category) noexcept {
 
 bool IsRelaxedPrefix(const std::string_view prefix) noexcept {
     return prefix == "PropBox_Yahaha" || prefix == "PropBox_Once" ||
-        prefix == "Prison" || prefix == "InteractBox" || prefix == "ShopStealGoods_";
+        prefix == "Prison" || prefix == "InteractBox" || prefix == "ShopStealGoods_" ||
+        prefix == kSafeActorPrefix || prefix == kKeyClassNeedle;
 }
 
 bool DeveloperModeEnabled(const AnomalyUiServiceV1* ui) noexcept {
@@ -531,6 +558,10 @@ void ResetPointState(Context& context) noexcept {
     context.teleported = false;
     context.moving = false;
     context.interacted = false;
+    context.safe_dispatched = false;
+    context.safe_grace = 0;
+    context.key_fired = false;
+    context.key_grace = 0;
     context.food_approaching = false;
     context.food_has_last_pos = false;
     context.fallout_baseline_z = 0.0;
@@ -1490,6 +1521,8 @@ constexpr std::string_view CategoryForChoice(const std::uint32_t choice) noexcep
         case 8: return "prison";
         case 9: return "wallet";
         case 11: return "shop_steal";
+        case 12: return "safe";
+        case 13: return "locker_key";
         default: return "";
     }
 }
@@ -1506,6 +1539,8 @@ constexpr std::string_view ActorPrefixForChoice(const std::uint32_t choice) noex
         case 8: return "Prison";
         case 9: return "InteractBox";
         case 11: return "ShopStealGoods_";
+        case 12: return "WorldSafeBox";
+        case 13: return "CabinetKey";
         default: return "";
     }
 }
@@ -1522,6 +1557,8 @@ constexpr std::string_view ActorPrefixForCategory(
     if (category == "prison") return "PropBox_Once";
     if (category == "wallet") return "InteractBox";
     if (category == "shop_steal") return "ShopStealGoods_";
+    if (category == "safe") return "WorldSafeBox";
+    if (category == "locker_key") return "CabinetKey";
     return "";
 }
 
@@ -1636,6 +1673,9 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
     }
 }
 
+void ReadSafeTable(Context& context, std::vector<Point>& points);
+void CollectLockerKeys(Context& context, std::vector<Point>& points);
+
 void ReadTable(Context& context) {
     std::vector<Point> points;
     void* table_object{};
@@ -1734,6 +1774,8 @@ void ReadTable(Context& context) {
         points.push_back(std::move(p));
     }
     ReadRandomItemTable(context, points);
+    ReadSafeTable(context, points);
+    CollectLockerKeys(context, points);
     std::lock_guard<std::mutex> lock(context.mutex);
     context.points = std::move(points);
     RebuildFilteredLocked(context);
@@ -1889,6 +1931,179 @@ bool ReadRecordSelections(const std::uintptr_t record,
 void LogBox(Context& context, const std::string& message) {
     const auto* core = anomaly::sdk::Host(context.host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID, 1).get();
     if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, anomaly::sdk::StringView("box-auto " + message));
+}
+
+// The map's safe point table lists every world safe, opened or not, whether or not its cell is
+// loaded. A point already confirmed as opened is dropped here, so the walk never revisits it.
+void ReadSafeTable(Context& context, std::vector<Point>& points) {
+    if (!ObjectsReady(context.objects)) return;
+    AnomalyGenerationHandleV1 handle{};
+    const auto st = context.objects->find_exact(
+        context.objects->user, anomaly::sdk::StringView(kSafeTablePath), &handle);
+    if (st.code != ANOMALY_STATUS_V1_OK || handle.id == 0) {
+        LogBox(context, "safe table not found");
+        return;
+    }
+    if (context.g_objects_address == 0 &&
+        !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
+                            context.g_objects_address)) {
+        return;
+    }
+    const void* table_object =
+        ObjectAt(context.g_objects_address, ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle));
+    if (table_object == nullptr) return;
+    struct ArrayHeader {
+        std::uintptr_t data{};
+        std::int32_t count{};
+        std::int32_t capacity{};
+    } header;
+    if (!Read(reinterpret_cast<const void*>(
+                  reinterpret_cast<std::uintptr_t>(table_object) +
+                  native_layout.kDataTableRowMapOffset),
+              header) ||
+        header.count <= 0 || header.capacity < header.count || header.data == 0) {
+        LogBox(context, "safe table row map unreadable");
+        return;
+    }
+    std::size_t read{};
+    for (std::int32_t i = 0; i < header.count; ++i) {
+        const auto element = header.data +
+            static_cast<std::uintptr_t>(i) * native_layout.kDataTableRowStride;
+        RawName row_id{};
+        std::uintptr_t row{};
+        if (!Read(reinterpret_cast<const void*>(element), row_id) ||
+            row_id.comparison_index == 0) {
+            continue;
+        }
+        if (!Read(reinterpret_cast<const void*>(element + native_layout.kDataTableRowPointerOffset),
+                  row) || row == 0) {
+            continue;
+        }
+        Point p;
+        p.row_name = ResolveName(
+            context.names, static_cast<std::uint32_t>(row_id.comparison_index));
+        if (p.row_name.empty() || p.row_name.find(kSafeRowPrefix) != 0) continue;
+        if (row_id.number != 0) {
+            p.row_name.push_back('_');
+            p.row_name += std::to_string(row_id.number - 1U);
+        }
+        double x{}, y{}, z{};
+        Read(reinterpret_cast<const void*>(row + native_layout.kSafeTableCoordOffset), x);
+        Read(reinterpret_cast<const void*>(row + native_layout.kSafeTableCoordOffset + 8), y);
+        Read(reinterpret_cast<const void*>(row + native_layout.kSafeTableCoordOffset + 16), z);
+        if (x == 0.0 && y == 0.0 && z == 0.0) continue;
+        // A point already confirmed as opened stays out of the walk for the whole session.
+        if (context.safe_opened_points.find(p.row_name) !=
+            context.safe_opened_points.end()) {
+            continue;
+        }
+        p.x = x;
+        p.y = y;
+        p.z = z;
+        p.category = "safe";
+        ++read;
+        points.push_back(std::move(p));
+    }
+    LogBox(context, "safe table rows=" + std::to_string(read));
+}
+
+// A key that was just streamed in can still sit at the origin for a moment, so a point read there
+// would teleport the player to the middle of the map; those reads are dropped instead.
+void CollectLockerKeys(Context& context, std::vector<Point>& points) {
+    if (context.g_objects_address == 0 &&
+        !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
+                            context.g_objects_address)) {
+        return;
+    }
+    std::int32_t count{};
+    std::int32_t num_chunks{};
+    std::uintptr_t items{};
+    if (!Read(reinterpret_cast<const void*>(context.g_objects_address +
+                                            native_layout.kObjectItemsOffset), items) ||
+        items == 0 ||
+        !Read(reinterpret_cast<const void*>(context.g_objects_address +
+                                            native_layout.kObjectCountOffset), count) ||
+        !Read(reinterpret_cast<const void*>(context.g_objects_address +
+                                            native_layout.kObjectNumChunksOffset), num_chunks) ||
+        count <= 0 || num_chunks <= 0) {
+        return;
+    }
+    std::unordered_map<std::uintptr_t, bool> class_cache;
+    std::uint32_t current_chunk = 0xFFFFFFFFu;
+    std::uintptr_t chunk{};
+    std::size_t added{};
+    std::size_t degenerate{};
+    for (std::int32_t i = 0; i < count; ++i) {
+        const auto chunk_index = static_cast<std::uint32_t>(i) / native_layout.kObjectChunkSize;
+        if (chunk_index != current_chunk) {
+            current_chunk = chunk_index;
+            if (!Read(reinterpret_cast<const void*>(
+                          items + static_cast<std::uintptr_t>(chunk_index) * sizeof(void*)),
+                      chunk) ||
+                chunk == 0) {
+                continue;
+            }
+        }
+        const auto within = static_cast<std::uint32_t>(i) % native_layout.kObjectChunkSize;
+        std::uintptr_t object{};
+        if (!Read(reinterpret_cast<const void*>(
+                      chunk + static_cast<std::uintptr_t>(within) * native_layout.kObjectItemStride),
+                  object) ||
+            object == 0) {
+            continue;
+        }
+        std::uintptr_t cls{};
+        if (!Read(reinterpret_cast<const void*>(object + native_layout.kObjectClassOffset), cls) ||
+            cls == 0) {
+            continue;
+        }
+        const auto cached = class_cache.find(cls);
+        bool is_key{};
+        if (cached != class_cache.end()) {
+            is_key = cached->second;
+        } else {
+            is_key = ObjectName(context.names, cls).find(kKeyClassNeedle) != std::string::npos;
+            class_cache[cls] = is_key;
+        }
+        if (!is_key) continue;
+        // The class default object has no root component, but checking it explicitly keeps the
+        // sweep from ever turning the template into a point.
+        std::uintptr_t cdo{};
+        if (Read(reinterpret_cast<const void*>(cls + native_layout.kUClassDefaultObjectOffset),
+                 cdo) &&
+            cdo == object) {
+            continue;
+        }
+        std::uintptr_t root{};
+        if (!Read(reinterpret_cast<const void*>(object + native_layout.kActorRootComponentOffset),
+                  root) ||
+            root == 0) {
+            continue;
+        }
+        double x{}, y{}, z{};
+        if (!Read(reinterpret_cast<const void*>(root + native_layout.kSceneComponentLocationOffset),
+                  x) ||
+            !Read(reinterpret_cast<const void*>(
+                      root + native_layout.kSceneComponentLocationOffset + 8), y) ||
+            !Read(reinterpret_cast<const void*>(
+                      root + native_layout.kSceneComponentLocationOffset + 16), z)) {
+            continue;
+        }
+        if (std::abs(x) < 1.0 && std::abs(y) < 1.0) {
+            ++degenerate;
+            continue;
+        }
+        Point p;
+        p.row_name = ObjectName(context.names, object);
+        p.x = x;
+        p.y = y;
+        p.z = z;
+        p.category = "locker_key";
+        points.push_back(std::move(p));
+        ++added;
+    }
+    LogBox(context, "key sweep added=" + std::to_string(added) +
+                        " degenerate=" + std::to_string(degenerate));
 }
 
 bool FoodGroupOf(const std::string_view name, std::string& key) {
@@ -3417,6 +3632,423 @@ void TickFoodPickup(Context& context, const Point& p,
     }
 }
 
+// A world safe answers BP_IsTreasureBoxOpened (1 parm, 1 byte through the parameter buffer). That
+// answer is the only trustworthy way to tell a looted safe from a fresh one.
+bool ReadSafeOpened(Context& context, const std::uintptr_t actor, bool& known) noexcept {
+    known = false;
+    std::uintptr_t cls{};
+    if (!Read(reinterpret_cast<const void*>(actor + native_layout.kObjectClassOffset), cls) ||
+        cls == 0) {
+        return false;
+    }
+    std::uintptr_t getter{};
+    if (!FindFunction(context.names, cls, "BP_IsTreasureBoxOpened", 1, 1, getter) ||
+        getter == 0) {
+        return false;
+    }
+    std::uint8_t params[8]{};
+    if (!Invoke(context, reinterpret_cast<void*>(actor), reinterpret_cast<void*>(getter),
+                params)) {
+        return false;
+    }
+    known = true;
+    return params[0] != 0;
+}
+
+// World safes are looted with the game's own client event chain: the pick-lock animation is
+// presentation only, and NetMulticast_NotifyTreasureBoxUnlock is what flips the box to opened.
+// The chain stops at the first event after which BP_IsTreasureBoxOpened answers true.
+void TickSafeBox(Context& context, const Point& p,
+                 const std::chrono::steady_clock::time_point now) {
+    if (context.target_actor == 0) {
+        context.target_actor = ScanForActor(context, p, kSafeActorPrefix);
+        if (context.target_actor == 0) {
+            ++context.retry_count;
+            if (context.retry_count <= kActorLoadWaitSeconds) {
+                context.due = now + std::chrono::milliseconds(1000);
+                const std::array args{std::string_view(p.row_name),
+                                      std::string_view(std::to_string(context.retry_count))};
+                context.status = context.localizer.Format(
+                    "status.safe_wait_actor", "Waiting for safe {0} ({1})", args);
+            } else if (context.teleport_retry == 0) {
+                // A safe only exists once its cell streams in, and the arrival can land in a cell
+                // that is still loading, so one more teleport is worth trying before giving up.
+                context.teleport_retry = 1;
+                context.teleported = false;
+                context.retry_count = 0;
+                context.due = now + std::chrono::milliseconds(2000);
+                const std::array args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.safe_reteleport", "Safe not loaded, re-teleport {0}", args);
+            } else {
+                ++context.skipped;
+                ++context.current_index;
+                ResetPointState(context);
+                context.due = now;
+                const std::array args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.safe_not_found", "Safe not found, skip {0}", args);
+                LogBox(context, "safe not found point=" + p.row_name);
+            }
+            return;
+        }
+    }
+    bool known{};
+    const bool opened = ReadSafeOpened(context, context.target_actor, known);
+    if (known && opened && !context.safe_dispatched) {
+        // Already looted: remember it so every later table read drops the point.
+        context.safe_opened_points.insert(p.row_name);
+        ++context.skipped;
+        ++context.current_index;
+        ResetPointState(context);
+        context.due = now;
+        const std::array args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format(
+            "status.safe_already_open", "Safe already open, skip {0}", args);
+        LogBox(context, "safe already open point=" + p.row_name);
+        return;
+    }
+    if (!context.safe_dispatched) {
+        double actor_pos[3]{};
+        double player_pos[3]{};
+        if (ReadActorLocation(context, context.target_actor, actor_pos) &&
+            SnapshotPlayerPosition(context, player_pos)) {
+            const double dx = player_pos[0] - actor_pos[0];
+            const double dy = player_pos[1] - actor_pos[1];
+            const double dist = std::sqrt(dx * dx + dy * dy);
+            // The event chain does not need the player to stand on the box, so only a safe that is
+            // plainly out of reach is approached, and never at the cost of the dispatch.
+            if (dist > kTargetActorMaxDistanceCentimeters) {
+                const bool developer_mode =
+                    context.developer_mode.load(std::memory_order_acquire);
+                if (developer_mode) {
+                    Point approach;
+                    approach.x = actor_pos[0];
+                    approach.y = actor_pos[1];
+                    approach.z = actor_pos[2];
+                    Teleport(context, approach);
+                    context.due = now + std::chrono::milliseconds(1000);
+                } else if (NavigationReady(context.navigation)) {
+                    Point approach;
+                    approach.x = actor_pos[0];
+                    approach.y = actor_pos[1];
+                    approach.z = player_pos[2];
+                    double destination[3]{};
+                    ComputeApproachDestination(context, approach, destination);
+                    context.navigation->move_to_location(
+                        context.navigation->user, destination);
+                    context.due = now + std::chrono::milliseconds(300);
+                } else {
+                    context.due = now + std::chrono::milliseconds(500);
+                }
+                const std::string distance =
+                    std::to_string(static_cast<long long>(dist));
+                const std::array args{std::string_view(p.row_name),
+                                      std::string_view(distance)};
+                context.status = context.localizer.Format(
+                    "status.safe_approach", "Approaching safe {0} ({1}cm)", args);
+                return;
+            }
+        }
+        std::uintptr_t cls{};
+        Read(reinterpret_cast<const void*>(context.target_actor + native_layout.kObjectClassOffset),
+             cls);
+        std::string used;
+        bool state_known{};
+        bool state_opened{};
+        for (const std::string_view step : kSafeUnlockSteps) {
+            std::uintptr_t function{};
+            if (!FindFunction(context.names, cls, step, 0, 0, function) || function == 0) {
+                continue;
+            }
+            if (!Invoke(context, reinterpret_cast<void*>(context.target_actor),
+                        reinterpret_cast<void*>(function), nullptr)) {
+                continue;
+            }
+            if (!used.empty()) used.push_back('+');
+            used += step;
+            state_opened = ReadSafeOpened(context, context.target_actor, state_known);
+            if (state_known && state_opened) break;
+        }
+        LogBox(context, "safe dispatch point=" + p.row_name + " used=" + used +
+                            " opened=" + (state_known ? (state_opened ? "1" : "0") : "n/a"));
+        if (state_known && state_opened) {
+            context.safe_opened_points.insert(p.row_name);
+            ++context.picked;
+            ++context.current_index;
+            ResetPointState(context);
+            context.due = now;
+            const std::array args{std::string_view(p.row_name), std::string_view(used)};
+            context.status = context.localizer.Format(
+                "status.safe_opened", "Opened safe {0} ({1})", args);
+            return;
+        }
+        context.safe_dispatched = true;
+        context.safe_grace = 0;
+        context.due = now + std::chrono::milliseconds(1500);
+        const std::array args{std::string_view(p.row_name), std::string_view(used)};
+        context.status = context.localizer.Format(
+            "status.safe_dispatched", "Unlock sent to safe {0} ({1})", args);
+        return;
+    }
+    // The box reacts a moment later, so the state is re-read for a few ticks before giving up.
+    bool later_known{};
+    const bool later_opened = ReadSafeOpened(context, context.target_actor, later_known);
+    if (later_known && later_opened) {
+        context.safe_opened_points.insert(p.row_name);
+        ++context.picked;
+        ++context.current_index;
+        ResetPointState(context);
+        context.due = now;
+        const std::array args{std::string_view(p.row_name), std::string_view("verify")};
+        context.status = context.localizer.Format(
+            "status.safe_opened", "Opened safe {0} ({1})", args);
+        LogBox(context, "safe opened point=" + p.row_name + " via=verify");
+        return;
+    }
+    if (later_known && context.safe_grace < 2) {
+        ++context.safe_grace;
+        context.due = now + std::chrono::milliseconds(1200);
+        const std::array args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format(
+            "status.safe_verifying", "Checking safe {0}", args);
+        return;
+    }
+    if (context.teleport_retry == 0) {
+        context.teleport_retry = 1;
+        context.target_actor = 0;
+        context.safe_dispatched = false;
+        context.safe_grace = 0;
+        context.retry_count = 0;
+        context.teleported = false;
+        context.due = now + std::chrono::milliseconds(2000);
+        const std::array args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format(
+            "status.safe_retry", "Safe still closed, retry {0}", args);
+        LogBox(context, "safe retry point=" + p.row_name);
+        return;
+    }
+    ++context.skipped;
+    ++context.current_index;
+    ResetPointState(context);
+    context.due = now;
+    const std::array args{std::string_view(p.row_name)};
+    context.status = context.localizer.Format(
+        "status.safe_failed", "Safe did not open, skip {0}", args);
+    LogBox(context, "safe failed point=" + p.row_name);
+}
+
+
+// A lost key still offering interaction entries has not been taken; one with no entries, or one
+// that left GObjects, has. That difference is the only confirmation available.
+bool ActorOffersInteractEntries(Context& context, const std::uintptr_t actor,
+                                int& entries) noexcept {
+    entries = 0;
+    if (actor == 0 || context.trigger_interact_fn == 0) return false;
+    std::uintptr_t cls{};
+    if (!Read(reinterpret_cast<const void*>(actor + native_layout.kObjectClassOffset), cls) ||
+        cls == 0) {
+        return false;
+    }
+    std::uintptr_t entries_fn{};
+    if (!FindFunction(context.names, cls, "BPGetInteractEntries", 2, 24, entries_fn)) {
+        return false;
+    }
+    std::vector<std::int32_t> choices;
+    if (!ReadInteractChoices(context, actor, context.controller, entries_fn, choices)) {
+        return false;
+    }
+    entries = static_cast<int>(choices.size());
+    return true;
+}
+
+// Keys are plain interactable actors: the interaction entries they expose are what takes the key,
+// and the actor leaving GObjects is the confirmation. Their point is the actor position read during
+// the sweep, which goes stale while the cell streams, so the live position decides the landing.
+void TickLockerKey(Context& context, const Point& p,
+                   const std::chrono::steady_clock::time_point now) {
+    if (context.target_actor == 0) {
+        context.target_actor = ScanForActor(context, p, "CabinetKey");
+        if (context.target_actor == 0) {
+            ++context.retry_count;
+            if (context.retry_count <= kActorLoadWaitSeconds) {
+                context.due = now + std::chrono::milliseconds(500);
+                const std::array args{std::string_view(p.row_name),
+                                      std::string_view(std::to_string(context.retry_count))};
+                context.status = context.localizer.Format(
+                    "status.key_wait_actor", "Waiting for key {0} ({1})", args);
+            } else {
+                ++context.skipped;
+                ++context.current_index;
+                ResetPointState(context);
+                context.due = now;
+                const std::array args{std::string_view(p.row_name)};
+                context.status = context.localizer.Format(
+                    "status.key_not_found", "Key not found, skip {0}", args);
+            }
+            return;
+        }
+    }
+    double actor_pos[3]{};
+    double player_pos[3]{};
+    const bool located = ReadActorLocation(context, context.target_actor, actor_pos) &&
+        SnapshotPlayerPosition(context, player_pos);
+    // Once the interaction went out the actor may already be tearing down and its components read
+    // as the origin; treating that as a distance would send the player across the map.
+    if (!located && !context.interacted) {
+        ++context.retry_count;
+        context.target_actor = 0;
+        if (context.retry_count > kActorLoadWaitSeconds) {
+            ++context.skipped;
+            ++context.current_index;
+            ResetPointState(context);
+            context.due = now;
+            const std::array args{std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                "status.key_unreachable", "Key position unreachable, skip {0}", args);
+            LogBox(context, "key location lost point=" + p.row_name);
+            return;
+        }
+        context.due = now + std::chrono::milliseconds(500);
+        return;
+    }
+    const bool developer_mode = context.developer_mode.load(std::memory_order_acquire);
+    const double approach_threshold =
+        developer_mode ? kTeleportApproachRadiusCentimeters : kPickupApproachRadiusCentimeters;
+    if (!context.interacted && located) {
+        const double dx = player_pos[0] - actor_pos[0];
+        const double dy = player_pos[1] - actor_pos[1];
+        const double dz = player_pos[2] - actor_pos[2];
+        const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist > approach_threshold) {
+            if (std::abs(actor_pos[0]) < 1.0 && std::abs(actor_pos[1]) < 1.0) {
+                ++context.retry_count;
+                context.target_actor = 0;
+                if (context.retry_count > kActorLoadWaitSeconds) {
+                    ++context.skipped;
+                    ++context.current_index;
+                    ResetPointState(context);
+                    context.due = now;
+                    const std::array args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.key_unreachable", "Key position unreachable, skip {0}", args);
+                    LogBox(context, "key position zero point=" + p.row_name);
+                } else {
+                    context.due = now + std::chrono::milliseconds(500);
+                }
+                return;
+            }
+            Point approach;
+            approach.x = actor_pos[0];
+            approach.y = actor_pos[1];
+            approach.z = actor_pos[2];
+            if (developer_mode) {
+                if (context.interact_retry >= 3) {
+                    ++context.skipped;
+                    ++context.current_index;
+                    ResetPointState(context);
+                    context.due = now;
+                    const std::array args{std::string_view(p.row_name)};
+                    context.status = context.localizer.Format(
+                        "status.key_unreachable", "Key position unreachable, skip {0}", args);
+                    LogBox(context, "key teleport gave up point=" + p.row_name + " cm=" +
+                                        std::to_string(static_cast<long long>(dist)));
+                    return;
+                }
+                ++context.interact_retry;
+                Teleport(context, approach);
+                context.due = now + std::chrono::milliseconds(1000);
+            } else if (NavigationReady(context.navigation)) {
+                double destination[3]{};
+                ComputeApproachDestination(context, approach, destination);
+                context.navigation->move_to_location(context.navigation->user, destination);
+                context.due = now + std::chrono::milliseconds(300);
+            } else {
+                context.due = now + std::chrono::milliseconds(500);
+            }
+            const std::array args{
+                std::string_view(p.row_name),
+                std::string_view(std::to_string(static_cast<long long>(dist)))};
+            context.status = context.localizer.Format(
+                "status.key_approach", "Approaching key {0} ({1}cm)", args);
+            return;
+        }
+    }
+    if (!context.interacted) {
+        InteractProbe probe{};
+        const bool fired = TriggerInteractPickup(context, context.target_actor, &probe);
+        context.interacted = true;
+        context.key_fired = fired;
+        context.due = now + std::chrono::milliseconds(2000);
+        const std::string entries = std::to_string(probe.entries);
+        const std::string fired_text = fired ? "1" : "0";
+        const std::array args{std::string_view(p.row_name), std::string_view(entries),
+                              std::string_view(fired_text)};
+        context.status = context.localizer.Format(
+            "status.key_interact", "Interacting with key {0} (entries {1}, fired {2})", args);
+        LogBox(context, "key interact point=" + p.row_name + " entries=" + entries +
+                            " fired=" + fired_text + " reason=" + std::string(probe.reason));
+        if (!fired && probe.entries == 0) {
+            // No entries at all means the key was already taken; the point is finished.
+            ++context.picked;
+            ++context.current_index;
+            ResetPointState(context);
+            context.due = now;
+            const std::array gone_args{std::string_view(p.row_name)};
+            context.status = context.localizer.Format(
+                "status.key_already", "Key already taken {0}", gone_args);
+            LogBox(context, "key already taken point=" + p.row_name);
+        }
+        return;
+    }
+    int live_entries{};
+    const bool entries_readable =
+        ActorOffersInteractEntries(context, context.target_actor, live_entries);
+    if (!IsObjectInGObjects(context, context.target_actor) ||
+        (entries_readable && live_entries == 0)) {
+        ++context.picked;
+        ++context.current_index;
+        ResetPointState(context);
+        context.due = now;
+        const std::array args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format("status.key_picked", "Key picked {0}", args);
+        LogBox(context, "key picked point=" + p.row_name +
+                            (entries_readable ? " via=entries" : " via=gone"));
+        return;
+    }
+    // The key plays its collection animation for a moment before it disappears, so it gets a
+    // couple of grace ticks before the attempt counts as failed.
+    if (context.key_fired && context.key_grace < 3) {
+        ++context.key_grace;
+        context.due = now + std::chrono::milliseconds(1500);
+        const std::array args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format("status.key_verifying", "Checking key {0}", args);
+        return;
+    }
+    if (context.teleport_retry == 0) {
+        context.teleport_retry = 1;
+        context.target_actor = 0;
+        context.interacted = false;
+        context.key_fired = false;
+        context.key_grace = 0;
+        context.retry_count = 0;
+        context.teleported = false;
+        context.due = now + std::chrono::milliseconds(2000);
+        const std::array args{std::string_view(p.row_name)};
+        context.status = context.localizer.Format(
+            "status.key_reattempt", "Key remained, re-approach {0}", args);
+        return;
+    }
+    ++context.skipped;
+    ++context.current_index;
+    ResetPointState(context);
+    context.due = now;
+    const std::array args{std::string_view(p.row_name)};
+    context.status = context.localizer.Format(
+        "status.key_remained_skip", "Key remained, skip {0}", args);
+    LogBox(context, "key remained skip point=" + p.row_name);
+}
+
 void Tick(Context& context) {
     std::lock_guard<std::mutex> lock(context.mutex);
     if (!context.running) return;
@@ -3525,7 +4157,10 @@ void Tick(Context& context) {
         PrepareShopStealth(context, p, now);
         return;
     }
-    if (!context.teleported && !context.moving && !context.landmark_transfer_wait) {
+    // A key's point is the actor position read during the sweep and goes stale while its cell
+    // streams, so TickLockerKey decides the landing from the live position instead.
+    if (!context.teleported && !context.moving && !context.landmark_transfer_wait &&
+        p.category != "locker_key") {
         if (context.developer_mode.load(std::memory_order_acquire)) {
             if (Teleport(context, p)) {
                 context.teleported = true;
@@ -3726,6 +4361,14 @@ void Tick(Context& context) {
     if (p.category == "box_food" || p.category == "item_food" ||
         p.category == "prison" || p.category == "wallet") {
         TickFoodPickup(context, p, now);
+        return;
+    }
+    if (p.category == "safe") {
+        TickSafeBox(context, p, now);
+        return;
+    }
+    if (p.category == "locker_key") {
+        TickLockerKey(context, p, now);
         return;
     }
     if (context.target_actor == 0) {
@@ -4533,7 +5176,7 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     if (ui->button(ui->user, anomaly::sdk::StringView(read_table_label), 0.0F, 0.0F) != 0) {
         context.read_pending.store(true, std::memory_order_release);
     }
-    const std::array<std::string, 12> type_names = {
+    const std::array<std::string, 14> type_names = {
         context.localizer.Text("type.all", "All"),
         context.localizer.Text("type.hunter", "Hunter Box"),
         context.localizer.Text("type.character", "Character Box"),
@@ -4546,6 +5189,8 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         context.localizer.Text("type.wallet", "Wallet"),
         context.localizer.Text("type.oracle", "Oracle Stone"),
         context.localizer.Text("type.shop_steal", "Shop Items"),
+        context.localizer.Text("type.safe", "Safe"),
+        context.localizer.Text("type.locker_key", "Lost Locker Key"),
     };
     for (std::size_t i = 0; i < type_names.size(); ++i) {
         if (ui->button(ui->user, anomaly::sdk::StringView(type_names[i]), 0.0F, 0.0F) != 0) {
