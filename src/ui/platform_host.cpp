@@ -3193,6 +3193,22 @@ private:
 
     static constexpr ImVec4 kClear{0.0f, 0.0f, 0.0f, 0.0f};
 
+    // The first-run card floats on the game frame instead of the themed shell and
+    // carries its own light pane (see DrawFirstRunNoticePopup), so it names its
+    // inks here: near-black body type, a golden yellow for a caution callout with
+    // the bright yellow rule that marks it, and blue links. A caution is set in
+    // the deeper gold rather than in the pure yellow of its rule, which would
+    // have almost no contrast on a pale face. The pane tint is the cream the
+    // plugin windows over the game already wear, so the card and those windows
+    // read as the same material.
+    static constexpr ImVec4 kNoticePaneTint{1.000f, 0.989f, 0.954f, 1.0f};
+    static constexpr ImVec4 kNoticeInk{0.106f, 0.110f, 0.122f, 1.0f};
+    static constexpr ImVec4 kNoticeMutedInk{0.361f, 0.373f, 0.400f, 1.0f};
+    static constexpr ImVec4 kNoticeCautionInk{0.620f, 0.412f, 0.020f, 1.0f};
+    static constexpr ImVec4 kNoticeCautionMark{0.949f, 0.718f, 0.020f, 1.0f};
+    static constexpr ImVec4 kNoticeLinkInk{0.078f, 0.404f, 0.784f, 1.0f};
+    static constexpr ImVec4 kNoticeDangerInk{0.702f, 0.149f, 0.118f, 1.0f};
+
     // Buttons are continuous rounded rectangles whose radius follows their
     // height, the proportion Apple's controls use.
     static float CapsuleRounding(const ImVec2 size) noexcept {
@@ -6864,11 +6880,10 @@ private:
                 DrawNoticeEmphasis(run.text);
                 break;
             case anomaly::NoticeRunStyle::Code:
-                ImGui::TextColored(
-                    ThemeColor(anomaly::PlatformUiTheme().text_muted), "%s", run.text.c_str());
+                ImGui::TextColored(kNoticeMutedInk, "%s", run.text.c_str());
                 break;
             case anomaly::NoticeRunStyle::Link:
-                ImGui::PushStyleColor(ImGuiCol_Text, AccentColor());
+                ImGui::PushStyleColor(ImGuiCol_Text, kNoticeLinkInk);
                 ImGui::TextUnformatted(run.text.c_str());
                 ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) {
@@ -6934,19 +6949,25 @@ private:
                 continue;
             }
             // Alert lines are indented and carry a rule, so consecutive blocks
-            // read as one callout.
+            // read as one callout. A caution or warning is the one thing on the
+            // card that must be impossible to skim past, so it is set in gold and
+            // marked with the bright yellow rule; the informational alerts keep
+            // the body ink and only mark themselves with a muted rule.
             const bool severe = block.alert == anomaly::NoticeAlert::Caution ||
                 block.alert == anomaly::NoticeAlert::Warning;
+            const ImVec4 alert_ink = severe ? kNoticeCautionInk : kNoticeInk;
             const float indent = Scaled(14.0f);
             const ImVec2 start = ImGui::GetCursorScreenPos();
+            ImGui::PushStyleColor(ImGuiCol_Text, alert_ink);
             ImGui::Indent(indent);
             draw_block(block);
             ImGui::Unindent(indent);
+            ImGui::PopStyleColor();
             const ImVec2 end = ImGui::GetCursorScreenPos();
             ImGui::GetWindowDrawList()->AddRectFilled(
                 ImVec2(start.x, start.y - Scaled(2.0f)),
                 ImVec2(start.x + Scaled(3.0f), end.y - Scaled(4.0f)),
-                ImGui::GetColorU32(severe ? WarningColor() : AccentColor()),
+                ImGui::GetColorU32(severe ? kNoticeCautionMark : kNoticeMutedInk),
                 Scaled(1.5f));
         }
     }
@@ -6985,7 +7006,15 @@ private:
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
             return;
         }
-        // Untinted: the backdrop, blurred, with no colour mixed in.
+        // The card floats on the game frame, with no themed shell behind it to
+        // carry the palette's ink, so it names its own pane. The options below
+        // are this card's alone -- an own copy of SurfaceOptions handed to
+        // RegisterWindowSurface, exactly as a plugin window does it -- so the
+        // shell's surfaces and the plugin windows keep resolving theirs and are
+        // untouched. The material matches a plugin window over the game (deep
+        // backdrop, heavy face, soft rim, and the variant's own saturation); only
+        // the veil is a few points stronger, because near-black type needs a
+        // paler face than a dark-ink window does.
         anomaly::glass::SurfaceOptions surface;
         surface.variant = anomaly::glass::Variant::Regular;
         surface.rounding = ImGui::GetStyle().PopupRounding;
@@ -6993,12 +7022,13 @@ private:
             ? ImGui::GetIO().FontGlobalScale : 1.0f;
         surface.clip = false;
         surface.shadow = true;
-        surface.saturation = 1.0f;
-        surface.tint_strength = 0.0f;
-        // Nothing is filled where the backdrop is empty: the compositor blurs the
-        // desktop behind the window instead.
-        surface.minimum_alpha = 0.0f;
+        surface.tint = kNoticePaneTint;
+        surface.tint_strength = 0.56f;
+        surface.face_blur = 2.0f;
+        surface.rim_blur = 1.7f;
+        surface.deep_backdrop = true;
         anomaly::glass::RegisterWindowSurface(surface);
+        ImGui::PushStyleColor(ImGuiCol_Text, kNoticeInk);
         const float footer_height = Scaled(104.0f);
         const float body_height = std::max(
             Scaled(110.0f), ImGui::GetContentRegionAvail().y - footer_height);
@@ -7007,14 +7037,16 @@ private:
             DrawNoticeDocument(*notice_document_);
         } else {
             // Missing document: show the expected path, keep the gate closed.
-            ImGui::TextColored(ErrorColor(), "!  %s",
+            ImGui::TextColored(kNoticeDangerInk, "!  %s",
                 anomaly::NoticeDocumentPath(diagnostics_.runtime_root,
                     anomaly::kFirstRunNoticeDocument,
                     anomaly::LocaleName(diagnostics_.translator->locale()))
                     .string().c_str());
         }
         ImGui::EndChild();
+        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.0f, 0.0f, 0.0f, 0.14f));
         ImGui::Separator();
+        ImGui::PopStyleColor();
         ImFont* const footer_font =
             ue5mem::PlatformUiFontForScale(PlatformUiScale() * 1.12f);
         const bool footer_pushed = footer_font != nullptr;
@@ -7034,12 +7066,19 @@ private:
             exit_width + ImGui::GetStyle().ItemSpacing.x + confirm_width;
         ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
             ImGui::GetWindowContentRegionMax().x - footer_width));
+        // A secondary button needs a fill of its own: the themed button ink is a
+        // dark low-alpha wash tuned for the shell's own veil, which the deep blur
+        // of this pane eats.
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.07f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.0f, 0.0f, 0.12f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.0f, 0.0f, 0.18f));
         if (ImGui::Button(exit_label.c_str(), ImVec2(exit_width, button_height))) {
             notice_agreed_ = false;
             notice_popup_opened_ = false;
             ImGui::CloseCurrentPopup();
             CloseManagementShell();
         }
+        ImGui::PopStyleColor(3);
         ImGui::SameLine();
         ImGui::BeginDisabled(!notice_agreed_);
         if (PrimaryButton(confirm_label.c_str(), ImVec2(confirm_width, button_height))) {
@@ -7049,6 +7088,7 @@ private:
         }
         ImGui::EndDisabled();
         if (footer_pushed) ImGui::PopFont();
+        ImGui::PopStyleColor();
         ImGui::EndPopup();
     }
 
