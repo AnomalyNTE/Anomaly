@@ -247,7 +247,7 @@ void TestShortlist() {
 }
 
 void TestLayout() {
-    Section("layout resource: ships complete, records sources, rejects bad documents");
+    Section("layout resource: ships complete and rejects bad documents");
     const jelly::Layout& layout = ShippedLayout();
     CHECK(jelly::LayoutProblems(layout).empty());
     CHECK(layout.version == 1);
@@ -256,10 +256,6 @@ void TestLayout() {
     CHECK(layout.offsets.size() > 30);
     for (const auto& entry : layout.offsets) {
         CHECK(!entry.second.type.empty());
-        CHECK(!entry.second.source.empty());
-    }
-    for (const auto& entry : layout.properties) {
-        CHECK(!entry.second.source.empty());
     }
     // The vehicle family is matched as a substring of the actor's class chain, so the
     // entry has to be a fragment rather than a whole class name.
@@ -279,10 +275,6 @@ void TestLayout() {
     CHECK(
         std::find(missing.begin(), missing.end(), "missing offset objects.items") !=
         missing.end());
-
-    jelly::Layout unattributed = layout;
-    unattributed.offsets["object.class"].source.clear();
-    CHECK(!jelly::LayoutProblems(unattributed).empty());
 
     // A resource that does not name the vehicle family would silently treat every car as
     // an ordinary multi-part model again, so it is refused as incomplete instead.
@@ -322,15 +314,18 @@ void TestLayout() {
         CHECK(spec.parms_size == 297);
     }
 
-    jelly::Layout parsed;
-    std::string error;
-    CHECK(!jelly::ParseLayout("{\"schema\":", parsed, error));
-    CHECK(!jelly::ParseLayout(
-        "{\"schema\":\"anomaly.plugin.jelly.layout\"} trailing", parsed, error));
-    CHECK(!jelly::ParseLayout("[1,2,3]", parsed, error));
-    CHECK(!jelly::ParseLayout("{}", parsed, error));
-    CHECK(jelly::ParseLayout("{\"schema\":\"anomaly.plugin.jelly.layout\"}", parsed, error));
-    CHECK(!jelly::LayoutProblems(parsed).empty());
+    anomaly::testing::ProfileHost host("Jelly");
+    auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(&host.api), "compatibility.profile.json");
+    CHECK(static_cast<bool>(loaded));
+    if (loaded) {
+        auto incomplete = loaded.value();
+        incomplete.layout.erase("objects.items");
+        bool rejected = false;
+        try { static_cast<void>(jelly::FromProfile(incomplete)); }
+        catch (const std::exception&) { rejected = true; }
+        CHECK(rejected);
+    }
+
 }
 
 void TestFramePolicy() {
@@ -389,11 +384,13 @@ void TestProcessEventAnchor() {
     // The bytes the observer overwrites are the first instruction of the function, so
     // the anchor starts on the push sequence that survives it.
     std::string anchored;
-    CHECK(jelly::DropLeadingBytes(symbol.pattern, symbol.detour_bytes, anchored));
+    const auto& full = ShippedLayout().symbols.at("process_event_prologue").pattern;
+    CHECK(jelly::DropLeadingBytes(full, symbol.detour_bytes, anchored));
     CHECK(anchored.starts_with("54 41 55 41 56 41 57 "));
+    CHECK(symbol.pattern.starts_with(anchored));
     // Exactly the five leading tokens are gone: "40 55 56 57 41 " is fifteen bytes of
     // pattern text.
-    CHECK(anchored.size() + 15 == symbol.pattern.size());
+    CHECK(anchored.size() + 15 == full.size());
 
     CHECK(!jelly::DropLeadingBytes(symbol.pattern, 0, anchored));
     CHECK(!jelly::DropLeadingBytes("48 8B", 2, anchored));

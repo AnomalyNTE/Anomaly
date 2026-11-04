@@ -52,6 +52,17 @@ struct ProfileSymbol {
     std::vector<std::string> required_by;
 };
 
+// A signature-selected layout, independent of PE/build identity. Selection is
+// completed before any feature validator or adapter sees these values.
+struct ProfileLayoutCandidate {
+    std::wstring module;
+    std::string section;
+    std::string pattern;
+    std::vector<std::uint8_t> entry;
+    std::map<std::string, std::int64_t, std::less<>> values;
+    std::map<std::string, std::string, std::less<>> symbol_patterns;
+};
+
 // Each direction needs independently verified recorder evidence. A profile
 // declaration is inert until the UE5 network-profile activation layer binds it
 // to a validated resolver snapshot.
@@ -83,6 +94,7 @@ struct BuildProfile {
     std::map<std::string, std::vector<std::string>, std::less<>> feature_layout_validators;
     std::map<std::string, std::vector<std::string>, std::less<>> feature_dependencies;
     std::map<std::string, std::int64_t, std::less<>> layout;
+    std::vector<ProfileLayoutCandidate> layout_candidates;
     std::optional<ProfileNetworkProtocol> network_protocol;
     std::filesystem::path source;
     std::string source_hash;

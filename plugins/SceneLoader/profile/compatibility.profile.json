@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "scene-loader-v1",
+  "layout": {
+    "ObjectClass": 16,
+    "ObjectName": 24,
+    "ObjectOuter": 32,
+    "ObjectIndex": 12,
+    "StructSuper": 64,
+    "StructProperties": 112,
+    "PropertyName": 32,
+    "PropertyOffset": 68,
+    "PropertySize": 52,
+    "PropertyNext": 72,
+    "FunctionCount": 180,
+    "FunctionSize": 182,
+    "RegistryCount": 36,
+    "RegistryItems": 16,
+    "ChunkSize": 65536,
+    "ItemStride": 24,
+    "ItemSerial": 16,
+    "RegistrySubtract": 16,
+    "ProcessEventSlot": 608,
+    "DataTableType": 40,
+    "DataTableMap": 48,
+    "MapEntryStride": 24,
+    "MapValue": 8,
+    "MapSize": 80,
+    "MapInlineBits": 16,
+    "MapBitsData": 32,
+    "MapBitCount": 40,
+    "MapFreeIndex": 48,
+    "RowStride": 24,
+    "SoftAssetName": 16,
+    "FunctionFlags": 176,
+    "FunctionNative": 216,
+    "LevelType": 8,
+    "LevelTitle": 16,
+    "LevelExtension": 112,
+    "InstancedStructData": 8,
+    "SingleEntrance": 80,
+    "SingleExitMap": 0,
+    "SingleExitPosition": 40,
+    "TransferLevel": 112,
+    "TransferTransform": 16,
+    "TransferCondition": 176,
+    "TransferPosition": 48,
+    "CloneCross": 16,
+    "CloneId": 8,
+    "CloneType": 73,
+    "CloneMap": 104,
+    "CloneNodes": 88,
+    "CloneTitle": 56,
+    "NodeDifficulty": 124,
+    "DeactivateDelegateInstruction": 293,
+    "DelegateStride": 16,
+    "DelegateUnits": 8,
+    "DelegateExecute": 96,
+    "DelegateIndex": 24,
+    "DelegateSerial": 28,
+    "ArrayCount": 8
+  },
+  "symbols": [
+    {
+      "name": "Objects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "World",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "TextToString",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B 0B 48 8B 01 48 83 C4 20",
+          "entry": "40 53 48 83 EC 20 48 8B D9 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ProcessEvent.entry",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05",
+          "values": {}
+        },
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "error_exit_exec",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8D 59 ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 ?? 48 8B CB E8 ?? ?? ?? ?? C7 80 ?? ?? ?? ?? ?? ?? ?? ?? 80 3D ?? ?? ?? ?? ?? 72 ?? 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 48 8B C8 E8",
+          "entry": "40 53 48 83 EC 20 48 8D 59",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "delegate_remove",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC 20 48 8B 29 48 8B F9 48 63 F2 48 8B DE 48 C1 E3 04",
+          "entry": "48 89 5C 24",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "deactivate_signal",
+      "candidates": [
+        {
+          "pattern": "40 57 48 83 EC 40 80 B9 ?? ?? ?? ?? ?? 48 8B F9 0F 85 ?? ?? ?? ?? 80 B9 ?? ?? ?? ?? ?? 0F 84 ?? ?? ?? ?? 48 8B 01",
+          "entry": "40 57 48 83 EC 40 80 B9",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "pink-paw-v1",
+  "layout": {
+    "kWorldGameInstanceOffset": 560,
+    "kGameInstanceLocalPlayersOffset": 56,
+    "kLocalPlayerControllerOffset": 48,
+    "kControllerPlayerStateOffset": 720,
+    "kActorRootComponentOffset": 456,
+    "kRobBankContainerInterfaceOffset": 872,
+    "kRobBankPickupVtableSlot": 24,
+    "kObjectInternalIndexOffset": 12,
+    "kObjectClassOffset": 16,
+    "kObjectNameOffset": 24,
+    "kObjectOuterOffset": 32,
+    "kStructSuperOffset": 64,
+    "kObjectItemsOffset": 16,
+    "kObjectMaxCountOffset": 32,
+    "kObjectCountOffset": 36,
+    "kObjectMaxChunksOffset": 40,
+    "kObjectNumChunksOffset": 44,
+    "kObjectChunkSize": 65536,
+    "kObjectItemStride": 24,
+    "kObjectPointerOffset": 0,
+    "kObjectSerialOffset": 16,
+    "kRobBankPointKeyDoorIdOffset": 196,
+    "kRobBankCloneDataAssetItemOffset": 104,
+    "kDataTableRowMapOffset": 48,
+    "kDataTableRowStride": 24,
+    "kDataTableRowPointerOffset": 8,
+    "kStaticItemNameOffset": 160,
+    "kInstancedStructDataOffset": 8,
+    "kRobBankItemValueOffset": 0,
+    "kRobBankItemCoinOffset": 4,
+    "kStructChildren": 72,
+    "kFieldNext": 40,
+    "kPropertyLink": 112,
+    "kFieldClass": 8,
+    "kFieldName": 32,
+    "kPropertyArrayDim": 48,
+    "kPropertySize": 52,
+    "kPropertyOffset": 68,
+    "kPropertyNext": 72,
+    "kStructPropertyStruct": 112,
+    "kArrayPropertyInner": 120,
+    "kFunctionNumParms": 180,
+    "kFunctionParmsSize": 182,
+    "kProcessEventSlot": 76,
+    "kGObjectsSubtract": 16,
+    "kPickupSuccessOffset": 214,
+    "kPickupFailureOffset": 227,
+    "kArrayNum": 8,
+    "kArrayMax": 12
+  },
+  "symbols": [
+    {
+      "name": "kGWorldPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kGObjectsPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPickupPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 48 83 BB D0 02 00 00 00 0F 84 ?? ?? ?? ?? E8 ?? ?? ?? ??",
+          "entry": "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kTextToStringPattern",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B D9 48 8B CA E8 ?? ?? ?? ?? 48 8B D0 48 8B CB E8 ?? ?? ?? ?? 48 8B C3 48 83 C4 20 5B C3",
+          "entry": "40 53 48 83 EC 20 48 8B D9 48 8B CA E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kFreeStringPattern",
+      "candidates": [
+        {
+          "pattern": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+          "entry": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPickupPrologue",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9",
+          "entry": "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPickupSuccessReturn",
+      "candidates": [
+        {
+          "pattern": "B0 01 48 8B 5C 24 58 48 83 C4 40 5F C3",
+          "entry": "B0 01 48 8B 5C 24 58 48 83 C4 40 5F C3",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPickupFailureReturn",
+      "candidates": [
+        {
+          "pattern": "48 8B 5C 24 58 32 C0 48 83 C4 40 5F C3",
+          "entry": "48 8B 5C 24 58 32 C0 48 83 C4 40 5F C3",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "layout",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
+          "values": {
+            "kRobBankCanInteractOffset": 3096,
+            "kRobBankPointUidOffset": 2976,
+            "kRobBankAwardDropIdOffset": 3080,
+            "kStaticItemElementDataOffset": 448
+          }
+        },
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
+          "values": {
+            "kRobBankCanInteractOffset": 3104,
+            "kRobBankPointUidOffset": 2984,
+            "kRobBankAwardDropIdOffset": 3088,
+            "kStaticItemElementDataOffset": 440
+          }
+        }
+      ]
+    },
+    {
+      "name": "ProcessEvent.entry",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05",
+          "values": {}
+        },
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

@@ -556,45 +556,31 @@ void NoteSelection() noexcept {
 // --- layout resource ---------------------------------------------------------------
 
 bool LoadLayoutResource(jelly::Layout& layout, std::string& error) {
-    const AnomalyCoreServiceV1* core = g_context.core;
-    if (core == nullptr || core->plugin_directory == nullptr) {
-        error = "the core service is unavailable";
+    try {
+        auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(g_context.host), "compatibility.profile.json");
+        if (!loaded) { error = loaded.error(); return false; }
+        const auto& profile = loaded.value();
+        layout = jelly::FromProfile(profile);
+        const auto objects = anomaly::sdk::ResolveProfileSymbol(
+            g_context.signatures, g_context.core, profile, "gobjects");
+        const auto event = anomaly::sdk::ResolveProfileSymbol(
+            g_context.signatures, g_context.core, profile, "process_event");
+        if (!objects || !event) { error = "profile symbols are unavailable"; return false; }
+        const auto& values = objects.candidate->values;
+        // x64 RIP-relative MOV encoding is the implementation contract.
+        if (values.at("resolveOffset") != 3 || values.at("instructionSize") != 7 ||
+            values.at("subtract") > 65536 || event.candidate->values.at("detourBytes") != jelly::kProcessEventDetourBytes)
+            throw std::runtime_error("unsupported Jelly symbol addressing contract");
+        std::int32_t displacement{};
+        if (!g_context.memory.Read(objects.address + values.at("resolveOffset"), &displacement, sizeof(displacement)))
+            throw std::runtime_error("cannot read the object registry reference");
+        g_context.gobjects = objects.address + values.at("instructionSize") + displacement - values.at("subtract");
+        g_context.process_event = event.address - event.candidate->values.at("detourBytes");
+        return true;
+    } catch (const std::exception& exception) {
+        error = exception.what();
         return false;
     }
-    std::size_t size = 0;
-    if (core->plugin_directory(core->user, nullptr, &size).code != ANOMALY_STATUS_V1_OK ||
-        size <= 1 || size > 4096) {
-        error = "the plugin directory is unavailable";
-        return false;
-    }
-    std::string directory(size, '\0');
-    if (core->plugin_directory(core->user, directory.data(), &size).code !=
-        ANOMALY_STATUS_V1_OK) {
-        error = "the plugin directory is unavailable";
-        return false;
-    }
-    if (const std::size_t end = directory.find('\0'); end != std::string::npos) {
-        directory.resize(end);
-    }
-    const std::string path = directory + "/data/jelly-layout.json";
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        error = "the layout resource is missing";
-        return false;
-    }
-    const std::string document{
-        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-    if (document.empty()) {
-        error = "the layout resource is empty";
-        return false;
-    }
-    if (!jelly::ParseLayout(document, layout, error)) return false;
-    const std::vector<std::string> problems = jelly::LayoutProblems(layout);
-    if (!problems.empty()) {
-        error = "the layout resource is incomplete: " + problems.front();
-        return false;
-    }
-    return true;
 }
 
 // --- settings ----------------------------------------------------------------------
@@ -714,68 +700,8 @@ void LoadSettings() noexcept {
 // service. The GObjects pattern is a RIP-relative load, so its displacement and
 // the recorded addend are applied here exactly as the host applies them.
 bool ResolveSymbols() {
-    const AnomalySignatureServiceV1* signatures = g_context.signatures;
     g_context.symbol_failure = Published::Detail::call_entry;
-    if (!SignaturesReady(signatures) || !g_context.layout_ready) return false;
-
-    const auto resolve = [signatures](
-                             const jelly::SymbolSpec& spec,
-                             const std::string_view pattern, std::uintptr_t& out) {
-        out = 0;
-        std::uintptr_t instruction{};
-        if (signatures->resolve(
-                signatures->user, anomaly::sdk::StringView(spec.module),
-                anomaly::sdk::StringView(spec.section),
-                anomaly::sdk::StringView(pattern), &instruction)
-                .code != ANOMALY_STATUS_V1_OK ||
-            instruction == 0) {
-            return false;
-        }
-        if (!spec.IsRipRelative()) {
-            out = instruction;
-            return true;
-        }
-        std::int32_t displacement{};
-        if (!g_context.memory.Read(
-                instruction + static_cast<std::uintptr_t>(spec.resolve_offset), &displacement,
-                sizeof(displacement))) {
-            return false;
-        }
-        const auto target = static_cast<std::intptr_t>(instruction) +
-            spec.instruction_size + displacement + spec.addend;
-        if (target <= 0) return false;
-        out = static_cast<std::uintptr_t>(target);
-        return true;
-    };
-
-    const auto gobjects = g_context.layout.symbols.find("gobjects");
-    const auto process_event = g_context.layout.symbols.find("process_event");
-    if (gobjects == g_context.layout.symbols.end() ||
-        process_event == g_context.layout.symbols.end()) {
-        return false;
-    }
-    if (!resolve(gobjects->second, gobjects->second.pattern, g_context.gobjects)) {
-        return false;
-    }
-    // ProcessEvent first as the resource records it, which is what the active
-    // Profile carries and what an unhooked process still shows at the entry. Once
-    // Anomaly's own observer has replaced the first bytes with its detour the
-    // recorded bytes are gone, so the entry is then found from the bytes that
-    // survive it and sits that far in front of the match.
-    const std::int64_t detour_bytes = process_event->second.detour_bytes;
-    if (!resolve(
-            process_event->second, process_event->second.pattern,
-            g_context.process_event)) {
-        std::string anchored;
-        if (!jelly::DropLeadingBytes(process_event->second.pattern, detour_bytes, anchored) ||
-            !resolve(process_event->second, anchored, g_context.process_event) ||
-            g_context.process_event <= static_cast<std::uintptr_t>(detour_bytes)) {
-            g_context.symbol_failure = Published::Detail::symbol_scan;
-            g_context.process_event = 0;
-            return false;
-        }
-        g_context.process_event -= static_cast<std::uintptr_t>(detour_bytes);
-    }
+    if (!g_context.layout_ready || g_context.gobjects == 0 || g_context.process_event == 0) return false;
     g_context.call.framework = g_context.framework;
     g_context.call.entry = g_context.process_event;
     auto model = std::make_unique<jelly::ModelAccess>(

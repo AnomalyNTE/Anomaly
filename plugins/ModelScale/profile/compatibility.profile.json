@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "model-scale-v1",
+  "layout": {
+    "kWorldGameInstanceOffset": 560,
+    "kGameInstanceLocalPlayersOffset": 56,
+    "kLocalPlayerControllerOffset": 48,
+    "kControllerPawnOffset": 776,
+    "kCharacterMeshOffset": 840,
+    "kSceneComponentRelativeScale3D": 384,
+    "kSceneComponentToWorldUpdated": 432,
+    "kSceneComponentToWorldUpdatedBit": 0
+  },
+  "symbols": [
+    {
+      "name": "kGWorldPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

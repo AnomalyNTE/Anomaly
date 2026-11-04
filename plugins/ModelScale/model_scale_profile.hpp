@@ -1,4 +1,5 @@
 #pragma once
+#include "../common/compatibility_profile.hpp"
 
 #include <cfloat>
 #include <cstdint>
@@ -22,38 +23,60 @@
 //     `bComponentToWorldUpdated` bit (0x01B0 bit 0) that the engine's own
 //     `SetRelativeScale3D` clears to schedule the transform rebuild.
 namespace model_scale_profile {
+struct Layout {
+    std::uint32_t kWorldGameInstanceOffset{};
+    std::uint32_t kGameInstanceLocalPlayersOffset{};
+    std::uint32_t kLocalPlayerControllerOffset{};
+    std::uint32_t kControllerPawnOffset{};
+    std::uint32_t kCharacterMeshOffset{};
+    std::uint32_t kSceneComponentRelativeScale3D{};
+    std::uint32_t kSceneComponentToWorldUpdated{};
+    std::uint32_t kSceneComponentToWorldUpdatedBit{};
+};
+inline Layout native_layout;
+inline anomaly::plugins::CompatibilityProfile compatibility;
+inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
+    try {
+        if (!compatibility.Load(host, "compatibility.profile.json", "model-scale-v1")) return false;
+        Layout parsed;
+        parsed.kWorldGameInstanceOffset = compatibility.Value("kWorldGameInstanceOffset", 16384);
+        parsed.kGameInstanceLocalPlayersOffset = compatibility.Value("kGameInstanceLocalPlayersOffset", 16384);
+        parsed.kLocalPlayerControllerOffset = compatibility.Value("kLocalPlayerControllerOffset", 16384);
+        parsed.kControllerPawnOffset = compatibility.Value("kControllerPawnOffset", 16384);
+        parsed.kCharacterMeshOffset = compatibility.Value("kCharacterMeshOffset", 16384);
+        parsed.kSceneComponentRelativeScale3D = compatibility.Value("kSceneComponentRelativeScale3D", 16384);
+        parsed.kSceneComponentToWorldUpdated = compatibility.Value("kSceneComponentToWorldUpdated", 16384);
+        parsed.kSceneComponentToWorldUpdatedBit = compatibility.Value("kSceneComponentToWorldUpdatedBit", 16384);
+        native_layout = parsed;
+        return true;
+    } catch (...) { return false; }
+}
+
 
 // RIP-relative load of GWorld. Displacement is at byte 3, instruction is 7 bytes.
-inline constexpr std::string_view kGWorldPattern =
-    "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
+inline constexpr std::string_view kGWorldPattern = "kGWorldPattern";
 inline constexpr std::uint32_t kGWorldResolveOffset = 3;
 inline constexpr std::uint32_t kGWorldInstructionSize = 7;
 
 // UWorld -> UGameInstance -> LocalPlayers[0] -> ULocalPlayer -> APlayerController.
-inline constexpr std::uint32_t kWorldGameInstanceOffset = 0x230;
-inline constexpr std::uint32_t kGameInstanceLocalPlayersOffset = 0x38;
-inline constexpr std::uint32_t kLocalPlayerControllerOffset = 0x30;
 
 // APlayerController::Pawn.
-inline constexpr std::uint32_t kControllerPawnOffset = 0x308;
+
 // ACharacter::Mesh, the component the plugin scales.
 //
 // The capsule (0x0358) is deliberately not a target: it is the component the game's own
 // gameplay-scale path drives (`AHTAbilityCharacter::GameplayScale`, `GetCapsuleGameplayScale`),
 // and a scale written there was measured to be back at {1,1,1} within a frame.
-inline constexpr std::uint32_t kCharacterMeshOffset = 0x348;
+
 
 // USceneComponent::RelativeScale3D, an FVector of three doubles.
-inline constexpr std::uint32_t kSceneComponentRelativeScale3D = 0x180;
-inline constexpr std::uint32_t kVectorSize = 0x18;
+
 
 // USceneComponent::bComponentToWorldUpdated (0x01B0, bit 0). The engine's
 // SetRelativeScale3D writes RelativeScale3D and then clears this bit, which is what makes
 // the next tick run UpdateComponentToWorld and push the new scale down to the attached
 // children. Writing the vector alone leaves the cached transform in place, so the resize
 // never reaches the renderer: clearing the bit is the part that makes it visible.
-inline constexpr std::uint32_t kSceneComponentToWorldUpdated = 0x1B0;
-inline constexpr std::uint32_t kSceneComponentToWorldUpdatedBit = 0;
 
 // Bounds a scale factor to what the component can actually hold. RelativeScale3D is a
 // Vector3f, so the factor's range is a float's range: anything outside it is rounded to a

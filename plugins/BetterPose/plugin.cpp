@@ -40,6 +40,7 @@ using Microsoft::WRL::ComPtr;
 #include "joint_limits.hpp"
 #include "pose_document.hpp"
 #include "blender_motion.hpp"
+#include "blender_localization.hpp"
 #include "retarget/motion_builder.hpp"
 #include "anomaly/sdk/localization.hpp"
 
@@ -151,16 +152,12 @@ bool IsStructuralControlTrack(const std::string_view name) {
 // UObject::ClassPrivate. Only used by the read-only mesh scan, where a wrong
 // value cannot corrupt anything: it just matches nothing and the scan reports
 // zero candidates.
-constexpr std::uint32_t kObjectClassOffset = 0x10;
 // UObject::NamePrivate (an FName: comparison index + number).
-constexpr std::uint32_t kObjectNameOffset = 0x18;
 // UObject::OuterPrivate. A component's outer is its owning actor, which is how
 // the scan narrows the whole world down to the local player's own components.
-constexpr std::uint32_t kObjectOuterOffset = 0x20;
 // USceneComponent::AttachParent. This is read-only: it identifies the scene
 // component an accessory is attached to; it is not a leader/master-pose
 // binding and must never be written by this plugin.
-constexpr std::uint32_t kMeshAttachParentOffset = 0xD8;
 // Extra components are only bone-driven when their bones can be matched to the
 // body skeleton this closely (mean position error, cm). Measured on a real
 // character: name mapping 6/222 and positional error ~9.9 cm even while both
@@ -1530,10 +1527,6 @@ struct Context final {
   std::array<std::atomic<double>, 3> blender_camera_base_location{};
   std::array<std::atomic<double>, 3> blender_camera_base_rotation{};
   std::array<std::atomic<double>, 3>
-      blender_camera_frozen_base_location{};
-  std::array<std::atomic<double>, 3>
-      blender_camera_frozen_base_rotation{};
-  std::array<std::atomic<double>, 3>
       blender_camera_loaded_correction_base_location{};
   std::array<std::atomic<double>, 3>
       blender_camera_loaded_correction_base_rotation{};
@@ -1544,12 +1537,9 @@ struct Context final {
   std::atomic<double> blender_camera_base_scale{1.0};
   std::atomic_bool blender_camera_anchor_valid{};
   std::atomic_bool blender_camera_base_valid{};
-  std::atomic_bool blender_camera_frozen_base_valid{};
   std::atomic_bool blender_camera_loaded_correction_base_valid{};
   std::atomic<std::uint64_t> blender_camera_direct_log_ms{};
   std::atomic<float> blender_camera_base_fov{};
-  std::atomic<float> blender_camera_frozen_base_fov{};
-  std::atomic<int> blender_camera_drive_mode{-1};
   std::atomic<double> blender_camera_frame_time{-1.0};
   std::atomic<double> blender_camera_hook_time{-1.0};
   // Camera hook and character anchor. The hook rewrites the POV at view-build time (see
@@ -1843,8 +1833,8 @@ Quatd QuatNormalize(const Quatd &q) noexcept;
 Quatd QuatConjugate(const Quatd &q) noexcept;
 std::array<double, 3> QuatToRotator(const Quatd &input) noexcept;
 
-nlohmann::json BlenderError(std::string_view message) {
-  return {{"ok", false}, {"error", std::string(message)}};
+nlohmann::json BlenderError(Context &context, std::string_view message) {
+  return {{"ok", false}, {"error", better_pose::LocalizeBlenderMessage(context.localizer, message)}};
 }
 
 bool BlenderFinite3(const nlohmann::json &value, std::array<double, 3> &out) noexcept {
@@ -2076,14 +2066,14 @@ bool InstallBlenderCameraTrack(Context &context,
     const auto &keys = payload["keys"];
     if (keys.empty() ||
         keys.size() > better_pose::blender_motion::kMaximumFrames) {
-      error = "Blender 镜头关键帧数量无效";
+      error = "Invalid Blender motion frame count";
       return false;
     }
     track.keys.reserve(keys.size());
     for (const auto &item : keys) {
       if (!item.is_object() || !item.contains("frame") ||
           !item["frame"].is_number_unsigned()) {
-        error = "Blender 镜头关键帧无效";
+        error = "Invalid Blender motion camera track";
         return false;
       }
       better_pose::mmd2bip::VmdCameraKey key;
@@ -2099,7 +2089,7 @@ bool InstallBlenderCameraTrack(Context &context,
           !BlenderFinite3(item.value("rotation",
                                      nlohmann::json::array()),
                           rotation)) {
-        error = "Blender 镜头关键帧参数无效";
+        error = "Blender motion camera track contains invalid values";
         return false;
       }
       for (std::size_t axis{}; axis != 3; ++axis) {
@@ -2131,33 +2121,33 @@ bool InstallBlenderCameraTrack(Context &context,
   } else {
   if (!payload.is_object() || !payload.contains("frames") ||
       !payload["frames"].is_array() || payload["frames"].empty()) {
-    error = "Blender 镜头轨道为空";
+    error = "Invalid Blender motion camera track";
     return false;
   }
   if (payload["frames"].size() >
       better_pose::blender_motion::kMaximumFrames) {
-    error = "Blender 镜头轨道过长";
+    error = "Invalid Blender motion frame count";
     return false;
   }
   better_pose::blender_motion::Document source;
   source.fps = payload.value("fps", 30.0);
   if (!std::isfinite(source.fps) || source.fps <= 0.0) {
-    error = "Blender 镜头轨道帧率无效";
+    error = "Invalid Blender motion frame rate";
     return false;
   }
   for (const auto &item : payload["frames"]) {
     if (!item.is_object()) {
-      error = "Blender 镜头轨道包含无效帧";
+      error = "Invalid Blender motion camera track";
       return false;
     }
     better_pose::blender_motion::Frame frame;
     frame.time = item.value("time", -1.0);
     if (!std::isfinite(frame.time) || frame.time < 0.0) {
-      error = "Blender 镜头轨道的帧时间无效";
+      error = "Invalid Blender motion camera track";
       return false;
     }
     if (!item.contains("camera") || !item["camera"].is_object()) {
-      error = "Blender 镜头轨道缺少相机数据";
+      error = "Blender motion camera track contains invalid values";
       return false;
     }
     const auto &camera = item["camera"];
@@ -2168,7 +2158,7 @@ bool InstallBlenderCameraTrack(Context &context,
     else if (camera.contains("focus"))
       focus = &camera["focus"];
     if (focus == nullptr || !BlenderFinite3(*focus, sample.focus)) {
-      error = "Blender 镜头轨道的目标点无效";
+      error = "Blender motion camera track contains invalid values";
       return false;
     }
     sample.yaw = item.value("yaw", camera.value("yaw", 0.0));
@@ -2179,7 +2169,7 @@ bool InstallBlenderCameraTrack(Context &context,
         !std::isfinite(sample.distance) || sample.distance <= 1.0 ||
         !std::isfinite(sample.fov) || sample.fov <= 1.0 ||
         sample.fov >= 179.0) {
-      error = "Blender 镜头轨道的相机参数无效";
+      error = "Blender motion camera track contains invalid values";
       return false;
     }
     frame.camera = sample;
@@ -2190,7 +2180,7 @@ bool InstallBlenderCameraTrack(Context &context,
           source, CameraUnitCm(context), built, error) ||
       built.empty()) {
     if (error.empty())
-      error = "Blender 镜头轨道没有可用关键帧";
+      error = "Invalid Blender motion camera track";
     return false;
   }
   track.keys.reserve(built.size());
@@ -2239,9 +2229,12 @@ bool InstallBlenderCameraTrack(Context &context,
                              std::string(imported_kind) + " keys=" +
                              std::to_string(imported_key_count));
   context.blender_status =
-      std::string("Blender 已连接；已导入 ") +
-      (std::strcmp(imported_kind, "raw") == 0 ? "原始" : "烘焙") +
-      " CameraTrack（" + std::to_string(imported_key_count) + " 键）";
+      context.localizer.Format(
+          "blender.message.89",
+          "Blender camera imported: {0} keys ({1})",
+          std::array<std::string_view, 2>{
+              std::to_string(imported_key_count),
+              std::strcmp(imported_kind, "raw") == 0 ? "raw" : "baked"});
   error.clear();
   return true;
 }
@@ -2318,7 +2311,7 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
         !context.bone_names.empty() &&
         context.bone_parents.size() == context.bone_names.size();
     if (pull_mode && !bones_ready)
-      return BlenderError("角色骨架尚未就绪，请先点击加载骨骼");
+      return BlenderError(context, "Character skeleton is not ready; load bones first");
     context.blender_active.store(!pull_mode, std::memory_order_release);
     context.blender_pull_active.store(pull_mode, std::memory_order_release);
     context.blender_session.store(GetTickCount64(), std::memory_order_release);
@@ -2343,12 +2336,9 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
                                                    std::memory_order_release);
     context.blender_camera_source_valid.store(false, std::memory_order_release);
     context.blender_camera_base_valid.store(false, std::memory_order_release);
-    context.blender_camera_frozen_base_valid.store(false,
-                                                   std::memory_order_release);
     context.blender_camera_loaded_correction_base_valid.store(
         false, std::memory_order_release);
     context.blender_camera_anchor_valid.store(false, std::memory_order_release);
-    context.blender_camera_drive_mode.store(-1, std::memory_order_release);
     context.blender_camera_direct_log_ms.store(0, std::memory_order_release);
     context.blender_camera_base_fov.store(0.0F, std::memory_order_release);
     context.blender_camera_fov.store(0.0F, std::memory_order_release);
@@ -2363,10 +2353,12 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
     context.blender_model = Hex(context.runtime.character);
     RestoreBlenderCameraTrack(context);
     if (pull_mode || !body.contains("camera_track")) {
-      context.blender_status = "Blender 已连接；使用 Blender 时间轴预览";
+      context.blender_status = better_pose::LocalizeBlenderMessage(
+          context.localizer, "Blender connected; preview using its timeline");
     } else if (context.camera_loaded.load(std::memory_order_acquire)) {
-      context.blender_status =
-          "Blender 已连接；使用当前 CameraTrack 并叠加 Blender 修正";
+      context.blender_status = better_pose::LocalizeBlenderMessage(
+          context.localizer,
+          "Blender connected; using the current CameraTrack with live corrections");
     } else {
       std::string camera_error;
       if (!InstallBlenderCameraTrack(context, body["camera_track"],
@@ -2390,7 +2382,7 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
             context.camera_session_active.store(true,
                                                 std::memory_order_release);
         }
-        return BlenderError("Blender 镜头导入失败：" + camera_error);
+        return BlenderError(context, camera_error);
       }
     }
     if (bones_ready)
@@ -2401,12 +2393,12 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
   if ((!context.blender_active.load(std::memory_order_acquire) &&
        !context.blender_pull_active.load(std::memory_order_acquire)) ||
       session != context.blender_session.load(std::memory_order_acquire))
-    return BlenderError("Blender 会话已失效，请重新连接");
+    return BlenderError(context, "Blender session expired; reconnect");
   if (path == "scene")
     return BlenderScene(context);
   if (path == "sample") {
     if (!context.motion_loaded.load(std::memory_order_acquire))
-      return BlenderError("当前没有加载 MMD 动作");
+      return BlenderError(context, "No MMD motion is loaded");
     const double start = body.value("start", 0.0);
     const double fps = std::clamp(body.value("fps", 30.0), 1.0, 120.0);
     const auto count = static_cast<std::uint32_t>(
@@ -2430,12 +2422,9 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
                                                    std::memory_order_release);
     context.blender_camera_source_valid.store(false, std::memory_order_release);
     context.blender_camera_base_valid.store(false, std::memory_order_release);
-    context.blender_camera_frozen_base_valid.store(false,
-                                                   std::memory_order_release);
     context.blender_camera_loaded_correction_base_valid.store(
         false, std::memory_order_release);
     context.blender_camera_anchor_valid.store(false, std::memory_order_release);
-    context.blender_camera_drive_mode.store(-1, std::memory_order_release);
     context.blender_camera_direct_log_ms.store(0, std::memory_order_release);
     context.blender_camera_base_fov.store(0.0F, std::memory_order_release);
     context.blender_camera_fov.store(0.0F, std::memory_order_release);
@@ -2478,20 +2467,18 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
     }
     context.blender_resume_motion.store(false, std::memory_order_release);
     context.blender_motion_was_playing.store(false, std::memory_order_release);
-    context.blender_status = "Blender 已断开，已恢复游戏姿态";
+    context.blender_status = better_pose::LocalizeBlenderMessage(context.localizer, "Blender disconnected; game pose restored");
     return {{"ok", true}};
   }
   if (path == "ping")
-    return {{"ok", true}, {"sequence", context.blender_sequence},
-            {"camera_loaded",
-             context.camera_loaded.load(std::memory_order_acquire)}};
+    return {{"ok", true}, {"sequence", context.blender_sequence}};
   if (path != "frame")
-    return BlenderError("未知 Blender 请求");
+    return BlenderError(context, "Unknown Blender request");
   const auto sequence = body.value("sequence", std::uint64_t{});
   if (sequence <= context.blender_sequence)
-    return BlenderError("过期的 Blender 帧");
+    return BlenderError(context, "Expired Blender frame");
   if (!body.contains("bones") || !body["bones"].is_array())
-    return BlenderError("Blender 帧缺少骨骼数据");
+    return BlenderError(context, "Blender frame has no bone data");
   std::vector<std::array<double, 3>> next;
   {
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -2511,29 +2498,29 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
                              item["r"].is_array() && item["r"].size() == 3;
     if (!item.is_object() || !item.contains("i") || !item["i"].is_number_unsigned() ||
         (!has_quaternion && !has_rotator))
-      return BlenderError("Blender 帧中的骨骼数据无效");
+      return BlenderError(context, "Invalid bone data in Blender frame");
     const auto index = item["i"].get<std::size_t>();
     if (index >= next.size() || !IsBlenderBodyBone(context.bone_names[index]))
-      return BlenderError("Blender 帧中的骨骼索引或旋转无效");
+      return BlenderError(context, "Invalid bone index or rotation in Blender frame");
     if (item.contains("q") && item["q"].is_array() && item["q"].size() == 4) {
       std::array<double, 4> q{};
       for (std::size_t axis{}; axis != 4; ++axis) {
         if (!item["q"][axis].is_number())
-          return BlenderError("Blender 帧中的四元数无效");
+          return BlenderError(context, "Invalid quaternion in Blender frame");
         q[axis] = item["q"][axis].get<double>();
         if (!std::isfinite(q[axis]) || std::abs(q[axis]) > 1.01)
-          return BlenderError("Blender 帧中的四元数超出范围");
+          return BlenderError(context, "Quaternion outside supported range in Blender frame");
       }
       const auto angles = BlenderQuatToRotator(q);
       next[index] = angles;
     } else {
       if (!item["r"][0].is_number() || !item["r"][1].is_number() ||
           !item["r"][2].is_number())
-        return BlenderError("Blender 帧中的欧拉旋转无效");
+        return BlenderError(context, "Invalid Euler rotation in Blender frame");
       for (std::size_t axis{}; axis != 3; ++axis) {
         const double value = item["r"][axis].get<double>();
         if (!std::isfinite(value) || std::abs(value) > 360.0)
-          return BlenderError("Blender 帧中的旋转超出范围");
+          return BlenderError(context, "Rotation outside supported range in Blender frame");
         next[index][axis] = value;
       }
     }
@@ -2542,20 +2529,20 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
   std::vector<std::pair<std::string, float>> faces;
   if (body.contains("faces")) {
     if (!body["faces"].is_object())
-      return BlenderError("Blender 帧中的表情数据无效");
+      return BlenderError(context, "Invalid expression data in Blender frame");
     for (auto it = body["faces"].begin(); it != body["faces"].end(); ++it) {
       if (!it.value().is_number())
-        return BlenderError("Blender 帧中的表情权重无效");
+        return BlenderError(context, "Invalid expression weight in Blender frame");
       const float weight = it.value().get<float>();
       if (!std::isfinite(weight))
-        return BlenderError("Blender 帧中的表情权重超出范围");
+        return BlenderError(context, "Expression weight outside supported range in Blender frame");
       faces.emplace_back(it.key(), std::clamp(weight, 0.0F, 1.0F));
     }
   }
   std::array<double, 3> root{};
   if (body.contains("root")) {
     if (!BlenderFinite3(body["root"], root))
-      return BlenderError("Blender 根位移无效");
+      return BlenderError(context, "Invalid Blender root translation");
   }
   std::array<double, 3> camera_delta_location{};
   std::array<double, 3> camera_delta_rotation{};
@@ -2611,20 +2598,20 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
       if (!has_position || !has_rotation ||
           !BlenderFinite3(camera["delta_position"], camera_delta_location) ||
           !camera["delta_rotation"].is_array() || camera["delta_rotation"].size() != 4)
-        return BlenderError("Blender 镜头位姿无效");
+        return BlenderError(context, "Invalid Blender camera pose");
       std::array<double, 4> quaternion{};
       for (std::size_t axis{}; axis != 4; ++axis) {
         if (!camera["delta_rotation"][axis].is_number())
-          return BlenderError("Blender 镜头旋转无效");
+          return BlenderError(context, "Invalid Blender camera rotation");
         quaternion[axis] = camera["delta_rotation"][axis].get<double>();
         if (!std::isfinite(quaternion[axis]) || std::abs(quaternion[axis]) > 1.01)
-          return BlenderError("Blender 镜头旋转超出范围");
+          return BlenderError(context, "Blender camera rotation outside supported range");
       }
       camera_delta_rotation = BlenderQuatToRotator(quaternion);
       camera_lens_scale = camera.value("lens_scale", 1.0);
       if (!std::isfinite(camera_lens_scale) ||
           camera_lens_scale < 0.05 || camera_lens_scale > 20.0)
-        return BlenderError("Blender 镜头缩放无效");
+        return BlenderError(context, "Invalid Blender camera zoom");
       direct_camera = true;
     }
     const bool has_motion_position =
@@ -2637,16 +2624,16 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
                           motion_camera_delta_location) ||
           !camera["motion_delta_rotation"].is_array() ||
           camera["motion_delta_rotation"].size() != 4)
-        return BlenderError("Blender 完整镜头位姿无效");
+        return BlenderError(context, "Invalid complete Blender camera pose");
       std::array<double, 4> quaternion{};
       for (std::size_t axis{}; axis != 4; ++axis) {
         if (!camera["motion_delta_rotation"][axis].is_number())
-          return BlenderError("Blender 完整镜头旋转无效");
+          return BlenderError(context, "Invalid complete Blender camera rotation");
         quaternion[axis] =
             camera["motion_delta_rotation"][axis].get<double>();
         if (!std::isfinite(quaternion[axis]) ||
             std::abs(quaternion[axis]) > 1.01)
-          return BlenderError("Blender 完整镜头旋转超出范围");
+          return BlenderError(context, "Complete Blender camera rotation outside supported range");
       }
       motion_camera_delta_rotation = BlenderQuatToRotator(quaternion);
       motion_camera = true;
@@ -2657,41 +2644,41 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
                           camera_relative_location) ||
           !camera["rotation"].is_array() ||
           camera["rotation"].size() != 4)
-        return BlenderError("Blender 绝对镜头位姿无效");
+        return BlenderError(context, "Invalid absolute Blender camera pose");
       std::array<double, 4> quaternion{};
       for (std::size_t axis{}; axis != 4; ++axis) {
         if (!camera["rotation"][axis].is_number())
-          return BlenderError("Blender 绝对镜头旋转无效");
+          return BlenderError(context, "Invalid absolute Blender camera rotation");
         quaternion[axis] = camera["rotation"][axis].get<double>();
         if (!std::isfinite(quaternion[axis]) ||
             std::abs(quaternion[axis]) > 1.01)
-          return BlenderError("Blender 绝对镜头旋转超出范围");
+          return BlenderError(context, "Absolute Blender camera rotation outside supported range");
       }
       camera_absolute_rotation = BlenderQuatToRotator(quaternion);
       relative_camera = true;
     }
     if (camera.contains("forward")) {
       if (!BlenderFinite3(camera["forward"], camera_forward))
-        return BlenderError("Blender 镜头方向无效");
+        return BlenderError(context, "Invalid Blender camera direction");
       const double length =
           std::sqrt(camera_forward[0] * camera_forward[0] +
                     camera_forward[1] * camera_forward[1] +
                     camera_forward[2] * camera_forward[2]);
       if (!(length > 1e-6))
-        return BlenderError("Blender 镜头方向为零");
+        return BlenderError(context, "Blender camera direction is zero");
       for (double &value : camera_forward)
         value /= length;
       forward_camera = true;
     }
     if (camera.contains("look_forward")) {
       if (!BlenderFinite3(camera["look_forward"], camera_look_forward))
-        return BlenderError("Blender 镜头参照方向无效");
+        return BlenderError(context, "Invalid Blender camera reference direction");
       const double length =
           std::sqrt(camera_look_forward[0] * camera_look_forward[0] +
                     camera_look_forward[1] * camera_look_forward[1] +
                     camera_look_forward[2] * camera_look_forward[2]);
       if (!(length > 1e-6))
-        return BlenderError("Blender 镜头参照方向为零");
+        return BlenderError(context, "Blender camera reference direction is zero");
       for (double &value : camera_look_forward)
         value /= length;
       look_forward_camera = true;
@@ -2699,16 +2686,16 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
     if (camera.contains("focus_delta_rotation")) {
       if (!camera["focus_delta_rotation"].is_array() ||
           camera["focus_delta_rotation"].size() != 4)
-        return BlenderError("Blender 镜头焦点偏差无效");
+        return BlenderError(context, "Invalid Blender camera focus offset");
       std::array<double, 4> quaternion{};
       for (std::size_t axis{}; axis != 4; ++axis) {
         if (!camera["focus_delta_rotation"][axis].is_number())
-          return BlenderError("Blender 镜头焦点偏差无效");
+          return BlenderError(context, "Invalid Blender camera focus offset");
         quaternion[axis] =
             camera["focus_delta_rotation"][axis].get<double>();
         if (!std::isfinite(quaternion[axis]) ||
             std::abs(quaternion[axis]) > 1.01)
-          return BlenderError("Blender 镜头焦点偏差超出范围");
+          return BlenderError(context, "Blender camera focus offset outside supported range");
       }
       camera_focus_delta_rotation = BlenderQuatToRotator(quaternion);
       focus_delta_camera = true;
@@ -2863,9 +2850,7 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
   context.blender_frame.valid = true;
   ApplyBlenderMorphs(context, context.blender_frame.faces);
   context.blender_sequence = sequence;
-  return {{"ok", true}, {"sequence", context.blender_sequence},
-          {"camera_loaded",
-           context.camera_loaded.load(std::memory_order_acquire)}};
+  return {{"ok", true}, {"sequence", context.blender_sequence}};
 }
 
 bool BlenderSend(SOCKET socket, const std::string &text) noexcept {
@@ -2892,7 +2877,7 @@ void BlenderServeClient(Context &context, SOCKET socket) noexcept {
       while (header_end == std::string::npos) {
         const int received = recv(socket, buffer, sizeof(buffer), 0);
         if (received <= 0 || request.size() > 32768)
-          throw std::runtime_error("HTTP 请求头无效");
+          throw std::runtime_error("Invalid HTTP request header");
         request.append(buffer, static_cast<std::size_t>(received));
         header_end = request.find("\r\n\r\n");
       }
@@ -2917,7 +2902,7 @@ void BlenderServeClient(Context &context, SOCKET socket) noexcept {
             std::stoull(lower_header.substr(value_start, value_end - value_start));
       }
       if (length > 4U * 1024U * 1024U)
-        throw std::runtime_error("Blender 请求过大");
+        throw std::runtime_error("Blender request is too large");
       const std::size_t body_start = header_end + 4;
       while (request.size() < body_start + length) {
         const int received =
@@ -2926,7 +2911,7 @@ void BlenderServeClient(Context &context, SOCKET socket) noexcept {
                      sizeof(buffer), body_start + length - request.size())),
                  0);
         if (received <= 0)
-          throw std::runtime_error("Blender 请求不完整");
+          throw std::runtime_error("Incomplete Blender request");
         request.append(buffer, static_cast<std::size_t>(received));
       }
       const std::string body = request.substr(body_start, length);
@@ -2937,7 +2922,7 @@ void BlenderServeClient(Context &context, SOCKET socket) noexcept {
       nlohmann::json response;
       if (method != "POST" || path.rfind("/api/blender/", 0) != 0 ||
           lower_header.find("\r\norigin:") != std::string::npos) {
-        response = BlenderError("只接受本机 Blender POST 请求");
+        response = BlenderError(context, "Only local Blender POST requests are accepted");
       } else {
         auto command = std::make_shared<Context::BlenderCommand>();
         command->path = path.substr(13);
@@ -2961,7 +2946,7 @@ void BlenderServeClient(Context &context, SOCKET socket) noexcept {
             }
           }
           if (!queued)
-            response = BlenderError("Blender 请求队列已满");
+            response = BlenderError(context, "Blender request queue is full");
           else if (future.wait_for(std::chrono::seconds(2)) ==
                    std::future_status::ready)
             response = future.get();
@@ -2970,7 +2955,7 @@ void BlenderServeClient(Context &context, SOCKET socket) noexcept {
             response = {{"ok", false},
                         {"retryable", true},
                         {"error",
-                         "等待游戏更新超时，请保持游戏处于可操作场景"}};
+                         "Game update timed out; keep the game in an interactive scene"}};
           }
         }
       }
@@ -2984,7 +2969,7 @@ void BlenderServeClient(Context &context, SOCKET socket) noexcept {
         break;
     }
   } catch (const std::exception &error) {
-    const std::string payload = BlenderError(error.what()).dump();
+    const std::string payload = BlenderError(context, error.what()).dump();
     const std::string header = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " +
                                std::to_string(payload.size()) + "\r\nConnection: close\r\n\r\n";
     BlenderSend(socket, header + payload);
@@ -3040,7 +3025,7 @@ void BlenderServerMain(Context &context) noexcept {
 void BlenderStartServer(Context &context) noexcept {
   if (context.blender_server_thread.joinable())
     return;
-  context.blender_status = "Blender 服务已启动：http://127.0.0.1:18923";
+  context.blender_status = better_pose::LocalizeBlenderMessage(context.localizer, "Blender server started: http://127.0.0.1:18923");
   context.blender_server_stop.store(false, std::memory_order_release);
   context.blender_server_thread = std::thread([&context] { BlenderServerMain(context); });
 }
@@ -3052,7 +3037,7 @@ void BlenderStopServer(Context &context) noexcept {
     for (auto &command : context.blender_commands) {
       command->cancelled.store(true, std::memory_order_release);
       try {
-        command->result.set_value(BlenderError("BetterPose 正在卸载"));
+        command->result.set_value(BlenderError(context, "BetterPose is unloading"));
       } catch (...) {
       }
     }
@@ -3096,12 +3081,9 @@ void BlenderStopServer(Context &context) noexcept {
                                                    std::memory_order_release);
   context.blender_camera_source_valid.store(false, std::memory_order_release);
   context.blender_camera_base_valid.store(false, std::memory_order_release);
-  context.blender_camera_frozen_base_valid.store(false,
-                                                 std::memory_order_release);
   context.blender_camera_loaded_correction_base_valid.store(
       false, std::memory_order_release);
   context.blender_camera_anchor_valid.store(false, std::memory_order_release);
-  context.blender_camera_drive_mode.store(-1, std::memory_order_release);
   context.blender_camera_direct_log_ms.store(0, std::memory_order_release);
   context.blender_camera_base_fov.store(0.0F, std::memory_order_release);
   context.blender_camera_fov.store(0.0F, std::memory_order_release);
@@ -3133,7 +3115,7 @@ void BlenderDrain(Context &context) noexcept {
       command->result.set_value(BlenderExecute(context, command->path, command->body));
     } catch (const std::exception &error) {
       try {
-        command->result.set_value(BlenderError(error.what()));
+        command->result.set_value(BlenderError(context, error.what()));
       } catch (...) {
       }
     }
@@ -5275,15 +5257,9 @@ bool ReadPointerAt(Context &context, const std::uintptr_t base,
 
 bool ResolveSignature(Context &context, const std::string_view pattern,
                       std::uintptr_t &address) noexcept {
-  address = 0;
-  return SignatureReady(context.signature) &&
-         context.signature
-                 ->resolve(context.signature->user,
-                           anomaly::sdk::StringView("HTGame.exe"),
-                           anomaly::sdk::StringView(".text"),
-                           anomaly::sdk::StringView(pattern), &address)
-                 .code == ANOMALY_STATUS_V1_OK &&
-         address != 0;
+  (void)context;
+  address = compatibility.Address(pattern);
+  return address != 0;
 }
 
 bool ResolveGWorld(Context &context) noexcept {
@@ -5310,14 +5286,14 @@ bool ResolvePlayerCharacterPair(Context &context, std::uintptr_t &character,
   std::uintptr_t local_player{};
   std::uintptr_t controller{};
   if (!Read(context, context.runtime.g_world_address, world) ||
-      !ReadPointerAt(context, world, kWorldGameInstanceOffset, game_instance) ||
-      !ReadPointerAt(context, game_instance, kGameInstanceLocalPlayersOffset,
+      !ReadPointerAt(context, world, native_layout.kWorldGameInstanceOffset, game_instance) ||
+      !ReadPointerAt(context, game_instance, native_layout.kGameInstanceLocalPlayersOffset,
                      local_players) ||
       !Read(context, local_players, local_player) || local_player == 0 ||
-      !ReadPointerAt(context, local_player, kLocalPlayerControllerOffset,
+      !ReadPointerAt(context, local_player, native_layout.kLocalPlayerControllerOffset,
                      controller) ||
-      !ReadPointerAt(context, controller, kControllerPawnOffset, character) ||
-      !ReadPointerAt(context, character, kCharacterMeshOffset, mesh)) {
+      !ReadPointerAt(context, controller, native_layout.kControllerPawnOffset, character) ||
+      !ReadPointerAt(context, character, native_layout.kCharacterMeshOffset, mesh)) {
     return false;
   }
   return true;
@@ -5350,7 +5326,7 @@ bool ResolveLocalCharacter(Context &context) noexcept {
     const bool target_readable =
         found != context.pose_targets.end() &&
         ReadArrayHeader(context,
-                        found->mesh + kMeshComponentSpaceBuffer0Offset,
+                        found->mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
                         target_data, target_count) &&
         target_data != 0 && target_count != 0 && target_count <= 4096;
     if (target_readable) {
@@ -5382,10 +5358,10 @@ bool ReadAnimationState(Context &context) noexcept {
     return false;
   std::uint8_t animation_mode{};
   std::uint8_t animation_flags{};
-  if (!Read(context, mesh + kMeshAnimationModeOffset, animation_mode) ||
-      !Read(context, mesh + kMeshAnimationFlagsOffset, animation_flags))
+  if (!Read(context, mesh + native_layout.kMeshAnimationModeOffset, animation_mode) ||
+      !Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, animation_flags))
     return false;
-  static_cast<void>(Read(context, mesh + kMeshAnimScriptInstanceOffset,
+  static_cast<void>(Read(context, mesh + native_layout.kMeshAnimScriptInstanceOffset,
                         context.runtime.anim_instance));
   context.runtime.animation_mode = animation_mode;
   context.runtime.animation_flags = animation_flags;
@@ -5399,8 +5375,8 @@ bool ReadArrayHeader(Context &context, const std::uintptr_t array_address,
   if (array_address == 0)
     return false;
   std::int32_t count_value{};
-  if (!Read(context, array_address + kArrayDataOffset, data) ||
-      !Read(context, array_address + kArrayCountOffset, count_value) ||
+  if (!Read(context, array_address + native_layout.kArrayDataOffset, data) ||
+      !Read(context, array_address + native_layout.kArrayCountOffset, count_value) ||
       count_value < 0)
     return false;
   count = static_cast<std::uint32_t>(count_value);
@@ -5418,11 +5394,11 @@ bool ReadPoseArrays(Context &context) noexcept {
   std::uintptr_t local_space_data{};
   std::uint32_t local_space_count{};
   const bool authoritative =
-      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
+      ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
                       bone_space_data, bone_space_count) &&
-      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer1Offset,
+      ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer1Offset,
                       component_space_data, component_space_count) &&
-      ReadArrayHeader(context, mesh + kMeshLocalSpaceTransformsOffset,
+      ReadArrayHeader(context, mesh + native_layout.kMeshLocalSpaceTransformsOffset,
                       local_space_data, local_space_count) &&
       bone_space_data != 0 && bone_space_count != 0 &&
       component_space_data != 0 && component_space_count != 0 &&
@@ -5439,10 +5415,10 @@ bool ReadPoseArrays(Context &context) noexcept {
     return true;
   }
   static_cast<void>(ReadArrayHeader(
-      context, mesh + kMeshCachedBoneSpaceTransformsOffset,
+      context, mesh + native_layout.kMeshCachedBoneSpaceTransformsOffset,
       context.runtime.bone_space_data, context.runtime.bone_space_count));
   return ReadArrayHeader(
-      context, mesh + kMeshCachedComponentSpaceTransformsOffset,
+      context, mesh + native_layout.kMeshCachedComponentSpaceTransformsOffset,
       context.runtime.component_space_data,
       context.runtime.component_space_count);
 }
@@ -5451,7 +5427,7 @@ bool RestorePause(Context &context) noexcept {
   RuntimeState &state = context.runtime;
   if (!state.saved_pause || state.mesh == 0)
     return true;
-  if (!Write(context, state.mesh + kMeshAnimationFlagsOffset,
+  if (!Write(context, state.mesh + native_layout.kMeshAnimationFlagsOffset,
              state.original_animation_flags))
     return false;
   state.saved_pause = false;
@@ -5468,11 +5444,11 @@ bool ApplyPause(Context &context, const bool enabled) noexcept {
   if (state.saved_pause)
     return true;
   std::uint8_t flags{};
-  if (!Read(context, state.mesh + kMeshAnimationFlagsOffset, flags))
+  if (!Read(context, state.mesh + native_layout.kMeshAnimationFlagsOffset, flags))
     return false;
   state.original_animation_flags = flags;
-  flags |= static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit);
-  if (!Write(context, state.mesh + kMeshAnimationFlagsOffset, flags))
+  flags |= static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
+  if (!Write(context, state.mesh + native_layout.kMeshAnimationFlagsOffset, flags))
     return false;
   state.saved_pause = true;
   state.animation_flags = flags;
@@ -5483,7 +5459,7 @@ bool RestoreRate(Context &context) noexcept {
   RuntimeState &state = context.runtime;
   if (!state.saved_rate || state.mesh == 0)
     return true;
-  if (!Write(context, state.mesh + kMeshGlobalAnimRateScaleOffset,
+  if (!Write(context, state.mesh + native_layout.kMeshGlobalAnimRateScaleOffset,
              state.original_rate_scale))
     return false;
   state.saved_rate = false;
@@ -5498,19 +5474,19 @@ bool ApplyRate(Context &context, const bool enabled, const float value) noexcept
     return RestoreRate(context);
   if (!state.saved_rate) {
     float original{};
-    if (!Read(context, state.mesh + kMeshGlobalAnimRateScaleOffset, original))
+    if (!Read(context, state.mesh + native_layout.kMeshGlobalAnimRateScaleOffset, original))
       return false;
     state.original_rate_scale = original;
     state.saved_rate = true;
   }
-  return Write(context, state.mesh + kMeshGlobalAnimRateScaleOffset, value);
+  return Write(context, state.mesh + native_layout.kMeshGlobalAnimRateScaleOffset, value);
 }
 
 bool RestoreRootMotion(Context &context) noexcept {
   RuntimeState &state = context.runtime;
   if (!state.saved_root_motion || state.external_target || state.character == 0)
     return true;
-  if (!Write(context, state.character + kCharacterAnimRootMotionScaleOffset,
+  if (!Write(context, state.character + native_layout.kCharacterAnimRootMotionScaleOffset,
              state.original_root_motion_scale))
     return false;
   state.saved_root_motion = false;
@@ -5528,13 +5504,13 @@ bool ApplyRootMotion(Context &context, const bool enabled,
     return RestoreRootMotion(context);
   if (!state.saved_root_motion) {
     float original{};
-    if (!Read(context, state.character + kCharacterAnimRootMotionScaleOffset,
+    if (!Read(context, state.character + native_layout.kCharacterAnimRootMotionScaleOffset,
               original))
       return false;
     state.original_root_motion_scale = original;
     state.saved_root_motion = true;
   }
-  return Write(context, state.character + kCharacterAnimRootMotionScaleOffset,
+  return Write(context, state.character + native_layout.kCharacterAnimRootMotionScaleOffset,
                value);
 }
 
@@ -5546,7 +5522,7 @@ bool RestoreMultiThreadedUpdate(Context &context) noexcept {
     state.saved_multi_threaded_update = false;
     return true;
   }
-  if (!Write(context, state.anim_instance + kAnimInstanceUseMultiThreadedUpdateOffset,
+  if (!Write(context, state.anim_instance + native_layout.kAnimInstanceUseMultiThreadedUpdateOffset,
              state.original_multi_threaded_update_flags))
     return false;
   state.saved_multi_threaded_update = false;
@@ -5566,7 +5542,7 @@ bool ApplyMultiThreadedUpdate(Context &context, const bool enabled) noexcept {
   }
   if (!state.saved_multi_threaded_update) {
     std::uint8_t flags{};
-    if (!Read(context, state.anim_instance + kAnimInstanceUseMultiThreadedUpdateOffset,
+    if (!Read(context, state.anim_instance + native_layout.kAnimInstanceUseMultiThreadedUpdateOffset,
               flags))
       return false;
     state.original_multi_threaded_update_flags = flags;
@@ -5575,8 +5551,8 @@ bool ApplyMultiThreadedUpdate(Context &context, const bool enabled) noexcept {
   }
   std::uint8_t flags = state.original_multi_threaded_update_flags;
   flags &= static_cast<std::uint8_t>(
-      ~(1U << kAnimInstanceUseMultiThreadedUpdateBit));
-  return Write(context, state.anim_instance + kAnimInstanceUseMultiThreadedUpdateOffset,
+      ~(1U << native_layout.kAnimInstanceUseMultiThreadedUpdateBit));
+  return Write(context, state.anim_instance + native_layout.kAnimInstanceUseMultiThreadedUpdateOffset,
                flags);
 }
 
@@ -5604,14 +5580,14 @@ bool ForceMeshObjectUpdate(Context &context,
   if (mesh == 0)
     return false;
   std::uint8_t flags{};
-  if (!Read(context, mesh + kMeshForceMeshObjectUpdateOffset, flags))
+  if (!Read(context, mesh + native_layout.kMeshForceMeshObjectUpdateOffset, flags))
     return false;
   const std::uint8_t bit =
-      static_cast<std::uint8_t>(1U << kMeshForceMeshObjectUpdateBit);
-  if (!Write(context, mesh + kMeshForceMeshObjectUpdateOffset,
+      static_cast<std::uint8_t>(1U << native_layout.kMeshForceMeshObjectUpdateBit);
+  if (!Write(context, mesh + native_layout.kMeshForceMeshObjectUpdateOffset,
              static_cast<std::uint8_t>(flags & static_cast<std::uint8_t>(~bit))))
     return false;
-  return Write(context, mesh + kMeshForceMeshObjectUpdateOffset,
+  return Write(context, mesh + native_layout.kMeshForceMeshObjectUpdateOffset,
                static_cast<std::uint8_t>(flags | bit));
 }
 
@@ -5710,33 +5686,24 @@ Quatd RotatorToQuat(const double pitch_degrees, const double yaw_degrees,
 
 bool ReadTransform(Context &context, const std::uintptr_t address,
                    Transformd &transform) noexcept {
-  if (!Read(context, address + kTransformRotationOffset, transform.rotation) ||
-      !Read(context, address + kTransformTranslationOffset,
+  if (!Read(context, address + native_layout.kTransformRotationOffset, transform.rotation) ||
+      !Read(context, address + native_layout.kTransformTranslationOffset,
             transform.translation) ||
-      !Read(context, address + kTransformScaleOffset, transform.scale))
+      !Read(context, address + native_layout.kTransformScaleOffset, transform.scale))
     return false;
   return true;
 }
 
 bool WriteTransform(Context &context, const std::uintptr_t address,
                     const Transformd &transform) noexcept {
-  return Write(context, address + kTransformRotationOffset,
+  return Write(context, address + native_layout.kTransformRotationOffset,
                transform.rotation) &&
-         Write(context, address + kTransformTranslationOffset,
+         Write(context, address + native_layout.kTransformTranslationOffset,
                transform.translation) &&
-         Write(context, address + kTransformScaleOffset, transform.scale);
+         Write(context, address + native_layout.kTransformScaleOffset, transform.scale);
 }
 
-struct PackedTransform {
-  double rotation[4]{};
-  double translation[3]{};
-  double padding{};
-  double scale[3]{1.0, 1.0, 1.0};
-  double tail_padding{};
-};
-
-static_assert(sizeof(PackedTransform) == kTransformSize,
-              "PackedTransform must match the game FTransform layout");
+using PackedTransform = better_pose_profile::TransformContract;
 
 Transformd UnpackTransform(const PackedTransform &source) noexcept {
   Transformd out;
@@ -5832,7 +5799,7 @@ void ApplyPoseOverridesInTick(Context &context) noexcept {
   for (std::uint32_t bone_index{}; bone_index != count; ++bone_index) {
     std::uintptr_t local_address{};
     if (!AddAddress(state.local_space_data,
-                    static_cast<std::uint64_t>(bone_index) * kTransformSize,
+                    static_cast<std::uint64_t>(bone_index) * native_layout.kTransformSize,
                     local_address) ||
         !ReadTransform(context, local_address, locals[bone_index]))
       return;
@@ -5939,7 +5906,7 @@ bool ResolvePoseTickTarget(Context &context, const std::uintptr_t mesh,
     return false;
   std::uintptr_t function{};
   const std::uint64_t slot_address =
-      static_cast<std::uint64_t>(kSkeletalMeshTickVtableSlot) * sizeof(void *);
+      static_cast<std::uint64_t>(native_layout.kSkeletalMeshTickVtableSlot) * sizeof(void *);
   if (slot_address > (std::numeric_limits<std::uintptr_t>::max)() - vtable ||
       !Read(context, vtable + static_cast<std::uintptr_t>(slot_address),
             function) ||
@@ -6033,6 +6000,7 @@ bool GetBoneFNameForMesh(Context &context, std::uintptr_t mesh,
                          std::array<std::uint8_t, 8> &fname,
                          std::string &name) noexcept;
 bool TryAssetReferencePose(Context &context, std::uintptr_t asset) noexcept;
+std::uintptr_t BodyMeshAsset(Context &context, std::uintptr_t mesh) noexcept;
 bool FindReferencePose(Context &context) noexcept;
 Transformd TransformInverse(const Transformd &value) noexcept;
 std::string ClassNameOf(Context &context, std::uintptr_t object) noexcept;
@@ -6061,7 +6029,7 @@ void StepKawaiiRetry(Context &context) noexcept;
 bool EnsureExtraPoseAnimationMode(Context &context,
                                   Context::ExtraMesh &extra,
                                   bool enabled) noexcept;
-bool WritePoseableAccessoryPose(Context::ExtraMesh &extra,
+bool WritePoseableAccessoryPose(Context &context, Context::ExtraMesh &extra,
                                 const std::vector<std::array<double, 12>> &components) noexcept;
 void DestroyPoseableAccessories(Context &context) noexcept;
 void DestroyStalePoseableComponent(Context &context,
@@ -6444,12 +6412,12 @@ bool ResolveCameraManager(Context &context, std::uintptr_t &manager) noexcept {
   std::uintptr_t local_player{};
   std::uintptr_t controller{};
   return Read(context, context.runtime.g_world_address, world) &&
-         ReadPointerAt(context, world, kWorldGameInstanceOffset, game_instance) &&
-         ReadPointerAt(context, game_instance, kGameInstanceLocalPlayersOffset,
+         ReadPointerAt(context, world, native_layout.kWorldGameInstanceOffset, game_instance) &&
+         ReadPointerAt(context, game_instance, native_layout.kGameInstanceLocalPlayersOffset,
                        local_players) &&
          Read(context, local_players, local_player) && local_player != 0 &&
-         ReadPointerAt(context, local_player, kLocalPlayerControllerOffset, controller) &&
-         ReadPointerAt(context, controller, kControllerCameraManagerOffset, manager) &&
+         ReadPointerAt(context, local_player, native_layout.kLocalPlayerControllerOffset, controller) &&
+         ReadPointerAt(context, controller, native_layout.kControllerCameraManagerOffset, manager) &&
          manager != 0;
 }
 
@@ -6489,7 +6457,7 @@ bool ResolveCameraPovTarget(Context &context, const std::uintptr_t manager,
   std::uintptr_t vtable{};
   std::uintptr_t getter{};
   if (!Read(context, manager, vtable) || vtable == 0 ||
-      !ReadPointerAt(context, vtable, kCameraViewPointVtableOffset, getter) || getter == 0)
+      !ReadPointerAt(context, vtable, native_layout.kCameraViewPointVtableOffset, getter) || getter == 0)
     return false;
   std::array<std::uint8_t, 32> code{};
   if (!Read(context, getter, code))
@@ -6755,7 +6723,7 @@ bool CharacterRootWorld(Context &context, const std::uintptr_t mesh,
   PackedTransform packed{};
   const std::uintptr_t address =
       context.runtime.component_space_data +
-      static_cast<std::size_t>(root_bone) * kTransformSize;
+      static_cast<std::size_t>(root_bone) * native_layout.kTransformSize;
   Transformd component_world;
   if (!Read(context, address, packed) ||
       !ReadMeshComponentToWorld(context, mesh, component_world))
@@ -6798,8 +6766,8 @@ bool CharacterBounds(Context &context, const std::uintptr_t mesh, double feet[3]
   double origin[3]{};
   double extent[3]{};
   if (mesh == 0 ||
-      !AddAddress(mesh, kCharacterBoundsOriginOffset, origin_address) ||
-      !AddAddress(mesh, kCharacterBoundsExtentOffset, extent_address) ||
+      !AddAddress(mesh, native_layout.kCharacterBoundsOriginOffset, origin_address) ||
+      !AddAddress(mesh, native_layout.kCharacterBoundsExtentOffset, extent_address) ||
       !Read(context, origin_address, origin) || !Read(context, extent_address, extent))
     return false;
   // A character-sized box, so a stale offset cannot quietly place the camera at the origin.
@@ -6895,48 +6863,6 @@ bool SampleCameraTrack(Context &context, double position[3], double rotation[3],
   }
   return context.camera.Sample(frame, position, rotation, distance, fov,
                                cut_mode == 0);
-}
-
-bool SampleBlenderCameraAsTrack(Context &context, double position[3],
-                                double rotation[3], double *distance,
-                                double *fov) noexcept {
-  const double unit = CameraUnitCm(context);
-  const double yaw =
-      context.blender_camera_yaw_degrees.load(std::memory_order_acquire) *
-      kCameraDegreesToRadians;
-  const double pitch =
-      context.blender_camera_pitch_degrees.load(std::memory_order_acquire) *
-      kCameraDegreesToRadians;
-  const std::array<double, 3> camera_direction{
-      std::cos(pitch) * std::cos(yaw),
-      std::cos(pitch) * std::sin(yaw),
-      std::sin(pitch),
-  };
-  position[0] =
-      -context.blender_camera_focus_cm[0].load(std::memory_order_acquire) /
-      unit;
-  position[1] =
-      context.blender_camera_focus_cm[2].load(std::memory_order_acquire) /
-      unit;
-  position[2] =
-      -context.blender_camera_focus_cm[1].load(std::memory_order_acquire) /
-      unit;
-  const std::array<double, 3> forward_mmd{
-      -camera_direction[0],
-      camera_direction[2],
-      -camera_direction[1],
-  };
-  rotation[0] = std::asin(std::clamp(-forward_mmd[1], -1.0, 1.0));
-  rotation[1] = std::atan2(forward_mmd[0], forward_mmd[2]);
-  rotation[2] = 0.0;
-  *distance =
-      context.blender_camera_distance_cm.load(std::memory_order_acquire) /
-      unit;
-  *fov = context.blender_camera_fov.load(std::memory_order_acquire);
-  return *distance > 1.0 && *fov > 1.0 && *fov < 179.0 &&
-         std::isfinite(position[0]) && std::isfinite(position[1]) &&
-         std::isfinite(position[2]) && std::isfinite(rotation[0]) &&
-         std::isfinite(rotation[1]);
 }
 
 std::optional<std::uint32_t> CameraCutFrameAtPlayhead(Context &context) noexcept {
@@ -7286,7 +7212,7 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
           // same place the camera track writes its lens). The game's own value
           // is read once, before the first write, so it can be handed back.
           std::uintptr_t fov_address{};
-          if (AddAddress(context->camera_pov_struct, kCameraPovFovOffset, fov_address)) {
+          if (AddAddress(context->camera_pov_struct, native_layout.kCameraPovFovOffset, fov_address)) {
             if (context->orbit_game_fov.load(std::memory_order_acquire) <= 0.0F) {
               float game_fov{};
               if (Read(*context, fov_address, game_fov) && game_fov > 5.0F && game_fov < 170.0F)
@@ -7314,7 +7240,7 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
         const float game_fov = context->orbit_game_fov.load(std::memory_order_acquire);
         std::uintptr_t fov_address{};
         if (game_fov > 5.0F && game_fov < 170.0F &&
-            AddAddress(context->camera_pov_struct, kCameraPovFovOffset, fov_address))
+            AddAddress(context->camera_pov_struct, native_layout.kCameraPovFovOffset, fov_address))
           static_cast<void>(Write(*context, fov_address, game_fov));
       }
     }
@@ -7342,35 +7268,6 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
     const bool track_mode =
         context != nullptr && context->camera_enabled.load(std::memory_order_acquire) &&
         context->camera_loaded.load(std::memory_order_acquire);
-    const int camera_drive_mode =
-        follow_mode ? 1 : direct_mode ? 2 : correction_mode ? 3 : track_mode ? 4 : 0;
-    if (context != nullptr &&
-        context->blender_camera_drive_mode.exchange(
-            camera_drive_mode, std::memory_order_acq_rel) != camera_drive_mode) {
-      // Direct Blender, loaded-track correction and the no-relative fallback
-      // use different coordinate spaces. Reusing a baseline while the user
-      // loads or unloads a CameraTrack shifted the entire shot because world
-      // coordinates could survive in a field that now expected local offsets.
-      context->blender_camera_base_valid.store(false,
-                                               std::memory_order_release);
-      context->blender_camera_frozen_base_valid.store(
-          false, std::memory_order_release);
-      context->blender_camera_loaded_correction_base_valid.store(
-          false, std::memory_order_release);
-      context->blender_camera_anchor_valid.store(false,
-                                                 std::memory_order_release);
-      context->blender_camera_hook_time.store(-1.0,
-                                              std::memory_order_release);
-      context->camera_anchored.store(false, std::memory_order_release);
-      context->camera_anchor_wait = 0;
-      const char *mode_name = camera_drive_mode == 1 ? "follow"
-          : camera_drive_mode == 2 ? "direct-blender"
-          : camera_drive_mode == 3 ? "track-correction"
-          : camera_drive_mode == 4 ? "track"
-          : "inactive";
-      LogDiagnostic(*context, std::string("betterpose camera baseline reset mode=") +
-                               mode_name);
-    }
     // The getter's two out-parameters are the camera the view is built from: a location and a
     // rotation, three doubles each -- the free-camera plugin hooks this same function and reads and
     // writes the same two, which is why this plugin now drives them instead of the POV member the
@@ -7385,7 +7282,7 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
       const std::uintptr_t rotation_address = reinterpret_cast<std::uintptr_t>(out_rotation);
       std::uintptr_t fov_address{};
       // The lens has no out-parameter here, so it still goes into the accessor's struct.
-      if (AddAddress(context->camera_pov_struct, kCameraPovFovOffset, fov_address)) {
+      if (AddAddress(context->camera_pov_struct, native_layout.kCameraPovFovOffset, fov_address)) {
         double location[3] = {out_location[0], out_location[1], out_location[2]};
         double rotation[3] = {out_rotation[0], out_rotation[1], out_rotation[2]};
         bool read_ok = std::isfinite(location[0]) && std::isfinite(location[1]) &&
@@ -7410,14 +7307,9 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
           const double game_rotation[3] = {rotation[0], rotation[1], rotation[2]};
           // Follow mode never reads the track, whatever file happens to be loaded.
           const bool sampled =
-              track_mode
-                  ? SampleCameraTrack(*context, file_position, file_rotation,
-                                      &file_distance, &file_fov)
-                  : direct_mode &&
-                        SampleBlenderCameraAsTrack(
-                            *context, file_position, file_rotation,
-                            &file_distance, &file_fov);
-          if (usable && (follow_mode || sampled) &&
+              track_mode && SampleCameraTrack(*context, file_position, file_rotation,
+                                              &file_distance, &file_fov);
+          if (!direct_mode && usable && (follow_mode || sampled) &&
               CharacterBounds(*context, CameraFollowMesh(*context), feet, centre)) {
             // The shot's angle is captured once, from the direction the game's own camera looked at
             // the character: that direction is the way the character faces. The local frame needs a
@@ -7494,7 +7386,364 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               camera_base_written = true;
             }
           }
-          if (correction_mode) {
+          if (direct_mode) {
+            const bool direct_bounds_ready =
+                CharacterBounds(*context, CameraFollowMesh(*context), feet,
+                                centre);
+            const bool relative_ready =
+                context->blender_camera_relative_valid.load(
+                    std::memory_order_acquire) &&
+                direct_bounds_ready;
+            if (relative_ready) {
+              if (!context->camera_anchored.load(
+                      std::memory_order_acquire)) {
+                const bool plausible =
+                    GameCameraReadingIsPlausible(game_location, centre) ||
+                    ++context->camera_anchor_wait > 90;
+                // Anchor the local MMD frame to the character, not to the
+                // current Blender camera azimuth. A camera track can reach the
+                // same character from any side; using that transient camera
+                // direction rotates the whole shot differently depending on
+                // which frame the user happened to connect on.
+                const double dx = centre[0] - game_location[0];
+                const double dy = centre[1] - game_location[1];
+                if (plausible && std::sqrt(dx * dx + dy * dy) > 1.0) {
+                  context->camera_yaw.store(
+                      std::atan2(dy, dx) + 1.5707963267948966,
+                      std::memory_order_release);
+                  StoreCameraAnchor(*context, feet, centre);
+                }
+              }
+              const double target_height =
+                  2.0 * (centre[2] - feet[2]);
+              const double source_height =
+                  context->blender_camera_subject_height.load(
+                      std::memory_order_acquire);
+              const double subject_scale =
+                  target_height > 1.0 && source_height > 1.0
+                      ? std::clamp(target_height / source_height, 0.25, 4.0)
+                      : 1.0;
+              const double local_x =
+                  context->blender_camera_relative_location[0].load(
+                      std::memory_order_acquire) *
+                      subject_scale;
+              const double local_y =
+                  context->blender_camera_relative_location[1].load(
+                      std::memory_order_acquire) *
+                      subject_scale;
+              const double local_z =
+                  context->blender_camera_relative_location[2].load(
+                      std::memory_order_acquire) *
+                      subject_scale;
+              if (!context->blender_camera_anchor_valid.load(
+                      std::memory_order_acquire)) {
+                const double game_x = game_location[0] - feet[0];
+                const double game_y = game_location[1] - feet[1];
+                const double game_z = game_location[2] - feet[2];
+                const double blender_planar =
+                    std::sqrt(local_x * local_x +
+                              local_y * local_y);
+                const double game_planar =
+                    std::sqrt(game_x * game_x + game_y * game_y);
+                const double blender_yaw =
+                    std::atan2(local_y, local_x);
+                const double game_yaw = std::atan2(game_y, game_x);
+                const double basis_yaw =
+                    blender_planar > 1.0 && game_planar > 1.0
+                        ? game_yaw - blender_yaw
+                        : CameraWorldYaw(*context);
+                const double base_scale =
+                    blender_planar > 1.0 && game_planar > 1.0
+                        ? std::clamp(game_planar / blender_planar,
+                                     0.1, 10.0)
+                        : subject_scale;
+                context->blender_camera_base_yaw.store(
+                    basis_yaw, std::memory_order_release);
+                context->blender_camera_base_scale.store(
+                    base_scale, std::memory_order_release);
+                context->blender_camera_base_relative[0].store(
+                    game_x, std::memory_order_release);
+                context->blender_camera_base_relative[1].store(
+                    game_y, std::memory_order_release);
+                context->blender_camera_base_relative[2].store(
+                    game_z, std::memory_order_release);
+                for (int axis{}; axis != 3; ++axis) {
+                  context->blender_camera_base_location[axis].store(
+                      local_x * static_cast<int>(axis == 0) +
+                          local_y * static_cast<int>(axis == 1) +
+                          local_z * static_cast<int>(axis == 2),
+                      std::memory_order_release);
+                  context->blender_camera_base_rotation[axis].store(
+                      game_rotation[axis], std::memory_order_release);
+                  context->blender_camera_base_absolute_rotation[axis].store(
+                      context->blender_camera_absolute_rotation[axis].load(
+                          std::memory_order_acquire),
+                      std::memory_order_release);
+                  context->blender_camera_base_focus_delta_rotation[axis]
+                      .store(
+                          context->blender_camera_focus_delta_rotation[axis]
+                              .load(std::memory_order_acquire),
+                          std::memory_order_release);
+                }
+                float base_fov{};
+                if (Read(*context, fov_address, base_fov) &&
+                    base_fov > 5.0F && base_fov < 170.0F)
+                  context->blender_camera_base_fov.store(
+                      base_fov, std::memory_order_release);
+                context->blender_camera_anchor_valid.store(
+                    true, std::memory_order_release);
+              }
+              const double basis_yaw =
+                  context->blender_camera_base_yaw.load(
+                      std::memory_order_acquire);
+              const double base_scale =
+                  context->blender_camera_base_scale.load(
+                      std::memory_order_acquire);
+              const double delta_x =
+                  (local_x -
+                   context->blender_camera_base_location[0].load(
+                       std::memory_order_acquire)) *
+                  base_scale;
+              const double delta_y =
+                  (local_y -
+                   context->blender_camera_base_location[1].load(
+                       std::memory_order_acquire)) *
+                  base_scale;
+              const double delta_z =
+                  (local_z -
+                   context->blender_camera_base_location[2].load(
+                       std::memory_order_acquire)) *
+                  base_scale;
+              const double cos_yaw = std::cos(basis_yaw);
+              const double sin_yaw = std::sin(basis_yaw);
+              out_location[0] =
+                  feet[0] +
+                  context->blender_camera_base_relative[0].load(
+                      std::memory_order_acquire) +
+                  delta_x * cos_yaw - delta_y * sin_yaw;
+              out_location[1] =
+                  feet[1] +
+                  context->blender_camera_base_relative[1].load(
+                      std::memory_order_acquire) +
+                  delta_x * sin_yaw + delta_y * cos_yaw;
+              out_location[2] =
+                  feet[2] +
+                  context->blender_camera_base_relative[2].load(
+                      std::memory_order_acquire) +
+                  delta_z;
+              for (int axis{}; axis != 3; ++axis)
+                out_rotation[axis] =
+                    context->blender_camera_base_rotation[axis].load(
+                        std::memory_order_acquire);
+              // Rotation is the camera object's absolute orientation change,
+              // not a direction reconstructed from its focus. Moving the
+              // camera therefore cannot acquire look-at behaviour again.
+              for (int axis{}; axis != 3; ++axis) {
+                double delta =
+                    context->blender_camera_absolute_rotation[axis].load(
+                        std::memory_order_acquire) -
+                    context->blender_camera_base_absolute_rotation[axis].load(
+                        std::memory_order_acquire);
+                if (delta > 180.0)
+                  delta -= 360.0;
+                else if (delta < -180.0)
+                  delta += 360.0;
+                out_rotation[axis] += delta;
+              }
+              const std::uint64_t now = GetTickCount64();
+              const std::uint64_t last =
+                  context->blender_camera_direct_log_ms.load(
+                      std::memory_order_acquire);
+              if (last == 0 || now - last >= 1000) {
+                context->blender_camera_direct_log_ms.store(
+                    now, std::memory_order_release);
+                char message[640]{};
+                std::snprintf(
+                    message, sizeof(message),
+                    "betterpose blender direct local=(%.2f,%.2f,%.2f) "
+                    "base_local=(%.2f,%.2f,%.2f) "
+                    "base_relative=(%.2f,%.2f,%.2f) "
+                    "out=(%.2f,%.2f,%.2f) feet=(%.2f,%.2f,%.2f) "
+                    "game=(%.2f,%.2f,%.2f) yaw=%.2f scale=%.3f "
+                    "rotation=(%.2f,%.2f,%.2f)",
+                    local_x, local_y, local_z,
+                    context->blender_camera_base_location[0].load(
+                        std::memory_order_acquire),
+                    context->blender_camera_base_location[1].load(
+                        std::memory_order_acquire),
+                    context->blender_camera_base_location[2].load(
+                        std::memory_order_acquire),
+                    context->blender_camera_base_relative[0].load(
+                        std::memory_order_acquire),
+                    context->blender_camera_base_relative[1].load(
+                        std::memory_order_acquire),
+                    context->blender_camera_base_relative[2].load(
+                        std::memory_order_acquire),
+                    out_location[0], out_location[1], out_location[2],
+                    feet[0], feet[1], feet[2],
+                    game_location[0], game_location[1], game_location[2],
+                    basis_yaw * kCameraRadiansToDegrees, base_scale,
+                    out_rotation[0], out_rotation[1], out_rotation[2]);
+                LogDiagnostic(*context, message);
+              }
+            } else {
+              if (!context->blender_camera_base_valid.load(
+                      std::memory_order_acquire)) {
+                for (int axis{}; axis != 3; ++axis) {
+                  context->blender_camera_base_location[axis].store(
+                      game_location[axis], std::memory_order_release);
+                  context->blender_camera_base_rotation[axis].store(
+                      game_rotation[axis], std::memory_order_release);
+                }
+                float base_fov{};
+                if (Read(*context, fov_address, base_fov) &&
+                    base_fov > 5.0F && base_fov < 170.0F)
+                  context->blender_camera_base_fov.store(
+                      base_fov, std::memory_order_release);
+                context->blender_camera_base_valid.store(
+                    true, std::memory_order_release);
+              }
+              const double delta_x =
+                  context->blender_camera_motion_delta_location[0].load(
+                      std::memory_order_acquire);
+              const double delta_y =
+                  context->blender_camera_motion_delta_location[1].load(
+                      std::memory_order_acquire);
+              const double yaw = CameraWorldYaw(*context);
+              const double cos_yaw = std::cos(yaw);
+              const double sin_yaw = std::sin(yaw);
+              out_location[0] =
+                  context->blender_camera_base_location[0].load(
+                      std::memory_order_acquire) +
+                  delta_x * cos_yaw - delta_y * sin_yaw;
+              out_location[1] =
+                  context->blender_camera_base_location[1].load(
+                      std::memory_order_acquire) +
+                  delta_x * sin_yaw + delta_y * cos_yaw;
+              out_location[2] =
+                  context->blender_camera_base_location[2].load(
+                      std::memory_order_acquire) +
+                  context->blender_camera_motion_delta_location[2].load(
+                      std::memory_order_acquire);
+              for (int axis{}; axis != 3; ++axis)
+                out_rotation[axis] =
+                    context->blender_camera_base_rotation[axis].load(
+                        std::memory_order_acquire) +
+                    context->blender_camera_motion_delta_rotation
+                        [static_cast<std::size_t>(axis)]
+                            .load(std::memory_order_acquire);
+            }
+            const float vertical_fov =
+                context->blender_camera_fov.load(
+                    std::memory_order_acquire);
+            if (vertical_fov > 1.0F && vertical_fov < 179.0F) {
+              const double half =
+                  std::tan(vertical_fov * kCameraDegreesToRadians * 0.5) *
+                  (16.0 / 9.0);
+              const float lens = static_cast<float>(
+                  2.0 * std::atan(half) * kCameraRadiansToDegrees);
+              if (lens > 1.0F && lens < 179.0F) {
+                static_cast<void>(Write(*context, fov_address, lens));
+                context->orbit_fov_restore.store(true,
+                                                  std::memory_order_release);
+              }
+            }
+            if (direct_bounds_ready) {
+              const double unit = CameraUnitCm(*context);
+              const double yaw_radians =
+                  context->blender_camera_yaw_degrees.load(
+                      std::memory_order_acquire) *
+                  kCameraDegreesToRadians;
+              const double pitch_radians =
+                  context->blender_camera_pitch_degrees.load(
+                      std::memory_order_acquire) *
+                  kCameraDegreesToRadians;
+              const std::array<double, 3> camera_direction{
+                  std::cos(pitch_radians) * std::cos(yaw_radians),
+                  std::cos(pitch_radians) * std::sin(yaw_radians),
+                  std::sin(pitch_radians),
+              };
+              const std::array<double, 3> file_position{
+                  -context->blender_camera_focus_cm[0].load(
+                       std::memory_order_acquire) / unit,
+                  context->blender_camera_focus_cm[2].load(
+                      std::memory_order_acquire) / unit,
+                  -context->blender_camera_focus_cm[1].load(
+                      std::memory_order_acquire) / unit,
+              };
+              const std::array<double, 3> forward_mmd{
+                  -camera_direction[0],
+                  camera_direction[2],
+                  -camera_direction[1],
+              };
+              double file_rotation[3]{
+                  std::asin(std::clamp(-forward_mmd[1], -1.0, 1.0)),
+                  std::atan2(forward_mmd[0], forward_mmd[2]),
+                  0.0,
+              };
+              const double file_distance =
+                  context->blender_camera_distance_cm.load(
+                      std::memory_order_acquire) / unit;
+              DriveCameraTrack(
+                  *context, feet, centre, true, game_location,
+                  game_rotation, file_position.data(), file_rotation,
+                  file_distance, vertical_fov, base,
+                  rotation_address, fov_address, location, rotation);
+              // DriveCameraTrack aims a synthetic track at the character. That
+              // is correct for the initial composition, but translating the
+              // Blender camera must not make the game camera re-aim at the
+              // subject. During timeline playback DriveCameraTrack is the
+              // authored source of orientation. While the frame is static,
+              // keep that last generated orientation as the world basis and
+              // add only actual Blender rotation changes afterwards.
+              const double camera_time =
+                  context->blender_camera_frame_time.load(
+                      std::memory_order_acquire);
+              const double previous_hook_time =
+                  context->blender_camera_hook_time.exchange(
+                      camera_time, std::memory_order_acq_rel);
+              const bool timeline_moved =
+                  previous_hook_time < 0.0 ||
+                  std::abs(camera_time - previous_hook_time) > 1e-6;
+              if (timeline_moved ||
+                  !context->blender_camera_base_valid.load(
+                      std::memory_order_acquire)) {
+                for (int axis{}; axis != 3; ++axis) {
+                  context->blender_camera_base_location[axis].store(
+                      out_location[axis], std::memory_order_release);
+                  context->blender_camera_base_rotation[axis].store(
+                      out_rotation[axis], std::memory_order_release);
+                  context->blender_camera_base_absolute_rotation[axis].store(
+                      context->blender_camera_absolute_rotation[axis].load(
+                          std::memory_order_acquire),
+                      std::memory_order_release);
+                }
+                float base_fov{};
+                if (Read(*context, fov_address, base_fov) &&
+                    base_fov > 5.0F && base_fov < 170.0F)
+                  context->blender_camera_base_fov.store(
+                      base_fov, std::memory_order_release);
+                context->blender_camera_base_valid.store(
+                    true, std::memory_order_release);
+              } else {
+                for (int axis{}; axis != 3; ++axis) {
+                  double delta =
+                      context->blender_camera_absolute_rotation[axis].load(
+                          std::memory_order_acquire) -
+                      context->blender_camera_base_absolute_rotation[axis].load(
+                          std::memory_order_acquire);
+                  if (delta > 180.0)
+                    delta -= 360.0;
+                  else if (delta < -180.0)
+                    delta += 360.0;
+                  out_rotation[axis] =
+                      context->blender_camera_base_rotation[axis].load(
+                          std::memory_order_acquire) +
+                      delta;
+                }
+              }
+            }
+          } else if (correction_mode) {
             const bool track_base =
                 context->camera_loaded.load(std::memory_order_acquire);
             if (track_base) {
@@ -7570,20 +7819,20 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               // lets collision, follow and mouse motion shift the shot every
               // frame; applying it to this fixed baseline matches the Blender
               // preview and remains independent of a loaded game track.
-              if (!context->blender_camera_frozen_base_valid.load(
+              if (!context->blender_camera_base_valid.load(
                       std::memory_order_acquire)) {
                 for (int axis{}; axis != 3; ++axis) {
-                  context->blender_camera_frozen_base_location[axis].store(
+                  context->blender_camera_base_location[axis].store(
                       game_location[axis], std::memory_order_release);
-                  context->blender_camera_frozen_base_rotation[axis].store(
+                  context->blender_camera_base_rotation[axis].store(
                       game_rotation[axis], std::memory_order_release);
                 }
                 float base_fov{};
                 if (Read(*context, fov_address, base_fov) &&
                     base_fov > 5.0F && base_fov < 170.0F)
-                  context->blender_camera_frozen_base_fov.store(
+                  context->blender_camera_base_fov.store(
                       base_fov, std::memory_order_release);
-                context->blender_camera_frozen_base_valid.store(
+                context->blender_camera_base_valid.store(
                     true, std::memory_order_release);
               }
 
@@ -7600,20 +7849,20 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               const double cos_yaw = std::cos(yaw);
               const double sin_yaw = std::sin(yaw);
               out_location[0] =
-                  context->blender_camera_frozen_base_location[0].load(
+                  context->blender_camera_base_location[0].load(
                       std::memory_order_acquire) +
                   delta_x * cos_yaw - delta_y * sin_yaw;
               out_location[1] =
-                  context->blender_camera_frozen_base_location[1].load(
+                  context->blender_camera_base_location[1].load(
                       std::memory_order_acquire) +
                   delta_x * sin_yaw + delta_y * cos_yaw;
               out_location[2] =
-                  context->blender_camera_frozen_base_location[2].load(
+                  context->blender_camera_base_location[2].load(
                       std::memory_order_acquire) +
                   delta_z;
               for (int axis{}; axis != 3; ++axis)
                 out_rotation[axis] =
-                    context->blender_camera_frozen_base_rotation[axis].load(
+                    context->blender_camera_base_rotation[axis].load(
                         std::memory_order_acquire) +
                     context->blender_camera_motion_delta_rotation
                         [static_cast<std::size_t>(axis)]
@@ -7706,7 +7955,7 @@ bool ResolveGObjects(Context &context) noexcept {
     return false;
   const auto resolved = static_cast<std::intptr_t>(instruction) +
                         kGObjectsInstructionSize + displacement +
-                        kGObjectsAddend;
+                        native_layout.kGObjectsAddend;
   if (resolved <= 0)
     return false;
   context.g_objects_address = static_cast<std::uintptr_t>(resolved);
@@ -7723,14 +7972,14 @@ bool RefreshObjectRegistry(Context &context) noexcept {
   std::uint32_t max_count{};
   std::uint32_t max_chunks{};
   std::uint32_t num_chunks{};
-  if (!ReadPointerAt(context, context.g_objects_address, kObjectItemsOffset,
+  if (!ReadPointerAt(context, context.g_objects_address, native_layout.kObjectItemsOffset,
                      next.items) ||
-      !Read(context, context.g_objects_address + kObjectCountOffset, count) ||
-      !Read(context, context.g_objects_address + kObjectMaxCountOffset,
+      !Read(context, context.g_objects_address + native_layout.kObjectCountOffset, count) ||
+      !Read(context, context.g_objects_address + native_layout.kObjectMaxCountOffset,
             max_count) ||
-      !Read(context, context.g_objects_address + kObjectMaxChunksOffset,
+      !Read(context, context.g_objects_address + native_layout.kObjectMaxChunksOffset,
             max_chunks) ||
-      !Read(context, context.g_objects_address + kObjectNumChunksOffset,
+      !Read(context, context.g_objects_address + native_layout.kObjectNumChunksOffset,
             num_chunks) ||
       count == 0 || max_count < count || max_chunks < num_chunks ||
       num_chunks == 0 || num_chunks > 4096)
@@ -7786,8 +8035,8 @@ bool FindObjectAddressByPath(Context &context, const std::string_view path,
     if (detail != nullptr) *detail = "exact object index is out of range";
     return false;
   }
-  const std::uint32_t chunk_index = index / kObjectChunkSize;
-  const std::uint32_t within_chunk = index % kObjectChunkSize;
+  const std::uint32_t chunk_index = index / native_layout.kObjectChunkSize;
+  const std::uint32_t within_chunk = index % native_layout.kObjectChunkSize;
   if (chunk_index >= context.object_registry.num_chunks) {
     if (detail != nullptr) *detail = "exact object chunk is out of range";
     return false;
@@ -7798,7 +8047,7 @@ bool FindObjectAddressByPath(Context &context, const std::string_view path,
                      chunk) ||
       !ReadPointerAt(context, chunk,
                      static_cast<std::uint32_t>(within_chunk) *
-                         kObjectItemStride,
+                         native_layout.kObjectItemStride,
                      object)) {
     if (detail != nullptr) *detail = "exact object slot is unreadable";
     return false;
@@ -7863,10 +8112,10 @@ bool CallVirtualUFunction(Context &context, const std::uintptr_t object,
   }
   std::uintptr_t process_event{};
   if (!Read(context,
-            vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) *
+            vtable + static_cast<std::uint64_t>(native_layout.kProcessEventVtableSlot) *
                         sizeof(void *),
             process_event) ||
-      process_event == 0) {
+      process_event == 0 || !compatibility.MatchesEntry(context.core, "ProcessEvent.entry", process_event, true)) {
     detail = "ProcessEvent vtable slot is unreadable";
     return false;
   }
@@ -7912,10 +8161,10 @@ bool ResolvePoseableEntryPoints(Context &context,
   std::uintptr_t vtable{};
   if (!Read(context, extra.poseable_component, vtable) || vtable == 0 ||
       !Read(context,
-            vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) *
+            vtable + static_cast<std::uint64_t>(native_layout.kProcessEventVtableSlot) *
                         sizeof(void *),
             extra.poseable_process_event) ||
-      extra.poseable_process_event == 0) {
+      extra.poseable_process_event == 0 || !compatibility.MatchesEntry(context.core, "ProcessEvent.entry", extra.poseable_process_event, true)) {
     LogDiagnostic(context, "betterpose poseable entry: process event slot unreadable");
     return false;
   }
@@ -7925,12 +8174,13 @@ bool ResolvePoseableEntryPoints(Context &context,
 // The same call without the lookup: the caller resolved the function and the
 // component's ProcessEvent slot once. The parameter buffer is deliberately not
 // zero-initialised - only the bytes the function reads are ever copied in.
-bool CallResolvedUFunction(const std::uintptr_t object,
+bool CallResolvedUFunction(Context &context, const std::uintptr_t object,
                            const std::uintptr_t function,
                            const std::uintptr_t process_event,
                            const void *parameters, const std::size_t parameter_size,
                            void *output = nullptr) noexcept {
   if (object == 0 || function == 0 || process_event == 0 ||
+      !compatibility.MatchesEntry(context.core, "ProcessEvent.entry", process_event, true) ||
       parameter_size > kMaximumUFunctionParameterBytes ||
       (parameter_size != 0 && parameters == nullptr))
     return false;
@@ -8148,7 +8398,7 @@ bool CapturePoseBase(Context &context) noexcept {
   std::vector<std::array<double, 12>> base(count);
   for (std::uint32_t bone{}; bone != count; ++bone) {
     std::uintptr_t address{};
-    if (!AddAddress(data, static_cast<std::uint64_t>(bone) * kTransformSize,
+    if (!AddAddress(data, static_cast<std::uint64_t>(bone) * native_layout.kTransformSize,
                     address) ||
         !Read(context, address, base[bone]))
       return false;
@@ -8335,16 +8585,16 @@ bool ApplyCachedEntityPose(Context &context,
   std::uint32_t bone_count{};
   std::uint32_t component_count{};
   const bool authoritative =
-      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
+      ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
                       bone_data, bone_count) &&
-      ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer1Offset,
+      ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer1Offset,
                       component_data, component_count) &&
       bone_data != 0 && component_data != 0 && bone_count == count &&
       component_count == count;
   if (!authoritative) {
-    if (!ReadArrayHeader(context, mesh + kMeshCachedBoneSpaceTransformsOffset,
+    if (!ReadArrayHeader(context, mesh + native_layout.kMeshCachedBoneSpaceTransformsOffset,
                          bone_data, bone_count) ||
-        !ReadArrayHeader(context, mesh + kMeshCachedComponentSpaceTransformsOffset,
+        !ReadArrayHeader(context, mesh + native_layout.kMeshCachedComponentSpaceTransformsOffset,
                          component_data, component_count) ||
         bone_data == 0 || component_data == 0 || bone_count != count ||
         component_count != count)
@@ -8399,27 +8649,27 @@ bool MaintainParkedEntityPose(Context &context, const std::uintptr_t mesh,
 
   bool ok = ApplyCachedEntityPose(context, mesh);
   std::uint8_t flags{};
-  if (Read(context, mesh + kMeshAnimationFlagsOffset, flags)) {
+  if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
     if (!saved.pause_saved) {
       saved.pause_saved = true;
       saved.original_animation_flags = flags;
     }
     const std::uint8_t paused = static_cast<std::uint8_t>(
-        flags | static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit));
+        flags | static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit));
     if (paused != flags)
-      ok = Write(context, mesh + kMeshAnimationFlagsOffset, paused) && ok;
+      ok = Write(context, mesh + native_layout.kMeshAnimationFlagsOffset, paused) && ok;
   } else {
     ok = false;
   }
 
   std::uint8_t mode{};
-  if (Read(context, mesh + kMeshAnimationModeOffset, mode)) {
+  if (Read(context, mesh + native_layout.kMeshAnimationModeOffset, mode)) {
     if (!saved.animation_mode_saved) {
       saved.animation_mode_saved = true;
       saved.original_animation_mode = mode;
     }
     if (mode != kAnimationModeCustom)
-      ok = Write(context, mesh + kMeshAnimationModeOffset,
+      ok = Write(context, mesh + native_layout.kMeshAnimationModeOffset,
                  kAnimationModeCustom) && ok;
   } else {
     ok = false;
@@ -8451,13 +8701,13 @@ void RestoreSharedEntityPoses(Context &context) noexcept {
     if (mesh == 0)
       continue;
     if (saved.flags_saved)
-      static_cast<void>(Write(context, mesh + kMeshAnimationFlagsOffset,
+      static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
                               saved.original_animation_flags));
     if (saved.mode_saved)
-      static_cast<void>(Write(context, mesh + kMeshAnimationModeOffset,
+      static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset,
                               saved.original_animation_mode));
     if (saved.lod_saved)
-      static_cast<void>(Write(context, mesh + kMeshForcedLodModelOffset,
+      static_cast<void>(Write(context, mesh + native_layout.kMeshForcedLodModelOffset,
                               saved.original_forced_lod));
   }
   context.shared_entity_pose_states.clear();
@@ -8485,9 +8735,9 @@ bool ApplySharedEntityPose(Context &context,
     std::uintptr_t bone_data{};
     std::uint32_t component_count{};
     std::uint32_t bone_count{};
-    if (!ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
+    if (!ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
                          component_data, component_count) ||
-        !ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer1Offset,
+        !ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer1Offset,
                          bone_data, bone_count) ||
         component_data == 0 || bone_data == 0 ||
         component_count == 0 || component_count > 4096 ||
@@ -8497,19 +8747,19 @@ bool ApplySharedEntityPose(Context &context,
     SharedEntityPoseState &saved = context.shared_entity_pose_states[mesh];
     std::uint8_t flags{};
     if (!saved.flags_saved &&
-        Read(context, mesh + kMeshAnimationFlagsOffset, flags)) {
+        Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
       saved.flags_saved = true;
       saved.original_animation_flags = flags;
     }
     std::uint8_t mode{};
     if (!saved.mode_saved &&
-        Read(context, mesh + kMeshAnimationModeOffset, mode)) {
+        Read(context, mesh + native_layout.kMeshAnimationModeOffset, mode)) {
       saved.mode_saved = true;
       saved.original_animation_mode = mode;
     }
     std::int32_t forced_lod{};
     if (!saved.lod_saved &&
-        Read(context, mesh + kMeshForcedLodModelOffset, forced_lod)) {
+        Read(context, mesh + native_layout.kMeshForcedLodModelOffset, forced_lod)) {
       saved.lod_saved = true;
       saved.original_forced_lod = forced_lod;
     }
@@ -8552,17 +8802,17 @@ bool ApplySharedEntityPose(Context &context,
               WriteBytes(context, bone_data, bytes, byte_count);
     if (saved.flags_saved) {
       std::uint8_t next_flags = saved.original_animation_flags;
-      if (Read(context, mesh + kMeshAnimationFlagsOffset, flags)) {
+      if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
         next_flags = static_cast<std::uint8_t>(
-            flags | static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit));
+            flags | static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit));
       }
-      ok = Write(context, mesh + kMeshAnimationFlagsOffset, next_flags) && ok;
+      ok = Write(context, mesh + native_layout.kMeshAnimationFlagsOffset, next_flags) && ok;
     }
     if (saved.mode_saved)
-      ok = Write(context, mesh + kMeshAnimationModeOffset,
+      ok = Write(context, mesh + native_layout.kMeshAnimationModeOffset,
                  kAnimationModeCustom) && ok;
     if (saved.lod_saved)
-      ok = Write(context, mesh + kMeshForcedLodModelOffset,
+      ok = Write(context, mesh + native_layout.kMeshForcedLodModelOffset,
                  std::int32_t{0}) && ok;
     if (force_update)
       static_cast<void>(ForceMeshObjectUpdate(context, mesh));
@@ -8582,7 +8832,7 @@ bool SharedEntityPoseCompatible(Context &context,
   try {
     std::uintptr_t data{};
     std::uint32_t count{};
-    if (!ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
+    if (!ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
                          data, count) ||
         data == 0 || count == 0 || count > 4096) {
       context.shared_entity_pose_compatibility[mesh] = false;
@@ -8622,7 +8872,7 @@ bool SameBoneOrderForMesh(
   try {
     std::uintptr_t data{};
     std::uint32_t count{};
-    if (!ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
+    if (!ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
                          data, count) ||
         data == 0 || count != names.size())
       return false;
@@ -9102,7 +9352,7 @@ bool ApplyArmIkTargets(Context &context, const MotionSample &sample,
 nlohmann::json BlenderSampleMotion(Context &context, const double start,
                                    const std::uint32_t count, const double fps) {
   if (!ResolveMotionIndices(context))
-    return BlenderError("MMD 动作骨骼尚未解析");
+    return BlenderError(context, "MMD motion bones are not resolved");
   std::vector<std::array<double, 12>> base;
   {
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -9111,7 +9361,7 @@ nlohmann::json BlenderSampleMotion(Context &context, const double start,
                : context.pose_base_locals;
   }
   if (base.size() != context.bone_names.size())
-    return BlenderError("角色参考姿态尚未就绪");
+    return BlenderError(context, "Character reference pose is not ready");
   const double duration = [&context] {
     std::lock_guard<std::mutex> lock(context.motion_mutex);
     return MotionDuration(context.motion);
@@ -9122,7 +9372,7 @@ nlohmann::json BlenderSampleMotion(Context &context, const double start,
                                    0.0, duration);
     MotionSample sample;
     if (!SampleMotion(context, time, sample))
-      return BlenderError("无法采样 MMD 动作");
+      return BlenderError(context, "Could not sample MMD motion");
     auto bones = nlohmann::json::array();
     std::map<std::uint32_t, std::size_t> emitted_bones;
     for (std::size_t track{}; track != sample.indices.size(); ++track) {
@@ -9963,16 +10213,16 @@ bool ApplyInactiveEntityMotion(Context &context,
       context.motion_loaded.store(true, std::memory_order_release);
 
       std::uint8_t flags{};
-      if (Read(context, mesh + kMeshAnimationFlagsOffset, flags))
+      if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags))
         static_cast<void>(Write(
-            context, mesh + kMeshAnimationFlagsOffset,
+            context, mesh + native_layout.kMeshAnimationFlagsOffset,
             static_cast<std::uint8_t>(
                 flags | static_cast<std::uint8_t>(
-                            1U << kAnimationFlagPauseAnimsBit))));
+                            1U << native_layout.kAnimationFlagPauseAnimsBit))));
       static_cast<void>(
-          Write(context, mesh + kMeshAnimationModeOffset, kAnimationModeCustom));
+          Write(context, mesh + native_layout.kMeshAnimationModeOffset, kAnimationModeCustom));
       static_cast<void>(
-          Write(context, mesh + kMeshForcedLodModelOffset, std::int32_t{0}));
+          Write(context, mesh + native_layout.kMeshForcedLodModelOffset, std::int32_t{0}));
       ApplyMotionPoseDirect(context, false);
 
       context.bone_names.swap(entity.bone_names);
@@ -10082,7 +10332,7 @@ void StepMeshScan(Context &context) noexcept {
     context.mesh_scan_bone_counts.clear();
     context.mesh_scan_skeletal = 0;
     context.ref_locals.clear();
-    if (!Read(context, context.runtime.mesh + kObjectClassOffset,
+    if (!Read(context, context.runtime.mesh + native_layout.kObjectClassOffset,
               context.mesh_scan_class))
       context.mesh_scan_class = 0;
     // Reference bone: pick one with a non-zero local translation so the compare
@@ -10104,7 +10354,7 @@ void StepMeshScan(Context &context) noexcept {
   std::uint32_t budget = 20000;
   while (context.mesh_scan_cursor < registry.count && budget-- != 0) {
     const std::uint32_t index = context.mesh_scan_cursor++;
-    const std::uint32_t chunk = index / kObjectChunkSize;
+    const std::uint32_t chunk = index / native_layout.kObjectChunkSize;
     if (chunk >= registry.num_chunks)
       break;
     std::uintptr_t chunk_pointer{};
@@ -10114,12 +10364,12 @@ void StepMeshScan(Context &context) noexcept {
       continue;
     std::uintptr_t object{};
     if (!ReadPointerAt(context, chunk_pointer,
-                       (index % kObjectChunkSize) * kObjectItemStride,
+                       (index % native_layout.kObjectChunkSize) * native_layout.kObjectItemStride,
                        object) ||
         object == 0)
       continue;
     std::uintptr_t klass{};
-    if (!Read(context, object + kObjectClassOffset, klass) || klass == 0)
+    if (!Read(context, object + native_layout.kObjectClassOffset, klass) || klass == 0)
       continue;
     // A "Mesh" name match also hits SkeletalMeshSocket / MeshDeformer, which say
     // nothing about who owns geometry, so require an actual component class.
@@ -10130,7 +10380,7 @@ void StepMeshScan(Context &context) noexcept {
       class_name = cached->second;
     } else {
       std::uint32_t name_id{};
-      if (Read(context, klass + kObjectNameOffset, name_id))
+      if (Read(context, klass + native_layout.kObjectNameOffset, name_id))
         static_cast<void>(ResolveName(context, name_id, class_name));
       context.mesh_scan_class_cache[klass] = class_name;
     }
@@ -10154,7 +10404,7 @@ void StepMeshScan(Context &context) noexcept {
     // the actor that owns it, so anything else in the world is filtered out.
     std::uintptr_t outer{};
     if (context.runtime.character == 0 ||
-        !Read(context, object + kObjectOuterOffset, outer) ||
+        !Read(context, object + native_layout.kObjectOuterOffset, outer) ||
         outer != context.runtime.character)
       continue;
     // A readable bone array of a sane length means this component really owns a
@@ -10162,7 +10412,7 @@ void StepMeshScan(Context &context) noexcept {
     // 262, a hair-only component would have its own much smaller one.
     std::uintptr_t data{};
     std::uint32_t count{};
-    if (!ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset, data,
+    if (!ReadArrayHeader(context, object + native_layout.kMeshComponentSpaceBuffer0Offset, data,
                          count) ||
         data == 0 || count == 0 || count > 4096)
       continue;
@@ -10613,7 +10863,7 @@ bool EnsurePoseableAccessory(Context &context,
   // bone. The observed accessories attach directly to Head/Pelvis bones.
   std::uintptr_t source_parent{};
   std::array<std::uint8_t, 8> socket_parameters{}, socket_name{};
-  if (!ReadPointerAt(context, extra.object, kMeshAttachParentOffset, source_parent) ||
+  if (!ReadPointerAt(context, extra.object, native_layout.kMeshAttachParentOffset, source_parent) ||
       source_parent != context.runtime.mesh ||
       !CallVirtualUFunction(context, extra.object,
                             kFunctionSceneGetAttachSocketNamePath,
@@ -10726,7 +10976,7 @@ bool EnsurePoseableAccessory(Context &context,
 }
 
 bool WritePoseableAccessoryPose(
-    Context::ExtraMesh &extra,
+    Context &context, Context::ExtraMesh &extra,
     const std::vector<std::array<double, 12>> &components) noexcept {  if (!extra.poseable_active || extra.poseable_component == 0 ||
       components.size() != extra.bone_count ||
       extra.bone_fnames.size() != extra.bone_count ||
@@ -10751,7 +11001,7 @@ bool WritePoseableAccessoryPose(
     // EBoneSpaces::ComponentSpace in this build (WorldSpace=0,
     // ComponentSpace=1; there is no LocalSpace enum in this API).
     parameters[112] = 1;
-    if (!CallResolvedUFunction(extra.poseable_component,
+    if (!CallResolvedUFunction(context, extra.poseable_component,
                                extra.poseable_set_bone_function,
                                extra.poseable_process_event, parameters.data(),
                                parameters.size()))
@@ -10778,7 +11028,7 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
   static_assert(parameters.size() <= kMaximumUFunctionParameterBytes);
   std::memcpy(parameters.data(), &placement, sizeof(placement));
   if (extra.poseable_set_relative_function == 0 || extra.poseable_process_event == 0 ||
-      !CallResolvedUFunction(extra.poseable_component,
+      !CallResolvedUFunction(context, extra.poseable_component,
                              extra.poseable_set_relative_function,
                              extra.poseable_process_event, parameters.data(),
                              parameters.size()))
@@ -10792,7 +11042,7 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
     std::array<std::uint8_t, 96> world_query{};
     PackedTransform component_world{};
     const bool world_ok = extra.poseable_get_transform_function != 0 &&
-        CallResolvedUFunction(extra.poseable_component,
+        CallResolvedUFunction(context, extra.poseable_component,
                               extra.poseable_get_transform_function,
                               extra.poseable_process_event, world_query.data(),
                               world_query.size(), &component_world);
@@ -10843,7 +11093,7 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
       extra.poseable_scratch_pose.assign(extra.bone_count, std::array<double, 12>{});
     for (std::size_t bone{}; bone != extra.poseable_scratch_pose.size(); ++bone)
       extra.poseable_scratch_pose[bone] = (*desired_pose)[bone];
-    if (!WritePoseableAccessoryPose(extra, extra.poseable_scratch_pose))
+    if (!WritePoseableAccessoryPose(context, extra, extra.poseable_scratch_pose))
       return false;
     extra.poseable_bind_written = true;
   }
@@ -10931,7 +11181,7 @@ bool ReadBoneTranslations(Context &context, const std::uintptr_t array,
     return false;
   if (context.core->read_memory == nullptr)
     return false;
-  std::vector<std::uint8_t> raw(static_cast<std::size_t>(count) * kTransformSize);
+  std::vector<std::uint8_t> raw(static_cast<std::size_t>(count) * native_layout.kTransformSize);
   AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
   if (context.core->read_memory(context.core->user, array, span).code !=
       ANOMALY_STATUS_V1_OK)
@@ -10940,8 +11190,8 @@ bool ReadBoneTranslations(Context &context, const std::uintptr_t array,
   for (std::uint32_t index{}; index != count; ++index) {
     double values[3]{};
     std::memcpy(values,
-                raw.data() + static_cast<std::size_t>(index) * kTransformSize +
-                    kTransformTranslationOffset,
+                raw.data() + static_cast<std::size_t>(index) * native_layout.kTransformSize +
+                    native_layout.kTransformTranslationOffset,
                 sizeof(values));
     out[index] = {values[0], values[1], values[2]};
   }
@@ -10954,7 +11204,7 @@ bool ObjectAtIndex(Context &context, const std::uint32_t index,
   const ObjectRegistry &registry = context.object_registry;
   if (index >= registry.count)
     return false;
-  const std::uint32_t chunk = index / kObjectChunkSize;
+  const std::uint32_t chunk = index / native_layout.kObjectChunkSize;
   if (chunk >= registry.num_chunks)
     return false;
   std::uintptr_t chunk_pointer{};
@@ -10963,21 +11213,21 @@ bool ObjectAtIndex(Context &context, const std::uint32_t index,
       chunk_pointer == 0)
     return false;
   return ReadPointerAt(context, chunk_pointer,
-                       (index % kObjectChunkSize) * kObjectItemStride,
+                       (index % native_layout.kObjectChunkSize) * native_layout.kObjectItemStride,
                        object) &&
          object != 0;
 }
 
 std::string ClassNameOf(Context &context, const std::uintptr_t object) noexcept {
   std::uintptr_t klass{};
-  if (!Read(context, object + kObjectClassOffset, klass) || klass == 0)
+  if (!Read(context, object + native_layout.kObjectClassOffset, klass) || klass == 0)
     return {};
   const auto cached = context.mesh_scan_class_cache.find(klass);
   if (cached != context.mesh_scan_class_cache.end())
     return cached->second;
   std::uint32_t name_id{};
   std::string name;
-  if (Read(context, klass + kObjectNameOffset, name_id))
+  if (Read(context, klass + native_layout.kObjectNameOffset, name_id))
     static_cast<void>(ResolveName(context, name_id, name));
   context.mesh_scan_class_cache[klass] = name;
   return name;
@@ -10986,7 +11236,7 @@ std::string ClassNameOf(Context &context, const std::uintptr_t object) noexcept 
 std::string ObjectNameOf(Context &context, const std::uintptr_t object) noexcept {
   std::uint32_t name_id{};
   std::string name;
-  if (Read(context, object + kObjectNameOffset, name_id))
+  if (Read(context, object + native_layout.kObjectNameOffset, name_id))
     static_cast<void>(ResolveName(context, name_id, name));
   return name;
 }
@@ -10994,7 +11244,7 @@ std::string ObjectNameOf(Context &context, const std::uintptr_t object) noexcept
 bool IsPoseTargetRootComponent(Context &context,
                                const std::uintptr_t component) noexcept {
   std::uintptr_t attach_parent{};
-  if (!Read(context, component + kMeshAttachParentOffset, attach_parent) ||
+  if (!Read(context, component + native_layout.kMeshAttachParentOffset, attach_parent) ||
       attach_parent == 0)
     return true;
   // A generated actor's child costume/facial meshes point at the body through
@@ -11058,7 +11308,7 @@ void StepPoseTargetScan(Context &context) noexcept {
     if (class_name.find("SkeletalMeshComponent") == std::string::npos)
       continue;
     std::uintptr_t owner{};
-    if (!Read(context, object + kObjectOuterOffset, owner) || owner == 0 ||
+    if (!Read(context, object + native_layout.kObjectOuterOffset, owner) || owner == 0 ||
         owner == context.local_character)
       continue;
     const std::string owner_class = ClassNameOf(context, owner);
@@ -11076,7 +11326,7 @@ void StepPoseTargetScan(Context &context) noexcept {
       continue;
     std::uintptr_t data{};
     std::uint32_t count{};
-    if (!ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset,
+    if (!ReadArrayHeader(context, object + native_layout.kMeshComponentSpaceBuffer0Offset,
                          data, count) ||
         data == 0 || count == 0 || count > 4096)
       continue;
@@ -11123,7 +11373,7 @@ bool CameraFollowTargetSelectable(Context &context,
     return false;
   std::uintptr_t data{};
   std::uint32_t count{};
-  return ReadArrayHeader(context, mesh + kMeshComponentSpaceBuffer0Offset,
+  return ReadArrayHeader(context, mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
                          data, count) &&
          data != 0 && count != 0 && count <= 4096;
 }
@@ -11173,77 +11423,45 @@ bool ReadAssetBindSkeleton(Context &context, const std::uintptr_t asset,
                            const std::uint32_t bone_count,
                            std::vector<std::array<double, 12>> &locals,
                            std::vector<std::int32_t> &parents) noexcept {
-  if (asset == 0 || component == 0 || bone_count == 0 || bone_count > 4096)
-    return false;
-  for (std::uint32_t offset = 16; offset + 16 <= 0x800; offset += 8) {
-    std::uintptr_t pose_data{};
-    std::uint32_t pose_count{};
-    std::uint32_t pose_capacity{};
-    if (!ReadPointerAt(context, asset, offset, pose_data) || pose_data == 0)
-      continue;
-    if (!Read(context, asset + offset + 8, pose_count) ||
-        !Read(context, asset + offset + 12, pose_capacity))
-      continue;
-    if (pose_count != bone_count || pose_capacity < pose_count ||
-        pose_capacity > (1U << 20))
-      continue;
-    std::uintptr_t info_data{};
-    std::uint32_t info_count{};
-    if (!ReadPointerAt(context, asset, offset - 16, info_data) || info_data == 0)
-      continue;
-    if (!Read(context, asset + offset - 8, info_count) || info_count != bone_count)
-      continue;
-    std::array<double, 12> probe{};
-    for (const std::size_t sample :
-         {std::size_t{0}, static_cast<std::size_t>(bone_count - 1)}) {
-      if (!Read(context, pose_data + sample * kTransformSize, probe))
-        return false;
-      const double norm = probe[0] * probe[0] + probe[1] * probe[1] +
-                          probe[2] * probe[2] + probe[3] * probe[3];
-      if (norm < 0.9 || norm > 1.1)
-        return false;
-      if (std::fabs(probe[8] - 1.0) > 0.05 || std::fabs(probe[9] - 1.0) > 0.05 ||
-          std::fabs(probe[10] - 1.0) > 0.05)
-        return false;
-    }
-    for (const std::uint32_t stride : {12U, 16U}) {
-      bool names_ok = true;
-      for (const std::uint32_t sample : {0U, bone_count / 2, bone_count - 1}) {
-        std::int32_t name_id{};
-        std::string expected;
-        std::string found;
-        if (!Read(context, info_data + sample * stride, name_id) ||
-            !GetBoneNameForMesh(context, component, sample, expected) ||
-            !ResolveName(context, static_cast<std::uint32_t>(name_id), found) ||
-            found != expected) {
-          names_ok = false;
-          break;
-        }
-      }
-      if (!names_ok)
-        continue;
-      std::vector<std::array<double, 12>> read_locals(bone_count);
-      std::vector<std::int32_t> read_parents(bone_count, -1);
-      bool ok = true;
-      for (std::uint32_t bone{}; bone != bone_count && ok; ++bone) {
-        std::int32_t parent{};
-        if (!Read(context, pose_data + bone * kTransformSize, read_locals[bone]) ||
-            !Read(context, info_data + bone * stride + 8, parent) || parent < -1 ||
-            parent >= static_cast<std::int32_t>(bone_count) ||
-            parent >= static_cast<std::int32_t>(bone)) {
-          ok = false;                  // not a parent-before-child tree
-          break;
-        }
-        read_parents[bone] = parent;
-      }
-      if (!ok)
-        continue;
-      locals = std::move(read_locals);
-      parents = std::move(read_parents);
-      return true;
-    }
+  if (!asset || !component || !bone_count || bone_count > 4096 ||
+      BodyMeshAsset(context,component) != asset) return false;
+  constexpr std::string_view path="/Script/Engine.SkinnedMeshComponent.GetRefPoseTransform";
+  // Fixed reflected ABI: both SDKs declare int32 BoneIndex followed by FTransform.
+  struct alignas(16) ReferencePoseParams {
+    std::int32_t index{};
+    std::uint8_t padding[12]{};
+    std::array<double,12> result{};
+  };
+  static_assert(sizeof(ReferencePoseParams)==112 && offsetof(ReferencePoseParams,result)==16);
+  std::uintptr_t function{};
+  std::uint16_t parameter_size{};
+  if (!FindObjectAddressByPath(context,path,function) ||
+      !Read(context,function+native_layout.kFunctionParmsSizeOffset,parameter_size) ||
+      parameter_size != sizeof(ReferencePoseParams)) return false;
+  std::vector<std::array<double,12>> next_locals(bone_count);
+  std::vector<std::int32_t> next_parents(bone_count,-1);
+  for (std::uint32_t bone{}; bone<bone_count; ++bone) {
+    ReferencePoseParams params{}; params.index=static_cast<std::int32_t>(bone);
+    std::string detail;
+    if (!CallVirtualUFunction(context,component,path,&params,sizeof(params),detail,&params)) return false;
+    const auto& pose=params.result;
+    const auto norm=pose[0]*pose[0]+pose[1]*pose[1]+pose[2]*pose[2]+pose[3]*pose[3];
+    if (!std::all_of(pose.begin(),pose.end(),[](double v){ return std::isfinite(v); }) ||
+        norm<0.9 || norm>1.1) return false;
+    std::array<std::uint8_t,8> name{};
+    std::string rendered;
+    if (!GetBoneFNameForMesh(context,component,bone,name,rendered)) return false;
+    struct ParentParams { std::array<std::uint8_t,8> bone{}, parent{}; } parent{name};
+    if (!CallVirtualUFunction(context,component,kFunctionGetParentBonePath,&parent,sizeof(parent),detail,&parent)) return false;
+    struct IndexParams { std::array<std::uint8_t,8> name{}; std::int32_t result{-1}; } index{parent.parent};
+    static_assert(sizeof(IndexParams)==12);
+    if (!CallVirtualUFunction(context,component,kFunctionGetBoneIndexPath,&index,sizeof(index),detail,&index) ||
+        index.result < -1 || index.result >= static_cast<std::int32_t>(bone)) return false;
+    next_locals[bone]=params.result;
+    next_parents[bone]=index.result;
   }
-  return false;
+  locals=std::move(next_locals); parents=std::move(next_parents);
+  return true;
 }
 
 // Component-space positions from a bind skeleton: the transforms below, positions only.
@@ -11475,263 +11693,35 @@ std::uint32_t MatchBodyBone(Context &context, const std::string &name) noexcept 
 // equal this skeleton's bone count, the transforms must be sane, and resolving the
 // FNames out of the info array must reproduce this skeleton's bone names. Random
 // memory and another character's mesh both fail that.
-bool TryAssetReferencePose(Context &context,
-                           const std::uintptr_t asset) noexcept {
-  if (asset == 0 || context.bone_names.empty())
-    return false;
-  const std::size_t count = context.bone_names.size();
-  const auto expected = static_cast<std::uint32_t>(count);
-  const auto name_matches = [&context, count](const std::uintptr_t info,
-                                              const std::uint32_t stride) noexcept {
-    for (std::size_t sample : {std::size_t{0}, count / 2, count - 1}) {
-      std::int32_t name_id{};
-      if (!Read(context, info + sample * stride, name_id))
-        return false;
-      std::string name;
-      if (!ResolveName(context, static_cast<std::uint32_t>(name_id), name))
-        return false;
-      if (name != context.bone_names[sample])
-        return false;
-    }
-    return true;
-  };
-  for (std::uint32_t offset = 16; offset + 16 <= 0x800; offset += 8) {
-    std::uintptr_t pose_data{};
-    std::uint32_t pose_count{};
-    std::uint32_t pose_capacity{};
-    if (!ReadPointerAt(context, asset, offset, pose_data) || pose_data == 0)
-      continue;
-    if (!Read(context, asset + offset + 8, pose_count) ||
-        !Read(context, asset + offset + 12, pose_capacity))
-      continue;
-    if (pose_count != expected || pose_capacity < pose_count ||
-        pose_capacity > (1U << 20))
-      continue;
-    std::uintptr_t info_data{};
-    std::uint32_t info_count{};
-    if (!ReadPointerAt(context, asset, offset - 16, info_data) || info_data == 0)
-      continue;
-    if (!Read(context, asset + offset - 8, info_count) || info_count != expected)
-      continue;
-    // Sample the first and last transform: unit rotation, unit scale.
-    for (const std::size_t sample : {std::size_t{0}, count - 1}) {
-      std::array<double, 12> probe{};
-      if (!Read(context, pose_data + sample * kTransformSize, probe))
-        return false;
-      const double norm = probe[0] * probe[0] + probe[1] * probe[1] +
-                          probe[2] * probe[2] + probe[3] * probe[3];
-      if (norm < 0.9 || norm > 1.1)
-        return false;
-      if (std::fabs(probe[8] - 1.0) > 0.05 || std::fabs(probe[9] - 1.0) > 0.05 ||
-          std::fabs(probe[10] - 1.0) > 0.05)
-        return false;
-    }
-    if (!name_matches(info_data, 12) && !name_matches(info_data, 16))
-      continue;
-    std::vector<std::array<double, 12>> locals(count);
-    for (std::size_t bone{}; bone != count; ++bone) {
-      if (!Read(context, pose_data + bone * kTransformSize, locals[bone]))
-        return false;
-    }
-    context.ref_locals = std::move(locals);
-    context.ref_pose_object = asset;
-    context.ref_pose_status = "reference pose read from the mesh asset";
-    {
-      char message[160]{};
-      std::snprintf(message, sizeof(message),
-                    "betterpose refpose read %zu bones from mesh asset %llX",
-                    count, static_cast<unsigned long long>(asset));
-      LogDiagnostic(context, message);
-    }
-    return true;
-  }
-  return false;
+bool TryAssetReferencePose(Context &context, const std::uintptr_t asset) noexcept {
+  std::vector<std::array<double,12>> locals;
+  std::vector<std::int32_t> parents;
+  if (!ReadAssetBindSkeleton(context,asset,context.runtime.mesh,
+        static_cast<std::uint32_t>(context.bone_names.size()),locals,parents)) return false;
+  context.ref_locals=std::move(locals);
+  context.ref_pose_object=asset;
+  context.ref_pose_status="reference pose read through the skeletal mesh API";
+  return true;
 }
 
-// Find the character's mesh asset and read its reference pose. Called by the
-// skeleton export (and driven from the mesh scan, which already walks every
-// object, so it can also succeed there).
 bool FindReferencePose(Context &context) noexcept {
-  if (!context.ref_locals.empty())
-    return true;
-  context.ref_pose_object = 0;
-  context.ref_pose_status = "mesh unavailable";
-  const auto mesh = context.runtime.mesh;
-  if (mesh == 0)
-    return false;
-  if (context.bone_names.empty())
-    MaybeRefreshBoneNames(context);
-  const std::size_t count = context.bone_names.size();
-  if (count == 0) {
-    context.ref_pose_status = "bone names unavailable";
-    return false;
-  }
-  std::vector<std::uintptr_t> candidates;
-  // USkinnedMeshComponent is deep enough that SkeletalMesh can sit past 0x800, and
-  // this game subclasses the asset type (HTSkeletalMesh...), so match on the class
-  // name containing SkeletalMesh while excluding *Component* classes.
-  const auto looks_like_mesh_asset = [&context](const std::uintptr_t object) noexcept {
-    const std::string name = ClassNameOf(context, object);
-    if (name.empty())
-      return false;
-    if (name.find("SkeletalMesh") == std::string::npos)
-      return false;
-    return name.find("Component") == std::string::npos;
-  };
-  for (std::uint32_t offset{}; offset + 8 <= 0x2000; offset += 8) {
-    std::uintptr_t candidate{};
-    if (!ReadPointerAt(context, mesh, offset, candidate) || candidate == 0)
-      continue;
-    if (!looks_like_mesh_asset(candidate))
-      continue;
-    if (std::find(candidates.begin(), candidates.end(), candidate) ==
-        candidates.end())
-      candidates.push_back(candidate);
-  }
-  if (candidates.empty() && RefreshObjectRegistry(context)) {
-    // Fallback: the component does not hold the asset as a plain pointer here (the
-    // mesh scan found it only by walking the registry), so sweep the whole registry.
-    // This walks a few hundred thousand objects, which is why it only runs from an
-    // explicit action - and every candidate still has to pass the FName check.
-    for (std::uint32_t index{}; index < context.object_registry.count; ++index) {
-      std::uintptr_t candidate{};
-      if (!ObjectAtIndex(context, index, candidate))
-        continue;
-      if (!looks_like_mesh_asset(candidate))
-        continue;
-      if (TryAssetReferencePose(context, candidate))
-        return true;
-      candidates.push_back(candidate);
-    }
-  }
-  if (candidates.empty()) {
-    context.ref_pose_status = "no SkeletalMesh pointer in the mesh component";
-    return false;
-  }
-  for (const auto asset : candidates) {
-    if (TryAssetReferencePose(context, asset))
-      return true;
-  }
-  char status[128]{};
-  std::snprintf(status, sizeof(status),
-                "no reference pose array matched %zu mesh asset candidate(s)",
-                candidates.size());
-  context.ref_pose_status = status;
+  if (!context.ref_locals.empty()) return true;
+  context.ref_pose_object=0;
+  if (context.bone_names.empty()) MaybeRefreshBoneNames(context);
+  const auto asset=BodyMeshAsset(context,context.runtime.mesh);
+  if (asset && TryAssetReferencePose(context,asset)) return true;
+  context.ref_pose_status="skeletal mesh reference pose unavailable";
   return false;
 }
 
-// Read-only discovery of the attach-parent offset. A component stores its attach
-// parent as an FWeakObjectPtr {int32 ObjectIndex, int32 SerialNumber}, so a
-// candidate offset is only accepted when the index resolves through GObjects to
-// an object whose stored serial matches -- and when that holds for *every* probe
-// component at once, which random data never does.
+// AttachParent is a TObjectPtr in both supported SDKs.
 void StepAttachScan(Context &context) noexcept {
-  if (!context.attach_scan_requested.load(std::memory_order_acquire))
-    return;
-  context.attach_scan_requested.store(false, std::memory_order_release);
-  if (!RefreshObjectRegistry(context)) {
-    return;
-  }
-  std::vector<std::uintptr_t> probes;
-  if (context.runtime.mesh != 0)
-    probes.push_back(context.runtime.mesh);
-  for (const auto &candidate : context.mesh_scan_candidates) {
-    if (probes.size() >= 5)
-      break;
-    probes.push_back(candidate.first);
-  }
-  if (probes.size() < 2) {
-    return;
-  }
+  if (!context.attach_scan_requested.exchange(false,std::memory_order_acq_rel)) return;
   context.attach_offsets.clear();
-  auto read_weak = [&](const std::uintptr_t object, const std::uint32_t offset,
-                       std::uintptr_t &target, std::string &target_class) {
-    target = 0;
-    target_class.clear();
-    // UE5 declares AttachParent as TObjectPtr, which is a raw pointer in a
-    // non-editor build; older layouts use an FWeakObjectPtr {index, serial}.
-    // Try both and accept whichever resolves to a Component/Actor class, which
-    // random data has no way of doing.
-    std::uintptr_t raw{};
-    if (Read(context, object + offset, raw) && raw > 0x10000U &&
-        raw < 0x7FFFFFFFFFFFULL) {
-      std::string raw_class = ClassNameOf(context, raw);
-      if (raw_class.find("Component") != std::string::npos ||
-          raw_class.find("Actor") != std::string::npos) {
-        target = raw;
-        target_class = raw_class;
-        return true;
-      }
-    }
-    std::uint32_t index{};
-    std::uint32_t serial{};
-    if (!Read(context, object + offset, index) ||
-        !Read(context, object + offset + 4, serial) || index == 0)
-      return false;
-    std::uintptr_t candidate{};
-    if (!ObjectAtIndex(context, index, candidate))
-      return false;
-    // The serial guards against a stale index that now points elsewhere.
-    const std::uint32_t chunk = index / kObjectChunkSize;
-    std::uintptr_t chunk_pointer{};
-    std::uint32_t stored_serial{};
-    if (!ReadPointerAt(context, context.object_registry.items,
-                       chunk * sizeof(std::uintptr_t), chunk_pointer) ||
-        chunk_pointer == 0 ||
-        !Read(context,
-              chunk_pointer + (index % kObjectChunkSize) * kObjectItemStride +
-                  16,
-              stored_serial) ||
-        stored_serial != serial)
-      return false;
-    target = candidate;
-    target_class = ClassNameOf(context, candidate);
-    return !target_class.empty();
-  };
-  struct AttachHit {
-    std::uint32_t offset{};
-    std::uint32_t hits{};
-    std::string sample;
-  };
-  std::vector<AttachHit> hits;
-  for (std::uint32_t offset = 0x80; offset < 0xC00; offset += 8) {
-    std::uint32_t matched{};
-    std::string sample;
-    for (const auto probe : probes) {
-      std::uintptr_t target{};
-      std::string target_class;
-      if (read_weak(probe, offset, target, target_class)) {
-        ++matched;
-        if (sample.empty())
-          sample = target_class;
-      }
-    }
-    // Requiring *every* probe to match was the mistake that produced "none": a
-    // component with no attach parent (or an unreadable one) can never satisfy
-    // it. Accept a majority instead and report how many matched, so a partial
-    // answer still tells us something.
-    if (matched >= 2 && matched * 2 >= probes.size())
-      hits.push_back({offset, matched, sample});
-  }
-  std::sort(hits.begin(), hits.end(),
-            [](const AttachHit &left, const AttachHit &right) {
-              return left.hits > right.hits;
-            });
-  context.attach_offsets.clear();
-  for (const auto &hit : hits)
-    context.attach_offsets.emplace_back(hit.offset, hit.sample);
-  std::string list;
-  for (std::size_t i{}; i != hits.size() && i != 2; ++i) {
-    char entry[64]{};
-    std::snprintf(entry, sizeof(entry), "%s%X:%.16s %u/%zu",
-                  i == 0 ? "" : " ", static_cast<unsigned>(hits[i].offset),
-                  hits[i].sample.c_str(), static_cast<unsigned>(hits[i].hits),
-                  probes.size());
-    list += entry;
-  }
-  if (list.empty())
-    list = "none";
-  context.attach_parent_offset = hits.empty() ? 0U : hits[0].offset;
+  context.attach_parent_offset=native_layout.kMeshAttachParentOffset;
+  std::uintptr_t parent{};
+  if (context.runtime.mesh && Read(context,context.runtime.mesh+native_layout.kMeshAttachParentOffset,parent) && parent)
+    context.attach_offsets.emplace_back(native_layout.kMeshAttachParentOffset,ClassNameOf(context,parent));
 }
 
 // Diagnostics go to the runtime log so they can be read without asking the user
@@ -11752,13 +11742,13 @@ bool FindGeneratedAnimNode(Context &context, const std::uintptr_t anim_class,
   member_offset = 0;
   element_size = 0;
   std::uintptr_t property{};
-  if (!ReadPointerAt(context, anim_class, kUStructChildPropertiesOffset,
+  if (!ReadPointerAt(context, anim_class, native_layout.kUStructChildPropertiesOffset,
                      property))
     return false;
   for (std::uint32_t index{}; property != 0 && index != 2048; ++index) {
     std::uint32_t name_id{};
     std::string name;
-    if (!Read(context, property + kFFieldNameOffset, name_id) ||
+    if (!Read(context, property + native_layout.kFFieldNameOffset, name_id) ||
         !ResolveName(context, name_id, name))
       return false;
     const bool generated_suffix =
@@ -11768,8 +11758,8 @@ bool FindGeneratedAnimNode(Context &context, const std::uintptr_t anim_class,
     if (name == wanted || generated_suffix) {
       std::int32_t offset{};
       std::int32_t size{};
-      if (!Read(context, property + kFPropertyOffsetInternalOffset, offset) ||
-          !Read(context, property + kFPropertyElementSizeOffset, size) ||
+      if (!Read(context, property + native_layout.kFPropertyOffsetInternalOffset, offset) ||
+          !Read(context, property + native_layout.kFPropertyElementSizeOffset, size) ||
           offset < 0 || size <= 0)
         return false;
       member_offset = static_cast<std::uint32_t>(offset);
@@ -11777,7 +11767,7 @@ bool FindGeneratedAnimNode(Context &context, const std::uintptr_t anim_class,
       return true;
     }
     std::uintptr_t next{};
-    if (!Read(context, property + kFFieldNextOffset, next))
+    if (!Read(context, property + native_layout.kFFieldNextOffset, next))
       return false;
     property = next;
   }
@@ -11820,10 +11810,10 @@ void ReadKawaiiLimitGeometry(const std::uint8_t *entry,
   float radius{};
   float length{};
   float sphere_radius{};
-  std::memcpy(&radius, entry + kKawaiiLimitRadiusOffset, sizeof(radius));
-  std::memcpy(&length, entry + kKawaiiLimitLengthOffset, sizeof(length));
+  std::memcpy(&radius, entry + native_layout.kKawaiiLimitRadiusOffset, sizeof(radius));
+  std::memcpy(&length, entry + native_layout.kKawaiiLimitLengthOffset, sizeof(length));
   std::memcpy(&sphere_radius,
-              entry + kKawaiiLimitSphereRadiusOffset,
+              entry + native_layout.kKawaiiLimitSphereRadiusOffset,
               sizeof(sphere_radius));
   limit.radius = radius;
   limit.length = length;
@@ -11863,12 +11853,12 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
   }
   std::uintptr_t anim_class{};
   std::uintptr_t anim_instance{};
-  if (!ReadPointerAt(context, mesh, kMeshAnimClassOffset, anim_class) ||
+  if (!ReadPointerAt(context, mesh, native_layout.kMeshAnimClassOffset, anim_class) ||
       anim_class == 0) {
     error = "animation class or instance unreadable";
     return false;
   }
-  if (!ReadPointerAt(context, mesh, kMeshAnimScriptInstanceOffset,
+  if (!ReadPointerAt(context, mesh, native_layout.kMeshAnimScriptInstanceOffset,
                      anim_instance) ||
       anim_instance == 0) {
     std::array<std::uint8_t, sizeof(std::uintptr_t)> reflected_output{};
@@ -11906,13 +11896,13 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
   }
   snapshot.node = anim_instance + node_offset;
   std::uint32_t root_id{};
-  if (!Read(context, snapshot.node + kKawaiiRootBoneOffset, root_id) ||
+  if (!Read(context, snapshot.node + native_layout.kKawaiiRootBoneOffset, root_id) ||
       !ResolveName(context, root_id, snapshot.root)) {
     error = "KawaiiPhysics root bone unreadable";
     return false;
   }
   std::array<float, 7> base_raw{};
-  if (!Read(context, snapshot.node + kKawaiiPhysicsSettingsOffset, base_raw) ||
+  if (!Read(context, snapshot.node + native_layout.kKawaiiPhysicsSettingsOffset, base_raw) ||
       !std::all_of(base_raw.begin(), base_raw.end(),
                    [](const float value) { return std::isfinite(value); })) {
     error = "invalid KawaiiPhysics base settings";
@@ -11925,16 +11915,16 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
   snapshot.base.radius = base_raw[4];
   snapshot.base.limit_angle = base_raw[5];
   snapshot.base.forward_move_offset = base_raw[6];
-  if (!Read(context, snapshot.node + kKawaiiGravityOffset, snapshot.gravity) ||
+  if (!Read(context, snapshot.node + native_layout.kKawaiiGravityOffset, snapshot.gravity) ||
       !std::all_of(snapshot.gravity.begin(), snapshot.gravity.end(),
                    [](const double value) { return std::isfinite(value); }))
     snapshot.gravity = {};
   std::uint8_t wind_flags{};
   static_cast<void>(
-      Read(context, snapshot.node + kKawaiiWindEnabledOffset, wind_flags));
+      Read(context, snapshot.node + native_layout.kKawaiiWindEnabledOffset, wind_flags));
   float wind_scale{};
   static_cast<void>(
-      Read(context, snapshot.node + kKawaiiWindScaleOffset, wind_scale));
+      Read(context, snapshot.node + native_layout.kKawaiiWindScaleOffset, wind_scale));
   snapshot.wind_scale = std::isfinite(wind_scale) ? wind_scale : 0.0;
   snapshot.wind_enabled = (wind_flags & 1U) != 0;
   if (read_capsule_limits) {
@@ -11956,17 +11946,17 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
       return count;
     };
     snapshot.spherical_limits =
-        read_limit_count(kKawaiiSphericalLimitsOffset);
+        read_limit_count(native_layout.kKawaiiSphericalLimitsOffset);
     snapshot.capsule_limits =
-        read_limit_count(kKawaiiCapsuleLimitsOffset);
-    snapshot.box_limits = read_limit_count(kKawaiiBoxLimitsOffset);
-    snapshot.planar_limits = read_limit_count(kKawaiiPlanarLimitsOffset);
+        read_limit_count(native_layout.kKawaiiCapsuleLimitsOffset);
+    snapshot.box_limits = read_limit_count(native_layout.kKawaiiBoxLimitsOffset);
+    snapshot.planar_limits = read_limit_count(native_layout.kKawaiiPlanarLimitsOffset);
   }
   std::uintptr_t bones_data{};
   std::uint32_t bone_count{};
   const std::uint32_t modify_bones_offset =
       ResolveKawaiiPropertyOffset(context, "ModifyBones",
-                                  kKawaiiModifyBonesOffset);
+                                  native_layout.kKawaiiModifyBonesOffset);
   const bool bones_available =
       ReadArrayHeader(context, snapshot.node + modify_bones_offset,
                       bones_data, bone_count) &&
@@ -11975,24 +11965,24 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
   if (bones_available) {
     snapshot.source_bones = bone_count;
     std::vector<std::uint8_t> bones(
-        static_cast<std::size_t>(bone_count) * kKawaiiModifyBoneSize);
+        static_cast<std::size_t>(bone_count) * native_layout.kKawaiiModifyBoneSize);
     if (ReadBytes(context, bones_data, bones.data(), bones.size())) {
       snapshot.overrides.reserve(bone_count);
       for (std::uint32_t bone{}; bone != bone_count; ++bone) {
         const std::size_t start =
-            static_cast<std::size_t>(bone) * kKawaiiModifyBoneSize;
+            static_cast<std::size_t>(bone) * native_layout.kKawaiiModifyBoneSize;
         const auto *entry = bones.data() + start;
-        if (entry[kKawaiiModifyBoneDummyOffset] != 0 ||
-            entry[kKawaiiModifyBoneSkipOffset] != 0)
+        if (entry[native_layout.kKawaiiModifyBoneDummyOffset] != 0 ||
+            entry[native_layout.kKawaiiModifyBoneSkipOffset] != 0)
           continue;
         std::uint32_t name_id{};
-        std::memcpy(&name_id, entry + kKawaiiModifyBoneNameOffset,
+        std::memcpy(&name_id, entry + native_layout.kKawaiiModifyBoneNameOffset,
                     sizeof(name_id));
         std::string name;
         if (!ResolveName(context, name_id, name))
           continue;
         std::array<float, 7> raw{};
-        std::memcpy(raw.data(), entry + kKawaiiModifyBoneSettingsOffset,
+        std::memcpy(raw.data(), entry + native_layout.kKawaiiModifyBoneSettingsOffset,
                     sizeof(raw));
         if (!std::all_of(raw.begin(), raw.end(),
                          [](const float value) {
@@ -12026,35 +12016,35 @@ bool ReadKawaiiPhysicsSnapshot(Context &context, const std::uintptr_t mesh,
   if (read_capsule_limits) {
     std::uintptr_t limits_data{};
     std::uint32_t limit_count{};
-    if (ReadArrayHeader(context, snapshot.node + kKawaiiCapsuleLimitsOffset,
+    if (ReadArrayHeader(context, snapshot.node + native_layout.kKawaiiCapsuleLimitsOffset,
                         limits_data, limit_count) &&
         limits_data != 0 && limit_count != 0 && limit_count <= 256) {
       std::vector<std::uint8_t> limits(
-          static_cast<std::size_t>(limit_count) * kKawaiiCapsuleLimitSize);
+          static_cast<std::size_t>(limit_count) * native_layout.kKawaiiCapsuleLimitSize);
       if (ReadBytes(context, limits_data, limits.data(), limits.size())) {
         snapshot.limits.reserve(limit_count);
         for (std::uint32_t index{}; index != limit_count; ++index) {
           const auto *entry =
               limits.data() +
-              static_cast<std::size_t>(index) * kKawaiiCapsuleLimitSize;
-          if (entry[kKawaiiLimitEnabledOffset] == 0)
+              static_cast<std::size_t>(index) * native_layout.kKawaiiCapsuleLimitSize;
+          if (entry[native_layout.kKawaiiLimitEnabledOffset] == 0)
             continue;
           std::uint32_t driving_id{};
-          std::memcpy(&driving_id, entry + kKawaiiLimitDrivingBoneOffset,
+          std::memcpy(&driving_id, entry + native_layout.kKawaiiLimitDrivingBoneOffset,
                       sizeof(driving_id));
           KawaiiCapsuleLimitSnapshot limit;
           std::memcpy(&limit.cached_bone_index,
-                      entry + kKawaiiLimitCachedBoneIndexOffset,
+                      entry + native_layout.kKawaiiLimitCachedBoneIndexOffset,
                       sizeof(limit.cached_bone_index));
           const bool resolved =
               ResolveName(context, driving_id, limit.driving_bone);
           if (!resolved && limit.cached_bone_index < 0)
             continue;
           std::memcpy(limit.offset_location.data(),
-                      entry + kKawaiiLimitOffsetLocationOffset,
+                      entry + native_layout.kKawaiiLimitOffsetLocationOffset,
                       sizeof(limit.offset_location));
           std::memcpy(limit.offset_rotation.data(),
-                      entry + kKawaiiLimitOffsetRotationOffset,
+                      entry + native_layout.kKawaiiLimitOffsetRotationOffset,
                       sizeof(limit.offset_rotation));
           ReadKawaiiLimitGeometry(entry, limit);
           if (!std::all_of(limit.offset_location.begin(),
@@ -12094,10 +12084,10 @@ void RestoreKawaiiInitialization(Context &context,
                                  Context::ExtraMesh &extra) noexcept {
   if (extra.kawaii_tick_option_overridden) {
     static_cast<void>(Write(
-        context, extra.object + kMeshVisibilityBasedAnimTickOptionOffset,
+        context, extra.object + native_layout.kMeshVisibilityBasedAnimTickOptionOffset,
         extra.kawaii_original_anim_tick_option));
     static_cast<void>(Write(context,
-                            extra.object + kMeshForcedLodModelOffset,
+                            extra.object + native_layout.kMeshForcedLodModelOffset,
                             extra.kawaii_original_forced_lod));
     extra.kawaii_tick_option_overridden = false;
   }
@@ -12126,20 +12116,20 @@ void BeginKawaiiInitialization(Context &context,
   static_cast<void>(CallVirtualUFunction(
       context, extra.object, kFunctionSetComponentTickEnabledPath,
       &enable_component_tick, sizeof(enable_component_tick), detail));
-  if (Read(context, extra.object + kMeshVisibilityBasedAnimTickOptionOffset,
+  if (Read(context, extra.object + native_layout.kMeshVisibilityBasedAnimTickOptionOffset,
            extra.kawaii_original_anim_tick_option) &&
-      Read(context, extra.object + kMeshForcedLodModelOffset,
+      Read(context, extra.object + native_layout.kMeshForcedLodModelOffset,
            extra.kawaii_original_forced_lod)) {
     const std::uint8_t always_tick = 0;
     const std::int32_t lod_zero = 0;
     extra.kawaii_tick_option_overridden =
         Write(context,
-              extra.object + kMeshVisibilityBasedAnimTickOptionOffset,
+              extra.object + native_layout.kMeshVisibilityBasedAnimTickOptionOffset,
               always_tick) &&
-        Write(context, extra.object + kMeshForcedLodModelOffset, lod_zero);
+        Write(context, extra.object + native_layout.kMeshForcedLodModelOffset, lod_zero);
   }
   std::uint8_t animation_mode{};
-  if (Read(context, extra.object + kMeshAnimationModeOffset,
+  if (Read(context, extra.object + native_layout.kMeshAnimationModeOffset,
            animation_mode)) {
     struct SetAnimationModeParameters {
       std::uint8_t mode;
@@ -12516,9 +12506,9 @@ void BuildExtraMeshes(Context &context) noexcept {
     std::uint32_t component_count{};
     std::uintptr_t bone_data{};
     std::uint32_t bone_array_count{};
-    if (!ReadArrayHeader(context, object + kMeshComponentSpaceBuffer1Offset,
+    if (!ReadArrayHeader(context, object + native_layout.kMeshComponentSpaceBuffer1Offset,
                          component_data, component_count) ||
-        !ReadArrayHeader(context, object + kMeshComponentSpaceBuffer0Offset,
+        !ReadArrayHeader(context, object + native_layout.kMeshComponentSpaceBuffer0Offset,
                          bone_data, bone_array_count))
       continue;
     if (component_data == 0 || bone_data == 0 || component_count < bone_count ||
@@ -12550,7 +12540,7 @@ void BuildExtraMeshes(Context &context) noexcept {
     // Save the untouched buffers so unloading can put them back: without this
     // the components keep our last written pose and only a relog fixes them.
     const auto byte_count =
-        static_cast<std::size_t>(bone_count) * kTransformSize;
+        static_cast<std::size_t>(bone_count) * native_layout.kTransformSize;
     extra.saved_component.assign(byte_count, 0);
     extra.saved_bone.assign(byte_count, 0);
     // Read through the core service in one call: the single-value Read template
@@ -13536,11 +13526,11 @@ void WriteExtraMeshes(Context &context,
       if (source < packed.size()) {
         out[bone] = packed[source];
       } else if (extra.saved_component.size() >=
-                 (static_cast<std::size_t>(bone) + 1) * kTransformSize) {
+                 (static_cast<std::size_t>(bone) + 1) * native_layout.kTransformSize) {
         // Unmapped bone: keep whatever it had, so nothing collapses.
         std::memcpy(&out[bone],
                     extra.saved_component.data() +
-                        static_cast<std::size_t>(bone) * kTransformSize,
+                        static_cast<std::size_t>(bone) * native_layout.kTransformSize,
                     sizeof(PackedTransform));
       }
     }
@@ -13721,7 +13711,7 @@ bool EnsurePoseForcedLod(Context &context, const bool enabled) noexcept {
   }
   if (!state.saved_forced_lod) {
     std::int32_t original{};
-    if (!Read(context, state.mesh + kMeshForcedLodModelOffset, original))
+    if (!Read(context, state.mesh + native_layout.kMeshForcedLodModelOffset, original))
       return false;
     state.original_forced_lod = original;
     state.saved_forced_lod = true;
@@ -13745,7 +13735,7 @@ bool EnsurePoseAnimationMode(Context &context, const bool enabled) noexcept {
   if (!enabled) {
     if (state.saved_animation_mode && state.animation_mode_applied) {
       const std::uint8_t original = state.original_animation_mode;
-      if (!Write(context, state.mesh + kMeshAnimationModeOffset, original))
+      if (!Write(context, state.mesh + native_layout.kMeshAnimationModeOffset, original))
         return false;
       state.animation_mode_applied = false;
       state.saved_animation_mode = false;
@@ -13759,7 +13749,7 @@ bool EnsurePoseAnimationMode(Context &context, const bool enabled) noexcept {
   }
   if (!state.saved_animation_mode) {
     std::uint8_t original{};
-    if (!Read(context, state.mesh + kMeshAnimationModeOffset, original))
+    if (!Read(context, state.mesh + native_layout.kMeshAnimationModeOffset, original))
       return false;
     state.original_animation_mode = original;
     state.saved_animation_mode = true;
@@ -13784,7 +13774,7 @@ bool EnsurePoseAnimationMode(Context &context, const bool enabled) noexcept {
   // to the direct property write, which is sufficient when no AnimInstance
   // reinitialization is requested.
   const std::uint8_t custom = kAnimationModeCustom;
-  if (!Write(context, state.mesh + kMeshAnimationModeOffset, custom))
+  if (!Write(context, state.mesh + native_layout.kMeshAnimationModeOffset, custom))
     return false;
   state.animation_mode_applied = true;
   return true;
@@ -13798,8 +13788,8 @@ bool EnsureExtraPoseAnimationMode(Context &context,
   if (!enabled) {
     if (extra.original_animation_mode_saved && extra.animation_mode_paused) {
       const std::uint8_t original = extra.original_animation_mode;
-      if (!Write(context, extra.object + kMeshAnimationModeOffset, original) ||
-          !Write(context, extra.object + kMeshAnimationFlagsOffset,
+      if (!Write(context, extra.object + native_layout.kMeshAnimationModeOffset, original) ||
+          !Write(context, extra.object + native_layout.kMeshAnimationFlagsOffset,
                  extra.original_animation_flags))
         return false;
       extra.animation_mode_paused = false;
@@ -13814,8 +13804,8 @@ bool EnsureExtraPoseAnimationMode(Context &context,
   if (!extra.original_animation_mode_saved) {
     std::uint8_t original{};
     std::uint8_t original_flags{};
-    if (!Read(context, extra.object + kMeshAnimationModeOffset, original) ||
-        !Read(context, extra.object + kMeshAnimationFlagsOffset,
+    if (!Read(context, extra.object + native_layout.kMeshAnimationModeOffset, original) ||
+        !Read(context, extra.object + native_layout.kMeshAnimationFlagsOffset,
               original_flags))
       return false;
     extra.original_animation_mode = original;
@@ -13827,11 +13817,11 @@ bool EnsureExtraPoseAnimationMode(Context &context,
     const std::uint8_t custom = kAnimationModeCustom;
     std::uint8_t paused_flags = extra.original_animation_flags;
     paused_flags |= static_cast<std::uint8_t>(
-        1U << kAnimationFlagPauseAnimsBit);
+        1U << native_layout.kAnimationFlagPauseAnimsBit);
     paused_flags &= static_cast<std::uint8_t>(
-        ~(1U << kAnimationFlagEnableAnimationBit));
-    return Write(context, extra.object + kMeshAnimationModeOffset, custom) &&
-           Write(context, extra.object + kMeshAnimationFlagsOffset,
+        ~(1U << native_layout.kAnimationFlagEnableAnimationBit));
+    return Write(context, extra.object + native_layout.kMeshAnimationModeOffset, custom) &&
+           Write(context, extra.object + native_layout.kMeshAnimationFlagsOffset,
                  paused_flags);
   }
 
@@ -13845,15 +13835,15 @@ bool EnsureExtraPoseAnimationMode(Context &context,
                             kFunctionSetAnimationModePath, &parameters,
                             sizeof(parameters), detail)) {
     const std::uint8_t custom = kAnimationModeCustom;
-    if (!Write(context, extra.object + kMeshAnimationModeOffset, custom))
+    if (!Write(context, extra.object + native_layout.kMeshAnimationModeOffset, custom))
       return false;
   }
   std::uint8_t paused_flags = extra.original_animation_flags;
   paused_flags |= static_cast<std::uint8_t>(
-      1U << kAnimationFlagPauseAnimsBit);
+      1U << native_layout.kAnimationFlagPauseAnimsBit);
   paused_flags &= static_cast<std::uint8_t>(
-      ~(1U << kAnimationFlagEnableAnimationBit));
-  if (!Write(context, extra.object + kMeshAnimationFlagsOffset,
+      ~(1U << native_layout.kAnimationFlagEnableAnimationBit));
+  if (!Write(context, extra.object + native_layout.kMeshAnimationFlagsOffset,
              paused_flags))
     return false;
   extra.animation_mode_paused = true;
@@ -13864,7 +13854,7 @@ bool EnsureExtraPoseAnimationMode(Context &context,
 
 void SetReflectionStatus(Context &context, const std::string_view message) {
   std::scoped_lock lock(context.state_mutex);
-  context.reflection_status.assign(message.data(), message.size());
+  context.reflection_status = better_pose::LocalizeBlenderMessage(context.localizer, message);
 }
 
 std::wstring Utf8ToWide(const std::string_view value) {
@@ -14955,7 +14945,7 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
       std::ifstream file(Utf8ToWide(data->path), std::ios::binary);
       if (!file) {
         SetReflectionStatus(*context,
-                            "Blender 动作导入失败：无法打开文件");
+                            "Blender motion import failed: cannot open file");
         delete data;
         return;
       }
@@ -14964,7 +14954,7 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
       if (file.bad() || source.empty() ||
           source.size() > kMaximumMotionBytes) {
         SetReflectionStatus(*context,
-                            "Blender 动作导入失败：文件无法读取或过大");
+                            "Blender motion import failed: unreadable or oversized file");
         delete data;
         return;
       }
@@ -14983,8 +14973,8 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
           !better_pose::blender_motion::BuildCameraKeys(
               parsed, data->blender_camera_unit_cm, camera_keys, error)) {
         SetReflectionStatus(*context,
-                            "Blender 动作导入失败：" +
-                                (error.empty() ? std::string("格式无效")
+                            "Blender motion import failed: " +
+                                (error.empty() ? std::string("Invalid format")
                                                : error));
         delete data;
         return;
@@ -14995,7 +14985,7 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
                                 data->preserve_shared_timeline)) {
           SetReflectionStatus(
               *context,
-              "Blender 动作加载已取消：动作已卸载或角色已切换");
+              "Blender motion load canceled: motion unloaded or character changed");
         } else {
           context->mmd_unit_cm.store(data->blender_camera_unit_cm,
                                      std::memory_order_release);
@@ -15032,27 +15022,16 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
           }
           context->motion_secondary_tuning_stale.store(
               false, std::memory_order_release);
-          std::string status =
-              "Blender 动作已作为 MMD 离线载入：" +
-              std::to_string(report.frame_count) + " 帧，" +
-              std::to_string(report.bone_tracks) + " 根骨骼";
-          if (report.offset_tracks != 0)
-            status += "，" + std::to_string(report.offset_tracks) +
-                      " 根局部位移";
-          if (report.morph_tracks != 0)
-            status += "，" + std::to_string(report.morph_tracks) +
-                      " 个表情";
-          if (report.camera_keys != 0)
-            status += "，" + std::to_string(report.camera_keys) +
-                      " 个镜头关键帧";
-          if (ignored != 0)
-            status += "，跳过 " + std::to_string(ignored) + " 个无效样本";
+          const std::string status = context->localizer.Format("blender.import_summary",
+              "Loaded Blender motion as MMD: {0} frames, {1} bones, {2} translations, {3} expressions, {4} camera keys; skipped {5} samples",
+              std::array<std::string_view,6>{std::to_string(report.frame_count), std::to_string(report.bone_tracks),
+                  std::to_string(report.offset_tracks), std::to_string(report.morph_tracks), std::to_string(report.camera_keys), std::to_string(ignored)});
           SetReflectionStatus(*context, status);
           LogDiagnostic(*context, status);
         }
       } catch (const std::exception &exception) {
         SetReflectionStatus(*context,
-                            std::string("Blender 动作导入失败：") +
+                            std::string("Blender motion import failed: ") +
                                 exception.what());
       }
     } else if (data->action == 6) {
@@ -15425,7 +15404,7 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
       std::uintptr_t address{};
       std::array<double, 12> component{};
       if (AddAddress(component_data,
-                     static_cast<std::uint64_t>(index) * kTransformSize, address) &&
+                     static_cast<std::uint64_t>(index) * native_layout.kTransformSize, address) &&
           Read(context, address, component)) {
         bone["liveComponent"] = TransformToJson(component.data());
       }
@@ -15531,7 +15510,7 @@ void ExecutePoseFileAction(Context &context) noexcept {
   } else if (action == 7) {
     if (context.motion_file.empty()) {
       delete data;
-      SetReflectionStatus(context, "Blender 动作导入失败：未选择文件");
+      SetReflectionStatus(context, "Blender motion import failed: no file selected");
       return;
     }
     // An offline .bpmotion must replace the live Blender pose. Leaving the
@@ -15551,7 +15530,7 @@ void ExecutePoseFileAction(Context &context) noexcept {
       delete data;
       SetReflectionStatus(
           context,
-          "Blender 动作导入失败：找不到当前角色骨骼，请先让角色可见");
+          "Blender motion import failed: make the character visible before loading its skeleton");
       return;
     }
     if (context.ref_locals.empty()) {
@@ -15572,7 +15551,7 @@ void ExecutePoseFileAction(Context &context) noexcept {
       delete data;
       SetReflectionStatus(
           context,
-          "Blender 动作导入失败：当前角色参考姿态尚未就绪");
+          "Blender motion import failed: current reference pose is not ready");
       return;
     }
     data->blender_bone_names = context.bone_names;
@@ -15596,7 +15575,7 @@ void ExecutePoseFileAction(Context &context) noexcept {
       delete data;
       SetReflectionStatus(
           context,
-          "Blender 动作已直接转换为 MMD，不需要 VMD 轨道映射预检");
+          "Blender motion converted directly to MMD; no VMD track mapping check is needed");
       return;
     }
     data->path = context.motion_file;
@@ -15868,10 +15847,10 @@ void PublishSnapshot(Context &context, const std::string_view status) {
     std::uintptr_t component_transform{};
     static_cast<void>(AddAddress(
         context.runtime.component_space_data,
-        static_cast<std::uint64_t>(next.pose_bone_index) * kTransformSize,
+        static_cast<std::uint64_t>(next.pose_bone_index) * native_layout.kTransformSize,
         component_transform));
     static_cast<void>(Read(context,
-                           component_transform + kTransformTranslationOffset,
+                           component_transform + native_layout.kTransformTranslationOffset,
                            next.component_translation_readback));
   }
   if (context.runtime.bone_space_data != 0 &&
@@ -15879,9 +15858,9 @@ void PublishSnapshot(Context &context, const std::string_view status) {
     std::uintptr_t bone_transform{};
     static_cast<void>(AddAddress(
         context.runtime.bone_space_data,
-        static_cast<std::uint64_t>(next.pose_bone_index) * kTransformSize,
+        static_cast<std::uint64_t>(next.pose_bone_index) * native_layout.kTransformSize,
         bone_transform));
-    static_cast<void>(Read(context, bone_transform + kTransformTranslationOffset,
+    static_cast<void>(Read(context, bone_transform + native_layout.kTransformTranslationOffset,
                            next.bone_translation_readback));
   }
   const auto pose_length =
@@ -15910,13 +15889,13 @@ bool RefreshRuntime(Context &context) noexcept {
   MaybeRefreshBoneNames(context);
   RefreshBoneHierarchyDirect(context);
   static_cast<void>(Read(context,
-                         context.runtime.mesh + kMeshGlobalAnimRateScaleOffset,
+                         context.runtime.mesh + native_layout.kMeshGlobalAnimRateScaleOffset,
                          context.runtime.rate_scale));
   if (context.runtime.external_target)
     context.runtime.root_motion_scale = 1.0F;
   else
     static_cast<void>(Read(
-        context, context.runtime.character + kCharacterAnimRootMotionScaleOffset,
+        context, context.runtime.character + native_layout.kCharacterAnimRootMotionScaleOffset,
         context.runtime.root_motion_scale));
   return true;
 }
@@ -15924,9 +15903,8 @@ bool RefreshRuntime(Context &context) noexcept {
 // ---------------------------------------------------------------------------
 // Expression: the body mesh's morph targets (blend shapes).
 //
-// USkeletalMesh::MorphTargets is a TArray<UMorphTarget*>. Its offset is not in
-// the Profile, so it is found on the asset: the first TArray header whose
-// elements are live objects of a MorphTarget class. The names are the morph
+// USkeletalMesh::MorphTargets is a Profile-selected TArray<UMorphTarget*>.
+// Entries must still resolve to live MorphTarget objects. The names are the morph
 // objects' own FNames, which is exactly the FName SetMorphTarget takes.
 // SetMorphTarget(FName, float Value, bool bRemoveZeroWeight) is 13 bytes
 // (FName @0, float @8, bool @12), read from the engine's own reflection.
@@ -15936,16 +15914,10 @@ constexpr std::string_view kFunctionSetMorphTargetPath =
     "/Script/Engine.SkeletalMeshComponent.SetMorphTarget";
 
 std::uintptr_t BodyMeshAsset(Context &context, const std::uintptr_t mesh) noexcept {
-  for (std::uint32_t offset{}; offset + 8 <= 0x2000; offset += 8) {
-    std::uintptr_t candidate{};
-    if (!ReadPointerAt(context, mesh, offset, candidate) || candidate == 0)
-      continue;
-    const std::string name = ClassNameOf(context, candidate);
-    if (name.find("SkeletalMesh") != std::string::npos &&
-        name.find("Component") == std::string::npos)
-      return candidate;
-  }
-  return 0;
+  std::uintptr_t asset{};
+  if (!mesh || !Read(context,mesh+native_layout.kMeshSkeletalMeshOffset,asset) || !asset) return 0;
+  const auto name=ClassNameOf(context,asset);
+  return name.find("SkeletalMesh") != std::string::npos && name.find("Component") == std::string::npos ? asset : 0;
 }
 
 bool ReadMorphCatalog(Context &context, const std::uintptr_t asset,
@@ -15970,21 +15942,13 @@ bool ReadMorphCatalog(Context &context, const std::uintptr_t asset,
         continue;
       better_pose::morph::Entry entry;
       entry.name = ObjectNameOf(context, morph);
-      if (entry.name.empty() || !Read(context, morph + kObjectNameOffset, entry.fname))
+      if (entry.name.empty() || !Read(context, morph + native_layout.kObjectNameOffset, entry.fname))
         continue;
       entries.push_back(std::move(entry));
     }
     return !entries.empty();
   };
-  if (context.morph_array_offset != 0 && read_at(context.morph_array_offset))
-    return true;
-  for (std::uint32_t offset = 0x28; offset + 16 <= 0x1000; offset += 8) {
-    if (read_at(offset)) {
-      context.morph_array_offset = offset;
-      return true;
-    }
-  }
-  return false;
+  return read_at(native_layout.kMeshMorphTargetsOffset);
 }
 
 better_pose::history::ExpressionState CaptureExpression(Context &context) {
@@ -16075,17 +16039,17 @@ bool CaptureCurrentLocalPose(
       state.component_space_count != count ||
       context.bone_names.size() != count ||
       context.bone_parents.size() != count) {
-    error = "当前角色姿态缓冲不可用";
+    error = "Current character pose buffer unavailable";
     return false;
   }
   std::vector<Transformd> components(count);
   for (std::uint32_t bone{}; bone != count; ++bone) {
     std::uintptr_t address{};
     if (!AddAddress(state.component_space_data,
-                    static_cast<std::uint64_t>(bone) * kTransformSize,
+                    static_cast<std::uint64_t>(bone) * native_layout.kTransformSize,
                     address) ||
         !ReadTransform(context, address, components[bone])) {
-      error = "无法读取当前角色骨骼姿态";
+      error = "Could not read current character skeleton pose";
       return false;
     }
   }
@@ -16259,7 +16223,7 @@ void ApplyMorphWritesToMesh(
     std::uintptr_t vtable{};
     if (!Read(context, mesh, vtable) || vtable == 0 ||
         !Read(context,
-              vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) * 8U,
+              vtable + static_cast<std::uint64_t>(native_layout.kProcessEventVtableSlot) * 8U,
               process_event) ||
         process_event == 0)
       return;
@@ -16268,7 +16232,7 @@ void ApplyMorphWritesToMesh(
       std::memcpy(parameters.data(), fname.data(), fname.size());
       std::memcpy(parameters.data() + 8, &value, sizeof(value));
       parameters[12] = 0;
-      static_cast<void>(CallResolvedUFunction(
+      static_cast<void>(CallResolvedUFunction(context,
           mesh, context.morph_set_function, process_event, parameters.data(),
           parameters.size()));
     }
@@ -16412,7 +16376,7 @@ void StepExpression(Context &context) noexcept {
     if (context.morph_process_event == 0) {
       std::uintptr_t vtable{};
       if (!Read(context, mesh, vtable) || vtable == 0 ||
-          !Read(context, vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) * 8U,
+          !Read(context, vtable + static_cast<std::uint64_t>(native_layout.kProcessEventVtableSlot) * 8U,
                 context.morph_process_event) ||
           context.morph_process_event == 0)
         return;
@@ -16850,7 +16814,7 @@ void ExportBlenderFile(Context &context) {
     name += extension;
   const std::wstring folder = Utf8ToWide(context.pose_export_folder);
   if (folder.empty()) {
-    SetStatus(context, "keyframe.file.no_folder", "导出失败：请先选择文件夹");
+    SetStatus(context, "keyframe.file.no_folder", "Export failed: choose a folder first");
     return;
   }
   std::size_t count{};
@@ -16859,7 +16823,7 @@ void ExportBlenderFile(Context &context) {
     count = context.keyframe_track.Size();
   }
   if (count == 0) {
-    SetStatus(context, "keyframe.file.nothing", "导出失败：时间轴没有关键帧");
+    SetStatus(context, "keyframe.file.nothing", "Export failed: timeline has no keyframes");
     return;
   }
   std::wstring path = folder;
@@ -16869,17 +16833,17 @@ void ExportBlenderFile(Context &context) {
   const std::string document = BuildBlenderDocument(context);
   std::ofstream file(path, std::ios::binary);
   if (!file) {
-    SetStatus(context, "keyframe.file.open_failed", "导出失败：无法打开文件",
+    SetStatus(context, "keyframe.file.open_failed", "Export failed: cannot open {0}",
               WideToUtf8(path));
     return;
   }
   file.write(document.data(), static_cast<std::streamsize>(document.size()));
   file.close();
   if (file)
-    SetStatus(context, "keyframe.file.exported", "已导出 Blender 动作 {0}：{1}",
+    SetStatus(context, "keyframe.file.exported", "Exported {0} Blender frames to {1}",
               std::to_string(count), WideToUtf8(path));
   else
-    SetStatus(context, "keyframe.file.write_failed", "导出失败：写入错误");
+    SetStatus(context, "keyframe.file.write_failed", "Export failed: write error");
 }
 
 void ImportFile(Context &context) {
@@ -17250,16 +17214,16 @@ bool ApplyInactiveEntityKeyframe(Context &context,
       context.ref_pose_status.swap(entity.ref_pose_status);
 
       std::uint8_t flags{};
-      if (Read(context, mesh + kMeshAnimationFlagsOffset, flags))
+      if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags))
         static_cast<void>(Write(
-            context, mesh + kMeshAnimationFlagsOffset,
+            context, mesh + native_layout.kMeshAnimationFlagsOffset,
             static_cast<std::uint8_t>(
                 flags | static_cast<std::uint8_t>(
-                            1U << kAnimationFlagPauseAnimsBit))));
+                            1U << native_layout.kAnimationFlagPauseAnimsBit))));
       static_cast<void>(
-          Write(context, mesh + kMeshAnimationModeOffset, kAnimationModeCustom));
+          Write(context, mesh + native_layout.kMeshAnimationModeOffset, kAnimationModeCustom));
       static_cast<void>(
-          Write(context, mesh + kMeshForcedLodModelOffset, std::int32_t{0}));
+          Write(context, mesh + native_layout.kMeshForcedLodModelOffset, std::int32_t{0}));
       const double frame =
           context.keyframe_frame.load(std::memory_order_acquire);
       const auto sample = entity.keyframe_track.Sample(frame);
@@ -18020,8 +17984,6 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
            std::memory_order_acquire));
   if (!direct_blender_camera) {
     context.blender_camera_base_valid.store(false, std::memory_order_release);
-    context.blender_camera_frozen_base_valid.store(
-        false, std::memory_order_release);
     context.blender_camera_loaded_correction_base_valid.store(
         false, std::memory_order_release);
     context.blender_camera_anchor_valid.store(false, std::memory_order_release);
@@ -18330,12 +18292,12 @@ bool ApplyPlayerFreeze(Context &context) noexcept {
 
   if (player.pause_saved) {
     std::uint8_t flags{};
-    if (!Read(context, player.mesh + kMeshAnimationFlagsOffset, flags))
+    if (!Read(context, player.mesh + native_layout.kMeshAnimationFlagsOffset, flags))
       return false;
     const std::uint8_t pause_bit =
-        static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit);
+        static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
     if ((flags & pause_bit) == 0 &&
-        !Write(context, player.mesh + kMeshAnimationFlagsOffset,
+        !Write(context, player.mesh + native_layout.kMeshAnimationFlagsOffset,
                static_cast<std::uint8_t>(flags | pause_bit)))
       return false;
   }
@@ -18345,10 +18307,10 @@ bool ApplyPlayerFreeze(Context &context) noexcept {
   // player's AnimInstance while another entity is selected.
   if (player.mode_saved) {
     std::uint8_t mode{};
-    if (!Read(context, player.mesh + kMeshAnimationModeOffset, mode))
+    if (!Read(context, player.mesh + native_layout.kMeshAnimationModeOffset, mode))
       return false;
     if (mode != kAnimationModeCustom &&
-        !Write(context, player.mesh + kMeshAnimationModeOffset,
+        !Write(context, player.mesh + native_layout.kMeshAnimationModeOffset,
                kAnimationModeCustom))
       return false;
   }
@@ -18361,11 +18323,11 @@ bool ReleasePlayerFreeze(Context &context) noexcept {
     return true;
 
   if (player.pause_saved &&
-      !Write(context, player.mesh + kMeshAnimationFlagsOffset,
+      !Write(context, player.mesh + native_layout.kMeshAnimationFlagsOffset,
              player.original_animation_flags))
     return false;
   if (player.mode_saved &&
-      !Write(context, player.mesh + kMeshAnimationModeOffset,
+      !Write(context, player.mesh + native_layout.kMeshAnimationModeOffset,
              player.original_animation_mode))
     return false;
   player = PlayerFreezeState{};
@@ -18394,22 +18356,22 @@ void ParkEntityPose(Context &context, const std::uintptr_t mesh) noexcept {
 
   EntityPoseState &saved = found->second;
   std::uint8_t flags{};
-  if (Read(context, mesh + kMeshAnimationFlagsOffset, flags)) {
+  if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
     if (!saved.pause_saved) {
       saved.pause_saved = true;
       saved.original_animation_flags = flags;
     }
-    flags |= static_cast<std::uint8_t>(1U << kAnimationFlagPauseAnimsBit);
-    static_cast<void>(Write(context, mesh + kMeshAnimationFlagsOffset, flags));
+    flags |= static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
+    static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags));
   }
   std::uint8_t mode{};
-  if (Read(context, mesh + kMeshAnimationModeOffset, mode) &&
+  if (Read(context, mesh + native_layout.kMeshAnimationModeOffset, mode) &&
       !saved.animation_mode_saved) {
     saved.animation_mode_saved = true;
     saved.original_animation_mode = mode;
   }
   const std::uint8_t custom = kAnimationModeCustom;
-  static_cast<void>(Write(context, mesh + kMeshAnimationModeOffset, custom));
+  static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset, custom));
 }
 
 void SyncEntityAnimationState(Context &context) noexcept {
@@ -18433,10 +18395,10 @@ void RestoreParkedEntityAnimations(Context &context) noexcept {
     if (mesh == 0)
       continue;
     if (saved.pause_saved)
-      static_cast<void>(Write(context, mesh + kMeshAnimationFlagsOffset,
+      static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
                               saved.original_animation_flags));
     if (saved.animation_mode_saved)
-      static_cast<void>(Write(context, mesh + kMeshAnimationModeOffset,
+      static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset,
                               saved.original_animation_mode));
   }
 }
@@ -20096,14 +20058,14 @@ bool ReadMeshComponentToWorld(Context &context, const std::uintptr_t mesh,
   std::uintptr_t process_event{};
   if (!Read(context, mesh, vtable) || vtable == 0 ||
       !Read(context,
-            vtable + static_cast<std::uint64_t>(kProcessEventVtableSlot) *
+            vtable + static_cast<std::uint64_t>(native_layout.kProcessEventVtableSlot) *
                         sizeof(void *),
             process_event) ||
       process_event == 0)
     return false;
   std::array<std::uint8_t, sizeof(PackedTransform)> parameters{};
   PackedTransform packed{};
-  if (!CallResolvedUFunction(mesh, context.overlay_component_transform_function,
+  if (!CallResolvedUFunction(context, mesh, context.overlay_component_transform_function,
                              process_event, parameters.data(), parameters.size(),
                              &packed))
     return false;
@@ -20120,7 +20082,7 @@ Transformd OverlayJointWorld(const Context &context, const Transformd &component
                              const std::uint32_t bone) noexcept {
   PackedTransform packed{};
   std::memcpy(&packed,
-              context.overlay_raw_pose.data() + static_cast<std::size_t>(bone) * kTransformSize,
+              context.overlay_raw_pose.data() + static_cast<std::size_t>(bone) * native_layout.kTransformSize,
               sizeof(packed));
   return TransformMultiply(component_world, UnpackTransform(packed));
 }
@@ -21072,7 +21034,7 @@ void DrawAccessoryCollisionDebug(Context &context,
             have_points = true;
           } else if (CoreReady(context.core) && extra.component_space_data != 0) {
             std::vector<std::uint8_t> raw(
-                static_cast<std::size_t>(extra.bone_count) * kTransformSize);
+                static_cast<std::size_t>(extra.bone_count) * native_layout.kTransformSize);
             AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
             if (context.core->read_memory(context.core->user,
                                           extra.component_space_data, span)
@@ -21080,7 +21042,7 @@ void DrawAccessoryCollisionDebug(Context &context,
               for (std::size_t bone{}; bone != extra.bone_count; ++bone) {
                 PackedTransform packed{};
                 std::memcpy(&packed,
-                            raw.data() + static_cast<std::size_t>(bone) * kTransformSize,
+                            raw.data() + static_cast<std::size_t>(bone) * native_layout.kTransformSize,
                             sizeof(packed));
                 const Transformd joint =
                     TransformMultiply(accessory_world, UnpackTransform(packed));
@@ -21741,7 +21703,7 @@ bool StepGizmoDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame) noexcep
     Transformd component_world;
     if (!ReadMeshComponentToWorld(context, context.runtime.mesh, component_world) ||
         context.overlay_raw_pose.size() <
-            static_cast<std::size_t>(context.bone_parents.size()) * kTransformSize)
+            static_cast<std::size_t>(context.bone_parents.size()) * native_layout.kTransformSize)
       return true;
     const std::int32_t parent = context.bone_parents[bone];
     const Quatd parent_rotation =
@@ -22536,7 +22498,7 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       return;
     }
     auto &raw = context->overlay_raw_pose;
-    raw.resize(static_cast<std::size_t>(count) * kTransformSize);
+    raw.resize(static_cast<std::size_t>(count) * native_layout.kTransformSize);
     AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
     if (context->core->read_memory(context->core->user, pose, span).code !=
         ANOMALY_STATUS_V1_OK) {
@@ -22599,7 +22561,7 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
           context->overlay_hidden[bone] != 0)
         continue;
       PackedTransform packed{};
-      std::memcpy(&packed, raw.data() + static_cast<std::size_t>(bone) * kTransformSize,
+      std::memcpy(&packed, raw.data() + static_cast<std::size_t>(bone) * native_layout.kTransformSize,
                   sizeof(packed));
       const Transformd joint = TransformMultiply(component_world, UnpackTransform(packed));
       const double world[3]{joint.translation.x, joint.translation.y,
@@ -22817,7 +22779,7 @@ void ANOMALY_CALL DrawCollisionDebugOverlay(void *user,
           !ReadMeshComponentToWorld(*context, mesh, component_world))
         return;
       auto &raw = context->overlay_collision_raw_pose;
-      raw.resize(static_cast<std::size_t>(count) * kTransformSize);
+      raw.resize(static_cast<std::size_t>(count) * native_layout.kTransformSize);
       AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
       if (context->core->read_memory(context->core->user, pose, span).code !=
           ANOMALY_STATUS_V1_OK)
@@ -22828,7 +22790,7 @@ void ANOMALY_CALL DrawCollisionDebugOverlay(void *user,
         PackedTransform packed{};
         std::memcpy(
             &packed,
-            raw.data() + static_cast<std::size_t>(bone) * kTransformSize,
+            raw.data() + static_cast<std::size_t>(bone) * native_layout.kTransformSize,
             sizeof(packed));
         const Transformd joint =
             TransformMultiply(component_world, UnpackTransform(packed));
@@ -23682,6 +23644,7 @@ bool MirrorPose(Context &context, const int request) noexcept {
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
                                   void **plugin_context) {
+    if (!LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
   if (host == nullptr || plugin_context == nullptr)
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   *plugin_context = nullptr;
@@ -23873,9 +23836,9 @@ bool ReadCurrentBoneTranslation(Context &context,
     return false;
   std::uintptr_t transform{};
   if (!AddAddress(snapshot.component_space_data,
-                  static_cast<std::uint64_t>(bone) * kTransformSize,
+                  static_cast<std::uint64_t>(bone) * native_layout.kTransformSize,
                   transform) ||
-      !AddAddress(transform, kTransformTranslationOffset, transform))
+      !AddAddress(transform, native_layout.kTransformTranslationOffset, transform))
     return false;
   return Read(context, transform, translation);
 }
@@ -24194,7 +24157,7 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
     import_requested = true;
   ui->same_line(ui->user, 0.0F, 6.0F);
   if (button(context.localizer.Label("keyframe.import.blender",
-                                     "导入 Blender 动作为 MMD",
+                                     "Import Blender motion as MMD",
                                      "keyframe-import-blender")))
     blender_import_requested = true;
   {
@@ -25055,7 +25018,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   ui->text(ui->user, anomaly::sdk::StringView(status_text));
   if (context->blender_active.load(std::memory_order_acquire))
     ui->text(ui->user, anomaly::sdk::StringView(
-        "Blender 正在接管姿态；请在 Blender 中编辑骨骼，游戏内调节会被忽略"));
+        context->localizer.Text("blender.controls_pose", "Blender controls the pose; edit bones in Blender while connected")));
 
   const std::string character_line =
       "Character " + Hex(snapshot.character) + "  Mesh " + Hex(snapshot.mesh);
@@ -25406,7 +25369,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     }
     ui->same_line(ui->user, 0.0F, 6.0F);
     const std::string motion_blender_label = context->localizer.Text(
-        "motion.import.blender", "导入 Blender 为 MMD");
+        "motion.import.blender", "Import Blender as MMD");
     if (ui->button(ui->user,
                    anomaly::sdk::StringView(motion_blender_label),
                    112.0F, 0.0F) != 0) {

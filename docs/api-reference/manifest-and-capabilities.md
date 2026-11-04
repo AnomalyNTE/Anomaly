@@ -93,6 +93,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | `anomaly.config` | `configuration` |
 | `anomaly.storage` | `storage` |
 | `anomaly.json` | `json` |
+| `anomaly.profile` | `json` |
 | `anomaly.runtime-info` | `runtime-info` |
 | `anomaly.diagnostics` | `diagnostics` |
 | `anomaly.scheduler` | `scheduler` |

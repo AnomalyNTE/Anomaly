@@ -7,6 +7,7 @@
 #include "anomaly/plugin_dependency_resolver.hpp"
 #include "anomaly/plugin_native_dependency.hpp"
 #include "anomaly/plugin_package.hpp"
+#include "anomaly/plugin_profile.hpp"
 #include "anomaly/scoped_platform_services.hpp"
 #include "anomaly/structured_logger.hpp"
 #include "anomaly/thread_local_value.hpp"
@@ -1544,6 +1545,7 @@ struct PluginServiceContext {
     std::string plugin_id;
     std::uint64_t generation{};
     std::filesystem::path package_directory;
+    std::filesystem::path profile_package_directory;
     std::filesystem::path state_directory;
     std::filesystem::path configuration_directory;
     std::shared_ptr<anomaly::PluginScope> scope;
@@ -1559,6 +1561,7 @@ struct PluginServiceContext {
     AnomalyConfigServiceV1 config{};
     AnomalyStorageServiceV1 storage{};
     AnomalyJsonServiceV1 json{};
+    AnomalyProfileServiceV1 profile{};
     AnomalyRuntimeInfoServiceV1 runtime_info{};
     AnomalyLocalizationServiceV1 localization{};
     AnomalyDiagnosticsServiceV1 diagnostics{};
@@ -3252,7 +3255,8 @@ AnomalyStatusV1 ANOMALY_CALL JsonParseV1(
         }
         auto root = std::make_shared<nlohmann::json>(
             nlohmann::json::parse(document.data, document.data + document.size));
-        return RegisterJsonNode(context, std::move(root), root.get(), handle);
+        auto* value = root.get();
+        return RegisterJsonNode(context, std::move(root), value, handle);
     });
 }
 
@@ -3265,6 +3269,28 @@ AnomalyStatusV1 ANOMALY_CALL JsonReleaseV1(
         return context.scope->Release(handle.id)
             ? StatusV1(ANOMALY_STATUS_V1_OK)
             : StatusV1(ANOMALY_STATUS_V1_NOT_FOUND, "JSON handle is not live");
+    });
+}
+
+AnomalyStatusV1 ANOMALY_CALL LoadProfileV1(
+    void* user, const AnomalyStringViewV1 relative_path,
+    AnomalyGenerationHandleV1* document) {
+    if (document == nullptr)
+        return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "profile arguments are invalid");
+    *document = {};
+    if (relative_path.data == nullptr)
+        return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "profile arguments are invalid");
+    if (IsSynchronousStateIoForbidden())
+        return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "profile loading is unavailable from game or render callbacks");
+    return InvokeJsonService(user, [&](PluginServiceContext& context) {
+        auto result = anomaly::LoadPluginProfile(context.profile_package_directory, ServiceString(relative_path));
+        if (!result) {
+            LogV1(user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                {result.error.data(), result.error.size()});
+            return StatusV1(result.code, "profile could not be read or failed schema validation");
+        }
+        auto* root = result.document.get();
+        return RegisterJsonNode(context, std::move(result.document), root, document);
     });
 }
 
@@ -3495,6 +3521,11 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
     if (id == ANOMALY_JSON_SERVICE_V1_ID &&
         minimum_version <= context->json.service_version) {
         *service = &context->json;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
+    if (id == ANOMALY_PROFILE_SERVICE_V1_ID &&
+        minimum_version <= context->profile.service_version) {
+        *service = &context->profile;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
     if (id == ANOMALY_RUNTIME_INFO_SERVICE_V1_ID &&
@@ -4361,6 +4392,7 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
     plugin.service_context.plugin_id = plugin.view.id;
     plugin.service_context.generation = plugin.view.generation;
     plugin.service_context.package_directory = plugin.view.package_directory;
+    plugin.service_context.profile_package_directory = plugin.shadow_generation.package_root;
     plugin.service_context.state_directory = ValidPluginStateId(plugin.view.id)
         ? (root_ / L"state" / L"plugins" /
               WideUtf8(plugin.view.id.c_str())).lexically_normal()
@@ -4438,6 +4470,9 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
         JsonParseV1, JsonReleaseV1, JsonKindV1, JsonBooleanV1, JsonNumberV1,
         JsonStringV1, JsonArraySizeV1, JsonArrayItemV1, JsonObjectSizeV1,
         JsonObjectKeyAtV1, JsonObjectFindV1, JsonSerializeV1};
+    plugin.service_context.profile = {
+        sizeof(AnomalyProfileServiceV1), ANOMALY_PROFILE_SERVICE_V1_VERSION,
+        &plugin.service_context, LoadProfileV1};
     plugin.service_context.runtime_info = {
         sizeof(AnomalyRuntimeInfoServiceV1), ANOMALY_RUNTIME_INFO_SERVICE_V1_VERSION,
         &plugin.service_context, RuntimeInfoV1, RuntimeVersionV1};
@@ -6380,6 +6415,8 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
                     plugin.service_context.storage.service_version, true},
                 ServiceCandidate{ANOMALY_JSON_SERVICE_V1_ID,
                     plugin.service_context.json.service_version, true},
+                ServiceCandidate{ANOMALY_PROFILE_SERVICE_V1_ID,
+                    plugin.service_context.profile.service_version, true},
                 ServiceCandidate{ANOMALY_RUNTIME_INFO_SERVICE_V1_ID,
                     plugin.service_context.runtime_info.service_version, true},
                 ServiceCandidate{ANOMALY_LOCALIZATION_SERVICE_V1_ID,

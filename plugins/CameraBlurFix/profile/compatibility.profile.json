@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "camera-blur-fix-v1",
+  "layout": {
+    "kObjectInternalIndexOffset": 12,
+    "kObjectClassOffset": 16,
+    "kUStructSuperOffset": 64,
+    "kUStructPropertyLinkOffset": 112,
+    "kFFieldClassOffset": 8,
+    "kFFieldNextOffset": 24,
+    "kFFieldNameOffset": 32,
+    "kFPropertyElementSizeOffset": 52,
+    "kFPropertyOffsetOffset": 68,
+    "kUFunctionExecOffset": 216,
+    "kUFunctionNumParmsOffset": 180,
+    "kUFunctionParmsSizeOffset": 182,
+    "kGObjectsAddendMagnitude": 16,
+    "kObjectChunksOffset": 16,
+    "kObjectCountOffset": 36,
+    "kObjectChunkBits": 16,
+    "kObjectItemStride": 24,
+    "kObjectItemPointerOffset": 0,
+    "kObjectItemSerialOffset": 16
+  },
+  "symbols": [
+    {
+      "name": "kGWorldPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kGObjectsPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

@@ -55,6 +55,7 @@ struct DecodedInstruction {
 
 std::optional<DecodedInstruction> Decode(
     std::span<const ue5mem::PatternByte> source, std::size_t offset) {
+    if (offset >= source.size()) return std::nullopt;
     std::array<std::uint8_t, 32> bytes{};
     const auto remaining = (std::min)(bytes.size(), source.size() - offset);
     for (std::size_t i{}; i < remaining; ++i) bytes[i] = source[offset + i].value;
@@ -96,9 +97,27 @@ struct MemberRecipe {
     std::vector<MemberSite> sites;
 };
 
+// A callee anchor re-identifies a recipe whose own instruction bytes are shared with
+// other functions. Whole families of compiler-generated wrappers (exec thunks, row
+// getters, flag setters) differ only in the rel32 of the callee they call, and that
+// rel32 is exactly the byte range Normalize() has to wildcard, so the learned window
+// alone can never separate them. The anchor stores the normalized fingerprint of the
+// call target instead: the callee's own body is unique even when the caller template
+// is not, and it survives the next build because only its relative displacement moved.
+struct CalleeAnchor {
+    std::size_t instruction{};
+    std::string callee;
+};
+
+constexpr std::size_t kMaximumCalleeAnchors = 2;
+constexpr std::size_t kAnchorReadBytes = 48;
+constexpr std::size_t kAnchorMinimumFixed = 8;
+constexpr std::size_t kMaximumAnchorCandidates = 256;
+
 std::string Normalize(std::span<const ue5mem::PatternByte> source,
                       std::span<const MemberSite> members = {},
-                      std::size_t minimum_fixed = kMinimumFixedBytes) {
+                      std::size_t minimum_fixed = kMinimumFixedBytes,
+                      std::size_t minimum_instructions = 4) {
     std::vector<ue5mem::PatternByte> result;
     std::size_t offset{};
     std::size_t instructions{};
@@ -124,7 +143,7 @@ std::string Normalize(std::span<const ue5mem::PatternByte> source,
         offset += decoded.len;
         if (EndsBlock(decoded)) break;
     }
-    if (instructions < 4 || static_cast<std::size_t>(std::ranges::count_if(result, [](auto byte) {
+    if (instructions < minimum_instructions || static_cast<std::size_t>(std::ranges::count_if(result, [](auto byte) {
             return byte.mask == 0xFF;
         })) < minimum_fixed) return {};
     constexpr char hex[] = "0123456789ABCDEF";
@@ -144,6 +163,9 @@ bool ValidCachedPattern(std::string_view original,
     for (auto& byte : fixed) byte.mask = 0xFF;
     const auto normalized = ue5mem::Pattern::Parse(Normalize(fixed, sites, minimum_fixed));
     const auto declaration = ue5mem::Pattern::Parse(original);
+    // Never omit declared member/stack operands when compacting an address-only
+    // recipe. Its consumers still use those original offsets after recovery.
+    if (learned.size() < ue5mem::Pattern::Parse(Normalize(declaration.Bytes(), {}, 0, 0)).Size()) return false;
     if (normalized.Size() != learned.size()) return false;
     for (std::size_t i{}; i < learned.size(); ++i) {
         auto required = normalized.Bytes()[i].mask;
@@ -154,6 +176,167 @@ bool ValidCachedPattern(std::string_view original,
         if ((learned[i].mask & required) != required) return false;
     }
     return true;
+}
+
+bool RelativeBranch(const hde64s& code) {
+    return (code.flags & F_RELATIVE) && (code.flags & (F_IMM8 | F_IMM32));
+}
+
+std::uintptr_t BranchTarget(std::uintptr_t address, const hde64s& code) {
+    const auto displacement = code.flags & F_IMM32 ? static_cast<std::int32_t>(code.imm.imm32) :
+        static_cast<std::int8_t>(code.imm.imm8);
+    return static_cast<std::uintptr_t>(static_cast<std::int64_t>(address + code.len) + displacement);
+}
+
+std::vector<std::size_t> CallSites(std::span<const std::uint8_t> bytes) {
+    std::vector<std::size_t> sites;
+    std::size_t offset{};
+    while (offset < bytes.size()) {
+        std::array<std::uint8_t, 32> chunk{};
+        const auto remaining = (std::min)(chunk.size(), bytes.size() - offset);
+        std::copy_n(bytes.data() + offset, remaining, chunk.data());
+        hde64s decoded{};
+        hde64_disasm(chunk.data(), &decoded);
+        if ((decoded.flags & F_ERROR) || !decoded.len || decoded.len > remaining) break;
+        if (RelativeBranch(decoded)) sites.push_back(offset);
+        offset += decoded.len;
+        if (EndsBlock(decoded)) break;
+    }
+    return sites;
+}
+
+bool AnchorsFit(std::span<const ue5mem::PatternByte> pattern, std::span<const CalleeAnchor> anchors) {
+    std::vector<std::uint8_t> bytes;
+    for (auto byte : pattern) bytes.push_back(byte.value);
+    const auto sites = CallSites(bytes);
+    return std::ranges::all_of(anchors, [&](const auto& anchor) {
+        return anchor.instruction < pattern.size() &&
+            pattern[anchor.instruction].mask == 0xFF &&
+            std::ranges::find(sites, anchor.instruction) != sites.end();
+    });
+}
+
+bool InSection(const SignatureScanContext& context, std::uintptr_t address, std::size_t size) {
+    return address >= context.section.base && address - context.section.base <= context.section.virtual_size &&
+        size <= context.section.virtual_size - (address - context.section.base);
+}
+
+std::string CalleeFingerprint(const SignatureScanContext& context, std::uintptr_t target) {
+    std::array<std::uint8_t, kAnchorReadBytes> bytes{};
+    if (!InSection(context, target, bytes.size()) || !context.read(target, bytes.data(), bytes.size())) return {};
+    std::vector<ue5mem::PatternByte> source;
+    source.reserve(bytes.size());
+    for (const auto byte : bytes) source.push_back({byte, 0xFF});
+    return Normalize(source, {}, kAnchorMinimumFixed, 1);
+}
+
+bool AnchorMatches(const SignatureScanContext& context, std::uintptr_t candidate,
+                   const CalleeAnchor& anchor) {
+    std::array<std::uint8_t, 32> code{};
+    if (!InSection(context, candidate + anchor.instruction, 15) ||
+        !context.read(candidate + anchor.instruction, code.data(), 15)) return false;
+    hde64s decoded{};
+    hde64_disasm(code.data(), &decoded);
+    if ((decoded.flags & F_ERROR) || !RelativeBranch(decoded)) return false;
+    const auto target = BranchTarget(candidate + anchor.instruction, decoded);
+    std::array<std::uint8_t, kAnchorReadBytes> bytes{};
+    const auto pattern = ue5mem::Pattern::Parse(anchor.callee);
+    if (pattern.Size() == 0 || pattern.Size() > bytes.size()) return false;
+    const auto width = pattern.Size();
+    if (!InSection(context, target, width) || !context.read(target, bytes.data(), width)) return false;
+    for (std::size_t i{}; i < width; ++i) {
+        const auto& byte = pattern.Bytes()[i];
+        if (((bytes[i] ^ byte.value) & byte.mask) != 0) return false;
+    }
+    return true;
+}
+
+std::size_t AnchorSurvivors(const SignatureScanContext& context,
+                            std::span<const std::uintptr_t> candidates,
+                            std::span<const CalleeAnchor> anchors) {
+    std::size_t survivors{};
+    for (const auto candidate : candidates) {
+        if (std::ranges::all_of(anchors, [&](const CalleeAnchor& anchor) {
+                return AnchorMatches(context, candidate, anchor);
+            })) ++survivors;
+    }
+    return survivors;
+}
+
+// Pick the callee evidence that separates `instruction` from the other candidates of a
+// shared template. A single decisive call target is preferred; otherwise the two most
+// selective targets are combined. Applying anchors can only remove candidates, so a
+// learned anchor set never turns a wrong candidate into a match.
+std::vector<CalleeAnchor> LearnCalleeAnchors(const SignatureScanContext& context,
+                                             std::uintptr_t instruction,
+                                             std::span<const std::uintptr_t> matches,
+                                             std::size_t window_size,
+                                             std::stop_token stop) {
+    std::array<std::uint8_t, kWindowBytes> raw{};
+    if (!context.read(instruction, raw.data(), window_size)) return {};
+    struct Scored {
+        CalleeAnchor anchor;
+        std::size_t survivors{};
+    };
+    std::vector<Scored> scored;
+    for (const auto site : CallSites(std::span(raw).first(window_size))) {
+        if (stop.stop_requested()) return {};
+        std::array<std::uint8_t, 32> code{};
+        std::copy_n(raw.data() + site, (std::min)(code.size(), window_size - site), code.data());
+        hde64s decoded{};
+        hde64_disasm(code.data(), &decoded);
+        const auto target = BranchTarget(instruction + site, decoded);
+        auto fingerprint = CalleeFingerprint(context, target);
+        if (fingerprint.empty()) continue;
+        CalleeAnchor anchor{site, std::move(fingerprint)};
+        const auto survivors = AnchorSurvivors(context, matches, std::span(&anchor, 1));
+        if (survivors == 1) return {std::move(anchor)};
+        if (survivors < matches.size()) scored.push_back({std::move(anchor), survivors});
+    }
+    std::ranges::sort(scored, {}, &Scored::survivors);
+    for (std::size_t i{}; i < scored.size(); ++i) {
+        for (std::size_t j{i + 1}; j < scored.size(); ++j) {
+            const std::array<CalleeAnchor, 2> pair{scored[i].anchor, scored[j].anchor};
+            if (AnchorSurvivors(context, matches, pair) == 1) return {pair[0], pair[1]};
+        }
+    }
+    return {};
+}
+
+// Persist the shortest instruction-aligned prefix that still proves uniqueness.
+// Unrelated code near the end of a 128-byte window often changes between builds.
+// Prefix match sets only shrink as bytes are added, so binary search bounds the
+// extra scans. Callee evidence, when needed, remains inside every tested prefix.
+std::string CompactRecipe(const SignatureScanContext& context, std::string_view pattern,
+                          std::uintptr_t instruction, std::span<const CalleeAnchor> anchors,
+                          std::size_t declaration_size, std::stop_token stop) {
+    const auto parsed = ue5mem::Pattern::Parse(pattern);
+    const auto bytes = parsed.Bytes();
+    std::size_t minimum = declaration_size;
+    for (const auto& anchor : anchors)
+        minimum = (std::max)(minimum, anchor.instruction + Decode(bytes, anchor.instruction)->code.len);
+    std::vector<std::size_t> ends;
+    std::size_t fixed{}, instructions{};
+    for (std::size_t offset{}; offset < bytes.size();) {
+        const auto decoded = Decode(bytes, offset);
+        if (!decoded) break;
+        for (auto byte : bytes.subspan(offset, decoded->code.len)) fixed += byte.mask == 0xFF;
+        offset += decoded->code.len;
+        if (++instructions >= 4 && fixed >= kMinimumFixedBytes && offset >= minimum) ends.push_back(offset);
+    }
+    if (ends.empty()) return std::string(pattern);
+    const auto prefix = [&](std::size_t index) { return std::string(pattern.substr(0, ends[index] * 3 - 1)); };
+    std::size_t low{}, high = ends.size() - 1;
+    while (low < high && !stop.stop_requested()) {
+        const auto middle = low + (high - low) / 2;
+        const auto matches = context.scan(prefix(middle), kMaximumAnchorCandidates);
+        const bool unique = matches.size() < kMaximumAnchorCandidates &&
+            std::ranges::find(matches, instruction) != matches.end() &&
+            AnchorSurvivors(context, matches, anchors) == 1;
+        if (unique) high = middle;
+        else low = middle + 1;
+    }
+    return prefix(low);
 }
 
 struct ObjectOperand {
@@ -190,6 +373,7 @@ std::vector<ObjectOperand> ObjectOperands(std::span<const ue5mem::PatternByte> s
         std::uint32_t access{};
         std::uint32_t bytes = width;
         bool recognized = true;
+        bool xmm_destination{};
         switch (code.opcode) {
         case 0x88: bytes = 1; [[fallthrough]];
         case 0x89: access = 2; break;
@@ -204,9 +388,26 @@ std::vector<ObjectOperand> ObjectOperands(std::span<const ue5mem::PatternByte> s
         case 0x0F:
             if (code.opcode2 == 0xB6 || code.opcode2 == 0xBE) { bytes = 1; access = 1; }
             else if (code.opcode2 == 0xB7 || code.opcode2 == 0xBF) { bytes = 2; access = 1; }
-            // MOVAPS touches XMM registers, never the tracked general registers.
-            else if (code.opcode2 == 0x28 || code.opcode2 == 0x29) {}
+            // MOVSS/MOVSD expose scalar float/double fields. Packed vector moves
+            // are traversable but do not satisfy a scalar member binding.
+            else if (code.opcode2 == 0x10 || code.opcode2 == 0x11) {
+                bytes = code.p_rep == 0xF3 ? 4u : code.p_rep == 0xF2 ? 8u : 16u;
+                access = code.opcode2 == 0x10 ? 1u : 2u;
+                xmm_destination = true;
+            }
+            else if (code.opcode2 == 0x28 || code.opcode2 == 0x29 || code.opcode2 == 0x57) {
+                xmm_destination = true;
+            }
             else if (code.opcode2 < 0x80 || code.opcode2 > 0x8F) recognized = false;
+            break;
+        case 0xF6: case 0xF7:
+            // TEST r/m, imm does not overwrite the base register.
+            recognized = code.modrm_reg == 0;
+            if (recognized) { bytes = code.opcode == 0xF6 ? 1u : width; access = 1; }
+            break;
+        case 0xFF:
+            // Indirect calls clobber the same volatile registers as E8 calls.
+            recognized = code.modrm_reg == 2 || code.modrm_reg == 4;
             break;
         case 0x80: case 0x81: case 0x83:
             if (code.modrm_reg == 7) { bytes = code.opcode == 0x80 ? 1u : width; access = 1; }
@@ -248,7 +449,7 @@ std::vector<ObjectOperand> ObjectOperands(std::span<const ue5mem::PatternByte> s
         else if (code.opcode == 0x8D) assign_object(reg, code.rex_w ? member : std::nullopt);
         else if (code.opcode == 0x8A) objects[byte_register(code.modrm_reg, code.rex_r)].reset();
         else if (code.opcode == 0x63 ||
-            (code.opcode == 0x0F && access)) objects[reg].reset();
+            (code.opcode == 0x0F && access && !xmm_destination)) objects[reg].reset();
         else if ((code.opcode == 0x88 || code.opcode == 0xC6) && code.modrm_mod == 3)
             objects[byte_register(code.modrm_rm, code.rex_b)].reset();
         else if (code.opcode == 0xC7 && code.modrm_mod == 3) objects[rm].reset();
@@ -263,7 +464,7 @@ std::vector<ObjectOperand> ObjectOperands(std::span<const ue5mem::PatternByte> s
             objects[byte_register(code.opcode & 7, code.rex_b)].reset();
         else if (code.opcode >= 0xB8 && code.opcode <= 0xBF)
             objects[(code.opcode & 7) + 8 * code.rex_b].reset();
-        else if (code.opcode == 0xE8)
+        else if (code.opcode == 0xE8 || (code.opcode == 0xFF && code.modrm_reg == 2))
             for (const auto clobbered : {0, 1, 2, 8, 9, 10, 11}) objects[clobbered].reset();
         conditional_path |= (code.opcode >= 0x70 && code.opcode <= 0x7F) ||
             (code.opcode == 0x0F && code.opcode2 >= 0x80 && code.opcode2 <= 0x8F);
@@ -387,8 +588,39 @@ public:
                 const auto original = row.at("original").get<std::string>();
                 if (!contract.starts_with("relocation:") || parsed.Size() > kWindowBytes ||
                     Normalize(parsed.Bytes()) != pattern || !ValidCachedPattern(original, parsed.Bytes())) continue;
-                records_.emplace(Key{module, row.at("section").get<std::string>(),
-                    original, contract}, pattern);
+                std::string extended;
+                if (row.contains("extended")) {
+                    extended = row.at("extended").get<std::string>();
+                    const auto full = ue5mem::Pattern::Parse(extended);
+                    if (full.Size() <= parsed.Size() || full.Size() > kWindowBytes ||
+                        !extended.starts_with(pattern + " ") || Normalize(full.Bytes()) != extended ||
+                        !ValidCachedPattern(original, full.Bytes())) continue;
+                }
+                std::vector<CalleeAnchor> anchors;
+                if (row.contains("anchors")) {
+                    if (!row["anchors"].is_array() ||
+                        row["anchors"].size() > kMaximumCalleeAnchors) continue;
+                    bool valid{true};
+                    for (const auto& entry : row["anchors"]) {
+                        if (!entry.is_object()) { valid = false; break; }
+                        const auto instruction = entry.at("instruction").get<std::size_t>();
+                        const auto callee = entry.at("callee").get<std::string>();
+                        const auto callee_pattern = ue5mem::Pattern::Parse(callee);
+                        if (instruction >= parsed.Size() ||
+                            callee_pattern.Size() < kAnchorMinimumFixed ||
+                            callee_pattern.Size() > kAnchorReadBytes ||
+                            Normalize(callee_pattern.Bytes(), {}, kAnchorMinimumFixed, 1) != callee) {
+                            valid = false;
+                            break;
+                        }
+                        anchors.push_back({instruction, callee});
+                    }
+                    if (!valid || !AnchorsFit(parsed.Bytes(), anchors)) continue;
+                }
+                const auto key = Key{module, row.at("section").get<std::string>(), original, contract};
+                if (!records_.emplace(key, pattern).second) continue;
+                if (!extended.empty()) extended_records_.emplace(key, std::move(extended));
+                if (!anchors.empty()) anchor_records_.insert_or_assign(key, std::move(anchors));
             } catch (const nlohmann::json::exception&) {
             } catch (const std::invalid_argument&) {
             }
@@ -440,8 +672,20 @@ public:
             std::string module_utf8(count, '\0');
             WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, module.data(),
                 static_cast<int>(module.size()), module_utf8.data(), count, nullptr, nullptr);
-            document["records"].push_back({{"module", module_utf8}, {"section", section},
-                {"original", original}, {"contract", contract}, {"learned", learned}});
+            nlohmann::json row{{"module", module_utf8}, {"section", section},
+                {"original", original}, {"contract", contract}, {"learned", learned}};
+            if (const auto full = extended_records_.find(key); full != extended_records_.end())
+                row["extended"] = full->second;
+            const auto anchors = anchor_records_.find(key);
+            if (anchors != anchor_records_.end() && !anchors->second.empty()) {
+                auto encoded = nlohmann::json::array();
+                for (const auto& anchor : anchors->second) {
+                    encoded.push_back({{"instruction", anchor.instruction},
+                        {"callee", anchor.callee}});
+                }
+                row["anchors"] = std::move(encoded);
+            }
+            document["records"].push_back(std::move(row));
         }
         for (const auto& [key, recipe] : member_records_) {
             const auto& [module, section, original, contract] = key;
@@ -472,7 +716,9 @@ public:
     std::mutex mutex_;
     bool loaded_{};
     std::map<Key, std::string> records_;
+    std::map<Key, std::string> extended_records_;
     std::map<Key, MemberRecipe> member_records_;
+    std::map<Key, std::vector<CalleeAnchor>> anchor_records_;
 };
 
 SignatureUpdater::SignatureUpdater(std::filesystem::path directory)
@@ -486,16 +732,27 @@ SignatureRecovery SignatureUpdater::Recover(
     if (!ExecutableSection(context)) return {0, {}, "signature recovery requires an executable section"};
     const auto key = RecipeKey(context, contract, original_pattern);
     std::string learned;
+    std::string extended;
+    std::vector<CalleeAnchor> anchors;
     {
         std::scoped_lock lock(impl_->mutex_);
         impl_->Load();
         const auto found = impl_->records_.find(key);
         if (found != impl_->records_.end()) learned = found->second;
+        if (const auto full = impl_->extended_records_.find(key); full != impl_->extended_records_.end()) extended = full->second;
+        const auto learned_anchors = impl_->anchor_records_.find(key);
+        if (learned_anchors != impl_->anchor_records_.end()) anchors = learned_anchors->second;
     }
     if (stop.stop_requested()) return {0, {}, "signature recovery cancelled"};
     std::vector<std::uintptr_t> matches;
-    if (!learned.empty()) matches = context.scan(learned, 2);
+    if (!learned.empty()) matches = context.scan(learned, kMaximumAnchorCandidates);
     if (stop.stop_requested()) return {0, {}, "signature recovery cancelled"};
+    // A new function can share yesterday's unique prefix. Retain the original
+    // full evidence for that case, without requiring it when the prefix is unique.
+    if (matches.size() > 1 && !extended.empty()) {
+        const auto narrowed = context.scan(extended, kMaximumAnchorCandidates);
+        if (!narrowed.empty()) { learned = std::move(extended); matches = narrowed; }
+    }
     // A learned window can include instructions beyond the caller's original
     // signature. If that surrounding code changes, derive fresh evidence from
     // the original declaration instead of requiring a manually supplied backup.
@@ -503,11 +760,29 @@ SignatureRecovery SignatureUpdater::Recover(
         const auto parsed = ue5mem::Pattern::Parse(original_pattern);
         auto derived = Normalize(parsed.Bytes());
         if (derived.empty()) return {0, {}, "insufficient instruction evidence for signature recovery"};
+        // Anchors belong to decoded call sites, not arbitrary bytes beyond a new
+        // shorter declaration. Never discard mandatory evidence to force a hit.
+        if (!AnchorsFit(ue5mem::Pattern::Parse(derived).Bytes(), anchors))
+            return {0, {}, "declaration does not cover learned callee evidence"};
         if (derived != learned) {
             if (stop.stop_requested()) return {0, {}, "signature recovery cancelled"};
             learned = std::move(derived);
-            matches = context.scan(learned, 2);
+            matches = context.scan(learned, kMaximumAnchorCandidates);
         }
+    }
+    if (stop.stop_requested()) return {0, {}, "signature recovery cancelled"};
+    // Shared instruction templates stay ambiguous until the callee evidence separates
+    // them; the anchors only narrow the candidate set, they never invent a match.
+    if (matches.size() >= kMaximumAnchorCandidates)
+        return {0, {}, "signature candidate limit reached"};
+    if (!anchors.empty()) {
+        std::vector<std::uintptr_t> kept;
+        for (const auto candidate : matches) {
+            if (std::ranges::all_of(anchors, [&](const CalleeAnchor& anchor) {
+                    return AnchorMatches(context, candidate, anchor);
+                })) kept.push_back(candidate);
+        }
+        matches = std::move(kept);
     }
     if (stop.stop_requested()) return {0, {}, "signature recovery cancelled"};
     if (matches.size() != 1) return {0, {}, matches.empty()
@@ -529,21 +804,46 @@ std::string SignatureUpdater::Learn(
     if (!context.read(instruction, bytes.data(), bytes.size())) return "signature learning memory is unreadable";
     std::vector<ue5mem::PatternByte> source;
     for (auto byte : bytes) source.push_back({byte, 0xFF});
-    const auto learned = Normalize(source);
+    // Preserve the declaration's intentional operand wildcards. Freezing their
+    // observed values would make learned evidence less portable than its seed.
+    // Decode still requires concrete instruction prefixes/opcodes/ModRM bytes.
+    const auto declaration = ue5mem::Pattern::Parse(original_pattern);
+    for (std::size_t i{}; i < (std::min)(source.size(), declaration.Size()); ++i)
+        source[i].mask &= declaration.Bytes()[i].mask;
+    auto learned = Normalize(source);
     if (learned.empty()) return "insufficient instruction evidence for signature learning";
     if (stop.stop_requested()) return "signature learning cancelled";
-    const auto matches = context.scan(learned, 2);
-    if (matches.size() != 1 || matches.front() != instruction) return "learned instruction signature is ambiguous";
+    const auto matches = context.scan(learned, kMaximumAnchorCandidates);
+    if (matches.empty() || matches.size() >= kMaximumAnchorCandidates ||
+        std::ranges::find(matches, instruction) == matches.end())
+        return "learned instruction signature is ambiguous";
+    std::vector<CalleeAnchor> anchors;
+    if (matches.size() > 1) {
+        anchors = LearnCalleeAnchors(context, instruction, matches,
+            ue5mem::Pattern::Parse(learned).Size(), stop);
+        if (anchors.empty()) return "learned instruction signature is ambiguous";
+    }
+    if (stop.stop_requested()) return "signature learning cancelled";
+    const auto full = learned;
+    learned = CompactRecipe(context, learned, instruction, anchors,
+        ue5mem::Pattern::Parse(Normalize(declaration.Bytes(), {}, 0, 0)).Size(), stop);
     if (stop.stop_requested()) return "signature learning cancelled";
     const auto key = RecipeKey(context, contract, original_pattern);
     std::scoped_lock lock(impl_->mutex_);
     impl_->Load();
     const auto found = impl_->records_.find(key);
-    if (found != impl_->records_.end() && found->second == learned) return {};
+    if (anchors.empty() && found != impl_->records_.end() && found->second == learned &&
+        !impl_->anchor_records_.contains(key) &&
+        ((full == learned && !impl_->extended_records_.contains(key)) ||
+         (impl_->extended_records_.contains(key) && impl_->extended_records_.at(key) == full))) return {};
     if (found == impl_->records_.end() &&
         impl_->records_.size() + impl_->member_records_.size() >= kMaximumRecords)
         return "signature knowledge record limit reached";
     impl_->records_.insert_or_assign(key, learned);
+    if (full == learned) impl_->extended_records_.erase(key);
+    else impl_->extended_records_.insert_or_assign(key, full);
+    if (anchors.empty()) impl_->anchor_records_.erase(key);
+    else impl_->anchor_records_.insert_or_assign(key, std::move(anchors));
     return impl_->Save();
 }
 

@@ -2,7 +2,7 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/localization.hpp"
-#include <nlohmann/json.hpp>
+#include "function_contracts.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,7 +17,6 @@
 namespace character_studio {
 using Address = std::uintptr_t;
 using Handle = AnomalyGenerationHandleV1;
-using Json = nlohmann::json;
 
 inline bool Same(Handle a, Handle b) {
     return a.id == b.id && a.generation == b.generation;
@@ -62,18 +61,20 @@ struct Property {
 
 class Engine {
 public:
-    Engine(Process& process, Json resource, Address registry,
+    Engine(Process& process, anomaly::sdk::Profile resource, Address registry,
            const anomaly::sdk::Localizer& l10n)
         : process_(process), resource_(std::move(resource)), registry_(registry),
           localizer(l10n) {
-        if (resource_.at("schema") != "anomaly.plugin.character-studio.layout" ||
-            resource_.at("version") != 1 || resource_.at("game") != "nte")
+        contracts_ = LoadFunctionContracts(resource_.layout);
+        if (resource_.contract != "character-studio-v1" || resource_.game != "nte")
             throw std::runtime_error(
                 localizer.Text("error.layout_unsupported", "Unsupported model layout data"));
     }
-    const Json& resource() const { return resource_; }
+    const FunctionContracts& contracts() const { return contracts_; }
     std::size_t Offset(std::string_view key) const {
-        return resource_.at("layout").at(std::string(key)).get<std::size_t>();
+        const auto value = resource_.layout.at(std::string(key));
+        if (value > 65536) throw std::runtime_error("unsupported reflection layout offset");
+        return value;
     }
     template<class T> T Read(Address address) {
         T value{};
@@ -270,14 +271,14 @@ public:
     Function& Bind(const std::string& path) {
         if (auto found = functions_.find(path); found != functions_.end() &&
             Resolve(found->second.handle)) return found->second;
-        const auto& spec = resource_.at("functions").at(path);
+        const auto& spec = contracts_.at(path);
         const auto function = Find(path);
         if (!IsA(function, "Function"))
             throw std::runtime_error(
                 localizer.Text("error.not_ufunction", "The target is not a UFunction"));
         Function result;
         result.handle = Pin(function);
-        result.size = spec.at("size").get<std::size_t>();
+        result.size = spec.size;
         const auto count = Layout<std::uint8_t>(function, "ufunction.numParms");
         const auto size = Layout<std::uint16_t>(function, "ufunction.parmsSize");
         const auto ret = Layout<std::uint16_t>(function, "ufunction.returnValueOffset");
@@ -285,14 +286,14 @@ public:
         // Dumper C++ parameter structs include trailing alignment padding.
         // UFunction::ParmsSize may stop at the last reflected parameter instead.
         std::size_t parameter_end{};
-        for (const auto& param : spec.at("fields"))
+        for (const auto& param : spec.fields)
             parameter_end = std::max(parameter_end,
-                param.at("offset").get<std::size_t>() + param.at("size").get<std::size_t>());
+                static_cast<std::size_t>(param.offset) + static_cast<std::size_t>(param.size));
         if (!result.handle.id || result.size > 1024 || parameter_end > result.size ||
             (size != parameter_end && size != result.size) ||
-            count != spec.at("fields").size() || (flags & 0x40u)) {
+            count != spec.fields.size() || (flags & 0x40u)) {
             const std::string params = std::to_string(count);
-            const std::string declared = std::to_string(spec.at("fields").size());
+            const std::string declared = std::to_string(spec.fields.size());
             const std::string parms_size = std::to_string(size);
             const std::string parameter_tail = std::to_string(parameter_end);
             const std::string storage = std::to_string(result.size);
@@ -304,11 +305,11 @@ public:
                 arguments));
         }
         std::uint16_t expected_return = 0xffff;
-        for (const auto& param : spec.at("fields")) {
-            const auto name = param.at("name").get<std::string>();
-            auto field = Expect(function, name, param.at("type").get<std::string>(),
-                                param.at("size").get<std::size_t>());
-            if (field.offset != param.at("offset").get<std::int32_t>() ||
+        for (const auto& param : spec.fields) {
+            const auto name = param.name;
+            auto field = Expect(function, name, param.type,
+                                static_cast<std::size_t>(param.size));
+            if (field.offset != static_cast<std::int32_t>(param.offset) ||
                 field.offset + field.size > size) {
                 const std::array arguments{std::string_view(path), std::string_view(name)};
                 throw std::runtime_error(localizer.Format("error.parameter_offset_mismatch",
@@ -390,7 +391,8 @@ private:
         return Layout<Address>(slot, "objects.objectOffset");
     }
     Process& process_;
-    Json resource_;
+    anomaly::sdk::Profile resource_;
+    FunctionContracts contracts_;
     Address registry_{};
     std::map<std::string, Function, std::less<>> functions_;
     const anomaly::sdk::Localizer& localizer;

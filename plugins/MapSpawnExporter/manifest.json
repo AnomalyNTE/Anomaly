@@ -8,20 +8,64 @@
   "audience": "developer",
   "version": "0.1.0",
   "entry": "plugin.dll",
-  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
-  "games": ["nte"],
-  "builds": ["nte-*"],
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
   "loadPhase": "game-ready",
   "services": [
-    {"id": "anomaly.core", "minVersion": 1},
-    {"id": "anomaly.storage", "minVersion": 1},
-    {"id": "anomaly.scheduler", "minVersion": 1},
-    {"id": "anomaly.ui", "minVersion": 1},
-    {"id": "anomaly.interop.signature", "minVersion": 1},
-    {"id": "anomaly.ue5.names", "minVersion": 1},
-    {"id": "anomaly.ue5.objects", "minVersion": 1}
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.storage",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    }
   ],
   "capabilities": [
-    "ui", "storage", "scheduler", "memory-read", "interop-signature", "ue5-names", "ue5-objects"
+    "ui",
+    "storage",
+    "scheduler",
+    "memory-read",
+    "interop-signature",
+    "ue5-names",
+    "ue5-objects",
+    "json"
   ]
 }

@@ -135,6 +135,40 @@ typedef struct AnomalyJsonServiceV1 {
 
 ---
 
+## `anomaly.profile`
+
+- **ID**: `"anomaly.profile"` · **Version** 1 · **capability** `json`
+- Header: `anomaly/sdk/services/profile.h`; C++ helper: `anomaly/sdk/profile.hpp`.
+- Declare both `anomaly.profile` and `anomaly.json` v1 in the manifest.
+
+```c
+typedef struct AnomalyProfileServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *load)(void* user,
+        AnomalyStringViewV1 relative_path, AnomalyGenerationHandleV1* document);
+} AnomalyProfileServiceV1;
+```
+
+`load("my-plugin.profile.json")` reads `profile/my-plugin.profile.json` from the current DLL generation's package snapshot, not user state/config. Call only from Lifecycle/Worker; Game/Render returns `UNAVAILABLE`. The UTF-8 relative `.json` path is limited to 512 bytes. Absolute paths, parent traversal, reparse points and files over 1 MiB are rejected. A missing file returns `NOT_FOUND`, invalid paths/documents/schema return `INVALID_ARGUMENT`, and I/O errors return `FAILED`. The output handle is zero on failure.
+
+The result is a read-only `anomaly.json` document handle, queried and released through that service. Each child independently retains its document; releasing the root leaves existing children valid. All handles belong to the generation's PluginScope. C++ `LoadProfile` returns an owned `Profile` snapshot of strings, layout values and candidates, releasing temporary host handles before returning. Plugins need no third-party JSON parser. `Profile::symbol(name)` throws `std::out_of_range` for undeclared names; check required fields before installing hooks.
+
+All plugins use `schemas/plugin-profile.schema.json`, installed with the SDK under `share/anomaly/schemas/`. `schemaVersion` is 1. Unknown root fields, duplicate keys and duplicate symbol names are rejected:
+
+| Field | Meaning |
+| --- | --- |
+| `game` / `module` / `section` | Game ID, module filename and PE section |
+| `contract` | Semantic contract supported by the plugin, never Build identity |
+| `layout` | Shared named uint32 offsets, sizes and seeds |
+| `symbols` | 0–128 `{name, candidates}` entries, with 1–16 candidates per symbol |
+| Candidate `pattern` / `entry` | Space-separated hexadecimal bytes; only pattern accepts `??`; entry is exact |
+| Candidate `callOffset` | Optional E8 rel32 instruction position, within the pattern |
+| Candidate `values` | Candidate-specific named uint32 layout values |
+
+C++ `ResolveProfileSymbol(signature, core, profile, name)` uses the existing signature/memory services to validate a unique candidate, optional E8 rel32 target and exact entry bytes. Failure returns an empty result and `error`; no hooks are installed. The result's `candidate` borrows the supplied profile, which must remain alive while used. This helper additionally requires `interop-signature` and `memory-read`. Schema validation does not establish native layout compatibility: plugins must validate their semantic contract, required fields and calling conventions. Never fall back to compiled signatures or offsets when validation fails.
+
+---
+
 ## `anomaly.runtime-info`
 
 - **ID**: `"anomaly.runtime-info"` · **Version** 1 · **capability** `runtime-info`

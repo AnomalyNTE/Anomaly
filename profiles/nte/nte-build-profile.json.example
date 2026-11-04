@@ -6,124 +6,644 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
-      "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
-      "validators": ["readable", "world-shape-v1"],
-      "requiredBy": ["anomaly.ue5.world", "anomaly.ue5.actors", "anomaly.nte.session", "anomaly.nte.player", "anomaly.nte.player-esp", "anomaly.nte.entities", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
-    },
-    "ue5.GObjects": {
-      "module": "HTGame.exe",
-      "section": ".text",
-      "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1",
-      "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
-      "validators": ["readable", "object-registry-v1"],
-      "requiredBy": ["anomaly.ue5.objects", "anomaly.ue5.functions", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 3,
+        "instructionSize": 7
+      },
+      "validators": [
+        "readable",
+        "world-shape-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.world",
+        "anomaly.ue5.actors",
+        "anomaly.nte.session",
+        "anomaly.nte.player",
+        "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.navigation",
+        "anomaly.nte.player-esp",
+        "anomaly.nte.entities",
+        "anomaly.nte.pickup",
+        "anomaly.nte.combat",
+        "anomaly.nte.skills",
+        "anomaly.nte.skill-invocation"
+      ]
     },
     "ue5.FNamePool": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "FNAME_POOL_PATTERN",
-      "resolve": { "kind": "rip-rel32", "offset": 3, "instructionSize": 7 },
-      "validators": ["readable", "name-pool-v1"],
-      "requiredBy": ["anomaly.ue5.names", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "pattern": "48 8D 05 ?? ?? ?? ?? EB 13 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 01 0F 10 07 4C 8D 44 24 20 48 8B C8 48 8D 54 24 40",
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 3,
+        "instructionSize": 7
+      },
+      "validators": [
+        "readable",
+        "name-pool-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.names",
+        "anomaly.ue5.actors",
+        "anomaly.ue5.functions",
+        "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.navigation",
+        "anomaly.nte.esc-menu-button",
+        "anomaly.nte.entities",
+        "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
+        "anomaly.nte.combat",
+        "anomaly.nte.skills",
+        "anomaly.nte.skill-invocation"
+      ]
+    },
+    "ue5.FTextData.GetDisplayString": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 8B 51 30 48 83 C1 20 48 85 D2 48 8D 42 08 48 0F 44 C1 C3",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.names"
+      ]
+    },
+    "ue5.FTextDataStringTableEntry.GetSharedDisplayString": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 18 57 48 83 EC 20 48 8B 49 18 33 DB 48 8B FA 48 85 C9 74 5F 45 33 C0 48 8D 54 24 30 E8 ?? ?? ?? ??",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.names"
+      ]
+    },
+    "ue5.StringTableRegistry": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 83 EC 28 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA 08 17 00 00 48 8B 04 C8 8B 04 02 39 05 ?? ?? ?? ?? 7F 0C 48 8D 05 ?? ?? ?? ?? 48 83 C4 28 C3 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? FF 75 DF 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? BA A0 0F 00 00 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 66 0F 6F 05 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 33 C0 66 0F 7F 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 89 05 ?? ?? ?? ?? FF 15 ?? ?? ?? ?? BA A0 0F 00 00 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ??",
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 42,
+        "instructionSize": 46
+      },
+      "validators": [
+        "address-in-module",
+        "readable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.names"
+      ]
+    },
+    "ue5.GObjects": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 3,
+        "instructionSize": 7,
+        "addend": -16
+      },
+      "validators": [
+        "readable",
+        "object-registry-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.objects",
+        "anomaly.ue5.functions",
+        "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.navigation",
+        "anomaly.nte.esc-menu-button",
+        "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
+        "anomaly.nte.combat",
+        "anomaly.nte.skills",
+        "anomaly.nte.skill-invocation"
+      ]
     },
     "ue5.StaticFindObject": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "STATIC_FIND_OBJECT_PATTERN",
-      "resolve": { "kind": "direct" },
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.objects", "anomaly.nte.map-landmarks"]
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B E9 41 0F B6 D9 33 C9 49 8B F8 48 8B F2",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.objects",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.ui-buttons"
+      ]
     },
     "ue5.GameTick": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "GAME_TICK_PATTERN",
-      "resolve": { "kind": "direct" },
-      "validators": ["address-in-module", "tick-anchor-v1"],
-      "requiredBy": ["anomaly.ue5.framework", "anomaly.ue5.actors", "anomaly.ue5.functions", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "pattern": "4C 8B DC 55 53 41 54 41 55 41 57 49 8D 6B 98 48 81 EC 40 01 00 00 41 0F 29 7B A8",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "tick-anchor-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.framework",
+        "anomaly.ue5.world",
+        "anomaly.ue5.objects",
+        "anomaly.ue5.actors",
+        "anomaly.ue5.functions",
+        "anomaly.nte.session",
+        "anomaly.nte.player",
+        "anomaly.nte.player-teleport",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.navigation",
+        "anomaly.nte.player-esp",
+        "anomaly.nte.esc-menu-button",
+        "anomaly.nte.entities",
+        "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
+        "anomaly.nte.combat",
+        "anomaly.nte.skills",
+        "anomaly.nte.skill-invocation"
+      ]
     },
     "ue5.ProcessEvent": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "PROCESS_EVENT_PATTERN",
-      "resolve": { "kind": "direct" },
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.ahud", "anomaly.nte.map-landmarks", "anomaly.nte.navigation", "anomaly.nte.pickup"]
+      "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.framework",
+        "anomaly.ue5.ahud",
+        "anomaly.nte.map-landmarks",
+        "anomaly.nte.navigation",
+        "anomaly.nte.pickup",
+        "anomaly.nte.ui-buttons",
+        "anomaly.nte.combat",
+        "anomaly.nte.skills",
+        "anomaly.nte.skill-invocation"
+      ]
     },
     "nte.ClientIgnoreGameAndUiInput": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "CLIENT_IGNORE_GAME_AND_UI_INPUT_PATTERN",
-      "resolve": { "kind": "direct" },
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.nte.navigation"]
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 98 14 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.navigation"
+      ]
     },
     "ue5.AActorProcessEvent": {
       "module": "HTGame.exe",
       "section": ".text",
-      "pattern": "ACTOR_PROCESS_EVENT_PATTERN",
-      "resolve": { "kind": "direct" },
-      "validators": ["address-in-module", "executable"],
-      "requiredBy": ["anomaly.ue5.ahud"]
+      "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.ahud"
+      ]
+    },
+    "nte.HTAbilityCharacter.BroadcastCharacterOnDamaged": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 81 EC B0 01 00 00 48 8B E9 49 8B F1 48 8D 4C 24 20 49 8B F8 48 8B DA E8 ?? ?? ?? ??",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.combat"
+      ]
+    },
+    "nte.HTUI_MenuExtension.AddMenuPage": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 55 57 48 83 EC 38 83 B9 90 0F 00 00 00 8B EA 48 8B F9 0F 84 ?? ?? ?? ?? 48 8B 89 A0 0F 00 00 48 85 C9 0F 84 ?? ?? ?? ?? 39 91 B0 06 00 00 0F 8E ?? ?? ?? ?? 4C 89 6C 24 60",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
+    },
+    "nte.HTUI_MenuExtension.execAddMenuPage": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? ?? ?? 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? D5 01",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
+    },
+    "nte.CommonButtonBase.HandleButtonClicked": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B CB 0F B6 F8 E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 0F B6 93 79 04 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
+    },
+    "nte.CommonButtonBase.BP_OnClicked": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 53 48 83 EC 60 F6 81 68 04 00 00 02 48 8B D9 0F 85 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? E8 ?? ?? ?? ?? 4C 8B 0B 45 33 C0 48 8B D0 48 8B CB 41 FF 91 60 02 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.nte.esc-menu-button"
+      ]
     }
   },
   "features": {
-    "ue5.framework": ["ue5.GameTick"],
-    "ue5.world": ["ue5.GWorld", "ue5.GameTick"],
-    "ue5.names": ["ue5.FNamePool"],
-    "ue5.objects": ["ue5.GObjects", "ue5.GameTick"],
-    "ue5.object-find": ["ue5.StaticFindObject"],
-    "ue5.actors": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool"],
-    "ue5.functions": ["ue5.GObjects", "ue5.GameTick", "ue5.FNamePool"],
-    "ue5.process-event": ["ue5.ProcessEvent"],
-    "ue5.actor-process-event": ["ue5.AActorProcessEvent"],
-    "ue5.ahud": ["ue5.ProcessEvent"],
-    "nte.session": ["ue5.GWorld", "ue5.GameTick"],
-    "nte.player": ["ue5.GWorld", "ue5.GameTick"],
-    "nte.map-landmarks": ["ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent", "ue5.StaticFindObject"],
-    "nte.navigation": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent", "nte.ClientIgnoreGameAndUiInput"],
-    "nte.player-esp": ["ue5.GWorld", "ue5.GameTick"],
-    "nte.entities": ["ue5.GWorld", "ue5.GameTick"],
-    "nte.pickup": ["ue5.GWorld", "ue5.GameTick", "ue5.FNamePool", "ue5.GObjects", "ue5.ProcessEvent"]
+    "ue5.ftext": [
+      "ue5.FTextData.GetDisplayString",
+      "ue5.FTextDataStringTableEntry.GetSharedDisplayString",
+      "ue5.StringTableRegistry"
+    ],
+    "ue5.framework": [
+      "ue5.GameTick"
+    ],
+    "ue5.world": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "ue5.names": [
+      "ue5.FNamePool"
+    ],
+    "ue5.objects": [
+      "ue5.GObjects",
+      "ue5.GameTick"
+    ],
+    "ue5.object-find": [
+      "ue5.StaticFindObject"
+    ],
+    "ue5.process-event": [
+      "ue5.ProcessEvent"
+    ],
+    "ue5.actor-process-event": [
+      "ue5.AActorProcessEvent"
+    ],
+    "ue5.ahud": [
+      "ue5.ProcessEvent"
+    ],
+    "ue5.streaming-source": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "ue5.actors": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool"
+    ],
+    "ue5.functions": [
+      "ue5.GObjects",
+      "ue5.GameTick",
+      "ue5.FNamePool"
+    ],
+    "nte.session": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "nte.player": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "nte.navigation": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.ProcessEvent",
+      "nte.ClientIgnoreGameAndUiInput"
+    ],
+    "nte.player-esp": [
+      "ue5.GWorld",
+      "ue5.GameTick"
+    ],
+    "nte.player-teleport": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects"
+    ],
+    "nte.map-landmarks": [
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.ProcessEvent",
+      "ue5.StaticFindObject"
+    ],
+    "nte.esc-menu-button": [
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "nte.HTUI_MenuExtension.AddMenuPage",
+      "nte.HTUI_MenuExtension.execAddMenuPage",
+      "nte.CommonButtonBase.HandleButtonClicked",
+      "nte.CommonButtonBase.BP_OnClicked"
+    ],
+    "nte.entities": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool"
+    ],
+    "nte.pickup": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.ProcessEvent"
+    ],
+    "nte.ui-buttons": [
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.StaticFindObject",
+      "ue5.ProcessEvent"
+    ],
+    "nte.combat": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "nte.HTAbilityCharacter.BroadcastCharacterOnDamaged"
+    ],
+    "nte.skills": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects"
+    ],
+    "nte.skill-invocation": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects"
+    ],
+    "nte.vehicle": [
+      "ue5.GWorld",
+      "ue5.GameTick",
+      "ue5.FNamePool",
+      "ue5.GObjects",
+      "ue5.ProcessEvent"
+    ]
   },
-  "optionalFeatures": ["ue5.actors", "ue5.functions", "ue5.object-find", "ue5.process-event", "ue5.actor-process-event", "ue5.ahud", "nte.player-esp", "nte.map-landmarks", "nte.navigation", "nte.pickup"],
+  "optionalFeatures": [
+    "ue5.ftext",
+    "ue5.actors",
+    "ue5.functions",
+    "ue5.object-find",
+    "ue5.process-event",
+    "ue5.actor-process-event",
+    "ue5.ahud",
+    "nte.player-esp",
+    "nte.player-teleport",
+    "nte.map-landmarks",
+    "nte.navigation",
+    "nte.esc-menu-button",
+    "nte.pickup",
+    "nte.ui-buttons",
+    "nte.combat",
+    "nte.skills",
+    "nte.skill-invocation",
+    "ue5.streaming-source",
+    "nte.vehicle"
+  ],
   "featureLayoutValidators": {
-    "ue5.actors": ["ue5-actors-reflection-v1"],
-    "ue5.functions": ["ue5-functions-reflection-v1"],
-    "ue5.object-find": ["ue5-static-find-object-abi-v1"],
-    "ue5.process-event": ["ue5-process-event-abi-v1"],
-    "ue5.actor-process-event": ["ue5-actor-process-event-abi-v1"],
-    "ue5.ahud": ["ue5-ahud-reflection-v1"],
-    "nte.player": ["nte-player-layout-v1"],
-    "nte.player-esp": ["nte-player-esp-layout-v1"],
-    "nte.map-landmarks": ["nte-map-landmarks-layout-v1"],
-    "nte.navigation": ["nte-navigation-layout-v1", "nte-navigation-input-abi-v1"],
-    "nte.entities": ["nte-entities-layout-v1"],
-    "nte.pickup": ["nte-pickup-layout-v1"]
+    "ue5.ftext": [
+      "ue5-ftext-layout-v1"
+    ],
+    "ue5.actors": [
+      "ue5-actors-reflection-v1"
+    ],
+    "ue5.functions": [
+      "ue5-functions-reflection-v1"
+    ],
+    "ue5.object-find": [
+      "ue5-static-find-object-abi-v1"
+    ],
+    "ue5.process-event": [
+      "ue5-process-event-abi-v1"
+    ],
+    "ue5.actor-process-event": [
+      "ue5-actor-process-event-abi-v1"
+    ],
+    "ue5.ahud": [
+      "ue5-ahud-reflection-v1"
+    ],
+    "nte.player": [
+      "nte-player-layout-v1"
+    ],
+    "nte.player-esp": [
+      "nte-player-esp-layout-v1"
+    ],
+    "nte.player-teleport": [
+      "nte-player-teleport-layout-v1"
+    ],
+    "nte.map-landmarks": [
+      "nte-map-landmarks-layout-v1"
+    ],
+    "nte.navigation": [
+      "nte-navigation-layout-v1",
+      "nte-navigation-input-abi-v1"
+    ],
+    "nte.esc-menu-button": [
+      "nte-esc-menu-hooks-v1"
+    ],
+    "nte.entities": [
+      "nte-entities-layout-v2"
+    ],
+    "nte.pickup": [
+      "nte-pickup-layout-v1"
+    ],
+    "nte.ui-buttons": [
+      "nte-ui-buttons-layout-v1"
+    ],
+    "nte.combat": [
+      "nte-combat-reflection-v1"
+    ],
+    "nte.skills": [
+      "nte-skills-layout-v1"
+    ],
+    "nte.skill-invocation": [
+      "nte-skill-invocation-v1"
+    ],
+    "ue5.streaming-source": [
+      "ue5-streaming-source-layout-v1"
+    ],
+    "nte.vehicle": [
+      "nte-vehicle-layout-v1"
+    ]
   },
   "featureDependencies": {
-    "ue5.actors": ["ue5.world", "ue5.names"],
-    "ue5.functions": ["ue5.objects", "ue5.names"],
-    "ue5.object-find": ["ue5.objects"],
-    "ue5.actor-process-event": ["ue5.process-event"],
-    "ue5.ahud": ["ue5.functions", "ue5.process-event"],
-    "nte.player-esp": ["nte.player"],
-    "nte.map-landmarks": ["nte.player", "ue5.names", "ue5.objects", "ue5.object-find", "ue5.process-event"],
-    "nte.navigation": ["nte.player", "ue5.names", "ue5.objects", "ue5.process-event"],
-    "nte.pickup": ["nte.player", "nte.entities", "ue5.names", "ue5.objects", "ue5.process-event"]
+    "ue5.ftext": [
+      "ue5.names"
+    ],
+    "ue5.actors": [
+      "ue5.world",
+      "ue5.names"
+    ],
+    "ue5.functions": [
+      "ue5.objects",
+      "ue5.names"
+    ],
+    "ue5.object-find": [
+      "ue5.objects"
+    ],
+    "ue5.actor-process-event": [
+      "ue5.process-event"
+    ],
+    "ue5.ahud": [
+      "ue5.functions",
+      "ue5.process-event"
+    ],
+    "nte.player-esp": [
+      "nte.player"
+    ],
+    "nte.player-teleport": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.map-landmarks": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.object-find",
+      "ue5.process-event"
+    ],
+    "nte.navigation": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.esc-menu-button": [
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.entities": [
+      "ue5.names"
+    ],
+    "nte.pickup": [
+      "nte.player",
+      "nte.entities",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.ui-buttons": [
+      "ue5.names",
+      "ue5.objects",
+      "ue5.object-find",
+      "ue5.process-event"
+    ],
+    "nte.combat": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.skills": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ],
+    "nte.skill-invocation": [
+      "nte.skills",
+      "ue5.process-event"
+    ],
+    "ue5.streaming-source": [
+      "nte.player"
+    ],
+    "nte.vehicle": [
+      "nte.player",
+      "ue5.names",
+      "ue5.objects",
+      "ue5.process-event"
+    ]
   },
   "layout": {
     "world.gameInstance": 560,
     "world.persistentLevel": 48,
+    "world.levels": 464,
+    "level.worldSettings": 688,
+    "worldSettings.htSceneSolelyDataAsset": 1312,
+    "sceneSolelyDataAsset.monsterArrayDataTable": 48,
+    "sceneSolelyDataAsset.monsterArrayDataTableCount": 56,
     "level.actors": 160,
+    "entities.maxLevels": 4096,
+    "entities.maxCount": 32768,
     "gameInstance.localPlayers": 56,
     "localPlayer.controller": 48,
     "controller.controlRotation": 832,
-    "controller.getPlayerCharacterVtableOffset": 5272,
     "controller.pawn": 776,
     "controller.playerState": 720,
-    "playerState.roleName": 1120,
     "controller.cameraManager": 896,
+    "controller.streamingSourceVtableOffset": 3168,
     "actor.rootComponent": 456,
     "object.internalIndex": 12,
     "object.class": 16,
@@ -131,6 +651,7 @@
     "object.outer": 32,
     "uclass.classDefaultObject": 272,
     "ustruct.superStruct": 64,
+    "ustruct.propertyLink": 112,
     "ufunction.numParms": 180,
     "ufunction.parmsSize": 182,
     "ufunction.returnValueOffset": 184,
@@ -138,46 +659,112 @@
     "ufunction.nativeFlag": 1024,
     "ustruct.children": 72,
     "ufield.next": 40,
-    "ustruct.propertyLink": 112,
+    "ufunction.execFunction": 216,
+    "fstack.locals": 32,
+    "escMenu.buttonClickedVtableOffset": 1392,
     "ffield.class": 8,
     "ffield.name": 32,
+    "ffield.next": 24,
     "ffieldClass.name": 0,
     "fproperty.arrayDim": 48,
     "fproperty.elementSize": 52,
     "fproperty.offsetInternal": 68,
     "fproperty.propertyLinkNext": 72,
     "fstructProperty.struct": 112,
+    "fobjectProperty.propertyClass": 112,
+    "farrayProperty.inner": 120,
+    "fclassProperty.metaClass": 120,
     "fboolProperty.fieldSize": 112,
     "fboolProperty.byteOffset": 113,
     "fboolProperty.byteMask": 114,
     "fboolProperty.fieldMask": 115,
     "character.setCustomIgnoreMoveInputVtableOffset": 4048,
     "character.setCustomLimitInputVtableOffset": 4104,
+    "tarray.data": 0,
+    "tarray.num": 8,
+    "tarray.max": 12,
     "damageEvent.size": 368,
     "damageEvent.damage": 16,
     "damageEvent.damageGEDef": 312,
     "damageEvent.damageTags": 328,
-    "names.blocksOffset": 16,
-    "names.blockBits": 16,
-    "names.entryStride": 2,
-    "names.headerLengthShift": 6,
-    "sceneComponent.mobility": 244,
-    "sceneComponent.location": 280,
-    "sceneComponent.boundsOrigin": 280,
-    "sceneComponent.boundsExtent": 304,
-    "cameraManager.location": 880,
-    "cameraManager.rotation": 904,
-    "cameraManager.fov": 928,
-    "objects.itemsOffset": 16,
-    "objects.countOffset": 36,
-    "objects.maxCountOffset": 32,
-    "objects.maxChunksOffset": 40,
-    "objects.numChunksOffset": 44,
-    "objects.chunkCountSize": 4,
-    "objects.chunkSize": 65536,
-    "objects.itemStride": 24,
-    "objects.objectOffset": 0,
-    "objects.serialOffset": 16,
+    "abilitySpawnActor.triggerAbilityHandle": 1160,
+    "abilitySpawnActor.savedTriggerSkillCDO": 1168,
+    "abilitySystem.tryActivateAbilityStack": 8280,
+    "gameplayEffectSpec.size": 664,
+    "gameplayEffectSpec.def": 0,
+    "gameplayEffectSpec.duration": 80,
+    "gameplayEffectSpec.stackCount": 448,
+    "activeGameplayEffect.size": 864,
+    "activeGameplayEffect.spec": 24,
+    "activeGameplayEffect.replicationId": 0,
+    "activeGameplayEffect.replicationKey": 4,
+    "damageTextInfo.displayDamage": 28,
+    "damageTextInfo.damageType": 32,
+    "damageTextInfo.critical": 33,
+    "damageTextInfo.headHit": 34,
+    "damageTextInfo.weakUnbalance": 35,
+    "damageTextInfo.attacker": 36,
+    "damageTextInfo.victim": 44,
+    "damageTextInfo.combatStatistics": 52,
+    "damageTextInfo.injurySourceName": 52,
+    "damageTextInfo.basicDamage": 60,
+    "damageTextInfo.finalDamage": 64,
+    "damageTextInfo.displayType": 24,
+    "damageTextInfo.reactionType": 68,
+    "damageTextInfo.reactionDisplayType": 69,
+    "gameplayEffect.uiData": 768,
+    "gameplayEffectUIData.description": 40,
+    "abilityCharacter.abilitySystemComponent": 2368,
+    "abilitySystem.activeGameplayEffects": 2200,
+    "activeGameplayEffects.size": 768,
+    "activeGameplayEffects.arrayReplicationKey": 84,
+    "activeGameplayEffects.items": 304,
+    "abilityData.skillDamageDataTable": 1112,
+    "skillDamage.gaName": 24,
+    "gameplayAbilityTips.name": 8,
+    "gameplayAbilityTips.gameplayAbility": 144,
+    "gameplayEffectTips.name": 8,
+    "gameplayEffectTips.geParamName": 120,
+    "staticItemData.itemName": 160,
+    "characterDataAsset.mapCharacterFileDataTable": 48,
+    "characterFileData.abilityName": 72,
+    "survivalData.monsterDataTable": 80,
+    "survivalData.skillDataTable": 88,
+    "survivalData.skillEffectDataTable": 96,
+    "buff.specDef": 0,
+    "buff.duration": 664,
+    "buff.stackCount": 668,
+    "ftext.textData": 0,
+    "ftextData.textSource": 32,
+    "ftextData.displayStringGetter": 40,
+    "ftextData.sharedDisplayStringGetter": 48,
+    "ftextData.sharedDisplayString": 48,
+    "ftextData.stringTableReference": 24,
+    "ftextStringTableReference.tableId": 16,
+    "ftextStringTableReference.keyId": 24,
+    "ftextStringTableReference.cachedDisplayString": 48,
+    "sharedString.value": 8,
+    "stringTable.entries": 32,
+    "stringTableEntry.sourceString": 16,
+    "stringTable.mapElementStride": 32,
+    "stringTable.mapValue": 8,
+    "fstring.data": 0,
+    "fstring.count": 8,
+    "fstring.capacity": 12,
+    "weakObject.index": 0,
+    "weakObject.serial": 4,
+    "abilitySystem.activatableAbilities": 1032,
+    "abilitySpecContainer.items": 264,
+    "abilitySpec.stride": 240,
+    "abilitySpec.handle": 12,
+    "abilitySpec.ability": 16,
+    "abilitySpec.level": 24,
+    "abilitySpec.inputId": 28,
+    "abilitySpec.activeCount": 40,
+    "abilitySpec.stateBits": 41,
+    "ability.cooldownGameplayEffectClass": 440,
+    "skills.maxCount": 512,
+    "buffs.maxCount": 512,
     "dataTable.rowMap": 48,
     "dataTable.rowMapElementStride": 24,
     "dataTable.rowMapRowOffset": 8,
@@ -191,38 +778,13 @@
     "dataTable.rowMapFlagsNum": 40,
     "dataTable.rowMapFlagsMax": 44,
     "dataTable.maxRows": 4096,
-    "abilitySpawnActor.triggerAbilityHandle": 1152,
-    "abilitySpawnActor.savedTriggerSkillCDO": 1160,
-    "abilitySystem.tryActivateAbilityStack": 8280,
-    "gameplayEffectSpec.size": 664,
-    "gameplayEffectSpec.def": 0,
-    "gameplayEffectSpec.duration": 80,
-    "gameplayEffectSpec.stackCount": 448,
-    "activeGameplayEffect.size": 864,
-    "activeGameplayEffect.spec": 24,
-    "activeGameplayEffect.replicationId": 0,
-    "activeGameplayEffect.replicationKey": 4,
-    "abilityCharacter.abilitySystemComponent": 2208,
-    "abilityCharacter.characterConfigId": 7544,
-    "abilitySystem.activeGameplayEffects": 2200,
-    "activeGameplayEffects.size": 768,
-    "activeGameplayEffects.arrayReplicationKey": 84,
-    "activeGameplayEffects.items": 304,
-    "abilitySystem.lastTreatmentGEDef": 9048,
-    "abilitySystem.currentDamageCauserOrInstigator": 9064,
-    "abilitySystem.currentDamageGameplayEffect": 9072,
-    "buffs.maxCount": 512,
-    "gameData.abilityDataAsset": 952,
-    "abilityData.skillDamageDataTable": 1112,
-    "skillDamage.gaName": 24,
-    "gameData.gameplayAbilityTipsDataTable": 3352,
-    "gameData.gameplayEffectTipsDataTable": 3360,
-    "gameplayAbilityTips.name": 8,
-    "gameplayAbilityTips.gameplayAbility": 144,
-    "gameplayEffectTips.name": 8,
-    "gameplayEffectTips.geParamName": 120,
-    "gameData.teleportPointDataTable": 408,
-    "staticItemData.itemName": 160,
+    "skillData.skillName": 8,
+    "skillData.gaName": 200,
+    "skillData.geName": 208,
+    "skillEffect.skillEffectId": 8,
+    "skillEffect.belongSkillId": 16,
+    "skillEffect.name": 24,
+    "monsterData.textName": 24,
     "teleportPoint.belongsLevel": 8,
     "teleportPoint.floor": 40,
     "teleportPoint.transformTranslation": 96,
@@ -230,7 +792,28 @@
     "teleportPoint.canTeleport": 216,
     "teleportPoint.overrideTransform": 217,
     "teleportPoint.overrideTranslation": 256,
-    "pickup.actor.interactFinish": 976,
+    "names.blocksOffset": 16,
+    "names.blockBits": 16,
+    "names.entryStride": 2,
+    "names.headerLengthShift": 6,
+    "sceneComponent.mobility": 244,
+    "sceneComponent.location": 280,
+    "sceneComponent.boundsOrigin": 280,
+    "sceneComponent.boundsExtent": 304,
+    "cameraManager.location": 880,
+    "cameraManager.rotation": 904,
+    "cameraManager.fov": 928,
+    "objects.itemsOffset": 16,
+    "objects.maxCountOffset": 32,
+    "objects.countOffset": 36,
+    "objects.maxChunksOffset": 40,
+    "objects.numChunksOffset": 44,
+    "objects.chunkCountSize": 4,
+    "objects.chunkSize": 65536,
+    "objects.itemStride": 24,
+    "objects.objectOffset": 0,
+    "objects.serialOffset": 16,
+    "pickup.actor.interactFinish": 984,
     "pickup.trigger.numParms": 3,
     "pickup.trigger.parmsSize": 13,
     "pickup.trigger.actor": 0,
@@ -247,6 +830,133 @@
     "pickup.entries.array": 8,
     "pickup.entries.maximumChoices": 8,
     "pickup.interactEntryStride": 360,
-    "pickup.interactEntryIndex": 0
-  }
+    "pickup.interactEntryIndex": 0,
+    "object.flags": 8,
+    "widget.slot": 48,
+    "widget.flags": 217,
+    "widget.enabledMask": 4,
+    "widget.visibility": 220,
+    "widget.renderOpacity": 224,
+    "panelSlot.parent": 40,
+    "widgetTree.rootWidget": 48,
+    "panelWidget.slots": 360,
+    "widgetSwitcher.activeWidgetIndex": 384,
+    "button.onPressed": 1352,
+    "button.onReleased": 1368,
+    "button.onClicked": 1336,
+    "scriptDelegate.stride": 16,
+    "scriptDelegate.objectIndex": 0,
+    "scriptDelegate.serial": 4,
+    "scriptDelegate.functionName": 8,
+    "commonButton.lockedByte": 1128,
+    "commonButton.lockedMask": 2,
+    "activatableWidget.isModal": 898,
+    "activatableWidget.isActive": 992,
+    "activatableContainer.widgetList": 400,
+    "activatableContainer.displayedWidget": 416,
+    "htuiButton.buttonText": 5968,
+    "htuiButton.pressedFlag": 6129,
+    "htuiButton.lastClickTicks": 6208,
+    "htuiBase.isClosing": 1562,
+    "htuiBase.pauseGame": 1811,
+    "htuiBase.hideMainForm": 1877,
+    "htuiBase.inputConfig": 3646,
+    "htuiBase.inputConfigMenu": 3,
+    "checkBox.onCheckStateChanged": 2808,
+    "textBlock.text": 392,
+    "htuiRadioBox.radioBox": 4960,
+    "htuiRadioBox.radioText": 4968,
+    "htuiRadioBox.blockButton": 4976,
+    "htuiListItem.clickButton": 1616,
+    "vehicle.movementComponent": 888,
+    "vehicle.maxEngineTorque": 2616,
+    "vehicle.maxEngineRPM": 2620,
+    "vehicle.maxLinearVelocity": 4580,
+    "vehicle.topSpeedInKmH": 4588,
+    "vehicle.reverseTopSpeedInKmH": 4596,
+    "vehicle.enableTopSpeedLimit": 4600,
+    "vehicle.topSpeedRatio": 4640,
+    "abilitySpawnActor.size": 1192,
+    "dataTable.size": 176,
+    "skillDamage.size": 120,
+    "gameplayAbilityTips.size": 184,
+    "gameplayEffectTips.size": 136,
+    "monsterData.size": 296
+  },
+  "layoutCandidates": [
+    {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+      "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
+      "values": {
+        "abilityCharacter.characterConfigId": 7736,
+        "abilityCharacter.size": 5376,
+        "abilityData.size": 3432,
+        "abilitySystem.currentDamageCauserOrInstigator": 9104,
+        "abilitySystem.currentDamageGameplayEffect": 9112,
+        "abilitySystem.size": 9816,
+        "aiCharacter.size": 10464,
+        "controller.getPlayerCharacterVtableOffset": 5272,
+        "gameData.abilityDataAsset": 952,
+        "gameData.characterDataAsset": 152,
+        "gameData.characterDataTable": 8936,
+        "gameData.gameplayAbilityTipsDataTable": 3352,
+        "gameData.gameplayEffectTipsDataTable": 3360,
+        "gameData.monsterInfoDataTable": 8368,
+        "gameData.size": 9296,
+        "gameData.survivalGamePlayDataAsset": 9224,
+        "gameData.teleportPointDataTable": 408,
+        "playerCharacter.currentDisplayCharacterId": 10724,
+        "playerCharacter.defaultCharacterId": 10664,
+        "playerState.roleName": 1120,
+        "playerState.size": 4952,
+        "vehicle.comfortMaxEngineRPM": 5732,
+        "vehicle.comfortMaxEngineTorque": 5728,
+        "vehicle.comfortTopSpeedInKmH": 5936,
+        "vehicle.movementComponentSize": 6160
+      },
+      "symbolPatterns": {
+        "nte.ClientIgnoreGameAndUiInput": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 98 14 00 00",
+        "nte.HTUI_MenuExtension.execAddMenuPage": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? ?? ?? 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? D5 01"
+      }
+    },
+    {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+      "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
+      "values": {
+        "abilityCharacter.characterConfigId": 7800,
+        "abilityCharacter.size": 5440,
+        "abilityData.size": 3448,
+        "abilitySystem.currentDamageCauserOrInstigator": 9144,
+        "abilitySystem.currentDamageGameplayEffect": 9152,
+        "abilitySystem.size": 9856,
+        "aiCharacter.size": 10528,
+        "controller.getPlayerCharacterVtableOffset": 5320,
+        "gameData.abilityDataAsset": 1040,
+        "gameData.characterDataAsset": 160,
+        "gameData.characterDataTable": 9224,
+        "gameData.gameplayAbilityTipsDataTable": 3480,
+        "gameData.gameplayEffectTipsDataTable": 3488,
+        "gameData.monsterInfoDataTable": 8656,
+        "gameData.size": 9600,
+        "gameData.survivalGamePlayDataAsset": 9512,
+        "gameData.teleportPointDataTable": 416,
+        "playerCharacter.currentDisplayCharacterId": 10956,
+        "playerCharacter.defaultCharacterId": 10896,
+        "playerState.roleName": 1136,
+        "playerState.size": 4968,
+        "vehicle.comfortMaxEngineRPM": 5804,
+        "vehicle.comfortMaxEngineTorque": 5800,
+        "vehicle.comfortTopSpeedInKmH": 6008,
+        "vehicle.movementComponentSize": 6224
+      },
+      "symbolPatterns": {
+        "nte.ClientIgnoreGameAndUiInput": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 C8 14 00 00 48 8B D8 48 85 C0 74 ?? 40 84 ED",
+        "nte.HTUI_MenuExtension.execAddMenuPage": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? 5C FA 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? 12 02"
+      }
+    }
+  ]
 }

@@ -48,6 +48,7 @@ plugin.dll
 package.sha256
 assets\               可选
 locales\              可选
+profile\              可选
 其他 native DLL       可选
 ```
 

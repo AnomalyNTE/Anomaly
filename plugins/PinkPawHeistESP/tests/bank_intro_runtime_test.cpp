@@ -1,4 +1,5 @@
 #include "../rob_bank_runtime.hpp"
+#include "../../../apps/test_host/plugin_profile_fixture_host.hpp"
 
 #include <array>
 #include <chrono>
@@ -22,6 +23,7 @@ std::string_view View(AnomalyStringViewV1 text) { return {text.data, text.size};
 // BPUI_SideDialogue/UI_Dialogue with BtnSkip, plus an inactive HTUI_Cinema.
 // Exercise the public runtime, reflection validation and ProcessEvent dispatch.
 struct BankEntry final {
+    anomaly::testing::ProfileHost profile_host{"PinkPawHeistESP"};
     std::vector<std::uint8_t> memory = std::vector<std::uint8_t>(1024 * 1024);
     std::size_t used{};
     std::vector<std::string> name_pool{"None"};
@@ -29,7 +31,7 @@ struct BankEntry final {
     std::unordered_map<std::uintptr_t, std::string> functions;
     std::uint32_t object_count{};
     std::uintptr_t slots{}, registry{}, vtable{}, class_class{}, function_class{};
-    std::uintptr_t world_instruction{}, objects_instruction{}, pickup{}, scratch{};
+    std::uintptr_t world_instruction{}, objects_instruction{}, pickup{}, scratch{}, free_string{};
     std::uintptr_t controller{}, actor{}, bank_asset{}, other_asset{}, dialogue{}, button{}, parent{}, second{};
     std::uintptr_t player_state{}, key_doors_property{}, key_doors_inner{};
     std::uintptr_t dispatched_widget{};
@@ -173,25 +175,40 @@ struct BankEntry final {
         Put(players, player); Put(player + 48, controller);
         const auto world_storage = Allocate(8); Put(world_storage, world);
         world_instruction = Allocate(8); objects_instruction = Allocate(8);
+        const std::uint8_t world_prefix[]{0x48,0x8B,0x1D}, objects_prefix[]{0x48,0x8B,0x05};
+        std::memcpy(reinterpret_cast<void*>(world_instruction),world_prefix,sizeof(world_prefix));
+        std::memcpy(reinterpret_cast<void*>(objects_instruction),objects_prefix,sizeof(objects_prefix));
         Put(world_instruction + 3, static_cast<std::int32_t>(world_storage - world_instruction - 7));
         Put(objects_instruction + 3, static_cast<std::int32_t>(registry + 16 - objects_instruction - 7));
-        pickup = Allocate(256); scratch = Allocate(8);
+        pickup = Allocate(256); scratch = Allocate(64); free_string = Allocate(64);
         const std::array<std::uint8_t, 16> prologue{0x48,0x89,0x5C,0x24,0x10,0x57,0x48,0x83,0xEC,0x40,0x48,0x8B,0xDA,0x48,0x8B,0xF9};
         const std::array<std::uint8_t, 13> success{0xB0,0x01,0x48,0x8B,0x5C,0x24,0x58,0x48,0x83,0xC4,0x40,0x5F,0xC3};
         const std::array<std::uint8_t, 13> failure{0x48,0x8B,0x5C,0x24,0x58,0x32,0xC0,0x48,0x83,0xC4,0x40,0x5F,0xC3};
         std::memcpy(reinterpret_cast<void*>(pickup), prologue.data(), prologue.size());
+        Put(pickup + prologue.size(), std::uint8_t{0xE8});
+        // Recorded 1.4 entries, independent of the production Profile document.
+        const std::uint8_t text_entry[]{0x40,0x53,0x48,0x83,0xEC,0x20,0x48,0x8B,0xD9,0x48,0x8B,0xCA,0xE8};
+        const std::uint8_t free_entry[]{0x48,0x85,0xC9,0x74,0x2E,0x53,0x48,0x83,0xEC,0x20,0x48,0x8B,0xD9,0x48,0x8B,0x0D};
+        std::memcpy(reinterpret_cast<void*>(scratch),text_entry,sizeof(text_entry));
+        std::memcpy(reinterpret_cast<void*>(free_string),free_entry,sizeof(free_entry));
         std::memcpy(reinterpret_cast<void*>(pickup + 0xD6), success.data(), success.size());
         std::memcpy(reinterpret_cast<void*>(pickup + 0xE3), failure.data(), failure.size());
         core.read_memory = [](void* user, std::uintptr_t address, AnomalyMutableByteSpanV1 out) {
             auto& f = *static_cast<BankEntry*>(user);
+            if (address == reinterpret_cast<std::uintptr_t>(&ProcessEvent))
+                return anomaly::testing::RecordedProcessEventEntry(out);
+            if (address >= 0x10000 && address < 0x10000 + f.profile_host.image.size())
+                return f.profile_host.core.read_memory(&f.profile_host, address, out);
             const auto begin = reinterpret_cast<std::uintptr_t>(f.memory.data());
             if (address < begin || address - begin > f.used || out.size > f.used - (address - begin)) return Result(ANOMALY_STATUS_V1_NOT_FOUND);
             std::memcpy(out.data, reinterpret_cast<const void*>(address), out.size); return Result();
         };
         signatures.resolve = [](void* user, AnomalyStringViewV1, AnomalyStringViewV1, AnomalyStringViewV1 pattern, std::uintptr_t* out) {
             auto& f = *static_cast<BankEntry*>(user); const auto text = View(pattern);
+            if (text.starts_with("48 89 5C 24 08"))
+                return f.profile_host.signatures.resolve(&f.profile_host, {}, {}, pattern, out);
             *out = text.starts_with("48 8B 1D") ? f.world_instruction : text.starts_with("48 8B 05") ? f.objects_instruction :
-                text.starts_with("48 89 5C") ? f.pickup : f.scratch;
+                text.starts_with("48 89 5C") ? f.pickup : text.starts_with("48 85 C9") ? f.free_string : f.scratch;
             return Result();
         };
         names.resolve_utf8 = [](void* user, std::uint32_t id, char* out, std::size_t* size) {
@@ -207,14 +224,15 @@ struct BankEntry final {
             if (found == f.paths.end()) return Result(ANOMALY_STATUS_V1_NOT_FOUND);
             *out = found->second; return Result();
         };
-        host.query_service = [](void* user, AnomalyStringViewV1 id, std::uint32_t, const void** out) {
+        host.query_service = [](void* user, AnomalyStringViewV1 id, std::uint32_t version, const void** out) {
             auto& f = *static_cast<BankEntry*>(user); const auto name = View(id);
             *out = name == ANOMALY_CORE_SERVICE_V1_ID ? static_cast<void*>(&f.core) :
                 name == ANOMALY_SIGNATURE_SERVICE_V1_ID ? static_cast<void*>(&f.signatures) :
                 name == ANOMALY_UE5_NAMES_SERVICE_V1_ID ? static_cast<void*>(&f.names) :
                 name == ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID ? static_cast<void*>(&f.framework) :
                 name == ANOMALY_UE5_OBJECTS_SERVICE_V1_ID ? static_cast<void*>(&f.objects) : nullptr;
-            return Result(*out ? ANOMALY_STATUS_V1_OK : ANOMALY_STATUS_V1_NOT_FOUND);
+            if (!*out) return anomaly::testing::ProfileHost::Query(&f.profile_host, id, version, out);
+            return Result();
         };
     }
 };

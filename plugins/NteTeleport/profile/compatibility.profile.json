@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "nte-teleport-v1",
+  "layout": {
+    "kWorldGameInstanceOffset": 560,
+    "kGameInstanceLocalPlayersOffset": 56,
+    "kLocalPlayerControllerOffset": 48,
+    "kControllerPlayerStateOffset": 720,
+    "kNavPathActorLastRequestParamOffset": 1264,
+    "kNavPathRequestGoalLocationOffset": 40
+  },
+  "symbols": [
+    {
+      "name": "kGWorldPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "layout",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
+          "values": {
+            "kPlayerStateCurNavigationPathEffectOffset": 6600
+          }
+        },
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
+          "values": {
+            "kPlayerStateCurNavigationPathEffectOffset": 7024
+          }
+        }
+      ]
+    }
+  ]
+}

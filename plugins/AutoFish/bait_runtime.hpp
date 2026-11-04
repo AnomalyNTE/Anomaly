@@ -16,7 +16,7 @@ uint64_t equip_sent{};
 uintptr_t text_to_string{};
 Clock::time_point next_catalog{},next_stock{};
 std::filesystem::path bait_file;
-struct TableEntry {FName key;uintptr_t row;uint32_t hash,next;};
+struct TableEntry {FName key;uintptr_t row;uint32_t hash,next;}; // TMap<FName,uint8*> element: Row at +8.
 static_assert(sizeof(TableEntry)==24);
 struct CatalogBuild {
     AnomalyGenerationHandleV1 table{};
@@ -34,18 +34,19 @@ bool SparseElements(const Reader& r,uintptr_t address,size_t stride,int limit,st
        h.free_count<0 || h.free_count>h.count || (!h.extra_bits && h.count>128) || (h.count && !h.data)) return false;
     raw.resize(static_cast<size_t>(h.count)*stride);flags.resize((h.count+31)/32);
     if(h.count && (core->read_memory(core->user,h.data,{raw.data(),raw.size()}).code!=0 ||
-       core->read_memory(core->user,h.extra_bits?h.extra_bits:address+16,
+       core->read_memory(core->user,h.extra_bits?h.extra_bits:address+fishing::profile::native_layout.MapInlineBits,
            {reinterpret_cast<uint8_t*>(flags.data()),flags.size()*4}).code!=0)) return false;
     return true;
 }
 bool TableRows(const Reader& r,uintptr_t table,const char* type,std::vector<TableEntry>& rows) {
     uintptr_t row_type{};
-    if(!r.IsA(table,"DataTable") || !r.Read(table+0x28,row_type) || r.NameAt(row_type+24)!=type) return false;
+    // UDataTable::RowStruct at +0x28, UDataTable::RowMap at +0x30 with 24-byte sparse elements.
+    if(!r.IsA(table,"DataTable") || !r.Read(table+fishing::profile::native_layout.DataTableType,row_type) || r.NameAt(row_type + fishing::profile::native_layout.ObjectName)!=type) return false;
     std::vector<uint8_t> raw;std::vector<uint32_t> flags;
-    if(!SparseElements(r,table+0x30,24,8192,raw,flags)) return false;
+    if(!SparseElements(r,table+fishing::profile::native_layout.DataTableMap,fishing::profile::native_layout.RowStride,8192,raw,flags)) return false;
     rows.clear();
-    for(size_t i=0;i<raw.size()/24;++i) if(flags[i/32]&(1u<<(i%32))) {
-        TableEntry row{};std::memcpy(&row,raw.data()+i*24,24);
+    for(size_t i=0;i<raw.size()/fishing::profile::native_layout.RowStride;++i) if(flags[i/32]&(1u<<(i%32))) {
+        TableEntry row{};std::memcpy(&row,raw.data()+i*fishing::profile::native_layout.RowStride,sizeof(row));
         if(!row.key.id || !row.row) return false;rows.push_back(row);
     }
     return true;
@@ -57,11 +58,8 @@ uintptr_t InvokeTextString(uintptr_t function,uintptr_t text) {
 std::string BaitText(const Reader& r,uintptr_t address) {
     char cached[512]{};size_t length=sizeof(cached);
     if(names->resolve_ftext_utf8 && names->resolve_ftext_utf8(names->user,address,cached,&length).code==0 && cached[0]) return cached;
-    if(!text_to_string) {
-        const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        if(!sig || !sig->resolve || sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),
-            StringView(fishing::profile::TextToString),&text_to_string).code!=0) return {};
-    }
+    text_to_string=fishing::profile::compatibility.Address("TextToString");
+    if(!text_to_string) return {};
     // FText::ToString returns a borrowed FString reference; no returned allocation is owned here.
     const auto string=InvokeTextString(text_to_string,address);RowArray value{};
     if(!string || !r.Read(string,value) || !value.data || value.count<1 || value.count>512 || value.capacity<value.count) return {};
@@ -80,36 +78,41 @@ void UpdateBaitCatalog(const Reader& r) {
         uintptr_t gd{};if(!cdo || !get || !Invoke(r,cdo,get,&gd) || !r.IsA(gd,"HTGameData")) return;
         const auto fish=Child(r,gd,"FishingDataAsset"),bait=Child(r,fish,"StaticFishBaitDataTable"),goods=Child(r,gd,"GoodsDataTable");
         uintptr_t row_type{};
-        if(!goods || !r.Read(goods+0x28,row_type) || !r.Property(row_type,"OwnerShopID",0x28,8) ||
-           !r.Property(row_type,"ItemID",0x30,8) || !r.Property(row_type,"ItemName",0x38,16) ||
-           !r.Property(row_type,"CurrencyID",0x8C,8) || !r.Property(row_type,"Price",0x98,8)) return;
+        if(!goods || !r.Read(goods+fishing::profile::native_layout.DataTableType,row_type) || !r.Property(row_type,"OwnerShopID",fishing::profile::native_layout.GoodsShop,8) ||
+           !r.Property(row_type,"ItemID",fishing::profile::native_layout.GoodsItem,8) || !r.Property(row_type,"ItemName",fishing::profile::native_layout.GoodsName,16) ||
+           !r.Property(row_type,"CurrencyID",fishing::profile::native_layout.GoodsCurrency,8) || !r.Property(row_type,"Price",fishing::profile::native_layout.GoodsPrice,8)) return;
         // This asset stores bait rows as generic StaticItemData, with bait-specific
         // details in their extension payload. The property name is not its row type.
         uintptr_t bait_type{};
-        if(!bait || !r.Read(bait+0x28,bait_type) || !r.Property(bait_type,"ItemName",0xA0,16) ||
-           !r.Property(bait_type,"ItemType",8,1)) return;
+        if(!bait || !r.Read(bait+fishing::profile::native_layout.DataTableType,bait_type) || !r.Property(bait_type,"ItemName",fishing::profile::native_layout.ItemName,16) ||
+           !r.Property(bait_type,"ItemType",fishing::profile::native_layout.ItemType,1)) return;
         std::vector<TableEntry> baits,all;
         if(!TableRows(r,bait,"StaticItemData",baits) || !TableRows(r,goods,"GoodsData",all)) return;
         catalog_build={};catalog_build.table=Handle(r,goods);if(!catalog_build.table.id) return;
         catalog_build.goods=std::move(all);
-        for(auto entry:baits) {uint8_t type{};if(r.Read(entry.row+8,type) && type==42) catalog_build.baits[NameKey(entry.key)]=entry.row;}
+        // FStaticItemData.ItemType at +8; 42 is EItemType::ITEM_TYPE_FISH_BAIT.
+        for(auto entry:baits) {uint8_t type{};if(r.Read(entry.row+fishing::profile::native_layout.ItemType,type) && type==42) catalog_build.baits[NameKey(entry.key)]=entry.row;}
         next_catalog=now;
     }
     if(!Resolve(r,objects,catalog_build.table)) {catalog_build={};next_catalog=now+std::chrono::seconds(5);return;}
+    // GoodsDataTable rows are FGoodsData. Field names for the raw offsets below:
+    // +0x28 OwnerShopID, +0x30 ItemID, +0x38 ItemName, +0x8C CurrencyID, +0x98 Price,
+    // +0x58 MixAmount (per-purchase minimum), +0x60 MaxAmount, +0x68 MaxSelectorAmount.
     // Build in small batches; never scan the global object or name pools every frame.
     int found_this_tick=0;
     for(size_t end=std::min(catalog_build.cursor+128,catalog_build.goods.size());catalog_build.cursor<end;) {
         const auto entry=catalog_build.goods[catalog_build.cursor++];FName item{};
-        if(!r.Read(entry.row+0x30,item) || !catalog_build.baits.contains(NameKey(item))) continue;
+        if(!r.Read(entry.row+fishing::profile::native_layout.GoodsItem,item) || !catalog_build.baits.contains(NameKey(item))) continue;
         BaitOption option{};option.item=item;
-        if(!r.Read(entry.row+0x28,option.shop) || !r.Read(entry.row+0x8C,option.currency) ||
-           !r.Read(entry.row+0x98,option.price) || !r.Read(entry.row+0x58,option.minimum) ||
-           !r.Read(entry.row+0x60,option.maximum) || !option.shop.id || !option.currency.id || option.price<=0) continue;
-        int64_t selector{};r.Read(entry.row+0x68,selector);
+        if(!r.Read(entry.row+fishing::profile::native_layout.GoodsShop,option.shop) || !r.Read(entry.row+fishing::profile::native_layout.GoodsCurrency,option.currency) ||
+           !r.Read(entry.row+fishing::profile::native_layout.GoodsPrice,option.price) || !r.Read(entry.row+fishing::profile::native_layout.GoodsMinimum,option.minimum) ||
+           !r.Read(entry.row+fishing::profile::native_layout.GoodsMaximum,option.maximum) || !option.shop.id || !option.currency.id || option.price<=0) continue;
+        int64_t selector{};r.Read(entry.row+fishing::profile::native_layout.GoodsSelector,selector);
         option.maximum=selector>0?selector:999;option.minimum=std::max<int64_t>(1,option.minimum);
         option.maximum=std::clamp<int64_t>(option.maximum,option.minimum,9999);
-        option.goods=entry.key;option.key=r.Name(entry.key);option.label=BaitText(r,catalog_build.baits.at(NameKey(item))+0xA0);
-        if(option.label.empty()) option.label=BaitText(r,entry.row+0x38);
+        option.goods=entry.key;option.key=r.Name(entry.key);
+        option.label=BaitText(r,catalog_build.baits.at(NameKey(item))+fishing::profile::native_layout.ItemName); // FStaticItemData.ItemName
+        if(option.label.empty()) option.label=BaitText(r,entry.row+fishing::profile::native_layout.GoodsName); // FGoodsData.ItemName
         if(option.label.empty()) option.label=r.Name(item);
         const auto currency=r.Name(option.currency);
         // Only normal fishing currencies are offered, not charge or unrelated shop goods.

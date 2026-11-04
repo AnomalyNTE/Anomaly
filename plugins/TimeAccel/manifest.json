@@ -68,6 +68,18 @@
       "id": "anomaly.scheduler",
       "minVersion": 1,
       "optional": true
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
     }
   ],
   "capabilities": [
@@ -80,6 +92,8 @@
     "nte-player-snapshot",
     "input",
     "storage",
-    "scheduler"
+    "scheduler",
+    "json",
+    "interop-signature"
   ]
 }

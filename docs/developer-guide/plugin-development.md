@@ -13,6 +13,8 @@ Anomaly\plugins\MyPlugin\
   manifest.json     声明 ID、版本、API 范围、依赖、所需服务与 capability
   plugin.dll        导出 AnomalyPluginEntryV1
   assets\           （可选）资源
+  locales\          （可选）本地化目录
+  profile\          （可选）签名、布局与兼容配置
   dependency.dll    （可选）native 依赖
 ```
 
@@ -40,11 +42,41 @@ anomaly_add_plugin(my_plugin
   PACKAGE_NAME MyPlugin)
 ```
 
-`anomaly_add_plugin` 固定输出 `plugin.dll`，把 Manifest 与 Manifest 同级的 `locales` 目录放进包目录，
+`anomaly_add_plugin` 固定输出 `plugin.dll`，把 Manifest 与同级的 `locales/`、`assets/`、`profile/`
+目录放进包目录，
 并负责这个包的安装：默认装到 `<prefix>/Anomaly/plugins/<PACKAGE_NAME>`（`GameRuntime` 组件）。
 两个可选关键字改变安装行为：`NO_RELEASE` 只构建、不产生安装规则；`TEST_PLUGIN` 装进独立的
 `TestPlugins` 组件，并只在 `ANOMALY_BUILD_TEST_PLUGINS=ON` 时构建与安装。插件自己的额外资源
 （例如 `data\`）仍需在工程里显式列出。
+
+`profile/` 是所有插件共用的目录约定，由 CMake 自动复制和安装。相关功能优先放在一个 JSON 文件，
+通过 `symbols` 和 `candidates` 区分符号与兼容候选。格式必须符合
+[`plugin-profile.schema.json`](../../schemas/plugin-profile.schema.json)。签名、入口字节、调用位置、
+偏移种子与版本差异写在 profile 中，不能硬编码到 C++；代码保留调用协议、语义合同与必要的布局校验。
+
+在 manifest 中声明 `anomaly.profile`、`anomaly.json` v1 和 `json` capability，启动时调用
+`anomaly::sdk::LoadProfile(host, "my-plugin.profile.json")`。宿主从当前 DLL generation 的包快照
+加载 `profile/` 下的文件，统一检查目录边界和 schema；插件不再自行打开文件或解析 JSON。
+返回的 C++ `Profile` 是插件自有快照，临时 JSON 句柄已释放。仅在 Lifecycle/Worker 加载，后续回调
+只读快照；路径参数不带 `profile/` 前缀。
+
+```cpp
+#include <anomaly/sdk/profile.hpp>
+
+const auto loaded = anomaly::sdk::LoadProfile(host, "my-plugin.profile.json");
+if (!loaded) { /* 记录 loaded.error()，停用依赖功能 */ return; }
+const auto& profile = loaded.value();
+if (profile.contract != "my-plugin-v1") return;
+// 检查所需 layout/values 与自身实现匹配，再解析地址和安装 Hook。
+const auto symbol = anomaly::sdk::ResolveProfileSymbol(signature, core, profile, "query");
+if (!symbol) { /* 记录 symbol.error，停用依赖功能 */ return; }
+```
+
+公共 resolver 验证唯一候选、可选 E8 相对调用和精确入口字节；多匹配或入口改变会拒绝结果。
+`contract` 是语义合同，不是 Build identity。
+新增目录后重新 configure 并构建；配置更新随新的包 generation 生效，不写回 profile。
+完整字段与 C ABI 见 [profile 服务](../api-reference/platform-services.md#anomalyprofile)，
+单文件示例见 [`SummonLab/profile/compatibility.profile.json`](../../plugins/SummonLab/profile/compatibility.profile.json)。
 
 源码入口：`<anomaly/sdk/anomaly_sdk.h>`（C）或 `<anomaly/sdk/cpp.hpp>`（C++，提供 `Host`、`ServiceRef`、`UiWindow` 等轻量 wrapper）。
 
@@ -293,24 +325,24 @@ if (sequence != 0 && sequence != cached_sequence) {
 由地址解析接口验证。直接绕过该服务自行扫描的插件不经过这条恢复路径。
 
 需要自动学习字段偏移的插件可选择 signature v2，并包含 `anomaly/sdk/signature.hpp`。
-manifest 中将该服务的 `minVersion` 设为 `2`。签名和语义种子仍放在插件自己的头文件；
-启动阶段调用一次框架 API，后续回调只读取本地快照。例如已有 `kPausePattern` / `kResumePattern`：
+manifest 中将该服务的 `minVersion` 设为 `2`。签名和偏移种子从上述公共 profile 加载；
+启动阶段调用一次框架 API，后续回调只读取本地快照。例如已验证 `profile` 包含单候选的 `pause` / `resume`：
 
 ```cpp
-inline constexpr AnomalySignatureFieldV2 fields[]{
-    anomaly::sdk::FieldSeed("PlayingID", 0x438, 4),
-    anomaly::sdk::FieldSeed("Paused", 0x43C),
+const AnomalySignatureFieldV2 fields[]{
+    anomaly::sdk::FieldSeed("PlayingID", profile.layout.at("PlayingID"), 4),
+    anomaly::sdk::FieldSeed("Paused", profile.layout.at("Paused")),
 };
 inline constexpr AnomalySignatureMemberV2 members[]{
     anomaly::sdk::MemberUse(0, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
     anomaly::sdk::MemberUse(1, 1, ANOMALY_SIGNATURE_MEMBER_WRITE_V2),
 };
-inline constexpr AnomalySignatureWitnessV2 witnesses[]{
-    anomaly::sdk::Witness("pause", kPausePattern, members),
-    anomaly::sdk::Witness("resume", kResumePattern, members),
+const AnomalySignatureWitnessV2 witnesses[]{
+    anomaly::sdk::Witness("pause", profile.symbol("pause").candidates.front().pattern, members),
+    anomaly::sdk::Witness("resume", profile.symbol("resume").candidates.front().pattern, members),
 };
-inline constexpr anomaly::sdk::LayoutSchema schema{
-    "HTGame.exe", ".text", fields, witnesses};
+const anomaly::sdk::LayoutSchema schema{
+    profile.module, profile.section, fields, witnesses};
 
 // Lifecycle / Worker；signature 是已查询的 AnomalySignatureServiceV2。
 auto resolved = anomaly::sdk::ResolveLayout(signature, schema);

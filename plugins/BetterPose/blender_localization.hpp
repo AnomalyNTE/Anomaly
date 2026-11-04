@@ -1,0 +1,97 @@
+#pragma once
+#include <anomaly/sdk/localization.hpp>
+namespace better_pose {
+inline std::string LocalizeBlenderMessage(const anomaly::sdk::Localizer& localizer, std::string_view message) {
+    if (message == "Blender file is not valid JSON") return localizer.Text("blender.message.1", "Blender file is not valid JSON");
+    if (message == "Choose a Better Pose .bpmotion file") return localizer.Text("blender.message.2", "Choose a Better Pose .bpmotion file");
+    if (message == "Invalid Blender motion frame rate") return localizer.Text("blender.message.3", "Invalid Blender motion frame rate");
+    if (message == "Invalid Blender motion duration") return localizer.Text("blender.message.4", "Invalid Blender motion duration");
+    if (message == "Too many Blender motion bones") return localizer.Text("blender.message.5", "Too many Blender motion bones");
+    if (message == "Invalid Blender motion bone name") return localizer.Text("blender.message.6", "Invalid Blender motion bone name");
+    if (message == "Blender motion contains no usable bones") return localizer.Text("blender.message.7", "Blender motion contains no usable bones");
+    if (message == "Invalid Blender motion bone parent") return localizer.Text("blender.message.8", "Invalid Blender motion bone parent");
+    if (message == "Invalid Blender motion frame count") return localizer.Text("blender.message.9", "Invalid Blender motion frame count");
+    if (message == "Blender motion frame has no valid time") return localizer.Text("blender.message.10", "Blender motion frame has no valid time");
+    if (message == "Blender timeline must start at zero and increase strictly") return localizer.Text("blender.message.11", "Blender timeline must start at zero and increase strictly");
+    if (message == "Blender timeline must start at zero") return localizer.Text("blender.message.12", "Blender timeline must start at zero");
+    if (message == "Invalid Blender motion root translation") return localizer.Text("blender.message.13", "Invalid Blender motion root translation");
+    if (message == "Invalid Blender motion camera track") return localizer.Text("blender.message.14", "Invalid Blender motion camera track");
+    if (message == "Blender motion camera track contains invalid values") return localizer.Text("blender.message.15", "Blender motion camera track contains invalid values");
+    if (message == "Invalid Blender motion bone frame") return localizer.Text("blender.message.16", "Invalid Blender motion bone frame");
+    if (message == "Invalid Blender motion expression track") return localizer.Text("blender.message.17", "Invalid Blender motion expression track");
+    if (message == "Corrupt Blender motion data") return localizer.Text("blender.message.18", "Corrupt Blender motion data");
+    if (message == "Camera import failed: invalid character unit scale") return localizer.Text("blender.message.19", "Camera import failed: invalid character unit scale");
+    if (message == "Blender motion has no importable content") return localizer.Text("blender.message.20", "Blender motion has no importable content");
+    if (message == "Current character reference pose is not ready") return localizer.Text("blender.message.21", "Current character reference pose is not ready");
+    if (message == "Blender motion has no bones matching this character") return localizer.Text("blender.message.22", "Blender motion has no bones matching this character");
+    if (message.starts_with("Blender motion conversion failed: ")) return localizer.Format("blender.message.23", "Blender motion conversion failed: {0}", std::array<std::string_view,1>{message.substr(std::string_view("Blender motion conversion failed: ").size())});
+    if (message == "Character skeleton is not ready; load bones first") return localizer.Text("blender.message.24", "Character skeleton is not ready; load bones first");
+    if (message == "Blender connected; preview using its timeline") return localizer.Text("blender.message.25", "Blender connected; preview using its timeline");
+    if (message == "Blender session expired; reconnect") return localizer.Text("blender.message.26", "Blender session expired; reconnect");
+    if (message == "No MMD motion is loaded") return localizer.Text("blender.message.27", "No MMD motion is loaded");
+    if (message == "Blender disconnected; game pose restored") return localizer.Text("blender.message.28", "Blender disconnected; game pose restored");
+    if (message == "Unknown Blender request") return localizer.Text("blender.message.29", "Unknown Blender request");
+    if (message == "Expired Blender frame") return localizer.Text("blender.message.30", "Expired Blender frame");
+    if (message == "Blender frame has no bone data") return localizer.Text("blender.message.31", "Blender frame has no bone data");
+    if (message == "Invalid bone data in Blender frame") return localizer.Text("blender.message.32", "Invalid bone data in Blender frame");
+    if (message == "Invalid bone index or rotation in Blender frame") return localizer.Text("blender.message.33", "Invalid bone index or rotation in Blender frame");
+    if (message == "Invalid quaternion in Blender frame") return localizer.Text("blender.message.34", "Invalid quaternion in Blender frame");
+    if (message == "Quaternion outside supported range in Blender frame") return localizer.Text("blender.message.35", "Quaternion outside supported range in Blender frame");
+    if (message == "Invalid Euler rotation in Blender frame") return localizer.Text("blender.message.36", "Invalid Euler rotation in Blender frame");
+    if (message == "Rotation outside supported range in Blender frame") return localizer.Text("blender.message.37", "Rotation outside supported range in Blender frame");
+    if (message == "Invalid expression data in Blender frame") return localizer.Text("blender.message.38", "Invalid expression data in Blender frame");
+    if (message == "Invalid expression weight in Blender frame") return localizer.Text("blender.message.39", "Invalid expression weight in Blender frame");
+    if (message == "Expression weight outside supported range in Blender frame") return localizer.Text("blender.message.40", "Expression weight outside supported range in Blender frame");
+    if (message == "Invalid Blender root translation") return localizer.Text("blender.message.41", "Invalid Blender root translation");
+    if (message == "Invalid Blender camera pose") return localizer.Text("blender.message.42", "Invalid Blender camera pose");
+    if (message == "Invalid Blender camera rotation") return localizer.Text("blender.message.43", "Invalid Blender camera rotation");
+    if (message == "Blender camera rotation outside supported range") return localizer.Text("blender.message.44", "Blender camera rotation outside supported range");
+    if (message == "Invalid Blender camera zoom") return localizer.Text("blender.message.45", "Invalid Blender camera zoom");
+    if (message == "Invalid complete Blender camera pose") return localizer.Text("blender.message.46", "Invalid complete Blender camera pose");
+    if (message == "Invalid complete Blender camera rotation") return localizer.Text("blender.message.47", "Invalid complete Blender camera rotation");
+    if (message == "Complete Blender camera rotation outside supported range") return localizer.Text("blender.message.48", "Complete Blender camera rotation outside supported range");
+    if (message == "Invalid absolute Blender camera pose") return localizer.Text("blender.message.49", "Invalid absolute Blender camera pose");
+    if (message == "Invalid absolute Blender camera rotation") return localizer.Text("blender.message.50", "Invalid absolute Blender camera rotation");
+    if (message == "Absolute Blender camera rotation outside supported range") return localizer.Text("blender.message.51", "Absolute Blender camera rotation outside supported range");
+    if (message == "Invalid Blender camera direction") return localizer.Text("blender.message.52", "Invalid Blender camera direction");
+    if (message == "Blender camera direction is zero") return localizer.Text("blender.message.53", "Blender camera direction is zero");
+    if (message == "Invalid Blender camera reference direction") return localizer.Text("blender.message.54", "Invalid Blender camera reference direction");
+    if (message == "Blender camera reference direction is zero") return localizer.Text("blender.message.55", "Blender camera reference direction is zero");
+    if (message == "Invalid Blender camera focus offset") return localizer.Text("blender.message.56", "Invalid Blender camera focus offset");
+    if (message == "Blender camera focus offset outside supported range") return localizer.Text("blender.message.57", "Blender camera focus offset outside supported range");
+    if (message == "Invalid HTTP request header") return localizer.Text("blender.message.58", "Invalid HTTP request header");
+    if (message == "Blender request is too large") return localizer.Text("blender.message.59", "Blender request is too large");
+    if (message == "Incomplete Blender request") return localizer.Text("blender.message.60", "Incomplete Blender request");
+    if (message == "Only local Blender POST requests are accepted") return localizer.Text("blender.message.61", "Only local Blender POST requests are accepted");
+    if (message == "Blender request queue is full") return localizer.Text("blender.message.62", "Blender request queue is full");
+    if (message == "Game update timed out; keep the game in an interactive scene") return localizer.Text("blender.message.63", "Game update timed out; keep the game in an interactive scene");
+    if (message == "Blender server started: http://127.0.0.1:18923") return localizer.Text("blender.message.64", "Blender server started: http://127.0.0.1:18923");
+    if (message == "BetterPose is unloading") return localizer.Text("blender.message.65", "BetterPose is unloading");
+    if (message == "MMD motion bones are not resolved") return localizer.Text("blender.message.66", "MMD motion bones are not resolved");
+    if (message == "Character reference pose is not ready") return localizer.Text("blender.message.67", "Character reference pose is not ready");
+    if (message == "Could not sample MMD motion") return localizer.Text("blender.message.68", "Could not sample MMD motion");
+    if (message == "Blender motion import failed: cannot open file") return localizer.Text("blender.message.69", "Blender motion import failed: cannot open file");
+    if (message == "Blender motion import failed: unreadable or oversized file") return localizer.Text("blender.message.70", "Blender motion import failed: unreadable or oversized file");
+    if (message == "Invalid format") return localizer.Text("blender.message.72", "Invalid format");
+    if (message == "Blender motion load canceled: motion unloaded or character changed") return localizer.Text("blender.message.73", "Blender motion load canceled: motion unloaded or character changed");
+    if (message == "Blender motion import failed: no file selected") return localizer.Text("blender.message.74", "Blender motion import failed: no file selected");
+    if (message == "Blender motion import failed: make the character visible before loading its skeleton") return localizer.Text("blender.message.75", "Blender motion import failed: make the character visible before loading its skeleton");
+    if (message == "Blender motion import failed: current reference pose is not ready") return localizer.Text("blender.message.76", "Blender motion import failed: current reference pose is not ready");
+    if (message == "Blender motion converted directly to MMD; no VMD track mapping check is needed") return localizer.Text("blender.message.77", "Blender motion converted directly to MMD; no VMD track mapping check is needed");
+    if (message == "Current character pose buffer unavailable") return localizer.Text("blender.message.78", "Current character pose buffer unavailable");
+    if (message == "Could not read current character skeleton pose") return localizer.Text("blender.message.79", "Could not read current character skeleton pose");
+    if (message == "Export failed: choose a folder first") return localizer.Text("blender.message.80", "Export failed: choose a folder first");
+    if (message == "Export failed: timeline has no keyframes") return localizer.Text("blender.message.81", "Export failed: timeline has no keyframes");
+    if (message == "Export failed: write error") return localizer.Text("blender.message.84", "Export failed: write error");
+    if (message == "Import Blender motion as MMD") return localizer.Text("blender.message.85", "Import Blender motion as MMD");
+    if (message == "Blender controls the pose; edit bones in Blender while connected") return localizer.Text("blender.message.86", "Blender controls the pose; edit bones in Blender while connected");
+    if (message == "Import Blender as MMD") return localizer.Text("blender.message.87", "Import Blender as MMD");
+    if (message == "Blender connected; using the current CameraTrack with live corrections") return localizer.Text("blender.message.88", "Blender connected; using the current CameraTrack with live corrections");
+    constexpr std::string_view import_prefix = "Blender motion import failed: ";
+    if (message.starts_with(import_prefix)) {
+        const auto detail = LocalizeBlenderMessage(localizer, message.substr(import_prefix.size()));
+        return localizer.Format("blender.message.71", "Blender motion import failed: {0}", std::array<std::string_view,1>{detail});
+    }
+    return std::string(message);
+}
+} // namespace better_pose

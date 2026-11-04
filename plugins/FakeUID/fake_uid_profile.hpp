@@ -1,65 +1,79 @@
 #pragma once
+#include "../common/compatibility_profile.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
 namespace fake_uid_profile {
+struct Layout {
+    std::uint32_t kObjectClassOffset{};
+    std::uint32_t kObjectOuterOffset{};
+    std::uint32_t kFromStringResolveOffset{};
+    std::uint32_t kFromStringInstructionSize{};
+    std::uint32_t kProcessEventMatchOffset{};
+    std::uint32_t kObjectNameOffset{};
+    std::uint32_t kObjectRegistryItemsOffset{};
+    std::uint32_t kObjectChunkSize{};
+    std::uint32_t kObjectItemStride{};
+    std::uint32_t kObjectItemSerialOffset{};
+    std::uint32_t kTextFieldOffset{};
+    std::uint32_t kWidgetSlotOffset{};
+    std::uint32_t kWidgetVisibilityOffset{};
+    std::uint32_t kUFunctionFlagsOffset{};
+    std::uint32_t kUFunctionFuncOffset{};
+    std::uint32_t kUFunctionNumParmsOffset{};
+    std::uint32_t kUFunctionParmsSizeOffset{};
+    std::uint32_t kUFunctionReturnValueOffset{};
+    std::uintptr_t kSetTextVtableOffset{};
+    std::int32_t kGObjectsAddend{};
+};
+inline Layout native_layout;
+inline anomaly::plugins::CompatibilityProfile compatibility;
+inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
+    try {
+        if (!compatibility.Load(host,"compatibility.profile.json","fake-uid-v1", {"ProcessEvent.entry"})) return false;
+        Layout parsed;
+        parsed.kObjectClassOffset = compatibility.Value("kObjectClassOffset",65536,8);
+        parsed.kObjectOuterOffset = compatibility.Value("kObjectOuterOffset",65536,8);
+        parsed.kFromStringResolveOffset = compatibility.Value("kFromStringResolveOffset",65536);
+        parsed.kFromStringInstructionSize = compatibility.Value("kFromStringInstructionSize",65536);
+        parsed.kProcessEventMatchOffset = compatibility.Value("kProcessEventMatchOffset",65536);
+        parsed.kObjectNameOffset = compatibility.Value("kObjectNameOffset",65536);
+        parsed.kObjectRegistryItemsOffset = compatibility.Value("kObjectRegistryItemsOffset",65536);
+        parsed.kObjectChunkSize = compatibility.Value("kObjectChunkSize",65536);
+        parsed.kObjectItemStride = compatibility.Value("kObjectItemStride",65536);
+        parsed.kObjectItemSerialOffset = compatibility.Value("kObjectItemSerialOffset",65536);
+        parsed.kTextFieldOffset = compatibility.Value("kTextFieldOffset",65536);
+        parsed.kWidgetSlotOffset = compatibility.Value("kWidgetSlotOffset",65536);
+        parsed.kWidgetVisibilityOffset = compatibility.Value("kWidgetVisibilityOffset",65536);
+        parsed.kUFunctionFlagsOffset = compatibility.Value("kUFunctionFlagsOffset",65536);
+        parsed.kUFunctionFuncOffset = compatibility.Value("kUFunctionFuncOffset",65536);
+        parsed.kUFunctionNumParmsOffset = compatibility.Value("kUFunctionNumParmsOffset",65536);
+        parsed.kUFunctionParmsSizeOffset = compatibility.Value("kUFunctionParmsSizeOffset",65536);
+        parsed.kUFunctionReturnValueOffset = compatibility.Value("kUFunctionReturnValueOffset",65536);
+        parsed.kSetTextVtableOffset = compatibility.Value("kSetTextVtableOffset",65536);
+        parsed.kGObjectsAddend = -static_cast<std::int32_t>(compatibility.Value("kGObjectsAddendMagnitude",65536));
+        if (parsed.kObjectChunkSize == 0 || parsed.kObjectItemStride < sizeof(void*) || parsed.kObjectItemSerialOffset + sizeof(std::int32_t) > parsed.kObjectItemStride) return false;
+        native_layout=parsed; return true;
+    } catch (...) { return false; }
+}
+
 
 // FakeUID owns this NTE-specific compatibility contract. The host supplies the
 // generic signature scanner and UE services, but does not publish these details.
-inline constexpr std::string_view kSetTextPattern =
-    "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B F9 48 8B F2 48 8B 0A "
-    "48 8B 9F 88 01 00 00 48 3B D9 74 25 48 89 8F 88 01 00 00 48 85 C9 74 0B "
-    "48 8B 01 48 8D 54 24 60 FF 50 08 48 85 DB 74 09 48 8B 03 48 8B CB FF 50 10 "
-    "8B 46 08 48 8D 54 24 60";
-inline constexpr std::string_view kAssignStringPattern =
-    "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C 89 74 24 20 41 57 48 83 "
-    "EC 30 33 C0 4C 8D 79 08 48 89 01 4C 8D 71 0C 41 89 07 48 8B FA 41 89 06 "
-    "48 8B F1 48 85 D2 74 66 66 39 02 74 61 48 C7 C3 FF FF FF FF 48 FF C3 66 39 "
-    "04 5A 75 F7 83 C3 01 78 6A 85 DB 7E 1B BA 02 00 00 00";
-inline constexpr std::string_view kFromStringPattern =
-    "40 53 48 83 EC 30 48 8B C2 48 8B D9 48 8B C8 48 8D 54 24 20 E8 ?? ?? ?? ?? "
-    "48 8B D0 48 8B CB E8 ?? ?? ?? ?? 48 8B 4C 24 20 48 85 C9 74 ?? E8 ?? ?? ?? "
-    "?? 48 8B C3 48 83 C4 30 5B C3 CC CC CC CC 40 53 57 48 83 EC 38 48 89 6C 24 "
-    "60";
-inline constexpr std::uint32_t kFromStringResolveOffset = 32;
-inline constexpr std::uint32_t kFromStringInstructionSize = 36;
-inline constexpr std::string_view kFreeStringPattern =
-    "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C "
-    "E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 "
-    "5B C3";
-inline constexpr std::string_view kTextToStringPattern =
-    "40 53 48 83 EC 20 48 8B D9 48 8B CA E8 ?? ?? ?? ?? 48 8B D0 48 8B CB E8 ?? "
-    "?? ?? ?? 48 8B C3 48 83 C4 20 5B C3";
-inline constexpr std::string_view kGObjectsPattern =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
-inline constexpr std::string_view kProcessEventPattern =
-    // Start five bytes into the function. Anomaly's public ProcessEvent
-    // observer may already have replaced the entry with an E9 detour before
-    // this plugin hot-loads; the remaining prologue is stable and unique.
-    "54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 "
-    "48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 "
-    "8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? "
-    "33 F6 F7 82 B0 00 00 00 00 04 00 00";
-inline constexpr std::uint32_t kProcessEventMatchOffset = 5;
+inline constexpr std::string_view kSetTextPattern = "kSetTextPattern";
+inline constexpr std::string_view kAssignStringPattern = "kAssignStringPattern";
+inline constexpr std::string_view kFromStringPattern = "kFromStringPattern";
 
-inline constexpr std::uint32_t kObjectNameOffset = 24;
-inline constexpr std::uint32_t kObjectRegistryItemsOffset = 16;
-inline constexpr std::uint32_t kObjectChunkSize = 65536;
-inline constexpr std::uint32_t kObjectItemStride = 24;
-inline constexpr std::uint32_t kObjectItemSerialOffset = 16;
-inline constexpr std::uint32_t kTextFieldOffset = 392;
-inline constexpr std::uint32_t kWidgetSlotOffset = 0x30;
-inline constexpr std::uint32_t kWidgetVisibilityOffset = 0xDC;
-inline constexpr std::uint32_t kUFunctionFlagsOffset = 0xB0;
-inline constexpr std::uint32_t kUFunctionFuncOffset = 0xD8;
-inline constexpr std::uint32_t kUFunctionNumParmsOffset = 180;
-inline constexpr std::uint32_t kUFunctionParmsSizeOffset = 182;
-inline constexpr std::uint32_t kUFunctionReturnValueOffset = 184;
-inline constexpr std::uintptr_t kSetTextVtableOffset = 856;
+
+inline constexpr std::string_view kFreeStringPattern = "kFreeStringPattern";
+inline constexpr std::string_view kTextToStringPattern = "kTextToStringPattern";
+inline constexpr std::string_view kGObjectsPattern = "kGObjectsPattern";
+inline constexpr std::string_view kProcessEventPattern = "kProcessEventPattern";
+
 inline constexpr std::uint32_t kGObjectsResolveOffset = 3;
 inline constexpr std::uint32_t kGObjectsInstructionSize = 7;
-inline constexpr std::int32_t kGObjectsAddend = -16;
+
 
 }  // namespace fake_uid_profile

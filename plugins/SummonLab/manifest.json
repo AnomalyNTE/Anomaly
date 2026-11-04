@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "local.nte.summon-lab",
   "name": "Summon Lab",
-  "description": "Summon characters with gameplay attributes initialized during native spawning, before spawn completion.",
+  "description": "Summon characters with gameplay attributes initialized during native spawning, before spawn completion",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "user",
@@ -31,6 +31,14 @@
     },
     {
       "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
       "minVersion": 1
     },
     {
@@ -64,6 +72,7 @@
   ],
   "capabilities": [
     "ui",
+    "json",
     "game-events",
     "ue5-objects",
     "ue5-names",

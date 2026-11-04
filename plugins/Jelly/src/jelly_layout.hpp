@@ -1,6 +1,6 @@
 #pragma once
 //
-// 布局资料 (layout resource).
+// Host-loaded compatibility layout.
 //
 // The plugin carries its own layout resource instead of inheriting offsets from
 // another plugin. Every entry records the field type it describes and where the
@@ -9,6 +9,7 @@
 // signature back from the live process and refuses the target when the two do
 // not agree. Nothing in here is treated as a compatibility proof by itself.
 
+#include <anomaly/sdk/profile.hpp>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -96,18 +97,12 @@ struct Layout {
     std::int64_t process_event_detour_bytes{};
 };
 
-inline constexpr std::string_view kLayoutSchemaId = "anomaly.plugin.jelly.layout";
+[[nodiscard]] Layout FromProfile(const anomaly::sdk::Profile& profile);
 
 // The detour Anomaly's public ProcessEvent observer installs on UObject::ProcessEvent
 // is a five byte E9 jump, so that is the only form the model module accepts and the
 // only value `detourBytes` may carry.
 inline constexpr std::int64_t kProcessEventDetourBytes = 5;
-
-// Parses the resource document into `out`. A syntax error is reported in
-// `error`; a syntactically valid document whose entries are incomplete still
-// parses, and LayoutProblems() then lists what is missing.
-bool ParseLayout(
-    const std::string_view document, Layout& out, std::string& error) noexcept;
 
 // The same signature with its first `skip` bytes dropped, which is how a symbol is
 // found once something has overwritten them: the bytes that survive the patch are

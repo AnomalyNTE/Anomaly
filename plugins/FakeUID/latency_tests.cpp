@@ -1,4 +1,5 @@
 #include "plugin.cpp"
+#include "../../apps/test_host/plugin_profile_fixture_host.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -33,8 +34,14 @@ struct Registry {
     AnomalyUe5ObjectsServiceV1 objects_service{};
     AnomalyUe5NamesServiceV1 names_service{};
     Context context{};
+    AnomalyCoreServiceV1 core{};
 
     Registry() {
+        core.struct_size=sizeof(core); core.service_version=1; core.read_memory=[](void*, std::uintptr_t address, AnomalyMutableByteSpanV1 bytes) -> AnomalyStatusV1 {
+            if(address == reinterpret_cast<std::uintptr_t>(Event)) return anomaly::testing::RecordedProcessEventEntry(bytes);
+            return {ANOMALY_STATUS_V1_NOT_FOUND};
+        };
+        context.core=&core;
         vtable[107] = reinterpret_cast<std::uintptr_t>(&TextSetter);
         chunks[0] = reinterpret_cast<std::uintptr_t>(slots.data());
         Put(header, 16, reinterpret_cast<std::uintptr_t>(chunks.data()));
@@ -124,6 +131,10 @@ struct PrefixFixture : Registry {
     std::array<std::byte, 128> prefix_slot{}, value_slot{};
     AnomalyGenerationHandleV1 prefix_handle{}, value_handle{};
     PrefixFixture() {
+        core.read_memory=[](void*, std::uintptr_t address, AnomalyMutableByteSpanV1 bytes) -> AnomalyStatusV1 {
+            if(address == reinterpret_cast<std::uintptr_t>(Dispatch)) return anomaly::testing::RecordedProcessEventEntry(bytes);
+            return {ANOMALY_STATUS_V1_NOT_FOUND};
+        };
         convert[0] = std::byte{1}; set[0] = std::byte{2};
         get_position[0] = std::byte{3}; set_position[0] = std::byte{4};
         context.text_to_string = ReadText;
@@ -141,9 +152,9 @@ struct PrefixFixture : Registry {
         Put(value_slot, 32, std::uintptr_t{200});
         Put(value_slot, 64, double{43}); Put(value_slot, 72, double{9});
         Widget(300, 13, 100); Widget(301, 14, 100);
-        Put(objects[300], fake_uid_profile::kWidgetSlotOffset,
+        Put(objects[300], 48 /* UWidget::Slot in both supplied SDKs */,
             reinterpret_cast<std::uintptr_t>(value_slot.data()));
-        Put(objects[301], fake_uid_profile::kWidgetSlotOffset,
+        Put(objects[301], 48 /* UWidget::Slot in both supplied SDKs */,
             reinterpret_cast<std::uintptr_t>(prefix_slot.data()));
         prefix_handle = {(std::uint64_t{7} << 32) | 302, generation};
         value_handle = {(std::uint64_t{7} << 32) | 301, generation};
@@ -205,6 +216,8 @@ struct PrefixFixture : Registry {
 }
 
 int main() {
+    anomaly::testing::ProfileHost profile_host("FakeUID");
+    if (!fake_uid_profile::LoadCompatibility(&profile_host.api)) { std::cerr << profile_host.error; return 1; }
     using namespace fixture;
     Registry registry;
     // Two interleaved HUD trees: the older algorithm overwrote both handles

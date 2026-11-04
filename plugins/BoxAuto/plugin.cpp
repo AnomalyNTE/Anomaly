@@ -28,6 +28,8 @@
 #include <vector>
 
 namespace {
+using box_auto_compat::native_layout;
+using box_auto_compat::compatibility;
 
 constexpr std::string_view kEnvTablePath =
     "/Game/DataTable/Treasurebox/DT_EnvirTreasureBoxConfig.DT_EnvirTreasureBoxConfig";
@@ -39,56 +41,52 @@ constexpr std::string_view kBigWorldYaHaHaTablePath =
 constexpr std::string_view kRandomItemDropTablePath =
     "/Game/DataAssets/DataAssetSet/RandomItem/DT_RandomItemDrop.DT_RandomItemDrop";
 
-constexpr std::ptrdiff_t kDataTableRowMapOffset = 0x30;
-constexpr std::uint32_t kDataTableRowStride = 24;
-constexpr std::uint32_t kDataTableRowPointerOffset = 8;
-constexpr std::ptrdiff_t kCoordOffset = 48;
-constexpr std::ptrdiff_t kRandomItemCoordOffset = 80;
-constexpr std::ptrdiff_t kRandomItemTypeOffset = 32;
 
-constexpr std::string_view kGObjectsPattern =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
-constexpr std::string_view kGWorldPattern =
-    "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
-constexpr std::string_view kGetRecordOwnerPattern =
-    "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 "
-    "48 8B 99 60 01 00 00 48 8B E9";
-constexpr std::ptrdiff_t kGObjectsAddend = -16;
+
+
+
+
+
+
+constexpr std::string_view kGObjectsPattern = "kGObjectsPattern";
+constexpr std::string_view kGWorldPattern = "kGWorldPattern";
+constexpr std::string_view kGetRecordOwnerPattern = "kGetRecordOwnerPattern";
+
 constexpr std::uint32_t kRipDisplacementOffset = 3;
 constexpr std::uint32_t kRipInstructionSize = 7;
-constexpr std::ptrdiff_t kObjectItemsOffset = 16;
-constexpr std::ptrdiff_t kObjectCountOffset = 36;
-constexpr std::ptrdiff_t kObjectNumChunksOffset = 44;
-constexpr std::uint32_t kObjectChunkSize = 65536;
-constexpr std::uint32_t kObjectItemStride = 24;
 
-constexpr std::ptrdiff_t kObjectClassOffset = 16;
-constexpr std::ptrdiff_t kObjectNameOffset = 24;
-constexpr std::ptrdiff_t kUStructChildrenOffset = 72;
-constexpr std::ptrdiff_t kUStructSuperStructOffset = 64;
-constexpr std::ptrdiff_t kUFieldNextOffset = 40;
-constexpr std::ptrdiff_t kUClassDefaultObjectOffset = 272;
-constexpr std::ptrdiff_t kUFunctionNumParmsOffset = 180;
-constexpr std::ptrdiff_t kUFunctionParmsSizeOffset = 182;
-constexpr std::ptrdiff_t kUFunctionFlagsOffset = 176;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 constexpr std::uint32_t kFuncNativeFlag = 0x400;
-constexpr std::ptrdiff_t kWorldGameInstanceOffset = 560;
-constexpr std::ptrdiff_t kGameInstanceLocalPlayersOffset = 56;
-constexpr std::ptrdiff_t kLocalPlayerControllerOffset = 48;
-constexpr std::ptrdiff_t kControllerPlayerStateOffset = 720;
-constexpr std::ptrdiff_t kRecordOwnerFindRecordVtableOffset = 280;
-constexpr std::ptrdiff_t kRecordOwnerOffset = 8;
-constexpr std::ptrdiff_t kRecordIndexOffset = 16;
-constexpr std::ptrdiff_t kRecordDescriptorTableOffset = 24;
-constexpr std::uint32_t kRecordDescriptorStride = 40;
-constexpr std::ptrdiff_t kRecordDescriptorStoreOffset = 32;
-constexpr std::ptrdiff_t kRecordStoreRowsOffset = 32;
-constexpr std::ptrdiff_t kRecordGetStringVtableOffset = 224;
+
+
+
+
+
+
+
+
+
+
+
+
 constexpr std::uint32_t kMaximumRecordRows = 10000;
-constexpr std::size_t kProcessEventVtableIndex = 0x4C;
-constexpr std::ptrdiff_t kActorRootComponentOffset = 456;
-constexpr std::ptrdiff_t kSceneComponentLocationOffset = 280;
-constexpr std::ptrdiff_t kInteractFinishOffset = 976;
+
+
+
+
 constexpr std::int32_t kScanBatchSize = 8192;
 constexpr std::size_t kMaximumNameBytes = 1024;
 
@@ -189,6 +187,7 @@ void OracleQueueTeleport(Context& context, const double position[3]);
 }  // namespace oracle_stone_impl
 
 struct Context final {
+    const AnomalyCoreServiceV1* core{};
     const AnomalyHostApiV1* host{};
     const AnomalySignatureServiceV1* signature{};
     const AnomalyUe5NamesServiceV1* names{};
@@ -684,15 +683,8 @@ bool ResolveFunction(Context& context, const std::string_view pattern,
                      std::uintptr_t& address) noexcept {
     address = 0;
     if (!SignatureReady(context.signature)) return false;
-    std::uintptr_t instruction{};
-    if (context.signature->resolve(context.signature->user,
-                                   anomaly::sdk::StringView("HTGame.exe"),
-                                   anomaly::sdk::StringView(".text"),
-                                   anomaly::sdk::StringView(pattern), &instruction)
-            .code != ANOMALY_STATUS_V1_OK ||
-        instruction == 0) {
-        return false;
-    }
+    const auto instruction = compatibility.Address(pattern);
+    if (instruction == 0) return false;
     address = instruction;
     return true;
 }
@@ -702,15 +694,8 @@ bool ResolveRipRelative(
     const std::ptrdiff_t addend, std::uintptr_t& address) noexcept {
     address = 0;
     if (!SignatureReady(context.signature)) return false;
-    std::uintptr_t instruction{};
-    if (context.signature->resolve(
-            context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
-            anomaly::sdk::StringView(".text"),
-            anomaly::sdk::StringView(pattern), &instruction)
-            .code != ANOMALY_STATUS_V1_OK ||
-        instruction == 0) {
-        return false;
-    }
+    const auto instruction = compatibility.Address(pattern);
+    if (instruction == 0) return false;
     std::int32_t displacement{};
     if (!Read(reinterpret_cast<const void*>(instruction + kRipDisplacementOffset),
               displacement)) {
@@ -734,22 +719,22 @@ void* ObjectAt(const std::uintptr_t g_objects, const std::uint32_t index) noexce
     std::int32_t count{};
     std::int32_t num_chunks{};
     std::uintptr_t items{};
-    if (!Read(reinterpret_cast<const void*>(g_objects + kObjectItemsOffset), items) ||
+    if (!Read(reinterpret_cast<const void*>(g_objects + native_layout.kObjectItemsOffset), items) ||
         items == 0 ||
-        !Read(reinterpret_cast<const void*>(g_objects + kObjectCountOffset), count) ||
-        !Read(reinterpret_cast<const void*>(g_objects + kObjectNumChunksOffset),
+        !Read(reinterpret_cast<const void*>(g_objects + native_layout.kObjectCountOffset), count) ||
+        !Read(reinterpret_cast<const void*>(g_objects + native_layout.kObjectNumChunksOffset),
               num_chunks) ||
         count <= 0 || index >= static_cast<std::uint32_t>(count) || num_chunks <= 0) {
         return nullptr;
     }
-    const auto chunk_index = index / kObjectChunkSize;
-    const auto within = index % kObjectChunkSize;
+    const auto chunk_index = index / native_layout.kObjectChunkSize;
+    const auto within = index % native_layout.kObjectChunkSize;
     if (chunk_index >= static_cast<std::uint32_t>(num_chunks)) return nullptr;
     const auto chunk = ReadPointer(reinterpret_cast<const void*>(
         items + static_cast<std::uintptr_t>(chunk_index) * sizeof(void*)));
     if (!chunk) return nullptr;
     return ReadPointer(reinterpret_cast<const std::uint8_t*>(chunk) +
-        static_cast<std::uintptr_t>(within) * kObjectItemStride);
+        static_cast<std::uintptr_t>(within) * native_layout.kObjectItemStride);
 }
 
 std::string ResolveName(
@@ -777,34 +762,7 @@ using oracle_stone_locator_profile::kGObjectsPattern;
 using oracle_stone_locator_profile::kGWorldPattern;
 using oracle_stone_locator_profile::kRipDisplacementOffset;
 using oracle_stone_locator_profile::kRipInstructionSize;
-using oracle_stone_locator_profile::kGObjectsAddend;
-using oracle_stone_locator_profile::kObjectItemsOffset;
-using oracle_stone_locator_profile::kObjectCountOffset;
-using oracle_stone_locator_profile::kObjectMaxCountOffset;
-using oracle_stone_locator_profile::kObjectMaxChunksOffset;
-using oracle_stone_locator_profile::kObjectNumChunksOffset;
-using oracle_stone_locator_profile::kObjectChunkSize;
-using oracle_stone_locator_profile::kObjectItemStride;
-using oracle_stone_locator_profile::kWorldGameInstanceOffset;
-using oracle_stone_locator_profile::kGameInstanceLocalPlayersOffset;
-using oracle_stone_locator_profile::kLocalPlayerControllerOffset;
-using oracle_stone_locator_profile::kControllerPlayerStateOffset;
-using oracle_stone_locator_profile::kDataTableRowMapOffset;
-using oracle_stone_locator_profile::kDataTableRowMapElementStride;
-using oracle_stone_locator_profile::kDataTableRowMapRowOffset;
-using oracle_stone_locator_profile::kDataTableRowMapData;
-using oracle_stone_locator_profile::kDataTableRowMapNum;
-using oracle_stone_locator_profile::kDataTableRowMapMax;
-using oracle_stone_locator_profile::kDataTableRowMapInlineFlags;
-using oracle_stone_locator_profile::kDataTableRowMapFlagsData;
-using oracle_stone_locator_profile::kDataTableRowMapFlagsNum;
-using oracle_stone_locator_profile::kDataTableRowMapFlagsMax;
 using oracle_stone_locator_profile::kDataTableMaxRows;
-using oracle_stone_locator_profile::kOracleStoneDataAssetTableOffset;
-using oracle_stone_locator_profile::kOracleStoneLevelOffset;
-using oracle_stone_locator_profile::kOracleStoneFloorOffset;
-using oracle_stone_locator_profile::kOracleStoneLocationOffset;
-using oracle_stone_locator_profile::kOracleStoneMapExploreOffset;
 using oracle_stone_locator_profile::kTreasureboxDataAssetPath;
 
 using oracle_stone_locator::OracleStoneUnknown;
@@ -934,14 +892,8 @@ bool OracleResolveRipRelative(const AnomalySignatureServiceV1* signature,
                               std::uintptr_t& address) noexcept {
     address = 0;
     if (!SignatureReady(signature)) return false;
-    std::uintptr_t instruction{};
-    if (signature->resolve(signature->user, anomaly::sdk::StringView("HTGame.exe"),
-                           anomaly::sdk::StringView(".text"),
-                           anomaly::sdk::StringView(pattern), &instruction)
-            .code != ANOMALY_STATUS_V1_OK ||
-        instruction == 0) {
-        return false;
-    }
+    const auto instruction = compatibility.Address(pattern);
+    if (instruction == 0) return false;
     std::int32_t displacement{};
     if (!Read(reinterpret_cast<const void*>(instruction + kRipDisplacementOffset),
               displacement)) {
@@ -984,7 +936,7 @@ bool OracleRefreshObjectRegistry(Context& context) noexcept {
     if (context.g_objects_address == 0) {
         if (!OracleGateOpen(context.objects_gate)) return false;
         if (!OracleResolveRipRelative(context.signature, kGObjectsPattern,
-                                      kGObjectsAddend, context.g_objects_address)) {
+                                      native_layout.kGObjectsAddend, context.g_objects_address)) {
             OracleGateFailed(context, context.objects_gate, "GObjects signature");
             return false;
         }
@@ -992,16 +944,16 @@ bool OracleRefreshObjectRegistry(Context& context) noexcept {
     }
     ObjectRegistry next{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), next.items) ||
+                  context.g_objects_address + native_layout.kObjectItemsOffset), next.items) ||
         next.items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), next.count) ||
+                  context.g_objects_address + native_layout.kObjectCountOffset), next.count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectMaxCountOffset), next.max_count) ||
+                  context.g_objects_address + native_layout.kObjectMaxCountOffset), next.max_count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectMaxChunksOffset), next.max_chunks) ||
+                  context.g_objects_address + native_layout.kObjectMaxChunksOffset), next.max_chunks) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), next.num_chunks) ||
+                  context.g_objects_address + native_layout.kObjectNumChunksOffset), next.num_chunks) ||
         next.count == 0 || next.count > kMaximumObjectCount ||
         next.max_count < next.count || next.num_chunks == 0 ||
         next.num_chunks > next.max_chunks ||
@@ -1018,8 +970,8 @@ bool OracleObjectFromHandle(Context& context,
     object = 0;
     if (!OracleRefreshObjectRegistry(context)) return false;
     const std::uint32_t index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
-    const std::uint32_t chunk_index = index / kObjectChunkSize;
-    const std::uint32_t within_chunk = index % kObjectChunkSize;
+    const std::uint32_t chunk_index = index / native_layout.kObjectChunkSize;
+    const std::uint32_t within_chunk = index % native_layout.kObjectChunkSize;
     if (index >= context.registry.count ||
         chunk_index >= context.registry.num_chunks) {
         return false;
@@ -1030,7 +982,7 @@ bool OracleObjectFromHandle(Context& context,
     if (!chunk) return false;
     return Read(reinterpret_cast<const void*>(
                     reinterpret_cast<std::uintptr_t>(chunk) +
-                    static_cast<std::uintptr_t>(within_chunk) * kObjectItemStride),
+                    static_cast<std::uintptr_t>(within_chunk) * native_layout.kObjectItemStride),
                 object) &&
         object != 0;
 }
@@ -1068,18 +1020,18 @@ bool OracleResolvePlayerState(Context& context) noexcept {
     if (!Read(reinterpret_cast<const void*>(context.g_world_address), world) ||
         world == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  world + kWorldGameInstanceOffset), game_instance) ||
+                  world + native_layout.kWorldGameInstanceOffset), game_instance) ||
         game_instance == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  game_instance + kGameInstanceLocalPlayersOffset), local_players) ||
+                  game_instance + native_layout.kGameInstanceLocalPlayersOffset), local_players) ||
         local_players == 0 ||
         !Read(reinterpret_cast<const void*>(local_players), local_player) ||
         local_player == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  local_player + kLocalPlayerControllerOffset), controller) ||
+                  local_player + native_layout.kLocalPlayerControllerOffset), controller) ||
         controller == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  controller + kControllerPlayerStateOffset), context.player_state) ||
+                  controller + native_layout.kControllerPlayerStateOffset), context.player_state) ||
         context.player_state == 0) {
         return false;
     }
@@ -1096,7 +1048,7 @@ bool OracleScanCatalog(Context& context) {
         return false;
     }
     if (!Read(reinterpret_cast<const void*>(
-                  context.treasure_asset + kOracleStoneDataAssetTableOffset),
+                  context.treasure_asset + native_layout.kOracleStoneDataAssetTableOffset),
               context.data_table) ||
         context.data_table == 0) {
         OracleGateFailed(context, context.scan_gate, "oracle data table read");
@@ -1109,19 +1061,19 @@ bool OracleScanCatalog(Context& context) {
     std::int32_t flags_num{};
     std::int32_t flags_max{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.data_table + kDataTableRowMapOffset + kDataTableRowMapData), data) ||
+                  context.data_table + native_layout.kDataTableRowMapOffset + native_layout.kDataTableRowMapData), data) ||
         !Read(reinterpret_cast<const void*>(
-                  context.data_table + kDataTableRowMapOffset + kDataTableRowMapNum), num) ||
+                  context.data_table + native_layout.kDataTableRowMapOffset + native_layout.kDataTableRowMapNum), num) ||
         !Read(reinterpret_cast<const void*>(
-                  context.data_table + kDataTableRowMapOffset + kDataTableRowMapMax), max) ||
+                  context.data_table + native_layout.kDataTableRowMapOffset + native_layout.kDataTableRowMapMax), max) ||
         !Read(reinterpret_cast<const void*>(
-                  context.data_table + kDataTableRowMapOffset + kDataTableRowMapFlagsData),
+                  context.data_table + native_layout.kDataTableRowMapOffset + native_layout.kDataTableRowMapFlagsData),
               flags_data) ||
         !Read(reinterpret_cast<const void*>(
-                  context.data_table + kDataTableRowMapOffset + kDataTableRowMapFlagsNum),
+                  context.data_table + native_layout.kDataTableRowMapOffset + native_layout.kDataTableRowMapFlagsNum),
               flags_num) ||
         !Read(reinterpret_cast<const void*>(
-                  context.data_table + kDataTableRowMapOffset + kDataTableRowMapFlagsMax),
+                  context.data_table + native_layout.kDataTableRowMapOffset + native_layout.kDataTableRowMapFlagsMax),
               flags_max) ||
         data == 0 || num <= 0 || num > kDataTableMaxRows || max < num ||
         flags_num < num || flags_max < flags_num) {
@@ -1141,8 +1093,8 @@ bool OracleScanCatalog(Context& context) {
         }
     } else if (word_count > 4 ||
                !ReadBytes(reinterpret_cast<const void*>(
-                              context.data_table + kDataTableRowMapOffset +
-                              kDataTableRowMapInlineFlags),
+                              context.data_table + native_layout.kDataTableRowMapOffset +
+                              native_layout.kDataTableRowMapInlineFlags),
                           flags.data(), flags.size() * sizeof(std::uint32_t))) {
         return false;
     }
@@ -1150,12 +1102,12 @@ bool OracleScanCatalog(Context& context) {
     discovered.reserve(static_cast<std::size_t>(num));
     for (std::int32_t index{}; index < num; ++index) {
         const std::size_t element_offset =
-            static_cast<std::size_t>(index) * kDataTableRowMapElementStride;
+            static_cast<std::size_t>(index) * native_layout.kDataTableRowMapElementStride;
         FNameValue id_name{};
         std::uintptr_t row{};
         if (!Read(reinterpret_cast<const void*>(data + element_offset), id_name) ||
             !Read(reinterpret_cast<const void*>(
-                      data + element_offset + kDataTableRowMapRowOffset), row) ||
+                      data + element_offset + native_layout.kDataTableRowMapRowOffset), row) ||
             id_name.comparison_index == 0 || row == 0) {
             continue;
         }
@@ -1164,12 +1116,12 @@ bool OracleScanCatalog(Context& context) {
         record.oracle_stone_id = OracleRenderFName(context.names, id_name);
         if (record.oracle_stone_id.empty()) continue;
         std::string level;
-        if (OracleReadFString(row + kOracleStoneLevelOffset, level)) {
+        if (OracleReadFString(row + native_layout.kOracleStoneLevelOffset, level)) {
             record.level = std::move(level);
         }
-        if (!Read(reinterpret_cast<const void*>(row + kOracleStoneFloorOffset),
+        if (!Read(reinterpret_cast<const void*>(row + native_layout.kOracleStoneFloorOffset),
                   record.floor) ||
-            !Read(reinterpret_cast<const void*>(row + kOracleStoneLocationOffset),
+            !Read(reinterpret_cast<const void*>(row + native_layout.kOracleStoneLocationOffset),
                   record.world_position) ||
             !std::isfinite(record.world_position[0]) ||
             !std::isfinite(record.world_position[1]) ||
@@ -1351,7 +1303,7 @@ void OracleInitialize(Context& context, const AnomalyHostApiV1* host) {
 std::string ObjectName(const AnomalyUe5NamesServiceV1* names,
                        const std::uintptr_t object) noexcept {
     std::uint32_t name_id{};
-    if (!Read(reinterpret_cast<const void*>(object + kObjectNameOffset), name_id)) {
+    if (!Read(reinterpret_cast<const void*>(object + native_layout.kObjectNameOffset), name_id)) {
         return {};
     }
     return ResolveName(names, name_id);
@@ -1363,20 +1315,20 @@ bool FindFunction(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cl
     std::uintptr_t owner = cls;
     for (std::uint32_t depth{}; owner != 0 && depth < 64; ++depth) {
         std::uintptr_t field{};
-        Read(reinterpret_cast<const void*>(owner + kUStructChildrenOffset), field);
+        Read(reinterpret_cast<const void*>(owner + native_layout.kUStructChildrenOffset), field);
         for (std::uint32_t count{}; field != 0 && count < 4096; ++count) {
             std::uintptr_t next{};
             std::uintptr_t field_class{};
-            if (!Read(reinterpret_cast<const void*>(field + kUFieldNextOffset), next) ||
-                !Read(reinterpret_cast<const void*>(field + kObjectClassOffset), field_class)) {
+            if (!Read(reinterpret_cast<const void*>(field + native_layout.kUFieldNextOffset), next) ||
+                !Read(reinterpret_cast<const void*>(field + native_layout.kObjectClassOffset), field_class)) {
                 break;
             }
             if (ObjectName(names, field_class) == "Function" &&
                 ObjectName(names, field) == target) {
                 std::uint8_t np{};
                 std::uint16_t ps{};
-                Read(reinterpret_cast<const void*>(field + kUFunctionNumParmsOffset), np);
-                Read(reinterpret_cast<const void*>(field + kUFunctionParmsSizeOffset), ps);
+                Read(reinterpret_cast<const void*>(field + native_layout.kUFunctionNumParmsOffset), np);
+                Read(reinterpret_cast<const void*>(field + native_layout.kUFunctionParmsSizeOffset), ps);
                 if (np == num_parms && ps == parms_size) {
                     result = field;
                     return true;
@@ -1386,7 +1338,7 @@ bool FindFunction(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cl
             field = next;
         }
         std::uintptr_t super{};
-        if (!Read(reinterpret_cast<const void*>(owner + kUStructSuperStructOffset), super) ||
+        if (!Read(reinterpret_cast<const void*>(owner + native_layout.kUStructSuperStructOffset), super) ||
             super == 0 || super == owner) {
             break;
         }
@@ -1398,28 +1350,28 @@ bool FindFunction(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cl
 // Offset of a reflected property, looked up by name on `cls` and its supers
 // (UStruct::PropertyLink -> FProperty::PropertyLinkNext). Used instead of a
 // hard-coded offset for fields whose position moves between builds.
-constexpr std::ptrdiff_t kUStructPropertyLinkOffset = 112;
-constexpr std::ptrdiff_t kFPropertyLinkNextOffset = 72;
-constexpr std::ptrdiff_t kFFieldNameOffset = 32;
-constexpr std::ptrdiff_t kFPropertyOffsetInternalOffset = 68;
+
+
+
+
 
 bool FindPropertyOffset(const AnomalyUe5NamesServiceV1* names, const std::uintptr_t cls,
                         const std::string_view target, std::int32_t& offset) noexcept {
     std::uintptr_t owner = cls;
     for (std::uint32_t depth{}; owner != 0 && depth < 64; ++depth) {
         std::uintptr_t property{};
-        Read(reinterpret_cast<const void*>(owner + kUStructPropertyLinkOffset), property);
+        Read(reinterpret_cast<const void*>(owner + native_layout.kUStructPropertyLinkOffset), property);
         for (std::uint32_t count{}; property != 0 && count < 4096; ++count) {
             std::uint32_t name_id{};
-            if (Read(reinterpret_cast<const void*>(property + kFFieldNameOffset), name_id) &&
+            if (Read(reinterpret_cast<const void*>(property + native_layout.kFFieldNameOffset), name_id) &&
                 ResolveName(names, name_id) == target &&
-                Read(reinterpret_cast<const void*>(property + kFPropertyOffsetInternalOffset),
+                Read(reinterpret_cast<const void*>(property + native_layout.kFPropertyOffsetInternalOffset),
                      offset) &&
                 offset > 0) {
                 return true;
             }
             std::uintptr_t next{};
-            if (!Read(reinterpret_cast<const void*>(property + kFPropertyLinkNextOffset), next) ||
+            if (!Read(reinterpret_cast<const void*>(property + native_layout.kFPropertyLinkNextOffset), next) ||
                 next == property) {
                 break;
             }
@@ -1428,7 +1380,7 @@ bool FindPropertyOffset(const AnomalyUe5NamesServiceV1* names, const std::uintpt
         // PropertyLink already walks inherited properties; the super chain is
         // only a fallback for classes whose link is not built yet.
         std::uintptr_t super{};
-        if (!Read(reinterpret_cast<const void*>(owner + kUStructSuperStructOffset), super) ||
+        if (!Read(reinterpret_cast<const void*>(owner + native_layout.kUStructSuperStructOffset), super) ||
             super == 0 || super == owner) {
             break;
         }
@@ -1445,28 +1397,28 @@ bool FindPropertyOffset(const AnomalyUe5NamesServiceV1* names, const std::uintpt
 // fallback when reflection is unavailable.
 std::ptrdiff_t InteractFinishOffset(Context& context, const std::uintptr_t actor) noexcept {
     std::uintptr_t cls{};
-    if (actor == 0 || !Read(reinterpret_cast<const void*>(actor + kObjectClassOffset), cls) ||
+    if (actor == 0 || !Read(reinterpret_cast<const void*>(actor + native_layout.kObjectClassOffset), cls) ||
         cls == 0) {
-        return kInteractFinishOffset;
+        return native_layout.kInteractFinishOffset;
     }
     const auto cached = context.interact_finish_offsets.find(cls);
     if (cached != context.interact_finish_offsets.end()) return cached->second;
     std::int32_t offset{};
     const std::ptrdiff_t resolved =
         FindPropertyOffset(context.names, cls, "bInteractFinish", offset) ? offset
-                                                                           : kInteractFinishOffset;
+                                                                           : native_layout.kInteractFinishOffset;
     context.interact_finish_offsets.emplace(cls, resolved);
     return resolved;
 }
 
-bool Invoke(void* object, void* function, void* parameters) noexcept {
+bool Invoke(Context& context, void* object, void* function, void* parameters) noexcept {
     if (!object || !function) return false;
     using ProcessEvent = void(__fastcall*)(void*, void*, void*);
     auto vtable = ReadPointer(object);
     if (!vtable) return false;
     auto process_event = ReadPointer(reinterpret_cast<const std::uint8_t*>(vtable) +
-        kProcessEventVtableIndex * sizeof(void*));
-    if (!process_event) return false;
+        native_layout.kProcessEventVtableIndex * sizeof(void*));
+    if (!box_auto_compat::compatibility.MatchesEntry(context.core, "ProcessEvent.entry", reinterpret_cast<std::uintptr_t>(process_event), true)) return false;
     __try {
         reinterpret_cast<ProcessEvent>(process_event)(object, function, parameters);
         return true;
@@ -1489,7 +1441,7 @@ bool InvokeNative(Context& context, void* object, void* function,
                   void* parameters) noexcept {
     if (!object || !function) return false;
     const auto flags_address =
-        reinterpret_cast<std::uintptr_t>(function) + kUFunctionFlagsOffset;
+        reinterpret_cast<std::uintptr_t>(function) + native_layout.kUFunctionFlagsOffset;
     std::uint32_t original_flags{};
     if (!Read(reinterpret_cast<const void*>(flags_address), original_flags)) {
         return false;
@@ -1499,7 +1451,7 @@ bool InvokeNative(Context& context, void* object, void* function,
                      invocation_flags)) {
         return false;
     }
-    const bool invoked = Invoke(object, function, parameters);
+    const bool invoked = Invoke(context, object, function, parameters);
     static_cast<void>(WriteUint32(reinterpret_cast<const void*>(flags_address),
                                   original_flags));
     return invoked;
@@ -1518,7 +1470,7 @@ bool FindExactObject(Context& context, const std::string_view path,
     }
     const auto index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
     if (context.g_objects_address == 0 &&
-        !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
+        !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
                             context.g_objects_address)) {
         return false;
     }
@@ -1592,7 +1544,7 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
         context.objects->user, anomaly::sdk::StringView(kRandomItemTablePath), &handle);
     if (st.code != ANOMALY_STATUS_V1_OK || handle.id == 0) return;
     if (context.g_objects_address == 0 &&
-        !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
+        !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
                             context.g_objects_address)) {
         return;
     }
@@ -1606,14 +1558,14 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
     } header;
     if (!Read(reinterpret_cast<const void*>(
                   reinterpret_cast<std::uintptr_t>(table_object) +
-                      kDataTableRowMapOffset),
+                      native_layout.kDataTableRowMapOffset),
               header) ||
         header.count <= 0 || header.capacity < header.count || header.data == 0) {
         return;
     }
     for (std::int32_t i = 0; i < header.count; ++i) {
         const auto element =
-            header.data + static_cast<std::uintptr_t>(i) * kDataTableRowStride;
+            header.data + static_cast<std::uintptr_t>(i) * native_layout.kDataTableRowStride;
         RawName row_id{};
         std::uintptr_t row{};
         if (!Read(reinterpret_cast<const void*>(element), row_id) ||
@@ -1621,18 +1573,18 @@ void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
             continue;
         }
         if (!Read(reinterpret_cast<const void*>(
-                      element + kDataTableRowPointerOffset),
+                      element + native_layout.kDataTableRowPointerOffset),
                   row) ||
             row == 0) {
             continue;
         }
         double x{}, y{}, z{};
-        Read(reinterpret_cast<const void*>(row + kRandomItemCoordOffset), x);
-        Read(reinterpret_cast<const void*>(row + kRandomItemCoordOffset + 8), y);
-        Read(reinterpret_cast<const void*>(row + kRandomItemCoordOffset + 16), z);
+        Read(reinterpret_cast<const void*>(row + native_layout.kRandomItemCoordOffset), x);
+        Read(reinterpret_cast<const void*>(row + native_layout.kRandomItemCoordOffset + 8), y);
+        Read(reinterpret_cast<const void*>(row + native_layout.kRandomItemCoordOffset + 16), z);
         if (x == 0.0 && y == 0.0 && z == 0.0) continue;
         std::uint32_t type_id{};
-        if (!Read(reinterpret_cast<const void*>(row + kRandomItemTypeOffset),
+        if (!Read(reinterpret_cast<const void*>(row + native_layout.kRandomItemTypeOffset),
                   type_id) ||
             type_id == 0) {
             continue;
@@ -1707,7 +1659,7 @@ void ReadTable(Context& context) {
         return;
     }
     if (context.g_objects_address == 0 &&
-        !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
+        !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
                             context.g_objects_address)) {
         std::lock_guard<std::mutex> lock(context.mutex);
         context.status = context.localizer.Text(
@@ -1733,7 +1685,7 @@ void ReadTable(Context& context) {
         std::int32_t capacity{};
     } header;
     if (!Read(reinterpret_cast<const void*>(
-                  reinterpret_cast<std::uintptr_t>(table_object) + kDataTableRowMapOffset),
+                  reinterpret_cast<std::uintptr_t>(table_object) + native_layout.kDataTableRowMapOffset),
               header) ||
         header.count <= 0 || header.capacity < header.count || header.data == 0) {
         std::lock_guard<std::mutex> lock(context.mutex);
@@ -1744,17 +1696,17 @@ void ReadTable(Context& context) {
     }
     for (std::int32_t i = 0; i < header.count; ++i) {
         const auto element = header.data +
-            static_cast<std::uintptr_t>(i) * kDataTableRowStride;
+            static_cast<std::uintptr_t>(i) * native_layout.kDataTableRowStride;
         RawName row_id{};
         std::uintptr_t row{};
         if (!Read(reinterpret_cast<const void*>(element), row_id) ||
             row_id.comparison_index == 0) continue;
-        if (!Read(reinterpret_cast<const void*>(element + kDataTableRowPointerOffset),
+        if (!Read(reinterpret_cast<const void*>(element + native_layout.kDataTableRowPointerOffset),
                   row) || row == 0) continue;
         double x{}, y{}, z{};
-        Read(reinterpret_cast<const void*>(row + kCoordOffset), x);
-        Read(reinterpret_cast<const void*>(row + kCoordOffset + 8), y);
-        Read(reinterpret_cast<const void*>(row + kCoordOffset + 16), z);
+        Read(reinterpret_cast<const void*>(row + native_layout.kCoordOffset), x);
+        Read(reinterpret_cast<const void*>(row + native_layout.kCoordOffset + 8), y);
+        Read(reinterpret_cast<const void*>(row + native_layout.kCoordOffset + 16), z);
         if (x == 0.0 && y == 0.0 && z == 0.0) continue;
         Point p;
         p.row_name = ResolveName(
@@ -1795,7 +1747,7 @@ bool ResolvePlayerState(Context& context, std::uintptr_t& player_state) noexcept
     player_state = 0;
     if (context.controller == 0) return false;
     return Read(reinterpret_cast<const void*>(
-                    context.controller + kControllerPlayerStateOffset),
+                    context.controller + native_layout.kControllerPlayerStateOffset),
                 player_state) &&
         player_state != 0;
 }
@@ -1849,7 +1801,7 @@ bool ResolveRandomItemRecords(Context& context) noexcept {
     if (!Read(reinterpret_cast<const void*>(owner_address), owner_vtable) ||
         owner_vtable == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  owner_vtable + kRecordOwnerFindRecordVtableOffset),
+                  owner_vtable + native_layout.kRecordOwnerFindRecordVtableOffset),
               find_record_address) ||
         find_record_address == 0) {
         return false;
@@ -1869,25 +1821,25 @@ bool ReadRecordSelections(const std::uintptr_t record,
     if (record == 0) return false;
     std::uintptr_t owner{};
     std::int32_t record_index{};
-    if (!Read(reinterpret_cast<const void*>(record + kRecordOwnerOffset), owner) ||
+    if (!Read(reinterpret_cast<const void*>(record + native_layout.kRecordOwnerOffset), owner) ||
         owner == 0 ||
-        !Read(reinterpret_cast<const void*>(record + kRecordIndexOffset),
+        !Read(reinterpret_cast<const void*>(record + native_layout.kRecordIndexOffset),
               record_index) ||
         record_index < 0 || record_index > 4096) {
         return false;
     }
     std::uintptr_t descriptors{};
     if (!Read(reinterpret_cast<const void*>(
-                  owner + kRecordDescriptorTableOffset), descriptors) ||
+                  owner + native_layout.kRecordDescriptorTableOffset), descriptors) ||
         descriptors == 0) {
         return false;
     }
     const std::uintptr_t descriptor =
         descriptors +
-        static_cast<std::uintptr_t>(record_index) * kRecordDescriptorStride;
+        static_cast<std::uintptr_t>(record_index) * native_layout.kRecordDescriptorStride;
     std::uintptr_t store{};
     if (!Read(reinterpret_cast<const void*>(
-                  descriptor + kRecordDescriptorStoreOffset), store) ||
+                  descriptor + native_layout.kRecordDescriptorStoreOffset), store) ||
         store == 0) {
         return false;
     }
@@ -1896,7 +1848,7 @@ bool ReadRecordSelections(const std::uintptr_t record,
         std::int32_t count{};
         std::int32_t capacity{};
     } rows;
-    if (!Read(reinterpret_cast<const void*>(store + kRecordStoreRowsOffset),
+    if (!Read(reinterpret_cast<const void*>(store + native_layout.kRecordStoreRowsOffset),
               rows) ||
         rows.count < 0 ||
         rows.count > static_cast<std::int32_t>(kMaximumRecordRows) ||
@@ -1915,7 +1867,7 @@ bool ReadRecordSelections(const std::uintptr_t record,
     std::uintptr_t get_string_address{};
     if (!Read(reinterpret_cast<const void*>(record), vtable) || vtable == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  vtable + kRecordGetStringVtableOffset), get_string_address) ||
+                  vtable + native_layout.kRecordGetStringVtableOffset), get_string_address) ||
         get_string_address == 0) {
         return false;
     }
@@ -2053,17 +2005,17 @@ bool GetPlayerController(Context& context) noexcept {
         return false;
     }
     std::uintptr_t game_instance{};
-    if (!Read(reinterpret_cast<const void*>(world + kWorldGameInstanceOffset),
+    if (!Read(reinterpret_cast<const void*>(world + native_layout.kWorldGameInstanceOffset),
               game_instance) || game_instance == 0) {
         return false;
     }
     std::uintptr_t players_array{};
     std::int32_t players_count{};
     if (!Read(reinterpret_cast<const void*>(
-                  game_instance + kGameInstanceLocalPlayersOffset), players_array) ||
+                  game_instance + native_layout.kGameInstanceLocalPlayersOffset), players_array) ||
         players_array == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  game_instance + kGameInstanceLocalPlayersOffset + 8), players_count) ||
+                  game_instance + native_layout.kGameInstanceLocalPlayersOffset + 8), players_count) ||
         players_count < 1) {
         return false;
     }
@@ -2074,12 +2026,12 @@ bool GetPlayerController(Context& context) noexcept {
     }
     std::uintptr_t controller{};
     if (!Read(reinterpret_cast<const void*>(
-                  local_player + kLocalPlayerControllerOffset), controller) ||
+                  local_player + native_layout.kLocalPlayerControllerOffset), controller) ||
         controller == 0) {
         return false;
     }
     std::uintptr_t controller_class{};
-    if (!Read(reinterpret_cast<const void*>(controller + kObjectClassOffset),
+    if (!Read(reinterpret_cast<const void*>(controller + native_layout.kObjectClassOffset),
               controller_class) || controller_class == 0) {
         return false;
     }
@@ -2113,12 +2065,12 @@ void BuildClassMap(Context& context) noexcept {
     std::int32_t num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.g_objects_address + native_layout.kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.g_objects_address + native_layout.kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.g_objects_address + native_layout.kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) {
         return;
     }
@@ -2130,7 +2082,7 @@ void BuildClassMap(Context& context) noexcept {
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
     for (std::int32_t i = 0; i < count; ++i) {
-        const auto chunk_index = static_cast<std::uint32_t>(i) / kObjectChunkSize;
+        const auto chunk_index = static_cast<std::uint32_t>(i) / native_layout.kObjectChunkSize;
         if (chunk_index != cur_chunk) {
             cur_chunk = chunk_index;
             if (!Read(reinterpret_cast<const void*>(
@@ -2139,20 +2091,20 @@ void BuildClassMap(Context& context) noexcept {
                 continue;
             }
         }
-        const auto within = static_cast<std::uint32_t>(i) % kObjectChunkSize;
+        const auto within = static_cast<std::uint32_t>(i) % native_layout.kObjectChunkSize;
         std::uintptr_t object{};
         if (!Read(reinterpret_cast<const void*>(
-                      chunk + static_cast<std::uintptr_t>(within) * kObjectItemStride), object) ||
+                      chunk + static_cast<std::uintptr_t>(within) * native_layout.kObjectItemStride), object) ||
             object == 0) {
             continue;
         }
         std::uintptr_t cls{};
-        if (!Read(reinterpret_cast<const void*>(object + kObjectClassOffset), cls) ||
+        if (!Read(reinterpret_cast<const void*>(object + native_layout.kObjectClassOffset), cls) ||
             cls == 0) {
             continue;
         }
         std::uint32_t name_id{};
-        if (!Read(reinterpret_cast<const void*>(cls + kObjectNameOffset), name_id) ||
+        if (!Read(reinterpret_cast<const void*>(cls + native_layout.kObjectNameOffset), name_id) ||
             name_id == 0) {
             continue;
         }
@@ -2179,7 +2131,7 @@ void BuildClassMap(Context& context) noexcept {
 std::uintptr_t ScanForActor(Context& context, const Point& p,
                            const std::string_view type_prefix) noexcept {
     if (context.g_objects_address == 0 &&
-        !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
+        !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
                             context.g_objects_address)) {
         return 0;
     }
@@ -2187,12 +2139,12 @@ std::uintptr_t ScanForActor(Context& context, const Point& p,
     std::int32_t num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.g_objects_address + native_layout.kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.g_objects_address + native_layout.kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.g_objects_address + native_layout.kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) {
         return 0;
     }
@@ -2208,7 +2160,7 @@ std::uintptr_t ScanForActor(Context& context, const Point& p,
     std::uintptr_t best{};
     double best_dist = 1e30;
     for (std::int32_t i = 0; i < count; ++i) {
-        const auto chunk_index = static_cast<std::uint32_t>(i) / kObjectChunkSize;
+        const auto chunk_index = static_cast<std::uint32_t>(i) / native_layout.kObjectChunkSize;
         if (chunk_index != current_chunk_index) {
             current_chunk_index = chunk_index;
             if (!Read(reinterpret_cast<const void*>(
@@ -2217,20 +2169,20 @@ std::uintptr_t ScanForActor(Context& context, const Point& p,
                 continue;
             }
         }
-        const auto within = static_cast<std::uint32_t>(i) % kObjectChunkSize;
+        const auto within = static_cast<std::uint32_t>(i) % native_layout.kObjectChunkSize;
         std::uintptr_t object{};
         if (!Read(reinterpret_cast<const void*>(
-                      chunk + static_cast<std::uintptr_t>(within) * kObjectItemStride), object) ||
+                      chunk + static_cast<std::uintptr_t>(within) * native_layout.kObjectItemStride), object) ||
             object == 0) {
             continue;
         }
         std::uintptr_t cls{};
-        if (!Read(reinterpret_cast<const void*>(object + kObjectClassOffset), cls) ||
+        if (!Read(reinterpret_cast<const void*>(object + native_layout.kObjectClassOffset), cls) ||
             cls == 0) {
             continue;
         }
         std::uint32_t cls_name_id{};
-        if (!Read(reinterpret_cast<const void*>(cls + kObjectNameOffset), cls_name_id)) {
+        if (!Read(reinterpret_cast<const void*>(cls + native_layout.kObjectNameOffset), cls_name_id)) {
             continue;
         }
         if (!map_it->second.contains(cls_name_id)) {
@@ -2247,7 +2199,7 @@ std::uintptr_t ScanForActor(Context& context, const Point& p,
             map_it->second.insert(cls_name_id);
         }
         std::uintptr_t cdo{};
-        if (Read(reinterpret_cast<const void*>(cls + kUClassDefaultObjectOffset), cdo) &&
+        if (Read(reinterpret_cast<const void*>(cls + native_layout.kUClassDefaultObjectOffset), cdo) &&
             cdo == object) {
             continue;
         }
@@ -2270,14 +2222,14 @@ std::uintptr_t ScanForActor(Context& context, const Point& p,
             if (!world_actor_class) continue;
         }
         std::uintptr_t root{};
-        if (!Read(reinterpret_cast<const void*>(object + kActorRootComponentOffset), root) ||
+        if (!Read(reinterpret_cast<const void*>(object + native_layout.kActorRootComponentOffset), root) ||
             root == 0) {
             continue;
         }
         double bx{}, by{}, bz{};
-        if (!Read(reinterpret_cast<const void*>(root + kSceneComponentLocationOffset), bx) ||
-            !Read(reinterpret_cast<const void*>(root + kSceneComponentLocationOffset + 8), by) ||
-            !Read(reinterpret_cast<const void*>(root + kSceneComponentLocationOffset + 16), bz)) {
+        if (!Read(reinterpret_cast<const void*>(root + native_layout.kSceneComponentLocationOffset), bx) ||
+            !Read(reinterpret_cast<const void*>(root + native_layout.kSceneComponentLocationOffset + 8), by) ||
+            !Read(reinterpret_cast<const void*>(root + native_layout.kSceneComponentLocationOffset + 16), bz)) {
             continue;
         }
         const double dx = bx - p.x;
@@ -2390,7 +2342,7 @@ bool ReadInteractChoices(Context& context, const std::uintptr_t actor,
                          std::vector<std::int32_t>& choices) noexcept {
     std::uint8_t params[24]{};
     std::memcpy(params + 0, &controller, sizeof(controller));
-    if (!Invoke(reinterpret_cast<void*>(actor), reinterpret_cast<void*>(fn),
+    if (!Invoke(context, reinterpret_cast<void*>(actor), reinterpret_cast<void*>(fn),
                 params)) {
         return false;
     }
@@ -2403,7 +2355,7 @@ bool ReadInteractChoices(Context& context, const std::uintptr_t actor,
     for (std::int32_t i = 0; i < entries.count; ++i) {
         std::int32_t index{};
         if (!Read(reinterpret_cast<const void*>(
-                      entries.data + static_cast<std::uintptr_t>(i) * 360),
+                      entries.data + static_cast<std::uintptr_t>(i) * native_layout.kInteractEntryStride),
                   index)) {
             return false;
         }
@@ -2418,7 +2370,7 @@ bool CanTryInteract(Context& context, const std::uintptr_t actor,
     std::uint8_t params[13]{};
     std::memcpy(params + 0, &controller, sizeof(controller));
     std::memcpy(params + 8, &index, sizeof(index));
-    if (!Invoke(reinterpret_cast<void*>(actor), reinterpret_cast<void*>(fn),
+    if (!Invoke(context, reinterpret_cast<void*>(actor), reinterpret_cast<void*>(fn),
                 params)) {
         return false;
     }
@@ -2436,7 +2388,7 @@ bool TriggerInteractPickup(Context& context, const std::uintptr_t actor,
         return false;
     }
     std::uintptr_t cls{};
-    if (!Read(reinterpret_cast<const void*>(actor + kObjectClassOffset), cls) ||
+    if (!Read(reinterpret_cast<const void*>(actor + native_layout.kObjectClassOffset), cls) ||
         cls == 0) {
         if (probe != nullptr) probe->reason = "class-read-failed";
         return false;
@@ -2749,7 +2701,7 @@ enum class ShopTakeResult : std::uint8_t {
 
 bool ShopItemUsesBlueprint(Context& context, std::uintptr_t actor,
                            bool& use_blueprint) {
-    const auto cls = reinterpret_cast<std::uintptr_t>(ReadPointer(reinterpret_cast<void*>(actor + kObjectClassOffset)));
+    const auto cls = reinterpret_cast<std::uintptr_t>(ReadPointer(reinterpret_cast<void*>(actor + native_layout.kObjectClassOffset)));
     if (!cls || !ObjectName(context.names, cls).starts_with("ShopStealGoods_")) return false;
     std::uintptr_t field{};
     std::int32_t offset{};
@@ -2782,23 +2734,23 @@ ShopTakeResult TakeShopItem(Context& context, std::uintptr_t actor,
 bool ReadActorLocation(Context& context, const std::uintptr_t actor,
                        double (&loc)[3]) noexcept {
     std::uintptr_t root{};
-    if (!Read(reinterpret_cast<const void*>(actor + kActorRootComponentOffset),
+    if (!Read(reinterpret_cast<const void*>(actor + native_layout.kActorRootComponentOffset),
               root) ||
         root == 0) {
         return false;
     }
     return Read(reinterpret_cast<const void*>(
-                    root + kSceneComponentLocationOffset), loc[0]) &&
+                    root + native_layout.kSceneComponentLocationOffset), loc[0]) &&
         Read(reinterpret_cast<const void*>(
-                 root + kSceneComponentLocationOffset + 8), loc[1]) &&
+                 root + native_layout.kSceneComponentLocationOffset + 8), loc[1]) &&
         Read(reinterpret_cast<const void*>(
-                 root + kSceneComponentLocationOffset + 16), loc[2]);
+                 root + native_layout.kSceneComponentLocationOffset + 16), loc[2]);
 }
 
 bool IsObjectInGObjects(Context& context, const std::uintptr_t target) noexcept {
     if (target == 0) return false;
     if (context.g_objects_address == 0 &&
-        !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
+        !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
                             context.g_objects_address)) {
         return true;
     }
@@ -2806,19 +2758,19 @@ bool IsObjectInGObjects(Context& context, const std::uintptr_t target) noexcept 
     std::int32_t num_chunks{};
     std::uintptr_t items{};
     if (!Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectItemsOffset), items) ||
+                  context.g_objects_address + native_layout.kObjectItemsOffset), items) ||
         items == 0 ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectCountOffset), count) ||
+                  context.g_objects_address + native_layout.kObjectCountOffset), count) ||
         !Read(reinterpret_cast<const void*>(
-                  context.g_objects_address + kObjectNumChunksOffset), num_chunks) ||
+                  context.g_objects_address + native_layout.kObjectNumChunksOffset), num_chunks) ||
         count <= 0 || num_chunks <= 0) {
         return true;
     }
     std::uint32_t cur_chunk = 0xFFFFFFFFu;
     std::uintptr_t chunk{};
     for (std::int32_t i = 0; i < count; ++i) {
-        const auto chunk_index = static_cast<std::uint32_t>(i) / kObjectChunkSize;
+        const auto chunk_index = static_cast<std::uint32_t>(i) / native_layout.kObjectChunkSize;
         if (chunk_index != cur_chunk) {
             cur_chunk = chunk_index;
             if (!Read(reinterpret_cast<const void*>(
@@ -2828,10 +2780,10 @@ bool IsObjectInGObjects(Context& context, const std::uintptr_t target) noexcept 
                 continue;
             }
         }
-        const auto within = static_cast<std::uint32_t>(i) % kObjectChunkSize;
+        const auto within = static_cast<std::uint32_t>(i) % native_layout.kObjectChunkSize;
         std::uintptr_t object{};
         if (!Read(reinterpret_cast<const void*>(
-                      chunk + static_cast<std::uintptr_t>(within) * kObjectItemStride),
+                      chunk + static_cast<std::uintptr_t>(within) * native_layout.kObjectItemStride),
                   object) ||
             object == 0) {
             continue;
@@ -2958,15 +2910,15 @@ void TickPickup(Context& context, const Point& p,
                 std::uintptr_t root{};
                 const bool near_point =
                     Read(reinterpret_cast<const void*>(
-                             context.target_actor + kActorRootComponentOffset),
+                             context.target_actor + native_layout.kActorRootComponentOffset),
                          root) &&
                     root != 0 &&
                     Read(reinterpret_cast<const void*>(
-                             root + kSceneComponentLocationOffset), bx) &&
+                             root + native_layout.kSceneComponentLocationOffset), bx) &&
                     Read(reinterpret_cast<const void*>(
-                             root + kSceneComponentLocationOffset + 8), by) &&
+                             root + native_layout.kSceneComponentLocationOffset + 8), by) &&
                     Read(reinterpret_cast<const void*>(
-                             root + kSceneComponentLocationOffset + 16), bz) &&
+                             root + native_layout.kSceneComponentLocationOffset + 16), bz) &&
                     ((bx - p.x) * (bx - p.x) + (by - p.y) * (by - p.y) +
                      (bz - p.z) * (bz - p.z)) <=
                         kFallbackVerifyRadiusCentimeters *
@@ -3952,7 +3904,7 @@ void Tick(Context& context) {
             ? (shop_result = TakeShopItem(context, context.target_actor,
                                           &shop_probe),
                shop_result == ShopTakeResult::triggered)
-            : Invoke(reinterpret_cast<void*>(context.controller),
+            : Invoke(context, reinterpret_cast<void*>(context.controller),
                      reinterpret_cast<void*>(context.server_interact_fn), params);
         if (triggered) {
             context.interacted = true;
@@ -4270,12 +4222,14 @@ void Tick(Context& context) {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) {
+    if (!box_auto_compat::LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     if (!host || !plugin_context || host->api_major != ANOMALY_PLUGIN_API_V1_MAJOR) {
         return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
     }
     auto* context = new (std::nothrow) Context{};
     if (!context) return {ANOMALY_STATUS_V1_FAILED, 0, {nullptr, 0}};
     context->host = host;
+    context->core = anomaly::sdk::Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
     const auto view = anomaly::sdk::Host(host);
     context->localizer = anomaly::sdk::Localizer(host);
     context->signature = view.Query<AnomalySignatureServiceV1>(

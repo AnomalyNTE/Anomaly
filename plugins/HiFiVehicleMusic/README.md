@@ -128,15 +128,16 @@ WASAPI 独占模式按文件原生采样率打开设备，设备不支持时由 
 专辑相关函数（FindRow 0x148A5622A、两个 ForeachRow 0x14932739F / 0x149313F9F 取调用点 `E8 rel32`；
 GetGameInstance 0x1487F49E0、GetAlbumData 0x148A55CB0、`TArray<FName>::AddUnique` 0x1415FDC20、
 GetOwnedMusicListIDs 0x148FED6D0、ReGenerateNewMusicListIDs 0x148A56140、SetCurrentMusicListID
-0x148A3C020）的签名及行结构偏移见 `hifi_vehicle_music_profile.hpp`。GameInstance 音乐表 `+0x1840`、
-专辑表 `+0x1848`（1.4a→1.4b 未变）。
+0x148A3C020）的签名及行结构偏移见 `profile/compatibility.profile.json`。音乐表 `+0x1840`、
+专辑表 `+0x1848`（1.4a→1.4b 未变；1.5a 起这两个字段属于 `UHTGameData` 的
+`PlayerMusicDataTable` / `MusicAlbumDataTable`，分别移到 `+0x1960` / `+0x1968`）。
 
 `UHTSoundSubsystem` 偏移（1.4b = 1.4a + 0x18，因为 1.4b 在 0x3D8 插入了 0x18 字节的
 `SingleFFmpegMusicNode`）：`PlayerMusicAkComp` `0x3F0`、ListID `0x418`、EventName `0x430`、
 PlayingID `0x438`、Paused `0x43C`、PendingSeek `0x43D`、PlayerType `0x440`；
 `UAkAudioEvent` 名称 FName 在 `0x18`。本地玩家判定：`APawn::Controller` `0x2F8`、
 `APlayerController::Player` `0x368`、`UPlayer::PlayerController` `0x30`。已拥有歌单 ID
-`TArray<FName>` 在 `0x3F8`（Num 在 `+0x400`）。签名与偏移统一定义在 `hifi_vehicle_music_profile.hpp`。
+`TArray<FName>` 在 `0x3F8`（Num 在 `+0x400`）。签名与偏移统一定义在 `profile/compatibility.profile.json`，`hifi_vehicle_music_profile.hpp` 负责解析和校验实现合同。
 
 ## 设置
 
@@ -308,3 +309,7 @@ PlayingID `0x438`、Paused `0x43C`、PendingSeek `0x43D`、PlayerType `0x440`；
   拒绝发布），再对着运行中的 1.4b 客户端逐个扫描确认唯一命中；游戏内实测待做
 - [ ] 本地专辑封面只在专辑行首次创建时导入，若当时导入函数未就绪不会重试（尚未遇到）
 - [ ] 游戏内实测（需用户执行）：确认事件名、seek 语义、各后端独占/ASIO 打开情况
+
+### 1.4b / 1.5a 兼容数据
+
+启动时由宿主 `anomaly.profile` 读取同一份 `profile/compatibility.profile.json`，通过唯一签名和入口字节选取候选。音乐表和专辑表的差异随候选布局生效；详情封面的 1.4b FName 值参数和 1.5a FName 指针参数分别遵循各自调用 ABI。1.4b 有只读运行进程字节核对，1.5a 为所给 SDK 和 IDA 映像的静态核对，尚未完成 1.5 实机播放验证。

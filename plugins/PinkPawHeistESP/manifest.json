@@ -7,28 +7,124 @@
   "license": "AGPL-3.0-only",
   "version": "1.18.0",
   "entry": "plugin.dll",
-  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
-  "games": ["nte"],
-  "builds": ["nte-*"],
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
   "loadPhase": "game-ready",
   "services": [
-    {"id": "anomaly.ui", "minVersion": 1},
-    {"id": "anomaly.localization", "minVersion": 1},
-    {"id": "anomaly.config", "minVersion": 1},
-    {"id": "anomaly.interop.signature", "minVersion": 1},
-    {"id": "anomaly.ue5.framework", "minVersion": 1},
-    {"id": "anomaly.ue5.ahud", "minVersion": 1},
-    {"id": "anomaly.ue5.names", "minVersion": 1},
-    {"id": "anomaly.ue5.objects", "minVersion": 1, "optional": true},
-    {"id": "anomaly.websocket", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.entities", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.actors", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.pickup", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.ui-buttons", "minVersion": 1, "optional": true},
-    {"id": "anomaly.font", "minVersion": 1, "optional": true}
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.config",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.ahud",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.websocket",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player-teleport",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.entities",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.actors",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.pickup",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.ui-buttons",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.font",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    }
   ],
-  "capabilities": ["ui", "configuration", "game-events", "interop-signature", "memory-read", "ue5-ahud", "ue5-names", "ue5-objects", "websocket", "nte-entity-snapshot", "nte-actor-snapshot", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport", "nte-pickup", "nte-ui-buttons", "ui-font"]
+  "capabilities": [
+    "ui",
+    "configuration",
+    "game-events",
+    "interop-signature",
+    "memory-read",
+    "ue5-ahud",
+    "ue5-names",
+    "ue5-objects",
+    "websocket",
+    "nte-entity-snapshot",
+    "nte-actor-snapshot",
+    "nte-session-snapshot",
+    "nte-player-snapshot",
+    "nte-player-teleport",
+    "nte-pickup",
+    "nte-ui-buttons",
+    "ui-font",
+    "json"
+  ]
 }

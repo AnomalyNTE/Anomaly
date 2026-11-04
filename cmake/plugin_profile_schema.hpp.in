@@ -1,0 +1,7 @@
+#pragma once
+#include <string_view>
+
+namespace anomaly::detail {
+inline constexpr std::string_view kPluginProfileSchemaJson =
+    R"ANOMALY_SCHEMA(@ANOMALY_PLUGIN_PROFILE_SCHEMA_JSON@)ANOMALY_SCHEMA";
+}

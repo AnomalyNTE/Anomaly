@@ -1,8 +1,9 @@
+#include "native_layout.hpp"
 // Anomaly 插件：空无一人（一键把人群密度环境倍率压到近乎为 0）
 //    勾选：读取当前 昼/夜/晴/雨/雪 环境倍率作为初值 → 全部置 0.01
 //    取消：恢复初值
-// 目标字段：HTMassCrowdSpawner（+0x408 DefaultDensityProfile、+0x428 DensityProfiles）
-//          内 HTMassCrowdDensityProfile 的 +0x0C/+0x10/+0x14/+0x18/+0x1C。
+// 目标字段：HTMassCrowdSpawner（+0x458 DefaultDensityProfile、+0x478 DensityProfiles）
+//          内 HTMassCrowdDensityProfile 的 +0x0C/+0x10/+0x14/+0x18/+0x1C（1.4b 起未变）。
 // 窗口热键固定 F8；开关热键可改键，默认未绑定。
 
 #include "anomaly/sdk/cpp.hpp"
@@ -31,14 +32,16 @@ using anomaly::sdk::StringView;
 constexpr std::uint32_t kCondFirstUseEver = 4u;
 
 // UObject 布局
-constexpr std::uintptr_t kClassPrivateOffset = 0x10;
-constexpr std::uintptr_t kNamePrivateOffset = 0x18;
 
-// HTMassCrowdSpawner 上的密度字段
-constexpr std::uintptr_t kDefaultProfileOffset = 0x408;
-constexpr std::uintptr_t kDensityProfilesOffset = 0x428;  // TArray
-constexpr std::uintptr_t kProfileStride = 0x20;
-constexpr std::uintptr_t kScaleOffsets[5] = {0x0C, 0x10, 0x14, 0x18, 0x1C};
+
+
+// HTMassCrowdSpawner 上的密度字段（NTE 1.5a：DefaultDensityProfile 0x458、DensityProfiles 0x478，
+// 相比 1.4b 的 0x408/0x428 整体后移 0x50 —— 基类 HTMassSpawnerBase 由 0x80 长到 0xD0 所致；
+// AMassSpawner.Count(+0x2E8)/SpawningCountScale(+0x328) 并未移动）
+
+  // TArray
+
+
 constexpr std::uint32_t kMaxProfiles = 16;
 constexpr int kMaxSpawners = 16;
 const float kEmptyScales[5] = {0.01F, 0.01F, 0.01F, 0.01F, 0.01F};  // 空街值（昼/夜/晴/雨/雪）
@@ -46,17 +49,16 @@ const float kDefaultScales[5] = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F};     // 游戏默
 
 // 车辆生成器（HTMassVehicleSpawner）上的字段
 //   MassSpawner 基类：Count(+0x2E8, int32) 生成上限、SpawningCountScale(+0x328, f32) 数量倍率
-//   HTMassVehicleSpawner 自己：MinActiveVehiclesNum(+0x45C, int32) 保底在线车辆数
-constexpr std::uintptr_t kSpawnCountOffset = 0x2E8;
-constexpr std::uintptr_t kSpawnScaleOffset = 0x328;
-constexpr std::uintptr_t kVehMinActiveOffset = 0x45C;
+//   HTMassVehicleSpawner 自己：MinActiveVehiclesNum(+0x4AC, int32) 保底在线车辆数（1.4b 为 0x45C）
+
+
+
 constexpr int kDefaultVehCount = 3000;
 constexpr float kDefaultVehScale = 0.8F;
 constexpr int kDefaultVehMinActive = 50;
 
 // 游戏自带「索引 → 对象地址」助手签名（HTGame.exe .text 唯一命中）
-constexpr char kIndexToAddressPattern[] =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3";
+
 
 constexpr int kConfVersion = 5;
 constexpr const char* kConfFile = "deserted.conf";
@@ -251,11 +253,8 @@ void TryResolveGobjectsSlot() {
         SetStatus(g_localizer.Text("status.signature_unavailable", "The signature service is unavailable").c_str());
         return;
     }
-    std::uintptr_t match = 0;
-    if (g_signature->resolve(g_signature->user, StringView("HTGame.exe"), StringView(".text"),
-                             StringView(kIndexToAddressPattern), &match).code !=
-            ANOMALY_STATUS_V1_OK ||
-        match == 0) {
+    const std::uintptr_t match = deserted_profile::compatibility.Address("objects");
+    if (match == 0) {
         SetStatus(g_localizer.Text("status.gobjects_signature_missing",
                      "The object table signature did not match (the game version may have changed)").c_str());
         return;
@@ -276,9 +275,9 @@ std::uintptr_t IndexToAddress(std::uint32_t index) {
     std::uintptr_t chunk_array = 0;
     if (!SafeReadPtr(s.gobjects_slot, &chunk_array) || chunk_array == 0) return 0;
     std::uintptr_t chunk_ptr = 0;
-    if (!SafeReadPtr(chunk_array + (index >> 16) * 8u, &chunk_ptr) || chunk_ptr == 0) return 0;
+    if (!SafeReadPtr(chunk_array + (index / deserted_profile::native_layout.kObjectChunkSize) * sizeof(std::uintptr_t), &chunk_ptr) || chunk_ptr == 0) return 0;
     std::uintptr_t object = 0;
-    if (!SafeReadPtr(chunk_ptr + (index & 0xFFFFu) * 0x18u, &object)) return 0;
+    if (!SafeReadPtr(chunk_ptr + (index % deserted_profile::native_layout.kObjectChunkSize) * deserted_profile::native_layout.kObjectItemStride, &object)) return 0;
     return object;
 }
 
@@ -287,8 +286,8 @@ bool ClassNameContains(std::uintptr_t addr, const char* needle) {
     if (!LooksLikePointer(addr) || needle == nullptr) return false;
     if (g_names == nullptr || g_names->resolve_utf8 == nullptr) return false;
     std::uintptr_t cls = 0;
-    if (!SafeReadPtr(addr + kClassPrivateOffset, &cls) || cls == 0) return false;
-    const std::uint32_t id = SafeReadU32(cls + kNamePrivateOffset);
+    if (!SafeReadPtr(addr + deserted_profile::native_layout.kClassPrivateOffset, &cls) || cls == 0) return false;
+    const std::uint32_t id = SafeReadU32(cls + deserted_profile::native_layout.kNamePrivateOffset);
     if (id == 0) return false;
     char name[128]{};
     std::size_t size = sizeof(name);
@@ -322,8 +321,8 @@ bool IsSpawnerObject(std::uintptr_t addr) {
     if (!LooksLikePointer(addr)) return false;
     if (!ClassNameContains(addr, "MassCrowdSpawner")) return false;
     std::uintptr_t data = 0;
-    if (!SafeReadPtr(addr + kDensityProfilesOffset, &data) || !LooksLikePointer(data)) return false;
-    const std::uint32_t num = SafeReadU32(addr + kDensityProfilesOffset + 8);
+    if (!SafeReadPtr(addr + deserted_profile::native_layout.kDensityProfilesOffset, &data) || !LooksLikePointer(data)) return false;
+    const std::uint32_t num = SafeReadU32(addr + deserted_profile::native_layout.kDensityProfilesOffset + deserted_profile::native_layout.kArrayNumOffset);
     return num > 0 && num <= kMaxProfiles;
 }
 
@@ -339,35 +338,35 @@ bool IsVehicleSpawnerObject(std::uintptr_t addr) {
     if (!LooksLikePointer(addr)) return false;
     if (!ClassNameContains(addr, "VehicleSpawner")) return false;  // 挡掉同名 UFunction
     if (ClassNameContains(addr, "SpawnDataGenerator")) return false;
-    const std::int32_t count = static_cast<std::int32_t>(SafeReadU32(addr + kSpawnCountOffset));
+    const std::int32_t count = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kSpawnCountOffset));
     float scale = 0.0F;
-    if (!SafeReadF32(addr + kSpawnScaleOffset, &scale)) return false;
+    if (!SafeReadF32(addr + deserted_profile::native_layout.kSpawnScaleOffset, &scale)) return false;
     return count >= 0 && count <= 1000000 && scale >= 0.0F && scale <= 100.0F;
 }
 
 void ReadVehicleParams(std::uintptr_t addr, int* count, float* scale, int* min_active) {
-    *count = static_cast<std::int32_t>(SafeReadU32(addr + kSpawnCountOffset));
-    if (!SafeReadF32(addr + kSpawnScaleOffset, scale)) *scale = kDefaultVehScale;
-    *min_active = static_cast<std::int32_t>(SafeReadU32(addr + kVehMinActiveOffset));
+    *count = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kSpawnCountOffset));
+    if (!SafeReadF32(addr + deserted_profile::native_layout.kSpawnScaleOffset, scale)) *scale = kDefaultVehScale;
+    *min_active = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kVehMinActiveOffset));
 }
 
 // 把一台车辆生成器的生成能力对齐到 (count, scale, min_active)：先读后比，不一致才写
 int SyncOneVehicle(std::uintptr_t addr, int count, float scale, int min_active) {
     int written = 0;
     const std::int32_t cur_count =
-        static_cast<std::int32_t>(SafeReadU32(addr + kSpawnCountOffset));
+        static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kSpawnCountOffset));
     if (cur_count != count &&
-        WriteU32(addr + kSpawnCountOffset, static_cast<std::uint32_t>(count))) {
+        WriteU32(addr + deserted_profile::native_layout.kSpawnCountOffset, static_cast<std::uint32_t>(count))) {
         ++written;
     }
     float cur_scale = 0.0F;
-    if (SafeReadF32(addr + kSpawnScaleOffset, &cur_scale) && cur_scale != scale &&
-        WriteF32(addr + kSpawnScaleOffset, scale)) {
+    if (SafeReadF32(addr + deserted_profile::native_layout.kSpawnScaleOffset, &cur_scale) && cur_scale != scale &&
+        WriteF32(addr + deserted_profile::native_layout.kSpawnScaleOffset, scale)) {
         ++written;
     }
-    const std::int32_t cur_min = static_cast<std::int32_t>(SafeReadU32(addr + kVehMinActiveOffset));
+    const std::int32_t cur_min = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kVehMinActiveOffset));
     if (cur_min != min_active &&
-        WriteU32(addr + kVehMinActiveOffset, static_cast<std::uint32_t>(min_active))) {
+        WriteU32(addr + deserted_profile::native_layout.kVehMinActiveOffset, static_cast<std::uint32_t>(min_active))) {
         ++written;
     }
     return written;
@@ -417,7 +416,7 @@ void CaptureVehicleBaseline() {
 bool ReadScales(std::uintptr_t sp, float out[5]) {
     for (int i = 0; i < 5; ++i) {
         float v = 0.0F;
-        if (!SafeReadF32(sp + kDefaultProfileOffset + kScaleOffsets[i], &v)) return false;
+        if (!SafeReadF32(sp + deserted_profile::native_layout.kDefaultProfileOffset + deserted_profile::native_layout.kScaleOffsets[i], &v)) return false;
         if (!(v >= 0.0F) || v > 1000.0F) return false;
         out[i] = v;
     }
@@ -439,8 +438,8 @@ int SyncScale(std::uintptr_t address, const float* values) {
     int written = 0;
     for (int k = 0; k < 5; ++k) {
         float current = 0.0F;
-        if (SafeReadF32(address + kScaleOffsets[k], &current) && current == values[k]) continue;
-        if (WriteF32(address + kScaleOffsets[k], values[k])) ++written;
+        if (SafeReadF32(address + deserted_profile::native_layout.kScaleOffsets[k], &current) && current == values[k]) continue;
+        if (WriteF32(address + deserted_profile::native_layout.kScaleOffsets[k], values[k])) ++written;
     }
     return written;
 }
@@ -451,16 +450,16 @@ int SyncScales(const float* values) {
     for (int i = 0; i < s.spawner_count; ++i) {
         const std::uintptr_t sp = s.spawner[i];
         if (!IsSpawnerObject(sp)) continue;
-        written += SyncScale(sp + kDefaultProfileOffset, values);
+        written += SyncScale(sp + deserted_profile::native_layout.kDefaultProfileOffset, values);
 
         std::uintptr_t data = 0;
         std::uint32_t num = 0;
-        if (SafeReadPtr(sp + kDensityProfilesOffset, &data) && LooksLikePointer(data)) {
-            num = SafeReadU32(sp + kDensityProfilesOffset + 8);
+        if (SafeReadPtr(sp + deserted_profile::native_layout.kDensityProfilesOffset, &data) && LooksLikePointer(data)) {
+            num = SafeReadU32(sp + deserted_profile::native_layout.kDensityProfilesOffset + deserted_profile::native_layout.kArrayNumOffset);
         }
         if (data == 0 || num == 0 || num > kMaxProfiles) continue;
         for (std::uint32_t p = 0; p < num; ++p) {
-            written += SyncScale(data + p * kProfileStride, values);
+            written += SyncScale(data + p * deserted_profile::native_layout.kProfileStride, values);
         }
     }
     return written;
@@ -893,6 +892,7 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui_v1) {
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
     if (context == nullptr) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *context = nullptr;
+    if (!deserted_profile::LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
     const Host view(host);
     g_localizer = anomaly::sdk::Localizer(host);
 

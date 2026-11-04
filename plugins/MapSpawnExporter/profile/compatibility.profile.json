@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "map-spawn-exporter-v1",
+  "layout": {
+    "kGObjectsAddendMagnitude": 16,
+    "kObjectItemsOffset": 16,
+    "kObjectCountOffset": 36,
+    "kObjectMaxCountOffset": 32,
+    "kObjectMaxChunksOffset": 40,
+    "kObjectNumChunksOffset": 44,
+    "kObjectChunkSize": 65536,
+    "kObjectItemStride": 24,
+    "kDataTableRowMapOffset": 48,
+    "kDataTableRowStride": 24,
+    "kDataTableRowPointerOffset": 8,
+    "kObjectClassOffset": 16,
+    "kObjectNameOffset": 24,
+    "kObjectOuterOffset": 32,
+    "kDataTableRowStructOffset": 40,
+    "kTeleportBelongsLevelOffset": 8,
+    "kTeleportFloorOffset": 40,
+    "kTeleportTransformTranslationOffset": 96,
+    "kTeleportTypeOffset": 184,
+    "kTeleportCanTeleportOffset": 216,
+    "kTeleportOverrideTransformOffset": 217,
+    "kTeleportOverrideTranslationOffset": 256,
+    "kRandomItemTableOffset": 72,
+    "kOracleStoneDataAssetTableOffset": 64,
+    "kOracleStoneLevelOffset": 16,
+    "kOracleStoneFloorOffset": 48,
+    "kOracleStoneLocationOffset": 64,
+    "kRandomItemLevelNameOffset": 8,
+    "kRandomItemTypeOffset": 32,
+    "kRandomItemTransformOffset": 48,
+    "kTransformTranslationOffset": 32,
+    "kMapInlineBits": 16,
+    "kMapBitsData": 32,
+    "kMapBitCount": 40,
+    "kMapBitCapacity": 44,
+    "kStructPropertyLink": 112,
+    "kStructSize": 88,
+    "kPropertyName": 32,
+    "kPropertyOffset": 68,
+    "kPropertyClass": 8,
+    "kPropertyElementSize": 52,
+    "kPropertyNext": 72,
+    "kStructPropertyStruct": 112
+  },
+  "symbols": [
+    {
+      "name": "kGObjectsPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

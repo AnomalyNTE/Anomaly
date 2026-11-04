@@ -138,6 +138,53 @@ plugin generation 一起失效。
 
 ---
 
+## `anomaly.profile`
+
+- **ID**：`"anomaly.profile"` · **版本** 1 · **capability** `json`
+- 头文件：`anomaly/sdk/services/profile.h`；C++ 辅助：`anomaly/sdk/profile.hpp`。
+- manifest 同时声明 `anomaly.profile` 和 `anomaly.json` v1。
+
+```c
+typedef struct AnomalyProfileServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *load)(void* user,
+        AnomalyStringViewV1 relative_path, AnomalyGenerationHandleV1* document);
+} AnomalyProfileServiceV1;
+```
+
+`load("my-plugin.profile.json")` 从插件当前 DLL generation 的包快照中读取
+`profile/my-plugin.profile.json`，不访问用户 state/config 目录。仅 Lifecycle/Worker 可调用；
+Game/Render 返回 `UNAVAILABLE`。输入必须是 UTF-8 相对 `.json` 路径，最多 512 字节；拒绝绝对路径、
+父目录遍历、reparse 和超过 1 MiB 的文件。缺失文件返回 `NOT_FOUND`，路径、格式或 schema
+错误返回 `INVALID_ARGUMENT`，I/O 故障返回 `FAILED`；失败时输出句柄为零。
+
+返回值是只读 `anomaly.json` 文档句柄，使用该服务查询并 `release`。每个 child handle 独立持有
+文档，释放 root 不影响尚存的 child；所有句柄均受 generation 和 PluginScope 管理。C++
+`LoadProfile` 返回包含字符串、布局和候选的自有 `Profile` 快照，返回前释放临时宿主句柄，
+无需插件依赖第三方 JSON 库。`Profile::symbol(name)` 对未声明名称抛出 `std::out_of_range`，
+插件应在安装 Hook 前检查自身需要的字段。
+
+所有插件共用仓库 `schemas/plugin-profile.schema.json`（SDK 安装到 `share/anomaly/schemas/`）。
+`schemaVersion` 固定为 1，不接受未知根字段、重复键或重复符号名：
+
+| 字段 | 内容 |
+| --- | --- |
+| `game` / `module` / `section` | 游戏标识、模块名与 PE 节名 |
+| `contract` | 插件实现的语义合同；不包含或匹配 Build identity |
+| `layout` | 名称到 uint32 的共享偏移、尺寸与种子 |
+| `symbols` | 0–128 个 `{name, candidates}`，每个符号 1–16 个候选 |
+| 候选 `pattern` / `entry` | 空格分隔的十六进制字节；仅 pattern 允许 `??`，entry 必须精确 |
+| 候选 `callOffset` | 可选 E8 rel32 指令位置，必须落在 pattern 范围内 |
+| 候选 `values` | 该候选特有的 uint32 布局数据 |
+
+C++ `ResolveProfileSymbol(signature, core, profile, name)` 使用现有 signature/memory 服务，
+检查唯一候选、可选 E8 rel32 目标与精确入口字节；失败返回空结果和 `error`，不安装 Hook。
+成功结果的 `candidate` 借用输入 profile，使用期间须保持该快照存活。该 helper 还需
+`interop-signature` 和 `memory-read` capability。Schema 校验不等于布局已适配，插件仍须
+校验语义合同、所需字段和调用协议；不能用编译期签名或偏移作为失败兜底。
+
+---
+
 ## `anomaly.runtime-info`
 
 - **ID**：`"anomaly.runtime-info"` · **版本** 1 · **capability** `runtime-info`

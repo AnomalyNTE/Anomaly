@@ -20,14 +20,22 @@
 
 namespace pink_paw_heist_esp {
 namespace {
+constexpr std::uint32_t kRobBankCanInteractMask=1;
+constexpr std::uint32_t kMaximumFunctionParameters=512;
+constexpr std::uint32_t kMaximumObjectChunks=4096;
+constexpr std::uint32_t kObjectDiscoveryBatch=2048;
+constexpr std::uint32_t kMaximumResolvedNameBytes=1024;
+constexpr std::uint32_t kMaximumMarkerEntityCount=32768;
+
+using bank_profile::native_layout;
+using bank_profile::compatibility;
+using bank_profile::LoadCompatibility;
 
 constexpr std::string_view kModuleName = "HTGame.exe";
 constexpr std::string_view kTextSection = ".text";
 
-constexpr std::string_view kGWorldPattern =
-    "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
-constexpr std::string_view kGObjectsPattern =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
+constexpr std::string_view kGWorldPattern="kGWorldPattern";
+constexpr std::string_view kGObjectsPattern="kGObjectsPattern";
 constexpr std::string_view kRobBankPointPath =
     "/Game/DataTable/RobBank/DT_RobBankPoint";
 constexpr std::string_view kRobBankPointObjectPath =
@@ -36,81 +44,82 @@ constexpr std::string_view kRobBankDataAssetPath =
     "/Game/DataTable/RobBank/DA_RobBank";
 constexpr std::string_view kRobBankDataAssetObjectPath =
     "/Game/DataTable/RobBank/DA_RobBank.DA_RobBank";
-constexpr std::string_view kPickupPattern =
-    "48 89 5C 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? "
-    "84 C0 0F 84 ?? ?? ?? ?? 48 83 BB D0 02 00 00 00 0F 84 ?? ?? ?? ?? "
-    "E8 ?? ?? ?? ??";
-constexpr std::string_view kTextToStringPattern =
-    "40 53 48 83 EC 20 48 8B D9 48 8B CA E8 ?? ?? ?? ?? 48 8B D0 48 8B CB "
-    "E8 ?? ?? ?? ?? 48 8B C3 48 83 C4 20 5B C3";
-constexpr std::string_view kFreeStringPattern =
-    "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 "
-    "75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 "
-    "48 83 C4 20 5B C3";
+constexpr std::string_view kPickupPattern="kPickupPattern";
+constexpr std::string_view kTextToStringPattern="kTextToStringPattern";
+constexpr std::string_view kFreeStringPattern="kFreeStringPattern";
 
 constexpr std::uint32_t kRipDisplacementOffset = 3;
 constexpr std::uint32_t kRipInstructionSize = 7;
-constexpr std::ptrdiff_t kGObjectsAddend = -16;
+
 
 // UE and NTE layout used only by the Pink Paw RobBank interaction path.
 // Generic session/player/entity/actor/teleport behavior remains host-owned.
-constexpr std::ptrdiff_t kWorldGameInstanceOffset = 560;
-constexpr std::ptrdiff_t kGameInstanceLocalPlayersOffset = 56;
-constexpr std::ptrdiff_t kLocalPlayerControllerOffset = 48;
-constexpr std::ptrdiff_t kControllerPlayerStateOffset = 720;
-constexpr std::ptrdiff_t kActorRootComponentOffset = 456;
+
+
+
+
+
 // UE5-HT exposes the RobBank interaction interface as a secondary base subobject: the
 // subobject starts here, its first member is its own vtable pointer, and the pickup entry
 // still sits at byte offset 24 of that vtable. The subobject address is the interface
 // `this` pointer the entry expects.
-constexpr std::ptrdiff_t kRobBankContainerInterfaceOffset = 872;
-constexpr std::ptrdiff_t kRobBankPickupVtableSlot = 24;
 
-constexpr std::ptrdiff_t kObjectInternalIndexOffset = 12;
-constexpr std::ptrdiff_t kObjectClassOffset = 16;
-constexpr std::ptrdiff_t kObjectNameOffset = 24;
-constexpr std::ptrdiff_t kObjectOuterOffset = 32;
-constexpr std::ptrdiff_t kStructSuperOffset = 64;
 
-constexpr std::ptrdiff_t kObjectItemsOffset = 16;
-constexpr std::ptrdiff_t kObjectMaxCountOffset = 32;
-constexpr std::ptrdiff_t kObjectCountOffset = 36;
-constexpr std::ptrdiff_t kObjectMaxChunksOffset = 40;
-constexpr std::ptrdiff_t kObjectNumChunksOffset = 44;
-constexpr std::uint32_t kObjectChunkSize = 65536;
-constexpr std::uint32_t kObjectItemStride = 24;
-constexpr std::uint32_t kObjectPointerOffset = 0;
-constexpr std::uint32_t kObjectSerialOffset = 16;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // AHTRobBankItemActor::CanInteract, replicated from the server. Only item actors carry
 // this field; container actors (AHTRobBankContainerActor) have none, so the flag is
 // consulted only for classes that derive from AHTRobBankItemActor.
-constexpr std::ptrdiff_t kRobBankCanInteractOffset = 0xC18;
-constexpr std::uint8_t kRobBankCanInteractMask = 1;
-constexpr std::ptrdiff_t kRobBankPointUidOffset = 2976;
-constexpr std::ptrdiff_t kRobBankPointKeyDoorIdOffset = 196;
-constexpr std::ptrdiff_t kRobBankAwardDropIdOffset = 3080;
-constexpr std::ptrdiff_t kRobBankCloneDataAssetItemOffset = 104;
+// 1.5a moved these three: AHTVisualActor gained EavesdropEventOwnerActor (8 bytes) at
+// 0x400, so AHTRobBankItemActorBase starts at 0x0BA8 instead of 0x0BA0 and
+// AHTRobBankItemActor::CanInteract sits at 0x0C20 instead of 0x0C18.
+
+
+// AHTRobBankItemActorBase::PointUID (0x0BA8; 1.4b 0x0BA0).
+
+// FRobBankItemPointData::KeyDoorID (0x0C4), unchanged in 1.5a.
+
+// AHTRobBankItemActorBase::AwardDropID (0x0C10; 1.4b 0x0C08).
+
+// URobBankCloneDataAsset::DT_RobBankItem (0x68), unchanged in 1.5a.
+
 constexpr std::int32_t kMaximumKeyDoors = 4096;
 
-constexpr std::ptrdiff_t kDataTableRowMapOffset = 48;
-constexpr std::size_t kDataTableRowStride = 24;
-constexpr std::size_t kDataTableRowPointerOffset = 8;
+
+
+
 constexpr std::int32_t kMaximumDataTableRows = 4096;
-constexpr std::ptrdiff_t kStaticItemNameOffset = 160;
-// FStaticItemData::ElementData, verified against the live StructProperty
-// metadata on 2026-10-19 (previously 0x1B8).
-constexpr std::ptrdiff_t kStaticItemElementDataOffset = 0x1C0;
-constexpr std::ptrdiff_t kInstancedStructDataOffset = 8;
-constexpr std::ptrdiff_t kRobBankItemValueOffset = 0;
-constexpr std::ptrdiff_t kRobBankItemCoinOffset = 4;
+// FStaticItemData::ItemName (0x0A0), unchanged in 1.5a.
+
+// FStaticItemData::ElementData (FInstancedStruct). 1.5a dropped the 1.4b-only
+// FName at 0x0EC, so every member from FTimeLimit onward moved back by 8 and
+// ElementData is 0x1B8 again (1.4b 0x1C0).
+
+
+
+
 constexpr std::string_view kAccessCardItemPrefix = "RobBankItem_G";
 constexpr std::string_view kAwardDropIdPrefix = "drop_";
 
 // Clone-scene requests are resolved by name on the local PlayerState; no extraction id is read.
-constexpr std::ptrdiff_t kStructChildren = 72;
-constexpr std::ptrdiff_t kFieldNext = 40;
-constexpr std::size_t kMaximumFunctionParameters = 512;
+
+
+
 constexpr std::string_view kEvacuationFunctionName = "RobBankRequestEvacuation";
 constexpr std::array<std::string_view, 2> kExitCloneFunctionNames{
     "ServerExitCloneSceneRPC",
@@ -118,21 +127,15 @@ constexpr std::array<std::string_view, 2> kExitCloneFunctionNames{
 };
 
 constexpr std::uint32_t kMaximumObjects = 16U * 1024U * 1024U;
-constexpr std::uint32_t kMaximumObjectChunks = 4096;
-constexpr std::uint32_t kObjectDiscoveryBatch = 2048;
-constexpr std::size_t kMaximumResolvedNameBytes = 1024;
-constexpr std::uint32_t kMaximumMarkerEntityCount = 32768;
+
+
+
+
 constexpr std::size_t kMarkerPageCapacity = ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY;
 
-constexpr std::array<std::uint8_t, 16> kPickupPrologue{
-    0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83,
-    0xEC, 0x40, 0x48, 0x8B, 0xDA, 0x48, 0x8B, 0xF9};
-constexpr std::array<std::uint8_t, 13> kPickupSuccessReturn{
-    0xB0, 0x01, 0x48, 0x8B, 0x5C, 0x24, 0x58,
-    0x48, 0x83, 0xC4, 0x40, 0x5F, 0xC3};
-constexpr std::array<std::uint8_t, 13> kPickupFailureReturn{
-    0x48, 0x8B, 0x5C, 0x24, 0x58, 0x32, 0xC0,
-    0x48, 0x83, 0xC4, 0x40, 0x5F, 0xC3};
+
+
+
 
 AnomalyStatusV1 Status(
     const std::uint32_t code,
@@ -502,22 +505,22 @@ struct RobBankRuntime::Impl final {
         const std::string_view type, const std::int32_t size,
         std::uintptr_t& property, std::int32_t& offset) const {
         using namespace bank_profile;
-        if (!Read(structure + kPropertyLink, property)) return false;
+        if (!Read(structure + native_layout.kPropertyLink, property)) return false;
         for (std::size_t count{}; property != 0 && count < 2048; ++count) {
             std::uint32_t name_id{};
             std::uintptr_t field_class{};
-            if (!Read(property + kFieldName, name_id)) return false;
+            if (!Read(property + native_layout.kFieldName, name_id)) return false;
             if (ResolveName(name_id) == name) {
                 std::int32_t array_dim{}, element_size{};
                 std::uint32_t type_id{};
-                return ReadPointerAt(property, kFieldClass, field_class) &&
+                return ReadPointerAt(property, native_layout.kFieldClass, field_class) &&
                     Read(field_class, type_id) && ResolveName(type_id) == type &&
-                    Read(property + kPropertyArrayDim, array_dim) && array_dim == 1 &&
-                    Read(property + kPropertySize, element_size) && element_size == size &&
-                    Read(property + kPropertyOffset, offset) && offset >= 0;
+                    Read(property + native_layout.kPropertyArrayDim, array_dim) && array_dim == 1 &&
+                    Read(property + native_layout.kPropertySize, element_size) && element_size == size &&
+                    Read(property + native_layout.kPropertyOffset, offset) && offset >= 0;
             }
             std::uintptr_t next{};
-            if (!Read(property + kPropertyNext, next) || next == property) return false;
+            if (!Read(property + native_layout.kPropertyNext, next) || next == property) return false;
             property = next;
         }
         return false;
@@ -532,12 +535,12 @@ struct RobBankRuntime::Impl final {
         std::uintptr_t function_class{}, owner{};
         std::uint8_t count{};
         std::uint16_t size{};
-        if (!ReadPointerAt(function, kObjectClassOffset, function_class) ||
+        if (!ReadPointerAt(function, native_layout.kObjectClassOffset, function_class) ||
             ResolveObjectName(function_class) != "Function" ||
-            !ReadPointerAt(function, kObjectOuterOffset, owner) ||
+            !ReadPointerAt(function, native_layout.kObjectOuterOffset, owner) ||
             ResolveObjectName(owner) != expected_owner ||
-            !Read(function + kFunctionNumParms, count) || count != parameters.size() ||
-            !Read(function + kFunctionParmsSize, size) || size != parameter_size) return false;
+            !Read(function + native_layout.kFunctionNumParms, count) || count != parameters.size() ||
+            !Read(function + native_layout.kFunctionParmsSize, size) || size != parameter_size) return false;
         for (const auto& p : parameters) {
             std::uintptr_t property{};
             std::int32_t offset{};
@@ -552,8 +555,8 @@ struct RobBankRuntime::Impl final {
         void* parameters) const noexcept {
         std::uintptr_t vtable{}, method{};
         return Read(object, vtable) && vtable != 0 &&
-            Read(vtable + bank_profile::kProcessEventSlot * sizeof(std::uintptr_t), method) &&
-            method != 0 && InvokeBankFunction(
+            Read(vtable + native_layout.kProcessEventSlot * sizeof(std::uintptr_t), method) &&
+            method != 0 && compatibility.MatchesEntry(core, "ProcessEvent.entry", method, true) && InvokeBankFunction(
                 reinterpret_cast<void*>(object), method, function, parameters);
     }
 
@@ -565,11 +568,11 @@ struct RobBankRuntime::Impl final {
         std::uintptr_t owner = class_object;
         for (std::uint32_t depth{}; owner != 0 && depth < 64; ++depth) {
             std::uintptr_t field{};
-            if (Read(owner + kStructChildren, field)) {
+            if (Read(owner + native_layout.kStructChildren, field)) {
                 for (std::uint32_t count{}; field != 0 && count < 8192; ++count) {
                     std::uintptr_t next{}, field_class{};
-                    if (!Read(field + kFieldNext, next) ||
-                        !ReadPointerAt(field, kObjectClassOffset, field_class)) {
+                    if (!Read(field + native_layout.kFieldNext, next) ||
+                        !ReadPointerAt(field, native_layout.kObjectClassOffset, field_class)) {
                         return false;
                     }
                     if (ResolveObjectName(field_class) == "Function" &&
@@ -582,7 +585,7 @@ struct RobBankRuntime::Impl final {
                 }
             }
             std::uintptr_t super{};
-            if (!Read(owner + kStructSuperOffset, super) || super == 0 ||
+            if (!Read(owner + native_layout.kStructSuperOffset, super) || super == 0 ||
                 super == owner) {
                 return false;
             }
@@ -595,7 +598,7 @@ struct RobBankRuntime::Impl final {
         const std::uintptr_t object, const std::uintptr_t function) const noexcept {
         std::uint16_t parameter_size{};
         if (function == 0 ||
-            !Read(function + bank_profile::kFunctionParmsSize, parameter_size) ||
+            !Read(function + native_layout.kFunctionParmsSize, parameter_size) ||
             parameter_size > kMaximumFunctionParameters) {
             return false;
         }
@@ -615,7 +618,7 @@ struct RobBankRuntime::Impl final {
         if (found == rows.rows_by_name.end()) return false;
         std::uintptr_t table_class{}, row_struct{}, property{};
         std::int32_t offset{};
-        if (!ReadPointerAt(table, kObjectClassOffset, table_class) ||
+        if (!ReadPointerAt(table, native_layout.kObjectClassOffset, table_class) ||
             !FindProperty(table_class, "RowStruct", "ObjectProperty", 8, property, offset) ||
             !ReadPointerAt(table, offset, row_struct) || ResolveObjectName(row_struct) != "CloneSystemData") {
             return false;
@@ -632,8 +635,8 @@ struct RobBankRuntime::Impl final {
         std::uintptr_t inner{}, node_struct{};
         if (!Read(row + offset, nodes) || nodes.count < 1 || nodes.capacity < nodes.count ||
             nodes.capacity > 64 || nodes.data == 0 ||
-            !ReadPointerAt(property, kArrayPropertyInner, inner) ||
-            !ReadPointerAt(inner, kStructPropertyStruct, node_struct) ||
+            !ReadPointerAt(property, native_layout.kArrayPropertyInner, inner) ||
+            !ReadPointerAt(inner, native_layout.kStructPropertyStruct, node_struct) ||
             ResolveObjectName(node_struct) != "CloneSystemSubNodeData" ||
             !FindProperty(node_struct, "DifficultyLevel", "IntProperty", 4, property, offset) ||
             !Read(nodes.data + offset, level) || level < 1 ||
@@ -678,14 +681,8 @@ struct RobBankRuntime::Impl final {
     [[nodiscard]] bool ResolveDirect(
         const std::string_view pattern,
         std::uintptr_t& address) const noexcept {
-        address = 0;
-        return signatures != nullptr && signatures->resolve != nullptr &&
-            signatures->resolve(
-                signatures->user, anomaly::sdk::StringView(kModuleName),
-                anomaly::sdk::StringView(kTextSection),
-                anomaly::sdk::StringView(pattern), &address).code ==
-                ANOMALY_STATUS_V1_OK &&
-            address != 0;
+        address=compatibility.Address(pattern);
+        return address!=0;
     }
 
     [[nodiscard]] bool ResolveRipRelative(
@@ -721,7 +718,7 @@ struct RobBankRuntime::Impl final {
         std::uintptr_t free_string{};
         if (!ResolveRipRelative(kGWorldPattern, 0, world_storage) ||
             !ResolveRipRelative(
-                kGObjectsPattern, kGObjectsAddend, object_registry_address) ||
+                kGObjectsPattern, -static_cast<std::ptrdiff_t>(native_layout.kGObjectsSubtract), object_registry_address) ||
             !ResolveDirect(kPickupPattern, pickup) ||
             !ResolveDirect(kTextToStringPattern, text_to_string) ||
             !ResolveDirect(kFreeStringPattern, free_string)) {
@@ -729,11 +726,11 @@ struct RobBankRuntime::Impl final {
         }
         std::uintptr_t success_return{};
         std::uintptr_t failure_return{};
-        if (!AddAddress(pickup, 0xD6U, success_return) ||
-            !AddAddress(pickup, 0xE3U, failure_return) ||
-            !Matches(pickup, kPickupPrologue) ||
-            !Matches(success_return, kPickupSuccessReturn) ||
-            !Matches(failure_return, kPickupFailureReturn)) {
+        if (!AddAddress(pickup, native_layout.kPickupSuccessOffset, success_return) ||
+            !AddAddress(pickup, native_layout.kPickupFailureOffset, failure_return) ||
+            !compatibility.MatchesEntry(core,"kPickupPrologue",pickup) ||
+            !compatibility.MatchesEntry(core,"kPickupSuccessReturn",success_return) ||
+            !compatibility.MatchesEntry(core,"kPickupFailureReturn",failure_return)) {
             return false;
         }
         pickup_function = pickup;
@@ -765,7 +762,7 @@ struct RobBankRuntime::Impl final {
     [[nodiscard]] std::string ResolveObjectName(const std::uintptr_t object) const {
         std::uintptr_t address{};
         std::uint32_t name_id{};
-        if (!AddSignedAddress(object, kObjectNameOffset, address) ||
+        if (!AddSignedAddress(object, native_layout.kObjectNameOffset, address) ||
             !Read(address, name_id)) {
             return {};
         }
@@ -815,7 +812,7 @@ struct RobBankRuntime::Impl final {
         for (std::uint32_t depth{}; class_object != 0 && depth < 128; ++depth) {
             if (ResolveObjectName(class_object) == expected_name) return true;
             std::uintptr_t next{};
-            if (!ReadPointerAt(class_object, kStructSuperOffset, next)) return false;
+            if (!ReadPointerAt(class_object, native_layout.kStructSuperOffset, next)) return false;
             class_object = next;
         }
         return false;
@@ -876,17 +873,17 @@ struct RobBankRuntime::Impl final {
             current.count > current.max_count || current.num_chunks > current.max_chunks) {
             return false;
         }
-        const std::uint32_t page = index / kObjectChunkSize;
-        const std::uint32_t slot = index % kObjectChunkSize;
+        const std::uint32_t page = index / native_layout.kObjectChunkSize;
+        const std::uint32_t slot = index % native_layout.kObjectChunkSize;
         std::uintptr_t chunk{};
         std::uintptr_t item{};
         std::uintptr_t object_address{};
         std::uintptr_t serial_address{};
         return ReadObjectChunk(current, page, chunk) &&
             AddAddress(
-                chunk, static_cast<std::uint64_t>(slot) * kObjectItemStride, item) &&
-            AddAddress(item, kObjectPointerOffset, object_address) &&
-            AddAddress(item, kObjectSerialOffset, serial_address) &&
+                chunk, static_cast<std::uint64_t>(slot) * native_layout.kObjectItemStride, item) &&
+            AddAddress(item, native_layout.kObjectPointerOffset, object_address) &&
+            AddAddress(item, native_layout.kObjectSerialOffset, serial_address) &&
             Read(object_address, object) && Read(serial_address, serial);
     }
 
@@ -898,43 +895,43 @@ struct RobBankRuntime::Impl final {
             current.count > current.max_count || current.num_chunks > current.max_chunks) {
             return false;
         }
-        const std::uint32_t page = index / kObjectChunkSize;
-        const std::uint32_t slot = index % kObjectChunkSize;
+        const std::uint32_t page = index / native_layout.kObjectChunkSize;
+        const std::uint32_t slot = index % native_layout.kObjectChunkSize;
         std::uintptr_t chunk{};
         std::uintptr_t item{};
         std::uintptr_t object_address{};
         return ReadObjectChunk(current, page, chunk) &&
             AddAddress(
-                chunk, static_cast<std::uint64_t>(slot) * kObjectItemStride, item) &&
-            AddAddress(item, kObjectPointerOffset, object_address) &&
+                chunk, static_cast<std::uint64_t>(slot) * native_layout.kObjectItemStride, item) &&
+            AddAddress(item, native_layout.kObjectPointerOffset, object_address) &&
             Read(object_address, object);
     }
 
     [[nodiscard]] bool LoadObjectRegistry(ObjectRegistry& next) const noexcept {
         ObjectRegistry candidate;
-        if (!ReadPointerAt(object_registry_address, kObjectItemsOffset, candidate.items)) {
+        if (!ReadPointerAt(object_registry_address, native_layout.kObjectItemsOffset, candidate.items)) {
             return false;
         }
         std::uintptr_t address{};
-        if (!AddSignedAddress(object_registry_address, kObjectCountOffset, address) ||
+        if (!AddSignedAddress(object_registry_address, native_layout.kObjectCountOffset, address) ||
             !Read(address, candidate.count) ||
-            !AddSignedAddress(object_registry_address, kObjectMaxCountOffset, address) ||
+            !AddSignedAddress(object_registry_address, native_layout.kObjectMaxCountOffset, address) ||
             !Read(address, candidate.max_count) ||
-            !AddSignedAddress(object_registry_address, kObjectMaxChunksOffset, address) ||
+            !AddSignedAddress(object_registry_address, native_layout.kObjectMaxChunksOffset, address) ||
             !Read(address, candidate.max_chunks) ||
-            !AddSignedAddress(object_registry_address, kObjectNumChunksOffset, address) ||
+            !AddSignedAddress(object_registry_address, native_layout.kObjectNumChunksOffset, address) ||
             !Read(address, candidate.num_chunks) || candidate.max_count == 0 ||
             candidate.max_count > kMaximumObjects || candidate.count > candidate.max_count ||
             candidate.max_chunks == 0 || candidate.max_chunks > kMaximumObjectChunks ||
             candidate.num_chunks > candidate.max_chunks ||
             static_cast<std::uint64_t>(candidate.max_count) >
-                static_cast<std::uint64_t>(candidate.max_chunks) * kObjectChunkSize) {
+                static_cast<std::uint64_t>(candidate.max_chunks) * native_layout.kObjectChunkSize) {
             return false;
         }
         const std::uint64_t required_chunks = candidate.count == 0
             ? 0
-            : (static_cast<std::uint64_t>(candidate.count) + kObjectChunkSize - 1U) /
-                kObjectChunkSize;
+            : (static_cast<std::uint64_t>(candidate.count) + native_layout.kObjectChunkSize - 1U) /
+                native_layout.kObjectChunkSize;
         if (required_chunks > candidate.num_chunks) return false;
 
         constexpr std::uint64_t kFnvOffset = 1469598103934665603ULL;
@@ -970,17 +967,17 @@ struct RobBankRuntime::Impl final {
         std::uintptr_t local_player{};
         std::uintptr_t count_address{};
         std::int32_t player_count{};
-        return ReadPointerAt(next_world, kWorldGameInstanceOffset, game_instance) &&
+        return ReadPointerAt(next_world, native_layout.kWorldGameInstanceOffset, game_instance) &&
             ReadPointerAt(
-                game_instance, kGameInstanceLocalPlayersOffset, local_players) &&
+                game_instance, native_layout.kGameInstanceLocalPlayersOffset, local_players) &&
             AddSignedAddress(
                 game_instance,
-                kGameInstanceLocalPlayersOffset +
+                native_layout.kGameInstanceLocalPlayersOffset +
                     static_cast<std::ptrdiff_t>(sizeof(std::uintptr_t)),
                 count_address) &&
             Read(count_address, player_count) && player_count >= 1 && player_count <= 64 &&
             Read(local_players, local_player) && local_player != 0 &&
-            ReadPointerAt(local_player, kLocalPlayerControllerOffset, next_controller);
+            ReadPointerAt(local_player, native_layout.kLocalPlayerControllerOffset, next_controller);
     }
 
     void ResetWorldState() noexcept {
@@ -1000,8 +997,8 @@ struct RobBankRuntime::Impl final {
         if (ResolveObjectName(table) != "DT_RobBankPoint") return false;
         std::uintptr_t class_object{};
         std::uintptr_t outer_object{};
-        if (!ReadPointerAt(table, kObjectClassOffset, class_object) ||
-            !ReadPointerAt(table, kObjectOuterOffset, outer_object) ||
+        if (!ReadPointerAt(table, native_layout.kObjectClassOffset, class_object) ||
+            !ReadPointerAt(table, native_layout.kObjectOuterOffset, outer_object) ||
             ResolveObjectName(class_object) != "DataTable" ||
             ResolveObjectName(outer_object) !=
                 kRobBankPointPath) {
@@ -1010,14 +1007,14 @@ struct RobBankRuntime::Impl final {
 
         std::uintptr_t row_map_address{};
         ArrayHeader header;
-        if (!AddSignedAddress(table, kDataTableRowMapOffset, row_map_address) ||
+        if (!AddSignedAddress(table, native_layout.kDataTableRowMapOffset, row_map_address) ||
             !Read(row_map_address, header) || header.count <= 0 ||
             header.capacity < header.count || header.capacity > kMaximumDataTableRows ||
             header.data == 0) {
             return false;
         }
         const std::size_t byte_count = static_cast<std::size_t>(header.count) *
-            kDataTableRowStride;
+            native_layout.kDataTableRowStride;
         std::vector<std::uint8_t> elements(byte_count);
         if (!ReadBytes(header.data, elements.data(), elements.size())) return false;
 
@@ -1027,12 +1024,12 @@ struct RobBankRuntime::Impl final {
         candidate.rows_by_name.reserve(static_cast<std::size_t>(header.count));
         for (std::int32_t index{}; index < header.count; ++index) {
             const std::size_t offset = static_cast<std::size_t>(index) *
-                kDataTableRowStride;
+                native_layout.kDataTableRowStride;
             FNameValue key;
             std::uintptr_t row{};
             std::memcpy(&key, elements.data() + offset, sizeof(key));
             std::memcpy(
-                &row, elements.data() + offset + kDataTableRowPointerOffset,
+                &row, elements.data() + offset + native_layout.kDataTableRowPointerOffset,
                 sizeof(row));
             const std::string rendered = RenderFName(key);
             if (key.comparison_index == 0 || row == 0 || rendered.empty()) return false;
@@ -1101,21 +1098,21 @@ struct RobBankRuntime::Impl final {
         const std::uintptr_t table,
         DataTableRows& result) {
         std::uintptr_t class_object{};
-        if (!ReadPointerAt(table, kObjectClassOffset, class_object) ||
+        if (!ReadPointerAt(table, native_layout.kObjectClassOffset, class_object) ||
             ResolveObjectName(class_object) != "DataTable") {
             return false;
         }
 
         std::uintptr_t row_map_address{};
         ArrayHeader header;
-        if (!AddSignedAddress(table, kDataTableRowMapOffset, row_map_address) ||
+        if (!AddSignedAddress(table, native_layout.kDataTableRowMapOffset, row_map_address) ||
             !Read(row_map_address, header) || header.count <= 0 ||
             header.capacity < header.count || header.capacity > kMaximumDataTableRows ||
             header.data == 0) {
             return false;
         }
         const std::size_t byte_count = static_cast<std::size_t>(header.count) *
-            kDataTableRowStride;
+            native_layout.kDataTableRowStride;
         std::vector<std::uint8_t> elements(byte_count);
         if (!ReadBytes(header.data, elements.data(), elements.size())) return false;
 
@@ -1125,12 +1122,12 @@ struct RobBankRuntime::Impl final {
         candidate.rows_by_name.reserve(static_cast<std::size_t>(header.count));
         for (std::int32_t index{}; index < header.count; ++index) {
             const std::size_t offset = static_cast<std::size_t>(index) *
-                kDataTableRowStride;
+                native_layout.kDataTableRowStride;
             FNameValue key;
             std::uintptr_t row{};
             std::memcpy(&key, elements.data() + offset, sizeof(key));
             std::memcpy(
-                &row, elements.data() + offset + kDataTableRowPointerOffset,
+                &row, elements.data() + offset + native_layout.kDataTableRowPointerOffset,
                 sizeof(row));
             const std::string rendered = RenderFName(key);
             if (key.comparison_index == 0 || row == 0 || rendered.empty()) return false;
@@ -1144,7 +1141,7 @@ struct RobBankRuntime::Impl final {
     [[nodiscard]] bool BuildItemTables(const std::uintptr_t data_asset) {
         std::uintptr_t table{};
         DataTableRows rows;
-        if (!ReadPointerAt(data_asset, kRobBankCloneDataAssetItemOffset, table) ||
+        if (!ReadPointerAt(data_asset, native_layout.kRobBankCloneDataAssetItemOffset, table) ||
             !BuildDataTableRows(table, rows)) {
             return false;
         }
@@ -1169,16 +1166,16 @@ struct RobBankRuntime::Impl final {
             std::int32_t pink_paw_coin_value{};
             const bool is_access_card = row_name.starts_with(kAccessCardItemPrefix);
             const bool values_resolved =
-                AddSignedAddress(row, kStaticItemElementDataOffset, address) &&
-                AddSignedAddress(address, kInstancedStructDataOffset, address) &&
+                AddSignedAddress(row, native_layout.kStaticItemElementDataOffset, address) &&
+                AddSignedAddress(address, native_layout.kInstancedStructDataOffset, address) &&
                 Read(address, element_data) && element_data != 0 &&
-                AddSignedAddress(element_data, kRobBankItemValueOffset, address) &&
+                AddSignedAddress(element_data, native_layout.kRobBankItemValueOffset, address) &&
                 Read(address, fons_value) &&
-                AddSignedAddress(element_data, kRobBankItemCoinOffset, address) &&
+                AddSignedAddress(element_data, native_layout.kRobBankItemCoinOffset, address) &&
                 Read(address, pink_paw_coin_value) &&
                 fons_value >= 0 && pink_paw_coin_value >= 0;
             if (!values_resolved && !is_access_card) continue;
-            if (!AddSignedAddress(row, kStaticItemNameOffset, address)) continue;
+            if (!AddSignedAddress(row, native_layout.kStaticItemNameOffset, address)) continue;
             std::string name = ReadText(address);
             if (name.empty()) {
                 if (is_access_card) continue;
@@ -1232,7 +1229,7 @@ struct RobBankRuntime::Impl final {
                 std::uintptr_t object{};
                 std::uintptr_t class_object{};
                 if (!ReadObjectPointer(registry, index, object) || object == 0 ||
-                    !ReadPointerAt(object, kObjectClassOffset, class_object) ||
+                    !ReadPointerAt(object, native_layout.kObjectClassOffset, class_object) ||
                     !IsRobBankCloneDataAssetClass(class_object) ||
                     !BuildItemTables(object)) {
                     continue;
@@ -1255,7 +1252,7 @@ struct RobBankRuntime::Impl final {
         RobBankInspection& inspection) const {
         std::uintptr_t address{};
         FNameValue award_drop_id;
-        if (!AddSignedAddress(actor, kRobBankAwardDropIdOffset, address) ||
+        if (!AddSignedAddress(actor, native_layout.kRobBankAwardDropIdOffset, address) ||
             !Read(address, award_drop_id)) {
             return;
         }
@@ -1283,7 +1280,7 @@ struct RobBankRuntime::Impl final {
         std::uintptr_t player_state{};
         if (player_controller == 0 ||
             !ReadPointerAt(
-                player_controller, kControllerPlayerStateOffset, player_state)) {
+                player_controller, native_layout.kControllerPlayerStateOffset, player_state)) {
             return false;
         }
         // The upstream layout and the observed bank client place this array
@@ -1292,12 +1289,12 @@ struct RobBankRuntime::Impl final {
         std::uintptr_t player_class{}, property{}, inner{}, inner_class{};
         std::int32_t offset{}, inner_size{};
         std::uint32_t inner_type{};
-        if (!ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+        if (!ReadPointerAt(player_state, native_layout.kObjectClassOffset, player_class) ||
             !FindProperty(player_class, "ClientRobBankKeyDoorDataArray", "ArrayProperty", 16, property, offset) ||
-            !ReadPointerAt(property, kArrayPropertyInner, inner) ||
-            !ReadPointerAt(inner, kFieldClass, inner_class) ||
+            !ReadPointerAt(property, native_layout.kArrayPropertyInner, inner) ||
+            !ReadPointerAt(inner, native_layout.kFieldClass, inner_class) ||
             !Read(inner_class, inner_type) || ResolveName(inner_type) != "NameProperty" ||
-            !Read(inner + kPropertySize, inner_size) ||
+            !Read(inner + native_layout.kPropertySize, inner_size) ||
             inner_size != static_cast<std::int32_t>(sizeof(FNameValue))) return false;
         std::uintptr_t address{};
         ArrayHeader header;
@@ -1340,10 +1337,10 @@ struct RobBankRuntime::Impl final {
         }
         std::uintptr_t index_address{};
         std::int32_t internal_index{-1};
-        if (!AddSignedAddress(actor, kObjectInternalIndexOffset, index_address) ||
+        if (!AddSignedAddress(actor, native_layout.kObjectInternalIndexOffset, index_address) ||
             !Read(index_address, internal_index) || internal_index < 0 ||
             static_cast<std::uint32_t>(internal_index) != index ||
-            !ReadPointerAt(actor, kObjectClassOffset, class_object)) {
+            !ReadPointerAt(actor, native_layout.kObjectClassOffset, class_object)) {
             return false;
         }
         const std::string class_name = ResolveObjectName(class_object);
@@ -1368,10 +1365,10 @@ struct RobBankRuntime::Impl final {
         }
         std::uintptr_t index_address{};
         std::int32_t internal_index{-1};
-        return AddSignedAddress(actor, kObjectInternalIndexOffset, index_address) &&
+        return AddSignedAddress(actor, native_layout.kObjectInternalIndexOffset, index_address) &&
             Read(index_address, internal_index) && internal_index >= 0 &&
             static_cast<std::uint32_t>(internal_index) == identity.object_index &&
-            ReadPointerAt(actor, kObjectClassOffset, class_object) &&
+            ReadPointerAt(actor, native_layout.kObjectClassOffset, class_object) &&
             ResolveObjectName(class_object).starts_with("BankBox_") &&
             IsRobBankClass(class_object);
     }
@@ -1415,7 +1412,7 @@ struct RobBankRuntime::Impl final {
             return true;
         }
         std::uintptr_t address{};
-        if (!AddSignedAddress(row, kRobBankPointKeyDoorIdOffset, address) ||
+        if (!AddSignedAddress(row, native_layout.kRobBankPointKeyDoorIdOffset, address) ||
             !Read(address, key_door)) {
             return false;
         }
@@ -1430,7 +1427,7 @@ struct RobBankRuntime::Impl final {
         blocked = false;
         std::uintptr_t root_address{};
         std::uintptr_t root{};
-        if (!AddSignedAddress(actor, kActorRootComponentOffset, root_address) ||
+        if (!AddSignedAddress(actor, native_layout.kActorRootComponentOffset, root_address) ||
             !Read(root_address, root)) {
             return false;
         }
@@ -1438,7 +1435,7 @@ struct RobBankRuntime::Impl final {
         if (!blocked && HasCanInteract(class_object)) {
             bool can_interact{};
             if (!ReadFlag(
-                    actor, kRobBankCanInteractOffset,
+                    actor, native_layout.kRobBankCanInteractOffset,
                     kRobBankCanInteractMask, can_interact)) {
                 return false;
             }
@@ -1451,7 +1448,7 @@ struct RobBankRuntime::Impl final {
 
         std::uintptr_t point_uid_address{};
         FNameValue point_uid;
-        if (!AddSignedAddress(actor, kRobBankPointUidOffset, point_uid_address) ||
+        if (!AddSignedAddress(actor, native_layout.kRobBankPointUidOffset, point_uid_address) ||
             !Read(point_uid_address, point_uid)) {
             return false;
         }
@@ -1499,7 +1496,7 @@ RobBankRuntime::~RobBankRuntime() = default;
 
 bool RobBankRuntime::Start(const AnomalyHostApiV1* const host) noexcept {
     Stop();
-    if (host == nullptr) return false;
+    if (host == nullptr || !LoadCompatibility(host)) return false;
     try {
         const anomaly::sdk::Host services(host);
         impl_->core = services.Query<AnomalyCoreServiceV1>(
@@ -1687,7 +1684,7 @@ AnomalyStatusV1 RobBankRuntime::Pickup(const RobBankEntity entity) noexcept {
         std::uintptr_t player_state{};
         std::uintptr_t player_state_vtable{};
         if (!impl_->ReadPointerAt(
-                live_controller, kControllerPlayerStateOffset, player_state) ||
+                live_controller, native_layout.kControllerPlayerStateOffset, player_state) ||
             !impl_->Read(player_state, player_state_vtable) ||
             player_state_vtable == 0) {
             return Status(
@@ -1700,10 +1697,10 @@ AnomalyStatusV1 RobBankRuntime::Pickup(const RobBankEntity entity) noexcept {
         std::uintptr_t method_slot{};
         std::uintptr_t method{};
         if (!AddSignedAddress(
-                actor, kRobBankContainerInterfaceOffset, interface_object) ||
+                actor, native_layout.kRobBankContainerInterfaceOffset, interface_object) ||
             !impl_->Read(interface_object, interface_vtable) || interface_vtable == 0 ||
             !AddSignedAddress(
-                interface_vtable, kRobBankPickupVtableSlot, method_slot) ||
+                interface_vtable, native_layout.kRobBankPickupVtableSlot, method_slot) ||
             !impl_->Read(method_slot, method) || method != impl_->pickup_function) {
             return Status(
                 ANOMALY_STATUS_V1_CONFLICT,
@@ -1732,8 +1729,8 @@ AnomalyStatusV1 RobBankRuntime::EnterBank() noexcept {
     try {
         using namespace bank_profile;
         std::uintptr_t player_state{}, player_class{}, can_enter{}, enter{};
-        if (!impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
-            !impl_->ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+        if (!impl_->ReadPointerAt(impl_->player_controller, native_layout.kControllerPlayerStateOffset, player_state) ||
+            !impl_->ReadPointerAt(player_state, native_layout.kObjectClassOffset, player_class) ||
             !impl_->ClassIsOrDerivesFrom(player_class, "HTPlayerState") ||
             !impl_->BindFunction(kCanEnterFunction, 1, kCanEnterParameters, can_enter) ||
             !impl_->BindFunction(kEnterFunction, 24, kEnterParameters, enter)) {
@@ -1768,8 +1765,8 @@ AnomalyStatusV1 RobBankRuntime::RequestEvacuation() noexcept {
     if (!impl_->IsGameThread()) return Status(ANOMALY_STATUS_V1_CONFLICT, "Bank evacuation requires the Game thread");
     try {
         std::uintptr_t player_state{}, player_class{}, function{};
-        if (!impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
-            !impl_->ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+        if (!impl_->ReadPointerAt(impl_->player_controller, native_layout.kControllerPlayerStateOffset, player_state) ||
+            !impl_->ReadPointerAt(player_state, native_layout.kObjectClassOffset, player_class) ||
             !impl_->ClassIsOrDerivesFrom(player_class, "HTPlayerState")) {
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank evacuation context is unavailable");
         }
@@ -1790,8 +1787,8 @@ AnomalyStatusV1 RobBankRuntime::ExitClone() noexcept {
     if (!impl_->IsGameThread()) return Status(ANOMALY_STATUS_V1_CONFLICT, "Clone exit requires the Game thread");
     try {
         std::uintptr_t player_state{}, player_class{}, function{};
-        if (!impl_->ReadPointerAt(impl_->player_controller, kControllerPlayerStateOffset, player_state) ||
-            !impl_->ReadPointerAt(player_state, kObjectClassOffset, player_class) ||
+        if (!impl_->ReadPointerAt(impl_->player_controller, native_layout.kControllerPlayerStateOffset, player_state) ||
+            !impl_->ReadPointerAt(player_state, native_layout.kObjectClassOffset, player_class) ||
             !impl_->ClassIsOrDerivesFrom(player_class, "HTPlayerState")) {
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Clone exit context is unavailable");
         }
@@ -1827,12 +1824,12 @@ AnomalyStatusV1 RobBankRuntime::SkipCutscenes(std::uint32_t& requests_sent) noex
         std::uintptr_t bank_sequence{};
         if (playing != 0) {
             std::uintptr_t actor{}, actor_class{}, asset{}, expected_asset{};
-            if (!impl_->ReadPointerAt(impl_->player_controller, kObjectClassOffset, controller_class) ||
+            if (!impl_->ReadPointerAt(impl_->player_controller, native_layout.kObjectClassOffset, controller_class) ||
                 !impl_->FindProperty(controller_class, "LevelSequenceActor", "ObjectProperty", 8, property, offset) ||
                 !impl_->Read(impl_->player_controller + offset, actor)) {
                 return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "Bank intro actor contract is unavailable");
             }
-            if (actor != 0 && impl_->ReadPointerAt(actor, kObjectClassOffset, actor_class) &&
+            if (actor != 0 && impl_->ReadPointerAt(actor, native_layout.kObjectClassOffset, actor_class) &&
                 impl_->FindProperty(actor_class, "LevelSequenceAsset", "ObjectProperty", 8, property, offset) &&
                 impl_->Read(actor + offset, asset) && asset != 0 &&
                 impl_->FindExactObject(kBankIntroSequence, expected_asset) && asset == expected_asset) {
@@ -1878,13 +1875,13 @@ AnomalyStatusV1 RobBankRuntime::SkipCutscenes(std::uint32_t& requests_sent) noex
         for (std::uint32_t index{}; index < impl_->registry.count; ++index) {
             std::uintptr_t widget{}, widget_class{};
             if (!impl_->ReadObjectPointer(impl_->registry, index, widget) || widget == 0 ||
-                !impl_->ReadPointerAt(widget, kObjectClassOffset, widget_class)) continue;
+                !impl_->ReadPointerAt(widget, native_layout.kObjectClassOffset, widget_class)) continue;
             auto [entry, inserted] = classes.try_emplace(widget_class, false);
             if (inserted) {
                 auto current = widget_class;
                 for (unsigned depth{}; current != 0 && depth < 64; ++depth) {
                     if (current == dialogue_class) { entry->second = true; break; }
-                    if (!impl_->Read(current + kStructSuperOffset, current)) break;
+                    if (!impl_->Read(current + native_layout.kStructSuperOffset, current)) break;
                 }
             }
             if (!entry->second || impl_->ResolveObjectName(widget).starts_with("Default__") ||
@@ -1892,7 +1889,7 @@ AnomalyStatusV1 RobBankRuntime::SkipCutscenes(std::uint32_t& requests_sent) noex
             std::uintptr_t button{}, button_class{};
             if (!impl_->ReadPointerAt(widget, button_offset, button) || !shown(button) ||
                 !query_bool(button, enabled) ||
-                !impl_->ReadPointerAt(button, kObjectClassOffset, button_class) ||
+                !impl_->ReadPointerAt(button, native_layout.kObjectClassOffset, button_class) ||
                 !impl_->ClassIsOrDerivesFrom(button_class, "CommonButtonBase") ||
                 !query_bool(button, interaction)) continue;
             // An ambiguous window set cannot authorize a dialogue skip.

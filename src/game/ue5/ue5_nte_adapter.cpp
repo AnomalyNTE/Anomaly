@@ -8671,16 +8671,21 @@ struct Ue5NteAdapter::State {
     // Dump-backed fields written by Anomaly's readable speed path. The binary uses
     // the input speed factor to derive an absolute km/h target, then computes the
     // actual TopSpeedRatio relative to the vehicle's original TopSpeedInKmH.
+
     [[nodiscard]] bool ReadVehicleSpeedFieldSnapshotLocked(
         const std::uintptr_t movement,
         VehicleSpeedFieldBaseline& snapshot) noexcept {
         try {
             snapshot = {};
-            if (movement == 0 || !ReadableRange(*memory, movement, 0x1810U)) return false;
+            const auto component_size = Layout(profile, "vehicle.movementComponentSize", -1);
+            if (component_size <= 0 || component_size > 65536 || movement == 0 ||
+                !ReadableRange(*memory, movement, static_cast<std::size_t>(component_size))) return false;
             const auto read_float = [&](const std::string_view key, float& value) {
                 const auto offset = Layout(profile, key, -1);
                 std::uintptr_t address{};
-                if (offset < 0 || offset > 0x1810 - static_cast<std::int64_t>(sizeof(float)) ||
+                if (offset < 0 ||
+                    offset > static_cast<std::int64_t>(component_size) -
+                        static_cast<std::int64_t>(sizeof(float)) ||
                     !AddAddress(movement, offset, address) ||
                     !ReadValue(*memory, address, value) ||
                     !std::isfinite(value) || value < 0.0F || value > 1000000000.0F) return false;
@@ -8699,7 +8704,8 @@ struct Ue5NteAdapter::State {
             }
             const auto enabled_offset = Layout(profile, "vehicle.enableTopSpeedLimit", -1);
             std::uintptr_t enabled_address{};
-            if (enabled_offset < 0 || enabled_offset >= 0x1810 ||
+            if (enabled_offset < 0 ||
+                enabled_offset >= static_cast<std::int64_t>(component_size) ||
                 !AddAddress(movement, enabled_offset, enabled_address) ||
                 !ReadValue(*memory, enabled_address, snapshot.enable_top_speed_limit) ||
                 snapshot.enable_top_speed_limit > 1U) {
@@ -8719,14 +8725,18 @@ struct Ue5NteAdapter::State {
         std::string& failure_reason) noexcept {
         try {
             failure_reason.clear();
-            if (!values.valid || movement == 0 || !ReadableRange(*memory, movement, 0x1810U)) {
+            const auto component_size = Layout(profile, "vehicle.movementComponentSize", -1);
+            if (component_size <= 0 || component_size > 65536 || !values.valid || movement == 0 ||
+                !ReadableRange(*memory, movement, static_cast<std::size_t>(component_size))) {
                 failure_reason = "载具速度字段快照或 MovementComponent 布局无效";
                 return false;
             }
             const auto write_float = [&](const std::string_view key, const float value) {
                 const auto offset = Layout(profile, key, -1);
                 std::uintptr_t address{};
-                if (offset < 0 || offset > 0x1810 - static_cast<std::int64_t>(sizeof(float)) ||
+                if (offset < 0 ||
+                    offset > static_cast<std::int64_t>(component_size) -
+                        static_cast<std::int64_t>(sizeof(float)) ||
                     !std::isfinite(value) || value < 0.0F || value > 1000000000.0F ||
                     !AddAddress(movement, offset, address) ||
                     !memory->Write(address, &value, sizeof(value))) {
@@ -8754,7 +8764,8 @@ struct Ue5NteAdapter::State {
             }
             const auto enabled_offset = Layout(profile, "vehicle.enableTopSpeedLimit", -1);
             std::uintptr_t enabled_address{};
-            if (enabled_offset < 0 || enabled_offset >= 0x1810 ||
+            if (enabled_offset < 0 ||
+                enabled_offset >= static_cast<std::int64_t>(component_size) ||
                 !AddAddress(movement, enabled_offset, enabled_address) ||
                 !memory->Write(enabled_address, &values.enable_top_speed_limit,
                     sizeof(values.enable_top_speed_limit))) {

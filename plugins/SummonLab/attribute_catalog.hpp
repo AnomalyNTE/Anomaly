@@ -6,10 +6,10 @@
 namespace summon_lab {
 
 // GameplayAttributeData fields from HTGame.GameplayAttributeSet in the supplied
-// Dumper-7 5.6.1-0+UE5-HT-1.4b CppSDK/SDK/HTGame_classes.hpp.
+// Dumper-7 5.6.1-0+UE5-HT-1.4b and 1.5a CppSDK/SDK/HTGame_classes.hpp.
 // These are game identifiers, not UI copy. Keep their spelling for reflection.
 // Names only: spawning still resolves and verifies the live properties.
-inline constexpr std::array<std::string_view, 155> kBirthAttributeNames{
+inline constexpr std::array<std::string_view, 156> kBirthAttributeNames{
     "HPMaxBase",
     "HPMaxUp",
     "HPMaxAdd",
@@ -165,6 +165,8 @@ inline constexpr std::array<std::string_view, 155> kBirthAttributeNames{
     "OnlineAtkRatio",
     "OnlineUnbalMaxRatio",
     "LogicCustomCoefficient",
+    // Append the 1.5 field so existing preset indices keep their meaning.
+    "FollowUpDamage",
 };
 
 inline constexpr std::size_t kMaxHpAttribute = 0;

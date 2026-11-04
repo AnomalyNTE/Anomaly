@@ -174,12 +174,8 @@ bool WriteBytes(
 bool ResolveGWorld() noexcept {
     if (g_context.g_world_address != 0) return true;
     if (!SignaturesReady(g_context.signatures)) return false;
-    std::uintptr_t instruction{};
-    const AnomalyStatusV1 status = g_context.signatures->resolve(
-        g_context.signatures->user, anomaly::sdk::StringView("HTGame.exe"),
-        anomaly::sdk::StringView(".text"),
-        anomaly::sdk::StringView(profile::kGWorldPattern), &instruction);
-    if (status.code != ANOMALY_STATUS_V1_OK || instruction == 0) return false;
+    const auto instruction = profile::compatibility.Address(profile::kGWorldPattern);
+    if (instruction == 0) return false;
     std::int32_t displacement{};
     if (!ReadBytes(instruction + profile::kGWorldResolveOffset, &displacement,
                    sizeof(displacement))) {
@@ -214,10 +210,10 @@ LocalComponent ResolveLocalComponent() noexcept {
         world == 0) {
         return {};
     }
-    const std::uintptr_t game_instance = ReadPointer(world, profile::kWorldGameInstanceOffset);
+    const std::uintptr_t game_instance = ReadPointer(world, profile::native_layout.kWorldGameInstanceOffset);
     if (game_instance == 0) return {};
     const std::uintptr_t local_players =
-        ReadPointer(game_instance, profile::kGameInstanceLocalPlayersOffset);
+        ReadPointer(game_instance, profile::native_layout.kGameInstanceLocalPlayersOffset);
     if (local_players == 0) return {};
     std::uintptr_t local_player{};
     if (!ReadBytes(local_players, &local_player, sizeof(local_player)) ||
@@ -225,25 +221,25 @@ LocalComponent ResolveLocalComponent() noexcept {
         return {};
     }
     const std::uintptr_t controller =
-        ReadPointer(local_player, profile::kLocalPlayerControllerOffset);
+        ReadPointer(local_player, profile::native_layout.kLocalPlayerControllerOffset);
     if (controller == 0) return {};
-    const std::uintptr_t character = ReadPointer(controller, profile::kControllerPawnOffset);
+    const std::uintptr_t character = ReadPointer(controller, profile::native_layout.kControllerPawnOffset);
     if (character == 0) return {};
 
-    const std::uintptr_t mesh = ReadPointer(character, profile::kCharacterMeshOffset);
+    const std::uintptr_t mesh = ReadPointer(character, profile::native_layout.kCharacterMeshOffset);
     if (mesh == 0) return {0, ComponentStatus::no_component};
     return {mesh, ComponentStatus::resolved};
 }
 
 bool ReadScale(const std::uintptr_t component, model_scale::ScaleVector& scale) noexcept {
-    return ReadBytes(AddOffset(component, profile::kSceneComponentRelativeScale3D),
-                     scale.data(), profile::kVectorSize);
+    return ReadBytes(AddOffset(component, profile::native_layout.kSceneComponentRelativeScale3D),
+                     scale.data(), sizeof(scale));
 }
 
 bool WriteScale(
     const std::uintptr_t component, const model_scale::ScaleVector& scale) noexcept {
-    return WriteBytes(AddOffset(component, profile::kSceneComponentRelativeScale3D),
-                      scale.data(), profile::kVectorSize);
+    return WriteBytes(AddOffset(component, profile::native_layout.kSceneComponentRelativeScale3D),
+                      scale.data(), sizeof(scale));
 }
 
 // Clear the bit the engine's own SetRelativeScale3D clears after it writes the vector.
@@ -251,11 +247,11 @@ bool WriteScale(
 // never reaches the mesh that is attached underneath.
 bool MarkTransformDirty(const std::uintptr_t component) noexcept {
     const std::uintptr_t address =
-        AddOffset(component, profile::kSceneComponentToWorldUpdated);
+        AddOffset(component, profile::native_layout.kSceneComponentToWorldUpdated);
     std::uint8_t flags{};
     if (!ReadBytes(address, &flags, sizeof(flags))) return false;
     flags = static_cast<std::uint8_t>(
-        flags & ~static_cast<std::uint8_t>(1U << profile::kSceneComponentToWorldUpdatedBit));
+        flags & ~static_cast<std::uint8_t>(1U << profile::native_layout.kSceneComponentToWorldUpdatedBit));
     return WriteBytes(address, &flags, sizeof(flags));
 }
 
@@ -610,6 +606,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     if (context == nullptr || host == nullptr) {
         return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     }
+    if (!profile::LoadCompatibility(host)) return StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE);
     const auto sdk_host = anomaly::sdk::Host(host);
     const auto core = sdk_host.Query<AnomalyCoreServiceV1>(
         ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);

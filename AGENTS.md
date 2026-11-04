@@ -123,7 +123,7 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 
 | # | 位置 | 作用 | 漏掉的后果 |
 | --- | --- | --- | --- |
-| 1 | `anomaly_add_plugin(<target> SOURCES … MANIFEST … PACKAGE_NAME … OUTPUT_DIRECTORY …)` | 定义 target、产出 `plugin.dll`、POST_BUILD 镜像 `locales/`/`assets/`、install 进 `Anomaly/plugins/<包名>` | 插件根本不存在 |
+| 1 | `anomaly_add_plugin(<target> SOURCES … MANIFEST … PACKAGE_NAME … OUTPUT_DIRECTORY …)` | 定义 target、产出 `plugin.dll`、POST_BUILD 镜像 `locales/`/`assets/`/`profile/`、install 进 `Anomaly/plugins/<包名>` | 插件根本不存在 |
 | 2 | `target_compile_options(<target> PRIVATE /utf-8)` 等 target 级设置 | 仅在该 target 需要的选项；`UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX` 与源码根 include **不要**在这里写 | 重复定义或缺失编译选项 |
 | 3 | `set(ANOMALY_BUILTIN_PLUGIN_TARGETS …)` 列表 | `foreach` 统一给每个插件加源码根 include 与 Win32 宏；`anomaly_test_host`、`anomaly-platform-preview` 也依赖这份列表 | 缺 include/宏，或 preview 镜像因 target 未构建而 stage 失败 |
 
@@ -131,6 +131,40 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
   `TestPlugins` 组件，同时加入第 3 处列表的 `list(APPEND …)` 分支，而不是主 `set(…)`。
 - **只在开发者模式展示**靠 manifest 的 `"audience": "developer"`，与 `TEST_PLUGIN` 无关：前者决定
   管理界面是否列出，后者决定是否随发布包产出。
+
+## 插件 Profile（强制）
+
+采用「Profile 保存兼容数据，宿主统一加载，插件校验后使用」的设计模式。可参考
+[`plugins/SummonLab/profile/compatibility.profile.json`](plugins/SummonLab/profile/compatibility.profile.json)
+和 [`plugins/SummonLab/native_layout.hpp`](plugins/SummonLab/native_layout.hpp) 的职责划分。
+
+- 兼容配置放在与 `manifest.json` 同级的 `profile/`；相关功能优先共用一个 profile，通过 `symbols`
+  与 `candidates` 组织。`anomaly_add_plugin` 统一复制、安装，禁止插件专用的重复打包逻辑。
+- 所有插件使用仓库 [`schemas/plugin-profile.schema.json`](schemas/plugin-profile.schema.json)，
+  禁止自行定义另一套 JSON 根结构。公共格式需要扩展时，统一修改 schema、宿主、SDK 与文档。
+- 通过宿主 `anomaly.profile` 读取和校验文件；manifest 声明 `anomaly.profile`、`anomaly.json` v1
+  和 `json` capability。C++ 使用 `anomaly::sdk::LoadProfile`（`include/anomaly/sdk/profile.hpp`），
+  禁止插件自己打开 profile 文件、引入 JSON parser 或复制解析逻辑。
+- 仅在 Lifecycle/Worker 加载；宿主从当前 DLL generation 的包快照读取 `profile/`，拒绝越界路径、
+  reparse、超限文档和不合规 schema。启动时加载一次，Game/Render 回调只读解析后的快照。
+- **signature / offset 只能放在 Profile**：扫描签名、入口字节、相对调用位置、游戏对象字段偏移、
+  虚表槽位偏移、版本相关的记录尺寸和步长等兼容数据，禁止硬编码在 `.cpp`/`.hpp`、宏、
+  `constexpr` 数组或嵌入的 JSON 中；移到另一个头文件不算配置化。
+- **Profile 必须参与实际执行**：启动时把所需字段解析成具名布局快照，后续读写和 Hook 使用该快照，
+  或使用经名称、类型和尺寸校验的运行时反射结果。禁止只在 JSON 声明偏移，实际仍使用数字字面量；
+  禁止缺项、解析失败或签名失配后回退到代码中的默认偏移或签名。
+- **多版本共用一份兼容配置**：已核对相同的值放公共 `layout`，差异放对应符号的 `candidates[].values`，
+  以唯一签名和入口校验选择候选。增加新版候选时保留仍支持的旧版。`contract` 表示实现支持的语义合同，不含或匹配
+  Build identity，也不通过版本号分支选择硬编码布局。
+- **代码保留实现合同与安全校验**：固定调用 ABI 的具名参数结构、`sizeof` / `offsetof`、指令解码规则，
+  以及范围、对齐、字段重叠、反射类型和对象生命周期校验属于代码。不得借此保留游戏偏移的第二份
+  数值副本，也不得为了配置化删除这些校验；只有实现支持且校验通过的布局才能用于内存访问。
+- 需要扫描的符号用公共 `ResolveProfileSymbol` 完成唯一候选、可选 E8 rel32 和入口字节校验；
+  已由受控对象或虚表取得地址的入口，按 Profile 校验实际入口字节，不把不唯一的短函数体用于全局扫描。
+  插件再检查所需字段与自身语义合同，全部通过后才安装依赖的 Hook。失败时停用相关功能，禁止猜测布局或地址。
+- 新增目录后重新 configure 并构建；更新配置随包的新 generation 生效。Profile 是发布兼容数据，
+  用户可写配置仍走 `anomaly.config` / `plugin-state`，不写回 profile。
+
 
 ## 构建与测试约定
 

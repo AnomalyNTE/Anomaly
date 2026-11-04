@@ -7,16 +7,55 @@
   "license": "AGPL-3.0-only",
   "version": "1.3.2",
   "entry": "plugin.dll",
-  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
-  "games": ["nte"],
-  "builds": ["nte-*"],
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
   "loadPhase": "game-ready",
   "services": [
-    {"id": "anomaly.core", "minVersion": 1},
-    {"id": "anomaly.interop.signature", "minVersion": 1},
-    {"id": "anomaly.ue5.objects", "minVersion": 1},
-    {"id": "anomaly.interop.hook", "minVersion": 1},
-    {"id": "anomaly.ue5.names", "minVersion": 1}
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.hook",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    }
   ],
-  "capabilities": ["interop-signature", "memory-read", "memory-write", "ue5-objects", "interop-hook", "ue5-names"]
+  "capabilities": [
+    "interop-signature",
+    "memory-read",
+    "memory-write",
+    "ue5-objects",
+    "interop-hook",
+    "ue5-names",
+    "json"
+  ]
 }

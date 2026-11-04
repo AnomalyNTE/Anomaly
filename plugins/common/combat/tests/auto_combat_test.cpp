@@ -9,6 +9,8 @@
 // 都有时间上限，测试不会挂死。四个互不相干的场景各自持有夹具与状态机，并行执行，总时长由
 // 最长的那个场景（10 秒无怪运行）决定。
 #include "../auto_combat.hpp"
+#include "../native_layout.hpp"
+#include "../../../../apps/test_host/plugin_profile_fixture_host.hpp"
 
 #include "anomaly/sdk/cpp.hpp"
 
@@ -235,6 +237,7 @@ AnomalyStatusV1 ANOMALY_CALL EntityPage(void* user, const AnomalyNteEntityPageRe
 }
 
 Fixture::Fixture() {
+    state.g_world_address = arena.Base() + kGWorldSlot;
     const std::uintptr_t base = arena.Base();
     // 让 kGWorldPattern 的 RIP 解析落在 kGWorldSlot：resolved = instruction + 7 + displacement。
     constexpr std::int32_t displacement =
@@ -527,6 +530,10 @@ void ScenarioAttackFailedFlag() {
 }  // namespace
 
 int main() {
+    anomaly::testing::ProfileHost profile_host("CombatBox");
+    anomaly::plugins::CompatibilityProfile profile;
+    Check(profile.Load(&profile_host.api, "compatibility.profile.json", "combat-box-v1", {"ProcessEvent.entry"}), "production profile must load");
+    Check(anomaly::plugins::combat::profile::Configure(&profile_host.api, profile), "combat layout must validate");
     // 断言 1：服务缺失 → unavailable。
     {
         Host missing{};

@@ -1,10 +1,62 @@
 #pragma once
+#include "../common/compatibility_profile.hpp"
 
 #include <cstdint>
 #include <cstddef>
 #include <string_view>
 
 namespace camera_blur_fix_profile {
+struct Layout {
+    std::uint32_t kObjectInternalIndexOffset{};
+    std::uint32_t kObjectClassOffset{};
+    std::uint32_t kUStructSuperOffset{};
+    std::uint32_t kUStructPropertyLinkOffset{};
+    std::uint32_t kFFieldClassOffset{};
+    std::uint32_t kFFieldNextOffset{};
+    std::uint32_t kFFieldNameOffset{};
+    std::uint32_t kFPropertyElementSizeOffset{};
+    std::uint32_t kFPropertyOffsetOffset{};
+    std::uint32_t kUFunctionExecOffset{};
+    std::uint32_t kUFunctionNumParmsOffset{};
+    std::uint32_t kUFunctionParmsSizeOffset{};
+    std::ptrdiff_t kGObjectsAddend{};
+    std::uint32_t kObjectChunksOffset{};
+    std::uint32_t kObjectCountOffset{};
+    std::uint32_t kObjectChunkBits{};
+    std::uint32_t kObjectItemStride{};
+    std::uint32_t kObjectItemPointerOffset{};
+    std::uint32_t kObjectItemSerialOffset{};
+};
+inline Layout native_layout;
+inline anomaly::plugins::CompatibilityProfile compatibility;
+inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
+    try {
+        if (!compatibility.Load(host, "compatibility.profile.json", "camera-blur-fix-v1")) return false;
+        Layout parsed;
+        parsed.kObjectInternalIndexOffset = compatibility.Value("kObjectInternalIndexOffset", 16384);
+        parsed.kObjectClassOffset = compatibility.Value("kObjectClassOffset", 16384);
+        parsed.kUStructSuperOffset = compatibility.Value("kUStructSuperOffset", 16384);
+        parsed.kUStructPropertyLinkOffset = compatibility.Value("kUStructPropertyLinkOffset", 16384);
+        parsed.kFFieldClassOffset = compatibility.Value("kFFieldClassOffset", 16384);
+        parsed.kFFieldNextOffset = compatibility.Value("kFFieldNextOffset", 16384);
+        parsed.kFFieldNameOffset = compatibility.Value("kFFieldNameOffset", 16384);
+        parsed.kFPropertyElementSizeOffset = compatibility.Value("kFPropertyElementSizeOffset", 16384);
+        parsed.kFPropertyOffsetOffset = compatibility.Value("kFPropertyOffsetOffset", 16384);
+        parsed.kUFunctionExecOffset = compatibility.Value("kUFunctionExecOffset", 16384);
+        parsed.kUFunctionNumParmsOffset = compatibility.Value("kUFunctionNumParmsOffset", 16384);
+        parsed.kUFunctionParmsSizeOffset = compatibility.Value("kUFunctionParmsSizeOffset", 16384);
+        parsed.kGObjectsAddend = -static_cast<std::ptrdiff_t>(compatibility.Value("kGObjectsAddendMagnitude", 16384));
+        parsed.kObjectChunksOffset = compatibility.Value("kObjectChunksOffset", 65536);
+        parsed.kObjectCountOffset = compatibility.Value("kObjectCountOffset", 16384);
+        parsed.kObjectChunkBits = compatibility.Value("kObjectChunkBits", 65536);
+        parsed.kObjectItemStride = compatibility.Value("kObjectItemStride", 16384);
+        parsed.kObjectItemPointerOffset = compatibility.Value("kObjectItemPointerOffset", 16384);
+        parsed.kObjectItemSerialOffset = compatibility.Value("kObjectItemSerialOffset", 16384);
+        native_layout = parsed;
+        return true;
+    } catch (...) { return false; }
+}
+
 
 // Keep the NPC/crowd mask setters from ea22766. The local player's independent
 // distance-hide and pitch-fade settings also need disabling; a material mask
@@ -21,42 +73,28 @@ inline constexpr float kVisibleMask = 1.0F;
 
 // Same validated GWorld signature as the active NTE profile. A world-service
 // handle identifies a lifecycle generation, not a GObjects slot.
-inline constexpr std::string_view kGWorldPattern =
-    "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
+inline constexpr std::string_view kGWorldPattern = "kGWorldPattern";
 
 // Existing UE5 reflection metadata layout from the active profile. Game-specific
 // camera offsets are resolved by property name/type, not copied from the dump.
-inline constexpr std::uint32_t kObjectInternalIndexOffset = 0xC;
-inline constexpr std::uint32_t kObjectClassOffset = 0x10;
-inline constexpr std::uint32_t kUStructSuperOffset = 0x40;
-inline constexpr std::uint32_t kUStructPropertyLinkOffset = 0x70;
-inline constexpr std::uint32_t kFFieldClassOffset = 0x8;
-inline constexpr std::uint32_t kFFieldNextOffset = 0x18;
-inline constexpr std::uint32_t kFFieldNameOffset = 0x20;
-inline constexpr std::uint32_t kFPropertyElementSizeOffset = 0x34;
-inline constexpr std::uint32_t kFPropertyOffsetOffset = 0x44;
+// That indirection is load-bearing: AHTPlayerCameraManager grew in 1.5a, so the fade
+// block moved (1.4b -> 1.5a: PlayerFadeDistanceSquare 0x3B54 -> 0x3B5C,
+// PlayerHideDistanceSquare 0x3B58 -> 0x3B60, PlayerPitchFadeCurve 0x3B60 -> 0x3B68)
+// and NormalCameraSettings moved further still (0xBAC8 -> 0xBAD8). FCameraSettings
+// itself did not move, so the 0x570 field size it is validated against still holds.
 
 // UE5 reflection layout: UFunction::Func and the {numParms, parmsSize} pair.
-inline constexpr std::uint32_t kUFunctionExecOffset = 0xD8;
-inline constexpr std::uint32_t kUFunctionNumParmsOffset = 0xB4;
-inline constexpr std::uint32_t kUFunctionParmsSizeOffset = 0xB6;
+
 // A UHT exec thunk loads `this` and then calls the native implementation, so
 // the last "mov rcx, rdi; call rel32" in the thunk is the function to hook.
 inline constexpr std::uint8_t kNativeCallMarker[] = {0x48, 0x8B, 0xCF, 0xE8};
 inline constexpr std::uint32_t kThunkScanBytes = 0xC0;
 
 // GObjects registry, used to turn an objects-service handle into an address.
-inline constexpr std::string_view kGObjectsPattern =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
+inline constexpr std::string_view kGObjectsPattern = "kGObjectsPattern";
 inline constexpr std::uint32_t kRipDisplacementOffset = 3;
 inline constexpr std::uint32_t kRipInstructionSize = 7;
-inline constexpr std::ptrdiff_t kGObjectsAddend = -16;
-inline constexpr std::uint32_t kObjectChunksOffset = 16;
-inline constexpr std::uint32_t kObjectCountOffset = 36;
-inline constexpr std::uint32_t kObjectChunkBits = 16;
-inline constexpr std::uint32_t kObjectItemStride = 24;
-inline constexpr std::uint32_t kObjectItemPointerOffset = 0;
-inline constexpr std::uint32_t kObjectItemSerialOffset = 16;
+
 inline constexpr std::uint32_t kMaximumObjectCount = 16U * 1024U * 1024U;
 
 // Retry missing hook targets or camera reflection metadata at a slow interval.

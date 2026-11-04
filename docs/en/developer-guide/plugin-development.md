@@ -13,6 +13,8 @@ Anomaly\plugins\MyPlugin\
   manifest.json     declares ID, version, API range, dependencies, required services and capabilities
   plugin.dll        exports AnomalyPluginEntryV1
   assets\           (optional) assets
+  locales\          (optional) localization catalogs
+  profile\          (optional) signatures, layouts and compatibility data
   dependency.dll    (optional) native dependency
 ```
 
@@ -40,7 +42,25 @@ anomaly_add_plugin(my_plugin
   PACKAGE_NAME MyPlugin)
 ```
 
-`anomaly_add_plugin` always outputs `plugin.dll`, places the manifest and the `locales` directory next to the manifest into the package directory, and owns the install rule for that package: by default it installs to `<prefix>/Anomaly/plugins/<PACKAGE_NAME>` (the `GameRuntime` component). Two optional keywords change the install behavior: `NO_RELEASE` only builds and produces no install rule; `TEST_PLUGIN` installs into a separate `TestPlugins` component and only builds and installs when `ANOMALY_BUILD_TEST_PLUGINS=ON`. Any extra assets of your own (for example `data\`) still have to be listed explicitly in the project.
+`anomaly_add_plugin` always outputs `plugin.dll`, copies the manifest and its sibling `locales/`, `assets/` and `profile/` directories into the package, and owns the install rule for that package: by default it installs to `<prefix>/Anomaly/plugins/<PACKAGE_NAME>` (the `GameRuntime` component). Two optional keywords change the install behavior: `NO_RELEASE` only builds and produces no install rule; `TEST_PLUGIN` installs into a separate `TestPlugins` component and only builds and installs when `ANOMALY_BUILD_TEST_PLUGINS=ON`. Any extra assets of your own (for example `data\`) still have to be listed explicitly in the project.
+
+`profile/` is shared by all plugins and automatically copied and installed by CMake. Prefer one JSON file for related features, organized by `symbols` and compatibility `candidates`. Every file must follow [`plugin-profile.schema.json`](../../../schemas/plugin-profile.schema.json). Store signatures, entry bytes, call offsets, layout seeds and version differences there, rather than hardcoding compatibility data in C++. Keep calling conventions, semantic contracts and necessary layout checks in code.
+
+Declare `anomaly.profile` and `anomaly.json` v1 plus the `json` capability in the manifest. Call `anomaly::sdk::LoadProfile(host, "my-plugin.profile.json")` during startup. The host reads `profile/` from the current DLL generation's package snapshot and validates paths and the shared schema. Plugins must not open or parse profile files themselves. The returned C++ `Profile` is an owned snapshot; temporary JSON handles have been released. Load only in Lifecycle/Worker, then read the snapshot in later callbacks. Omit the `profile/` prefix from the filename.
+
+```cpp
+#include <anomaly/sdk/profile.hpp>
+
+const auto loaded = anomaly::sdk::LoadProfile(host, "my-plugin.profile.json");
+if (!loaded) { /* Report loaded.error(); disable the feature. */ return; }
+const auto& profile = loaded.value();
+if (profile.contract != "my-plugin-v1") return;
+// Validate required layout/values against the implementation before installing hooks.
+const auto symbol = anomaly::sdk::ResolveProfileSymbol(signature, core, profile, "query");
+if (!symbol) { /* Report symbol.error; disable the feature. */ return; }
+```
+
+The shared resolver validates a unique candidate, optional E8 relative call and exact entry bytes. Ambiguous matches and changed entries are rejected. `contract` identifies semantic support, never Build identity. Configure again after adding the directory, then rebuild. Changes take effect in a new package generation; never write back to profiles. See the [profile service](../api-reference/platform-services.md#anomalyprofile) for the C ABI and fields, and [`SummonLab/profile/compatibility.profile.json`](../../../plugins/SummonLab/profile/compatibility.profile.json) for a combined example.
 
 Source entry points: `<anomaly/sdk/anomaly_sdk.h>` (C) or `<anomaly/sdk/cpp.hpp>` (C++, which provides lightweight wrappers such as `Host`, `ServiceRef` and `UiWindow`).
 
@@ -261,23 +281,23 @@ The original signature matching multiple times still returns `CONFLICT`, and ins
 The raw signature interface only provides addresses and has no layout validator or field update contract, so it only wildcards RIP-relative addresses and relative branch operands, keeping object member and stack displacement bytes; wildcards already present in the original pattern still follow the original declaration. When the learning window matches nothing, the framework also tries to re-derive from the complete instructions of the original pattern, so no hand-written fallback pattern is needed.
 Compile-time field offset constants in existing DLLs cannot be replaced by signature recovery; layout changes outside the window or not constrained by the original signature cannot be validated by the address resolution interface either. Plugins that bypass the service and scan on their own do not go through this recovery path.
 
-Plugins that need automatic field offset learning can opt into signature v2 and include `anomaly/sdk/signature.hpp`. Set `minVersion` to `2` for that service in the manifest. Signatures and semantic seeds still live in the plugin's own header; call the framework API once during startup, and later callbacks only read the local snapshot. For example, with an existing `kPausePattern` / `kResumePattern`:
+Plugins that need automatic field offset learning can opt into signature v2 and include `anomaly/sdk/signature.hpp`. Set `minVersion` to `2` for that service in the manifest. Load signatures and offset seeds from the shared profile described above; call the framework API once during startup, and later callbacks only read the local snapshot. For example, after validating a `profile` with single-candidate `pause` / `resume` symbols:
 
 ```cpp
-inline constexpr AnomalySignatureFieldV2 fields[]{
-    anomaly::sdk::FieldSeed("PlayingID", 0x438, 4),
-    anomaly::sdk::FieldSeed("Paused", 0x43C),
+const AnomalySignatureFieldV2 fields[]{
+    anomaly::sdk::FieldSeed("PlayingID", profile.layout.at("PlayingID"), 4),
+    anomaly::sdk::FieldSeed("Paused", profile.layout.at("Paused")),
 };
 inline constexpr AnomalySignatureMemberV2 members[]{
     anomaly::sdk::MemberUse(0, 4, ANOMALY_SIGNATURE_MEMBER_READ_V2),
     anomaly::sdk::MemberUse(1, 1, ANOMALY_SIGNATURE_MEMBER_WRITE_V2),
 };
-inline constexpr AnomalySignatureWitnessV2 witnesses[]{
-    anomaly::sdk::Witness("pause", kPausePattern, members),
-    anomaly::sdk::Witness("resume", kResumePattern, members),
+const AnomalySignatureWitnessV2 witnesses[]{
+    anomaly::sdk::Witness("pause", profile.symbol("pause").candidates.front().pattern, members),
+    anomaly::sdk::Witness("resume", profile.symbol("resume").candidates.front().pattern, members),
 };
-inline constexpr anomaly::sdk::LayoutSchema schema{
-    "HTGame.exe", ".text", fields, witnesses};
+const anomaly::sdk::LayoutSchema schema{
+    profile.module, profile.section, fields, witnesses};
 
 // Lifecycle / Worker; signature is the AnomalySignatureServiceV2 you already queried.
 auto resolved = anomaly::sdk::ResolveLayout(signature, schema);

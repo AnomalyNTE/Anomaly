@@ -11,7 +11,7 @@ include(CMakeParseArguments)
 # directory, and the same package directory is what gets installed.
 #
 #   - the package installs into `Anomaly/plugins/<PACKAGE_NAME>` of the GameRuntime
-#     component, and the `locales` and `assets` directories next to the manifest are
+#     component, and the `locales`, `assets` and `profile` directories next to the manifest are
 #     mirrored into the package directory and installed with it;
 #   - TEST_PLUGIN marks a developer test package: it is built and installed only when
 #     ANOMALY_BUILD_TEST_PLUGINS is ON, and it then installs into the TestPlugins component
@@ -66,30 +66,28 @@ function(anomaly_add_plugin target)
             target_compile_options(${target} PRIVATE /EHsc)
         endif()
     endif()
-    # The manifest sits in the plugin source directory, so that directory describes the
-    # package contents: the manifest itself, plus `locales` when the plugin ships
-    # localized catalogs. Both are mirrored into the build-tree package and installed.
+    # Package data stays beside the manifest in both the build tree and installation.
+    # Profiles hold plugin-owned signatures and layouts, separate from other assets.
     get_filename_component(anomaly_package_source_directory "${ANOMALY_MANIFEST}" DIRECTORY)
+    set(anomaly_package_resource_directories locales assets profile)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${ANOMALY_MANIFEST}" "$<TARGET_FILE_DIR:${target}>/manifest.json"
         VERBATIM)
-    if(EXISTS "${anomaly_package_source_directory}/locales")
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                    "${anomaly_package_source_directory}/locales"
-                    "$<TARGET_FILE_DIR:${target}>/locales"
-            VERBATIM)
-    endif()
-    # `assets` next to the manifest holds files the plugin loads at runtime
-    # (images and the like); mirrored and installed exactly like `locales`.
-    if(EXISTS "${anomaly_package_source_directory}/assets")
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                    "${anomaly_package_source_directory}/assets"
-                    "$<TARGET_FILE_DIR:${target}>/assets"
-            VERBATIM)
-    endif()
+    foreach(anomaly_resource_directory IN LISTS anomaly_package_resource_directories)
+        if(EXISTS "${anomaly_package_source_directory}/${anomaly_resource_directory}")
+            if(anomaly_resource_directory STREQUAL "profile")
+                add_custom_command(TARGET ${target} POST_BUILD
+                    COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:${target}>/profile"
+                    VERBATIM)
+            endif()
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                        "${anomaly_package_source_directory}/${anomaly_resource_directory}"
+                        "$<TARGET_FILE_DIR:${target}>/${anomaly_resource_directory}"
+                VERBATIM)
+        endif()
+    endforeach()
     set_property(TARGET ${target} PROPERTY ANOMALY_PACKAGE_DIRECTORY "${ANOMALY_OUTPUT_DIRECTORY}")
     if(ANOMALY_NO_RELEASE)
         return()
@@ -106,14 +104,11 @@ function(anomaly_add_plugin target)
         LIBRARY DESTINATION "${anomaly_package_directory}" COMPONENT ${anomaly_package_component})
     install(FILES "${ANOMALY_MANIFEST}"
         DESTINATION "${anomaly_package_directory}" COMPONENT ${anomaly_package_component})
-    if(EXISTS "${anomaly_package_source_directory}/locales")
-        install(DIRECTORY "${anomaly_package_source_directory}/locales/"
-            DESTINATION "${anomaly_package_directory}/locales"
-            COMPONENT ${anomaly_package_component})
-    endif()
-    if(EXISTS "${anomaly_package_source_directory}/assets")
-        install(DIRECTORY "${anomaly_package_source_directory}/assets/"
-            DESTINATION "${anomaly_package_directory}/assets"
-            COMPONENT ${anomaly_package_component})
-    endif()
+    foreach(anomaly_resource_directory IN LISTS anomaly_package_resource_directories)
+        if(EXISTS "${anomaly_package_source_directory}/${anomaly_resource_directory}")
+            install(DIRECTORY "${anomaly_package_source_directory}/${anomaly_resource_directory}/"
+                DESTINATION "${anomaly_package_directory}/${anomaly_resource_directory}"
+                COMPONENT ${anomaly_package_component})
+        endif()
+    endforeach()
 endfunction()
