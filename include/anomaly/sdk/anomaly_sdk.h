@@ -11,6 +11,7 @@
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/ui_resources.h"
 #include "anomaly/sdk/services/json.h"
+#include "anomaly/sdk/services/profile.h"
 #include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/plugin.h"

@@ -386,6 +386,15 @@ configure_file(
     "${GENERATED_DIR}/plugin_manifest_schema.hpp"
     @ONLY)
 file(READ
+    "${CMAKE_SOURCE_DIR}/schemas/plugin-profile.schema.json"
+    ANOMALY_PLUGIN_PROFILE_SCHEMA_JSON)
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/plugin_profile_schema.hpp.in"
+    "${GENERATED_DIR}/plugin_profile_schema.hpp"
+    @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/schemas/plugin-profile.schema.json")
+file(READ
     "${CMAKE_SOURCE_DIR}/schemas/build-profile.schema.json"
     ANOMALY_BUILD_PROFILE_SCHEMA_JSON)
 configure_file(
@@ -735,6 +744,14 @@ target_link_libraries(
     PUBLIC anomaly_semver
     PRIVATE nlohmann_json::nlohmann_json nlohmann_json_schema_validator::validator)
 
+add_library(anomaly_plugin_profile STATIC src/plugin/plugin_profile.cpp)
+target_include_directories(anomaly_plugin_profile PUBLIC include PRIVATE "${GENERATED_DIR}")
+target_compile_definitions(anomaly_plugin_profile PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_plugin_profile PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_plugin_profile
+    PUBLIC anomaly_reliable_storage nlohmann_json::nlohmann_json
+    PRIVATE nlohmann_json_schema_validator::validator)
+
 add_library(anomaly_plugin_compatibility STATIC src/plugin/plugin_compatibility.cpp)
 target_include_directories(anomaly_plugin_compatibility PUBLIC include)
 target_compile_definitions(
@@ -1004,6 +1021,7 @@ set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
     anomaly_imgui
     anomaly_nte_profile_runtime
     anomaly_plugin_manifest
+    anomaly_plugin_profile
     anomaly_platform_notice
     anomaly_reliable_storage
     anomaly_repository_configuration
@@ -1027,7 +1045,7 @@ target_link_libraries(
     anomaly_websocket_server
     anomaly_repository_coordinator
     anomaly_crash_reporter
-    anomaly_structured_logger anomaly_ui_resources anomaly_i18n
+    anomaly_structured_logger anomaly_ui_resources anomaly_i18n anomaly_plugin_profile
     nlohmann_json::nlohmann_json)
 add_dependencies(anomaly_core anomaly_stage_nte_profiles)
 add_custom_command(TARGET anomaly_core POST_BUILD
@@ -1126,7 +1144,7 @@ target_link_libraries(anomaly_test_host PRIVATE
     ue5mem_core anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
     anomaly_adapter_services anomaly_plugin_runtime
     anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
-    anomaly_i18n nlohmann_json::nlohmann_json Psapi)
+    anomaly_i18n anomaly_plugin_profile nlohmann_json::nlohmann_json Psapi)
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
     enable_testing()
@@ -1154,7 +1172,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         anomaly_platform_settings anomaly_platform_ui_layout anomaly_platform_notice
         anomaly_plugin_runtime
         anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
-        anomaly_i18n nlohmann_json::nlohmann_json ole32 shell32)
+        anomaly_i18n anomaly_plugin_profile nlohmann_json::nlohmann_json ole32 shell32)
     add_dependencies(anomaly-platform-preview anomaly_stage_nte_profiles)
 endif()
 
@@ -1951,7 +1969,7 @@ install(DIRECTORY include/anomaly/sdk/
     PATTERN "version.h" EXCLUDE)
 install(FILES "${ANOMALY_GENERATED_INSTALL_INCLUDE_DIR}/anomaly/sdk/version.h"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/anomaly/sdk COMPONENT SDK)
-install(FILES schemas/plugin-manifest.schema.json schemas/build-profile.schema.json
+install(FILES schemas/plugin-manifest.schema.json schemas/plugin-profile.schema.json schemas/build-profile.schema.json
     schemas/repository-config.schema.json
     schemas/repository-index.schema.json schemas/plugin-enablement.schema.json
     DESTINATION ${CMAKE_INSTALL_DATADIR}/anomaly/schemas COMPONENT SDK)

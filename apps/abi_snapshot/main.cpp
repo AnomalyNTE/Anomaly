@@ -1009,6 +1009,16 @@ std::string BuildSnapshot() {
         false);
     AppendStruct(
         output,
+        "AnomalyProfileServiceV1",
+        sizeof(AnomalyProfileServiceV1),
+        alignof(AnomalyProfileServiceV1),
+        {{"struct_size", offsetof(AnomalyProfileServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyProfileServiceV1, service_version)},
+         {"user", offsetof(AnomalyProfileServiceV1, user)},
+         {"load", offsetof(AnomalyProfileServiceV1, load)}},
+        false);
+    AppendStruct(
+        output,
         "AnomalyRuntimeInfoServiceV1",
         sizeof(AnomalyRuntimeInfoServiceV1),
         alignof(AnomalyRuntimeInfoServiceV1),
@@ -2511,6 +2521,8 @@ std::string BuildSnapshot() {
         ANOMALY_STORAGE_SERVICE_V1_VERSION, "AnomalyStorageServiceV1", false);
     AppendService(output, ANOMALY_JSON_SERVICE_V1_ID,
         ANOMALY_JSON_SERVICE_V1_VERSION, "AnomalyJsonServiceV1", false);
+    AppendService(output, ANOMALY_PROFILE_SERVICE_V1_ID,
+        ANOMALY_PROFILE_SERVICE_V1_VERSION, "AnomalyProfileServiceV1", false);
     AppendService(output, ANOMALY_RUNTIME_INFO_SERVICE_V1_ID,
         ANOMALY_RUNTIME_INFO_SERVICE_V1_VERSION, "AnomalyRuntimeInfoServiceV1", false);
     AppendService(output, ANOMALY_DIAGNOSTICS_SERVICE_V1_ID,

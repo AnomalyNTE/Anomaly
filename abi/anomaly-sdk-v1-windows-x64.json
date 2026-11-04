@@ -723,6 +723,16 @@
         "serialize": 104
       }
     },
+    "AnomalyProfileServiceV1": {
+      "size": 24,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "load": 16
+      }
+    },
     "AnomalyRuntimeInfoServiceV1": {
       "size": 32,
       "alignment": 8,
@@ -2199,6 +2209,7 @@
     { "id": "anomaly.config", "version": 1, "table": "AnomalyConfigServiceV1" },
     { "id": "anomaly.storage", "version": 1, "table": "AnomalyStorageServiceV1" },
     { "id": "anomaly.json", "version": 1, "table": "AnomalyJsonServiceV1" },
+    { "id": "anomaly.profile", "version": 1, "table": "AnomalyProfileServiceV1" },
     { "id": "anomaly.runtime-info", "version": 1, "table": "AnomalyRuntimeInfoServiceV1" },
     { "id": "anomaly.diagnostics", "version": 1, "table": "AnomalyDiagnosticsServiceV1" },
     { "id": "anomaly.scheduler", "version": 1, "table": "AnomalySchedulerServiceV1" },
