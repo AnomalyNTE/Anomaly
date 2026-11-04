@@ -73,6 +73,10 @@ constexpr std::uint64_t kUiTextureCacheBudgetBytes = 128ULL * 1024ULL * 1024ULL;
         return atlas.GetGlyphRangesJapanese();
     case anomaly::UiGlyphRange::ChineseFull:
         return atlas.GetGlyphRangesChineseFull();
+    case anomaly::UiGlyphRange::PrivateUse: {
+        static constexpr ImWchar kPrivateUse[]{0xE000, 0xF8FF, 0};
+        return kPrivateUse;
+    }
     case anomaly::UiGlyphRange::Default:
     case anomaly::UiGlyphRange::Latin:
     default:
@@ -246,9 +250,11 @@ public:
                 static_cast<float>((request.tint_rgba >> 16U) & 0xffU) / 255.0F,
                 static_cast<float>((request.tint_rgba >> 24U) & 0xffU) / 255.0F);
             const ImU32 color = ImGui::ColorConvertFloat4ToU32(tint);
+            const ImVec2 origin = request.viewport_relative
+                ? ImGui::GetMainViewport()->Pos : ImVec2(0.0F, 0.0F);
             if (request.rotation_degrees == 0.0F) {
-                const ImVec2 minimum(request.x, request.y);
-                const ImVec2 maximum(request.x + size.x, request.y + size.y);
+                const ImVec2 minimum(origin.x + request.x, origin.y + request.y);
+                const ImVec2 maximum(minimum.x + size.x, minimum.y + size.y);
                 const ImVec2 uv_min(request.uv0_x, request.uv0_y);
                 const ImVec2 uv_max(request.uv1_x, request.uv1_y);
                 if (request.rounding > 0.0F) {

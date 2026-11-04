@@ -11,9 +11,11 @@
 #include <d3dcommon.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -41,6 +43,8 @@ struct alignas(16) GlassConstants final {
     float shadow[4]{};
     float extra[4]{};
     float edge[4]{};
+    float sector[4]{};  // ring center, mid angle, half aperture; zero aperture = box
+    float ring[4]{};    // inner radius, outer radius
 };
 
 struct alignas(16) PassConstants final {
@@ -931,6 +935,11 @@ Look ResolveLook(const SurfaceOptions& options) noexcept {
     if (options.minimum_alpha >= 0.0f) look.minimum_alpha = options.minimum_alpha;
     if (options.face_blur >= 0.0f) look.blur_mix = options.face_blur;
     if (options.rim_blur >= 0.0f) look.rim_blur = options.rim_blur;
+    if (!options.rim) {
+        look.rim = 0.0f;
+        look.contact = 0.0f;
+    }
+    if (options.refraction_scale > 0.0f) look.refraction *= options.refraction_scale;
     if (!options.shadow) {
         look.shadow_alpha = 0.0f;
         look.contact = 0.0f;
@@ -1276,19 +1285,20 @@ void CaptureBackdrop(ImDrawList* list, const bool blur, const bool deep) noexcep
     }
 }
 
-void DrawSurface(ImDrawList* list, const ImVec2 min, const ImVec2 max,
-    const SurfaceOptions& options) noexcept {
-    if (list == nullptr || max.x - min.x < 1.0f || max.y - min.y < 1.0f) return;
-    const Look look = ResolveLook(options);
-    if (!Active()) {
-        DrawFallback(list, min, max, options, look);
-        return;
-    }
+namespace {
+
+// Records one surface over `min`..`max`; `sector` and `ring` shape it as a ring
+// sector when the aperture in sector[3] is positive.
+void RecordSurface(ImDrawList* list, const ImVec2 min, const ImVec2 max,
+    const SurfaceOptions& options, const Look& look, const float (&sector)[4],
+    const float (&ring)[4]) noexcept {
     try {
         Command& command = NewCommand();
         command.kind = CommandKind::Surface;
         command.clip = options.clip;
         GlassConstants& constants = command.constants;
+        std::copy(std::begin(sector), std::end(sector), std::begin(constants.sector));
+        std::copy(std::begin(ring), std::end(ring), std::begin(constants.ring));
         const float scale = options.scale > 0.0f ? options.scale : 1.0f;
         const float margin = look.shadow_alpha > 0.0f
             ? (look.shadow_blur + look.shadow_offset) * scale + 2.0f : 2.0f * scale;
@@ -1322,10 +1332,67 @@ void DrawSurface(ImDrawList* list, const ImVec2 min, const ImVec2 max,
         constants.extra[3] = look.contact;
         constants.edge[0] = look.shade;
         constants.edge[1] = look.rim_blur;
+        constants.edge[2] = (std::max)(0.0f, options.edge_feather) * scale;
         list->AddCallback(SurfaceCallback, &command);
         list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
     } catch (...) {
     }
+}
+
+}  // namespace
+
+void DrawSurface(ImDrawList* list, const ImVec2 min, const ImVec2 max,
+    const SurfaceOptions& options) noexcept {
+    if (list == nullptr || max.x - min.x < 1.0f || max.y - min.y < 1.0f) return;
+    const Look look = ResolveLook(options);
+    if (!Active()) {
+        DrawFallback(list, min, max, options, look);
+        return;
+    }
+    RecordSurface(list, min, max, options, look, {}, {});
+}
+
+void DrawSectorSurface(ImDrawList* list, const ImVec2 center, const float inner_radius,
+    const float outer_radius, const float angle_start, const float angle_end,
+    const SurfaceOptions& options) noexcept {
+    constexpr float kPi = 3.14159265358979323846f;
+    const float span = angle_end - angle_start;
+    if (list == nullptr || !(inner_radius >= 0.0f) || !(outer_radius - inner_radius >= 1.0f) ||
+        !(span > 0.0f) || !(span < kPi)) {
+        return;
+    }
+    const Look look = ResolveLook(options);
+    if (!Active()) {
+        const int segments = (std::max)(4, static_cast<int>(span * outer_radius / 6.0f));
+        if (!options.clip) list->PushClipRect(ImVec2(-16384.0f, -16384.0f),
+            ImVec2(16384.0f, 16384.0f), false);
+        list->PathArcTo(center, outer_radius, angle_start, angle_end, segments);
+        list->PathArcTo(center, inner_radius, angle_end, angle_start, segments);
+        const float fill = g_reduce_transparency ? 0.98f : look.fallback_alpha;
+        list->PathFillConcave(Color(look.tint, fill * ImGui::GetStyle().Alpha));
+        if (!options.clip) list->PopClipRect();
+        return;
+    }
+    // The quad only has to cover the shape: bound both arcs, including any
+    // axis extreme the span crosses.
+    ImVec2 min(FLT_MAX, FLT_MAX);
+    ImVec2 max(-FLT_MAX, -FLT_MAX);
+    const auto include = [&](const float radius, const float angle) {
+        const ImVec2 point(center.x + radius * std::cos(angle), center.y + radius * std::sin(angle));
+        min = ImVec2((std::min)(min.x, point.x), (std::min)(min.y, point.y));
+        max = ImVec2((std::max)(max.x, point.x), (std::max)(max.y, point.y));
+    };
+    include(inner_radius, angle_start);
+    include(inner_radius, angle_end);
+    include(outer_radius, angle_start);
+    include(outer_radius, angle_end);
+    for (int quarter = -8; quarter <= 8; ++quarter) {
+        const float angle = static_cast<float>(quarter) * kPi * 0.5f;
+        if (angle > angle_start && angle < angle_end) include(outer_radius, angle);
+    }
+    const float sector[4]{center.x, center.y, (angle_start + angle_end) * 0.5f, span * 0.5f};
+    const float ring[4]{inner_radius, outer_radius, 0.0f, 0.0f};
+    RecordSurface(list, min, max, options, look, sector, ring);
 }
 
 void RegisterWindowSurface(const SurfaceOptions& options) noexcept {

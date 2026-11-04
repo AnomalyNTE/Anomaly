@@ -1,5 +1,5 @@
-// One liquid glass surface: a rounded-rectangle lens over the captured
-// backdrop. The quad is the surface inflated by its shadow margin; the pixel
+// One liquid glass surface: a rounded-rectangle or ring-sector lens over the
+// captured backdrop. The quad is the surface inflated by its shadow margin; the pixel
 // shader resolves the shape from a signed distance field.
 //
 // What separates liquid glass from frosted glass is the edge, so the edge
@@ -22,7 +22,9 @@ cbuffer GlassConstants : register(b0) {
     float4 g_light;   // rim, lift, dark appearance, minimum alpha
     float4 g_shadow;  // alpha, offset y, blur, gloss
     float4 g_extra;   // bevel width, inner glow, magnification, contact line
-    float4 g_edge;    // shoulder shade, shoulder blur
+    float4 g_edge;    // shoulder shade, shoulder blur, edge feather in pixels
+    float4 g_sector;  // ring center x, y, mid angle, half aperture; zero aperture = box
+    float4 g_ring;    // inner radius, outer radius
 };
 
 Texture2D g_sharp : register(t0);
@@ -42,6 +44,25 @@ float rounded_box(float2 p, float2 half_size, float radius) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
 }
 
+// A ring sector symmetric about its mid angle, with corners rounded by
+// `radius`: the band between the two circles, cut by the two radial edges.
+float ring_sector(float2 p, float radius) {
+    float2 q = p - g_sector.xy;
+    float2 axis = float2(cos(g_sector.z), sin(g_sector.z));
+    float along = dot(q, axis);
+    float across = abs(dot(q, float2(-axis.y, axis.x)));
+    float half_width = (g_ring.y - g_ring.x) * 0.5;
+    float band = abs(length(q) - (g_ring.x + g_ring.y) * 0.5) - half_width;
+    float edge = across * cos(g_sector.w) - along * sin(g_sector.w);
+    float2 inset = float2(band, edge) + radius;
+    return length(max(inset, 0.0)) + min(max(inset.x, inset.y), 0.0) - radius;
+}
+
+float shape_distance(float2 p, float2 center, float2 half_size, float radius) {
+    if (g_sector.w > 0.0) return ring_sector(p, radius);
+    return rounded_box(p - center, half_size, radius);
+}
+
 float4 sample_blurred(float2 uv, float amount) {
     float4 sharp = g_sharp.SampleLevel(g_sampler, uv, 0.0);
     if (amount <= 0.0) return sharp;
@@ -55,14 +76,27 @@ float4 ps_glass(float4 position : SV_Position) : SV_Target {
     float2 center = (g_rect.xy + g_rect.zw) * 0.5;
     float2 half_size = max((g_rect.zw - g_rect.xy) * 0.5, 0.5);
     float radius = min(g_shape.x, min(half_size.x, half_size.y));
+    if (g_sector.w > 0.0) {
+        // The lens pivots on the middle of the band, and the bevel and corners
+        // are bounded by its thickness rather than by the bounding box.
+        float middle = (g_ring.x + g_ring.y) * 0.5;
+        center = g_sector.xy + middle * float2(cos(g_sector.z), sin(g_sector.z));
+        half_size = max((g_ring.y - g_ring.x) * 0.5, 0.5).xx;
+        radius = min(g_shape.x, half_size.x);
+    }
     float s = g_shape.y;
     bool dark = g_light.z > 0.5;
-    float d = rounded_box(p - center, half_size, radius);
-    float coverage = saturate(0.5 - d);
+    float d = shape_distance(p, center, half_size, radius);
+    // A feathered edge spreads the coverage ramp over g_edge.z pixels instead of
+    // one, which keeps a freestanding curve from stair-stepping.
+    float feather = g_edge.z;
+    float coverage = feather > 0.0
+        ? smoothstep(0.0, 1.0, saturate((feather * 0.5 - d) / max(feather, 1.0)))
+        : saturate(0.5 - d);
 
     // Outside the edge: a soft shadow and a hairline of contact.
     float shadow_distance =
-        max(rounded_box(p - center - float2(0.0, g_shadow.y), half_size, radius), 0.0);
+        max(shape_distance(p - float2(0.0, g_shadow.y), center, half_size, radius), 0.0);
     float shadow = g_shadow.x *
         pow(saturate(1.0 - shadow_distance / max(g_shadow.z, 1.0)), 2.4);
     float contact = g_extra.w * (1.0 - smoothstep(0.0, 1.25 * s, max(d, 0.0)));
@@ -71,10 +105,10 @@ float4 ps_glass(float4 position : SV_Position) : SV_Target {
 
     float2 e = float2(1.0, 0.0);
     float2 n = float2(
-        rounded_box(p - center + e.xy, half_size, radius) -
-            rounded_box(p - center - e.xy, half_size, radius),
-        rounded_box(p - center + e.yx, half_size, radius) -
-            rounded_box(p - center - e.yx, half_size, radius));
+        shape_distance(p + e.xy, center, half_size, radius) -
+            shape_distance(p - e.xy, center, half_size, radius),
+        shape_distance(p + e.yx, center, half_size, radius) -
+            shape_distance(p - e.yx, center, half_size, radius));
     n = n / max(length(n), 1e-4);
     float inside = max(-d, 0.0);
     float bevel_width = min(max(g_extra.x * s, 1.0), min(half_size.x, half_size.y));
@@ -83,6 +117,9 @@ float4 ps_glass(float4 position : SV_Position) : SV_Target {
     // climbs steeply toward the rim.
     float x = saturate(inside / bevel_width);
     float bend = 1.0 - sqrt(saturate(1.0 - (1.0 - x) * (1.0 - x)));
+    // The bend is steepest on the rim, where neighbouring pixels sample far
+    // apart and sparkle; within the feather band it eases back to zero.
+    if (feather > 0.0) bend *= smoothstep(0.0, feather * 2.0, inside);
     float shoulder = 1.0 - smoothstep(0.0, 1.0, x);
 
     float2 lensed = p + (center - p) * g_extra.z;
@@ -134,7 +171,7 @@ float4 ps_glass(float4 position : SV_Position) : SV_Target {
     float specular = rim_line * (0.22 + 0.78 * corner_light) * g_light.x;
     // A softer glow just inside the lit corner, and a gloss on the upper face.
     float glow = pow(saturate(shoulder), 2.5) * toward * toward * g_extra.y;
-    float upper = saturate(1.0 - (p.y - g_rect.y) / max(half_size.y * 0.9, 1.0));
+    float upper = saturate(1.0 - (p.y - g_rect.y) / max((g_rect.w - g_rect.y) * 0.45, 1.0));
     float gloss = g_shadow.w * upper * upper * upper;
     float highlight = saturate(specular + glow + gloss) * (dark ? 0.75 : 1.0);
     straight = lerp(straight, 1.0, highlight);

@@ -53,7 +53,7 @@ bool ValidWindowSize(
 }
 
 bool ValidGlyphRange(const UiGlyphRange range) noexcept {
-    return range >= UiGlyphRange::Default && range <= UiGlyphRange::ChineseFull;
+    return range >= UiGlyphRange::Default && range <= UiGlyphRange::PrivateUse;
 }
 
 bool ValidTextureFormat(const UiTextureFormat format) noexcept {
