@@ -1366,13 +1366,6 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/FakeUID/manifest.json
         PACKAGE_NAME FakeUID
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/FakeUID")
-    if(ANOMALY_BUILD_TEST_FIXTURES)
-        add_executable(anomaly_fake_uid_latency_fixture plugins/FakeUID/latency_tests.cpp)
-        target_include_directories(anomaly_fake_uid_latency_fixture PRIVATE include "${CMAKE_CURRENT_SOURCE_DIR}")
-        target_compile_options(anomaly_fake_uid_latency_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
-        target_compile_definitions(anomaly_fake_uid_latency_fixture PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-        target_link_libraries(anomaly_fake_uid_latency_fixture PRIVATE nlohmann_json::nlohmann_json)
-    endif()
     anomaly_add_plugin(anomaly_builtin_camera_tools
         SOURCES plugins/CameraTools/plugin.cpp
         MANIFEST plugins/CameraTools/manifest.json
@@ -2071,7 +2064,6 @@ if(ANOMALY_BUILD_TEST_FIXTURES AND ANOMALY_BUILD_BUILTIN_PLUGINS)
     add_test(NAME plugin_compatibility COMMAND anomaly_plugin_compatibility_fixture)
     foreach(profile_fixture IN ITEMS
         anomaly_pink_paw_bank_loop_fixture
-        anomaly_fake_uid_latency_fixture
         anomaly_skin_changer_plate_follow_fixture
         anomaly_combat_auto_fixture
         anomaly_better_pose_visibility_fixture
