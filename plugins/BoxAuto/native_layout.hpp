@@ -100,6 +100,7 @@ struct Layout {
     std::ptrdiff_t kCoordOffset{};
     std::ptrdiff_t kRandomItemCoordOffset{};
     std::ptrdiff_t kRandomItemTypeOffset{};
+    std::ptrdiff_t kSafeTableCoordOffset{};
     std::ptrdiff_t kUStructSuperStructOffset{};
     std::ptrdiff_t kUClassDefaultObjectOffset{};
     std::ptrdiff_t kUFunctionNumParmsOffset{};
@@ -222,6 +223,7 @@ inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
         parsed.kCoordOffset = compatibility.Value("kCoordOffset",65536);
         parsed.kRandomItemCoordOffset = compatibility.Value("kRandomItemCoordOffset",65536);
         parsed.kRandomItemTypeOffset = compatibility.Value("kRandomItemTypeOffset",65536);
+        parsed.kSafeTableCoordOffset = compatibility.Value("kSafeTableCoordOffset",65536);
         parsed.kUStructSuperStructOffset = compatibility.Value("kUStructSuperStructOffset",65536);
         parsed.kUClassDefaultObjectOffset = compatibility.Value("kUClassDefaultObjectOffset",65536);
         parsed.kUFunctionNumParmsOffset = compatibility.Value("kUFunctionNumParmsOffset",65536);
