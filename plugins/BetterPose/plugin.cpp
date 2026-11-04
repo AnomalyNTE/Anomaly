@@ -18020,7 +18020,6 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     context.blender_camera_loaded_correction_base_valid.store(
         false, std::memory_order_release);
     context.blender_camera_anchor_valid.store(false, std::memory_order_release);
-    context.blender_camera_drive_mode.store(-1, std::memory_order_release);
   }
   const bool motion_playing_now =
       context.motion_playing.load(std::memory_order_acquire);
