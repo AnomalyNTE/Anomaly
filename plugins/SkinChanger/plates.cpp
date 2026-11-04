@@ -26,16 +26,16 @@ int32_t Offset(const Reader& r, uintptr_t type, const char* name, int32_t size) 
     for (const auto& f : fields) if (f.type == type && f.name == name && f.size == size) return f.offset;
     const auto original_type = type; int32_t offset = -1;
     for (int depth = 0; type && depth < 32 && offset < 0; ++depth) {
-        uintptr_t field{}; if (!r.Read(type+112,field)) break;
+        uintptr_t field{}; if (!r.Read(type+accessory::profile::native_layout.PropertyLink,field)) break;
         for (int i = 0; field && i < 2048; ++i) {
-            if (r.NameAt(field+32) == name) {
+            if (r.NameAt(field+accessory::profile::native_layout.FieldName) == name) {
                 int32_t actual{};
-                if (r.Read(field+52,actual) && actual == size && r.Read(field+68,offset) && offset >= 0 && offset < 0x10000) break;
+                if (r.Read(field+accessory::profile::native_layout.PropertySize,actual) && actual == size && r.Read(field+accessory::profile::native_layout.PropertyOffset,offset) && offset >= 0 && offset < 0x10000) break;
                 offset = -1; break;
             }
-            if (!r.Read(field+72,field)) break;
+            if (!r.Read(field+accessory::profile::native_layout.PropertyNext,field)) break;
         }
-        if (!r.Read(type+64,type)) break;
+        if (!r.Read(type+accessory::profile::native_layout.Super,type)) break;
     }
     fields.push_back({original_type,name,size,offset}); return offset;
 }
@@ -43,7 +43,7 @@ struct ObjectCache { std::string path; AnomalyGenerationHandleV1 handle{}; };
 std::vector<ObjectCache> cache;
 AnomalyGenerationHandleV1 Handle(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, uintptr_t address) {
     int32_t index{}; AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
-    if (!address || !r.Read(address+12,index) || index < 0 || objects->snapshot_at(objects->user,index,&snapshot).code != 0 ||
+    if (!address || !r.Read(address+accessory::profile::native_layout.ObjectIndex,index) || index < 0 || objects->snapshot_at(objects->user,index,&snapshot).code != 0 ||
         Resolve(r,objects,snapshot.handle) != address) return {};
     return snapshot.handle;
 }
@@ -121,12 +121,12 @@ bool Restore(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
 }
 bool CaptureMesh(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, uintptr_t mesh, Mesh& saved) {
     uintptr_t cls{}; RowArray materials{};
-    if (!r.Read(mesh+16,cls)) return false;
+    if (!r.Read(mesh+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto offset = Offset(r,cls,"OverrideMaterials",16);
     if (offset < 0 || !r.Read(mesh+offset,materials) || materials.count < 1 || materials.count > 64 || materials.capacity < materials.count) return false;
     for (int i = 0; i < materials.count; ++i) {
         uintptr_t material{}; RowArray values{};
-        if (!r.Read(materials.data+i*8,material) || !r.Read(material+16,cls)) continue;
+        if (!r.Read(materials.data+i*8,material) || !r.Read(material+accessory::profile::native_layout.ObjectClass,cls)) continue;
         const auto scalars = Offset(r,cls,"ScalarParameterValues",16);
         if (scalars < 0 || !r.Read(material+scalars,values) || values.count < 1 || values.count > 256 || values.capacity < values.count) continue;
         std::map<int,Scalar> slots; std::optional<Scalar> mode;
@@ -157,7 +157,7 @@ bool Select(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, Vehicle&
     const auto character = Resolve(r,objects,player.character);
     if (!character) return false;
     uintptr_t cls{}, vehicle{}, component{};
-    if (!r.Read(character+16,cls)) return false;
+    if (!r.Read(character+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto land_type = Find(r,objects,"/Script/HTGame.CharacterVehicleState");
     const auto water_type = Find(r,objects,"/Script/HTGame.CharacterWaterVehicleState");
     const auto land = Offset(r,cls,"DrivingState",0x68);
@@ -172,13 +172,13 @@ bool Select(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, Vehicle&
             !Invoke(r,character,get_vehicle,&vehicle)) return false;
     }
     target.actor = Handle(r,objects,vehicle);
-    if (!target.actor.id || !r.IsA(vehicle,"Actor") || !r.Read(vehicle+16,cls)) return false;
+    if (!target.actor.id || !r.IsA(vehicle,"Actor") || !r.Read(vehicle+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto manager = Offset(r,cls,"ModuleManagerComponent",8);
     if (manager >= 0) r.Read(vehicle+manager,component);
     if (component && r.IsA(component,"HTVehicleModificationComponent")) target.component = Handle(r,objects,component);
     // A vehicle with plate-bearing meshes can work without the car modification component.
     const auto source = target.component.id ? component : vehicle;
-    if (!r.Read(source+16,cls)) return false;
+    if (!r.Read(source+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto number = Offset(r,cls,"VehicleNumberPlate",16); RowArray text{};
     if (number >= 0 && r.Read(source+number,text) && text.count > 0 && text.count <= 64 && text.capacity >= text.count) {
         std::wstring value(text.count,L'\0');
@@ -190,16 +190,16 @@ bool Select(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, Vehicle&
 }
 bool MaterialUnchanged(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, const Mesh& saved) {
     const auto mesh = Resolve(r,objects,saved.handle); uintptr_t cls{}, material{}; RowArray array{};
-    if (!mesh || !r.Read(mesh+16,cls)) return false;
+    if (!mesh || !r.Read(mesh+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto offset = Offset(r,cls,"OverrideMaterials",16);
     return offset >= 0 && r.Read(mesh+offset,array) && saved.material_index < array.count &&
         r.Read(array.data+8*saved.material_index,material) && material == Resolve(r,objects,saved.material);
 }
 bool IsType(const Reader& r,uintptr_t object,uintptr_t type) {
-    uintptr_t cls{}; if (!type || !r.Read(object+16,cls)) return false;
+    uintptr_t cls{}; if (!type || !r.Read(object+accessory::profile::native_layout.ObjectClass,cls)) return false;
     for (int depth = 0; cls && depth < 64; ++depth) {
         if (cls == type) return true;
-        if (!r.Read(cls+64,cls)) return false;
+        if (!r.Read(cls+accessory::profile::native_layout.Super,cls)) return false;
     }
     return false;
 }
@@ -221,7 +221,7 @@ std::vector<uintptr_t> PlateMeshCandidates(const Reader& r,const AnomalyUe5Objec
         seen.push_back(node);
         // Attached riders and their equipment belong to another actor, not the vehicle.
         uintptr_t owner{};
-        if (!r.Read(node+32,owner) || std::find(owners.begin(),owners.end(),owner) == owners.end()) continue;
+        if (!r.Read(node+accessory::profile::native_layout.ObjectOuter,owner) || std::find(owners.begin(),owners.end(),owner) == owners.end()) continue;
         if (IsType(r,node,mesh_type)) result.push_back(node);
         if (child_offset >= 0 && IsType(r,node,child_type)) {
             uintptr_t child{}, child_root{};

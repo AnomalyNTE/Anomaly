@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "time-accel-v1",
+  "layout": {
+    "kClassPrivateOffset": 16,
+    "kNamePrivateOffset": 24,
+    "kOuterPrivateOffset": 32,
+    "kLevelWorldSettingsOffset": 688,
+    "kWorldDilationOffset": 1504,
+    "kEngineTimeDilationOffset": 1024,
+    "kMinDilationOffset": 1036,
+    "kMaxDilationOffset": 1040
+  },
+  "symbols": [
+    {
+      "name": "layout",
+      "candidates": [
+        {
+          "pattern": "F3 0F 11 89 E0 05 00 00 45 84 C0 0F 84 ?? ?? ?? ?? C3",
+          "entry": "F3 0F 11 89 E0 05 00 00 45 84 C0",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

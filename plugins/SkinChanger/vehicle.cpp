@@ -26,7 +26,7 @@ uint64_t Pack(FName n) {return (uint64_t{n.number}<<32)|n.id;}
 FName Unpack(uint64_t n) {return {static_cast<uint32_t>(n),static_cast<uint32_t>(n>>32)};}
 AnomalyGenerationHandleV1 Handle(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uintptr_t p) {
     int32_t index{};AnomalyUe5ObjectSnapshotV1 s{sizeof(s)};
-    if(!p || !r.Read(p+12,index) || index<0 || o->snapshot_at(o->user,index,&s).code!=0 || Resolve(r,o,s.handle)!=p) return {};
+    if(!p || !r.Read(p+accessory::profile::native_layout.ObjectIndex,index) || index<0 || o->snapshot_at(o->user,index,&s).code!=0 || Resolve(r,o,s.handle)!=p) return {};
     return s.handle;
 }
 std::map<std::string,AnomalyGenerationHandleV1> objects_cache;
@@ -40,23 +40,23 @@ int Offset(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uintptr_t cls,con
     const auto cache_key=std::tuple{h.id,std::string(key),size};
     if(auto f=offsets.find(cache_key);f!=offsets.end()) return f->second;
     for(int depth=0;cls && depth<32;++depth) {
-        uintptr_t field{};if(!r.Read(cls+112,field)) break;
+        uintptr_t field{};if(!r.Read(cls+accessory::profile::native_layout.PropertyLink,field)) break;
         for(int n=0;field && n<2048;++n) {
-            if(r.NameAt(field+32)==key) {
+            if(r.NameAt(field+accessory::profile::native_layout.FieldName)==key) {
                 int bytes{},at{};
-                if(r.Read(field+52,bytes) && bytes==size && r.Read(field+68,at) && at>=0 && at<0x20000) {
+                if(r.Read(field+accessory::profile::native_layout.PropertySize,bytes) && bytes==size && r.Read(field+accessory::profile::native_layout.PropertyOffset,at) && at>=0 && at<0x20000) {
                     offsets[cache_key]=at;return at;
                 }
                 return -1;
             }
-            if(!r.Read(field+72,field)) break;
+            if(!r.Read(field+accessory::profile::native_layout.PropertyNext,field)) break;
         }
-        if(!r.Read(cls+64,cls)) break;
+        if(!r.Read(cls+accessory::profile::native_layout.Super,cls)) break;
     }
     return -1;
 }
 bool LocalFunction(const Reader& r,uintptr_t f,const char* name,uint8_t count,uint16_t bytes) {
-    uint32_t flags{};return r.Function(f,name,count,bytes) && r.Read(f+176,flags) && (flags&0x400) && !(flags&0x40);
+    uint32_t flags{};return r.Function(f,name,count,bytes) && r.Read(f+accessory::profile::native_layout.FunctionFlags,flags) && (flags&0x400) && !(flags&0x40);
 }
 bool ReadIds(const Reader& r,uintptr_t at,std::vector<uint64_t>& result) {
     RowArray array{};if(!r.Read(at,array) || array.count<0 || array.count>128 || array.capacity<array.count || array.capacity>4096) return false;
@@ -69,19 +69,19 @@ bool Current(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,Target& t) {
     AnomalyNteCombatantSnapshotV1 snapshot{sizeof(snapshot)};
     if(!combat || combat->current_combatant(combat->user,&snapshot).code!=0) return false;
     const auto actor=Resolve(r,o,snapshot.character);uintptr_t cls{},car{},component{};int32_t seat{-1};
-    if(!actor || !r.Read(actor+16,cls)) return false;
+    if(!actor || !r.Read(actor+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto ds=Offset(r,o,cls,"DrivingState",104);
     const auto type=Find(r,o,"/Script/HTGame.CharacterVehicleState");
     const auto current=Offset(r,o,type,"CurrentDrivingVehicle",8),seat_at=Offset(r,o,type,"TargetSeatIndex",4);
     if(ds<0 || current<0 || seat_at<0 || !r.Read(actor+ds+current,car) || !car || !r.Read(actor+ds+seat_at,seat) || seat!=0 ||
-       !r.IsA(car,"HTWheeledVehicleDrivable") || !r.Read(car+16,cls)) return false;
+       !r.IsA(car,"HTWheeledVehicleDrivable") || !r.Read(car+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto manager=Offset(r,o,cls,"ModuleManagerComponent",8),id=Offset(r,o,cls,"VehicleID",8);
     const auto color=Offset(r,o,cls,"ColorID",4);
     const auto entity=Offset(r,o,cls,"OwnerEntityHandle",8);
     if(color<0 || entity<0 || !r.Read(car+color,t.color) || !r.Read(car+entity,t.entity)) return false;
     if(manager<0 || id<0 || !r.Read(car+manager,component) || !r.IsA(component,"HTVehicleModificationComponent") ||
-       !r.Read(car+id,t.vehicle) || !t.vehicle.id || !r.Read(component+16,cls)) return false;
-    uintptr_t owner{};if(!r.Read(component+32,owner) || owner!=car) return false;
+       !r.Read(car+id,t.vehicle) || !t.vehicle.id || !r.Read(component+accessory::profile::native_layout.ObjectClass,cls)) return false;
+    uintptr_t owner{};if(!r.Read(component+accessory::profile::native_layout.ObjectOuter,owner) || owner!=car) return false;
     const auto list=Offset(r,o,cls,"CurrentModuleIDList",16);
     t.actor=Handle(r,o,car);t.component=Handle(r,o,component);
     return t.actor.id && t.component.id && list>=0 && ReadIds(r,component+list,t.modules);
@@ -136,8 +136,8 @@ uint64_t last_paint_report{};Clock::time_point next_paint_report{};
 bool BindingLive(const Reader& r,const PaintBinding& b) {
     const auto index=ANOMALY_UE5_OBJECT_HANDLE_INDEX(b.handle);
     uintptr_t chunks{},chunk{},object{};uint32_t count{},serial{};uint64_t entity{};uint8_t pool{};
-    return r.Read(registry+36,count) && index<count && r.Read(registry+16,chunks) && r.Read(chunks+8*(index/65536),chunk) &&
-        r.Read(chunk+24*(index%65536),object) && object==b.mesh && r.Read(chunk+24*(index%65536)+16,serial) &&
+    return r.Read(registry+accessory::profile::native_layout.RegistryCount,count) && index<count && r.Read(registry+accessory::profile::native_layout.RegistryItems,chunks) && r.Read(chunks+8*(index/accessory::profile::native_layout.ChunkSize),chunk) &&
+        r.Read(chunk+accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize),object) && object==b.mesh && r.Read(chunk+accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize)+accessory::profile::native_layout.Serial,serial) &&
         serial==ANOMALY_UE5_OBJECT_HANDLE_SERIAL(b.handle) && r.Read(b.entity_address,entity) && entity==b.entity &&
         r.Read(b.pool_address,pool) && !pool;
 }
@@ -179,13 +179,11 @@ bool EnsurePaintHook(const Reader& r,const AnomalyUe5ObjectsServiceV1* o) {
     const auto array=Find(r,o,"/Script/Engine.PrimitiveComponent.SetCustomPrimitiveDataFloatArray");
     uintptr_t scalar_exec{},array_exec{};
     if(!LocalFunction(r,scalar,"SetCustomPrimitiveDataFloat",2,8) || !LocalFunction(r,array,"SetCustomPrimitiveDataFloatArray",2,24) ||
-       !r.Read(scalar+0xd8,scalar_exec) || !r.Read(array+0xd8,array_exec)) return false;
-    const auto scalar_body=RelativeCall(r,scalar_exec+0xb2),array_body=RelativeCall(r,array_exec+0xc5);
-    const auto entry=RelativeCall(r,scalar_body+0x2c);
-    if(!entry || RelativeCall(r,array_body+0x24)!=entry) return false;
-    const std::array<uint8_t,24> expected{0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x48,0x89,0x7c,0x24,0x20,0x41,0x56,0x48,0x83,0xec,0x20,0x41,0x0f,0x10};
-    std::array<uint8_t,24> actual{};
-    if(!r.Read(entry,actual) || actual!=expected) return false;
+       !r.Read(scalar+accessory::profile::native_layout.FunctionNative,scalar_exec) || !r.Read(array+accessory::profile::native_layout.FunctionNative,array_exec)) return false;
+    const auto scalar_body=RelativeCall(r,scalar_exec+accessory::profile::native_layout.PaintScalarThunkCall),array_body=RelativeCall(r,array_exec+accessory::profile::native_layout.PaintArrayThunkCall);
+    const auto entry=RelativeCall(r,scalar_body+accessory::profile::native_layout.PaintScalarBodyCall);
+    if(!entry || RelativeCall(r,array_body+accessory::profile::native_layout.PaintArrayBodyCall)!=entry) return false;
+    if(!accessory::profile::compatibility.MatchesEntry(core,"Paint.entry",entry)) return false;
     AnomalyHookRequestV1 spec{sizeof(spec),ANOMALY_HOOK_V1_FUNCTION,entry,reinterpret_cast<void*>(&PaintDetour),StringView("vehicle-paint-data")};
     if(paint_hooks->create(paint_hooks->user,&spec,&paint_original,&paint_hook).code!=0) return false;
     Log("Vehicle appearance: scoped native paint writer installed");return true;
@@ -195,16 +193,16 @@ void PublishPaintBindings(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,ui
     for(const auto& [id,s]:saved) {
         if(id==exclude || !s.paint_valid) continue;
         const auto car=Resolve(r,o,s.target.actor);uintptr_t cls{};
-        if(!car || !r.Read(car+16,cls)) continue;
+        if(!car || !r.Read(car+accessory::profile::native_layout.ObjectClass,cls)) continue;
         const auto entity=Offset(r,o,cls,"OwnerEntityHandle",8),pool=Offset(r,o,cls,"bInMassPool",1);
         if(entity<0 || pool<0) continue;
         std::vector<uintptr_t> meshes;
         for(const auto key:{"Mesh","VehicleStaticMesh"}) {const auto at=Offset(r,o,cls,key,8);uintptr_t mesh{};if(at>=0 && r.Read(car+at,mesh) && mesh) meshes.push_back(mesh);}
         const auto component=Resolve(r,o,s.target.component);
-        if(component && r.Read(component+16,cls)) {
+        if(component && r.Read(component+accessory::profile::native_layout.ObjectClass,cls)) {
             const auto at=Offset(r,o,cls,"ModuleComponentMap",80);RowArray map{};
             if(at>=0 && r.Read(component+at,map) && map.count>=0 && map.count<=64 && map.capacity>=map.count) {
-                for(int n=0;n<map.count;++n) {uintptr_t mesh{};if(r.Read(map.data+24*n+8,mesh) && mesh && r.IsA(mesh,"PrimitiveComponent")) meshes.push_back(mesh);}
+                for(int n=0;n<map.count;++n) {uintptr_t mesh{};if(r.Read(map.data+accessory::profile::native_layout.MapEntryStride*n+accessory::profile::native_layout.MapValue,mesh) && mesh && r.IsA(mesh,"PrimitiveComponent")) meshes.push_back(mesh);}
             }
         }
         for(auto mesh:meshes) if(const auto handle=Handle(r,o,mesh);handle.id) bindings->push_back({mesh,car+entity,car+pool,handle,s.target.entity,s.paint});
@@ -216,9 +214,9 @@ void PublishPaintBindings(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,ui
 
 bool PaintData(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& t,float paint,bool check_only) {
     const auto car=Resolve(r,o,t.actor),component=Resolve(r,o,t.component);uintptr_t cls{},mesh{};
-    if(!car || !component || !std::isfinite(paint) || !r.Read(car+16,cls)) return false;
+    if(!car || !component || !std::isfinite(paint) || !r.Read(car+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto mesh_at=Offset(r,o,cls,"Mesh",8);
-    if(mesh_at<0 || !r.Read(car+mesh_at,mesh) || !r.IsA(mesh,"PrimitiveComponent") || !r.Read(mesh+16,cls)) return false;
+    if(mesh_at<0 || !r.Read(car+mesh_at,mesh) || !r.IsA(mesh,"PrimitiveComponent") || !r.Read(mesh+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto at=Offset(r,o,cls,"CustomPrimitiveDataInternal",16);RowArray array{};float current{};
     if(at<0 || !r.Read(mesh+at,array) || array.count<0 || array.count>256 || array.capacity<array.count) return false;
     const bool matches=array.count>2 && r.Read(array.data+8,current) && std::isfinite(current) && std::abs(current-paint)<0.0001f;
@@ -244,29 +242,22 @@ bool PrepareArrayCopy(const Reader& r) {
     // The getter prologue is hooked after CosmeticsStart. Reuse its validated
     // array helper rather than trying to rescan the already-patched getter.
     auto target=CosmeticsNameArrayCopyAddress();
-    if(!target) {
-        const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        uintptr_t getter{};int32_t rel{};uint8_t opcode{};
-        if(!sig || !sig->resolve || sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),StringView(accessory::profile::GetAppearance),&getter).code!=0) return false;
-        const auto call=getter+accessory::profile::CopyNamesCall;
-        if(!r.Read(call,opcode) || opcode!=0xe8 || !r.Read(call+1,rel)) return false;
-        target=static_cast<uintptr_t>(static_cast<intptr_t>(call)+5+rel);
-    }
-    const std::array<uint8_t,12> expected{0x40,0x53,0x48,0x83,0xec,0x40,0x48,0x8b,0xd9,0x48,0x3b,0xca};
-    std::array<uint8_t,12> actual{};MEMORY_BASIC_INFORMATION region{};
-    if(!r.Read(target,actual) || actual!=expected || !VirtualQuery(reinterpret_cast<void*>(target),&region,sizeof(region)) ||
-       region.State!=MEM_COMMIT || !(region.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) return false;
+    if(!target) target=accessory::profile::compatibility.Address("CopyNames");
+    MEMORY_BASIC_INFORMATION region{};
+    if(!target || target!=accessory::profile::compatibility.Address("CopyNames") ||
+       !VirtualQuery(reinterpret_cast<void*>(target),&region,sizeof(region)) || region.State!=MEM_COMMIT ||
+       !(region.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) return false;
     array_copy=target;return true;
 }
 
 bool StartCatalog(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uint64_t vehicle) {
     const auto table=Find(r,o,"/Game/DataTable/Vehicle/DT_vehicleModuleData.DT_vehicleModuleData");
     uintptr_t schema{};RowArray map{};uintptr_t flags{};int free{},bits{};
-    if(!table || !r.IsA(table,"DataTable") || !r.Read(table+0x28,schema) || r.NameAt(schema+24)!="VehicleModuleData" ||
+    if(!table || !r.IsA(table,"DataTable") || !r.Read(table+accessory::profile::native_layout.RowStruct,schema) || r.NameAt(schema+accessory::profile::native_layout.ObjectName)!="VehicleModuleData" ||
        !r.Property(schema,"ModuleID",8,8) || !r.Property(schema,"VehicleID",16,8) || !r.Property(schema,"ModuleName",24,16) ||
-       !r.Property(schema,"ModuleType",0x60,1) || !r.Read(table+0x30,map) || map.count<0 || map.count>8192 || map.capacity<map.count ||
-       !r.Read(table+0x50,flags) || !r.Read(table+0x58,bits) || bits<map.count || !r.Read(table+0x64,free) || free<0 || free>map.count) return false;
-    if(!flags) {if(map.count>128) return false;flags=table+0x40;}
+       !r.Property(schema,"ModuleType",accessory::profile::native_layout.VehicleRowType,1) || !r.Read(table+accessory::profile::native_layout.RowMap,map) || map.count<0 || map.count>8192 || map.capacity<map.count ||
+       !r.Read(table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapBitsData,flags) || !r.Read(table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapBitCount,bits) || bits<map.count || !r.Read(table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapFreeCount,free) || free<0 || free>map.count) return false;
+    if(!flags) {if(map.count>128) return false;flags=table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapInlineBits;}
     allocation.resize((map.count+31)/32);
     if(map.count && core->read_memory(core->user,flags,{reinterpret_cast<uint8_t*>(allocation.data()),allocation.size()*4}).code!=0) return false;
     table_handle=Handle(r,o,table);rows_data=map.data;rows_count=map.count;row_cursor=0;catalog_vehicle=vehicle;entries.clear();scanning=true;
@@ -275,18 +266,18 @@ bool StartCatalog(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uint64_t v
 void CatalogSlice(const Reader& r,const AnomalyUe5ObjectsServiceV1* o) {
     if(!scanning) return;
     const auto table=Resolve(r,o,table_handle);RowArray now{};
-    if(!table || !r.Read(table+0x30,now) || now.data!=rows_data || now.count!=rows_count) {scanning=false;catalog_vehicle=0;return;}
+    if(!table || !r.Read(table+accessory::profile::native_layout.RowMap,now) || now.data!=rows_data || now.count!=rows_count) {scanning=false;catalog_vehicle=0;return;}
     const auto until=Clock::now()+std::chrono::milliseconds(2);int processed{};
     while(row_cursor<rows_count && processed++<24 && Clock::now()<until) {
         const auto i=row_cursor++;
         if(!(allocation[i/32]&(1u<<(i%32)))) continue;
         uintptr_t row{};FName key{},id{},vehicle{};uint8_t type{};
-        if(!r.Read(rows_data+24*i,key) || !r.Read(rows_data+24*i+8,row) || !row || !r.Read(row+8,id) || Pack(id)!=Pack(key) ||
-           !r.Read(row+16,vehicle) || Pack(vehicle)!=catalog_vehicle || !r.Read(row+0x60,type)) continue;
+        if(!r.Read(rows_data+accessory::profile::native_layout.MapEntryStride*i,key) || !r.Read(rows_data+accessory::profile::native_layout.MapEntryStride*i+8,row) || !row || !r.Read(row+accessory::profile::native_layout.VehicleRowId,id) || Pack(id)!=Pack(key) ||
+           !r.Read(row+accessory::profile::native_layout.VehicleRowOwner,vehicle) || Pack(vehicle)!=catalog_vehicle || !r.Read(row+accessory::profile::native_layout.VehicleRowType,type)) continue;
         Entry e{{Pack(id),Pack(vehicle),type},r.Name(id),{}};
         if(vehicle_rules::Category(type)>=0 && r.names && r.names->resolve_ftext_utf8) {
             char buffer[1024]{};size_t bytes=sizeof(buffer);
-            if(r.names->resolve_ftext_utf8(r.names->user,row+24,buffer,&bytes).code==0) e.label=buffer;
+            if(r.names->resolve_ftext_utf8(r.names->user,row+accessory::profile::native_layout.VehicleRowName,buffer,&bytes).code==0) e.label=buffer;
         }
         entries.push_back(std::move(e));
     }
@@ -294,7 +285,7 @@ void CatalogSlice(const Reader& r,const AnomalyUe5ObjectsServiceV1* o) {
 }
 bool SameInstance(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& target) {
     const auto car=Resolve(r,o,target.actor);uintptr_t cls{};uint64_t entity{};uint8_t pooled{};
-    if(!car || !r.Read(car+16,cls)) return false;
+    if(!car || !r.Read(car+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto entity_at=Offset(r,o,cls,"OwnerEntityHandle",8),pool_at=Offset(r,o,cls,"bInMassPool",1);
     return entity_at>=0 && pool_at>=0 && r.Read(car+entity_at,entity) && entity==target.entity && r.Read(car+pool_at,pooled) && !pooled;
 }
@@ -302,7 +293,7 @@ bool Submit(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& ta
     if(!SameInstance(r,o,target)) return false;
     const auto component=Resolve(r,o,target.component);if(!component || ids.size()>128) return false;
     const auto car=Resolve(r,o,target.actor);uintptr_t car_class{},component_class{};
-    if(!car || !r.Read(car+16,car_class) || !r.Read(component+16,component_class)) return false;
+    if(!car || !r.Read(car+accessory::profile::native_layout.ObjectClass,car_class) || !r.Read(component+accessory::profile::native_layout.ObjectClass,component_class)) return false;
     const auto body_color=Offset(r,o,car_class,"ColorID",4),module_color=Offset(r,o,component_class,"VehicleColorID",4);
     const auto color_notify=Find(r,o,"/Script/HTGame.HTWheeledVehicleBase.OnRep_ColorID");
     if(body_color<0 || module_color<0 || !LocalFunction(r,color_notify,"OnRep_ColorID",0,0)) return false;
@@ -328,7 +319,7 @@ bool Submit(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& ta
        !Invoke(r,component,fish_fn,&fish)) {status=localizer.Text("status.fish_hook_unreadable","The hook display data could not be read, so nothing was applied.");return false;}
     if(fish) {
         uintptr_t cls{};std::array<uint8_t,20> display{};
-        if(!r.IsA(fish,"HTVehicleFishHookActor") || !r.Read(fish+16,cls)) return false;
+        if(!r.IsA(fish,"HTVehicleFishHookActor") || !r.Read(fish+accessory::profile::native_layout.ObjectClass,cls)) return false;
         const auto at=Offset(r,o,cls,"CurrentFishDisplayData",20);
         if(at<0 || !r.Read(fish+at,display)) return false;
         std::memcpy(parameters.data()+44,display.data(),20);
@@ -337,7 +328,7 @@ bool Submit(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& ta
     std::memcpy(parameters.data(),&array,16);parameters[16]=1;
     std::memcpy(parameters.data()+20,&target.vehicle,8);std::memcpy(parameters.data()+28,&skin,8);
     uintptr_t cls{};std::vector<uint64_t> previous;
-    if(!r.Read(component+16,cls)) return false;
+    if(!r.Read(component+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto list=Offset(r,o,cls,"CurrentModuleIDList",16);
     if(list<0 || !ReadIds(r,component+list,previous)) return false;
     if(!PrepareArrayCopy(r)) {Log("Vehicle appearance: name array interface unavailable");return false;}
@@ -364,9 +355,9 @@ bool Submit(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& ta
 bool VisualSignature(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& t,uint64_t& hash) {
     const auto car=Resolve(r,o,t.actor),component=Resolve(r,o,t.component);
     uintptr_t cls{},owner{};FName id{};
-    if(!car || !component || !r.Read(component+32,owner) || owner!=car || !r.Read(car+16,cls)) return false;
+    if(!car || !component || !r.Read(component+accessory::profile::native_layout.ObjectOuter,owner) || owner!=car || !r.Read(car+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto id_at=Offset(r,o,cls,"VehicleID",8);
-    if(id_at<0 || !r.Read(car+id_at,id) || Pack(id)!=Pack(t.vehicle) || !r.Read(component+16,cls)) return false;
+    if(id_at<0 || !r.Read(car+id_at,id) || Pack(id)!=Pack(t.vehicle) || !r.Read(component+accessory::profile::native_layout.ObjectClass,cls)) return false;
     hash=1469598103934665603ull;
     for(const auto& [key,size]:std::array<std::pair<const char*,int>,4>{{{"VehicleColorID",4},{"CurrentDecalTexture",8},{"CachedWheelSmokeData",80},{"CachedWheelMarkData",240}}}) {
         const auto at=Offset(r,o,cls,key,size);std::array<uint8_t,240> bytes{};
@@ -384,7 +375,7 @@ bool VisualSignature(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const T
     if(list<0 || !ReadIds(r,component+list,ids)) return false;
     for(auto module_id:ids) {hash^=module_id;hash*=1099511628211ull;}
     uintptr_t car_class{};int32_t color{};RowArray materials{};
-    if(!r.Read(car+16,car_class)) return false;
+    if(!r.Read(car+accessory::profile::native_layout.ObjectClass,car_class)) return false;
     const auto color_at=Offset(r,o,car_class,"ColorID",4),mids_at=Offset(r,o,car_class,"MaterialInstanceDynamics",16);
     if(color_at<0 || mids_at<0 || !r.Read(car+color_at,color) || !r.Read(car+mids_at,materials) || materials.count<0 || materials.count>128) return false;
     hash^=static_cast<uint32_t>(color);hash*=1099511628211ull;
@@ -479,7 +470,7 @@ void Update() noexcept {
                 if(found==saved.end()) status=localizer.Text("status.vehicle_no_changes","This vehicle has no changes from this plugin run.");
                 else if(Submit(r,o,target,found->second.target.modules,found->second.catalog)) {
                     const auto car=Resolve(r,o,target.actor);uintptr_t cls{};
-                    if(car && r.Read(car+16,cls)) {
+                    if(car && r.Read(car+accessory::profile::native_layout.ObjectClass,cls)) {
                         const auto at=Offset(r,o,cls,"ColorID",4);
                         const auto notify=Find(r,o,"/Script/HTGame.HTWheeledVehicleBase.OnRep_ColorID");
                         if(at>=0 && core->write_memory(core->user,car+at,{reinterpret_cast<const uint8_t*>(&found->second.target.color),4}).code==0)
@@ -497,7 +488,7 @@ void Update() noexcept {
                     if(found==saved.end()) found=saved.emplace(target.actor.id,Saved{target,*plan,entries}).first;
                     else {found->second.desired=*plan;found->second.catalog=entries;}
                     const auto component=Resolve(r,o,target.component);uintptr_t cls{};
-                    if(component && r.Read(component+16,cls)) {
+                    if(component && r.Read(component+accessory::profile::native_layout.ObjectClass,cls)) {
                         const auto at=Offset(r,o,cls,"VehicleColorID",4);
                         found->second.paint_valid=at>=0 && r.Read(component+at,found->second.paint) && std::isfinite(found->second.paint);
                     }

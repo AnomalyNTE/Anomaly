@@ -63,18 +63,16 @@ bool Bytes(const Reader&, uintptr_t address, void* data, size_t size) {
 }
 AnomalyGenerationHandleV1 Handle(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, uintptr_t object) {
     int32_t index{}; AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
-    if (!r.Read(object+12,index) || index < 0 ||
+    if (!r.Read(object+accessory::profile::native_layout.ObjectIndex,index) || index < 0 ||
         objects->snapshot_at(objects->user,static_cast<uint32_t>(index),&snapshot).code != 0 ||
         Resolve(r,objects,snapshot.handle) != object) return {};
     return snapshot.handle;
 }
 bool PrepareWorldPointer(const Reader& r) {
     if (!world_pointer) {
-        const auto sig = Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        uintptr_t instruction{}; int32_t displacement{};
-        if (!sig || !sig->resolve || sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),
-            StringView(accessory::profile::World),&instruction).code != 0 ||
-            !r.Read(instruction+3,displacement)) return false;
+        const auto instruction=accessory::profile::compatibility.Address("World");
+        int32_t displacement{};
+        if (!instruction || !r.Read(instruction+3,displacement)) return false;
         world_pointer = static_cast<uintptr_t>(static_cast<intptr_t>(instruction)+7+displacement);
     }
     return true;
@@ -82,25 +80,25 @@ bool PrepareWorldPointer(const Reader& r) {
 uintptr_t LocalInventory(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     if (!PrepareWorldPointer(r)) return 0;
     uintptr_t world{}, instance{}, local{}, controller{}, state{}, inventory{}, cls{}; RowArray players{};
-    if (!r.Read(world_pointer,world) || !r.Read(world+16,cls) ||
-        !Layout(r,cls,"OwningGameInstance",WorldGameInstance,8) || !r.Read(world+WorldGameInstance,instance) ||
-        !r.Read(instance+16,cls) || !Layout(r,cls,"LocalPlayers",GameInstanceLocalPlayers,16) ||
-        !r.Read(instance+GameInstanceLocalPlayers,players) || players.count != 1 || players.capacity < 1 || players.capacity > 16 ||
-        !r.Read(players.data,local) || !r.Read(local+16,cls) || !Layout(r,cls,"PlayerController",LocalPlayerController,8) ||
-        !r.Read(local+LocalPlayerController,controller) || !r.Read(controller+16,cls) || !Layout(r,cls,"PlayerState",ControllerPlayerState,8) ||
-        !r.Read(controller+ControllerPlayerState,state) || !r.Read(state+16,cls) || !Layout(r,cls,"InventoryComponent",PlayerStateInventory,8) ||
-        !r.Read(state+PlayerStateInventory,inventory) || !r.Read(inventory+16,cls) ||
-        !Layout(r,cls,"InventoryContainerMap",InventoryContainers,0x50) || !Handle(r,objects,inventory).id) return 0;
+    if (!r.Read(world_pointer,world) || !r.Read(world+accessory::profile::native_layout.ObjectClass,cls) ||
+        !Layout(r,cls,"OwningGameInstance",skin_awakening_profile::native_layout.WorldGameInstance,8) || !r.Read(world+skin_awakening_profile::native_layout.WorldGameInstance,instance) ||
+        !r.Read(instance+accessory::profile::native_layout.ObjectClass,cls) || !Layout(r,cls,"LocalPlayers",skin_awakening_profile::native_layout.GameInstanceLocalPlayers,16) ||
+        !r.Read(instance+skin_awakening_profile::native_layout.GameInstanceLocalPlayers,players) || players.count != 1 || players.capacity < 1 || players.capacity > 16 ||
+        !r.Read(players.data,local) || !r.Read(local+accessory::profile::native_layout.ObjectClass,cls) || !Layout(r,cls,"PlayerController",skin_awakening_profile::native_layout.LocalPlayerController,8) ||
+        !r.Read(local+skin_awakening_profile::native_layout.LocalPlayerController,controller) || !r.Read(controller+accessory::profile::native_layout.ObjectClass,cls) || !Layout(r,cls,"PlayerState",skin_awakening_profile::native_layout.ControllerPlayerState,8) ||
+        !r.Read(controller+skin_awakening_profile::native_layout.ControllerPlayerState,state) || !r.Read(state+accessory::profile::native_layout.ObjectClass,cls) || !Layout(r,cls,"InventoryComponent",skin_awakening_profile::native_layout.PlayerStateInventory,8) ||
+        !r.Read(state+skin_awakening_profile::native_layout.PlayerStateInventory,inventory) || !r.Read(inventory+accessory::profile::native_layout.ObjectClass,cls) ||
+        !Layout(r,cls,"InventoryContainerMap",skin_awakening_profile::native_layout.InventoryContainers,0x50) || !Handle(r,objects,inventory).id) return 0;
     return inventory;
 }
 // Character items are in CARD (4). Respect the allocation flags of sparse maps.
 std::optional<std::vector<uintptr_t>> Slots(const Reader& r, uintptr_t map, size_t stride, int32_t limit) {
     RowArray header{}; uintptr_t flags{}; int32_t bits{}, maximum{}, free{};
     if (!r.Read(map,header) || header.count < 0 || header.count > limit || header.capacity < header.count ||
-        header.capacity > limit*4 || !r.Read(map+32,flags) || !r.Read(map+40,bits) ||
-        !r.Read(map+44,maximum) || !r.Read(map+52,free) || bits < header.count || maximum < bits ||
+        header.capacity > limit*4 || !r.Read(map+accessory::profile::native_layout.MapBitsData,flags) || !r.Read(map+accessory::profile::native_layout.MapBitCount,bits) ||
+        !r.Read(map+accessory::profile::native_layout.MapBitCapacity,maximum) || !r.Read(map+accessory::profile::native_layout.MapFreeCount,free) || bits < header.count || maximum < bits ||
         free < 0 || free > header.count || bits > limit*4) return {};
-    if (!flags) { if (bits > 128) return {}; flags = map+16; }
+    if (!flags) { if (bits > 128) return {}; flags = map+accessory::profile::native_layout.MapInlineBits; }
     std::vector<uint32_t> allocated((header.count+31)/32);
     if (header.count && (!header.data || !Bytes(r,flags,allocated.data(),allocated.size()*4))) return {};
     std::vector<uintptr_t> result_slots;
@@ -110,23 +108,23 @@ std::optional<std::vector<uintptr_t>> Slots(const Reader& r, uintptr_t map, size
     return result_slots;
 }
 bool ReadOwned(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, uintptr_t inventory) {
-    const auto containers = Slots(r,inventory+InventoryContainers,176,64);
+    const auto containers = Slots(r,inventory+skin_awakening_profile::native_layout.InventoryContainers,accessory::profile::native_layout.InventoryContainerStride,64);
     if (!containers) return false;
     if (!item_class) item_class = FindCached(r,objects,"/Script/HTGame.HTCharacterItem");
-    if (!item_class || !Layout(r,item_class,"AwakenLevel",ItemAwakenLevel,4) ||
-        !Layout(r,item_class,"AwakenEffectDataLists",ItemAwakenEffects,16) || !Layout(r,item_class,"ItemID",ItemId,8) ||
-        !Layout(r,item_class,"UniqueID",ItemUniqueId,8)) return false;
+    if (!item_class || !Layout(r,item_class,"AwakenLevel",skin_awakening_profile::native_layout.ItemAwakenLevel,4) ||
+        !Layout(r,item_class,"AwakenEffectDataLists",skin_awakening_profile::native_layout.ItemAwakenEffects,16) || !Layout(r,item_class,"ItemID",skin_awakening_profile::native_layout.ItemId,8) ||
+        !Layout(r,item_class,"UniqueID",skin_awakening_profile::native_layout.ItemUniqueId,8)) return false;
     std::vector<Target> found;
     const auto inventory_id = Handle(r,objects,inventory);
     for (const auto entry : *containers) {
         uint8_t kind{}; if (!r.Read(entry,kind)) return false;
         if (kind != 4) continue;
-        const auto cards = Slots(r,entry+8,24,512); if (!cards) return false;
+        const auto cards = Slots(r,entry+accessory::profile::native_layout.InventoryContainerMap,accessory::profile::native_layout.MapEntryStride,512); if (!cards) return false;
         for (const auto card : *cards) {
             uintptr_t item{}, cls{}; Target target; target.inventory = inventory_id;
-            if (!r.Read(card,target.uid) || !r.Read(card+8,item) || !r.Read(item+16,cls) || cls != item_class ||
-                !r.Read(item+ItemId,target.character) || !target.character.id) continue;
-            uint64_t uid{}; if (!r.Read(item+ItemUniqueId,uid) || uid != target.uid) continue;
+            if (!r.Read(card,target.uid) || !r.Read(card+accessory::profile::native_layout.MapValue,item) || !r.Read(item+accessory::profile::native_layout.ObjectClass,cls) || cls != item_class ||
+                !r.Read(item+skin_awakening_profile::native_layout.ItemId,target.character) || !target.character.id) continue;
+            uint64_t uid{}; if (!r.Read(item+skin_awakening_profile::native_layout.ItemUniqueId,uid) || uid != target.uid) continue;
             target.item = Handle(r,objects,item); if (target.item.id) found.push_back(target);
         }
     }
@@ -137,11 +135,11 @@ bool Item(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, const Targ
           uintptr_t& item, uintptr_t& effects, int32_t& level, Effects& data) {
     item = Resolve(r,objects,target.item); const auto inventory = Resolve(r,objects,target.inventory);
     uintptr_t cls{}, owner{}, actual_inventory{}; uint64_t uid{}; FName character{}; RowArray array{};
-    if (!item || !inventory || !r.Read(item+16,cls) || cls != item_class ||
-        !r.Read(item+ItemUniqueId,uid) || uid != target.uid || !r.Read(item+ItemId,character) ||
-        Pack(character) != Pack(target.character) || !r.Read(item+32,owner) ||
-        !r.Read(owner+PlayerStateInventory,actual_inventory) || actual_inventory != inventory ||
-        !r.Read(item+ItemAwakenLevel,level) || level < 0 || level > 6 || !r.Read(item+ItemAwakenEffects,array) ||
+    if (!item || !inventory || !r.Read(item+accessory::profile::native_layout.ObjectClass,cls) || cls != item_class ||
+        !r.Read(item+skin_awakening_profile::native_layout.ItemUniqueId,uid) || uid != target.uid || !r.Read(item+skin_awakening_profile::native_layout.ItemId,character) ||
+        Pack(character) != Pack(target.character) || !r.Read(item+accessory::profile::native_layout.ObjectOuter,owner) ||
+        !r.Read(owner+skin_awakening_profile::native_layout.PlayerStateInventory,actual_inventory) || actual_inventory != inventory ||
+        !r.Read(item+skin_awakening_profile::native_layout.ItemAwakenLevel,level) || level < 0 || level > 6 || !r.Read(item+skin_awakening_profile::native_layout.ItemAwakenEffects,array) ||
         array.count != 6 || array.capacity < 6 || array.capacity > 64 || !r.Read(array.data,data)) return false;
     effects = array.data; return true;
 }
@@ -151,19 +149,19 @@ void DiscoverUi(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     ui_handle = {};
     if (!ui_class) ui_class = FindCached(r,objects,
         "/Game/UI/Blueprints/Character/BPUI_CharacterAwaken.BPUI_CharacterAwaken_C");
-    if (!ui_class || !Layout(r,ui_class,"m_CharacterInfoStruct",AwakenUiInfo,AwakenUiInfoSize)) return;
+    if (!ui_class || !Layout(r,ui_class,"m_CharacterInfoStruct",skin_awakening_profile::native_layout.AwakenUiInfo,skin_awakening_profile::native_layout.AwakenUiInfoSize)) return;
     const auto count = objects->count(objects->user);
     if (!ui_scan_index || ui_scan_index > count) ui_scan_index = count;
     uintptr_t chunks{};
-    if (!r.Read(registry+16,chunks)) return;
+    if (!r.Read(registry+accessory::profile::native_layout.RegistryItems,chunks)) return;
     // Find the recently created widget once. No per-object name resolution.
     const auto until = Clock::now()+std::chrono::microseconds(500);
     for (size_t n = 0; ui_scan_index && n < 1024 && Clock::now() < until; ++n) {
         const auto index = --ui_scan_index; uintptr_t chunk{}, object{}, cls{};
-        if (!r.Read(chunks+8*(index/65536),chunk) || !r.Read(chunk+24*(index%65536),object) ||
-            !r.Read(object+16,cls) || cls != ui_class) continue;
+        if (!r.Read(chunks+8*(index/accessory::profile::native_layout.ChunkSize),chunk) || !r.Read(chunk+accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize),object) ||
+            !r.Read(object+accessory::profile::native_layout.ObjectClass,cls) || cls != ui_class) continue;
         uint64_t uid{};
-        if (!r.Read(object+AwakenUiInfo,uid) || !uid) continue;
+        if (!r.Read(object+skin_awakening_profile::native_layout.AwakenUiInfo,uid) || !uid) continue;
         ui_handle = Handle(r,objects,object);
         if (ui_handle.id) return;
     }
@@ -172,7 +170,7 @@ void DiscoverUi(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
 bool Refresh(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, const Target& target) {
     const auto ui = Resolve(r,objects,ui_handle); const auto inventory = Resolve(r,objects,target.inventory);
     uint64_t uid{};
-    if (!ui || !inventory || !r.Read(ui+AwakenUiInfo,uid) || uid != target.uid) return false;
+    if (!ui || !inventory || !r.Read(ui+skin_awakening_profile::native_layout.AwakenUiInfo,uid) || uid != target.uid) return false;
     const auto fn = FindCached(r,objects,"/Script/HTGame.HTUI_CharacterAwaken.OnInventoryUpdateCharacterCallback");
     if (!fn || !r.Function(fn,"OnInventoryUpdateCharacterCallback",3,24) ||
         !Layout(r,fn,"NotifyType",0,1) || !Layout(r,fn,"InventoryComponent",8,8) ||
@@ -186,7 +184,7 @@ bool RestoreOne(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, cons
     uintptr_t item{}, effects{}; Effects current{}; int32_t level{};
     if (!Item(r,objects,saved.target,item,effects,level,current)) return false;
     const auto restored = awakening_data::Restore(current,saved.applied,saved.before);
-    if (!Write(effects,restored) || (level == 6 && !Write(item+ItemAwakenLevel,saved.level))) return false;
+    if (!Write(effects,restored) || (level == 6 && !Write(item+skin_awakening_profile::native_layout.ItemAwakenLevel,saved.level))) return false;
     if (refresh) Refresh(r,objects,saved.target);
     return true;
 }
@@ -198,8 +196,8 @@ bool RefreshVisual(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, u
 bool VisualIdentity(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects,
                     const VisualBackup& saved, uintptr_t& actor, uint8_t& current) {
     actor = Resolve(r,objects,saved.actor); uint64_t uid{};
-    return actor && r.Read(actor+ActorUniqueId,uid) && uid == saved.uid &&
-        r.Read(actor+ActorFullAwaken,current) && current <= 1;
+    return actor && r.Read(actor+skin_awakening_profile::native_layout.ActorUniqueId,uid) && uid == saved.uid &&
+        r.Read(actor+skin_awakening_profile::native_layout.ActorFullAwaken,current) && current <= 1;
 }
 bool RestoreVisuals(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, bool refresh) {
     bool restored = true;
@@ -210,7 +208,7 @@ bool RestoreVisuals(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, 
             visual_backups.erase(visual_backups.begin()+static_cast<std::ptrdiff_t>(i-1)); continue;
         }
         if (current == 1 && saved.before != 1) {
-            if (!Write(actor+ActorFullAwaken,saved.before) || (refresh && !RefreshVisual(r,objects,actor))) {
+            if (!Write(actor+skin_awakening_profile::native_layout.ActorFullAwaken,saved.before) || (refresh && !RefreshVisual(r,objects,actor))) {
                 restored = false; continue;
             }
         }
@@ -228,14 +226,14 @@ void UpdateVisual(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     const auto actor = Resolve(r,objects,player.character);
     const auto inventory = Resolve(r,objects,inventory_handle);
     uintptr_t cls{}, state{}, owner{}, appearance{}; uint64_t uid{}; uint8_t current{}; FName fashion{};
-    if (!actor || !inventory || !r.Read(actor+16,cls) ||
-        !Layout(r,cls,"UniqueID",ActorUniqueId,8) || !Layout(r,cls,"SavedPlayerState",ActorPlayerState,8) ||
-        !Layout(r,cls,"bReplicatedFullAwaken",ActorFullAwaken,1) ||
-        !Layout(r,cls,"CurPlayerAppearance",ActorAppearance,8) ||
-        !Layout(r,cls,"CurrentDisplayFashionID",ActorDisplayedFashion,8) ||
-        !r.Read(actor+ActorUniqueId,uid) || !r.Read(actor+ActorPlayerState,state) || !r.Read(inventory+32,owner) ||
-        !state || state != owner || !r.Read(actor+ActorFullAwaken,current) || current > 1 ||
-        !r.Read(actor+ActorAppearance,appearance) || !appearance || !r.Read(actor+ActorDisplayedFashion,fashion)) return;
+    if (!actor || !inventory || !r.Read(actor+accessory::profile::native_layout.ObjectClass,cls) ||
+        !Layout(r,cls,"UniqueID",skin_awakening_profile::native_layout.ActorUniqueId,8) || !Layout(r,cls,"SavedPlayerState",skin_awakening_profile::native_layout.ActorPlayerState,8) ||
+        !Layout(r,cls,"bReplicatedFullAwaken",skin_awakening_profile::native_layout.ActorFullAwaken,1) ||
+        !Layout(r,cls,"CurPlayerAppearance",skin_awakening_profile::native_layout.ActorAppearance,8) ||
+        !Layout(r,cls,"CurrentDisplayFashionID",skin_awakening_profile::native_layout.ActorDisplayedFashion,8) ||
+        !r.Read(actor+skin_awakening_profile::native_layout.ActorUniqueId,uid) || !r.Read(actor+skin_awakening_profile::native_layout.ActorPlayerState,state) || !r.Read(inventory+accessory::profile::native_layout.ObjectOuter,owner) ||
+        !state || state != owner || !r.Read(actor+skin_awakening_profile::native_layout.ActorFullAwaken,current) || current > 1 ||
+        !r.Read(actor+skin_awakening_profile::native_layout.ActorAppearance,appearance) || !appearance || !r.Read(actor+skin_awakening_profile::native_layout.ActorDisplayedFashion,fashion)) return;
     const auto target = std::find_if(owned.begin(),owned.end(),[&](const Target& value){return value.uid == uid;});
     uintptr_t item{}, effects{}; Effects nodes{}; int32_t level{};
     if (target == owned.end() || !Item(r,objects,*target,item,effects,level,nodes) || level != 6) return;
@@ -249,8 +247,8 @@ void UpdateVisual(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     // No UObject search, repeated mesh rebuild, or awakening buff application.
     if (current == 1 && saved->fashion == Pack(fashion) && saved->appearance == appearance) return;
     const uint8_t full = 1;
-    if (!Write(actor+ActorFullAwaken,full) || !RefreshVisual(r,objects,actor)) {
-        Write(actor+ActorFullAwaken,current); return;
+    if (!Write(actor+skin_awakening_profile::native_layout.ActorFullAwaken,full) || !RefreshVisual(r,objects,actor)) {
+        Write(actor+skin_awakening_profile::native_layout.ActorFullAwaken,current); return;
     }
     saved->fashion = Pack(fashion); saved->appearance = appearance;
     Log("Awakening: refreshed full-awakening world appearance for "+r.Name(target->character));
@@ -274,26 +272,26 @@ bool EffectNames(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, FNa
         table=FindCached(r,objects,variant.c_str());
     }
     uintptr_t row_type{}; RowArray entries{}; int32_t free{};
-    if (!table || !r.IsA(table, "DataTable") || !r.Read(table+DataTableRowStruct, row_type) ||
-        r.NameAt(row_type+24) != "CharacterAwakenEffectData" ||
-        !Layout(r,row_type, "AwakenEffectStructList", 8, 16) || !r.Read(table+DataTableRowMap, entries) ||
+    if (!table || !r.IsA(table, "DataTable") || !r.Read(table+skin_awakening_profile::native_layout.DataTableRowStruct, row_type) ||
+        r.NameAt(row_type+accessory::profile::native_layout.ObjectName) != "CharacterAwakenEffectData" ||
+        !Layout(r,row_type, "AwakenEffectStructList", 8, 16) || !r.Read(table+skin_awakening_profile::native_layout.DataTableRowMap, entries) ||
         entries.count < 1 || entries.count > 128 || entries.capacity < entries.count ||
-        !r.Read(table+DataTableRowMapFreeCount, free) || free != 0) return false;
+        !r.Read(table+skin_awakening_profile::native_layout.DataTableRowMapFreeCount, free) || free != 0) return false;
     const auto type = FindCached(r, objects, "/Script/HTGame.AwakenEffectStruct");
     const auto item_type = FindCached(r, objects, "/Script/HTGame.AwakenEffectData");
     int32_t stride{}, item_stride{};
-    if (!type || !r.Read(type+ScriptStructSize, stride) || stride != AwakenEffectStride || !Layout(r,type,"EffectID",0,8) ||
-        !Layout(r,type,"AwakenType",AwakenEffectType,1) || !item_type || !r.Read(item_type+ScriptStructSize,item_stride) ||
+    if (!type || !r.Read(type+skin_awakening_profile::native_layout.ScriptStructSize, stride) || stride != skin_awakening_profile::native_layout.AwakenEffectStride || !Layout(r,type,"EffectID",0,8) ||
+        !Layout(r,type,"AwakenType",skin_awakening_profile::native_layout.AwakenEffectType,1) || !item_type || !r.Read(item_type+skin_awakening_profile::native_layout.ScriptStructSize,item_stride) ||
         item_stride != 12 || !Layout(r,item_type,"Unlocked",0,1) || !Layout(r,item_type,"EffectID",4,8)) return false;
     for (int32_t i = 0; i < entries.count; ++i) {
         FName key{}; uintptr_t row{}; RowArray effects{};
-        if (!r.Read(entries.data+24*i, key) || Pack(key) != Pack(character)) continue;
-        if (!r.Read(entries.data+24*i+8, row) || !r.Read(row+8, effects) ||
+        if (!r.Read(entries.data+accessory::profile::native_layout.MapEntryStride*i, key) || Pack(key) != Pack(character)) continue;
+        if (!r.Read(entries.data+accessory::profile::native_layout.MapEntryStride*i+accessory::profile::native_layout.MapValue, row) || !r.Read(row+accessory::profile::native_layout.AwakenList, effects) ||
             effects.count < 6 || effects.count > 64 || effects.capacity < effects.count) return false;
         std::array<bool,6> found{};
         for (int32_t j = 0; j < effects.count; ++j) {
             FName name{}; uint8_t kind{};
-            if (!r.Read(effects.data+AwakenEffectStride*j, name) || !r.Read(effects.data+AwakenEffectStride*j+AwakenEffectType, kind)) return false;
+            if (!r.Read(effects.data+skin_awakening_profile::native_layout.AwakenEffectStride*j, name) || !r.Read(effects.data+skin_awakening_profile::native_layout.AwakenEffectStride*j+skin_awakening_profile::native_layout.AwakenEffectType, kind)) return false;
             if (kind != 0) continue;
             const auto label = r.Name(name);
             for (size_t k = 0; k < 6; ++k) if (label == "Effect"+std::to_string(k+1)) {
@@ -329,8 +327,8 @@ void Apply(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, const Tar
         backups[backup_index]=saved;
     } else backups.push_back(saved);
     const int32_t six = 6; Effects verified{}; int32_t verified_level{};
-    if (!Write(effects,*applied) || !Write(item+ItemAwakenLevel,six) || !r.Read(effects,verified) || verified != *applied ||
-        !r.Read(item+ItemAwakenLevel,verified_level) || verified_level != 6) {
+    if (!Write(effects,*applied) || !Write(item+skin_awakening_profile::native_layout.ItemAwakenLevel,six) || !r.Read(effects,verified) || verified != *applied ||
+        !r.Read(item+skin_awakening_profile::native_layout.ItemAwakenLevel,verified_level) || verified_level != 6) {
         if (RestoreOne(r,objects,saved,true)) backups.erase(backups.begin()+static_cast<std::ptrdiff_t>(backup_index));
         ++rejected;
         Log("Awakening: failed local preview for "+r.Name(target.character)); return;
@@ -400,11 +398,11 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     // A selected page is refreshed once; no continuous rewriting or RPCs.
     if (enabled) {
         const auto ui = Resolve(r,objects,ui_handle); uint64_t uid{}; int32_t ui_level{};
-        if (ui && r.Read(ui+AwakenUiInfo,uid) && r.Read(ui+AwakenUiLevel,ui_level) && ui_level != 6) {
+        if (ui && r.Read(ui+skin_awakening_profile::native_layout.AwakenUiInfo,uid) && r.Read(ui+skin_awakening_profile::native_layout.AwakenUiLevel,ui_level) && ui_level != 6) {
             const auto found = std::find_if(backups.begin(),backups.end(),[&](const Backup& saved){return saved.target.uid == uid;});
             if (found != backups.end()) {
                 const auto item = Resolve(r,objects,found->target.item); int32_t actual{};
-                if (r.Read(item+ItemAwakenLevel,actual) && actual == 6) Refresh(r,objects,found->target);
+                if (r.Read(item+skin_awakening_profile::native_layout.ItemAwakenLevel,actual) && actual == 6) Refresh(r,objects,found->target);
             }
         }
     }

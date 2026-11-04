@@ -95,23 +95,23 @@ bool UeFindField(const UeReader& reader, const std::uintptr_t object,
     std::uintptr_t cls = UeClassOf(reader, object);
     for (int depth = 0; cls != 0 && depth < 8; ++depth) {
         std::uintptr_t field{};
-        if (reader.Read(cls + kUeStructPropertyLinkOffset, field)) {
+        if (reader.Read(cls + night999_profile::native_layout.kUeStructPropertyLinkOffset, field)) {
             for (int index = 0; field != 0 && index < 2000; ++index) {
-                const std::string name = reader.NameAt(field + kUeFieldNameOffset);
+                const std::string name = reader.NameAt(field + night999_profile::native_layout.kUeFieldNameOffset);
                 if (name.empty() || name.size() > 64) break;
                 if (name == field_name) {
                     std::int32_t offset{};
-                    if (!reader.Read(field + kUeFieldOffsetOffset, offset)) return false;
+                    if (!reader.Read(field + night999_profile::native_layout.kUeFieldOffsetOffset, offset)) return false;
                     address = object + static_cast<std::uintptr_t>(offset);
                     return true;
                 }
                 std::uintptr_t next{};
-                if (!reader.Read(field + kUeFieldNextOffset, next) || next == field) break;
+                if (!reader.Read(field + night999_profile::native_layout.kUeFieldNextOffset, next) || next == field) break;
                 field = next;
             }
         }
         std::uintptr_t parent{};
-        if (!reader.Read(cls + kUeStructSuperOffset, parent) || parent == cls) break;
+        if (!reader.Read(cls + night999_profile::native_layout.kUeStructSuperOffset, parent) || parent == cls) break;
         cls = parent;
     }
     return false;
@@ -156,18 +156,18 @@ void UeAddMatch(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* object
     std::snprintf(match.name, sizeof(match.name), "%s", name.c_str());
     match.object = UeResolve(reader, objects, snapshot.handle);
     if (match.object != 0) {
-        reader.Read(match.object + kUeObjectOuterOffset, match.owner);
+        reader.Read(match.object + night999_profile::native_layout.kUeObjectOuterOffset, match.owner);
         const std::uintptr_t cls = UeClassOf(reader, match.object);
         if (cls != 0) {
-            match.is_function = reader.NameAt(cls + kUeObjectNameOffset) == "Function";
+            match.is_function = reader.NameAt(cls + night999_profile::native_layout.kUeObjectNameOffset) == "Function";
         }
         if (match.owner != 0) {
-            const std::string owner_name = reader.NameAt(match.owner + kUeObjectNameOffset);
+            const std::string owner_name = reader.NameAt(match.owner + night999_profile::native_layout.kUeObjectNameOffset);
             std::snprintf(match.owner_name, sizeof(match.owner_name), "%s", owner_name.c_str());
         }
         if (match.is_function) {
             std::uint16_t parms_size{};
-            reader.Read(match.object + kUeFunctionParmsSizeOffset, parms_size);
+            reader.Read(match.object + night999_profile::native_layout.kUeFunctionParmsSizeOffset, parms_size);
             match.parms_size = parms_size;
         }
     }
@@ -214,7 +214,7 @@ std::uintptr_t UeOwnerViaOuter(
         const std::uintptr_t cls = UeClassOf(reader, object);
         if (cls != 0 && UeClassDerivesFrom(reader, cls, owner_class)) return object;
         std::uintptr_t outer{};
-        if (!reader.Read(object + kUeObjectOuterOffset, outer) || outer == object) break;
+        if (!reader.Read(object + night999_profile::native_layout.kUeObjectOuterOffset, outer) || outer == object) break;
         object = outer;
     }
     return 0;
@@ -394,7 +394,7 @@ void UeOwnerStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objec
         if (object == 0) continue;
         const std::uintptr_t cls = UeClassOf(reader, object);
         if (cls == 0 || !UeClassDerivesFrom(reader, cls, g_ue_owner_class)) continue;
-        const std::string name = reader.NameAt(object + kUeObjectNameOffset);
+        const std::string name = reader.NameAt(object + night999_profile::native_layout.kUeObjectNameOffset);
         if (name.rfind("Default__", 0) == 0) {
             if (g_ue_cdo == 0) g_ue_cdo = object;
             continue;
@@ -407,7 +407,7 @@ void UeOwnerStep(const UeReader& reader, const AnomalyUe5ObjectsServiceV1* objec
 
 void UeFinishOwnerScan(const UeReader& reader) {
     std::string text = "target \"" + g_ue_target_name + "\" -> class ";
-    text += g_ue_owner_class != 0 ? reader.NameAt(g_ue_owner_class + kUeObjectNameOffset)
+    text += g_ue_owner_class != 0 ? reader.NameAt(g_ue_owner_class + night999_profile::native_layout.kUeObjectNameOffset)
                                   : std::string("(unknown)");
     text += g_ue_instance != 0
         ? (g_ue_instance_is_cdo ? ", only the CDO exists (no live instance)"
@@ -421,7 +421,7 @@ void UeFinishOwnerScan(const UeReader& reader) {
 bool UeCachedRefreshFunctionValid(const UeReader& reader) {
     if (g_ue_refresh_fn_cache == 0 || g_ue_refresh_fn_name_id == 0) return false;
     std::uint32_t name_id{};
-    if (!reader.Read(g_ue_refresh_fn_cache + kUeObjectNameOffset, name_id) ||
+    if (!reader.Read(g_ue_refresh_fn_cache + night999_profile::native_layout.kUeObjectNameOffset, name_id) ||
         name_id != g_ue_refresh_fn_name_id) {
         return false;
     }
@@ -429,7 +429,7 @@ bool UeCachedRefreshFunctionValid(const UeReader& reader) {
         return false;
     }
     const std::uintptr_t cls = UeClassOf(reader, g_ue_refresh_fn_cache);
-    return cls != 0 && reader.NameAt(cls + kUeObjectNameOffset) == "Function";
+    return cls != 0 && reader.NameAt(cls + night999_profile::native_layout.kUeObjectNameOffset) == "Function";
 }
 
 // 记录一条定位结果（供后续复用）。
@@ -439,7 +439,7 @@ void UeRememberRefreshTarget(const UeReader& reader, const std::uintptr_t functi
     g_ue_refresh_fn_parms_size = parms_size;
     std::uint32_t name_id{};
     g_ue_refresh_fn_name_id =
-        reader.Read(function + kUeObjectNameOffset, name_id) ? name_id : 0;
+        reader.Read(function + night999_profile::native_layout.kUeObjectNameOffset, name_id) ? name_id : 0;
 }
 
 // find_exact 用完整对象路径直接取 UFunction —— 毫秒级，不扫注册表。
@@ -460,14 +460,14 @@ bool UeLocateRefreshFunctionByPath(const UeReader& reader, std::uintptr_t& funct
 bool UeAdoptRefreshFunction(const UeReader& reader, const std::uintptr_t function) {
     if (function == 0) return false;
     const std::uintptr_t cls = UeClassOf(reader, function);
-    if (cls == 0 || reader.NameAt(cls + kUeObjectNameOffset) != "Function") return false;
-    if (reader.NameAt(function + kUeObjectNameOffset) != std::string(kUeRefreshFunction)) {
+    if (cls == 0 || reader.NameAt(cls + night999_profile::native_layout.kUeObjectNameOffset) != "Function") return false;
+    if (reader.NameAt(function + night999_profile::native_layout.kUeObjectNameOffset) != std::string(kUeRefreshFunction)) {
         return false;
     }
     std::uintptr_t owner{};
-    if (!reader.Read(function + kUeObjectOuterOffset, owner) || owner == 0) return false;
+    if (!reader.Read(function + night999_profile::native_layout.kUeObjectOuterOffset, owner) || owner == 0) return false;
     std::uint16_t parms_size{};
-    reader.Read(function + kUeFunctionParmsSizeOffset, parms_size);
+    reader.Read(function + night999_profile::native_layout.kUeFunctionParmsSizeOffset, parms_size);
     g_ue_function = function;
     g_ue_owner_class = owner;
     g_ue_parms_size = parms_size;
@@ -485,7 +485,7 @@ bool UeAdoptRefreshFunction(const UeReader& reader, const std::uintptr_t functio
 bool UeTryReuseRefreshTarget(const UeReader& reader) {
     if (!UeCachedRefreshFunctionValid(reader)) return false;
     std::uintptr_t owner{};
-    if (!reader.Read(g_ue_refresh_fn_cache + kUeObjectOuterOffset, owner) || owner == 0) {
+    if (!reader.Read(g_ue_refresh_fn_cache + night999_profile::native_layout.kUeObjectOuterOffset, owner) || owner == 0) {
         return false;
     }
     std::uintptr_t state = UeLocalPlayerState(reader);

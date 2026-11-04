@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "jelly-reflection-v1",
+  "layout": {
+    "object.internal_index": 12,
+    "object.class": 16,
+    "object.name_offset": 24,
+    "object.outer": 32,
+    "ustruct.super_struct": 64,
+    "ustruct.children": 72,
+    "ustruct.property_link": 112,
+    "ufield.next": 40,
+    "ffield.next": 24,
+    "ffield.name": 32,
+    "ffield.class": 8,
+    "ffield_class.name": 0,
+    "fproperty.array_dim": 48,
+    "fproperty.element_size": 52,
+    "fproperty.offset_internal": 68,
+    "fstruct_property.struct": 112,
+    "fobject_property.property_class": 112,
+    "farray_property.inner": 120,
+    "fbool_property.field_size": 112,
+    "fbool_property.byte_offset": 113,
+    "fbool_property.byte_mask": 114,
+    "ufunction.num_parms": 180,
+    "ufunction.parms_size": 182,
+    "ufunction.return_value_offset": 184,
+    "objects.items": 16,
+    "objects.count": 36,
+    "objects.max_count": 32,
+    "objects.num_chunks": 44,
+    "objects.max_chunks": 40,
+    "objects.chunk_count_size": 4,
+    "objects.chunk_size": 65536,
+    "objects.item_stride": 24,
+    "objects.object_offset": 0,
+    "objects.serial_offset": 16,
+    "tarray.data": 0,
+    "tarray.num": 8,
+    "tarray.max": 12,
+    "property.relative_scale.element_size": 24,
+    "property.relative_rotation.element_size": 24,
+    "property.mobility.element_size": 1,
+    "property.hidden.element_size": 1,
+    "property.collision_enabled.element_size": 1,
+    "function.set_relative_scale.0.numParms": 1,
+    "function.set_relative_scale.0.parmsSize": 24,
+    "function.set_relative_scale.0.returnValueOffset": 65535,
+    "function.set_relative_scale.0.param0.size": 24,
+    "function.set_relative_scale.0.param0.offset": 0,
+    "function.set_relative_scale.1.numParms": 0,
+    "function.set_relative_scale.1.parmsSize": 0,
+    "function.set_relative_scale.1.returnValueOffset": 65535,
+    "function.set_relative_scale.1.param0.size": 24,
+    "function.set_relative_scale.1.param0.offset": 0,
+    "function.set_relative_rotation.0.numParms": 4,
+    "function.set_relative_rotation.0.parmsSize": 297,
+    "function.set_relative_rotation.0.returnValueOffset": 65535,
+    "function.set_relative_rotation.0.param0.size": 24,
+    "function.set_relative_rotation.0.param0.offset": 0,
+    "function.set_relative_rotation.0.param1.size": 1,
+    "function.set_relative_rotation.0.param1.offset": 24,
+    "function.set_relative_rotation.0.param2.size": 264,
+    "function.set_relative_rotation.0.param2.offset": 32,
+    "function.set_relative_rotation.0.param3.size": 1,
+    "function.set_relative_rotation.0.param3.offset": 296
+  },
+  "symbols": [
+    {
+      "name": "gobjects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {
+            "resolveOffset": 3,
+            "instructionSize": 7,
+            "subtract": 16
+          }
+        }
+      ]
+    },
+    {
+      "name": "process_event",
+      "candidates": [
+        {
+          "pattern": "54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "54 41 55 41 56 41 57 48 81 EC",
+          "values": {
+            "detourBytes": 5
+          }
+        }
+      ]
+    },
+    {
+      "name": "process_event_prologue",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

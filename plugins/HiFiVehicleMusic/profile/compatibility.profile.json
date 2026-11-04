@@ -1,0 +1,522 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "hifi-vehicle-music-v1",
+  "layout": {
+    "kPawnControllerOffset": 760,
+    "kPlayerControllerPlayerOffset": 872,
+    "kPlayerPlayerControllerOffset": 48,
+    "kSubsystemPlayerTypeOffset": 1088,
+    "kObjectNameOffset": 24,
+    "kSubsystemOwnedIdsOffset": 1016,
+    "kSubsystemCurrentIdOffset": 1048,
+    "kDurationInfoSecondsOffset": 88,
+    "kUiDurationCacheOffset": 4316,
+    "kUiDurationLabelOffset": 4120,
+    "kUiOuterOffset": 32,
+    "kImageBrushResourceOffset": 424,
+    "kMaterialTextureParametersOffset": 488,
+    "kTextureParameterSize": 40,
+    "kTextureParameterValueOffset": 16,
+    "kProcessEventVtableIndex": 76,
+    "kUiOwnerPanelOffset": 4088,
+    "kUiOwnerStripOffset": 4096,
+    "kUiStripDurationLabelOffset": 3992,
+    "kUiStripDurationCacheOffset": 4004,
+    "kSubsystemPlayingIdOffset": 1080,
+    "kSubsystemPausedOffset": 1084,
+    "kDetailCoverImageOffset": 3992,
+    "kPageCoverImageOffset": 1624,
+    "kPageItemAlbumIdOffset": 384,
+    "kImageSetBrushFromTextureSlot": 800,
+    "kVehicleItemSongIdOffset": 384,
+    "kObjectArrayRelOffset": 3,
+    "kObjectArrayInstructionSize": 7,
+    "kObjectArrayCountOffset": 20,
+    "kObjectsPerChunk": 65536,
+    "kObjectItemSize": 24,
+    "kObjectItemSerialOffset": 16,
+    "kObjectItemFlagsOffset": 8,
+    "kSerialCounterRelOffset": 16,
+    "kSerialCounterInstructionEnd": 20,
+    "kObjectIndexOffset": 12,
+    "kObjectClassOffset": 16,
+    "kObjectOuterOffset": 32,
+    "kSoftPtrSize": 40,
+    "kSoftPtrAssetPathOffset": 8,
+    "kSoftPtrSubPathOffset": 24,
+    "kFTextSize": 16,
+    "kFStringSize": 16,
+    "kMusicRowSize": 176,
+    "kMusicTitleOffset": 8,
+    "kMusicSortIndexOffset": 24,
+    "kMusicCommentOffset": 32,
+    "kMusicDescriptionOffset": 88,
+    "kMusicAlbumIdOffset": 104,
+    "kMusicEventOffset": 112,
+    "kMusicEventSize": 40,
+    "kMusicEventSubPathOffset": 24,
+    "kMusicSourceItemOffset": 152,
+    "kMusicSourceQuestOffset": 160,
+    "kMusicIsListOffset": 168,
+    "kMusicIsHiddenOffset": 169,
+    "kAlbumRowSize": 88,
+    "kAlbumNameOffset": 8,
+    "kAlbumSortIndexOffset": 24,
+    "kAlbumCoverOffset": 32,
+    "kAlbumDescriptionOffset": 72,
+    "kFunctionNumParms": 180,
+    "kFunctionParmsSize": 182,
+    "kFunctionReturnOffset": 184,
+    "kPlayerDiscImageOffset": 4024
+  },
+  "symbols": [
+    {
+      "name": "kPostPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B C4 4C 89 40 18 55 53 56 57 41 54 41 56 41 57 48 8D 68 88 48 81 EC 40 01 00 00 0F 29 70 B8",
+          "entry": "48 8B C4 4C 89 40 18 55 53 56 57 41 54 41 56 41 57 48 8D 68 88 48 81 EC 40 01 00 00 0F 29 70 B8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kStopPattern",
+      "candidates": [
+        {
+          "pattern": "48 83 EC 28 0F B6 C2 48 89 5C 24 38",
+          "entry": "48 83 EC 28 0F B6 C2 48 89 5C 24 38",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPausePattern",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 8B 91 38 04 00 00 48 8B D9 85 D2 7E ?? 33 C9 41 B1 04 44 8D 41 64 E8 ?? ?? ?? ?? 48 8D 8B 80 03 00 00 C6 83 3C 04 00 00 01",
+          "entry": "40 53 48 83 EC 20 8B 91 38 04 00 00 48 8B D9 85 D2 7E",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kResumePattern",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 8B 91 38 04 00 00 48 8B D9 85 D2 7E ?? 33 C9 41 B1 04 44 8D 41 64 E8 ?? ?? ?? ?? 48 8D 8B 80 03 00 00 C6 83 3C 04 00 00 00",
+          "entry": "40 53 48 83 EC 20 8B 91 38 04 00 00 48 8B D9 85 D2 7E",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSetPlayerTypePattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8D 99 A8 04 00 00 4C 89 74 24 30 48 8D B1 40 04 00 00 8B EA 48 8B F9 39 91 40 04 00 00",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8D 99 A8 04 00 00 4C 89 74 24 30 48 8D B1 40 04 00 00 8B EA 48 8B F9 39 91 40 04 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kEndGetOffPattern",
+      "candidates": [
+        {
+          "pattern": "40 55 53 56 57 41 54 41 55 41 57 48 8D AC 24 10 FF FF FF 48 81 EC F0 01 00 00 44 0F B6 EA 48 8B F9 E8",
+          "entry": "40 55 53 56 57 41 54 41 55 41 57 48 8D AC 24 10 FF FF FF 48 81 EC F0 01 00 00 44 0F B6 EA 48 8B F9 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kGameInstancePattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 80 10 03 00 00 48 85 C0 74 ?? 48 8B 40 30 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kFindRowCallPattern",
+      "candidates": [
+        {
+          "pattern": "E8 ?? ?? ?? ?? 48 8B 4C 24 40 48 8B F0 48 85 C9 74 ?? E8 ?? ?? ?? ?? 48 85 F6 74 ?? 48 8B 46 68",
+          "entry": "48 89 5C 24 18 48 89 6C 24 20 48 89 54 24 10 56",
+          "values": {},
+          "callOffset": 0
+        }
+      ]
+    },
+    {
+      "name": "kForEachRowCallPattern",
+      "candidates": [
+        {
+          "pattern": "E8 ?? ?? ?? ?? 48 8B 0F 48 85 C9 74 ?? E8 ?? ?? ?? ?? 44 0F B6 44 24 30",
+          "entry": "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C",
+          "values": {},
+          "callOffset": 0
+        }
+      ]
+    },
+    {
+      "name": "kAlbumForEachCallPattern",
+      "candidates": [
+        {
+          "pattern": "E8 ?? ?? ?? ?? 48 8B 0B 48 85 C9 74 ?? E8 ?? ?? ?? ?? 44 0F B6 85 80 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 4C",
+          "values": {},
+          "callOffset": 0
+        }
+      ]
+    },
+    {
+      "name": "layout",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
+          "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
+          "values": {
+            "kGameInstanceMusicTableOffset": 6208,
+            "kGameInstanceAlbumTableOffset": 6216
+          }
+        },
+        {
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
+          "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
+          "values": {
+            "kGameInstanceMusicTableOffset": 6496,
+            "kGameInstanceAlbumTableOffset": 6504
+          }
+        }
+      ]
+    },
+    {
+      "name": "kAlbumRowPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
+          "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
+          "values": {}
+        },
+        {
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
+          "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kAddUniquePattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 48 8B FA 48 8B 09 4C 8B C1 4C 63 4B 08",
+          "entry": "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 48 8B FA 48 8B 09 4C 8B C1 4C 63 4B 08",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kOwnedCopyPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 40 48 8B DA 33 D2 48 89 13 48 8D 43 0C 48 63 B9 00 04 00 00",
+          "entry": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 40 48 8B DA 33 D2 48 89 13 48 8D 43 0C 48 63 B9 00 04 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kReGeneratePattern",
+      "candidates": [
+        {
+          "pattern": "4C 8B DC 53 55 56 57 41 55 48 81 EC 90 00 00 00",
+          "entry": "4C 8B DC 53 55 56 57 41 55 48 81 EC 90 00 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSetCurrentPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 54 24 10 48 89 4C 24 08 53 55 41 56 48 81 EC 80 00 00 00 83 B9 28 04 00 00 00 4C 8D B1 20 04 00 00",
+          "entry": "48 89 54 24 10 48 89 4C 24 08 53 55 41 56 48 81 EC 80 00 00 00 83 B9 28 04 00 00 00 4C 8D B1 20 04 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kItemRefreshPattern",
+      "candidates": [
+        {
+          "pattern": "41 57 48 81 EC 80 00 00 00 48 8B 81 40 10 00 00 4C 8B F9 48 85 C0 0F 84 ?? ?? ?? ?? 8B 40 08 C1 E8 1E F6 D0 A8 01",
+          "entry": "41 57 48 81 EC 80 00 00 00 48 8B 81 40 10 00 00 4C 8B F9 48 85 C0 0F 84",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kVehiclePanelPattern",
+      "candidates": [
+        {
+          "pattern": "40 55 41 54 41 55 41 56 48 8D AC 24 B8 FE FF FF 48 81 EC 48 02 00 00",
+          "entry": "40 55 41 54 41 55 41 56 48 8D AC 24 B8 FE FF FF 48 81 EC 48 02 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kResolveCurrentPattern",
+      "candidates": [
+        {
+          "pattern": "40 56 48 83 EC 70 48 8B F1 E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 8B 8E 40 04 00 00",
+          "entry": "40 56 48 83 EC 70 48 8B F1 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSyncCurrentPattern",
+      "candidates": [
+        {
+          "pattern": "40 53 57 48 83 EC 28 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 93 18 04 00 00",
+          "entry": "40 53 57 48 83 EC 28 48 8B D9 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPageListPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 00 FF FF FF 48 81 EC 00 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 F0 00 00 00 45 33 FF 4C 8B E9 44 89 7D 88 48 8B 01",
+          "entry": "48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 00 FF FF FF 48 81 EC 00 02 00 00 48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kMusicEndPattern",
+      "candidates": [
+        {
+          "pattern": "84 D2 0F 85 ?? ?? ?? ?? 55 53 56 48 8D 6C 24 E0 48 81 EC 20 01 00 00 49 8B F0 48 8B D9 4D 85 C0 0F 84",
+          "entry": "84 D2 0F 85",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSetCurrentIdPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 02 48 39 81 18 04 00 00 74 13 48 89 81 18 04 00 00 48 81 C1 F0 02 00 00 E9",
+          "entry": "48 8B 02 48 39 81 18 04 00 00 74 13 48 89 81 18 04 00 00 48 81 C1 F0 02 00 00 E9",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPositionFractionPattern",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 48 8B D9 E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 32 80 3D ?? ?? ?? ?? 03 72 78",
+          "entry": "40 53 48 83 EC 50 48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kPositionSecondsPattern",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 48 8B D9 E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 32 80 3D ?? ?? ?? ?? 03 72 77",
+          "entry": "40 53 48 83 EC 50 48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kDurationCallbackPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 57 48 83 EC 30 4C 8B 41 08 48 8B F9 8B 42 58 48 89 74 24 40 41 89 80 DC 10 00 00",
+          "entry": "48 89 5C 24 10 57 48 83 EC 30 4C 8B 41 08 48 8B F9 8B 42 58 48 89 74 24 40 41 89 80 DC 10 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kDurationCallback2Pattern",
+      "candidates": [
+        {
+          "pattern": "40 57 48 83 EC 30 48 8B 02 48 8B 11 8B 40 58 89 82 DC 10 00 00 48 8B 09 48 8B B9 18 10 00 00",
+          "entry": "40 57 48 83 EC 30 48 8B 02 48 8B 11 8B 40 58 89 82 DC 10 00 00 48 8B 09 48 8B B9 18 10 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kChangeSoundPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 18 57 48 81 EC C0 00 00 00 48 8B F9 0F 29 BC 24 A0 00 00 00 8B 89 18 04 00 00 0F 28 F9 E8",
+          "entry": "48 89 5C 24 18 57 48 81 EC C0 00 00 00 48 8B F9 0F 29 BC 24 A0 00 00 00 8B 89 18 04 00 00 0F 28 F9 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kEntryClickPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 48 8B 12 E8 ?? ?? ?? ?? 48 8B 13 48 8B CF 48 8B 5C 24 30 48 83 C4 20 5F",
+          "entry": "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 48 8B 12 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kDetailCoverPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 54 24 10 56 48 83 EC 50 48 8B 81 98 0F 00 00 48 8B F1 48 85 C0 0F 84",
+          "entry": "48 89 54 24 10 56 48 83 EC 50 48 8B 81 98 0F 00 00 48 8B F1 48 85 C0 0F 84",
+          "values": {
+            "albumIndirect": 0
+          }
+        },
+        {
+          "pattern": "48 89 5C 24 20 56 48 83 EC 60 48 8B 81 98 0F 00 00 48 8B DA 48 8B F1 48 85 C0 0F 84",
+          "entry": "48 89 5C 24 20 56 48 83 EC 60 48 8B 81 98 0F 00 00 48 8B DA 48 8B F1 48 85 C0 0F 84",
+          "values": {
+            "albumIndirect": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "kPageCoverPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 56 48 83 EC 50 48 8B DA 48 8B F1 E8 ?? ?? ?? ?? 48 85 DB 0F 84 ?? ?? ?? ?? E8",
+          "entry": "48 89 5C 24 10 56 48 83 EC 50 48 8B DA 48 8B F1 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kItemSelectedPattern",
+      "candidates": [
+        {
+          "pattern": "48 85 D2 0F 84 ?? ?? ?? ?? 53 57 48 83 EC 68 48 8B FA 48 8B D9 E8 ?? ?? ?? ?? 48 8B 57 10 4C 8D 40 30",
+          "entry": "48 85 D2 0F 84",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kRowClickPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8B 01 48 8B F9 FF 90 C0 04 00 00 84 C0 0F 84",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8B 01 48 8B F9 FF 90 C0 04 00 00 84 C0 0F 84",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kListClickPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 48 8B 7A 10 48 8B DA 48 8B F1 48 85 FF 74 ?? E8",
+          "entry": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 48 8B 7A 10 48 8B DA 48 8B F1 48 85 FF 74",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSoundSubsystemCallPattern",
+      "candidates": [
+        {
+          "pattern": "49 8B CD 48 89 B4 24 80 02 00 00 E8 ?? ?? ?? ?? 48 89 45 10",
+          "entry": "48 83 EC 28 48 8B D1 45 33 C0 48 8B 0D",
+          "values": {},
+          "callOffset": 11
+        }
+      ]
+    },
+    {
+      "name": "kImportTexturePattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 50 33 F6 48 8D 3D ?? ?? ?? ?? 0F 57 C0 48 8B D9 F3 0F 7F 44 24 30",
+          "entry": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 50 33 F6 48 8D 3D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSetItemFlagsPattern",
+      "candidates": [
+        {
+          "pattern": "40 53 56 48 83 EC 48 48 8B D9 48 89 7C 24 70 48 8D 0D ?? ?? ?? ?? 8B FA FF 15 ?? ?? ?? ?? 8B 43 08 A9 00 00 50 6E",
+          "entry": "40 53 56 48 83 EC 48 48 8B D9 48 89 7C 24 70 48 8D 0D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kObjectArrayPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSerialCounterPattern",
+      "candidates": [
+        {
+          "pattern": "8B 5F 10 85 DB 75 ?? BB 01 00 00 00 F0 0F C1 1D",
+          "entry": "8B 5F 10 85 DB 75",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kSetListItemPattern",
+      "candidates": [
+        {
+          "pattern": "48 8D 4C 24 30 E8 ?? ?? ?? ?? 48 8B D0 48 8B CF FF D6 48 8B 4C 24 20 48 85 C9 74 05 E8",
+          "entry": "40 53 48 83 EC 30 48 8B D9 48 8D 4C 24 20",
+          "values": {},
+          "callOffset": 5
+        }
+      ]
+    },
+    {
+      "name": "ProcessEvent.entry",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05",
+          "values": {}
+        },
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

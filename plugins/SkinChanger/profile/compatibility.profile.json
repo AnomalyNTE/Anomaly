@@ -1,0 +1,229 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "skin-changer-v1",
+  "layout": {
+    "GliderSpawnCall": 342,
+    "CopyNamesCall": 355,
+    "WorldGameInstance": 560,
+    "LocalPlayers": 56,
+    "Controller": 48,
+    "Pawn": 776,
+    "ObjectClass": 16,
+    "Super": 64,
+    "PropertyLink": 112,
+    "FieldName": 32,
+    "PropertyOffset": 68,
+    "PropertyNext": 72,
+    "AppearanceType": 8,
+    "AppearanceCharacter": 12,
+    "AppearanceName": 48,
+    "AppearanceData": 440,
+    "AppearanceCharacterShow": 529,
+    "RowStruct": 40,
+    "RowMap": 48,
+    "RegistryItems": 16,
+    "RegistryCount": 36,
+    "ItemStride": 24,
+    "Serial": 16,
+    "ObjectName": 24,
+    "ObjectIndex": 12,
+    "ObjectOuter": 32,
+    "PropertySize": 52,
+    "FunctionCount": 180,
+    "FunctionSize": 182,
+    "FunctionFlags": 176,
+    "FunctionNative": 216,
+    "ChunkSize": 65536,
+    "RegistrySubtract": 16,
+    "ArrayCount": 8,
+    "ProcessEventSlot": 608,
+    "MapBitsData": 32,
+    "MapBitCount": 40,
+    "MapBitCapacity": 44,
+    "MapFreeCount": 52,
+    "MapInlineBits": 16,
+    "MapEntryStride": 24,
+    "MapValue": 8,
+    "RefreshGetterCall": 164,
+    "PaintScalarThunkCall": 178,
+    "PaintArrayThunkCall": 197,
+    "PaintScalarBodyCall": 44,
+    "PaintArrayBodyCall": 36,
+    "VehicleRowId": 8,
+    "VehicleRowOwner": 16,
+    "VehicleRowName": 24,
+    "VehicleRowType": 96,
+    "DecorationType": 12,
+    "DecorationName": 24,
+    "InstancedStructData": 8,
+    "InventoryContainerStride": 176,
+    "InventoryContainerMap": 8,
+    "AwakenList": 8,
+    "awakening.WorldGameInstance": 560,
+    "awakening.GameInstanceLocalPlayers": 56,
+    "awakening.LocalPlayerController": 48,
+    "awakening.ControllerPlayerState": 720,
+    "awakening.InventoryContainers": 288,
+    "awakening.ItemId": 40,
+    "awakening.ItemUniqueId": 48,
+    "awakening.ItemAwakenLevel": 212,
+    "awakening.ItemAwakenEffects": 216,
+    "awakening.AwakenUiInfo": 4824,
+    "awakening.AwakenUiInfoSize": 328,
+    "awakening.AwakenUiLevel": 4864,
+    "awakening.DataTableRowStruct": 40,
+    "awakening.DataTableRowMap": 48,
+    "awakening.DataTableRowMapFreeCount": 100,
+    "awakening.ScriptStructSize": 88,
+    "awakening.AwakenEffectStride": 128,
+    "awakening.AwakenEffectType": 88
+  },
+  "symbols": [
+    {
+      "name": "layout",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "values": {
+            "GliderId": 10912,
+            "GliderActor": 15168,
+            "GliderLoading": 15176,
+            "DisplayCharacter": 10724,
+            "awakening.PlayerStateInventory": 9656,
+            "awakening.ActorUniqueId": 10864,
+            "awakening.ActorPlayerState": 11384,
+            "awakening.ActorFullAwaken": 11103,
+            "awakening.ActorAppearance": 10592,
+            "awakening.ActorDisplayedFashion": 10716
+          }
+        },
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "values": {
+            "GliderId": 11160,
+            "GliderActor": 15560,
+            "GliderLoading": 15568,
+            "DisplayCharacter": 10956,
+            "awakening.PlayerStateInventory": 10080,
+            "awakening.ActorUniqueId": 11112,
+            "awakening.ActorPlayerState": 11624,
+            "awakening.ActorFullAwaken": 11351,
+            "awakening.ActorAppearance": 10824,
+            "awakening.ActorDisplayedFashion": 10948
+          }
+        }
+      ]
+    },
+    {
+      "name": "Refresh",
+      "candidates": [
+        {
+          "pattern": "40 55 41 55 48 8D AC 24 88 FD FF FF 48 81 EC 78 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 50 02 00 00 48 FF 81 58 2A 00 00 4C 8B E9 48 8B 81 58 2A 00 00 48 89 44 24 70 48 89 4D 90",
+          "entry": "40 55 41 55 48 8D AC 24 88 FD FF FF 48 81 EC 78 03 00 00 48 8B 05",
+          "values": {}
+        },
+        {
+          "pattern": "40 55 41 54 48 8D AC 24 78 FD FF FF 48 81 EC 88 03 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 60 02 00 00 48 FF 81 50 2B 00 00 4C 8B E1 48 8B 81 50 2B 00 00 48 89 45 88 48 89 4D 98",
+          "entry": "40 55 41 54 48 8D AC 24 78 FD FF FF 48 81 EC 88 03 00 00 48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "World",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Objects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "GliderSpawn",
+      "candidates": [
+        {
+          "pattern": "40 55 53 57 48 8D 6C 24 B9 48 81 EC A0 00 00 00 48 8B FA 48 8B D9 E8 ?? ?? ?? ?? 48 85 C0 0F 84 2E 01 00 00 48 83 7F 08 00",
+          "entry": "40 55 53 57 48 8D 6C 24 B9 48 81 EC A0 00 00 00 48 8B FA 48 8B D9 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "GliderRefresh",
+      "candidates": [
+        {
+          "pattern": "48 8B C4 55 48 8D 68 A1 48 81 EC A0 00 00 00 48 89 58 08 48 8B D9 4C 89 70 E8 E8 ?? ?? ?? ?? 45 33 F6 48 85 C0 74 7E 48 8B 88 98 00 00 00 48 85 C9 74 72 48 8B 93 A0 2A 00 00",
+          "entry": "48 8B C4 55 48 8D 68 A1 48 81 EC A0 00 00 00 48 89 58 08 48 8B D9 4C 89 70 E8 E8",
+          "values": {}
+        },
+        {
+          "pattern": "48 8B C4 55 48 8D 68 A1 48 81 EC A0 00 00 00 48 89 58 08 48 8B D9 4C 89 70 E8 E8 ?? ?? ?? ?? 45 33 F6 48 85 C0 74 7E 48 8B 88 A0 00 00 00 48 85 C9 74 72 48 8B 93 98 2B 00 00",
+          "entry": "48 8B C4 55 48 8D 68 A1 48 81 EC A0 00 00 00 48 89 58 08 48 8B D9 4C 89 70 E8 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "SoftClassAssign",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 18 56 48 83 EC 40 48 8B 02 48 8D 71 18 48 89 01 48 8B D9 0F 10 42 08 48 83 C2 18 0F 11 41 08 48 3B F2 74 62",
+          "entry": "48 89 5C 24 18 56 48 83 EC 40 48 8B 02 48 8D 71 18 48 89 01 48 8B D9 0F 10 42 08 48 83 C2 18 0F 11 41 08 48 3B F2 74 62",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "CopyNames",
+      "candidates": [
+        {
+          "pattern": "48 8D 4E 10 48 89 46 08 E8 ?? ?? ?? ?? 48 8B 87 ?? ?? ?? ?? 48 3B 06 75 18 48 8D 8F ?? ?? ?? ?? 48 8D 56 08 E8",
+          "entry": "40 53 48 83 EC 40 48 8B D9 48 3B CA",
+          "values": {},
+          "callOffset": 8
+        }
+      ]
+    },
+    {
+      "name": "Paint.entry",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 41 0F 10",
+          "entry": "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 41 0F 10",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ProcessEvent.entry",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05",
+          "values": {}
+        },
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

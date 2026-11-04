@@ -267,7 +267,7 @@ bool ModelAccess::Prepare(
     const std::int64_t object_offset = LayoutOffset(layout_, "objects.object_offset", -1);
     const std::int64_t serial_offset = LayoutOffset(layout_, "objects.serial_offset", -1);
     const std::int64_t chunk_count_size =
-        LayoutOffset(layout_, "objects.chunk_count_size", 4);
+        LayoutOffset(layout_, "objects.chunk_count_size", -1);
     if (items_offset < 0 || count_offset < 0 || max_count_offset < 0 ||
         num_chunks_offset < 0 || max_chunks_offset < 0 || chunk_size <= 0 ||
         item_stride < 8 || object_offset < 0 || serial_offset < 0 ||

@@ -1153,6 +1153,10 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     target_compile_options(anomaly_profile_compatibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     add_test(NAME profile_compatibility COMMAND anomaly_profile_compatibility_fixture
         "${CMAKE_SOURCE_DIR}/profiles/nte/nte-current.json")
+    add_executable(anomaly_signature_coverage_fixture apps/test_host/signature_coverage_fixture.cpp)
+    target_link_libraries(anomaly_signature_coverage_fixture PRIVATE anomaly_signature_updater anomaly_plugin_profile nlohmann_json::nlohmann_json)
+    target_include_directories(anomaly_signature_coverage_fixture PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_compile_options(anomaly_signature_coverage_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     add_executable(anomaly_d3d12_interop_fixture
         apps/render_fixture/d3d12_interop_fixture.cpp)
     target_include_directories(anomaly_d3d12_interop_fixture PRIVATE include src)
@@ -1741,17 +1745,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CharacterStudio/manifest.json
         PACKAGE_NAME CharacterStudio
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CharacterStudio")
-    target_link_libraries(anomaly_builtin_character_studio PRIVATE nlohmann_json::nlohmann_json)
     target_compile_options(anomaly_builtin_character_studio PRIVATE /utf-8)
     target_compile_definitions(anomaly_builtin_character_studio PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    add_custom_command(TARGET anomaly_builtin_character_studio POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/plugins/CharacterStudio/layout.json"
-            "$<TARGET_FILE_DIR:anomaly_builtin_character_studio>/layout.json")
-    set_property(TARGET anomaly_builtin_character_studio APPEND PROPERTY LINK_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/plugins/CharacterStudio/layout.json")
-    install(FILES plugins/CharacterStudio/layout.json
-        DESTINATION Anomaly/plugins/CharacterStudio COMPONENT GameRuntime)
     anomaly_add_plugin(anomaly_builtin_npc_summon
         SOURCES plugins/NpcSummon/plugin.cpp
         MANIFEST plugins/NpcSummon/manifest.json
@@ -1765,9 +1760,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         INCLUDE_DIRECTORIES "${ANOMALY_MONKEYS_AUDIO_INCLUDE_DIRS}"
         COMPILE_DEFINITIONS "PLATFORM_WINDOWS;UNICODE;_UNICODE")
 
-    # 果冻形变插件：源码里直接写中文注释与诊断，需要 /utf-8。布局是插件自己的资源
-    # （data/jelly-layout.json），所以像 BetterPose 一样把 data 目录同步进包目录并随包
-    # 安装。Anomaly 2.3.0 起的宿主用 in-process mapper 映射插件镜像，其预检要求导入
+    # Jelly uses the shared Profile packaging. The mapped plugin exports the C++ bridge.
     # _CxxThrowException 的 C++ 镜像导出异常桥，且不允许 loader 管理的静态 TLS：桥源码
     # 与 /Zc:threadSafeInit- 让同一个包在旧宿主上也能加载；新版 SDK 自带这两样
     # （ANOMALY_CXX_THROW_BRIDGE）时桥源码不再重复编译。
@@ -1780,20 +1773,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/Jelly/manifest.json
         PACKAGE_NAME Jelly
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/Jelly")
-    target_include_directories(anomaly_builtin_jelly PRIVATE plugins/Jelly/src)
+    target_include_directories(anomaly_builtin_jelly PRIVATE plugins/Jelly/src "${PROJECT_SOURCE_DIR}/include")
     target_compile_definitions(anomaly_builtin_jelly PRIVATE
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_compile_options(anomaly_builtin_jelly PRIVATE /utf-8 /Zc:threadSafeInit-)
     if(NOT ANOMALY_CXX_THROW_BRIDGE)
         target_sources(anomaly_builtin_jelly PRIVATE plugins/Jelly/src/plugin_cxx_throw_bridge.cpp)
     endif()
-    add_custom_command(TARGET anomaly_builtin_jelly POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/plugins/Jelly/data"
-                "$<TARGET_FILE_DIR:anomaly_builtin_jelly>/data"
-        VERBATIM)
-    install(DIRECTORY plugins/Jelly/data/
-        DESTINATION Anomaly/plugins/Jelly/data COMPONENT GameRuntime)
     if(ANOMALY_BUILD_TEST_FIXTURES)
         # 离线夹具：纯逻辑与合成 UE 镜像，不需要游戏、运行中的宿主或网络。
         add_executable(anomaly_jelly_logic_fixture
@@ -1803,9 +1789,9 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             plugins/Jelly/src/jelly_layout.cpp
             plugins/Jelly/src/jelly_selection.cpp
             plugins/Jelly/src/jelly_model.cpp)
-        target_include_directories(anomaly_jelly_logic_fixture PRIVATE plugins/Jelly/src)
+        target_link_libraries(anomaly_jelly_logic_fixture PRIVATE anomaly_plugin_profile ue5mem_memory)
+        target_include_directories(anomaly_jelly_logic_fixture PRIVATE plugins/Jelly/src "${PROJECT_SOURCE_DIR}/include")
         target_compile_definitions(anomaly_jelly_logic_fixture PRIVATE
-            JELLY_LAYOUT_RESOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/plugins/Jelly/data/jelly-layout.json"
             WIN32_LEAN_AND_MEAN NOMINMAX)
         target_compile_options(anomaly_jelly_logic_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
@@ -2074,5 +2060,26 @@ if(ANOMALY_BUILD_SYMBOLS)
     foreach(symbol_target IN LISTS ANOMALY_RELEASE_PE_TARGETS)
         install(FILES "$<TARGET_PDB_FILE:${symbol_target}>"
             DESTINATION symbols COMPONENT Symbols)
+    endforeach()
+endif()
+
+if(ANOMALY_BUILD_TEST_FIXTURES AND ANOMALY_BUILD_BUILTIN_PLUGINS)
+    add_executable(anomaly_plugin_compatibility_fixture apps/test_host/plugin_compatibility_fixture.cpp)
+    target_link_libraries(anomaly_plugin_compatibility_fixture PRIVATE anomaly_plugin_profile ue5mem_memory)
+    target_compile_features(anomaly_plugin_compatibility_fixture PRIVATE cxx_std_20)
+    target_compile_options(anomaly_plugin_compatibility_fixture PRIVATE /utf-8 /EHsc)
+    add_test(NAME plugin_compatibility COMMAND anomaly_plugin_compatibility_fixture)
+    foreach(profile_fixture IN ITEMS
+        anomaly_pink_paw_bank_loop_fixture
+        anomaly_fake_uid_latency_fixture
+        anomaly_skin_changer_plate_follow_fixture
+        anomaly_combat_auto_fixture
+        anomaly_better_pose_visibility_fixture
+        anomaly_better_pose_character_switch_fixture
+        anomaly_better_pose_joint_drag_fixture
+        anomaly_better_pose_limb_calibration_fixture
+        anomaly_better_pose_t_pose_calibration_fixture
+)
+        target_link_libraries(${profile_fixture} PRIVATE anomaly_plugin_profile ue5mem_memory)
     endforeach()
 endif()

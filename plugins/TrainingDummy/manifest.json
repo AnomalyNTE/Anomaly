@@ -52,6 +52,14 @@
     {
       "id": "anomaly.nte.actors",
       "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
     }
   ],
   "capabilities": [
@@ -61,6 +69,7 @@
     "nte-session-snapshot",
     "nte-player-snapshot",
     "nte-actor-snapshot",
-    "memory-read"
+    "memory-read",
+    "json"
   ]
 }

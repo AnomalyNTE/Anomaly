@@ -135,7 +135,7 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 ## 插件 Profile（强制）
 
 采用「Profile 保存兼容数据，宿主统一加载，插件校验后使用」的设计模式。可参考
-[`plugins/SummonLab/profile/summon-lab.profile.json`](plugins/SummonLab/profile/summon-lab.profile.json)
+[`plugins/SummonLab/profile/compatibility.profile.json`](plugins/SummonLab/profile/compatibility.profile.json)
 和 [`plugins/SummonLab/native_layout.hpp`](plugins/SummonLab/native_layout.hpp) 的职责划分。
 
 - 兼容配置放在与 `manifest.json` 同级的 `profile/`；相关功能优先共用一个 profile，通过 `symbols`
@@ -154,8 +154,7 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
   或使用经名称、类型和尺寸校验的运行时反射结果。禁止只在 JSON 声明偏移，实际仍使用数字字面量；
   禁止缺项、解析失败或签名失配后回退到代码中的默认偏移或签名。
 - **多版本共用一份兼容配置**：已核对相同的值放公共 `layout`，差异放对应符号的 `candidates[].values`，
-  以唯一签名和入口校验选择候选。`provenance` 记录 SDK、反汇编或实测依据及适用版本，区分静态预适配
-  与实机验证；增加新版候选时保留仍支持的旧版。`contract` 表示实现支持的语义合同，不含或匹配
+  以唯一签名和入口校验选择候选。增加新版候选时保留仍支持的旧版。`contract` 表示实现支持的语义合同，不含或匹配
   Build identity，也不通过版本号分支选择硬编码布局。
 - **代码保留实现合同与安全校验**：固定调用 ABI 的具名参数结构、`sizeof` / `offsetof`、指令解码规则，
   以及范围、对齐、字段重叠、反射类型和对象生命周期校验属于代码。不得借此保留游戏偏移的第二份

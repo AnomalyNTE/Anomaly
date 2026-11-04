@@ -160,12 +160,10 @@ All plugins use `schemas/plugin-profile.schema.json`, installed with the SDK und
 | `game` / `module` / `section` | Game ID, module filename and PE section |
 | `contract` | Semantic contract supported by the plugin, never Build identity |
 | `layout` | Shared named uint32 offsets, sizes and seeds |
-| `symbols` | 1–128 `{name, candidates}` entries, with 1–16 candidates per symbol |
+| `symbols` | 0–128 `{name, candidates}` entries, with 1–16 candidates per symbol |
 | Candidate `pattern` / `entry` | Space-separated hexadecimal bytes; only pattern accepts `??`; entry is exact |
 | Candidate `callOffset` | Optional E8 rel32 instruction position, within the pattern |
 | Candidate `values` | Candidate-specific named uint32 layout values |
-| `provenance` | Evidence required at the root and for each candidate |
-| `unavailable` | Degradation policy description, enforced by plugin logic |
 
 C++ `ResolveProfileSymbol(signature, core, profile, name)` uses the existing signature/memory services to validate a unique candidate, optional E8 rel32 target and exact entry bytes. Failure returns an empty result and `error`; no hooks are installed. The result's `candidate` borrows the supplied profile, which must remain alive while used. This helper additionally requires `interop-signature` and `memory-read`. Schema validation does not establish native layout compatibility: plugins must validate their semantic contract, required fields and calling conventions. Never fall back to compiled signatures or offsets when validation fails.
 

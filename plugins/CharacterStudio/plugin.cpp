@@ -186,43 +186,30 @@ void Status(Context& c, std::string text, bool warning = false) {
             StringView("Character Studio: " + c.status));
 }
 Address ResolveSymbol(Context& c, const AnomalySignatureServiceV1* signatures,
-                      const Json& spec) {
-    Address site{};
-    if (!signatures || !signatures->resolve ||
-        signatures->resolve(signatures->user, StringView(spec.at("module").get<std::string>()),
-            StringView(spec.at("section").get<std::string>()),
-            StringView(spec.at("pattern").get<std::string>()), &site).code != 0) return 0;
-    const auto& rule = spec.at("resolve");
-    if (rule.at("kind") == "direct") return site;
+                      const anomaly::sdk::Profile& profile, std::string_view name) {
+    const auto result = anomaly::sdk::ResolveProfileSymbol(signatures,c.process.core,profile,name);
+    if (!result) return 0;
+    const auto& values = result.candidate->values;
+    const auto offset = values.at("displacementOffset");
+    const auto size = values.at("instructionSize");
+    const auto subtract = values.at("subtract");
+    if (offset > size || size - offset < sizeof(std::int32_t) || size > 16 || subtract > 256) return 0;
     std::int32_t displacement{};
-    if (!c.process.Read(site + rule.at("offset").get<Address>(), &displacement,
-                        sizeof(displacement))) return 0;
-    return site + rule.at("instructionSize").get<Address>() + displacement +
-        rule.value("addend", std::int64_t{0});
+    if (!c.process.Read(result.address+offset,&displacement,sizeof(displacement))) return 0;
+    return result.address+size+displacement-subtract;
 }
-Address ProcessEvent(Context& c, const AnomalySignatureServiceV1* signatures, Json spec) {
-    auto entry = ResolveSymbol(c, signatures, spec);
-    // The host observer uses a five-byte E9 hook. Match the surviving original
-    // instructions, then validate the untouched prologue tail at the recovered entry.
-    if (!entry && signatures && signatures->resolve) {
-        auto pattern = spec.at("pattern").get<std::string>();
-        std::size_t offset{};
-        for (unsigned token = 0; token < 5; ++token) {
-            offset = pattern.find(' ', offset);
-            if (offset == std::string::npos) return 0;
-            ++offset;
-        }
-        spec["pattern"] = pattern.substr(offset);
-        if (const auto tail = ResolveSymbol(c, signatures, spec); tail >= 5) entry = tail - 5;
-    }
-    constexpr std::uint8_t prologue[]{
-        0x40,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,
-        0x48,0x81,0xec,0,1,0,0,0x48,0x8d,0x6c,0x24,0x30,0x48,0x89,0x9d,0x28,1,0,0};
-    std::uint8_t observed[sizeof(prologue)]{};
-    if (!Executable(entry) || !c.process.Read(entry, observed, sizeof(observed))) return 0;
-    const std::size_t skip = observed[0] == 0xe9 ? 5 : 0;
-    return std::memcmp(observed + skip, prologue + skip, sizeof(prologue) - skip) == 0
-        ? entry : 0;
+Address ProcessEvent(Context& c, const AnomalySignatureServiceV1* signatures,
+                     const anomaly::sdk::Profile& profile) {
+    const auto result = anomaly::sdk::ResolveProfileSymbol(signatures,c.process.core,profile,"ue5.ProcessEvent");
+    if (!result) return 0;
+    const auto skip = result.candidate->values.at("entryOffset");
+    if (skip != 5 || result.address <= skip) return 0; // Host E9 rel32 detour ABI.
+    const auto entry = result.address - skip;
+    const auto& expected = profile.symbol("ue5.ProcessEvent.prologue").candidates.at(0).entry;
+    std::vector<std::uint8_t> actual(expected.size());
+    if (expected.size() <= skip || !Executable(entry) || !c.process.Read(entry,actual.data(),actual.size())) return 0;
+    const auto start = actual[0] == 0xE9 ? skip : 0;
+    return std::equal(actual.begin()+start,actual.end(),expected.begin()+start) ? entry : 0;
 }
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) noexcept {
     if (!output) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
@@ -244,19 +231,15 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
         const auto* signatures = Query<AnomalySignatureServiceV1>(host,
             ANOMALY_SIGNATURE_SERVICE_V1_ID);
         auto* core = c->process.core;
-        if (!core || !core->plugin_directory) return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
-        const auto path = LiveProcess::String([&](char* out, std::size_t* size) {
-            return core->plugin_directory(core->user, out, size);
-        });
-        const std::u8string utf8_path(path.begin(), path.end());
-        std::ifstream file(std::filesystem::path(utf8_path) / "layout.json", std::ios::binary);
-        if (!file)
-            throw std::runtime_error(
-                c->localizer.Text("error.layout_missing", "layout.json is missing"));
-        auto resource = Json::parse(file);
-        const auto registry = ResolveSymbol(*c, signatures, resource.at("symbols").at("ue5.GObjects"));
-        c->world_slot = ResolveSymbol(*c, signatures, resource.at("symbols").at("ue5.GWorld"));
-        c->process.entry = ProcessEvent(*c, signatures, resource.at("symbols").at("ue5.ProcessEvent"));
+        auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(host), "compatibility.profile.json");
+        if (!loaded) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+        auto resource = std::move(loaded).value();
+        if (resource.contract != "character-studio-v1" || resource.game != "nte" ||
+            resource.module != "HTGame.exe" || resource.section != ".text")
+            return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+        const auto registry = ResolveSymbol(*c,signatures,resource,"ue5.GObjects");
+        c->world_slot = ResolveSymbol(*c,signatures,resource,"ue5.GWorld");
+        c->process.entry = ProcessEvent(*c,signatures,resource);
         if (registry && c->world_slot && c->process.entry && core->read_memory &&
             c->process.names && c->process.names->resolve_utf8 &&
             c->process.names->resolve_ftext_utf8 && c->process.objects &&

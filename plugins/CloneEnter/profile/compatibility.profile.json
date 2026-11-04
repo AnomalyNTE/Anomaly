@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "clone-enter-v1",
+  "layout": {
+    "kObjectItemsOffset": 16,
+    "kObjectCountOffset": 36,
+    "kObjectNumChunksOffset": 44,
+    "kObjectChunkSize": 65536,
+    "kObjectItemStride": 24,
+    "kObjectClassOffset": 16,
+    "kObjectNameOffset": 24,
+    "kUStructChildrenOffset": 72,
+    "kUStructSuperStructOffset": 64,
+    "kUFieldNextOffset": 40,
+    "kUFunctionNumParmsOffset": 180,
+    "kUFunctionParmsSizeOffset": 182,
+    "kWorldGameInstanceOffset": 560,
+    "kGameInstanceLocalPlayersOffset": 56,
+    "kLocalPlayerControllerOffset": 48,
+    "kControllerPlayerStateOffset": 720,
+    "kProcessEventVtableIndex": 76,
+    "kDataTableRowMapOffset": 48,
+    "kDataTableRowStride": 24,
+    "kDataAssetCloneSystemDataOffset": 56,
+    "kDataAssetCloneEnterOffset": 72,
+    "kContainCloneSystemIDsOffset": 64,
+    "kDataCloneTypeOffset": 73,
+    "kDataSubNodesOffset": 88,
+    "kSubNodeSize": 160,
+    "kSubNodeDifficultyOffset": 124,
+    "kSubNodeSpawnOffset": 136,
+    "kUStructPropertyLinkOffset": 112,
+    "kFFieldNameOffset": 32,
+    "kFFieldClassOffset": 8,
+    "kFPropertyElementSizeOffset": 52,
+    "kFPropertyOffsetInternalOffset": 68,
+    "kFPropertyPropertyLinkNextOffset": 72,
+    "kFStructPropertyStructOffset": 112,
+    "kFArrayPropertyInnerOffset": 120,
+    "kSubNodeTeamLevelOffset": 128,
+    "kGObjectsSubtract": 16,
+    "kArrayNumOffset": 8,
+    "kArrayMaxOffset": 12,
+    "combat.kObjectClassOffset": 16,
+    "combat.kObjectNameOffset": 24,
+    "combat.kUStructChildrenOffset": 72,
+    "combat.kUStructSuperStructOffset": 64,
+    "combat.kUFieldNextOffset": 40,
+    "combat.kUFunctionNumParmsOffset": 180,
+    "combat.kUFunctionParmsSizeOffset": 182,
+    "combat.kWorldGameInstanceOffset": 560,
+    "combat.kGameInstanceLocalPlayersOffset": 56,
+    "combat.kLocalPlayerControllerOffset": 48,
+    "combat.kControllerPlayerStateOffset": 720,
+    "combat.kProcessEventVtableIndex": 76,
+    "combat.kDataTableRowMapOffset": 48,
+    "combat.kDataTableRowStride": 24,
+    "combat.kUStructPropertyLinkOffset": 112,
+    "combat.kFFieldNameOffset": 32,
+    "combat.kFFieldClassOffset": 8,
+    "combat.kFPropertyElementSizeOffset": 52,
+    "combat.kFPropertyOffsetInternalOffset": 68,
+    "combat.kFPropertyPropertyLinkNextOffset": 72,
+    "combat.kArrayNumOffset": 8,
+    "combat.kArrayMaxOffset": 12,
+    "combat.kRowPointerOffset": 8,
+    "kModifiersArrayOffset": 584,
+    "kModifierInfoSize": 824,
+    "kAttributeOwnerOffset": 48,
+    "kAttributePropertyOffset": 16,
+    "kModifierOpOffset": 56,
+    "kModifierMagnitudeOffset": 64,
+    "kMagnitudeTypeOffset": 0,
+    "kMagnitudeScalableOffset": 8,
+    "kMagnitudeSetByCallerOffset": 464,
+    "kMagnitudeCustomOffset": 320,
+    "kMagnitudeAttributeBasedOffset": 48,
+    "kFunctionNativeOffset": 216,
+    "kEnumNamesOffset": 64,
+    "kEnumPairStride": 16,
+    "kEnumPairValueOffset": 8
+  },
+  "symbols": [
+    {
+      "name": "kGObjectsPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kGWorldPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "combat.World",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ProcessEvent.entry",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05",
+          "values": {}
+        },
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "layout",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "values": {
+            "kDamageUpGeneralBaseOffset": 488
+          }
+        },
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "values": {
+            "kDamageUpGeneralBaseOffset": 504
+          }
+        }
+      ]
+    }
+  ]
+}

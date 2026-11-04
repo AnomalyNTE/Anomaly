@@ -20,7 +20,6 @@ struct ProfileCandidate final {
     std::vector<std::uint8_t> entry;
     std::optional<std::uint32_t> call_offset;
     ProfileValues values;
-    std::string provenance;
 };
 
 struct ProfileSymbol final {
@@ -30,7 +29,7 @@ struct ProfileSymbol final {
 
 // Plugin-owned snapshot. No file I/O or host handles remain after LoadProfile.
 struct Profile final {
-    std::string game, module, section, contract, provenance, unavailable;
+    std::string game, module, section, contract;
     ProfileValues layout;
     std::vector<ProfileSymbol> symbols;
 
@@ -151,8 +150,6 @@ private:
         profile.module = root.member("module").string();
         profile.section = root.member("section").string();
         profile.contract = root.member("contract").string();
-        profile.provenance = root.member("provenance").string();
-        profile.unavailable = root.member("unavailable").string();
         profile.layout = root.member("layout").values();
         const auto symbols = root.member("symbols");
         const auto symbol_count = symbols.size();
@@ -166,7 +163,6 @@ private:
                 const auto candidate_source = candidates.item(c);
                 ProfileCandidate candidate;
                 candidate.pattern = candidate_source.member("pattern").string();
-                candidate.provenance = candidate_source.member("provenance").string();
                 candidate.values = candidate_source.member("values").values();
                 if (const auto call = candidate_source.optional_member("callOffset"))
                     candidate.call_offset = call->number();

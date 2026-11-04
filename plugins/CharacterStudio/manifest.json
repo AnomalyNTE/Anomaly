@@ -55,6 +55,14 @@
     {
       "id": "anomaly.nte.player",
       "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
     }
   ],
   "capabilities": [
@@ -65,6 +73,7 @@
     "interop-signature",
     "ui",
     "nte-session-snapshot",
-    "nte-player-snapshot"
+    "nte-player-snapshot",
+    "json"
   ]
 }

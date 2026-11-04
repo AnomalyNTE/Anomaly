@@ -1,3 +1,4 @@
+#include "../../../apps/test_host/plugin_profile_fixture_host.hpp"
 #pragma once
 //
 // A synthetic UE image for the offline fixture.
@@ -716,16 +717,10 @@ inline ActorFixture BuildSimpleActor(
 
 // The resource that actually ships in the package.
 inline jelly::Layout LoadShippedLayout() {
-    std::ifstream stream(JELLY_LAYOUT_RESOURCE_PATH, std::ios::binary);
-    const std::string document{
-        std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-    jelly::Layout layout;
-    std::string error;
-    if (!jelly::ParseLayout(document, layout, error)) {
-        std::printf("  FAIL: the shipped layout resource does not parse: %s\n", error.c_str());
-        ++g_failures;
-    }
-    return layout;
+    anomaly::testing::ProfileHost host("Jelly");
+    auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(&host.api), "compatibility.profile.json");
+    if (!loaded) throw std::runtime_error(loaded.error());
+    return jelly::FromProfile(loaded.value());
 }
 
 inline const jelly::Layout& ShippedLayout() {

@@ -180,7 +180,10 @@ struct Context {
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyHookServiceV1* hooks{};
-    std::array<NativeCombatHook, 4> local_combat_hooks{};
+    std::array<NativeCombatHook, 5> local_combat_hooks{};
+    struct DamageReportLayout {
+        std::uint32_t size{}, source{}, target{}, effect{}, damage{}, hp{};
+    } damage_report;
     std::uint32_t mirror_record_size{};
     std::vector<std::uint8_t> mirror_getter_entry;
     std::uint32_t camp_count{};
@@ -223,6 +226,7 @@ struct Context {
     int hostile{};
     int pet{};
     int aggressive{};
+    int ignore_player{};
     int ft_compatibility{};
 
     // Game-thread-only scratch. Native Conv_StringToText replaces its previous
@@ -884,7 +888,7 @@ struct LocalBirthBinding {
     float exact_hp{};
     CombatConfigSource combat_config;
     SummonIdentity registration;
-    std::uint32_t health_observations{}, mirror_observations{};
+    std::uint32_t health_observations{}, mirror_observations{}, damage_observations{};
 };
 struct PendingBirthConfiguration {
     AnomalyGenerationHandleV1 actor_handle{};
@@ -1013,8 +1017,7 @@ void ObserveFinalTowerHealth(const char* event, AnomalyGenerationHandleV1 contro
         std::scoped_lock lock(g_local_birth_mutex);
         for (auto& binding : g_local_births) {
             const auto& registration = binding.registration;
-            if (!binding.combat_config.config_name.starts_with("FT_") ||
-                binding.health_observations >= 16 || index != registration.index ||
+            if (binding.health_observations >= 16 || index != registration.index ||
                 controller.id != registration.controller.id ||
                 controller.generation != registration.controller.generation ||
                 std::memcmp(identity.data(), registration.leader.data(),
@@ -1595,6 +1598,91 @@ void ANOMALY_CALL PreserveLocalBirthMaxHP(void* context, void* owner,
         } catch (...) { input = record; }
         if (original != nullptr) original(context, owner, input, scratch);
     } catch (...) {}
+}
+
+using DamageReportFn = std::uintptr_t (ANOMALY_CALL*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, float);
+
+std::uintptr_t ANOMALY_CALL ObserveNativeDamageReport(std::uintptr_t controller,
+    std::uintptr_t source, std::uintptr_t target, float damage) noexcept {
+    const auto original = reinterpret_cast<DamageReportFn>(g_context.local_combat_hooks[4].original);
+    std::uintptr_t report{};
+    try {
+        LocalCombatLease lease(4);
+        if (original != nullptr) report = original(controller, source, target, damage);
+        if (!lease || !g_observe_ft_health.load(std::memory_order_acquire)) return report;
+        LocalBirthBinding attacker, victim;
+        {
+            std::scoped_lock lock(g_local_birth_mutex);
+            const auto a = std::find_if(g_local_births.begin(), g_local_births.end(),
+                [source](const auto& value) { return value.ability_system == source; });
+            const auto b = std::find_if(g_local_births.begin(), g_local_births.end(),
+                [target](const auto& value) { return value.ability_system == target; });
+            if (a == g_local_births.end() || b == g_local_births.end() || a == b ||
+                a->damage_observations >= 24 ||
+                (!a->combat_config.config_name.starts_with("FT_") &&
+                 !b->combat_config.config_name.starts_with("FT_"))) return report;
+            ++a->damage_observations;
+            attacker = *a;
+            victim = *b;
+        }
+        if (!ProbeHandle(attacker.actor_handle) || !ProbeHandle(victim.actor_handle)) return report;
+        const auto& layout = g_context.damage_report;
+        NativeIdentity source_identity{}, target_identity{};
+        std::int32_t effect{-1};
+        float reported_damage{}, reported_hp{}, local_hp{};
+        const bool readable = report != 0 &&
+            ReadValue(report + layout.source, &source_identity) &&
+            ReadValue(report + layout.target, &target_identity) &&
+            ReadValue(report + layout.effect, &effect) &&
+            ReadValue(report + layout.damage, &reported_damage) &&
+            ReadValue(report + layout.hp, &reported_hp);
+        const auto matches = [](NativeIdentity identity, const SummonIdentity& registration) {
+            std::int32_t index{};
+            std::memcpy(&index, identity.data() + g_layout.diagnosticSummonIndex, sizeof(index));
+            return index == registration.index && std::memcmp(identity.data(), registration.leader.data(),
+                g_layout.diagnosticSummonIndex) == 0;
+        };
+        static_cast<void>(ReadReflectedValue(target, "HPCurrent", "FloatProperty", &local_hp));
+        char message[384]{};
+        std::snprintf(message, sizeof(message),
+            "SummonLab FT-damage-report: source=%p target=%p input=%.9g built=%s effect=%d damage=%.9g reportHP=%.9g localHP=%.9g sourceMatch=%d targetMatch=%d",
+            reinterpret_cast<void*>(attacker.actor), reinterpret_cast<void*>(victim.actor), damage,
+            readable ? "yes" : "no", effect, reported_damage, reported_hp, local_hp,
+            readable && matches(source_identity, attacker.registration),
+            readable && matches(target_identity, victim.registration));
+        g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            anomaly::sdk::StringView(message));
+    } catch (...) {}
+    return report;
+}
+
+bool InstallDamageReportObserver(const anomaly::sdk::Host& host, const anomaly::sdk::Profile& profile) {
+    try {
+        const auto signature = host.Query<AnomalySignatureServiceV1>(
+            ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
+        const auto resolved = anomaly::sdk::ResolveProfileSymbol(
+            signature.get(), g_context.core, profile, "native-damage-report");
+        if (!resolved) return false;
+        const auto& values = resolved.candidate->values;
+        Context::DamageReportLayout layout{values.at("recordSize"), values.at("sourceIdentity"),
+            values.at("targetIdentity"), values.at("effectIndex"), values.at("damage"), values.at("currentHp")};
+        if (layout.size > 1024 || layout.size % alignof(std::uintptr_t) != 0 ||
+            layout.source % alignof(std::uint32_t) != 0 || layout.target % alignof(std::uint32_t) != 0 ||
+            layout.effect % alignof(std::int32_t) != 0 || layout.damage % alignof(float) != 0 ||
+            layout.hp % alignof(float) != 0 ||
+            !summon_lab::ValidBuffer(layout.size, {{layout.source, sizeof(NativeIdentity)},
+                {layout.target, sizeof(NativeIdentity)}, {layout.effect, sizeof(std::int32_t)},
+                {layout.damage, sizeof(float)}, {layout.hp, sizeof(float)}})) return false;
+        g_context.damage_report = layout;
+        AnomalyHookRequestV1 request{sizeof(request)};
+        request.kind = ANOMALY_HOOK_V1_FUNCTION;
+        request.target = resolved.address;
+        request.detour = reinterpret_cast<void*>(&ObserveNativeDamageReport);
+        request.label = anomaly::sdk::StringView("summon-native-damage-report");
+        auto& hook = g_context.local_combat_hooks[4];
+        return g_context.hooks->create(g_context.hooks->user, &request, &hook.original,
+            &hook.handle).code == ANOMALY_STATUS_V1_OK && hook.handle.id != 0 && hook.original != 0;
+    } catch (const std::out_of_range&) { return false; }
 }
 
 bool InstallLocalCombatHooks(const anomaly::sdk::Host& query, const anomaly::sdk::Profile& profile) {
@@ -2218,6 +2306,7 @@ SummonResult SummonOne() {
     bool pet{};
     bool aggressive{};
     bool compatibility{};
+    bool ignore_player{};
     std::string server_combat_blueprint;
     std::array<char, kDisplayNameCapacity> display_name{};
     std::array<BirthPreset, kBirthAttributeNames.size()> presets{};
@@ -2228,6 +2317,7 @@ SummonResult SummonOne() {
         hostile = g_context.hostile != 0;
         pet = g_context.pet != 0;
         aggressive = g_context.aggressive != 0;
+        ignore_player = g_context.ignore_player != 0;
         compatibility = g_context.ft_compatibility != 0 && MonsterConfigName(path).starts_with("FT_");
         if (compatibility)
             server_combat_blueprint = g_context.final_tower_combat_blueprint;
@@ -2400,6 +2490,35 @@ SummonResult SummonOne() {
             static_cast<void>(InvokeByPath(ai_handle, kPathDestroyActor, nullptr, 0));
             std::snprintf(result.detail, sizeof(result.detail),
                           "summon: AddSummonedAI failed");
+            return result;
+        }
+    }
+
+    if (ignore_player) {
+        AnomalyGenerationHandleV1 controller{};
+        std::uintptr_t controller_pointer{}, player_pointer{}, player_state{}, target{};
+        bool ignored = InvokeByPath(pawn, "/Script/Engine.Pawn:GetController",
+            &controller_pointer, sizeof(controller_pointer)) &&
+            HandleFromPointer(controller_pointer, &controller) &&
+            InvokeByPath(controller, "/Script/Engine.Controller:K2_GetPawn",
+                &player_pointer, sizeof(player_pointer)) && player_pointer != 0 &&
+            InvokeByPath(controller, "/Script/HTGame.HTPlayerController:GetHTPlayerState",
+                &player_state, sizeof(player_state)) && player_state != 0 &&
+            // The native ignore list stores the PlayerState, surviving character switches.
+            InvokeByPath(ai_handle, "/Script/HTGame.HTAICharacter:SetIgnoredAggroTarget",
+                &player_pointer, sizeof(player_pointer)) &&
+            InvokeByPath(ai_handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
+                &target, sizeof(target));
+        if (ignored && (target == player_pointer || target == player_state)) {
+            target = 0;
+            ignored = InvokeByPath(ai_handle, "/Script/HTGame.HTAICharacter:SetCurrentAggroTarget",
+                &target, sizeof(target));
+        }
+        if (!ignored) {
+            static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
+            const auto message = g_context.localizer.Text("summon.ignore_player_failed",
+                "Could not exclude the player as a target; summon removed");
+            std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
             return result;
         }
     }
@@ -3249,6 +3368,7 @@ void ConsumeSpawnRequest() {
         g_context.hostile = request["hostile"].get<bool>() ? 1 : 0;
         g_context.pet = 0;
         g_context.aggressive = 1;
+        g_context.ignore_player = 0;
     }
     static_cast<void>(PushOp(PendingOp{OpKind::Summon, 0}));
 }
@@ -3407,6 +3527,7 @@ void ResetState() {
     g_context.hostile = 0;
     g_context.pet = 0;
     g_context.aggressive = 0;
+    g_context.ignore_player = 0;
     g_context.ft_compatibility = 0;
     g_context.last_result = {};
     g_context.last_result_failed = false;
@@ -3460,7 +3581,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     g_context.events = events.get();
     g_context.has_invoke = HasInvoke(g_context.events);
 
-    const auto loaded = anomaly::sdk::LoadProfile(query, "summon-lab.profile.json");
+    const auto loaded = anomaly::sdk::LoadProfile(query, "compatibility.profile.json");
     if (loaded && ValidateSummonProfile(loaded.value(), &g_layout)) {
         const auto& profile = loaded.value();
         g_layout_ready = true;
@@ -3472,7 +3593,12 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         if (combat_ready && !InstallFinalTowerHooks(query, profile) && g_context.core != nullptr)
             g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 anomaly::sdk::StringView("SummonLab: FinalTower config bridge unavailable"));
-        if (combat_ready) StartFinalTowerHealthObserver();
+        if (combat_ready) {
+            StartFinalTowerHealthObserver();
+            if (!InstallDamageReportObserver(query, profile))
+                g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                    anomaly::sdk::StringView("SummonLab: native damage observer unavailable"));
+        }
     } else if (g_context.core != nullptr && g_context.core->log != nullptr) {
         g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
             anomaly::sdk::StringView(loaded ? "Unsupported SummonLab profile contract or layout" : loaded.error()));
@@ -3883,6 +4009,8 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
             const auto aggressive = localizer.Text("param.aggressive", "Aggressive");
             ui->checkbox(ui->user, anomaly::sdk::StringView(aggressive), &g_context.aggressive);
+            const auto ignore_player = localizer.Text("param.ignore_player", "Do not target the player");
+            ui->checkbox(ui->user, anomaly::sdk::StringView(ignore_player), &g_context.ignore_player);
         }
         if (MonsterConfigName(path).starts_with("FT_")) {
             if (ui->checkbox != nullptr) {

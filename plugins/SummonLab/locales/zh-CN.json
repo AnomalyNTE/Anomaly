@@ -11,6 +11,8 @@
     "param.hostile": "敌对",
     "param.pet": "作为宠物",
     "param.aggressive": "主动攻击",
+    "param.ignore_player": "不以玩家为目标",
+    "summon.ignore_player_failed": "无法排除玩家目标，已移除召唤实体",
     "summon.compatibility": "FT 兼容召唤（实验）",
     "summon.server_source": "服务端战斗配置：{0}",
     "summon.compatibility_hint": "默认血量、防御和被动采用来源配置，自定义血量不能超过其原生上限",

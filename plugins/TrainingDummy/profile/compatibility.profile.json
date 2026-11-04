@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "training-dummy-v1",
+  "layout": {
+    "ObjectIndex": 12
+  },
+  "symbols": []
+}

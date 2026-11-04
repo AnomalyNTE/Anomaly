@@ -1,186 +1,222 @@
 #include "jelly_layout.hpp"
-
-#include "jelly_json.hpp"
-
 #include <cctype>
-#include <cstddef>
-#include <string>
+#include <stdexcept>
 #include <utility>
-#include <vector>
 
 namespace jelly {
-namespace {
-
-std::string Text(const json::Value* value, const std::string_view key) {
-    if (value == nullptr) return {};
-    const json::Value* member = value->Find(key);
-    if (member == nullptr || !member->IsString()) return {};
-    return member->text;
-}
-
-std::int64_t Number(const json::Value* value, const std::string_view key, const std::int64_t fallback) {
-    if (value == nullptr) return fallback;
-    const json::Value* member = value->Find(key);
-    if (member == nullptr || !member->IsNumber()) return fallback;
-    return static_cast<std::int64_t>(member->number);
-}
-
-bool HasMember(const json::Value* value, const std::string_view key) {
-    return value != nullptr && value->Find(key) != nullptr;
-}
-
-bool ParseHexBytes(const std::string_view text, std::vector<std::uint8_t>& out) {
-    out.clear();
-    int high = -1;
-    for (const char character : text) {
-        if (character == ' ' || character == '\t' || character == '\n') continue;
-        int digit = -1;
-        if (character >= '0' && character <= '9') {
-            digit = character - '0';
-        } else if (character >= 'a' && character <= 'f') {
-            digit = character - 'a' + 10;
-        } else if (character >= 'A' && character <= 'F') {
-            digit = character - 'A' + 10;
-        } else {
-            return false;
+Layout FromProfile(const anomaly::sdk::Profile& profile) {
+    if (profile.contract != "jelly-reflection-v1" || profile.game != "nte" ||
+        profile.module != "HTGame.exe" || profile.section != ".text")
+        throw std::runtime_error("unsupported Jelly profile contract");
+    const auto value = [&](std::string_view key) {
+        const auto found = profile.layout.find(key);
+        if (found == profile.layout.end() || found->second > 65536)
+            throw std::runtime_error("missing or unsupported Jelly layout field");
+        return found->second;
+    };
+    Layout out;
+    out.version = 1;
+    out.game = profile.game;
+    out.offsets.emplace("object.internal_index", OffsetEntry{value("object.internal_index"), "int32", {}, true});
+    out.offsets.emplace("object.class", OffsetEntry{value("object.class"), "UClass*", {}, true});
+    out.offsets.emplace("object.name_offset", OffsetEntry{value("object.name_offset"), "FName id (uint32)", {}, true});
+    out.offsets.emplace("object.outer", OffsetEntry{value("object.outer"), "UObject*", {}, true});
+    out.offsets.emplace("ustruct.super_struct", OffsetEntry{value("ustruct.super_struct"), "UStruct*", {}, true});
+    out.offsets.emplace("ustruct.children", OffsetEntry{value("ustruct.children"), "UField* head of the UField chain", {}, true});
+    out.offsets.emplace("ustruct.property_link", OffsetEntry{value("ustruct.property_link"), "FField* head of the child-property chain", {}, true});
+    out.offsets.emplace("ufield.next", OffsetEntry{value("ufield.next"), "UField*", {}, true});
+    out.offsets.emplace("ffield.next", OffsetEntry{value("ffield.next"), "FField*", {}, true});
+    out.offsets.emplace("ffield.name", OffsetEntry{value("ffield.name"), "FName id (uint32)", {}, true});
+    out.offsets.emplace("ffield.class", OffsetEntry{value("ffield.class"), "FFieldClass*", {}, true});
+    out.offsets.emplace("ffield_class.name", OffsetEntry{value("ffield_class.name"), "FName id (uint32)", {}, true});
+    out.offsets.emplace("fproperty.array_dim", OffsetEntry{value("fproperty.array_dim"), "int32", {}, true});
+    out.offsets.emplace("fproperty.element_size", OffsetEntry{value("fproperty.element_size"), "int32", {}, true});
+    out.offsets.emplace("fproperty.offset_internal", OffsetEntry{value("fproperty.offset_internal"), "int32", {}, true});
+    out.offsets.emplace("fstruct_property.struct", OffsetEntry{value("fstruct_property.struct"), "UStruct*", {}, true});
+    out.offsets.emplace("fobject_property.property_class", OffsetEntry{value("fobject_property.property_class"), "UClass*", {}, true});
+    out.offsets.emplace("farray_property.inner", OffsetEntry{value("farray_property.inner"), "FProperty*", {}, true});
+    out.offsets.emplace("fbool_property.field_size", OffsetEntry{value("fbool_property.field_size"), "uint8", {}, true});
+    out.offsets.emplace("fbool_property.byte_offset", OffsetEntry{value("fbool_property.byte_offset"), "uint8", {}, true});
+    out.offsets.emplace("fbool_property.byte_mask", OffsetEntry{value("fbool_property.byte_mask"), "uint8", {}, true});
+    out.offsets.emplace("ufunction.num_parms", OffsetEntry{value("ufunction.num_parms"), "uint8", {}, true});
+    out.offsets.emplace("ufunction.parms_size", OffsetEntry{value("ufunction.parms_size"), "uint16", {}, true});
+    out.offsets.emplace("ufunction.return_value_offset", OffsetEntry{value("ufunction.return_value_offset"), "uint16", {}, true});
+    out.offsets.emplace("objects.items", OffsetEntry{value("objects.items"), "FUObjectItem** chunk table", {}, true});
+    out.offsets.emplace("objects.count", OffsetEntry{value("objects.count"), "int32", {}, true});
+    out.offsets.emplace("objects.max_count", OffsetEntry{value("objects.max_count"), "int32", {}, true});
+    out.offsets.emplace("objects.num_chunks", OffsetEntry{value("objects.num_chunks"), "uint32", {}, true});
+    out.offsets.emplace("objects.max_chunks", OffsetEntry{value("objects.max_chunks"), "uint32", {}, true});
+    out.offsets.emplace("objects.chunk_count_size", OffsetEntry{value("objects.chunk_count_size"), "field width of the chunk counters", {}, true});
+    out.offsets.emplace("objects.chunk_size", OffsetEntry{value("objects.chunk_size"), "objects per chunk", {}, true});
+    out.offsets.emplace("objects.item_stride", OffsetEntry{value("objects.item_stride"), "FUObjectItem stride", {}, true});
+    out.offsets.emplace("objects.object_offset", OffsetEntry{value("objects.object_offset"), "UObject* offset inside FUObjectItem", {}, true});
+    out.offsets.emplace("objects.serial_offset", OffsetEntry{value("objects.serial_offset"), "int32 serial offset inside FUObjectItem", {}, true});
+    out.offsets.emplace("tarray.data", OffsetEntry{value("tarray.data"), "pointer to the element array", {}, true});
+    out.offsets.emplace("tarray.num", OffsetEntry{value("tarray.num"), "int32 element count", {}, true});
+    out.offsets.emplace("tarray.max", OffsetEntry{value("tarray.max"), "int32 allocation capacity", {}, true});
+    out.class_names.emplace("actor", "Actor");
+    out.class_names.emplace("scene_component", "SceneComponent");
+    out.class_names.emplace("primitive_component", "PrimitiveComponent");
+    out.class_names.emplace("mesh_component", "MeshComponent");
+    out.class_names.emplace("character", "Character");
+    out.class_names.emplace("function", "Function");
+    out.class_names.emplace("vector_struct", "Vector");
+    out.class_names.emplace("body_instance_struct", "BodyInstance");
+    out.class_families.emplace("instanced_mesh", std::vector<std::string>{"InstancedStaticMeshComponent", "HierarchicalInstancedStaticMeshComponent"});
+    out.class_families.emplace("non_visual_mesh", std::vector<std::string>{"WidgetComponent"});
+    out.class_families.emplace("vehicle", std::vector<std::string>{"BP_Vehicle"});
+    {
+        PropertySpec spec;
+        spec.owner = "Actor";
+        spec.name = "RootComponent";
+        spec.type = "ObjectProperty";
+        spec.class_name = "SceneComponent";
+        spec.present = true;
+        out.properties.emplace("root_component", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "AttachChildren";
+        spec.type = "ArrayProperty";
+        spec.inner_type = "ObjectProperty";
+        spec.inner_class_name = "SceneComponent";
+        spec.present = true;
+        out.properties.emplace("attach_children", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "AttachParent";
+        spec.type = "ObjectProperty";
+        spec.class_name = "SceneComponent";
+        spec.present = true;
+        out.properties.emplace("attach_parent", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "RelativeScale3D";
+        spec.type = "StructProperty";
+        spec.struct_name = "Vector";
+        spec.element_size = value("property.relative_scale.element_size");
+        spec.present = true;
+        out.properties.emplace("relative_scale", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "RelativeRotation";
+        spec.type = "StructProperty";
+        spec.struct_name = "Rotator";
+        spec.element_size = value("property.relative_rotation.element_size");
+        spec.present = true;
+        out.properties.emplace("relative_rotation", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "Mobility";
+        spec.element_size = value("property.mobility.element_size");
+        spec.present = true;
+        out.properties.emplace("mobility", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "bVisible";
+        spec.type = "BoolProperty";
+        spec.present = true;
+        out.properties.emplace("visible", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "Actor";
+        spec.name = "bHidden";
+        spec.type = "BoolProperty";
+        spec.element_size = value("property.hidden.element_size");
+        spec.present = true;
+        out.properties.emplace("hidden", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "PrimitiveComponent";
+        spec.name = "BodyInstance";
+        spec.type = "StructProperty";
+        spec.struct_name = "BodyInstance";
+        spec.present = true;
+        out.properties.emplace("body_instance", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "BodyInstance";
+        spec.name = "CollisionEnabled";
+        spec.element_size = value("property.collision_enabled.element_size");
+        spec.present = true;
+        out.properties.emplace("collision_enabled", std::move(spec));
+    }
+    {
+        PropertySpec spec;
+        spec.owner = "BodyInstance";
+        spec.name = "bSimulatePhysics";
+        spec.type = "BoolProperty";
+        spec.present = true;
+        out.properties.emplace("simulate_physics", std::move(spec));
+    }
+    {
+        FunctionSpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "SetRelativeScale3D";
+        spec.num_parms = value("function.set_relative_scale.0.numParms");
+        spec.parms_size = value("function.set_relative_scale.0.parmsSize");
+        spec.return_value_offset = value("function.set_relative_scale.0.returnValueOffset");
+        spec.exact_size = spec.parms_size != 0;
+        spec.params.push_back({"NewScale3D", "StructProperty", "Vector", value("function.set_relative_scale.0.param0.size"), value("function.set_relative_scale.0.param0.offset")});
+        out.functions["set_relative_scale"].push_back(std::move(spec));
+    }
+    {
+        FunctionSpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "K2_SetRelativeScale3D";
+        spec.num_parms = value("function.set_relative_scale.1.numParms");
+        spec.parms_size = value("function.set_relative_scale.1.parmsSize");
+        spec.return_value_offset = value("function.set_relative_scale.1.returnValueOffset");
+        spec.exact_size = spec.parms_size != 0;
+        spec.params.push_back({"NewScale3D", "StructProperty", "Vector", value("function.set_relative_scale.1.param0.size"), value("function.set_relative_scale.1.param0.offset")});
+        out.functions["set_relative_scale"].push_back(std::move(spec));
+    }
+    {
+        FunctionSpec spec;
+        spec.owner = "SceneComponent";
+        spec.name = "K2_SetRelativeRotation";
+        spec.num_parms = value("function.set_relative_rotation.0.numParms");
+        spec.parms_size = value("function.set_relative_rotation.0.parmsSize");
+        spec.return_value_offset = value("function.set_relative_rotation.0.returnValueOffset");
+        spec.exact_size = spec.parms_size != 0;
+        spec.params.push_back({"NewRotation", "StructProperty", "Rotator", value("function.set_relative_rotation.0.param0.size"), value("function.set_relative_rotation.0.param0.offset")});
+        spec.params.push_back({"bSweep", "BoolProperty", "", value("function.set_relative_rotation.0.param1.size"), value("function.set_relative_rotation.0.param1.offset")});
+        spec.params.push_back({"SweepHitResult", "StructProperty", "HitResult", value("function.set_relative_rotation.0.param2.size"), value("function.set_relative_rotation.0.param2.offset")});
+        spec.params.push_back({"bTeleport", "BoolProperty", "", value("function.set_relative_rotation.0.param3.size"), value("function.set_relative_rotation.0.param3.offset")});
+        out.functions["set_relative_rotation"].push_back(std::move(spec));
+    }
+    for (const auto& symbol : profile.symbols) {
+        if (symbol.candidates.size() != 1) throw std::runtime_error("unsupported Jelly symbol contract");
+        const auto& candidate = symbol.candidates.front();
+        SymbolSpec spec;
+        spec.pattern = candidate.pattern;
+        spec.module = profile.module;
+        spec.section = profile.section;
+        spec.present = true;
+        if (symbol.name == "process_event") {
+            spec.detour_bytes = candidate.values.at("detourBytes");
+            out.process_event_detour_bytes = spec.detour_bytes;
         }
-        if (high < 0) {
-            high = digit;
-        } else {
-            out.push_back(static_cast<std::uint8_t>((high << 4) | digit));
-            high = -1;
-        }
+        if (symbol.name == "process_event_prologue") out.process_event_prologue = candidate.entry;
+        out.symbols.emplace(symbol.name, std::move(spec));
     }
-    return high < 0 && !out.empty();
-}
-
-}  // namespace
-
-bool ParseLayout(
-    const std::string_view document, Layout& out, std::string& error) noexcept {
-    out = Layout{};
-    json::Value root;
-    if (!json::Parse(document, root, error)) return false;
-    if (!root.IsObject()) {
-        error = "the layout resource is not an object";
-        return false;
-    }
-    if (Text(&root, "schema") != kLayoutSchemaId) {
-        error = "the layout resource has an unexpected schema";
-        return false;
-    }
-    out.version = Number(&root, "version", 0);
-    out.game = Text(&root, "game");
-    if (const json::Value* source = root.Find("source"); source != nullptr) {
-        out.source_note = Text(source, "note");
-    }
-
-    if (const json::Value* symbols = root.Find("symbols"); symbols != nullptr) {
-        for (const auto& member : symbols->members) {
-            const json::Value& entry = member.second;
-            SymbolSpec spec;
-            spec.type = Text(&entry, "type");
-            spec.source = Text(&entry, "source");
-            spec.module = Text(&entry, "module");
-            spec.section = Text(&entry, "section");
-            spec.pattern = Text(&entry, "pattern");
-            spec.resolve = Text(&entry, "resolve");
-            spec.resolve_offset = Number(&entry, "resolveOffset", 0);
-            spec.instruction_size = Number(&entry, "instructionSize", 0);
-            spec.addend = Number(&entry, "addend", 0);
-            spec.detour_bytes = Number(&entry, "detourBytes", 0);
-            if (entry.Find("bytes") != nullptr) {
-                static_cast<void>(ParseHexBytes(Text(&entry, "bytes"), out.process_event_prologue));
-            }
-            if (member.first == "process_event") {
-                out.process_event_detour_bytes = spec.detour_bytes;
-            }
-            spec.present = HasMember(&entry, "pattern");
-            out.symbols.emplace(member.first, std::move(spec));
-        }
-    }
-
-    if (const json::Value* names = root.Find("classNames"); names != nullptr) {
-        for (const auto& member : names->members) {
-            if (member.second.IsString()) out.class_names.emplace(member.first, member.second.text);
-        }
-    }
-
-    if (const json::Value* families = root.Find("classFamilies"); families != nullptr) {
-        for (const auto& member : families->members) {
-            if (!member.second.IsArray()) continue;
-            std::vector<std::string> values;
-            for (const auto& item : member.second.items) {
-                if (item.IsString()) values.push_back(item.text);
-            }
-            out.class_families.emplace(member.first, std::move(values));
-        }
-    }
-
-    if (const json::Value* offsets = root.Find("offsets"); offsets != nullptr) {
-        for (const auto& member : offsets->members) {
-            const json::Value& entry = member.second;
-            OffsetEntry record;
-            record.value = Number(&entry, "value", 0);
-            record.type = Text(&entry, "type");
-            record.source = Text(&entry, "source");
-            record.present = entry.IsNumber() || HasMember(&entry, "value");
-            out.offsets.emplace(member.first, std::move(record));
-        }
-    }
-
-    if (const json::Value* properties = root.Find("properties"); properties != nullptr) {
-        for (const auto& member : properties->members) {
-            const json::Value& entry = member.second;
-            PropertySpec spec;
-            spec.owner = Text(&entry, "owner");
-            spec.name = Text(&entry, "name");
-            spec.type = Text(&entry, "type");
-            spec.struct_name = Text(&entry, "struct_name");
-            spec.class_name = Text(&entry, "class_name");
-            spec.inner_type = Text(&entry, "inner_type");
-            spec.inner_class_name = Text(&entry, "inner_class_name");
-            spec.source = Text(&entry, "source");
-            spec.element_size = Number(&entry, "element_size", 0);
-            spec.present = !spec.name.empty() && !spec.owner.empty();
-            out.properties.emplace(member.first, std::move(spec));
-        }
-    }
-
-    if (const json::Value* functions = root.Find("functions"); functions != nullptr) {
-        for (const auto& member : functions->members) {
-            if (!member.second.IsArray()) continue;
-            std::vector<FunctionSpec> candidates;
-            for (const auto& entry : member.second.items) {
-                FunctionSpec spec;
-                spec.owner = Text(&entry, "owner");
-                spec.name = Text(&entry, "name");
-                spec.source = Text(&entry, "source");
-                spec.num_parms = static_cast<std::uint32_t>(Number(&entry, "numParms", 0));
-                spec.parms_size = static_cast<std::uint32_t>(Number(&entry, "parmsSize", 0));
-                spec.return_value_offset =
-                    static_cast<std::uint32_t>(Number(&entry, "returnValueOffset", 0));
-                spec.exact_size = spec.parms_size != 0;
-                if (const json::Value* params = entry.Find("params");
-                    params != nullptr && params->IsArray()) {
-                    for (const auto& item : params->items) {
-                        FunctionParamSpec param;
-                        param.name = Text(&item, "name");
-                        param.type = Text(&item, "type");
-                        param.struct_name = Text(&item, "struct_name");
-                        param.element_size = Number(&item, "element_size", 0);
-                        param.offset = Number(&item, "offset", 0);
-                        spec.params.push_back(std::move(param));
-                    }
-                }
-                if (!spec.name.empty() && !spec.owner.empty()) {
-                    candidates.push_back(std::move(spec));
-                }
-            }
-            out.functions.emplace(member.first, std::move(candidates));
-        }
-    }
-    return true;
+    const auto problems = LayoutProblems(out);
+    if (!problems.empty()) throw std::runtime_error(problems.front());
+    return out;
 }
 
 bool DropLeadingBytes(
@@ -230,9 +266,9 @@ std::vector<std::string> LayoutProblems(const Layout& layout) {
             problems.emplace_back("missing offset " + std::string(key));
             return;
         }
-        if (found->second.source.empty() || found->second.type.empty()) {
+        if (found->second.type.empty()) {
             problems.emplace_back(
-                "offset " + std::string(key) + " does not record its source and type");
+                "offset " + std::string(key) + " does not record its type");
         }
     };
     const auto require_symbol = [&problems, &layout](const std::string_view key) {
@@ -250,9 +286,6 @@ std::vector<std::string> LayoutProblems(const Layout& layout) {
         const auto found = layout.properties.find(key);
         if (found == layout.properties.end() || !found->second.present) {
             problems.emplace_back("missing property " + std::string(key));
-        } else if (found->second.source.empty()) {
-            problems.emplace_back(
-                "property " + std::string(key) + " does not record its source");
         }
     };
     const auto require_function = [&problems, &layout](const std::string_view key) {

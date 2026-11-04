@@ -699,12 +699,9 @@ bool Resolve(
     const AnomalySignatureServiceV1& signature,
     const std::string_view pattern,
     std::uintptr_t& target) noexcept {
-    target = 0;
-    return signature.resolve(
-               signature.user, anomaly::sdk::StringView("HTGame.exe"),
-               anomaly::sdk::StringView(".text"), anomaly::sdk::StringView(pattern),
-               &target).code == ANOMALY_STATUS_V1_OK &&
-        target != 0;
+    (void)signature;
+    target = fake_uid_profile::compatibility.Address(pattern);
+    return target != 0;
 }
 
 bool ResolveRipRelative32(
@@ -1418,20 +1415,20 @@ bool ResolveWidgetAddress(
     const std::uint32_t expected_serial = static_cast<std::uint32_t>(handle.id >> 32U);
     __try {
         const auto chunks = *reinterpret_cast<const std::uintptr_t* const*>(
-            context.object_registry + fake_uid_profile::kObjectRegistryItemsOffset);
+            context.object_registry + fake_uid_profile::native_layout.kObjectRegistryItemsOffset);
         if (chunks == nullptr) return false;
         const std::uintptr_t chunk =
-            chunks[index / fake_uid_profile::kObjectChunkSize];
+            chunks[index / fake_uid_profile::native_layout.kObjectChunkSize];
         if (chunk == 0) return false;
         const std::uintptr_t item =
             chunk + static_cast<std::uintptr_t>(
-                        index % fake_uid_profile::kObjectChunkSize) *
-                fake_uid_profile::kObjectItemStride;
+                        index % fake_uid_profile::native_layout.kObjectChunkSize) *
+                fake_uid_profile::native_layout.kObjectItemStride;
         const std::uint32_t serial = *reinterpret_cast<const std::uint32_t*>(
-            item + fake_uid_profile::kObjectItemSerialOffset);
+            item + fake_uid_profile::native_layout.kObjectItemSerialOffset);
         const std::uintptr_t object = *reinterpret_cast<const std::uintptr_t*>(item);
         const auto object_name = object == 0 ? 0U : *reinterpret_cast<const std::uint32_t*>(
-            object + fake_uid_profile::kObjectNameOffset);
+            object + fake_uid_profile::native_layout.kObjectNameOffset);
         if (serial != expected_serial || object == 0 ||
             (object_name != context.target_name_id &&
              object_name != context.target_prefix_name_id)) {
@@ -1440,7 +1437,7 @@ bool ResolveWidgetAddress(
         const std::uintptr_t vtable = *reinterpret_cast<const std::uintptr_t*>(object);
         if (vtable == 0 ||
             *reinterpret_cast<const std::uintptr_t*>(
-                vtable + fake_uid_profile::kSetTextVtableOffset) !=
+                vtable + fake_uid_profile::native_layout.kSetTextVtableOffset) !=
                     reinterpret_cast<std::uintptr_t>(context.set_text)) {
             return false;
         }
@@ -1464,23 +1461,23 @@ bool ResolveTextBlockAddress(
     const std::uint32_t expected_serial = static_cast<std::uint32_t>(handle.id >> 32U);
     __try {
         const auto chunks = *reinterpret_cast<const std::uintptr_t* const*>(
-            context.object_registry + fake_uid_profile::kObjectRegistryItemsOffset);
+            context.object_registry + fake_uid_profile::native_layout.kObjectRegistryItemsOffset);
         if (chunks == nullptr) return false;
         const std::uintptr_t chunk =
-            chunks[index / fake_uid_profile::kObjectChunkSize];
+            chunks[index / fake_uid_profile::native_layout.kObjectChunkSize];
         if (chunk == 0) return false;
         const std::uintptr_t item =
             chunk + static_cast<std::uintptr_t>(
-                        index % fake_uid_profile::kObjectChunkSize) *
-                fake_uid_profile::kObjectItemStride;
+                        index % fake_uid_profile::native_layout.kObjectChunkSize) *
+                fake_uid_profile::native_layout.kObjectItemStride;
         const std::uint32_t serial = *reinterpret_cast<const std::uint32_t*>(
-            item + fake_uid_profile::kObjectItemSerialOffset);
+            item + fake_uid_profile::native_layout.kObjectItemSerialOffset);
         const std::uintptr_t object = *reinterpret_cast<const std::uintptr_t*>(item);
         if (serial != expected_serial || object == 0) return false;
         const std::uintptr_t vtable = *reinterpret_cast<const std::uintptr_t*>(object);
         if (vtable == 0 ||
             *reinterpret_cast<const std::uintptr_t*>(
-                vtable + fake_uid_profile::kSetTextVtableOffset) !=
+                vtable + fake_uid_profile::native_layout.kSetTextVtableOffset) !=
                     reinterpret_cast<std::uintptr_t>(context.set_text)) {
             return false;
         }
@@ -1501,12 +1498,12 @@ bool ReadRoleIdObjectNameId(
             *reinterpret_cast<const std::uintptr_t*>(object);
         if (vtable == 0 ||
             *reinterpret_cast<const std::uintptr_t*>(
-                vtable + fake_uid_profile::kSetTextVtableOffset) !=
+                vtable + fake_uid_profile::native_layout.kSetTextVtableOffset) !=
                 reinterpret_cast<std::uintptr_t>(context.set_text)) {
             return false;
         }
         name_id = *reinterpret_cast<const std::uint32_t*>(
-            object + fake_uid_profile::kObjectNameOffset);
+            object + fake_uid_profile::native_layout.kObjectNameOffset);
         return name_id != 0;
     } __except (1) {
         name_id = 0;
@@ -1540,7 +1537,7 @@ std::uint32_t ReadObjectNameIdRaw(const std::uintptr_t object) noexcept {
     if (object == 0) return 0;
     __try {
         return *reinterpret_cast<const std::uint32_t*>(
-            object + fake_uid_profile::kObjectNameOffset);
+            object + fake_uid_profile::native_layout.kObjectNameOffset);
     } __except (1) { return 0; }
 }
 
@@ -1888,10 +1885,10 @@ bool IsHookTargetWidget(
             *reinterpret_cast<const std::uintptr_t*>(widget);
         const std::uint32_t widget_name_id =
             *reinterpret_cast<const std::uint32_t*>(
-                widget + fake_uid_profile::kObjectNameOffset);
+                widget + fake_uid_profile::native_layout.kObjectNameOffset);
         if (vtable == 0 ||
             *reinterpret_cast<const std::uintptr_t*>(
-                vtable + fake_uid_profile::kSetTextVtableOffset) !=
+                vtable + fake_uid_profile::native_layout.kSetTextVtableOffset) !=
                 reinterpret_cast<std::uintptr_t>(context.set_text) ||
             widget_name_id == 0 ||
             (widget_name_id != override.target_name_id &&
@@ -1920,10 +1917,10 @@ bool IsHookPrefixWidget(
             *reinterpret_cast<const std::uintptr_t*>(widget);
         if (vtable == 0 ||
             *reinterpret_cast<const std::uintptr_t*>(
-                vtable + fake_uid_profile::kSetTextVtableOffset) !=
+                vtable + fake_uid_profile::native_layout.kSetTextVtableOffset) !=
                 reinterpret_cast<std::uintptr_t>(context.set_text) ||
             *reinterpret_cast<const std::uint32_t*>(
-                widget + fake_uid_profile::kObjectNameOffset) !=
+                widget + fake_uid_profile::native_layout.kObjectNameOffset) !=
                 override.prefix_name_id) {
             return false;
         }
@@ -2215,7 +2212,7 @@ bool SetWidgetText(
 std::uintptr_t ReadObjectOuter(const std::uintptr_t object) noexcept {
     if (object == 0) return 0;
     __try {
-        return *reinterpret_cast<const std::uintptr_t*>(object + 32);
+        return *reinterpret_cast<const std::uintptr_t*>(object + fake_uid_profile::native_layout.kObjectOuterOffset);
     } __except (1) {
         return 0;
     }
@@ -2229,7 +2226,7 @@ std::uintptr_t ReadWidgetPanel(const std::uintptr_t widget) noexcept {
     if (widget == 0) return 0;
     __try {
         const std::uintptr_t slot = *reinterpret_cast<const std::uintptr_t*>(
-            widget + fake_uid_profile::kWidgetSlotOffset);
+            widget + fake_uid_profile::native_layout.kWidgetSlotOffset);
         return ReadObjectOuter(slot);
     } __except (1) {
         return 0;
@@ -2249,7 +2246,7 @@ std::uint8_t ReadVisibilityField(const std::uintptr_t widget) noexcept {
     if (widget == 0) return 0;
     __try {
         return *reinterpret_cast<const std::uint8_t*>(
-            widget + fake_uid_profile::kWidgetVisibilityOffset);
+            widget + fake_uid_profile::native_layout.kWidgetVisibilityOffset);
     } __except (1) {
         return 0;
     }
@@ -2289,17 +2286,17 @@ bool ResolveObjectAddress(
     const std::uint32_t expected_serial = static_cast<std::uint32_t>(handle.id >> 32U);
     __try {
         const auto chunks = *reinterpret_cast<const std::uintptr_t* const*>(
-            context.object_registry + fake_uid_profile::kObjectRegistryItemsOffset);
+            context.object_registry + fake_uid_profile::native_layout.kObjectRegistryItemsOffset);
         if (chunks == nullptr) return false;
         const std::uintptr_t chunk =
-            chunks[index / fake_uid_profile::kObjectChunkSize];
+            chunks[index / fake_uid_profile::native_layout.kObjectChunkSize];
         if (chunk == 0) return false;
         const std::uintptr_t item =
             chunk + static_cast<std::uintptr_t>(
-                         index % fake_uid_profile::kObjectChunkSize) *
-                fake_uid_profile::kObjectItemStride;
+                         index % fake_uid_profile::native_layout.kObjectChunkSize) *
+                fake_uid_profile::native_layout.kObjectItemStride;
         const std::uint32_t serial = *reinterpret_cast<const std::uint32_t*>(
-            item + fake_uid_profile::kObjectItemSerialOffset);
+            item + fake_uid_profile::native_layout.kObjectItemSerialOffset);
         const std::uintptr_t candidate = *reinterpret_cast<const std::uintptr_t*>(item);
         if (serial != expected_serial || candidate == 0) return false;
         object = candidate;
@@ -2315,7 +2312,7 @@ bool SetNativeFunctionFlag(
     if (function == 0) return false;
     __try {
         auto* const flags = reinterpret_cast<std::uint32_t*>(
-            function + fake_uid_profile::kUFunctionFlagsOffset);
+            function + fake_uid_profile::native_layout.kUFunctionFlagsOffset);
         previous_flags = *flags;
         *flags = previous_flags | 0x400U;
         return true;
@@ -2329,7 +2326,7 @@ bool RestoreFunctionFlags(
     if (function == 0) return false;
     __try {
         *reinterpret_cast<std::uint32_t*>(
-            function + fake_uid_profile::kUFunctionFlagsOffset) = previous_flags;
+            function + fake_uid_profile::native_layout.kUFunctionFlagsOffset) = previous_flags;
         return true;
     } __except (1) {
         return false;
@@ -2341,7 +2338,7 @@ bool WriteWidgetVisibility(
     if (widget == 0) return false;
     __try {
         *reinterpret_cast<std::uint8_t*>(
-            widget + fake_uid_profile::kWidgetVisibilityOffset) = visibility;
+            widget + fake_uid_profile::native_layout.kWidgetVisibilityOffset) = visibility;
         return true;
     } __except (1) {
         return false;
@@ -2376,17 +2373,17 @@ bool ReadVisibilityLayout(
     return_value = 0;
     __try {
         class_object = *reinterpret_cast<const std::uintptr_t*>(
-            visibility_function + 16);
+            visibility_function + fake_uid_profile::native_layout.kObjectClassOffset);
         outer_object = *reinterpret_cast<const std::uintptr_t*>(
-            visibility_function + 32);
+            visibility_function + fake_uid_profile::native_layout.kObjectOuterOffset);
         func = *reinterpret_cast<const std::uintptr_t*>(
-            visibility_function + fake_uid_profile::kUFunctionFuncOffset);
+            visibility_function + fake_uid_profile::native_layout.kUFunctionFuncOffset);
         num_parms = *reinterpret_cast<const std::uint8_t*>(
-            visibility_function + fake_uid_profile::kUFunctionNumParmsOffset);
+            visibility_function + fake_uid_profile::native_layout.kUFunctionNumParmsOffset);
         parms_size = *reinterpret_cast<const std::uint16_t*>(
-            visibility_function + fake_uid_profile::kUFunctionParmsSizeOffset);
+            visibility_function + fake_uid_profile::native_layout.kUFunctionParmsSizeOffset);
         return_value = *reinterpret_cast<const std::uint16_t*>(
-            visibility_function + fake_uid_profile::kUFunctionReturnValueOffset);
+            visibility_function + fake_uid_profile::native_layout.kUFunctionReturnValueOffset);
         return true;
     } __except (1) {
         return false;
@@ -2482,7 +2479,9 @@ bool ResolveTextWriteBindings(Context& context) noexcept {
 bool InvokeProcessEvent(
     Context& context, const std::uintptr_t object, const std::uintptr_t function,
     void* const parameters) noexcept {
-    if (object == 0 || function == 0 || context.process_event == nullptr) return false;
+    if (object == 0 || function == 0 || context.process_event == nullptr ||
+        !fake_uid_profile::compatibility.MatchesEntry(context.core, "ProcessEvent.entry",
+            reinterpret_cast<std::uintptr_t>(context.process_event), true)) return false;
     // The generated SDK wrappers set FUNC_Native (0x400) before every
     // ProcessEvent call. Without it, this build can enter the reflected
     // dispatch path with a native UFunction and leave FText output in an
@@ -2555,7 +2554,7 @@ void AlignRoleIdSlot(
     }
     __try {
         const auto slot = *reinterpret_cast<std::uintptr_t*>(
-            widget + fake_uid_profile::kWidgetSlotOffset);
+            widget + fake_uid_profile::native_layout.kWidgetSlotOffset);
         if (slot == 0) {
             if (!context.slot_binding_failed_emitted) {
                 context.slot_binding_failed_emitted = true;
@@ -3246,6 +3245,7 @@ bool EnsureWindow(Context& context) {
 
 AnomalyStatusV1 ANOMALY_CALL Load(
     const AnomalyHostApiV1* host, void** plugin_context) {
+    if (!fake_uid_profile::LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     if (host == nullptr || plugin_context == nullptr) {
         return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "host is invalid");
     }
@@ -3335,11 +3335,11 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* user) {
         if (!Resolve(
                 *context->signature, fake_uid_profile::kProcessEventPattern,
                 process_event_match) ||
-            process_event_match <= fake_uid_profile::kProcessEventMatchOffset) {
+            process_event_match <= fake_uid_profile::native_layout.kProcessEventMatchOffset) {
             AddMissing("ProcessEvent");
         } else {
             bindings.process_event =
-                process_event_match - fake_uid_profile::kProcessEventMatchOffset;
+                process_event_match - fake_uid_profile::native_layout.kProcessEventMatchOffset;
         }
     }
     if (!missing.empty()) {
@@ -3359,7 +3359,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* user) {
         reinterpret_cast<const void*>(
             bindings.gobjects_accessor + fake_uid_profile::kGObjectsResolveOffset),
         sizeof(registry_displacement));
-    context->text_field_offset = fake_uid_profile::kTextFieldOffset;
+    context->text_field_offset = fake_uid_profile::native_layout.kTextFieldOffset;
     if (context->text_field_offset == 0 || context->text_field_offset > 4096) {
         if (!context->runtime_pending_emitted) {
             context->runtime_pending_emitted = true;
@@ -3370,7 +3370,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* user) {
     }
     context->object_registry =
         bindings.gobjects_accessor + fake_uid_profile::kGObjectsInstructionSize +
-        registry_displacement + fake_uid_profile::kGObjectsAddend;
+        registry_displacement + fake_uid_profile::native_layout.kGObjectsAddend;
     context->free_string = reinterpret_cast<FreeStringFn>(bindings.free_string);
     context->assign_string =
         reinterpret_cast<AssignStringFn>(bindings.assign_string);

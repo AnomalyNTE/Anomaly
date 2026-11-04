@@ -1,3 +1,4 @@
+#include "native_layout.hpp"
 // Minimal UE Native bridge adapted from the local AGPL NaiLong bridge.
 
 // All invocation occurs in Anomaly's Game callback domain; no D3D hooks.
@@ -29,6 +30,8 @@
 #include <vector>
 
 namespace ue {
+using nailong_profile::native_layout;
+using nailong_profile::compatibility;
 
 inline const AnomalyCoreServiceV1* g_core=nullptr;
 
@@ -44,31 +47,31 @@ inline AnomalyStringViewV1 nl_sv(const char* s){return {s,std::strlen(s)};}
 
 inline bool nl_good(AnomalyStatusV1 s){return s.code==ANOMALY_STATUS_V1_OK;}
 
-#define NL_GOBJECTS_PATTERN "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3"
+
 
 #define NL_GOBJECTS_RESOLVE_OFFSET 3u
 
 #define NL_GOBJECTS_INSTRUCTION_SIZE 7u
 
-#define NL_GOBJECTS_ADDEND (-16)
 
-#define NL_OBJ_ITEMS_OFFSET 16u
 
-#define NL_OBJ_MAX_COUNT_OFFSET 32u
 
-#define NL_OBJ_COUNT_OFFSET 36u
 
-#define NL_OBJ_MAX_CHUNKS_OFFSET 40u
 
-#define NL_OBJ_NUM_CHUNKS_OFFSET 44u
 
-#define NL_OBJ_CHUNK_SIZE 65536u
 
-#define NL_OBJ_ITEM_STRIDE 24u
 
-#define NL_OBJ_OBJECT_OFFSET 0u
 
-#define NL_OBJ_SERIAL_OFFSET 16u
+
+
+
+
+
+
+
+
+
+
 
 typedef struct NlObjectRegistry {
 
@@ -136,17 +139,8 @@ static int nl_resolve_gobjects(void) {
 
     intptr_t resolved;
 
-    if (g_signature == NULL || g_signature->resolve == NULL) return 0;
-
-    if (!nl_good(g_signature->resolve(g_signature->user, nl_sv("HTGame.exe"),
-
-            nl_sv(".text"), nl_sv(NL_GOBJECTS_PATTERN), &instruction)) ||
-
-        instruction == 0u) {
-
-        return 0;
-
-    }
+    instruction=compatibility.Address("Objects");
+    if (!instruction) return 0;
 
     if (!nl_read_u32(instruction + NL_GOBJECTS_RESOLVE_OFFSET, &raw)) return 0;
 
@@ -154,7 +148,7 @@ static int nl_resolve_gobjects(void) {
 
     resolved = (intptr_t)instruction + (intptr_t)NL_GOBJECTS_INSTRUCTION_SIZE +
 
-        (intptr_t)displacement + (intptr_t)NL_GOBJECTS_ADDEND;
+        (intptr_t)displacement + -static_cast<intptr_t>(native_layout.RegistrySubtract);
 
     if (resolved <= 0) return 0;
 
@@ -180,15 +174,15 @@ static int nl_refresh_objects(void) {
 
     if (g_reg.gobjects == 0u && !nl_resolve_gobjects()) return 0;
 
-    if (!nl_read_ptr(g_reg.gobjects + NL_OBJ_ITEMS_OFFSET, &items)) return 0;
+    if (!nl_read_ptr(g_reg.gobjects + native_layout.NL_OBJ_ITEMS_OFFSET, &items)) return 0;
 
-    if (!nl_read_u32(g_reg.gobjects + NL_OBJ_COUNT_OFFSET, &count)) return 0;
+    if (!nl_read_u32(g_reg.gobjects + native_layout.NL_OBJ_COUNT_OFFSET, &count)) return 0;
 
-    if (!nl_read_u32(g_reg.gobjects + NL_OBJ_MAX_COUNT_OFFSET, &max_count)) return 0;
+    if (!nl_read_u32(g_reg.gobjects + native_layout.NL_OBJ_MAX_COUNT_OFFSET, &max_count)) return 0;
 
-    if (!nl_read_u32(g_reg.gobjects + NL_OBJ_MAX_CHUNKS_OFFSET, &max_chunks)) return 0;
+    if (!nl_read_u32(g_reg.gobjects + native_layout.NL_OBJ_MAX_CHUNKS_OFFSET, &max_chunks)) return 0;
 
-    if (!nl_read_u32(g_reg.gobjects + NL_OBJ_NUM_CHUNKS_OFFSET, &num_chunks)) return 0;
+    if (!nl_read_u32(g_reg.gobjects + native_layout.NL_OBJ_NUM_CHUNKS_OFFSET, &num_chunks)) return 0;
 
     if (items == 0u || count == 0u || max_count < count ||
 
@@ -238,9 +232,9 @@ static int nl_object_slot(uint32_t index, uintptr_t* object, uint32_t* serial) {
 
     if (!g_reg.ready || index >= g_reg.count) return 0;
 
-    page = index / NL_OBJ_CHUNK_SIZE;
+    page = index / native_layout.NL_OBJ_CHUNK_SIZE;
 
-    slot = index % NL_OBJ_CHUNK_SIZE;
+    slot = index % native_layout.NL_OBJ_CHUNK_SIZE;
 
     if (page >= g_reg.num_chunks) return 0;
 
@@ -248,11 +242,11 @@ static int nl_object_slot(uint32_t index, uintptr_t* object, uint32_t* serial) {
 
     if (chunk == 0u || (chunk & 7u) != 0u) return 0;
 
-    item = chunk + ((uintptr_t)slot * NL_OBJ_ITEM_STRIDE);
+    item = chunk + ((uintptr_t)slot * native_layout.NL_OBJ_ITEM_STRIDE);
 
-    if (!nl_read_ptr(item + NL_OBJ_OBJECT_OFFSET, &value)) return 0;
+    if (!nl_read_ptr(item + native_layout.NL_OBJ_OBJECT_OFFSET, &value)) return 0;
 
-    if (!nl_read_u32(item + NL_OBJ_SERIAL_OFFSET, &number)) return 0;
+    if (!nl_read_u32(item + native_layout.NL_OBJ_SERIAL_OFFSET, &number)) return 0;
 
     *object = value;
 
@@ -276,7 +270,7 @@ inline bool Capture(std::uintptr_t p,Ref& out){
 
     std::uint32_t i=0,s=0,flags=0; std::uintptr_t v=0;
 
-    if(!p||!nl_read_u32(p+8,&flags)||(flags&0x18000)||!nl_read_u32(p+12,&i)) return false;
+    if(!p||!nl_read_u32(p+native_layout.ObjectFlags,&flags)||(flags&0x18000)||!nl_read_u32(p+native_layout.ObjectIndex,&i)) return false;
 
     if(!nl_object_slot(i,&v,&s)){
 
@@ -308,7 +302,7 @@ inline int Alive(const Ref& r){
 
     if(p!=r.ptr||s!=r.serial)return 0;
 
-    std::uint32_t flags=0;if(!nl_read_u32(p+8,&flags))return -1;
+    std::uint32_t flags=0;if(!nl_read_u32(p+native_layout.ObjectFlags,&flags))return -1;
 
     return (flags&0x18000)?0:1;
 
@@ -364,25 +358,13 @@ inline bool Ready(){
 
     process_event=0;
 
-    const char* pattern="40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00";
-
-    std::uintptr_t resolved=0;
-
-    const auto signature_status=g_signature->resolve(g_signature->user,nl_sv("HTGame.exe"),nl_sv(".text"),nl_sv(pattern),&resolved);
-
-    if(nl_good(signature_status)&&ExecutableAddress(resolved)){process_event=resolved;return true;}
-
-    // The host may have installed an inline hook. The UObject vtable slot is the
-
-    // authoritative callable entry in that case; accept a trampoline in any
-
-    // committed executable image instead of comparing against a stale RVA.
-
+    // Resolve from the controlled UObject vtable; validate its complete prologue
+    // or the host observer detour and surviving entry bytes against the Profile.
     auto cls=Find("/Script/CoreUObject.Object");std::uintptr_t cdo=0,vt=0,target=0;
 
-    if(!cls||!nl_read_ptr(cls+0x110,&cdo)||!nl_read_ptr(cdo,&vt)||!nl_read_ptr(vt+0x4C*8,&target)||!ExecutableAddress(target)){
+    if(!cls||!nl_read_ptr(cls+native_layout.ClassDefaultObject,&cdo)||!nl_read_ptr(cdo,&vt)||!nl_read_ptr(vt+native_layout.ProcessEventSlot,&target)||!ExecutableAddress(target)||!compatibility.MatchesEntry(g_core,"ProcessEvent.entry",target,true)){
 
-        last_error="ProcessEvent unavailable: signature and UObject vtable fallback failed";return false;
+        last_error="ProcessEvent unavailable: UObject vtable entry validation failed";return false;
 
     }
 
@@ -398,7 +380,7 @@ inline bool Ready(){
 
     if(!f){last_error=std::string("function unavailable: ")+path;return false;}
 
-    if(!nl_read_u32(f+176,&flags)||!nl_read(f+182,&size,sizeof(size))||!(flags&0x400)||size!=n){
+    if(!nl_read_u32(f+native_layout.FunctionFlags,&flags)||!nl_read(f+native_layout.FunctionSize,&size,sizeof(size))||!(flags&0x400)||size!=n){
 
         last_error=std::string("Native ABI mismatch: ")+path+" expected="+std::to_string(n)+" actual="+std::to_string(size);return false;
 
@@ -412,9 +394,9 @@ inline bool Ready(){
 
 inline bool IsClass(std::uintptr_t obj,std::uintptr_t base){
 
-    std::uintptr_t cls=0;if(!base||!nl_read_ptr(obj+16,&cls))return false;
+    std::uintptr_t cls=0;if(!base||!nl_read_ptr(obj+native_layout.ObjectClass,&cls))return false;
 
-    for(int i=0;cls&&i<40;++i){if(cls==base)return true;if(!nl_read_ptr(cls+64,&cls))return false;}return false;
+    for(int i=0;cls&&i<40;++i){if(cls==base)return true;if(!nl_read_ptr(cls+native_layout.StructSuper,&cls))return false;}return false;
 
 }
 
@@ -495,11 +477,11 @@ inline std::int32_t PropertyOffsetOnClass(std::uintptr_t cls,const char* wanted,
 
     std::uintptr_t property=0;
 
-    if(!nl_read_ptr(cls+112,&property))return -1;
+    if(!nl_read_ptr(cls+native_layout.StructProperties,&property))return -1;
 
     for(int i=0;property&&i<1024;++i){
 
-        std::uint32_t name=0;if(!nl_read_u32(property+32,&name))return -1;
+        std::uint32_t name=0;if(!nl_read_u32(property+native_layout.PropertyName,&name))return -1;
 
         char text[128]{};std::size_t n=sizeof(text);
 
@@ -507,13 +489,13 @@ inline std::int32_t PropertyOffsetOnClass(std::uintptr_t cls,const char* wanted,
 
             std::int32_t size=0,offset=0;
 
-            if(!nl_read(property+52,&size,4)||size!=expectedSize||!nl_read(property+68,&offset,4)||offset<40||offset>65536)return -1;
+            if(!nl_read(property+native_layout.PropertySize,&size,4)||size!=expectedSize||!nl_read(property+native_layout.PropertyOffset,&offset,4)||offset<40||offset>65536)return -1;
 
             return offset;
 
         }
 
-        if(!nl_read_ptr(property+72,&property))return -1;
+        if(!nl_read_ptr(property+native_layout.PropertyNext,&property))return -1;
 
     }
 
@@ -536,7 +518,7 @@ inline std::int32_t PropertyOffset(const char* owner,const char* wanted,std::int
 
         std::uintptr_t super=0;
 
-        if(!nl_read_ptr(cls+64,&super))break;
+        if(!nl_read_ptr(cls+native_layout.StructSuper,&super))break;
 
         cls=super;
 
@@ -664,7 +646,7 @@ inline std::uintptr_t VertexMaterial(){
 
     auto cls=Find("/Script/Engine.KismetSystemLibrary");std::uintptr_t cdo=0;
 
-    if(!cls||!nl_read_ptr(cls+0x110,&cdo)||!cdo)return 0;
+    if(!cls||!nl_read_ptr(cls+native_layout.ClassDefaultObject,&cdo)||!cdo)return 0;
 
     // Exact ABI from the supplied Engine_parameters.hpp. No UObject loading on Render/worker threads.
 

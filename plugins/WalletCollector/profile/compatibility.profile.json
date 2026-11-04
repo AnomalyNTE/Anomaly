@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "wallet-collector-v1",
+  "layout": {
+    "kGObjectsAddendMagnitude": 16,
+    "kObjectItemsOffset": 16,
+    "kObjectMaxCountOffset": 32,
+    "kObjectCountOffset": 36,
+    "kObjectMaxChunksOffset": 40,
+    "kObjectNumChunksOffset": 44,
+    "kObjectChunkSize": 65536,
+    "kObjectItemStride": 24,
+    "kDataAssetRandomItemTableOffset": 72,
+    "kDataTableRowMapOffset": 48,
+    "kDataTableRowStride": 24,
+    "kDataTableRowPointerOffset": 8,
+    "kRandomItemLevelNameOffset": 8,
+    "kRandomItemTypeNameOffset": 32,
+    "kRandomItemTransformOffset": 48,
+    "kTransformTranslationOffset": 32,
+    "kWorldGameInstanceOffset": 560,
+    "kGameInstanceLocalPlayersOffset": 56,
+    "kLocalPlayerControllerOffset": 48,
+    "kControllerPlayerStateOffset": 720,
+    "kRecordOwnerFindRecordVtableOffset": 280,
+    "kRecordOwnerOffset": 8,
+    "kRecordIndexOffset": 16,
+    "kRecordDescriptorTableOffset": 24,
+    "kRecordDescriptorStride": 40,
+    "kRecordDescriptorStoreOffset": 32,
+    "kRecordStoreRowsOffset": 32,
+    "kRecordGetStringVtableOffset": 224
+  },
+  "symbols": [
+    {
+      "name": "kGObjectsPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kGWorldPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kGetRecordOwnerPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 48 8B 99 60 01 00 00 48 8B E9",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 48 8B 99 60 01 00 00 48 8B E9",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

@@ -18,6 +18,7 @@
 
 #include <anomaly/sdk/services/plugin_state.h>
 
+#include <anomaly/sdk/localization.hpp>
 #include <atomic>
 
 #include <cmath>
@@ -39,6 +40,7 @@ constexpr char kId[]="com.nailong.costume";
 constexpr char kVersion[]="1.7.7";
 
 const AnomalyHostApiV1* host=nullptr;
+anomaly::sdk::Localizer localizer;
 
 const AnomalyNteActorsServiceV1* actors=nullptr;
 
@@ -50,7 +52,7 @@ struct Settings {bool enabled=true,bone_follow=true,nearby_npcs=true;float heigh
 
 Settings settings;
 
-std::string status="未启用；使用 UE 原生场景模型替换";
+std::string status;
 
 nailong::ModelAsset model;
 
@@ -239,7 +241,7 @@ void SaveDeferredRestore(){
 
     FILE* f=nullptr;
 
-    if(fopen_s(&f,path.c_str(),"wb")!=0||!f){Status("待恢复记录不可写");return;}
+    if(fopen_s(&f,path.c_str(),"wb")!=0||!f){Status(localizer.Text("restore.unwritable", "Cannot write pending restoration records").c_str());return;}
 
     const std::uint32_t count=std::uint32_t(deferred_restore.size());
 
@@ -277,7 +279,7 @@ void SaveDeferredRestore(){
 
     fclose(f);
 
-    if(!ok)Status("待恢复记录写入不完整");
+    if(!ok)Status(localizer.Text("restore.incomplete", "Restoration records were not fully written").c_str());
 
 }
 
@@ -388,19 +390,19 @@ bool AssetBytes(const char* relative,std::vector<std::uint8_t>& bytes){
 
     char path[2048]{};std::size_t n=sizeof(path);
 
-    if(!ue::g_core||!ue::g_core->plugin_directory||!ue::nl_good(ue::g_core->plugin_directory(ue::g_core->user,path,&n))){Status("无法取得插件资产目录");return false;}
+    if(!ue::g_core||!ue::g_core->plugin_directory||!ue::nl_good(ue::g_core->plugin_directory(ue::g_core->user,path,&n))){Status(localizer.Text("asset.directory", "Plugin asset directory unavailable").c_str());return false;}
 
     std::string utf8=std::string(path)+"/"+relative;
 
     int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,utf8.data(),int(utf8.size()),nullptr,0);
 
-    if(count<=0){Status("资产路径 UTF-8 无效");return false;}
+    if(count<=0){Status(localizer.Text("asset.path", "Asset path is not valid UTF-8").c_str());return false;}
 
     std::wstring wide(std::size_t(count),L'\0');MultiByteToWideChar(CP_UTF8,0,utf8.data(),int(utf8.size()),wide.data(),count);
 
     HANDLE f=CreateFileW(wide.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
 
-    if(f==INVALID_HANDLE_VALUE){Status(std::string("资产未找到: ")+relative);return false;}
+    if(f==INVALID_HANDLE_VALUE){Status(localizer.Format("asset.missing", "Asset not found: {0}", std::array<std::string_view,1>{relative}));return false;}
 
     LARGE_INTEGER size{};bool valid=GetFileSizeEx(f,&size)&&size.QuadPart>=12&&size.QuadPart<=32*1024*1024;
 
@@ -408,7 +410,7 @@ bool AssetBytes(const char* relative,std::vector<std::uint8_t>& bytes){
 
     valid=valid&&ReadFile(f,bytes.data(),DWORD(bytes.size()),&read,nullptr)&&read==bytes.size();CloseHandle(f);
 
-    if(!valid)Status(std::string("读取资产失败: ")+relative);return valid;
+    if(!valid)Status(localizer.Format("asset.read_failed", "Could not read asset: {0}", std::array<std::string_view,1>{relative}));return valid;
 
 }
 
@@ -438,7 +440,7 @@ bool RestoreOne(Record& target){
 
     const int alive=ue::Alive(target.actor);
 
-    if(alive<0){Status("对象身份读取失败；保留恢复记录");return false;}
+    if(alive<0){Status(localizer.Text("restore.identity", "Object identity unavailable; keeping restoration records").c_str());return false;}
 
     if(alive==0){
         // A dead/streamed-out actor must ALSO get a rebind cooldown. Without it,
@@ -482,13 +484,13 @@ bool RestoreOne(Record& target){
 
     }
 
-    if(!complete){Status("原模型尚未完全恢复，未丢弃恢复记录");return false;}
+    if(!complete){Status(localizer.Text("restore.pending", "Original model is not fully restored; keeping records").c_str());return false;}
 
     if(target.component.ptr){
 
         const int live=ue::Alive(target.component);
 
-        if(live<0){Status("奶龙组件身份读取失败，保留恢复记录");return false;}
+        if(live<0){Status(localizer.Text("restore.component", "NaiLong component identity unavailable; keeping records").c_str());return false;}
 
         if(live==1){
             if(std::find_if(retired_components.begin(),retired_components.end(),[&](const ue::Ref& r){return r.ptr==target.component.ptr;})==retired_components.end()){
@@ -512,7 +514,7 @@ bool RestoreOne(Record& target){
                 " sections="+std::to_string(sections)+" hidden="+std::to_string(hidden)+
                 " destroy_call="+std::to_string(destroyed));
             if(!cleared||!section_read||sections!=0||!destroyed){
-                Status("奶龙网格尚未清空，保留恢复记录");return false;
+                Status(localizer.Text("restore.mesh", "NaiLong mesh is not cleared; keeping records").c_str());return false;
             }
         }
 
@@ -529,7 +531,7 @@ bool RestoreOne(Record& target){
 
     ForgetDressed(target.actor.ptr);
 
-    target={};Status("原角色已恢复；奶龙组件已移除");
+    target={};Status(localizer.Text("restore.complete", "Original character restored; NaiLong component removed").c_str());
 
     Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,"NaiLong UE: original meshes restored; owned PMC removed");return true;
 
@@ -607,14 +609,14 @@ void ReplayDeferredRestore(double dt){
 
         Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,"NaiLong: deferred restore from the previous run completed");
 
-        Status("已自动恢复上次遗留的原模型");
+        Status(localizer.Text("restore.previous", "Restored models left by the previous session").c_str());
 
     }else{
 
         // Re-persist the survivors so a second stop does not lose them.
         SaveDeferredRestore();
 
-        Status("仍有 "+std::to_string(deferred_restore.size())+" 个角色的原模型待恢复，正在重试");
+        Status(localizer.Format("status.restore_pending", "Retrying restoration for {0} characters", std::array<std::string_view,1>{std::to_string(deferred_restore.size())}));
 
     }
 
@@ -682,7 +684,7 @@ bool AnimateOne(Record& target,const Settings& cfg,double dt){
 
     if(!target.component.ptr||ue::Alive(target.component)!=1){
 
-        Status("奶龙组件已失效，准备恢复原角色并重试");
+        Status(localizer.Text("status.stale", "NaiLong component expired; restoring and retrying").c_str());
 
         return false;
 
@@ -699,7 +701,7 @@ bool AnimateOne(Record& target,const Settings& cfg,double dt){
 
     std::vector<nailong::M4> pose;std::string error;
 
-    if(ue::Alive(target.component)!=1||!target.driver.Sample(source_rig,double(cfg.height)*100,pose,error)){Status("骨骼驱动中断，准备恢复原角色: "+error);return false;}
+    if(ue::Alive(target.component)!=1||!target.driver.Sample(source_rig,double(cfg.height)*100,pose,error)){Status(localizer.Format("status.driver_interrupted", "Bone driver interrupted; restoring character: {0}", std::array<std::string_view,1>{error}));return false;}
 
     if(!target.driver.diagnostic.empty()&&(skin_frames.load(std::memory_order_relaxed)%30)==0)
 
@@ -717,7 +719,7 @@ bool AnimateOne(Record& target,const Settings& cfg,double dt){
 
         set_array(40,section.uv.data(),section.uv.size());set_array(56,section.bgra.data(),section.bgra.size());set_array(72,section.tangents.data(),section.tangents.size());
 
-        if(!ue::Call(target.component.ptr,"/Script/ProceduralMeshComponent.ProceduralMeshComponent.UpdateMeshSection",p.data(),p.size())){Status("UE 蒙皮网格更新失败: "+ue::last_error);return false;}
+        if(!ue::Call(target.component.ptr,"/Script/ProceduralMeshComponent.ProceduralMeshComponent.UpdateMeshSection",p.data(),p.size())){Status(localizer.Format("status.mesh_failed", "UE mesh update failed: {0}", std::array<std::string_view,1>{ue::last_error}));return false;}
 
     }
 
@@ -745,11 +747,11 @@ bool ReadPlayerGeneration(std::uint64_t& generation){
 
 bool ReadCurrentActor(ue::Ref& current,AnomalyNteEntitySnapshotV1& selected,std::string& class_name){
 
-    if(!actors||!actors->frame||!actors->page){Status("等待 NTE Actor 服务");return false;}
+    if(!actors||!actors->frame||!actors->page){Status(localizer.Text("status.wait_actors", "Waiting for NTE actor service").c_str());return false;}
 
     AnomalyNteEntityFrameV1 frame{};frame.struct_size=sizeof(frame);
 
-    if(!ue::nl_good(actors->frame(actors->user,&frame))){Status("等待玩家 Actor 快照建立");return false;}
+    if(!ue::nl_good(actors->frame(actors->user,&frame))){Status(localizer.Text("status.wait_frame", "Waiting for player actor snapshot").c_str());return false;}
 
     constexpr std::uint32_t kCapacity=4;std::array<AnomalyNteEntitySnapshotV1,kCapacity> page_data{};
 
@@ -767,7 +769,7 @@ bool ReadCurrentActor(ue::Ref& current,AnomalyNteEntitySnapshotV1& selected,std:
 
         actor_total.store(result.total_matches,std::memory_order_relaxed);actor_returned.store(result.returned,std::memory_order_relaxed);
 
-        {std::lock_guard lock(actor_diag_mutex);actor_class_diag="当前玩家身份不唯一或 Actor 快照无效";}return false;
+        {std::lock_guard lock(actor_diag_mutex);actor_class_diag=localizer.Text("status.ambiguous_actor", "Player identity is ambiguous or actor snapshot is invalid").c_str();}return false;
 
     }
 
@@ -777,17 +779,17 @@ bool ReadCurrentActor(ue::Ref& current,AnomalyNteEntitySnapshotV1& selected,std:
 
     if(index==UINT32_MAX){
 
-        {std::lock_guard lock(actor_diag_mutex);actor_class_diag=result.total_matches?"当前玩家身份不唯一或快照无效":"等待当前玩家身份";}return false;
+        {std::lock_guard lock(actor_diag_mutex);actor_class_diag=result.total_matches?localizer.Text("status.ambiguous", "Player identity is ambiguous or snapshot is invalid").c_str():localizer.Text("status.wait_identity", "Waiting for current player identity").c_str();}return false;
 
     }
 
     selected=page_data[index];
 
-    if(!selected.entity_id||selected.entity_id>UINT32_MAX){Status("当前玩家实体身份无效");return false;}
+    if(!selected.entity_id||selected.entity_id>UINT32_MAX){Status(localizer.Text("status.invalid_identity", "Current player entity identity is invalid").c_str());return false;}
 
     std::uintptr_t ptr=0;std::uint32_t serial=0;
 
-    if(!ue::nl_object_slot(std::uint32_t(selected.entity_id)-1,&ptr,&serial)||!ptr||!serial){Status("当前玩家 UObject 尚未就绪");return false;}
+    if(!ue::nl_object_slot(std::uint32_t(selected.entity_id)-1,&ptr,&serial)||!ptr||!serial){Status(localizer.Text("status.wait_object", "Current player UObject is not ready").c_str());return false;}
 
     current={ptr,std::uint32_t(selected.entity_id)-1,serial};
 
@@ -805,7 +807,7 @@ bool EnableSourcePoseTick(Record& target){
 
     const auto offset=ue::AnimationTickOffset();
 
-    if(!target.driver.mesh.ptr||offset<0){ue::last_error="源骨骼动画 Tick 属性不可用";return false;}
+    if(!target.driver.mesh.ptr||offset<0){ue::last_error=localizer.Text("error.tick_property", "Source skeleton animation tick property unavailable").c_str();return false;}
 
     for(auto& h:target.hidden){
 
@@ -813,7 +815,7 @@ bool EnableSourcePoseTick(Record& target){
 
         h.tick_offset=offset;std::uint8_t before=0;
 
-        if(!ue::ReadByte(h.object.ptr+std::uintptr_t(offset),before)){ue::last_error="读取源骨骼动画 Tick 失败";return false;}
+        if(!ue::ReadByte(h.object.ptr+std::uintptr_t(offset),before)){ue::last_error=localizer.Text("error.tick_read", "Could not read source skeleton animation tick").c_str();return false;}
 
         h.tick_original=before;
 
@@ -821,17 +823,17 @@ bool EnableSourcePoseTick(Record& target){
 
         const auto address=h.object.ptr+std::uintptr_t(offset);
 
-        if(!ue::WriteByte(address,0)){ue::last_error="开启源骨骼动画 Tick 失败";return false;}
+        if(!ue::WriteByte(address,0)){ue::last_error=localizer.Text("error.tick_write", "Could not enable source skeleton animation tick").c_str();return false;}
 
         h.tick_changed=true;std::uint8_t after=0;
 
-        if(!ue::ReadByte(address,after)||after!=0){ue::last_error="源骨骼动画 Tick 写入校验失败";return false;}
+        if(!ue::ReadByte(address,after)||after!=0){ue::last_error=localizer.Text("error.tick_verify", "Source skeleton animation tick write did not verify").c_str();return false;}
 
         return true;
 
     }
 
-    ue::last_error="已绑定的源骨骼组件不在原模型恢复记录中";
+    ue::last_error=localizer.Text("error.untracked_skeleton", "Bound skeleton component is absent from restoration records").c_str();
 
     return false;
 
@@ -1166,7 +1168,7 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
     // Refuse to dress an actor twice.
     if(AlreadyDressed(actor.ptr)){
 
-        Status("该角色已替换，跳过重复装配");
+        Status(localizer.Text("status.already_replaced", "Character already replaced; skipping duplicate assembly").c_str());
         return false;
 
     }
@@ -1231,11 +1233,11 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
 
     auto mat=ue::VertexMaterial();
 
-    if(!root||!cls){Status("UE 原生根组件或 ProceduralMeshComponent 未就绪");return false;}
+    if(!root||!cls){Status(localizer.Text("status.wait_components", "UE root component or ProceduralMeshComponent is not ready").c_str());return false;}
 
     // Do not substitute the player's material: it cannot reproduce the source model colors.
 
-    if(!mat){Status("VertexColorMaterial 未加载，保留原角色；不降级为叠加层或基础体");return false;}
+    if(!mat){Status(localizer.Text("status.wait_material", "VertexColorMaterial is not loaded; keeping original character").c_str());return false;}
 
     std::vector<ue::Ref> originals;
 
@@ -1263,7 +1265,7 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
 
     }
 
-    if(originals.empty()&&!allow_static_fallback){Status("原角色网格枚举失败；没有隐藏任何原组件");return false;}
+    if(originals.empty()&&!allow_static_fallback){Status(localizer.Text("status.enumerate_failed", "Could not enumerate original meshes; original components remain visible").c_str());return false;}
 
     Record next;next.actor=actor;next.revision=cfg.revision;next.player_generation=player_generation;
 
@@ -1280,7 +1282,7 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
             if(candidate.Init(r.ptr,root,source_rig,reason)){next.driver=std::move(candidate);bound=true;break;}}
 
         if(!bound){
-            if(!allow_static_fallback){Status("没有可靠的源骨架驱动；保留原角色: "+reason);return false;}
+            if(!allow_static_fallback){Status(localizer.Format("status.no_driver", "No reliable skeleton driver; keeping character: {0}", std::array<std::string_view,1>{reason}));return false;}
             Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,"NaiLong NPC: incompatible source rig; using static replacement: "+reason);
         }
 
@@ -1294,7 +1296,7 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
     double half=ue::CapsuleHalfHeight(root);
 
     if(half<=0||!std::isfinite(half)){
-        if(!allow_static_fallback){Status("胶囊半高不可用，取消装配以免模型漂移");return false;}
+        if(!allow_static_fallback){Status(localizer.Text("status.capsule_unavailable", "Capsule half height unavailable; assembly canceled").c_str());return false;}
         half=90;
     }
 
@@ -1302,13 +1304,13 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
 
     if(!component){Status(ue::last_error);return false;}
 
-    if(!ue::Capture(component,next.component)){ue::Destroy(component);Status("新组件身份验证失败");return false;}
+    if(!ue::Capture(component,next.component)){ue::Destroy(component);Status(localizer.Text("status.new_identity_failed", "New component identity check failed").c_str());return false;}
 
     // Keep the mesh invisible until attachment, upload and all original mesh
     // changes have completed. This also prevents a partially-created component
     // from showing for one frame during a restore/rebuild.
     if(!ue::SetVisible(component,false)){
-        ue::Destroy(component);Status("新组件初始隐藏失败");return false;
+        ue::Destroy(component);Status(localizer.Text("status.new_hide_failed", "Could not initially hide the new component").c_str());return false;
     }
 
     RememberDressed(actor.ptr,component);
@@ -1320,7 +1322,7 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
 
     if(!ue::NoCollision(component)||!ue::Attach(component,root)||!Upload(component,target,upload_cfg,mat)){
 
-        const auto reason=ue::last_error;RestoreOne(target);Status("装配失败，已尝试恢复："+reason);return false;
+        const auto reason=ue::last_error;RestoreOne(target);Status(localizer.Format("status.assembly_failed", "Assembly failed; restoration attempted: {0}", std::array<std::string_view,1>{reason}));return false;
 
     }
 
@@ -1332,7 +1334,7 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
 
     if(upload_cfg.bone_follow&&!EnableSourcePoseTick(target)){
 
-        const auto reason=ue::last_error;RestoreOne(target);Status("源骨骼动画刷新准备失败，已尝试恢复："+reason);return false;
+        const auto reason=ue::last_error;RestoreOne(target);Status(localizer.Format("status.tick_prepare_failed", "Animation refresh preparation failed; restoration attempted: {0}", std::array<std::string_view,1>{reason}));return false;
 
     }
 
@@ -1346,17 +1348,17 @@ bool ReplaceInto(Record& target,const ue::Ref& actor,const Settings& cfg,std::ui
 
         if(!ue::SetVisible(h.object.ptr,false)||!ue::Visible(h.object.ptr,visible)||visible){
 
-            const auto reason=ue::last_error;RestoreOne(target);Status("隐藏原模型失败，已尝试恢复："+reason);return false;
+            const auto reason=ue::last_error;RestoreOne(target);Status(localizer.Format("status.hide_failed", "Could not hide original model; restoration attempted: {0}", std::array<std::string_view,1>{reason}));return false;
 
         }
 
     }
 
     if(!ue::SetVisible(component,true)){
-        const auto reason=ue::last_error;RestoreOne(target);Status("奶龙组件显示失败，已尝试恢复："+reason);return false;
+        const auto reason=ue::last_error;RestoreOne(target);Status(localizer.Format("status.show_failed", "Could not show NaiLong; restoration attempted: {0}", std::array<std::string_view,1>{reason}));return false;
     }
 
-    Status(upload_cfg.bone_follow?"已替换：源骨架蒙皮跟随原角色；可读取 BetterPose/MMD 姿势":"已替换：使用静态整模");
+    Status(upload_cfg.bone_follow?localizer.Text("status.following", "Replaced: following source skeleton and BetterPose/MMD poses").c_str():localizer.Text("status.static", "Replaced: using the static model").c_str());
 
     Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,"NaiLong UE: actor replaced; original meshes="+std::to_string(target.hidden.size())+
         "; native PMC="+std::to_string(component)+"; map="+target.driver.mapping_summary+"; ref="+target.driver.reference_source);return true;
@@ -1637,7 +1639,7 @@ void ANOMALY_CALL Update(void*,double dt){
     // so it runs before the model gate below.
     if(!ue::InGame())return;
 
-    if(!ue::Ready()){Status(ue::last_error.empty()?"等待 UE 反射桥接就绪":ue::last_error);return;}
+    if(!ue::Ready()){Status(ue::last_error.empty()?localizer.Text("status.wait_bridge", "Waiting for UE reflection bridge").c_str():ue::last_error);return;}
 
     if(!deferred_restore.empty())ReplayDeferredRestore(dt);
 
@@ -1717,7 +1719,7 @@ void ANOMALY_CALL Update(void*,double dt){
 
                 Restore();settle_time=0.25;
 
-                Status("检测到当前角色 Actor 已切换，正在重新绑定");return;
+                Status(localizer.Text("status.rebinding", "Player actor changed; rebinding").c_str());return;
 
             }
 
@@ -1731,7 +1733,7 @@ void ANOMALY_CALL Update(void*,double dt){
 
     case nailong::BoundUpdateRoute::Retry:
 
-        Status("当前玩家 UObject 身份暂不可验证；暂停骨骼采样并重试");return;
+        Status(localizer.Text("status.retry_identity", "Player UObject identity unavailable; pausing sampling and retrying").c_str());return;
 
     case nailong::BoundUpdateRoute::Unbound:
 
@@ -1745,7 +1747,7 @@ void ANOMALY_CALL Update(void*,double dt){
 
     if(!ReadCurrentActor(current,snapshot,class_name)){
 
-        Status("等待唯一的当前玩家 Actor");return;
+        Status(localizer.Text("status.wait_unique", "Waiting for an unambiguous current player actor").c_str());return;
 
     }
 
@@ -1755,7 +1757,7 @@ void ANOMALY_CALL Update(void*,double dt){
 
        (current.ptr==previous_actor.ptr&&current.serial==previous_actor.serial)){
 
-        Status("等待角色切换后的新 Actor 快照");return;
+        Status(localizer.Text("status.wait_new_actor", "Waiting for the new actor snapshot after character switch").c_str());return;
 
     }
 
@@ -1763,7 +1765,7 @@ void ANOMALY_CALL Update(void*,double dt){
 
     if(!Replace(current,cfg,player_generation,player_generation_valid)){
 
-        settle_time=0.5;Status("当前角色绑定失败，保留启用状态并重试");return;
+        settle_time=0.5;Status(localizer.Text("status.retry_bind", "Character binding failed; staying enabled and retrying").c_str());return;
 
     }
 
@@ -1800,7 +1802,7 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
     // set it back to 1 when the window is reopened from the plugin list.
     int open=context_window_open;
 
-    const int visible=ui->begin_window(ui->user,Sv("奶龙"),&open,0);
+    const int visible=ui->begin_window(ui->user,Sv(localizer.Text("window.title", "NaiLong").c_str()),&open,0);
 
     // Written unconditionally: the click that closes the window returns 0 here,
     // and committing only on the open branch would reopen the panel next frame.
@@ -1810,49 +1812,49 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
 
         std::lock_guard lock(state_mutex);
 
-        int enabled=settings.enabled;bool changed=ui->checkbox(ui->user,Sv("替换当前可控角色（切换自动跟随）"),&enabled);settings.enabled=enabled!=0;
+        int enabled=settings.enabled;bool changed=ui->checkbox(ui->user,Sv(localizer.Text("option.player", "Replace current character (follow switches)").c_str()),&enabled);settings.enabled=enabled!=0;
 
-        int bone_follow=settings.bone_follow;changed = changed || ui->checkbox(ui->user,Sv("骨骼跟随 / BetterPose MMD"),&bone_follow);settings.bone_follow=bone_follow!=0;
+        int bone_follow=settings.bone_follow;changed = changed || ui->checkbox(ui->user,Sv(localizer.Text("option.bone_follow", "Follow skeleton / BetterPose MMD").c_str()),&bone_follow);settings.bone_follow=bone_follow!=0;
 
-        int nearby_npcs=settings.nearby_npcs;changed = changed || ui->checkbox(ui->user,Sv("附近 NPC 也换上奶龙"),&nearby_npcs);settings.nearby_npcs=nearby_npcs!=0;
+        int nearby_npcs=settings.nearby_npcs;changed = changed || ui->checkbox(ui->user,Sv(localizer.Text("option.nearby_npcs", "Replace nearby NPCs too").c_str()),&nearby_npcs);settings.nearby_npcs=nearby_npcs!=0;
 
-        changed = changed || ui->slider_float(ui->user,Sv("NPC 范围（米）"),&settings.npc_radius,5,300);
+        changed = changed || ui->slider_float(ui->user,Sv(localizer.Text("option.npc_radius", "NPC radius (m)").c_str()),&settings.npc_radius,5,300);
 
         float npc_fps=float(settings.npc_pose_fps);
-        if(ui->slider_float(ui->user,Sv("NPC 骨骼更新 FPS（越低越省）"),&npc_fps,5,30)){
+        if(ui->slider_float(ui->user,Sv(localizer.Text("option.npc_pose_fps", "NPC pose FPS (lower uses less CPU)").c_str()),&npc_fps,5,30)){
             settings.npc_pose_fps=int(npc_fps+0.5f);changed=true;
         }
 
         float npc_limit=float(settings.npc_limit);
-        if(ui->slider_float(ui->user,Sv("NPC 数量上限（越少越省）"),&npc_limit,1,512)){
+        if(ui->slider_float(ui->user,Sv(localizer.Text("option.npc_limit", "NPC limit (lower uses less CPU)").c_str()),&npc_limit,1,512)){
             settings.npc_limit=int(npc_limit+0.5f);changed=true;
         }
 
-        changed = changed || ui->slider_float(ui->user,Sv("蒙皮更新 FPS"),&settings.pose_fps,15,60);
+        changed = changed || ui->slider_float(ui->user,Sv(localizer.Text("option.pose_fps", "Skinning FPS").c_str()),&settings.pose_fps,15,60);
 
-        changed = changed || ui->slider_float(ui->user,Sv("奶龙高度（米）"),&settings.height,0.5f,3.0f);
+        changed = changed || ui->slider_float(ui->user,Sv(localizer.Text("option.height", "NaiLong height (m)").c_str()),&settings.height,0.5f,3.0f);
 
-        changed = changed || ui->slider_float(ui->user,Sv("脚底偏移（cm）"),&settings.offset,-100,100);
+        changed = changed || ui->slider_float(ui->user,Sv(localizer.Text("option.offset", "Foot offset (cm)").c_str()),&settings.offset,-100,100);
 
-        changed = changed || ui->slider_float(ui->user,Sv("朝向修正（度）"),&settings.yaw,-180,180);
+        changed = changed || ui->slider_float(ui->user,Sv(localizer.Text("option.yaw", "Heading correction (degrees)").c_str()),&settings.yaw,-180,180);
 
-        if(ui->button(ui->user,Sv("一键替换全部 NPC（当前范围）"),0,0)){
+        if(ui->button(ui->user,Sv(localizer.Text("action.replace_all", "Replace all NPCs in range").c_str()),0,0)){
             // Deliberately does NOT touch settings.revision: a revision bump re-arms
             // the player path, which would re-run Replace() on the already dressed
             // pawn and leave two NaiLong bodies on it. The one-shot flag is enough.
             settings.nearby_npcs=true;npc_bind_now_requested=true;
         }
 
-        if(ui->button(ui->user,Sv("恢复玩家与 NPC 并移除奶龙"),0,0)){settings.enabled=false;settings.nearby_npcs=false;changed=true;}
+        if(ui->button(ui->user,Sv(localizer.Text("action.restore", "Restore player and NPCs and remove NaiLong").c_str()),0,0)){settings.enabled=false;settings.nearby_npcs=false;changed=true;}
 
         if(changed)++settings.revision;
 
         ui->separator(ui->user);
 
-        std::string summary="已替换 NPC："+std::to_string(npc_count.load())+" 个（离开范围自动恢复）";
+        std::string summary=localizer.Format("status.npc_summary", "Replaced NPCs: {0} (restored when out of range)", std::array<std::string_view,1>{std::to_string(npc_count.load())});
         ui->text(ui->user,{summary.data(),summary.size()});
 
-        ui->text(ui->user,Sv("可直接停用插件：残留的奶龙会在下次启用时自动还原。"));
+        ui->text(ui->user,Sv(localizer.Text("status.unload_hint", "You can disable the plugin; remaining replacements are restored on the next activation.").c_str()));
 
         if(!status.empty())ui->text(ui->user,{status.data(),status.size()});
 
@@ -1863,8 +1865,11 @@ void ANOMALY_CALL Draw(void*,const AnomalyUiServiceV1* ui){
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* h,void** context){
+    if (!nailong_profile::LoadCompatibility(h)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
 
-    host=h;Services();CacheStateDirectory();
+    host=h;localizer=anomaly::sdk::Localizer(h);
+    status=localizer.Text("status.initial", "Disabled; uses UE native model replacement");
+    Services();CacheStateDirectory();
 
     // A previous run may have stopped while actors were still dressed; the file
     // is replayed from Update() as soon as the Game domain is live.
@@ -1998,7 +2003,7 @@ extern "C" __declspec(dllexport) AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntry
 
     d->struct_size=sizeof(*d);d->api_major=ANOMALY_PLUGIN_API_V1_MAJOR;d->api_minor=ANOMALY_PLUGIN_API_V1_MINOR;
 
-    d->id=Sv(kId);d->name=Sv("奶龙");d->author=Sv("yi621yi");d->version=Sv(kVersion);
+    d->id=Sv(kId);d->name=Sv("NaiLong");d->author=Sv("yi621yi");d->version=Sv(kVersion);
 
     d->on_load=Load;d->on_start=Start;d->on_stop=Stop;d->on_unload=Unload;d->on_update=Update;d->on_draw=Draw;return Ok();
 

@@ -76,6 +76,11 @@ function(anomaly_add_plugin target)
         VERBATIM)
     foreach(anomaly_resource_directory IN LISTS anomaly_package_resource_directories)
         if(EXISTS "${anomaly_package_source_directory}/${anomaly_resource_directory}")
+            if(anomaly_resource_directory STREQUAL "profile")
+                add_custom_command(TARGET ${target} POST_BUILD
+                    COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:${target}>/profile"
+                    VERBATIM)
+            endif()
             add_custom_command(TARGET ${target} POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E copy_directory
                         "${anomaly_package_source_directory}/${anomaly_resource_directory}"

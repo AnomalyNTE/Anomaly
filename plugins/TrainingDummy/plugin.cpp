@@ -1,4 +1,5 @@
-﻿#include <anomaly/sdk/cpp.hpp>
+#include <anomaly/sdk/profile.hpp>
+#include <anomaly/sdk/cpp.hpp>
 #include <anomaly/sdk/plugin.h>
 #include <anomaly/sdk/services/core.h>
 #include <anomaly/sdk/services/nte.h>
@@ -27,37 +28,50 @@ constexpr std::size_t kPageCapacity = 128;
 
 constexpr std::uint32_t kActorRefreshInterval = 30;
 
-constexpr int32_t L_object_class = 16;
-constexpr int32_t L_object_name = 24;
-constexpr int32_t L_object_internalIndex = 12;
+std::uint32_t object_index_offset{};
 
-
-// 实测 ParmsSize
-constexpr std::size_t kParmSummonAI = 208;
-constexpr std::size_t kParmMakeSoftClassPath = 48;
-constexpr std::size_t kParmConvSoftClassRef = 72;
-constexpr std::size_t kParmGetTransform = 96;
-
-// SummonAI 参数偏移（TSoftClassPtr=40, FTransform 对齐到 96, ret 200）
-constexpr std::size_t kSummonAIClass = 0;
-constexpr std::size_t kSummonBPet = 40;
-constexpr std::size_t kSummonOffsetLocation = 48;
-constexpr std::size_t kSummonAttackMode = 72;
-constexpr std::size_t kSummonAILevel = 76;
-constexpr std::size_t kSummonSkillLevel = 80;
-constexpr std::size_t kSummonTransform = 96;
-constexpr std::size_t kSummonSameCamp = 192;
-constexpr std::size_t kSummonReturn = 200;
-
-// MakeSoftClassPath: FString(16) + ret(16)
-constexpr std::size_t kMakeSoftInString = 0;
-constexpr std::size_t kMakeSoftReturn = 16;
-constexpr std::size_t kFSoftClassPathSize = 32;
-
-// Conv_SoftClassPathToSoftClassRef: FSoftClassPath(32) + ret(32)
-constexpr std::size_t kConvSoftIn = 0;
-constexpr std::size_t kConvSoftReturn = 32;
-constexpr std::size_t kTSoftClassPtrSize = 40;
+// Supported ProcessEvent parameter ABI, independently checked in both SDKs.
+struct NativeString { std::uintptr_t data; std::int32_t count, capacity; };
+struct SoftPath { std::uint64_t package, asset; NativeString subpath; };
+struct SoftClass { std::uint64_t weak; SoftPath path; };
+struct alignas(16) Transform { double rotation[4], translation[3], padding, scale[3], tail; };
+struct MakeSoftParams { NativeString input; SoftPath result; };
+struct ConvertSoftParams { SoftPath input; SoftClass result; };
+struct SummonParams {
+    SoftClass ai_class;
+    std::uint8_t pet;
+    std::uint8_t padding[7];
+    double location[3];
+    std::uint8_t attack_mode;
+    std::uint8_t padding2[3];
+    std::int32_t ai_level, skill_level;
+    std::uint8_t padding3[12];
+    Transform transform;
+    std::uint8_t same_camp;
+    std::uint8_t padding4[7];
+    std::uintptr_t result;
+};
+static_assert(sizeof(MakeSoftParams)==48 && sizeof(ConvertSoftParams)==72 && sizeof(Transform)==96);
+static_assert(sizeof(SummonParams)==208 && offsetof(SummonParams, result)==200);
+constexpr auto kParmSummonAI = sizeof(SummonParams);
+constexpr auto kParmMakeSoftClassPath = sizeof(MakeSoftParams);
+constexpr auto kParmConvSoftClassRef = sizeof(ConvertSoftParams);
+constexpr auto kParmGetTransform = sizeof(Transform);
+constexpr auto kSummonAIClass = offsetof(SummonParams, ai_class);
+constexpr auto kSummonBPet = offsetof(SummonParams, pet);
+constexpr auto kSummonOffsetLocation = offsetof(SummonParams, location);
+constexpr auto kSummonAttackMode = offsetof(SummonParams, attack_mode);
+constexpr auto kSummonAILevel = offsetof(SummonParams, ai_level);
+constexpr auto kSummonSkillLevel = offsetof(SummonParams, skill_level);
+constexpr auto kSummonTransform = offsetof(SummonParams, transform);
+constexpr auto kSummonSameCamp = offsetof(SummonParams, same_camp);
+constexpr auto kSummonReturn = offsetof(SummonParams, result);
+constexpr auto kMakeSoftInString = offsetof(MakeSoftParams, input);
+constexpr auto kMakeSoftReturn = offsetof(MakeSoftParams, result);
+constexpr auto kFSoftClassPathSize = sizeof(SoftPath);
+constexpr auto kConvSoftIn = offsetof(ConvertSoftParams, input);
+constexpr auto kConvSoftReturn = offsetof(ConvertSoftParams, result);
+constexpr auto kTSoftClassPtrSize = sizeof(SoftClass);
 
 constexpr const char* kGameplayStaticsCdo = "/Script/Engine.Default__GameplayStatics";
 constexpr const char* kPathMakeSoftClassPath =
@@ -236,7 +250,7 @@ bool HandleFromPointer(std::uintptr_t pointer, AnomalyGenerationHandleV1* out) {
     if (pointer == 0 || g_context.objects == nullptr || g_context.objects->snapshot_at == nullptr)
         return false;
     std::uint32_t internal_index{};
-    if (!ReadValue(pointer + static_cast<std::uintptr_t>(L_object_internalIndex), &internal_index))
+    if (!ReadValue(pointer + static_cast<std::uintptr_t>(object_index_offset), &internal_index))
         return false;
     AnomalyUe5ObjectSnapshotV1 snapshot{};
     snapshot.struct_size = sizeof(snapshot);
@@ -791,6 +805,13 @@ void ResetState() {
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
     if (context == nullptr) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
+    auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(host), "compatibility.profile.json");
+    if (!loaded || loaded.value().contract != "training-dummy-v1" || loaded.value().game != "nte")
+        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
+    const auto field = loaded.value().layout.find("ObjectIndex");
+    if (field == loaded.value().layout.end() || field->second > 4096 || field->second % alignof(std::uint32_t))
+        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
+    object_index_offset = field->second;
     const anomaly::sdk::Host query(host);
     const auto ui = query.Query<AnomalyUiServiceV1>(ANOMALY_UI_SERVICE_V1_ID,
                                                     ANOMALY_UI_SERVICE_V1_VERSION);

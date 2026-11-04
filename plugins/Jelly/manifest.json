@@ -7,22 +7,73 @@
   "license": "AGPL-3.0-only",
   "version": "0.1.12",
   "entry": "plugin.dll",
-  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
-  "games": ["nte"],
-  "builds": ["nte-*"],
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
   "loadPhase": "game-ready",
   "services": [
-    {"id": "anomaly.core", "minVersion": 1},
-    {"id": "anomaly.interop.signature", "minVersion": 1},
-    {"id": "anomaly.ue5.names", "minVersion": 1},
-    {"id": "anomaly.ue5.objects", "minVersion": 1},
-    {"id": "anomaly.ue5.framework", "minVersion": 1},
-    {"id": "anomaly.nte.actors", "minVersion": 1},
-    {"id": "anomaly.nte.player", "minVersion": 1},
-    {"id": "anomaly.nte.session", "minVersion": 1},
-    {"id": "anomaly.ui", "minVersion": 1},
-    {"id": "anomaly.localization", "minVersion": 1, "optional": true},
-    {"id": "anomaly.config", "minVersion": 1, "optional": true}
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.actors",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.config",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    }
   ],
   "capabilities": [
     "memory-read",
@@ -35,6 +86,7 @@
     "nte-player-snapshot",
     "nte-session-snapshot",
     "ui",
-    "configuration"
+    "configuration",
+    "json"
   ]
 }

@@ -74,7 +74,7 @@ fishing::Persistence persisted_files;
 void Publish(std::string value) {status.store(std::make_shared<const std::string>(std::move(value)));}
 void ANOMALY_CALL Observe(void*,uintptr_t object,uintptr_t fn,void* parameters) {
     if(object!=observed_ps.load() && object!=observed_ui.load()) return;
-    const Reader r{names};const auto label=r.NameAt(fn+24);
+    const Reader r{names};const auto label=r.NameAt(fn + fishing::profile::native_layout.ObjectName);
     if(label.find("Fish")==std::string::npos && label.find("Throw")==std::string::npos &&
        label.find("Handle")==std::string::npos && label.find("Pressed")==std::string::npos) return;
     const auto phase=fishing::EventPhase(label);if(phase>=0) event_phase=phase;
@@ -116,21 +116,21 @@ uintptr_t Fn(const Reader& r,const char* package,const char* owner,const char* n
     return f && r.Function(f,name,static_cast<uint8_t>(count),static_cast<uint16_t>(size))?f:0;
 }
 int Field(const Reader& r,uintptr_t object,const char* name,int size) {
-    uintptr_t cls{};if(!r.Read(object+16,cls)) return -1;
+    uintptr_t cls{};if(!r.Read(object + fishing::profile::native_layout.ObjectClass,cls)) return -1;
     const auto key=std::to_string(cls)+":"+name+":"+std::to_string(size);
     const auto cached=offsets.find(key);if(cached!=offsets.end()) return cached->second;
     int found=-1;
     for(int depth=0;cls && depth<32;++depth) {
-        uintptr_t p{};if(!r.Read(cls+112,p)) break;
+        uintptr_t p{};if(!r.Read(cls + fishing::profile::native_layout.StructProperties,p)) break;
         for(int i=0;p && i<2048;++i) {
-            if(r.NameAt(p+32)==name) {
+            if(r.NameAt(p + fishing::profile::native_layout.PropertyName)==name) {
                 int bytes{},offset{};
-                if(r.Read(p+52,bytes) && bytes==size && r.Read(p+68,offset) && offset>=0 && offset<0x20000) found=offset;
+                if(r.Read(p + fishing::profile::native_layout.PropertySize,bytes) && bytes==size && r.Read(p + fishing::profile::native_layout.PropertyOffset,offset) && offset>=0 && offset<0x20000) found=offset;
                 break;
             }
-            if(!r.Read(p+72,p)) break;
+            if(!r.Read(p + fishing::profile::native_layout.PropertyNext,p)) break;
         }
-        if(found>=0 || !r.Read(cls+64,cls)) break;
+        if(found>=0 || !r.Read(cls + fishing::profile::native_layout.StructSuper,cls)) break;
     }
     offsets[key]=found;return found;
 }
@@ -140,16 +140,15 @@ uintptr_t Child(const Reader& r,uintptr_t parent,const char* field) {
 }
 AnomalyGenerationHandleV1 Handle(const Reader& r,uintptr_t address) {
     int index{};AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
-    if(!r.Read(address+12,index) || index<0 || objects->snapshot_at(objects->user,index,&snapshot).code!=0 ||
+    if(!r.Read(address + fishing::profile::native_layout.ObjectIndex,index) || index<0 || objects->snapshot_at(objects->user,index,&snapshot).code!=0 ||
        Resolve(r,objects,snapshot.handle)!=address) return {};
     return snapshot.handle;
 }
 uintptr_t World(const Reader& r) {
     if(!world_slot) {
-        const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        uintptr_t instruction{};int32_t displacement{};
-        if(!sig || sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),
-           StringView(fishing::profile::World),&instruction).code!=0 || !r.Read(instruction+3,displacement)) return 0;
+        const auto instruction=fishing::profile::compatibility.Address("World");
+        int32_t displacement{};
+        if(!instruction || !r.Read(instruction+3,displacement)) return 0;
         world_slot=static_cast<uintptr_t>(static_cast<intptr_t>(instruction)+7+displacement);
     }
     uintptr_t value{};return r.Read(world_slot,value) && r.IsA(value,"World")?value:0;
@@ -161,8 +160,8 @@ bool ActiveWidget(const Reader& r,uintptr_t widget) {
 }
 bool ClassDerives(const Reader& r,uintptr_t type,const char* base) {
     for(int depth=0;type && depth<32;++depth) {
-        if(r.NameAt(type+24)==base) return true;
-        if(!r.Read(type+64,type)) break;
+        if(r.NameAt(type + fishing::profile::native_layout.ObjectName)==base) return true;
+        if(!r.Read(type + fishing::profile::native_layout.StructSuper,type)) break;
     }
     return false;
 }
@@ -181,7 +180,7 @@ void ReadHudWidgets(const Reader& r,uintptr_t world,uintptr_t util) {
         else allocated=map.inline_bits[i/32];
         if(!(allocated&(1u<<(i%32)))) continue;
         uintptr_t type{};FName key{};
-        if(!r.Read(map.data+24*i,type) || !type || !r.Read(map.data+24*i+8,key)) continue;
+        if(!r.Read(map.data+fishing::profile::native_layout.MapEntryStride*i,type) || !type || !r.Read(map.data+fishing::profile::native_layout.MapEntryStride*i+fishing::profile::native_layout.MapValue,key)) continue;
         const bool main=ClassDerives(r,type,"HTUI_FishMain"),result=ClassDerives(r,type,"HTUI_FishingSuccess");
         if(!main && !result) continue;
         const auto label=r.Name(key);if(label.empty() || label.size()>128) continue;
@@ -210,14 +209,9 @@ bool InvokeRodUpdate(uintptr_t function,uintptr_t widget,int direction,float del
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 bool LockRod(const Reader& r,uintptr_t widget,double fish,double rod) {
-    if(!rod_update && Clock::now()>=next_rod_bind) {
-        next_rod_bind=Clock::now()+std::chrono::seconds(5);
-        const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        if(sig && sig->resolve) sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),
-            StringView(fishing::profile::RodUpdate),&rod_update);
-    }
+    rod_update=fishing::profile::compatibility.Address("RodUpdate");
     const auto offset=Field(r,widget,"RodSpeed",4);float speed{};
-    if(!rod_update || offset!=fishing::profile::RodSpeedOffset || !r.Read(widget+offset,speed) || speed<=0 || !std::isfinite(speed)) return false;
+    if(!rod_update || offset!=fishing::profile::native_layout.RodSpeedOffset || !r.Read(widget+offset,speed) || speed<=0 || !std::isfinite(speed)) return false;
     const auto now=Clock::now();const float elapsed=last_rod_update.time_since_epoch().count()?std::chrono::duration<float>(now-last_rod_update).count():0.02F;
     last_rod_update=now;
     const auto delta=fishing::LockDelta(fish,rod,speed,elapsed);
@@ -255,11 +249,11 @@ void SkipFishingCinematic(const Reader& r,uintptr_t ps) {
     uintptr_t asset{};if(!cdo || !get || !Invoke(r,cdo,get,&asset) || !r.IsA(asset,"FishingDataAsset")) return;
     // Match both the asset name and package to the game's fishing-success assets.
     // Other cutscenes owned by the player state must never be shortened.
-    const auto sequence_name=r.NameAt(sequence+24);uintptr_t outer{};r.Read(sequence+32,outer);
-    const auto package=r.NameAt(outer+24);bool match=false;
+    const auto sequence_name=r.NameAt(sequence + fishing::profile::native_layout.ObjectName);uintptr_t outer{};r.Read(sequence+fishing::profile::native_layout.ObjectOuter,outer);
+    const auto package=r.NameAt(outer + fishing::profile::native_layout.ObjectName);bool match=false;
     for(const auto field:{"FemaleFishingSuccessSequence","MaleFishingSuccessSequence"}) {
         const auto offset=Field(r,asset,field,40);
-        if(offset>=0 && sequence_name==r.NameAt(asset+offset+16) && package==r.NameAt(asset+offset+8)) match=true;
+        if(offset>=0 && sequence_name==r.NameAt(asset+offset+fishing::profile::native_layout.SoftAssetName) && package==r.NameAt(asset+offset+fishing::profile::native_layout.SoftPackageName)) match=true;
     }
     if(!match) return;
     const auto playing=Fn(r,"MovieScene","MovieSceneSequencePlayer","IsPlaying",1,1);
@@ -297,11 +291,8 @@ bool ContinueFishing(const Reader& r,uintptr_t widget) {
         struct Playing {uintptr_t animation;uint8_t active;} query{intro,0};
         if(!playing || !Invoke(r,widget,playing,&query) || query.active) return false;
     }
-    if(!catch_continue) {
-        const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        if(!sig || !sig->resolve || sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),
-            StringView(fishing::profile::CatchContinue),&catch_continue).code!=0) return false;
-    }
+    catch_continue=fishing::profile::compatibility.Address("CatchContinue");
+    if(!catch_continue) return false;
     const auto ready=Fn(r,"HTGame","HTUI_FishingSuccess","EnableCloseButton",0,0);
     if(!ready || !Invoke(r,widget,ready,nullptr) || !InvokeCatchContinue(catch_continue,widget)) return false;
     continued_result=result_serial;return true;
@@ -333,11 +324,8 @@ bool Cast(const Reader& r,uintptr_t widget,uintptr_t world,uintptr_t util) {
         has_cast=false;Publish(localizer.Text("status.cast_point_missing","Press F once at this fishing spot to record the cast point."));return false;
     }
     if(!ActiveWidget(r,widget) || !r.IsA(widget,"HTUI_FishMain")) return false;
-    if(!cast_begin) {
-        const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        if(!sig || !sig->resolve || sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),
-            StringView(fishing::profile::CastBegin),&cast_begin).code!=0) return false;
-    }
+    cast_begin=fishing::profile::compatibility.Address("CastBegin");
+    if(!cast_begin) return false;
     // The F-button's complete cast path validates gear and aiming, resets line endurance,
     // sets local fishing state, then sends the request. A bare RPC skips those steps.
     const auto before=cast_requests;
@@ -356,6 +344,13 @@ bool EnsureWindow() {
     return windows->register_window(windows->user,&spec,&window).code==0 && window.id;
 }
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host,void** context) noexcept {
+    if (!fishing::profile::LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+    const auto& layout=fishing::profile::native_layout;
+    if (layout.MapSize!=sizeof(HudMapHeader) || layout.MapInlineBits!=offsetof(HudMapHeader,inline_bits) ||
+        layout.MapBitsData!=offsetof(HudMapHeader,extra_bits) || layout.MapBitCount!=offsetof(HudMapHeader,bit_count) ||
+        layout.MapFreeIndex!=offsetof(HudMapHeader,first_free) || layout.RowStride!=sizeof(TableEntry) ||
+        layout.MapEntryStride!=sizeof(TableEntry) || layout.MapValue!=offsetof(TableEntry,row))
+        return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     api=host;core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
     names=Host(host).Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID,2).get();
     objects=Host(host).Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get();

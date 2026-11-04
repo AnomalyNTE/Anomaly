@@ -66,46 +66,6 @@ struct PoseDriver {
 
     std::uint64_t sample_count=0;
 
-    bool ReadReferenceFromAsset(std::uintptr_t ptr){
-
-        const std::size_t count=names.size();
-
-        for(std::size_t offset=16;offset+16<=0x800;offset+=8){
-
-            ue::Array pose{},info{};
-
-            if(!ue::nl_read(ptr+offset,&pose,16)||pose.num!=std::int32_t(count)||pose.max<pose.num||pose.max>1000000||!pose.data)continue;
-
-            if(!ue::nl_read(ptr+offset-16,&info,16)||info.num!=pose.num||info.max<info.num||!info.data)continue;
-
-            std::vector<ue::Transform> local(count);if(!ue::nl_read(reinterpret_cast<std::uintptr_t>(pose.data),local.data(),count*96))continue;
-
-            bool transforms=true;for(auto& t:local){if(!ValidTransform(t)){transforms=false;break;}for(auto s:t.scale)if(std::abs(s-1)>.05)transforms=false;}if(!transforms)continue;
-
-            for(std::size_t stride:{std::size_t(12),std::size_t(16)}){
-
-                std::vector<std::uint8_t> metadata(count*stride);if(!ue::nl_read(reinterpret_cast<std::uintptr_t>(info.data),metadata.data(),metadata.size()))continue;
-
-                std::vector<std::int32_t> candidate(count);bool match=true;
-
-                for(std::size_t i=0;i<count;++i){std::uint32_t id=0;std::memcpy(&id,metadata.data()+i*stride,4);std::memcpy(&candidate[i],metadata.data()+i*stride+8,4);
-
-                    std::uint32_t expected=0;std::memcpy(&expected,fnames[i].data(),4);
-
-                    if(id!=expected||candidate[i]>=std::int32_t(i)||candidate[i]<-1){match=false;break;}}
-
-                if(!match)continue;parents=std::move(candidate);reference.resize(count);
-
-                for(std::size_t i=0;i<count;++i){reference[i]=TransformMatrix(local[i]);if(parents[i]>=0)reference[i]=Mul(reference[parents[i]],reference[i]);}
-
-                return true;
-
-            }
-
-        }return false;
-
-    }
-
     bool ReadReferenceFromComponent(std::uintptr_t component,std::string& error){
 
         const std::size_t count=names.size();
@@ -238,15 +198,7 @@ struct PoseDriver {
         std::string reference_error;
 
         if(!ReadReferenceFromComponent(component,reference_error)){
-
-            if(!ReadReferenceFromAsset(assetptr)){
-
-                error="validated reference pose unavailable: "+reference_error;return false;
-
-            }
-
-            reference_source="asset-refpose-fallback";
-
+            error="validated reference pose unavailable: "+reference_error;return false;
         }
 
         M4 root_world{},mesh_world{},inverse_root{};

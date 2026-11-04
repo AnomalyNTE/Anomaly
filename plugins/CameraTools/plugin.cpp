@@ -289,15 +289,9 @@ bool AddAddress(const std::uintptr_t base, const std::uint64_t offset,
 
 bool ResolveSignature(Context &context, const std::string_view pattern,
                       std::uintptr_t &address) noexcept {
-  address = 0;
-  return SignatureReady(context.signature) &&
-         context.signature
-                 ->resolve(context.signature->user,
-                           anomaly::sdk::StringView("HTGame.exe"),
-                           anomaly::sdk::StringView(".text"),
-                           anomaly::sdk::StringView(pattern), &address)
-                 .code == ANOMALY_STATUS_V1_OK &&
-         address != 0;
+  (void)context;
+  address = compatibility.Address(pattern);
+  return address != 0;
 }
 
 bool ResolveRipRelative(Context &context, const std::string_view pattern,
@@ -333,25 +327,25 @@ bool NameEquals(Context &context, const std::uint32_t name_id,
                 const std::string_view expected) noexcept {
   if (expected.empty() || expected.size() > 15U)
     return false;
-  const auto block_index = name_id >> kNameBlockBits;
-  const auto entry_offset = name_id & ((1U << kNameBlockBits) - 1U);
+  const auto block_index = name_id >> native_layout.kNameBlockBits;
+  const auto entry_offset = name_id & ((1U << native_layout.kNameBlockBits) - 1U);
   std::uintptr_t block{};
   if (!ReadPointerAtOffset(context, context.f_name_pool_address,
-                           kNamePoolBlocksOffset +
+                           native_layout.kNamePoolBlocksOffset +
                                block_index * sizeof(std::uintptr_t),
                            block)) {
     return false;
   }
   std::uintptr_t entry{};
   if (!AddAddress(block,
-                  static_cast<std::uint64_t>(entry_offset) * kNameEntryStride,
+                  static_cast<std::uint64_t>(entry_offset) * native_layout.kNameEntryStride,
                   entry)) {
     return false;
   }
   std::uint16_t header{};
   std::array<char, 16> name{};
   if (!Read(context, entry, header) || (header & 1U) != 0 ||
-      (header >> kNameLengthShift) != expected.size() ||
+      (header >> native_layout.kNameLengthShift) != expected.size() ||
       !Read(context, entry + sizeof(header), name)) {
     return false;
   }
@@ -359,9 +353,9 @@ bool NameEquals(Context &context, const std::uint32_t name_id,
 }
 
 bool MouseAxisNamesValid(Context &context) noexcept {
-  return NameEquals(context, kMouseXNameId, "MouseX") &&
-         NameEquals(context, kMouseYNameId, "MouseY") &&
-         NameEquals(context, kMouse2DNameId, "Mouse2D");
+  return NameEquals(context, native_layout.kMouseXNameId, "MouseX") &&
+         NameEquals(context, native_layout.kMouseYNameId, "MouseY") &&
+         NameEquals(context, native_layout.kMouse2DNameId, "Mouse2D");
 }
 
 bool IsMouseAxisInput(const void *parameters) noexcept {
@@ -369,9 +363,9 @@ bool IsMouseAxisInput(const void *parameters) noexcept {
     return false;
   const auto *bytes = static_cast<const std::uint8_t *>(parameters);
   const auto name_id = *reinterpret_cast<const std::uint32_t *>(
-      bytes + kInputKeyEventArgsKeyOffset);
-  return name_id == kMouseXNameId || name_id == kMouseYNameId ||
-         name_id == kMouse2DNameId;
+      bytes + native_layout.kInputKeyEventArgsKeyOffset);
+  return name_id == native_layout.kMouseXNameId || name_id == native_layout.kMouseYNameId ||
+         name_id == native_layout.kMouse2DNameId;
 }
 
 bool ResolveLocalPlayerController(Context &context,
@@ -382,13 +376,13 @@ bool ResolveLocalPlayerController(Context &context,
   std::uintptr_t local_players{};
   std::uintptr_t local_player{};
   return Read(context, context.g_world_address, world) && world != 0 &&
-         ReadPointerAtOffset(context, world, kWorldGameInstanceOffset,
+         ReadPointerAtOffset(context, world, native_layout.kWorldGameInstanceOffset,
                              game_instance) &&
          ReadPointerAtOffset(context, game_instance,
-                             kGameInstanceLocalPlayersOffset, local_players) &&
+                             native_layout.kGameInstanceLocalPlayersOffset, local_players) &&
          Read(context, local_players, local_player) && local_player != 0 &&
          ReadPointerAtOffset(context, local_player,
-                             kLocalPlayerControllerOffset, controller);
+                             native_layout.kLocalPlayerControllerOffset, controller);
 }
 
 bool ResolveActiveCameraManager(Context &context,
@@ -399,9 +393,9 @@ bool ResolveActiveCameraManager(Context &context,
   std::uintptr_t view_point{};
   return ResolveLocalPlayerController(context, controller) &&
          ReadPointerAtOffset(context, controller,
-                             kControllerCameraManagerOffset, manager) &&
+                             native_layout.kControllerCameraManagerOffset, manager) &&
          Read(context, manager, vtable) && vtable != 0 &&
-         ReadPointerAtOffset(context, vtable, kCameraViewPointVtableOffset,
+         ReadPointerAtOffset(context, vtable, native_layout.kCameraViewPointVtableOffset,
                              view_point) &&
          view_point == context.view_point_target;
 }
@@ -413,10 +407,10 @@ bool ResolveActivePlayerInput(Context &context,
   std::uintptr_t vtable{};
   std::uintptr_t input_key{};
   return ResolveLocalPlayerController(context, controller) &&
-         ReadPointerAtOffset(context, controller, kControllerPlayerInputOffset,
+         ReadPointerAtOffset(context, controller, native_layout.kControllerPlayerInputOffset,
                              player_input) &&
          Read(context, player_input, vtable) && vtable != 0 &&
-         ReadPointerAtOffset(context, vtable, kPlayerInputKeyVtableOffset,
+         ReadPointerAtOffset(context, vtable, native_layout.kPlayerInputKeyVtableOffset,
                              input_key) &&
          input_key == context.input_key_target;
 }
@@ -483,7 +477,7 @@ bool ResolveCameraPov(Context &context, const std::uintptr_t manager,
   std::uintptr_t vtable{};
   std::uintptr_t accessor{};
   if (!Read(context, manager, vtable) || vtable == 0 ||
-      !ReadPointerAtOffset(context, vtable, kCameraPovAccessorVtableOffset,
+      !ReadPointerAtOffset(context, vtable, native_layout.kCameraPovAccessorVtableOffset,
                            accessor)) {
     return false;
   }
@@ -1021,7 +1015,7 @@ bool GameFovValid(const float fov) noexcept {
 void ApplyViewLens(Context &context) noexcept {
   const std::uintptr_t pov = context.camera_pov.load(std::memory_order_acquire);
   std::uintptr_t address{};
-  if (pov == 0 || !AddAddress(pov, kCameraPovFovOffset, address))
+  if (pov == 0 || !AddAddress(pov, native_layout.kCameraPovFovOffset, address))
     return;
   // The game's own lens, read out of the POV before this plugin writes to it: that read is both
   // the number the settings row shows while the setting is "game default" and the value it hands
@@ -1322,6 +1316,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
   if (host == nullptr || plugin_context == nullptr)
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   *plugin_context = nullptr;
+  if (!LoadCompatibility(host)) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
   auto *context = new (std::nothrow) Context();
   if (context == nullptr)
     return Status(ANOMALY_STATUS_V1_FAILED);

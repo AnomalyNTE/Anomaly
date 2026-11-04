@@ -116,8 +116,7 @@ bool Executable(Address address) {
         !(info.Protect & (PAGE_GUARD|PAGE_NOACCESS)) && (info.Protect & (PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY));
 }
 Address Resolve(Context& c, const char* pattern) {
-    Address result{};
-    if(c.signatures->resolve(c.signatures->user,StringView("HTGame.exe"),StringView(".text"),StringView(pattern),&result).code!=ANOMALY_STATUS_V1_OK) return 0;
+    const auto result=profile::compatibility.Address(pattern);
     return Executable(result)?result:0;
 }
 Address Rip(Context& c, Address instruction, int displacement, int length, int addend=0) {
@@ -135,20 +134,20 @@ std::string NameText(Context& c, Name name) {
     std::string result(text);if(name.number)result+="_"+std::to_string(name.number-1);return result;
 }
 bool IsA(Context& c,Address object,std::uint32_t type) {
-    Address cls{};if(!object||!type||!Read(c,object+profile::ObjectClass,cls))return false;
+    Address cls{};if(!object||!type||!Read(c,object+profile::native_layout.ObjectClass,cls))return false;
     for(int depth=0;cls&&depth<64;++depth){
-        Name name{};if(!Read(c,cls+24,name))return false;
+        Name name{};if(!Read(c,cls+accessory::profile::native_layout.ObjectName,name))return false;
         if(name.index==type)return true;
-        if(!Read(c,cls+profile::Super,cls))return false;
+        if(!Read(c,cls+profile::native_layout.Super,cls))return false;
     }return false;
 }
 bool PropertyAt(Context& c,Address cls,const char* name,std::uint32_t offset) {
-    Address field{};if(!Read(c,cls+profile::PropertyLink,field))return false;
+    Address field{};if(!Read(c,cls+profile::native_layout.PropertyLink,field))return false;
     for(int i=0;field&&i<2048;++i){
         Name id{};std::uint32_t found{};
-        if(!Read(c,field+profile::FieldName,id)||!Read(c,field+profile::PropertyOffset,found))return false;
+        if(!Read(c,field+profile::native_layout.FieldName,id)||!Read(c,field+profile::native_layout.PropertyOffset,found))return false;
         if(NameText(c,id)==name)return found==offset;
-        if(!Read(c,field+profile::PropertyNext,field))return false;
+        if(!Read(c,field+profile::native_layout.PropertyNext,field))return false;
     }return false;
 }
 Address ObjectAddress(Context& c,AnomalyGenerationHandleV1 handle) {
@@ -157,22 +156,22 @@ Address ObjectAddress(Context& c,AnomalyGenerationHandleV1 handle) {
        c.objects->snapshot_by_handle(c.objects->user,handle,&snapshot).code!=ANOMALY_STATUS_V1_OK)return 0;
     std::uint32_t index=ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle),count{},serial{};
     Address chunks{},chunk{},object{};
-    if(!Read(c,c.registry+profile::RegistryCount,count)||index>=count||
-       !Read(c,c.registry+profile::RegistryItems,chunks)||!chunks||
-       !Read(c,chunks+(index/65536)*8,chunk)||!chunk)return 0;
-    Address item=chunk+(index%65536)*profile::ItemStride;
-    if(!Read(c,item+profile::Serial,serial)||serial!=ANOMALY_UE5_OBJECT_HANDLE_SERIAL(handle)||!Read(c,item,object))return 0;
+    if(!Read(c,c.registry+profile::native_layout.RegistryCount,count)||index>=count||
+       !Read(c,c.registry+profile::native_layout.RegistryItems,chunks)||!chunks||
+       !Read(c,chunks+(index/accessory::profile::native_layout.ChunkSize)*sizeof(uintptr_t),chunk)||!chunk)return 0;
+    Address item=chunk+(index%accessory::profile::native_layout.ChunkSize)*profile::native_layout.ItemStride;
+    if(!Read(c,item+profile::native_layout.Serial,serial)||serial!=ANOMALY_UE5_OBJECT_HANDLE_SERIAL(handle)||!Read(c,item,object))return 0;
     return object;
 }
 Address LocalPawn(Context& c) {
     Address world{},instance{},players{},local{},controller{},pawn{};std::int32_t count{};
-    if(!Read(c,c.world,world)||!world||!Read(c,world+profile::WorldGameInstance,instance)||!instance||
-       !Read(c,instance+profile::LocalPlayers,players)||!players||!Read(c,instance+profile::LocalPlayers+8,count)||count<1||count>4||
-       !Read(c,players,local)||!local||!Read(c,local+profile::Controller,controller)||!controller||
-       !Read(c,controller+profile::Pawn,pawn)||!IsA(c,pawn,c.player_class))return 0;
-    Address cls{};if(!Read(c,pawn+profile::ObjectClass,cls))return 0;
+    if(!Read(c,c.world,world)||!world||!Read(c,world+profile::native_layout.WorldGameInstance,instance)||!instance||
+       !Read(c,instance+profile::native_layout.LocalPlayers,players)||!players||!Read(c,instance+profile::native_layout.LocalPlayers+profile::native_layout.ArrayCount,count)||count<1||count>4||
+       !Read(c,players,local)||!local||!Read(c,local+profile::native_layout.Controller,controller)||!controller||
+       !Read(c,controller+profile::native_layout.Pawn,pawn)||!IsA(c,pawn,c.player_class))return 0;
+    Address cls{};if(!Read(c,pawn+profile::native_layout.ObjectClass,cls))return 0;
     if(cls!=c.validated_class){
-        if(!PropertyAt(c,cls,"CurrentDisplayCharacterID",profile::DisplayCharacter))return 0;
+        if(!PropertyAt(c,cls,"CurrentDisplayCharacterID",profile::native_layout.DisplayCharacter))return 0;
         c.validated_class=cls;
     }return pawn;
 }
@@ -180,22 +179,22 @@ bool ReadCatalog(Context& c,Address table,std::vector<Row>& result,CatalogKind k
     const bool appearance=kind!=CatalogKind::Accessory;
     const bool glider=kind==CatalogKind::Glider;
     Address rowtype{};Name type{};
-    if(!IsA(c,table,c.table_class)||!Read(c,table+profile::RowStruct,rowtype)||!rowtype||
-       !Read(c,rowtype+24,type)||type.index!=(appearance?c.appearance_struct:c.row_struct))return false;
+    if(!IsA(c,table,c.table_class)||!Read(c,table+profile::native_layout.RowStruct,rowtype)||!rowtype||
+       !Read(c,rowtype+accessory::profile::native_layout.ObjectName,type)||type.index!=(appearance?c.appearance_struct:c.row_struct))return false;
     if(appearance){
-        if(!PropertyAt(c,rowtype,"AppearanceType",profile::AppearanceType)||
-           !PropertyAt(c,rowtype,"CharacterID",profile::AppearanceCharacter)||
-           !PropertyAt(c,rowtype,"Name",profile::AppearanceName)||
-           !PropertyAt(c,rowtype,"AppearanceData",profile::AppearanceData)||
-           !PropertyAt(c,rowtype,"IsCharacterShow",profile::AppearanceCharacterShow))return false;
+        if(!PropertyAt(c,rowtype,"AppearanceType",profile::native_layout.AppearanceType)||
+           !PropertyAt(c,rowtype,"CharacterID",profile::native_layout.AppearanceCharacter)||
+           !PropertyAt(c,rowtype,"Name",profile::native_layout.AppearanceName)||
+           !PropertyAt(c,rowtype,"AppearanceData",profile::native_layout.AppearanceData)||
+           !PropertyAt(c,rowtype,"IsCharacterShow",profile::native_layout.AppearanceCharacterShow))return false;
     }else if(!PropertyAt(c,rowtype,"Part",8)||!PropertyAt(c,rowtype,"Type",12)||
              !PropertyAt(c,rowtype,"Name",24)||!PropertyAt(c,rowtype,"MeshDatas",0x90))return false;
     struct Header{Address data;std::int32_t count,capacity;};Header h{};
-    Address map=table+profile::RowMap,flags{};std::int32_t bits{},maximum{},free{};
+    Address map=table+profile::native_layout.RowMap,flags{};std::int32_t bits{},maximum{},free{};
     if(!Read(c,map,h)||h.count<0||h.count>4096||h.capacity<h.count||h.capacity>65536||
-       !Read(c,map+32,flags)||!Read(c,map+40,bits)||!Read(c,map+44,maximum)||
-       !Read(c,map+52,free)||bits<h.count||bits>65536||maximum<bits||free<0||free>h.count)return false;
-    if(!flags){if(bits>128)return false;flags=map+16;}
+       !Read(c,map+accessory::profile::native_layout.MapBitsData,flags)||!Read(c,map+accessory::profile::native_layout.MapBitCount,bits)||!Read(c,map+accessory::profile::native_layout.MapBitCapacity,maximum)||
+       !Read(c,map+accessory::profile::native_layout.MapFreeCount,free)||bits<h.count||bits>65536||maximum<bits||free<0||free>h.count)return false;
+    if(!flags){if(bits>128)return false;flags=map+accessory::profile::native_layout.MapInlineBits;}
     std::vector<std::uint32_t> allocation((h.count+31)/32);
     if(h.count&&(!h.data||!ReadBytes(c,flags,allocation.data(),allocation.size()*4)))return false;
     int allocated=0;
@@ -208,26 +207,26 @@ bool ReadCatalog(Context& c,Address table,std::vector<Row>& result,CatalogKind k
         if(kind==CatalogKind::Accessory&&(part<1||part>4))continue;
         if(kind==CatalogKind::Glider&&part!=2)continue;
         Row entry{{id,static_cast<std::uint8_t>(appearance?0:part)},NameText(c,id),{}};
-        if(!appearance){Name decoration_type{};if(!Read(c,row+12,decoration_type))return false;
+        if(!appearance){Name decoration_type{};if(!Read(c,row+accessory::profile::native_layout.DecorationType,decoration_type))return false;
             entry.key.type=decoration_type;entry.type=NameText(c,decoration_type);}
         if(appearance){
             std::uint8_t appearance_type{},show{};
             Name character{};
-            if(!Read(c,row+profile::AppearanceType,appearance_type)||
-               !Read(c,row+profile::AppearanceCharacter,character)||
-               !Read(c,row+profile::AppearanceCharacterShow,show))return false;
+            if(!Read(c,row+profile::native_layout.AppearanceType,appearance_type)||
+               !Read(c,row+profile::native_layout.AppearanceCharacter,character)||
+               !Read(c,row+profile::native_layout.AppearanceCharacterShow,show))return false;
             // Shared gliders have no CharacterID. An empty character is valid here.
             if(!show||appearance_type!=2)continue;
         }
         if(glider){
             Address structure{},data{};Name structure_name{};
-            if(!Read(c,row+profile::AppearanceData,structure)||!structure||!Read(c,structure+24,structure_name)||
+            if(!Read(c,row+profile::native_layout.AppearanceData,structure)||!structure||!Read(c,structure+accessory::profile::native_layout.ObjectName,structure_name)||
                structure_name.index!=c.glide_struct||!PropertyAt(c,structure,"ActorClass",8)||
-               !Read(c,row+profile::AppearanceData+8,data)||!data)continue;
+               !Read(c,row+profile::native_layout.AppearanceData+profile::native_layout.InstancedStructData,data)||!data)continue;
             entry.soft_class=data+8;
         }
         char label[1024]{};std::size_t length=sizeof(label);
-        if(c.names->resolve_ftext_utf8 && c.names->resolve_ftext_utf8(c.names->user,row+(appearance?profile::AppearanceName:24),label,&length).code==ANOMALY_STATUS_V1_OK)entry.label=label;
+        if(c.names->resolve_ftext_utf8 && c.names->resolve_ftext_utf8(c.names->user,row+(appearance?profile::native_layout.AppearanceName:profile::native_layout.DecorationName),label,&length).code==ANOMALY_STATUS_V1_OK)entry.label=label;
         if(entry.label.empty())entry.label=entry.id;
         if(!entry.id.empty())result.push_back(std::move(entry));
     }
@@ -301,22 +300,20 @@ bool __fastcall GetDetour(void* object,Appearance* appearance) noexcept {
 }
 bool Bind(Context& c) {
     c.getter=Resolve(c,profile::GetAppearance);c.refresh=Resolve(c,profile::Refresh);
-    c.world=Rip(c,Resolve(c,profile::World),3,7);c.registry=Rip(c,Resolve(c,profile::Objects),3,7,-16);
+    c.world=Rip(c,Resolve(c,profile::World),3,7);c.registry=Rip(c,Resolve(c,profile::Objects),3,7,-static_cast<int>(profile::native_layout.RegistrySubtract));
     if(!c.getter||!c.refresh||!c.world||!c.registry)return false;
-    std::uint8_t opcode{};Address call=c.getter+profile::CopyNamesCall;
+    std::uint8_t opcode{};Address call=c.getter+profile::native_layout.CopyNamesCall;
     if(!Read(c,call,opcode)||opcode!=0xe8)return false;
     c.copy=Rip(c,call,1,5);
-    const auto refresh_call=c.refresh+0xa4;
+    const auto refresh_call=c.refresh+profile::native_layout.RefreshGetterCall;
     if(!Read(c,refresh_call,opcode)||opcode!=0xe8||Rip(c,refresh_call,1,5)!=c.getter)return false;
-    const std::uint8_t expected[]={0x40,0x53,0x48,0x83,0xec,0x40,0x48,0x8b,0xd9,0x48,0x3b,0xca};
-    std::uint8_t actual[sizeof(expected)]{};
-    return Executable(c.copy)&&ReadBytes(c,c.copy,actual,sizeof(actual))&&!std::memcmp(expected,actual,sizeof(actual));
+    return Executable(c.copy) && c.copy==profile::compatibility.Address("CopyNames");
 }
 bool BindGlider(Context& c) {
     c.glider_spawn=Resolve(c,profile::GliderSpawn);c.glider_refresh=Resolve(c,profile::GliderRefresh);
     c.soft_assign=Resolve(c,profile::SoftClassAssign);
     if(!c.glider_spawn||!c.glider_refresh||!c.soft_assign)return false;
-    auto call=c.glider_refresh+profile::GliderSpawnCall;std::uint8_t opcode{};
+    auto call=c.glider_refresh+profile::native_layout.GliderSpawnCall;std::uint8_t opcode{};
     return Read(c,call,opcode)&&opcode==0xe8&&Rip(c,call,1,5)==c.glider_spawn;
 }
 bool Services(Context& c) {
@@ -445,9 +442,9 @@ void UpdateGlider(Context& c,Address pawn) {
     if(!c.glider_hook.id)return;
     auto message=[&](const std::string& text){std::scoped_lock lock(c.mutex);c.glider_message=text;};
     Address cls{};
-    bool layout=Read(c,pawn+profile::ObjectClass,cls)&&cls;
+    bool layout=Read(c,pawn+profile::native_layout.ObjectClass,cls)&&cls;
     if(layout&&cls!=c.glider_validated_class){
-        layout=PropertyAt(c,cls,"GlideFashionID",profile::GliderId)&&PropertyAt(c,cls,"GlidingActor",profile::GliderActor);
+        layout=PropertyAt(c,cls,"GlideFashionID",profile::native_layout.GliderId)&&PropertyAt(c,cls,"GlidingActor",profile::native_layout.GliderActor);
         if(layout)c.glider_validated_class=cls;
     }
     const auto table=ObjectAddress(c,c.glider_table);
@@ -461,7 +458,7 @@ void UpdateGlider(Context& c,Address pawn) {
     if(c.glider_fault.exchange(false)){c.glider_enabled=false;message(localizer.Text("status.glider_replace_failed","Glider replacement failed and overriding stopped; restore the original glider."));}
     if(request==Request::None)return;
     std::uint8_t loading{};
-    if(!Read(c,pawn+profile::GliderLoading,loading)||loading){message(localizer.Text("status.glider_loading","The glider is loading; try again shortly."));return;}
+    if(!Read(c,pawn+profile::native_layout.GliderLoading,loading)||loading){message(localizer.Text("status.glider_loading","The glider is loading; try again shortly."));return;}
     if(request==Request::Restore||request==Request::Reload){
         c.glider_enabled=false;
         const bool refreshed=NativeRefresh(c.glider_refresh,pawn);
@@ -498,7 +495,7 @@ void UpdateGlider(Context& c,Address pawn) {
 void ScheduleCharacterLook(Context& c,Address pawn) {
     const auto now=std::chrono::steady_clock::now();
     std::uint8_t glider_loading{1};
-    Read(c,pawn+profile::GliderLoading,glider_loading);
+    Read(c,pawn+profile::native_layout.GliderLoading,glider_loading);
     std::scoped_lock lock(c.mutex);
     const auto found=c.profiles.find(c.active_character);
     if(found==c.profiles.end())return;
@@ -540,7 +537,7 @@ void UpdateImpl(Context& c,double delta) {
     if(!c.table.id||!c.glider_table.id||c.discovery_time>=2.0){Discover(c);c.discovery_time=0;}
     auto pawn=LocalPawn(c);auto previous=c.pawn.exchange(pawn);
     Name character{};
-    if(pawn)Read(c,pawn+profile::DisplayCharacter,character);
+    if(pawn)Read(c,pawn+profile::native_layout.DisplayCharacter,character);
     const auto character_id=NameText(c,character);
     if(previous!=pawn||c.last_character!=character_id){
         if(pawn)LogCosmetics(c,"local character="+character_id);

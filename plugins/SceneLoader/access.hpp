@@ -1,3 +1,4 @@
+#include "native_layout.hpp"
 #pragma once
 namespace {
 using namespace anomaly::sdk;
@@ -33,37 +34,37 @@ struct Reader {
     std::string NameAt(uintptr_t address) const { FName n{}; return Read(address, n) ? Name(n) : std::string{}; }
     bool IsA(uintptr_t object, std::string_view type) const {
         uintptr_t cls{};
-        if (!Read(object + 16, cls)) return false;
+        if (!Read(object+scene_profile::native_layout.ObjectClass, cls)) return false;
         for (int i = 0; cls && i < 64; ++i) {
-            if (NameAt(cls + 24) == type) return true;
+            if (NameAt(cls+scene_profile::native_layout.ObjectName) == type) return true;
             uintptr_t parent{};
-            if (!Read(cls + 64, parent) || parent == cls) break;
+            if (!Read(cls+scene_profile::native_layout.StructSuper, parent) || parent == cls) break;
             cls = parent;
         }
         return false;
     }
     bool Function(uintptr_t fn, std::string_view name, uint8_t count, uint16_t size) const {
         uint8_t actual_count{}; uint16_t actual_size{};
-        return IsA(fn, "Function") && NameAt(fn + 24) == name &&
-            Read(fn + 180, actual_count) && actual_count == count &&
-            Read(fn + 182, actual_size) && actual_size == size;
+        return IsA(fn, "Function") && NameAt(fn+scene_profile::native_layout.ObjectName) == name &&
+            Read(fn+scene_profile::native_layout.FunctionCount, actual_count) && actual_count == count &&
+            Read(fn+scene_profile::native_layout.FunctionSize, actual_size) && actual_size == size;
     }
     bool Property(uintptr_t cls, std::string_view name, int32_t offset, int32_t size) const {
         for (int depth = 0; cls && depth < 32; ++depth) {
             uintptr_t field{};
-            if (!Read(cls + 112, field)) return false;
+            if (!Read(cls+scene_profile::native_layout.StructProperties, field)) return false;
             for (int i = 0; field && i < 2048; ++i) {
-                if (NameAt(field + 32) == name) {
+                if (NameAt(field+scene_profile::native_layout.PropertyName) == name) {
                     int32_t actual_offset{}, actual_size{};
-                    return Read(field + 68, actual_offset) && actual_offset == offset &&
-                        Read(field + 52, actual_size) && actual_size == size;
+                    return Read(field+scene_profile::native_layout.PropertyOffset, actual_offset) && actual_offset == offset &&
+                        Read(field+scene_profile::native_layout.PropertySize, actual_size) && actual_size == size;
                 }
                 uintptr_t next{};
-                if (!Read(field + 72, next) || next == field) break;
+                if (!Read(field+scene_profile::native_layout.PropertyNext, next) || next == field) break;
                 field = next;
             }
             uintptr_t parent{};
-            if (!Read(cls + 64, parent) || parent == cls) break;
+            if (!Read(cls+scene_profile::native_layout.StructSuper, parent) || parent == cls) break;
             cls = parent;
         }
         return false;
@@ -85,17 +86,18 @@ uintptr_t Resolve(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, An
     if (objects->snapshot_by_handle(objects->user, h, &snapshot).code != 0) return 0;
     const auto index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(h);
     uintptr_t chunks{}, chunk{}, object{}; uint32_t count{}, serial{}; int32_t actual{};
-    if (!r.Read(registry + 36, count) || count > 16*1024*1024 || index >= count ||
-        !r.Read(registry + 16, chunks) || !r.Read(chunks + 8*(index/65536), chunk) ||
-        !r.Read(chunk + 24*(index%65536), object) ||
-        !r.Read(chunk + 24*(index%65536) + 16, serial) ||
+    if (!r.Read(registry+scene_profile::native_layout.RegistryCount, count) || count > 16*1024*1024 || index >= count ||
+        !r.Read(registry+scene_profile::native_layout.RegistryItems, chunks) || !r.Read(chunks + 8*(index/scene_profile::native_layout.ChunkSize), chunk) ||
+        !r.Read(chunk + scene_profile::native_layout.ItemStride*(index%scene_profile::native_layout.ChunkSize), object) ||
+        !r.Read(chunk + scene_profile::native_layout.ItemStride*(index%scene_profile::native_layout.ChunkSize) + scene_profile::native_layout.ItemSerial, serial) ||
         serial != ANOMALY_UE5_OBJECT_HANDLE_SERIAL(h) ||
-        !r.Read(object + 12, actual) || actual != static_cast<int32_t>(index)) return 0;
+        !r.Read(object+scene_profile::native_layout.ObjectIndex, actual) || actual != static_cast<int32_t>(index)) return 0;
     return object;
 }
 bool Invoke(const Reader& r, uintptr_t object, uintptr_t fn, void* parameters) {
     uintptr_t vtable{}, entry{};
-    if (!r.Read(object, vtable) || !r.Read(vtable + 0x4c*8, entry)) return false;
+    if (!r.Read(object, vtable) || !r.Read(vtable + scene_profile::native_layout.ProcessEventSlot, entry)) return false;
+    if(!scene_profile::compatibility.MatchesEntry(core,"ProcessEvent.entry",entry,true)) return false;
     MEMORY_BASIC_INFORMATION region{};
     if (!VirtualQuery(reinterpret_cast<void*>(entry), &region, sizeof(region)) ||
         region.State != MEM_COMMIT ||
@@ -110,14 +112,9 @@ bool Initialize(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     if (registry) return true;
     if (Clock::now() < retry_init) return false;
     retry_init = Clock::now() + std::chrono::seconds(5);
-    Host host(api);
-    const auto sig = host.Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-    uintptr_t instruction{}; int32_t displacement{};
-    if (!sig || !sig->resolve || !objects || !objects->find_exact ||
-        sig->resolve(sig->user, StringView("HTGame.exe"), StringView(".text"),
-            StringView("48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3"),
-            &instruction).code != 0 || !r.Read(instruction + 3, displacement)) return false;
-    registry = static_cast<uintptr_t>(static_cast<intptr_t>(instruction) + 7 + displacement - 16);
+    const auto instruction=scene_profile::compatibility.Address("Objects");int32_t displacement{};
+    if(!objects || !objects->find_exact || !instruction || !r.Read(instruction+3,displacement)) return false;
+    registry=static_cast<uintptr_t>(static_cast<intptr_t>(instruction)+7+displacement-scene_profile::native_layout.RegistrySubtract);
     return true;
 }
 

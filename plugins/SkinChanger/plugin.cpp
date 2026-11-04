@@ -1,3 +1,4 @@
+#include "awakening_profile.hpp"
 #include <anomaly/sdk/cpp.hpp>
 #include "cosmetics.hpp"
 #include "awakening.hpp"
@@ -50,6 +51,8 @@ void ReleaseWindow() noexcept {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) noexcept {
+    if (!accessory::profile::LoadCompatibility(host) || !skin_awakening_profile::LoadLayout())
+        return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     skin_change::Localizer() = anomaly::sdk::Localizer(host);
     window_service = Host(host).Query<AnomalyWindowServiceV1>(
         ANOMALY_WINDOW_SERVICE_V1_ID, ANOMALY_WINDOW_SERVICE_V1_VERSION).get();
