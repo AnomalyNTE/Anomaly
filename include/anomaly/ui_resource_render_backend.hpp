@@ -33,6 +33,9 @@ struct UiTextureDrawRequest final {
     // shell's labels while still being free to overhang the shell window, which
     // the window's own clip rectangle would otherwise cut off.
     bool behind{};
+    // x and y are relative to the main viewport's top left, like the plugin
+    // overlay API, instead of absolute ImGui coordinates.
+    bool viewport_relative{};
 };
 
 // Render-owned bridge for the logical resource registry. Implementations may

@@ -58,6 +58,7 @@ enum class UiGlyphRange : std::uint32_t {
     Cyrillic = 2,
     Japanese = 3,
     ChineseFull = 4,
+    PrivateUse = 5,
 };
 
 enum class UiTextureFormat : std::uint32_t {

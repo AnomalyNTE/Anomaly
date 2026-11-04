@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <atomic>
 #include <charconv>
@@ -503,6 +504,9 @@ struct PluginUiProxyContext {
     std::uint64_t generation{};
     bool close_requested{};
     bool reopen_requested{};
+    // on_draw runs for the overlay alone: the plugin's windows are closed, so
+    // begin_window opens nothing and the matching end_window draws nothing.
+    bool overlay_only{};
     UiStackEntryKind window_begin_kind{UiStackEntryKind::Window};
     UiStackEntryKind window_end_kind{UiStackEntryKind::Window};
     anomaly::UiResourceHandle window_resource{};
@@ -640,6 +644,11 @@ int ANOMALY_CALL ProxyBeginWindow(
         context->ui_stack->MarkMismatch();
         return 0;
     }
+    if (context->overlay_only) {
+        // Still tracked, so the end_window a plugin always pairs with it balances.
+        context->ui_stack->PushReserved({context->window_begin_kind, context->window_resource});
+        return 0;
+    }
     if (open != nullptr && context->reopen_requested) {
         *open = 1;
         context->reopen_requested = false;
@@ -662,7 +671,8 @@ void ANOMALY_CALL ProxyEndWindow(void* user) {
     if (context != nullptr && context->scope != nullptr && !callback) return;
     if (context != nullptr && context->service != nullptr &&
         context->service->end_window != nullptr && context->ui_stack != nullptr &&
-        context->ui_stack->Consume(context->window_end_kind, context->window_resource)) {
+        context->ui_stack->Consume(context->window_end_kind, context->window_resource) &&
+        !context->overlay_only) {
         context->service->end_window(context->service->user);
     }
 }
@@ -1202,6 +1212,130 @@ void ANOMALY_CALL ProxySetNextItemWidth(void* user, const float width) {
     }
 }
 
+// The overlay tail is published only when the host table carries all of it.
+const AnomalyUiServiceV1* OverlayService(const PluginUiProxyContext* context) noexcept {
+    const AnomalyUiServiceV1* const service =
+        context != nullptr ? context->service : nullptr;
+    return HasUiField<decltype(AnomalyUiServiceV1::overlay_text)>(
+               service, offsetof(AnomalyUiServiceV1, overlay_text)) &&
+            service->overlay_viewport_size != nullptr && service->overlay_glass != nullptr &&
+            service->overlay_rect_filled != nullptr && service->overlay_line != nullptr &&
+            service->overlay_circle != nullptr && service->overlay_ring_sector != nullptr &&
+            service->overlay_measure_text != nullptr && service->overlay_text != nullptr
+        ? service
+        : nullptr;
+}
+
+void ANOMALY_CALL ProxyOverlayViewportSize(void* user, float* width, float* height) {
+    const auto* context = UiProxyContext(user);
+    if (width != nullptr) *width = 0.0F;
+    if (height != nullptr) *height = 0.0F;
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_viewport_size == nullptr) return;
+    service->overlay_viewport_size(service->user, width, height);
+}
+
+int ANOMALY_CALL ProxyOverlayGlass(void* user, float x, float y, float width, float height,
+    const AnomalyUiGlassStyleV1* style) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_glass == nullptr) return 0;
+    return service->overlay_glass(service->user, x, y, width, height, style);
+}
+
+void ANOMALY_CALL ProxyOverlayRectFilled(void* user, float x, float y, float width,
+    float height, std::uint32_t color, float rounding) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_rect_filled == nullptr) return;
+    service->overlay_rect_filled(service->user, x, y, width, height, color, rounding);
+}
+
+void ANOMALY_CALL ProxyOverlayLine(void* user, float x0, float y0, float x1, float y1,
+    std::uint32_t color, float thickness) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_line == nullptr) return;
+    service->overlay_line(service->user, x0, y0, x1, y1, color, thickness);
+}
+
+void ANOMALY_CALL ProxyOverlayCircle(void* user, float center_x, float center_y,
+    float radius, std::uint32_t color, float thickness) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_circle == nullptr) return;
+    service->overlay_circle(service->user, center_x, center_y, radius, color, thickness);
+}
+
+void ANOMALY_CALL ProxyOverlayRingSector(void* user, float center_x, float center_y,
+    float inner_radius, float outer_radius, float angle_start, float angle_end,
+    std::uint32_t color) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_ring_sector == nullptr) return;
+    service->overlay_ring_sector(service->user, center_x, center_y, inner_radius,
+        outer_radius, angle_start, angle_end, color);
+}
+
+void ANOMALY_CALL ProxyOverlayMeasureText(
+    void* user, AnomalyStringViewV1 text, float font_size, float* width, float* height) {
+    const auto* context = UiProxyContext(user);
+    if (width != nullptr) *width = 0.0F;
+    if (height != nullptr) *height = 0.0F;
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_measure_text == nullptr) return;
+    service->overlay_measure_text(service->user, text, font_size, width, height);
+}
+
+void ANOMALY_CALL ProxyOverlayText(void* user, float x, float y, AnomalyStringViewV1 text,
+    std::uint32_t color, float font_size) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr || service->overlay_text == nullptr) return;
+    service->overlay_text(service->user, x, y, text, color, font_size);
+}
+
+// Appended after the overlay tail, so it is published on its own.
+int ANOMALY_CALL ProxyOverlayGlassRingSector(void* user, float center_x, float center_y,
+    float inner_radius, float outer_radius, float angle_start, float angle_end,
+    const AnomalyUiGlassStyleV1* style) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    const auto* service = OverlayService(context);
+    if ((context->scope != nullptr && !callback) || service == nullptr ||
+        !HasUiField<decltype(AnomalyUiServiceV1::overlay_glass_ring_sector)>(
+            service, offsetof(AnomalyUiServiceV1, overlay_glass_ring_sector)) ||
+        service->overlay_glass_ring_sector == nullptr) {
+        return 0;
+    }
+    return service->overlay_glass_ring_sector(service->user, center_x, center_y,
+        inner_radius, outer_radius, angle_start, angle_end, style);
+}
+
+int ANOMALY_CALL ProxyDrawScreenPrimitives(
+    void* user, const AnomalyUiScreenPrimitiveV1* primitives,
+    const std::size_t count) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return 0;
+    return context != nullptr && context->service != nullptr &&
+            HasUiField<decltype(AnomalyUiServiceV1::draw_screen_primitives)>(
+                context->service,
+                offsetof(AnomalyUiServiceV1, draw_screen_primitives)) &&
+            context->service->draw_screen_primitives != nullptr
+        ? context->service->draw_screen_primitives(
+              context->service->user, primitives, count)
+        : 0;
+}
+
 AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
     AnomalyUiServiceV1 proxy{
         sizeof(AnomalyUiServiceV1), ANOMALY_UI_SERVICE_V1_VERSION,
@@ -1218,6 +1352,16 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         ProxySameLine, ProxySetCursorPosX, ProxyTextLink,
         ProxyBeginTabBar, ProxyBeginTabItem, ProxyEndTabItem, ProxyEndTabBar};
     proxy.set_next_item_width = ProxySetNextItemWidth;
+    proxy.overlay_viewport_size = ProxyOverlayViewportSize;
+    proxy.overlay_glass = ProxyOverlayGlass;
+    proxy.overlay_rect_filled = ProxyOverlayRectFilled;
+    proxy.overlay_line = ProxyOverlayLine;
+    proxy.overlay_circle = ProxyOverlayCircle;
+    proxy.overlay_ring_sector = ProxyOverlayRingSector;
+    proxy.overlay_measure_text = ProxyOverlayMeasureText;
+    proxy.overlay_text = ProxyOverlayText;
+    proxy.overlay_glass_ring_sector = ProxyOverlayGlassRingSector;
+    proxy.draw_screen_primitives = ProxyDrawScreenPrimitives;
     if (context == nullptr || context->service == nullptr) {
         proxy.struct_size = offsetof(AnomalyUiServiceV1, user) + sizeof(proxy.user);
         return proxy;
@@ -1272,6 +1416,23 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         context->service->set_next_item_width == nullptr) {
         advertised_size = (std::min)(
             advertised_size, offsetof(AnomalyUiServiceV1, set_next_item_width));
+    }
+    if (OverlayService(context) == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size, offsetof(AnomalyUiServiceV1, overlay_viewport_size));
+    } else if (!HasUiField<decltype(AnomalyUiServiceV1::overlay_glass_ring_sector)>(
+                   context->service, offsetof(AnomalyUiServiceV1, overlay_glass_ring_sector)) ||
+               context->service->overlay_glass_ring_sector == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size, offsetof(AnomalyUiServiceV1, overlay_glass_ring_sector));
+    }
+    if (!HasUiField<decltype(AnomalyUiServiceV1::draw_screen_primitives)>(
+            context->service,
+            offsetof(AnomalyUiServiceV1, draw_screen_primitives)) ||
+        context->service->draw_screen_primitives == nullptr) {
+        advertised_size = (std::min)(
+            advertised_size,
+            offsetof(AnomalyUiServiceV1, draw_screen_primitives));
     }
     proxy.struct_size = static_cast<std::uint32_t>(advertised_size);
     return proxy;
@@ -2856,6 +3017,39 @@ AnomalyStatusV1 ANOMALY_CALL DrawTextureV1(
     });
 }
 
+AnomalyStatusV1 ANOMALY_CALL DrawTextureOverlayV1(
+    void* user, const AnomalyGenerationHandleV1 handle, const float x, const float y,
+    const float width, const float height, const std::uint32_t tint_rgba) {
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "texture position is invalid");
+    }
+    return InvokeUiResourceService(user, [&](PluginServiceContext& context) {
+        if (!IsActiveDrawResourceCallback(context)) {
+            return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "texture rendering is not active");
+        }
+        if (!ValidGenerationHandle(context, handle)) {
+            return StatusV1(ANOMALY_STATUS_V1_NOT_FOUND, "texture handle is not live");
+        }
+        const auto texture = context.ui_resources->ResourceState(context.scope, UiHandle(handle));
+        if (!texture) return StatusV1(ANOMALY_STATUS_V1_NOT_FOUND, "texture handle is not live");
+        if (texture->state == anomaly::UiResourceState::Failed) {
+            return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "texture decode or upload failed");
+        }
+        anomaly::UiTextureDrawRequest request;
+        request.x = x;
+        request.y = y;
+        request.width = width;
+        request.height = height;
+        request.tint_rgba = tint_rgba;
+        request.on_top = true;
+        request.viewport_relative = true;
+        if (!context.manager->DrawUiTextureEx(context.scope, UiHandle(handle), request)) {
+            return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "texture render backend is not ready");
+        }
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    });
+}
+
 AnomalyStatusV1 ANOMALY_CALL InputSnapshotV1(void* user, AnomalyInputSnapshotV1* snapshot) {
     if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot)) {
         return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "input snapshot is invalid");
@@ -3453,6 +3647,8 @@ bool RecoverPluginUiStack(
         (stack != nullptr && !stack->entries.empty());
 
     const auto end_window = [&]() noexcept {
+        // An overlay-only draw opened no host window, so there is none to close.
+        if (proxy.overlay_only) return;
         if (proxy.service == nullptr || proxy.service->end_window == nullptr) return;
         try {
             proxy.service->end_window(proxy.service->user);
@@ -3594,6 +3790,7 @@ struct PluginManager::LoadedPlugin {
     anomaly::PluginShadowGeneration shadow_generation;
     CallbackMetrics update_metrics;
     CallbackMetrics draw_metrics;
+    CallbackMetrics overlay_metrics;
     UiStackTracker ui_stack;
     PluginServiceContext service_context;
     AnomalyHostApiV1 host_api{};
@@ -4329,7 +4526,8 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
     plugin.service_context.texture = {
         sizeof(AnomalyTextureServiceV1), ANOMALY_TEXTURE_SERVICE_V1_VERSION,
         &plugin.service_context,
-        RequestTextureV1, ReleaseTextureV1, TextureStateV1, DrawTextureV1};
+        RequestTextureV1, ReleaseTextureV1, TextureStateV1, DrawTextureV1,
+        DrawTextureOverlayV1};
     plugin.service_context.input_service = {
         sizeof(AnomalyInputServiceV1), ANOMALY_INPUT_SERVICE_V1_VERSION,
         &plugin.service_context,
@@ -4527,6 +4725,12 @@ bool PluginManager::LoadBinary(
                     "exception in ABI v1 plugin entry: " + source.string());
             }
         });
+        constexpr std::size_t overlay_field_size =
+            offsetof(AnomalyPluginDescriptorV1, on_overlay) +
+            sizeof(descriptor.on_overlay);
+        const bool has_overlay_callback =
+            descriptor.struct_size >= overlay_field_size &&
+            descriptor.on_overlay != nullptr;
         constexpr std::size_t minimum_size = offsetof(AnomalyPluginDescriptorV1, on_draw) +
             sizeof(descriptor.on_draw);
         const bool valid = entry_status.code == ANOMALY_STATUS_V1_OK &&
@@ -4577,6 +4781,10 @@ bool PluginManager::LoadBinary(
         if (plugin->view.visibility_control) {
             static_cast<void>(plugin->scope->Register(
                 anomaly::PluginResourceKind::Ui, "plugin.draw"));
+        }
+        if (has_overlay_callback) {
+            static_cast<void>(plugin->scope->Register(
+                anomaly::PluginResourceKind::Ui, "plugin.overlay"));
         }
         plugin->ui_proxy_context.service = ui_service_;
         plugin->ui_proxy_context.ui_stack = &plugin->ui_stack;
@@ -5587,71 +5795,111 @@ void PluginManager::ApplyQueuedEnablementReload() {
 }
 
 void PluginManager::Draw(void* imgui_context) {
+    (void)imgui_context;
     const ScopedLogThreadDomain log_domain(anomaly::LogThreadDomain::Render);
+    const auto invoke_render_callback = [&](LoadedPlugin& plugin,
+                                            const AnomalyPluginRenderCallbackV1 callback,
+                                            const PluginCallbackEvidenceKind kind,
+                                            const bool allow_close,
+                                            const bool overlay_only) {
+        auto callback_lease = plugin.scope != nullptr
+            ? plugin.scope->AcquireCallback(plugin.view.generation)
+            : anomaly::PluginScope::CallbackLease{};
+        if (plugin.scope != nullptr && !callback_lease) return false;
+        ScopedPluginCallback callback_scope(
+            plugin.scope, plugin.view.generation, false);
+        const auto started = std::chrono::steady_clock::now();
+        bool fault{};
+        plugin.ui_proxy_context.close_requested = false;
+        plugin.ui_proxy_context.overlay_only = overlay_only;
+        try {
+            callback(
+                plugin.plugin_context,
+                reinterpret_cast<const AnomalyUiServiceV1*>(&plugin.ui_proxy));
+            if (allow_close && plugin.ui_proxy_context.close_requested) {
+                plugin.view.visible = false;
+                if (ui_resources_->WindowGroupState(plugin.scope).window_count == 0) {
+                    SetPersistentPluginWindowVisibility(plugin.view.id, false);
+                }
+            }
+        } catch (...) {
+            fault = true;
+            plugin.faulted = true;
+            plugin.view.status_reason =
+                kind == PluginCallbackEvidenceKind::Overlay
+                    ? "Overlay callback raised an exception"
+                    : "Draw callback raised an exception";
+        }
+        const bool ui_stack_fault = RecoverPluginUiStack(
+            plugin.ui_proxy_context, plugin.service_context);
+        plugin.ui_proxy_context.overlay_only = false;
+        if (ui_stack_fault) {
+            fault = true;
+            plugin.faulted = true;
+            plugin.view.status_reason =
+                "Render callback left the UI stack unbalanced";
+        }
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        CallbackMetrics& metrics = kind == PluginCallbackEvidenceKind::Overlay
+            ? plugin.overlay_metrics : plugin.draw_metrics;
+        metrics.Record(elapsed, fault, callback_budgets_.draw_slow_milliseconds);
+        if (callback_evidence_observer_) {
+            try {
+                callback_evidence_observer_({
+                    kind,
+                    plugin.view.id,
+                    plugin.view.generation,
+                    GetCurrentThreadId(),
+                    elapsed * 1000.0,
+                    fault});
+            } catch (...) {
+            }
+        }
+        if (fault) {
+            Log(
+                ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
+                std::string(ui_stack_fault
+                                ? "unbalanced UI stack: "
+                                : kind == PluginCallbackEvidenceKind::Overlay
+                                    ? "exception in ABI v1 overlay: "
+                                    : "exception in ABI v1 draw: ") +
+                    plugin.view.id);
+        }
+        return !fault;
+    };
+
     for (const auto& plugin : plugins_) {
         ReconcileWindowVisibility(*plugin);
-        if (!plugin->view.visible || plugin->faulted) continue;
-        auto callback = plugin->scope != nullptr
-            ? plugin->scope->AcquireCallback(plugin->view.generation)
-            : anomaly::PluginScope::CallbackLease{};
-        if (plugin->scope != nullptr && !callback) continue;
-        ScopedPluginCallback callback_scope(
-            plugin->scope, plugin->view.generation, false);
-        const auto started = std::chrono::steady_clock::now();
-        bool invoked{};
-        bool fault{};
-        if (plugin->started && plugin->descriptor_v1.on_draw != nullptr &&
-            ui_service_ != nullptr) {
-            invoked = true;
-            plugin->ui_proxy_context.close_requested = false;
-            try {
-                plugin->descriptor_v1.on_draw(
-                    plugin->plugin_context,
-                    reinterpret_cast<const AnomalyUiServiceV1*>(&plugin->ui_proxy));
-                if (plugin->ui_proxy_context.close_requested) {
-                    plugin->view.visible = false;
-                    if (ui_resources_->WindowGroupState(plugin->scope).window_count == 0) {
-                        SetPersistentPluginWindowVisibility(plugin->view.id, false);
-                    }
-                }
-            } catch (...) {
-                fault = true;
-                plugin->faulted = true;
-                plugin->view.status_reason = "Draw callback raised an exception";
-            }
-            const bool ui_stack_fault = RecoverPluginUiStack(
-                plugin->ui_proxy_context, plugin->service_context);
-            if (ui_stack_fault) {
-                fault = true;
-                plugin->faulted = true;
-                plugin->view.status_reason = "Draw callback left the UI stack unbalanced";
-            }
-            if (fault) {
-                Log(
-                    ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
-                    std::string(ui_stack_fault ? "unbalanced UI stack: "
-                                               : "exception in ABI v1 draw: ") +
-                        plugin->view.id);
-            }
+        if (plugin->faulted || !plugin->started || ui_service_ == nullptr)
+            continue;
+
+        constexpr std::size_t overlay_field_size =
+            offsetof(AnomalyPluginDescriptorV1, on_overlay) +
+            sizeof(plugin->descriptor_v1.on_overlay);
+        const bool has_overlay =
+            plugin->descriptor_v1.struct_size >= overlay_field_size &&
+            plugin->descriptor_v1.on_overlay != nullptr;
+        if (has_overlay &&
+            !invoke_render_callback(
+                *plugin, plugin->descriptor_v1.on_overlay,
+                PluginCallbackEvidenceKind::Overlay, false, true)) {
+            ReconcileWindowVisibility(*plugin);
+            continue;
         }
-        if (invoked) {
-            const double elapsed = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - started).count();
-            plugin->draw_metrics.Record(
-                elapsed, fault, callback_budgets_.draw_slow_milliseconds);
-            if (callback_evidence_observer_) {
-                try {
-                    callback_evidence_observer_({
-                        PluginCallbackEvidenceKind::Draw,
-                        plugin->view.id,
-                        plugin->view.generation,
-                        GetCurrentThreadId(),
-                        elapsed * 1000.0,
-                        fault});
-                } catch (...) {
-                }
-            }
-        }
+
+        ReconcileWindowVisibility(*plugin);
+        const bool overlay_only = !plugin->view.visible;
+        const bool draw_hidden_overlay =
+            overlay_only && !has_overlay &&
+            plugin->service_context.capabilities.HasCapability("ui-overlay");
+        if (plugin->faulted ||
+            (!plugin->view.visible && !draw_hidden_overlay) ||
+            plugin->descriptor_v1.on_draw == nullptr)
+            continue;
+        static_cast<void>(invoke_render_callback(
+            *plugin, plugin->descriptor_v1.on_draw,
+            PluginCallbackEvidenceKind::Draw, !overlay_only, overlay_only));
         ReconcileWindowVisibility(*plugin);
     }
 }
@@ -6289,6 +6537,7 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
         }
         view.update_metrics = plugin.update_metrics.View();
         view.draw_metrics = plugin.draw_metrics.View();
+        view.overlay_metrics = plugin.overlay_metrics.View();
         populate_platform_diagnostics(plugin, view);
         snapshot.plugins.push_back(std::move(view));
     };
@@ -6357,6 +6606,7 @@ std::string PluginManager::DiagnosticsJson() const {
             ",\"callbacks\":{\"updateSlow\":" +
                 std::to_string(plugin.update_metrics.slow_calls) +
             ",\"drawSlow\":" + std::to_string(plugin.draw_metrics.slow_calls) +
+            ",\"overlaySlow\":" + std::to_string(plugin.overlay_metrics.slow_calls) +
             ",\"scoped\":{\"calls\":" +
                 std::to_string(platform.scoped_callbacks.calls) +
             ",\"faults\":" + std::to_string(platform.scoped_callbacks.faults) +

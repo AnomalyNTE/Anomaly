@@ -141,9 +141,10 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | --- | --- |
 | `memory-read` | `anomaly.core` 的 `read_memory` |
 | `memory-write` | `anomaly.core` 的 `write_memory` |
+| `ui-overlay` | 插件窗口被关闭或在插件列表里隐藏后仍然每帧调用 `on_draw`，只用于绘制 `overlay_*` 叠加层（HUD、状态条）；此时 `begin_window` 返回 0、不打开任何窗口 |
 | `entity-esp` | ABI v1 兼容的 `anomaly.ui` ESP 绘制调用（`draw_entity_bbox` / `draw_entity_box3d` / `draw_entity_label`）；新插件应声明 `ue5-ahud` 并订阅 `anomaly.ue5.ahud` |
 
-以上三个 capability 是已知 capability，但不通过 service 映射自动派生——插件按需在 `capabilities` 中显式声明。
+以上四个 capability 是已知 capability，但不通过 service 映射自动派生——插件按需在 `capabilities` 中显式声明。
 
 ## 状态码
 

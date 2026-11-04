@@ -11,7 +11,9 @@ typedef AnomalyStatusV1 (ANOMALY_CALL *AnomalyPluginEntryV1Fn)(
     AnomalyPluginDescriptorV1* descriptor);
 ```
 
-The entry should validate `descriptor->struct_size >= sizeof(*descriptor)`, then fill in every field as is.
+The entry should first verify that `descriptor->struct_size` covers the base fields and `on_draw`, then
+populate those fields. Optional V1 tail fields may be written only when the host-provided `struct_size`
+covers their position, preserving compatibility with older hosts.
 
 ### `AnomalyPluginDescriptorV1`
 
@@ -26,6 +28,7 @@ typedef struct AnomalyPluginDescriptorV1 {
     void (ANOMALY_CALL *on_unload)(void* plugin_context);
     void (ANOMALY_CALL *on_update)(void* plugin_context, double delta_seconds);
     void (ANOMALY_CALL *on_draw)(void* plugin_context, const AnomalyUiServiceV1* ui);
+    void (ANOMALY_CALL *on_overlay)(void* plugin_context, const AnomalyUiServiceV1* ui);
 } AnomalyPluginDescriptorV1;
 ```
 
@@ -39,6 +42,11 @@ typedef struct AnomalyPluginDescriptorV1 {
 | `on_unload` | Clean up before unload |
 | `on_update` | Per-tick logic update (Game domain); may be `NULL` |
 | `on_draw` | Per-frame drawing (Render domain); may be `NULL` |
+| `on_overlay` | Runs every render frame in the Render domain even while the plugin window is closed; use it only for persistent world overlays such as `draw_screen_primitives`; may be `NULL` |
+
+`on_overlay` is an optional tail field in the V1 descriptor. The host calls it only when `struct_size`
+covers the field and the callback is non-null. Plugins that need to run against older hosts can keep a
+fallback drawing path in `on_draw`.
 
 For callback thread domains see [Plugin development · lifecycle](../developer-guide/plugin-development.md#3-lifecycle-and-entry-point).
 

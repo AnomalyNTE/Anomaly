@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cctype>
 #include <limits>
@@ -1232,6 +1233,192 @@ int ANOMALY_CALL DrawEntityLabel(
     return 1;
 }
 
+// Overlay calls draw on the foreground list of the main viewport in viewport-local pixels.
+ImVec2 OverlayPoint(const float x, const float y) noexcept {
+    const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+    return ImVec2(origin.x + x, origin.y + y);
+}
+
+ImVec4 OverlayColor(const std::uint32_t rgba) noexcept {
+    return ImVec4(static_cast<float>(rgba & 0xffU) / 255.0F,
+        static_cast<float>((rgba >> 8U) & 0xffU) / 255.0F,
+        static_cast<float>((rgba >> 16U) & 0xffU) / 255.0F,
+        static_cast<float>((rgba >> 24U) & 0xffU) / 255.0F);
+}
+
+void ANOMALY_CALL OverlayViewportSize(void*, float* width, float* height) {
+    const ImVec2 size = ImGui::GetMainViewport()->Size;
+    if (width != nullptr) *width = size.x;
+    if (height != nullptr) *height = size.y;
+}
+
+constexpr std::size_t kGlassStyleMinimumSize =
+    offsetof(AnomalyUiGlassStyleV1, scale) + sizeof(AnomalyUiGlassStyleV1::scale);
+
+// Reads a plugin glass style. Returns false for a style the host cannot use.
+bool OverlayGlassOptions(const AnomalyUiGlassStyleV1* style, glass::SurfaceOptions& options,
+    float& opacity) noexcept {
+    if (style == nullptr || style->struct_size < kGlassStyleMinimumSize ||
+        style->variant > ANOMALY_UI_GLASS_V1_THUMB) {
+        return false;
+    }
+    options.variant = static_cast<glass::Variant>(style->variant);
+    options.rounding = (std::max)(0.0F, style->rounding);
+    options.scale = style->scale > 0.0F ? style->scale : 1.0F;
+    options.shadow = (style->flags & ANOMALY_UI_GLASS_V1_NO_SHADOW) == 0;
+    options.clip = false;
+    if ((style->tint_rgba >> 24U) != 0) options.tint = OverlayColor(style->tint_rgba);
+    options.rim = (style->flags & ANOMALY_UI_GLASS_V1_NO_RIM) == 0;
+    options.edge_feather = 1.5F;
+    if (style->struct_size >= offsetof(AnomalyUiGlassStyleV1, refraction_scale) +
+            sizeof(style->refraction_scale) &&
+        std::isfinite(style->refraction_scale) && style->refraction_scale > 0.0F) {
+        options.refraction_scale = (std::min)(style->refraction_scale, 4.0F);
+    }
+    opacity = 1.0F;
+    if (style->struct_size >= offsetof(AnomalyUiGlassStyleV1, opacity) + sizeof(style->opacity) &&
+        std::isfinite(style->opacity)) {
+        opacity = std::clamp(style->opacity, 0.0F, 1.0F);
+    }
+    return opacity > 0.0F;
+}
+
+// The surface refracts what the frame holds at this point, earlier overlay calls included.
+// The thumb only needs the sharp copy. Opacity rides on the style alpha the material reads.
+template <typename DrawFn>
+int DrawOverlayGlass(const glass::SurfaceOptions& options, const float opacity, DrawFn draw) {
+    ImDrawList* const list = ImGui::GetForegroundDrawList();
+    glass::CaptureBackdrop(list, options.variant != glass::Variant::Thumb);
+    float& alpha = ImGui::GetStyle().Alpha;
+    const float saved = alpha;
+    alpha *= opacity;
+    draw(list);
+    alpha = saved;
+    return glass::Active() ? 1 : 0;
+}
+
+int ANOMALY_CALL OverlayGlass(void*, float x, float y, float width, float height,
+    const AnomalyUiGlassStyleV1* style) {
+    glass::SurfaceOptions options;
+    float opacity{};
+    if (!OverlayGlassOptions(style, options, opacity)) return 0;
+    return DrawOverlayGlass(options, opacity, [&](ImDrawList* list) {
+        glass::DrawSurface(list, OverlayPoint(x, y), OverlayPoint(x + width, y + height), options);
+    });
+}
+
+int ANOMALY_CALL OverlayGlassRingSector(void*, float center_x, float center_y,
+    float inner_radius, float outer_radius, float angle_start, float angle_end,
+    const AnomalyUiGlassStyleV1* style) {
+    glass::SurfaceOptions options;
+    float opacity{};
+    if (!OverlayGlassOptions(style, options, opacity) || !std::isfinite(center_x) ||
+        !std::isfinite(center_y) || !std::isfinite(angle_start) || !std::isfinite(angle_end)) {
+        return 0;
+    }
+    return DrawOverlayGlass(options, opacity, [&](ImDrawList* list) {
+        glass::DrawSectorSurface(list, OverlayPoint(center_x, center_y), inner_radius,
+            outer_radius, angle_start, angle_end, options);
+    });
+}
+
+void ANOMALY_CALL OverlayRectFilled(void*, float x, float y, float width, float height,
+    std::uint32_t color, float rounding) {
+    ImGui::GetForegroundDrawList()->AddRectFilled(
+        OverlayPoint(x, y), OverlayPoint(x + width, y + height), color, rounding);
+}
+
+void ANOMALY_CALL OverlayLine(void*, float x0, float y0, float x1, float y1,
+    std::uint32_t color, float thickness) {
+    ImGui::GetForegroundDrawList()->AddLine(
+        OverlayPoint(x0, y0), OverlayPoint(x1, y1), color, thickness);
+}
+
+void ANOMALY_CALL OverlayCircle(void*, float center_x, float center_y, float radius,
+    std::uint32_t color, float thickness) {
+    ImGui::GetForegroundDrawList()->AddCircle(
+        OverlayPoint(center_x, center_y), radius, color, 0, thickness);
+}
+
+void ANOMALY_CALL OverlayRingSector(void*, float center_x, float center_y,
+    float inner_radius, float outer_radius, float angle_start, float angle_end,
+    std::uint32_t color) {
+    if (!(outer_radius > inner_radius) || !(inner_radius >= 0.0F) ||
+        !(angle_end > angle_start)) {
+        return;
+    }
+    ImDrawList* const list = ImGui::GetForegroundDrawList();
+    const ImVec2 center = OverlayPoint(center_x, center_y);
+    const int segments = (std::max)(
+        4, static_cast<int>((angle_end - angle_start) * outer_radius / 6.0F));
+    list->PathArcTo(center, outer_radius, angle_start, angle_end, segments);
+    list->PathArcTo(center, inner_radius, angle_end, angle_start, segments);
+    list->PathFillConcave(color);
+}
+
+void ANOMALY_CALL OverlayMeasureText(
+    void*, AnomalyStringViewV1 value, float font_size, float* width, float* height) {
+    ImVec2 size{};
+    if (value.data != nullptr && value.size != 0) {
+        ImFont* const font = ImGui::GetFont();
+        const float pixels = font_size > 0.0F ? font_size : ImGui::GetFontSize();
+        size = font->CalcTextSizeA(pixels, FLT_MAX, 0.0F, value.data, value.data + value.size);
+    }
+    if (width != nullptr) *width = size.x;
+    if (height != nullptr) *height = size.y;
+}
+
+void ANOMALY_CALL OverlayText(void*, float x, float y, AnomalyStringViewV1 value,
+    std::uint32_t color, float font_size) {
+    if (value.data == nullptr || value.size == 0) return;
+    ImGui::GetForegroundDrawList()->AddText(ImGui::GetFont(),
+        font_size > 0.0F ? font_size : ImGui::GetFontSize(), OverlayPoint(x, y), color,
+        value.data, value.data + value.size);
+}
+
+int ANOMALY_CALL DrawScreenPrimitives(
+    void*, const AnomalyUiScreenPrimitiveV1* primitives, const std::size_t count) {
+    constexpr std::size_t kMaximumPrimitives = 1U << 20U;
+    if (primitives == nullptr || count == 0 || count > kMaximumPrimitives)
+        return 0;
+    ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+    for (std::size_t index{}; index != count; ++index) {
+        const auto& primitive = primitives[index];
+        if (primitive.struct_size < sizeof(primitive) ||
+            !std::isfinite(primitive.x) || !std::isfinite(primitive.y) ||
+            !std::isfinite(primitive.width) || !std::isfinite(primitive.height) ||
+            !std::isfinite(primitive.thickness))
+            return 0;
+        const ImVec2 first(primitive.x, primitive.y);
+        if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE) {
+            draw_list->AddLine(
+                first, ImVec2(primitive.width, primitive.height),
+                primitive.color_rgba,
+                primitive.thickness > 0.0F ? primitive.thickness : 1.0F);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT) {
+            draw_list->AddRectFilled(
+                first, ImVec2(first.x + primitive.width, first.y + primitive.height),
+                primitive.color_rgba);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_RECT) {
+            draw_list->AddRect(
+                first, ImVec2(first.x + primitive.width, first.y + primitive.height),
+                primitive.color_rgba, 0.0F, 0,
+                primitive.thickness > 0.0F ? primitive.thickness : 1.0F);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_CIRCLE) {
+            if (!(primitive.width > 0.0F)) return 0;
+            draw_list->AddCircleFilled(first, primitive.width, primitive.color_rgba);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_CIRCLE) {
+            if (!(primitive.width > 0.0F)) return 0;
+            draw_list->AddCircle(
+                first, primitive.width, primitive.color_rgba, 0,
+                primitive.thickness > 0.0F ? primitive.thickness : 1.0F);
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 const AnomalyUiServiceV1 kUiService{
     sizeof(AnomalyUiServiceV1), ANOMALY_UI_SERVICE_V1_VERSION, nullptr,
     SetNextWindowSize, BeginWindow, EndWindow, Text, Button, DrawEntityBbox,
@@ -1242,7 +1429,10 @@ const AnomalyUiServiceV1 kUiService{
     SetNextWindowSizeConstraints, GetWindowSize, InputUInt32, InputDouble,
     DeveloperModeEnabled, InputText, ButtonEnabled, SameLine, SetCursorPosX, TextLink,
     BeginTabBar, BeginTabItem, EndTabItem, EndTabBar,
-    TextWrapped, BeginChildAutoFitY, SliderFloatEnabled, SetNextItemWidth};
+    TextWrapped, BeginChildAutoFitY, SliderFloatEnabled, SetNextItemWidth,
+    OverlayViewportSize, OverlayGlass, OverlayRectFilled, OverlayLine, OverlayCircle,
+    OverlayRingSector, OverlayMeasureText, OverlayText, OverlayGlassRingSector,
+    DrawScreenPrimitives};
 
 }  // namespace
 

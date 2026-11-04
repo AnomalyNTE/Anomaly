@@ -102,7 +102,8 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("anomaly.example.my-plugin"),
         anomaly::sdk::StringView("My Plugin"),
         anomaly::sdk::StringView("Me"), anomaly::sdk::StringView("1.0.0"),
-        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw};
+        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw,
+        /*on_overlay*/ nullptr};
     return anomaly::sdk::Ok();
 }
 ```
@@ -115,10 +116,11 @@ The lifecycle callbacks and their thread affinity:
 | `on_start` | Activation | Lifecycle |
 | `on_update(delta)` | Logic update per tick | Game |
 | `on_draw(ui)` | Drawing each frame | Render |
+| `on_overlay(ui)` | Persistent overlay drawing on every render frame, even when the catalog window is closed | Render |
 | `on_stop(deadline)` | Stop, commit state | Lifecycle |
 | `on_unload` | Cleanup before unloading | Lifecycle |
 
-Render callbacks must stay a pure drawing path. Game-semantic service queries, cursor advancement, paging, name resolution and statistics belong in the Game domain `on_update`, converted into the plugin's own immutable display snapshot; `on_draw` only copies the snapshot under a short lock and calls the UI outside the lock. [`nte_combat_demo`](../../../examples/nte_combat_demo/plugin.cpp) demonstrates that boundary: it resolves sources and participants only when new damage arrives, and idle frames do not call NTE services repeatedly.
+Render callbacks must stay a pure drawing path. Game-semantic service queries, cursor advancement, paging, name resolution and statistics belong in the Game domain `on_update`, converted into the plugin's own immutable display snapshot; `on_draw` and `on_overlay` only copy the snapshot under a short lock and call the UI outside the lock. Use `on_overlay` for persistent world markers and `on_draw` for the regular plugin window. [`nte_combat_demo`](../../../examples/nte_combat_demo/plugin.cpp) demonstrates that boundary: it resolves sources and participants only when new damage arrives, and idle frames do not call NTE services repeatedly.
 
 See [Lifecycle and core services](../api-reference/lifecycle-and-core.md) for the complete entry / descriptor definitions.
 

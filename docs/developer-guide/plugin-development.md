@@ -118,7 +118,8 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("anomaly.example.my-plugin"),
         anomaly::sdk::StringView("My Plugin"),
         anomaly::sdk::StringView("Me"), anomaly::sdk::StringView("1.0.0"),
-        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw};
+        Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw,
+        /*on_overlay*/ nullptr};
     return anomaly::sdk::Ok();
 }
 ```
@@ -131,10 +132,11 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
 | `on_start` | 激活 | Lifecycle |
 | `on_update(delta)` | 每 tick 逻辑更新 | Game |
 | `on_draw(ui)` | 每帧绘制 | Render |
+| `on_overlay(ui)` | 每个渲染帧绘制持久覆盖层，窗口关闭时仍调用 | Render |
 | `on_stop(deadline)` | 停止，提交状态 | Lifecycle |
 | `on_unload` | 卸载前清理 | Lifecycle |
 
-Render 回调必须保持为纯绘制路径。游戏语义服务查询、cursor 推进、分页、名称解析和统计应在 Game 域 `on_update` 完成，并转换为插件自有的不可变展示快照；`on_draw` 仅在短锁内复制快照，锁外调用 UI。[`nte_combat_demo`](../../examples/nte_combat_demo/plugin.cpp) 展示了该边界：新伤害到达时才解析来源与参与者，静止帧不会重复调用 NTE 服务。
+Render 回调必须保持为纯绘制路径。游戏语义服务查询、cursor 推进、分页、名称解析和统计应在 Game 域 `on_update` 完成，并转换为插件自有的不可变展示快照；`on_draw` 和 `on_overlay` 仅在短锁内复制快照，锁外调用 UI。持续存在的世界标记应使用 `on_overlay`，普通插件窗口内容使用 `on_draw`。[`nte_combat_demo`](../../examples/nte_combat_demo/plugin.cpp) 展示了该边界：新伤害到达时才解析来源与参与者，静止帧不会重复调用 NTE 服务。
 
 完整入口 / 描述符定义见 [生命周期与 Core 服务](../api-reference/lifecycle-and-core.md)。
 

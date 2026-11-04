@@ -41,6 +41,30 @@ typedef struct AnomalyEspBoxStyleV1 {
     float outline_thickness;
 } AnomalyEspBoxStyleV1;
 
+typedef enum AnomalyUiScreenPrimitiveKindV1 {
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE = 1,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT = 2,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_RECT = 3,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_CIRCLE = 4,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_CIRCLE = 5
+} AnomalyUiScreenPrimitiveKindV1;
+
+// Batched screen-space game-overlay primitive. It is drawn behind host plugin
+// windows, matching the old AHUD overlay ordering. For LINE, x/y and
+// width/height are the two endpoints. For RECT, x/y is the top-left and
+// width/height is the size. For CIRCLE, x/y is the centre and width is the
+// radius. thickness applies to lines and outlined shapes.
+typedef struct AnomalyUiScreenPrimitiveV1 {
+    uint32_t struct_size;
+    uint32_t kind;
+    uint32_t color_rgba;
+    float x;
+    float y;
+    float width;
+    float height;
+    float thickness;
+} AnomalyUiScreenPrimitiveV1;
+
 typedef enum AnomalyUiFrameStateV1 {
     ANOMALY_UI_FRAME_V1_NONE = 0,
     ANOMALY_UI_FRAME_V1_ITEM_HOVERED = 1u << 0u,
@@ -54,7 +78,7 @@ typedef enum AnomalyUiFrameStateV1 {
 typedef enum AnomalyUiTextInputFlagsV1 {
     ANOMALY_UI_TEXT_INPUT_V1_NONE = 0,
     ANOMALY_UI_TEXT_INPUT_V1_DIGITS = 1u << 0u,
-    // 密钥等敏感字段使用密码掩码显示，不影响输入缓冲区的实际内容。
+    // Mask secret fields without changing the contents of the input buffer.
     ANOMALY_UI_TEXT_INPUT_V1_PASSWORD = 1u << 1u
 } AnomalyUiTextInputFlagsV1;
 
@@ -89,8 +113,41 @@ typedef enum AnomalyUiTabItemFlagsV1 {
     ANOMALY_UI_TAB_ITEM_V1_NO_TOOLTIP = 1u << 4u
 } AnomalyUiTabItemFlagsV1;
 
+typedef enum AnomalyUiGlassVariantV1 {
+    // Floating panels, toasts and menus: blurred, lightly tinted, refracting rim.
+    ANOMALY_UI_GLASS_V1_REGULAR = 0,
+    // Highly translucent and sharp.
+    ANOMALY_UI_GLASS_V1_CLEAR = 1,
+    // Thick frosted material without a lens.
+    ANOMALY_UI_GLASS_V1_MATERIAL = 2,
+    // Unblurred magnifying droplet for a selection; draw it before the label it carries.
+    ANOMALY_UI_GLASS_V1_THUMB = 3
+} AnomalyUiGlassVariantV1;
+
+typedef enum AnomalyUiGlassFlagsV1 {
+    ANOMALY_UI_GLASS_V1_NONE = 0,
+    ANOMALY_UI_GLASS_V1_NO_SHADOW = 1u << 0u,
+    // Drops the specular rim line and the contact hairline, leaving an edge drawn by
+    // refraction and shading alone.
+    ANOMALY_UI_GLASS_V1_NO_RIM = 1u << 1u
+} AnomalyUiGlassFlagsV1;
+
+// struct_size must be set. A tint_rgba alpha of zero keeps the variant's own tint.
+// Fields past `scale` are optional and read only when struct_size covers them.
+typedef struct AnomalyUiGlassStyleV1 {
+    uint32_t struct_size;
+    uint32_t flags;      // AnomalyUiGlassFlagsV1
+    uint32_t variant;    // AnomalyUiGlassVariantV1
+    uint32_t tint_rgba;
+    float rounding;
+    float scale;         // <= 0 uses 1
+    float opacity;       // 0..1 fades the whole surface; absent means 1
+    float refraction_scale;  // multiplies how far the edge bends the backdrop; <= 0 or absent means 1
+} AnomalyUiGlassStyleV1;
+
 // Stable C facade over the host UI implementation. Plugins never exchange C++ UI types.
-// Draw callbacks are valid only during the current on_draw callback unless documented otherwise.
+// Window and widget calls are valid only during on_draw. draw_screen_primitives
+// is also valid during on_overlay.
 typedef struct AnomalyUiServiceV1 {
     uint32_t struct_size;
     uint32_t service_version;
@@ -190,6 +247,46 @@ typedef struct AnomalyUiServiceV1 {
     // Width for the next input/slider only; negative values reserve space at the right edge.
     // A width of -1 fills the remaining content width, leaving one pixel.
     void (ANOMALY_CALL *set_next_item_width)(void* user, float width);
+    // Optional append-only overlay API. Overlay calls draw on the foreground of the main
+    // viewport, above every window, in viewport pixels with the origin at its top left.
+    // They are valid only during on_draw and need no window. Angles are radians, 0 points
+    // right and positive angles turn clockwise (screen Y grows downward).
+    void (ANOMALY_CALL *overlay_viewport_size)(void* user, float* width, float* height);
+    // Draws the host liquid glass material and returns 1, or draws the host's solid fallback
+    // and returns 0 when the glass renderer is unavailable or Reduce Transparency is on.
+    // A rounding of half the shorter side makes a disc or capsule.
+    int (ANOMALY_CALL *overlay_glass)(
+        void* user, float x, float y, float width, float height,
+        const AnomalyUiGlassStyleV1* style);
+    void (ANOMALY_CALL *overlay_rect_filled)(
+        void* user, float x, float y, float width, float height,
+        uint32_t color_rgba, float rounding);
+    void (ANOMALY_CALL *overlay_line)(
+        void* user, float x0, float y0, float x1, float y1,
+        uint32_t color_rgba, float thickness);
+    void (ANOMALY_CALL *overlay_circle)(
+        void* user, float center_x, float center_y, float radius,
+        uint32_t color_rgba, float thickness);
+    // Fills the band between inner_radius and outer_radius from angle_start to angle_end.
+    void (ANOMALY_CALL *overlay_ring_sector)(
+        void* user, float center_x, float center_y, float inner_radius, float outer_radius,
+        float angle_start, float angle_end, uint32_t color_rgba);
+    // A font_size of zero uses the current Anomaly UI font size.
+    void (ANOMALY_CALL *overlay_measure_text)(
+        void* user, AnomalyStringViewV1 text, float font_size, float* width, float* height);
+    void (ANOMALY_CALL *overlay_text)(
+        void* user, float x, float y, AnomalyStringViewV1 text,
+        uint32_t color_rgba, float font_size);
+    // Liquid glass shaped as a ring sector; returns like overlay_glass. The span
+    // angle_end - angle_start must be greater than 0 and less than pi. style->rounding
+    // rounds the four corners and is capped at half the band thickness.
+    int (ANOMALY_CALL *overlay_glass_ring_sector)(
+        void* user, float center_x, float center_y, float inner_radius, float outer_radius,
+        float angle_start, float angle_end, const AnomalyUiGlassStyleV1* style);
+    // Appends a batch below host plugin windows. Valid during on_draw and on_overlay.
+    int (ANOMALY_CALL *draw_screen_primitives)(
+        void* user, const AnomalyUiScreenPrimitiveV1* primitives,
+        size_t count);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus

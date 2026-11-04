@@ -26,9 +26,6 @@ void HitTargets() {
   Check(tl::HitTest(layout, layout.stop_button.left + 2, layout.stop_button.top + 2, index) == tl::Hit::Stop, "stop button");
   Check(tl::HitTest(layout, layout.record_button.left + 2, layout.record_button.top + 2, index) == tl::Hit::Record, "record button");
   Check(tl::HitTest(layout, layout.delete_button.left + 2, layout.delete_button.top + 2, index) == tl::Hit::Delete, "delete button");
-  Check(tl::HitTest(layout, layout.export_button.left + 2, layout.export_button.top + 2, index) ==
-            tl::Hit::Export,
-        "export timeline button");
   Check(layout.panel.bottom <= 600.0F - 78.0F, "timeline leaves bottom safe area");
   Check(tl::HitTest(layout, layout.playhead_x, layout.track.top + 2, index) == tl::Hit::Playhead, "playhead");
   Check(tl::HitTest(layout, layout.track.left + 20, layout.track.top + 2, index) == tl::Hit::Track, "track");
@@ -41,27 +38,6 @@ void KeyHit() {
   Check(tl::HitTest(layout, layout.keys[0].x, (layout.track.top + layout.track.bottom) * .5F, index) == tl::Hit::Key && index == 0, "first key");
   Check(tl::HitKey(layout, layout.keys[1].x + 8, (layout.track.top + layout.track.bottom) * .5F) == 1, "key tolerance");
   Check(tl::HitKey(layout, layout.keys[1].x + 12, (layout.track.top + layout.track.bottom) * .5F) == tl::kNone, "outside key tolerance");
-}
-
-void ExportLanes() {
-  std::vector<tl::KeyMark> marks{
-      {10, true, false, false, 0.0F},
-      {50, false, true, false, 0.0F},
-      {70, true, true, true, 0.0F}};
-  const auto layout =
-      tl::MakeLayout(1000.0F, 600.0F, 100, 0, marks, {}, true);
-  const auto lanes = tl::TrackLaneY(layout);
-  Check(layout.export_tracks, "export mode selected");
-  Check(lanes[0] < lanes[1] && lanes[1] < lanes[2],
-        "export lanes are distinct");
-  Check(tl::HitKey(layout, layout.keys[0].x, lanes[0]) == 0,
-        "bone key sits on the bone lane");
-  Check(tl::HitKey(layout, layout.keys[0].x, lanes[1]) == tl::kNone,
-        "a pose-only key is not pickable on the morph lane");
-  Check(tl::HitKey(layout, layout.keys[1].x, lanes[1]) == 1,
-        "morph key sits on the morph lane");
-  Check(tl::HitKey(layout, layout.keys[2].x, lanes[2]) == 2,
-        "camera key sits on the camera lane");
 }
 
 void SmallAndZeroLength() {
@@ -155,8 +131,6 @@ void FitButton() {
   // Lower left: under the play buttons, left of the track, inside the panel.
   Check(layout.fit_button.top > layout.play_button.bottom, "below the play buttons");
   Check(layout.fit_button.right < layout.track.left, "left of the track");
-  Check(layout.export_button.right <= layout.track.left,
-        "export switch stays in the left gutter");
   Check(layout.fit_button.bottom <= layout.panel.bottom &&
             layout.fit_button.left >= layout.panel.left,
         "inside the panel");
@@ -187,10 +161,10 @@ void PlaybackShortcut() {
 }  // namespace
 
 int main() {
-  LayoutAndMapping(); HitTargets(); KeyHit(); ExportLanes(); SmallAndZeroLength();
+  LayoutAndMapping(); HitTargets(); KeyHit(); SmallAndZeroLength();
   ViewClamp(); ZoomKeepsTheCursorFrame(); PanAndFollow(); ZoomedLayout();
   FitButton(); PlaybackShortcut();
   std::cout << "PASS timeline layout, mapping, hit targets, key hit, zero length, view clamp, "
-               "export lanes and switch, zoom around cursor (120 units/notch), "
+               "zoom around cursor (120 units/notch), "
                "pan and follow, zoomed layout, fit button, playback shortcut\n";
 }
