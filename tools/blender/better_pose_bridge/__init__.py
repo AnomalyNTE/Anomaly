@@ -280,6 +280,8 @@ def _on_begin(result):
     if not source_bones:
         # A camera-only session does not need a game skeleton. Keep any
         # armature already present in Blender and send just the camera track.
+        scene["betterpose_game_camera_loaded"] = bool(
+            result.get("camera_loaded", False))
         scene.bp_live = False
         if "betterpose_camera_delta_baseline" in scene:
             del scene["betterpose_camera_delta_baseline"]
@@ -402,6 +404,8 @@ def _on_begin(result):
     _capture_camera_baseline(scene)
     scene.bp_live = True
     _connected = True
+    scene["betterpose_game_camera_loaded"] = bool(
+        result.get("camera_loaded", False))
     if result.get("camera_loaded") and result.get("camera_enabled"):
         _set_status("已连接 BetterPose；驱动镜头随 Blender 时间轴播放")
     else:
@@ -411,6 +415,9 @@ def _on_begin(result):
 def _on_command(result):
     if not result.get("ok"):
         _set_status("游戏请求失败：" + result.get("error", "未知错误"))
+    elif "camera_loaded" in result:
+        bpy.context.scene["betterpose_game_camera_loaded"] = bool(
+            result.get("camera_loaded"))
 
 
 def _finish_pull():
@@ -670,17 +677,39 @@ def _camera_from_key(camera):
     return position, rotation
 
 
+def _subject_world_focus(armature, depsgraph):
+    if armature is None:
+        return None
+    sampled = armature.evaluated_get(depsgraph)
+    points = []
+    for bone in sampled.pose.bones:
+        points.append(sampled.matrix_world @ bone.head)
+        points.append(sampled.matrix_world @ bone.tail)
+    if not points:
+        return None
+    low = Vector((min(point.x for point in points),
+                  min(point.y for point in points),
+                  min(point.z for point in points)))
+    high = Vector((max(point.x for point in points),
+                   max(point.y for point in points),
+                   max(point.z for point in points)))
+    return (low + high) * 0.5
+
+
 def _camera_key(scene, camera):
     if not _is_betterpose_camera(scene):
         return None
     depsgraph = bpy.context.evaluated_depsgraph_get()
     sampled_camera = camera.evaluated_get(depsgraph)
-    focus = Vector(scene.get("betterpose_camera_focus", [0, 0, 0]))
+    armature = _armature(scene)
+    configured_focus = scene.get("betterpose_camera_focus")
+    focus = Vector(configured_focus if configured_focus else [0, 0, 0])
+    if not scene.get("betterpose_game_camera_loaded", False):
+        focus = _subject_world_focus(armature, depsgraph) or focus
     delta = sampled_camera.location - focus
     distance = max(delta.length, 0.01)
     direction = delta.normalized()
     matrix = sampled_camera.matrix_world
-    armature = _armature(scene)
     sampled_armature = (armature.evaluated_get(depsgraph)
                         if armature else None)
     relative = (sampled_armature.matrix_world.inverted() @ matrix.translation

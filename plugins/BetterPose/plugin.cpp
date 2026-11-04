@@ -1524,6 +1524,10 @@ struct Context final {
   std::array<std::atomic<double>, 3> blender_camera_base_location{};
   std::array<std::atomic<double>, 3> blender_camera_base_rotation{};
   std::array<std::atomic<double>, 3>
+      blender_camera_frozen_base_location{};
+  std::array<std::atomic<double>, 3>
+      blender_camera_frozen_base_rotation{};
+  std::array<std::atomic<double>, 3>
       blender_camera_loaded_correction_base_location{};
   std::array<std::atomic<double>, 3>
       blender_camera_loaded_correction_base_rotation{};
@@ -1534,9 +1538,12 @@ struct Context final {
   std::atomic<double> blender_camera_base_scale{1.0};
   std::atomic_bool blender_camera_anchor_valid{};
   std::atomic_bool blender_camera_base_valid{};
+  std::atomic_bool blender_camera_frozen_base_valid{};
   std::atomic_bool blender_camera_loaded_correction_base_valid{};
   std::atomic<std::uint64_t> blender_camera_direct_log_ms{};
   std::atomic<float> blender_camera_base_fov{};
+  std::atomic<float> blender_camera_frozen_base_fov{};
+  std::atomic<int> blender_camera_drive_mode{-1};
   std::atomic<double> blender_camera_frame_time{-1.0};
   std::atomic<double> blender_camera_hook_time{-1.0};
   // Camera hook and character anchor. The hook rewrites the POV at view-build time (see
@@ -2101,9 +2108,12 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
                                                    std::memory_order_release);
     context.blender_camera_source_valid.store(false, std::memory_order_release);
     context.blender_camera_base_valid.store(false, std::memory_order_release);
+    context.blender_camera_frozen_base_valid.store(false,
+                                                   std::memory_order_release);
     context.blender_camera_loaded_correction_base_valid.store(
         false, std::memory_order_release);
     context.blender_camera_anchor_valid.store(false, std::memory_order_release);
+    context.blender_camera_drive_mode.store(-1, std::memory_order_release);
     context.blender_camera_direct_log_ms.store(0, std::memory_order_release);
     context.blender_camera_base_fov.store(0.0F, std::memory_order_release);
     context.blender_camera_fov.store(0.0F, std::memory_order_release);
@@ -2154,9 +2164,12 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
                                                    std::memory_order_release);
     context.blender_camera_source_valid.store(false, std::memory_order_release);
     context.blender_camera_base_valid.store(false, std::memory_order_release);
+    context.blender_camera_frozen_base_valid.store(false,
+                                                   std::memory_order_release);
     context.blender_camera_loaded_correction_base_valid.store(
         false, std::memory_order_release);
     context.blender_camera_anchor_valid.store(false, std::memory_order_release);
+    context.blender_camera_drive_mode.store(-1, std::memory_order_release);
     context.blender_camera_direct_log_ms.store(0, std::memory_order_release);
     context.blender_camera_base_fov.store(0.0F, std::memory_order_release);
     context.blender_camera_fov.store(0.0F, std::memory_order_release);
@@ -2196,7 +2209,9 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
     return {{"ok", true}};
   }
   if (path == "ping")
-    return {{"ok", true}, {"sequence", context.blender_sequence}};
+    return {{"ok", true}, {"sequence", context.blender_sequence},
+            {"camera_loaded",
+             context.camera_loaded.load(std::memory_order_acquire)}};
   if (path != "frame")
     return BlenderError("未知 Blender 请求");
   const auto sequence = body.value("sequence", std::uint64_t{});
@@ -2797,9 +2812,12 @@ void BlenderStopServer(Context &context) noexcept {
                                                    std::memory_order_release);
   context.blender_camera_source_valid.store(false, std::memory_order_release);
   context.blender_camera_base_valid.store(false, std::memory_order_release);
+  context.blender_camera_frozen_base_valid.store(false,
+                                                 std::memory_order_release);
   context.blender_camera_loaded_correction_base_valid.store(
       false, std::memory_order_release);
   context.blender_camera_anchor_valid.store(false, std::memory_order_release);
+  context.blender_camera_drive_mode.store(-1, std::memory_order_release);
   context.blender_camera_direct_log_ms.store(0, std::memory_order_release);
   context.blender_camera_base_fov.store(0.0F, std::memory_order_release);
   context.blender_camera_fov.store(0.0F, std::memory_order_release);
@@ -7006,6 +7024,35 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
     const bool track_mode =
         context != nullptr && context->camera_enabled.load(std::memory_order_acquire) &&
         context->camera_loaded.load(std::memory_order_acquire);
+    const int camera_drive_mode =
+        follow_mode ? 1 : direct_mode ? 2 : correction_mode ? 3 : track_mode ? 4 : 0;
+    if (context != nullptr &&
+        context->blender_camera_drive_mode.exchange(
+            camera_drive_mode, std::memory_order_acq_rel) != camera_drive_mode) {
+      // Direct Blender, loaded-track correction and the no-relative fallback
+      // use different coordinate spaces. Reusing a baseline while the user
+      // loads or unloads a CameraTrack shifted the entire shot because world
+      // coordinates could survive in a field that now expected local offsets.
+      context->blender_camera_base_valid.store(false,
+                                               std::memory_order_release);
+      context->blender_camera_frozen_base_valid.store(
+          false, std::memory_order_release);
+      context->blender_camera_loaded_correction_base_valid.store(
+          false, std::memory_order_release);
+      context->blender_camera_anchor_valid.store(false,
+                                                 std::memory_order_release);
+      context->blender_camera_hook_time.store(-1.0,
+                                              std::memory_order_release);
+      context->camera_anchored.store(false, std::memory_order_release);
+      context->camera_anchor_wait = 0;
+      const char *mode_name = camera_drive_mode == 1 ? "follow"
+          : camera_drive_mode == 2 ? "direct-blender"
+          : camera_drive_mode == 3 ? "track-correction"
+          : camera_drive_mode == 4 ? "track"
+          : "inactive";
+      LogDiagnostic(*context, std::string("betterpose camera baseline reset mode=") +
+                               mode_name);
+    }
     // The getter's two out-parameters are the camera the view is built from: a location and a
     // rotation, three doubles each -- the free-camera plugin hooks this same function and reads and
     // writes the same two, which is why this plugin now drives them instead of the POV member the
@@ -7300,20 +7347,20 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
                 LogDiagnostic(*context, message);
               }
             } else {
-              if (!context->blender_camera_base_valid.load(
+              if (!context->blender_camera_frozen_base_valid.load(
                       std::memory_order_acquire)) {
                 for (int axis{}; axis != 3; ++axis) {
-                  context->blender_camera_base_location[axis].store(
+                  context->blender_camera_frozen_base_location[axis].store(
                       game_location[axis], std::memory_order_release);
-                  context->blender_camera_base_rotation[axis].store(
+                  context->blender_camera_frozen_base_rotation[axis].store(
                       game_rotation[axis], std::memory_order_release);
                 }
                 float base_fov{};
                 if (Read(*context, fov_address, base_fov) &&
                     base_fov > 5.0F && base_fov < 170.0F)
-                  context->blender_camera_base_fov.store(
+                  context->blender_camera_frozen_base_fov.store(
                       base_fov, std::memory_order_release);
-                context->blender_camera_base_valid.store(
+                context->blender_camera_frozen_base_valid.store(
                     true, std::memory_order_release);
               }
               const double delta_x =
@@ -7326,21 +7373,21 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               const double cos_yaw = std::cos(yaw);
               const double sin_yaw = std::sin(yaw);
               out_location[0] =
-                  context->blender_camera_base_location[0].load(
+                  context->blender_camera_frozen_base_location[0].load(
                       std::memory_order_acquire) +
                   delta_x * cos_yaw - delta_y * sin_yaw;
               out_location[1] =
-                  context->blender_camera_base_location[1].load(
+                  context->blender_camera_frozen_base_location[1].load(
                       std::memory_order_acquire) +
                   delta_x * sin_yaw + delta_y * cos_yaw;
               out_location[2] =
-                  context->blender_camera_base_location[2].load(
+                  context->blender_camera_frozen_base_location[2].load(
                       std::memory_order_acquire) +
                   context->blender_camera_motion_delta_location[2].load(
                       std::memory_order_acquire);
               for (int axis{}; axis != 3; ++axis)
                 out_rotation[axis] =
-                    context->blender_camera_base_rotation[axis].load(
+                    context->blender_camera_frozen_base_rotation[axis].load(
                         std::memory_order_acquire) +
                     context->blender_camera_motion_delta_rotation
                         [static_cast<std::size_t>(axis)]
@@ -7532,20 +7579,20 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               // lets collision, follow and mouse motion shift the shot every
               // frame; applying it to this fixed baseline matches the Blender
               // preview and remains independent of a loaded game track.
-              if (!context->blender_camera_base_valid.load(
+              if (!context->blender_camera_frozen_base_valid.load(
                       std::memory_order_acquire)) {
                 for (int axis{}; axis != 3; ++axis) {
-                  context->blender_camera_base_location[axis].store(
+                  context->blender_camera_frozen_base_location[axis].store(
                       game_location[axis], std::memory_order_release);
-                  context->blender_camera_base_rotation[axis].store(
+                  context->blender_camera_frozen_base_rotation[axis].store(
                       game_rotation[axis], std::memory_order_release);
                 }
                 float base_fov{};
                 if (Read(*context, fov_address, base_fov) &&
                     base_fov > 5.0F && base_fov < 170.0F)
-                  context->blender_camera_base_fov.store(
+                  context->blender_camera_frozen_base_fov.store(
                       base_fov, std::memory_order_release);
-                context->blender_camera_base_valid.store(
+                context->blender_camera_frozen_base_valid.store(
                     true, std::memory_order_release);
               }
 
@@ -7562,20 +7609,20 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
               const double cos_yaw = std::cos(yaw);
               const double sin_yaw = std::sin(yaw);
               out_location[0] =
-                  context->blender_camera_base_location[0].load(
+                  context->blender_camera_frozen_base_location[0].load(
                       std::memory_order_acquire) +
                   delta_x * cos_yaw - delta_y * sin_yaw;
               out_location[1] =
-                  context->blender_camera_base_location[1].load(
+                  context->blender_camera_frozen_base_location[1].load(
                       std::memory_order_acquire) +
                   delta_x * sin_yaw + delta_y * cos_yaw;
               out_location[2] =
-                  context->blender_camera_base_location[2].load(
+                  context->blender_camera_frozen_base_location[2].load(
                       std::memory_order_acquire) +
                   delta_z;
               for (int axis{}; axis != 3; ++axis)
                 out_rotation[axis] =
-                    context->blender_camera_base_rotation[axis].load(
+                    context->blender_camera_frozen_base_rotation[axis].load(
                         std::memory_order_acquire) +
                     context->blender_camera_motion_delta_rotation
                         [static_cast<std::size_t>(axis)]
@@ -17966,9 +18013,12 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
            std::memory_order_acquire));
   if (!direct_blender_camera) {
     context.blender_camera_base_valid.store(false, std::memory_order_release);
+    context.blender_camera_frozen_base_valid.store(
+        false, std::memory_order_release);
     context.blender_camera_loaded_correction_base_valid.store(
         false, std::memory_order_release);
     context.blender_camera_anchor_valid.store(false, std::memory_order_release);
+    context.blender_camera_drive_mode.store(-1, std::memory_order_release);
   }
   const bool motion_playing_now =
       context.motion_playing.load(std::memory_order_acquire);
