@@ -1,4 +1,5 @@
 #include "anomaly/host_ui_service.hpp"
+#include "anomaly/hook_manager.hpp"
 #include "anomaly/plugin_config_watcher.hpp"
 #include "anomaly/plugin_file_watcher.hpp"
 #include "pattern.hpp"
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -63,6 +65,7 @@ constexpr std::uint64_t kMaxPrivateGrowthBudgetBytes = 4ULL * 1024ULL * 1024ULL 
 
 void Usage() {
     std::cerr << "usage: anomaly-test-host --watcher-fixture | --config-watcher-fixture | "
+                 "--hook-stop-order-fixture "
                  "--plugin <package-or-root> [--reload N] [--ticks N] "
                  "[--duration-seconds N] [--tick-interval-ms N] [--reload-every-ticks N] "
                  "[--private-growth-budget-bytes N]\n";
@@ -310,12 +313,113 @@ bool VerifyEnablementConfigReload(const std::filesystem::path& root) {
     return reloaded;
 }
 
+struct HookStopOrderProbe {
+    std::atomic<int> batch_disable_calls{};
+    std::atomic<int> individual_disable_calls{};
+    std::atomic<int> remove_calls{};
+};
+
+class RejectBatchHookBackend final : public anomaly::HookBackend {
+public:
+    explicit RejectBatchHookBackend(std::shared_ptr<HookStopOrderProbe> probe)
+        : probe_(std::move(probe)) {}
+
+    bool Initialize() noexcept override { return true; }
+    void Uninitialize() noexcept override {}
+
+    bool Create(void* target, void*, void** original) noexcept override {
+        if (target == nullptr || original == nullptr) return false;
+        *original = target;
+        return true;
+    }
+
+    bool Enable(void*) noexcept override { return true; }
+    bool Disable(void*) noexcept override {
+        ++probe_->individual_disable_calls;
+        return true;
+    }
+
+    bool Remove(void*) noexcept override {
+        ++probe_->remove_calls;
+        return true;
+    }
+
+    bool QueueDisable(void*) noexcept override {
+        ++probe_->batch_disable_calls;
+        return false;
+    }
+
+    bool ApplyQueued() noexcept override { return true; }
+
+private:
+    std::shared_ptr<HookStopOrderProbe> probe_;
+};
+
+bool VerifyHookStopOrderFixture(const std::filesystem::path& root) {
+    const auto inline_dispatch = [](
+        std::string, std::uint64_t, std::function<void()> callback) -> bool {
+        if (!callback) return false;
+        callback();
+        return true;
+    };
+    auto probe = std::make_shared<HookStopOrderProbe>();
+    ue5mem::PluginManager manager(
+        root, root, {}, {}, {}, inline_dispatch, inline_dispatch, {},
+        std::make_unique<RejectBatchHookBackend>(probe));
+    manager.LoadAll();
+    auto loaded = manager.Plugins();
+    auto plugin = std::ranges::find_if(loaded, [](const auto& view) {
+        return view.id == "anomaly.test.hook-lifecycle";
+    });
+    if (plugin != loaded.end() && plugin->state == "disabled" &&
+        manager.SetEnabled(plugin->id, true)) {
+        loaded = manager.Plugins();
+        plugin = std::ranges::find_if(loaded, [](const auto& view) {
+            return view.id == "anomaly.test.hook-lifecycle";
+        });
+    }
+    if (plugin == loaded.end() || plugin->state != "active") {
+        std::cerr << "hook stop order fixture plugin did not activate";
+        if (plugin == loaded.end()) {
+            std::cerr << ": missing\n";
+        } else {
+            std::cerr << ": state=" << plugin->state
+                      << " reason=" << plugin->status_reason << '\n';
+        }
+        return false;
+    }
+
+    const bool stopped = manager.StopForRuntime(std::chrono::seconds(1));
+    const bool quarantined = std::ranges::any_of(
+        manager.Plugins(), [](const auto& view) {
+            return view.id == "anomaly.test.hook-lifecycle" &&
+                view.state == "quarantined";
+        });
+    const bool released_from_on_stop =
+        probe->individual_disable_calls.load() == 1 &&
+        probe->remove_calls.load() == 1 &&
+        probe->batch_disable_calls.load() == 0;
+    if (!stopped || quarantined || !released_from_on_stop) {
+        std::cerr
+            << "hook stop order fixture failed: stopped=" << (stopped ? 1 : 0)
+            << " quarantined=" << (quarantined ? 1 : 0)
+            << " batch_disable_calls=" << probe->batch_disable_calls.load()
+            << " individual_disable_calls="
+            << probe->individual_disable_calls.load()
+            << " remove_calls=" << probe->remove_calls.load() << '\n';
+        return false;
+    }
+    std::cout << "ok plugin_hook_stop_order individual_release=1 fallback=0\n";
+    return true;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
     std::filesystem::path input;
     bool watcher_fixture{};
     bool config_watcher_fixture{};
+    bool hook_stop_order_fixture{};
     bool enablement_fixture{};
     int reloads = 1;
     int ticks = 3;
@@ -327,6 +431,7 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring_view argument(argv[index]);
         if (argument == L"--watcher-fixture") watcher_fixture = true;
         else if (argument == L"--config-watcher-fixture") config_watcher_fixture = true;
+        else if (argument == L"--hook-stop-order-fixture") hook_stop_order_fixture = true;
         else if (argument == L"--enablement-fixture") enablement_fixture = true;
         else if (argument == L"--plugin" && index + 1 < argc) input = argv[++index];
         else if (argument == L"--reload" && index + 1 < argc) reloads = _wtoi(argv[++index]);
@@ -392,6 +497,15 @@ int wmain(int argc, wchar_t** argv) {
             return 12;
         }
         std::cout << "ok enablement_config_reload enable_applied=1\n";
+        return 0;
+    }
+    if (hook_stop_order_fixture) {
+        const bool ok = VerifyHookStopOrderFixture(root);
+        if (!staging.empty()) std::filesystem::remove_all(staging, error);
+        if (!ok) {
+            std::cerr << "plugin hook stop order fixture failed\n";
+            return 13;
+        }
         return 0;
     }
     int result = 0;

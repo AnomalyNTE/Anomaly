@@ -44,6 +44,11 @@ typedef struct AnomalyPluginDescriptorV1 {
 | `on_draw` | Per-frame drawing (Render domain); may be `NULL` |
 | `on_overlay` | Runs every render frame in the Render domain even while the plugin window is closed; use it only for persistent world overlays such as `draw_screen_primitives`; may be `NULL` |
 
+On stop or hot reload, the host first freezes ordinary callback sources and waits for callbacks that
+are already running. It then calls `on_stop`; the plugin can still release its hooks and other scoped
+resources there. The host revokes any leftovers as a fallback. If that fallback cannot drain safely,
+the plugin generation is quarantined and its DLL is not unmapped immediately.
+
 `on_overlay` is an optional tail field in the V1 descriptor. The host calls it only when `struct_size`
 covers the field and the callback is non-null. Plugins that need to run against older hosts can keep a
 fallback drawing path in `on_draw`.

@@ -2,6 +2,7 @@
 
 #include "json.hpp"
 #include "anomaly/adapter_service_registry.hpp"
+#include "anomaly/hook_manager.hpp"
 #include "anomaly/i18n.hpp"
 #include "anomaly/plugin_capability_policy.hpp"
 #include "anomaly/plugin_dependency_resolver.hpp"
@@ -113,6 +114,18 @@ constexpr std::wstring_view kPluginCacheOwnerFile{L".owner.lock"};
 constexpr std::size_t kMaximumNteEscMenuButtonIconBytes = 1024U * 1024U;
 constexpr std::array<std::uint8_t, 8> kPngSignature{
     0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU};
+
+std::unique_ptr<anomaly::ScopedPlatformServices> CreatePlatformServices(
+    anomaly::CoreMemoryServices memory_services,
+    std::shared_ptr<anomaly::ResourceLedger> ledger,
+    std::unique_ptr<anomaly::HookBackend> hook_backend) {
+    if (hook_backend != nullptr) {
+        return std::make_unique<anomaly::ScopedPlatformServices>(
+            std::move(memory_services), std::move(ledger), std::move(hook_backend));
+    }
+    return std::make_unique<anomaly::ScopedPlatformServices>(
+        std::move(memory_services), std::move(ledger));
+}
 
 std::uint32_t ANOMALY_CALL ExpandAnomalyFromNteEscMenu(
     void*, AnomalyGenerationHandleV1) noexcept {
@@ -3938,7 +3951,8 @@ PluginManager::PluginManager(
     std::shared_ptr<anomaly::StructuredLogger> logger,
     anomaly::HotkeyDispatcher input_dispatcher,
     UiResourceWorkerDispatcher ui_resource_worker_dispatcher,
-    anomaly::IpcPost ipc_post)
+    anomaly::IpcPost ipc_post,
+    std::unique_ptr<anomaly::HookBackend> hook_backend)
     : root_(std::filesystem::absolute(root)),
       plugin_directory_(plugin_directory.is_absolute() ? std::move(plugin_directory)
                                                         : root_ / plugin_directory),
@@ -3955,8 +3969,8 @@ PluginManager::PluginManager(
        ui_resource_worker_dispatcher_(std::move(ui_resource_worker_dispatcher)),
        ui_resource_worker_gate_(std::make_shared<UiResourceWorkerGate>()),
        lifecycle_ledger_(std::make_shared<anomaly::ResourceLedger>()),
-      platform_services_(std::make_unique<anomaly::ScopedPlatformServices>(
-          memory_services_, lifecycle_ledger_)),
+      platform_services_(CreatePlatformServices(
+          memory_services_, lifecycle_ledger_, std::move(hook_backend))),
       ipc_registry_(std::make_unique<anomaly::IpcRegistry>(std::move(ipc_post))),
       nte_esc_menu_buttons_(std::make_shared<NteEscMenuButtonRegistry>()) {
     if (g_manager != nullptr || g_process_quarantined) {
@@ -5208,15 +5222,6 @@ bool PluginManager::UnloadIndicesWithDeadline(
             if (queued_callback_canceller_) {
                 try { queued_callback_canceller_(plugin.view.id, generation); } catch (...) {}
             }
-            const bool platform_revoked = platform_services_ == nullptr ||
-                platform_services_->RevokeScope(
-                    ScopedPlatformOwner(plugin.service_context), deadline,
-                    anomaly::ScopedPlatformRevokePhase::PreStop);
-            if (!platform_revoked) {
-                quarantine = true;
-                timed_out = StopRemaining(deadline) == std::chrono::milliseconds::zero();
-                quarantine_reason = "platform hook revocation failed";
-            }
         }
 
         const auto remaining_before_stop = StopRemaining(deadline);
@@ -5237,10 +5242,6 @@ bool PluginManager::UnloadIndicesWithDeadline(
                 timed_out = true;
                 quarantine_reason = "callback barrier timed out";
             }
-        }
-
-        if (!quarantine && scope != nullptr) {
-            static_cast<void>(scope->RevokeAllExcept(anomaly::PluginResourceKind::Config));
         }
 
         if (!quarantine && plugin.started &&
@@ -5284,6 +5285,27 @@ bool PluginManager::UnloadIndicesWithDeadline(
                             "on_stop status=" + std::to_string(status.code);
                     }
                 }
+            }
+        }
+
+        // Give the plugin lifecycle callback first ownership of its installed
+        // hooks. BetterPose, for example, sets its callback-side stopping flag
+        // and releases the exact hook handles it owns. A host-initiated batch
+        // removal before on_stop can intermittently fail while the same
+        // individual removals succeed from the lifecycle thread. PreStop is
+        // still the fallback for plugins that leave hooks installed.
+        if (!quarantine && scope != nullptr) {
+            const bool platform_revoked = platform_services_ == nullptr ||
+                platform_services_->RevokeScope(
+                    ScopedPlatformOwner(plugin.service_context), deadline,
+                    anomaly::ScopedPlatformRevokePhase::PreStop);
+            if (!platform_revoked) {
+                quarantine = true;
+                timed_out = StopRemaining(deadline) == std::chrono::milliseconds::zero();
+                quarantine_reason = "platform hook revocation failed";
+            } else {
+                static_cast<void>(scope->RevokeAllExcept(
+                    anomaly::PluginResourceKind::Config));
             }
         }
 

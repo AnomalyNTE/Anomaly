@@ -132,7 +132,10 @@ typedef struct AnomalyHookServiceV1 {
 | `end_callback(callback_lease)` | 退出 detour 时归还租约 |
 
 > [!IMPORTANT]
-> detour 实现**必须**以 `begin_callback` / `end_callback` 成对包围，宿主借此在停止 / 卸载时安全 drain。当前实现的 hook kind 以 `ANOMALY_HOOK_V1_FUNCTION` 为主。有 Owner 的 HookManager 只启停并回收自身 hook，不使用全局开关。
+> detour 实现**必须**以 `begin_callback` / `end_callback` 成对包围，宿主借此在停止 / 卸载时安全 drain。
+> `begin_callback` 失败时仍应执行原函数，但不得继续运行插件自己的 hook 逻辑。插件应在 `on_stop`
+> 中主动释放 hook；宿主会在该回调之后回收剩余 hook 作为兜底。当前实现的 hook kind 以
+> `ANOMALY_HOOK_V1_FUNCTION` 为主。有 Owner 的 HookManager 只启停并回收自身 hook，不使用全局开关。
 
 ---
 

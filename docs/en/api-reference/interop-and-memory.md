@@ -144,7 +144,12 @@ typedef struct AnomalyHookServiceV1 {
 | `end_callback(callback_lease)` | returns the lease when leaving the detour |
 
 > [!IMPORTANT]
-> A detour implementation **must** be wrapped in a paired `begin_callback` / `end_callback`; the host relies on this to drain safely on stop / unload. The current implementation's hook kind is mainly `ANOMALY_HOOK_V1_FUNCTION`. A HookManager that has an owner only starts, stops, and reclaims its own hooks and does not use a global switch.
+> A detour implementation **must** be wrapped in a paired `begin_callback` / `end_callback`; the host
+> relies on this to drain safely on stop / unload. If `begin_callback` fails, the detour must still run
+> the original function but must not continue plugin-owned hook logic. Plugins should release their
+> hooks in `on_stop`; the host revokes any leftovers after that callback as a fallback. The current
+> implementation's hook kind is mainly `ANOMALY_HOOK_V1_FUNCTION`. A HookManager that has an owner only
+> starts, stops, and reclaims its own hooks and does not use a global switch.
 
 ---
 

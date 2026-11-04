@@ -6233,6 +6233,16 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
   } catch (...) {
   }
 
+  // Freezing the host scope makes new hook callbacks fail to acquire a lease.
+  // Still call the game's original tick, but never execute plugin-owned pose
+  // code without a lease or after on_stop has started.
+  if (!leased || context == nullptr ||
+      context->stopping.load(std::memory_order_acquire)) {
+    if (leased && HookReady(context->hook))
+      static_cast<void>(context->hook->end_callback(context->hook->user, lease));
+    return;
+  }
+
   try {
     if (context != nullptr) {
       const auto address = reinterpret_cast<std::uintptr_t>(object);
@@ -7169,6 +7179,16 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
     if (original != nullptr)
       pov = original(self, first, second);
   } catch (...) {
+  }
+
+  // Preserve the game's camera read even when the host has frozen callback
+  // sources. Plugin-owned writes are valid only while this invocation owns a
+  // callback lease and the plugin has not entered on_stop.
+  if (!leased || context == nullptr ||
+      context->stopping.load(std::memory_order_acquire)) {
+    if (leased && HookReady(context->hook))
+      static_cast<void>(context->hook->end_callback(context->hook->user, lease));
+    return pov;
   }
 
   // The pose camera comes first and owns the view outright while it is on.
