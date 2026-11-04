@@ -110,6 +110,7 @@ void*    user;             // 调用每个函数时作为第一个参数回传
 | `anomaly.config` | 1 | `configuration` | [config](platform-services.md#anomalyconfig) |
 | `anomaly.storage` | 1 | `storage` | [storage](platform-services.md#anomalystorage) |
 | `anomaly.json` | 1 | `json` | [json](platform-services.md#anomalyjson) |
+| `anomaly.profile` | 1 | `json` | [profile](platform-services.md#anomalyprofile) |
 | `anomaly.runtime-info` | 1 | `runtime-info` | [runtime-info](platform-services.md#anomalyruntime-info) |
 | `anomaly.diagnostics` | 1 | `diagnostics` | [diagnostics](platform-services.md#anomalydiagnostics) |
 | `anomaly.scheduler` | 1 | `scheduler` | [scheduler](platform-services.md#anomalyscheduler) |

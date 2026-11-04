@@ -93,6 +93,7 @@ Every required (non-optional) service needs the capability listed in the table b
 | `anomaly.config` | `configuration` |
 | `anomaly.storage` | `storage` |
 | `anomaly.json` | `json` |
+| `anomaly.profile` | `json` |
 | `anomaly.runtime-info` | `runtime-info` |
 | `anomaly.diagnostics` | `diagnostics` |
 | `anomaly.scheduler` | `scheduler` |

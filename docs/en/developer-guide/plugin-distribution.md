@@ -48,6 +48,7 @@ plugin.dll
 package.sha256
 assets\               optional
 locales\              optional
+profile\              optional
 other native DLLs     optional
 ```
 
