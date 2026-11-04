@@ -1,0 +1,16 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_MonsterStaticData_BigWorld",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Monster/DT_MonsterStaticData_BigWorld",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'MonsterStaticData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {}
+  }
+]

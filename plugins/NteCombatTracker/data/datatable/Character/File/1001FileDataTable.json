@@ -1,0 +1,189 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1001FileDataTable",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/File/1001FileDataTable",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterFileData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1001": {
+        "CVNameArr": [],
+        "Birthday": {
+          "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+          "Key": "Characterfile_test001",
+          "SourceString": "<!>临时译文",
+          "LocalizedString": "<!>临时译文"
+        },
+        "BirthdaySkillName": {
+          "CultureInvariantString": null
+        },
+        "HomePlace": {
+          "CultureInvariantString": null
+        },
+        "AbilityName": {
+          "CultureInvariantString": null
+        },
+        "Introduction": {
+          "CultureInvariantString": null
+        },
+        "DetailContent": [
+          {
+            "ID": "detail01",
+            "Title": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "Content": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "AudioEvent": {
+              "AssetPathName": "",
+              "SubPathString": ""
+            },
+            "Conditions": [
+              {
+                "Firendly": 0,
+                "QuestId": "None",
+                "CharacterFileBreakLevel": 0
+              }
+            ]
+          },
+          {
+            "ID": "detail02",
+            "Title": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "Content": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "AudioEvent": {
+              "AssetPathName": "",
+              "SubPathString": ""
+            },
+            "Conditions": [
+              {
+                "Firendly": 2,
+                "QuestId": "None",
+                "CharacterFileBreakLevel": 0
+              }
+            ]
+          }
+        ],
+        "DailyContent": [
+          {
+            "ID": "Daily01",
+            "Title": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "Content": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "AudioEvent": {
+              "AssetPathName": "/Game/WwiseAudio/Events/Voice/Char/NPC013/Play_Vo_Char_NPC013_greet_001.Play_Vo_Char_NPC013_greet_001",
+              "SubPathString": ""
+            },
+            "Conditions": []
+          },
+          {
+            "ID": "Daily02",
+            "Title": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "Content": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "AudioEvent": {
+              "AssetPathName": "/Game/WwiseAudio/Events/Voice/Char/NPC013/Play_Vo_Char_NPC013_greet_001.Play_Vo_Char_NPC013_greet_001",
+              "SubPathString": ""
+            },
+            "Conditions": [
+              {
+                "Firendly": 2,
+                "QuestId": "None",
+                "CharacterFileBreakLevel": 0
+              }
+            ]
+          }
+        ],
+        "BattleContent": [
+          {
+            "ID": "Battle01",
+            "Title": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "Content": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "AudioEvent": {
+              "AssetPathName": "/Game/WwiseAudio/Events/Voice/Char/NPC013/Play_Vo_Char_NPC013_greet_001.Play_Vo_Char_NPC013_greet_001",
+              "SubPathString": ""
+            },
+            "Conditions": []
+          },
+          {
+            "ID": "Battle02",
+            "Title": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "Content": {
+              "TableId": "/Game/Text/Gamepad/ST_Gamepad.ST_Gamepad",
+              "Key": "Characterfile_test001",
+              "SourceString": "<!>临时译文",
+              "LocalizedString": "<!>临时译文"
+            },
+            "AudioEvent": {
+              "AssetPathName": "/Game/WwiseAudio/Events/Voice/Char/NPC013/Play_Vo_Char_NPC013_greet_001.Play_Vo_Char_NPC013_greet_001",
+              "SubPathString": ""
+            },
+            "Conditions": [
+              {
+                "Firendly": 2,
+                "QuestId": "None",
+                "CharacterFileBreakLevel": 0
+              }
+            ]
+          }
+        ],
+        "CharacterPassByAudioEvents": []
+      }
+    }
+  }
+]

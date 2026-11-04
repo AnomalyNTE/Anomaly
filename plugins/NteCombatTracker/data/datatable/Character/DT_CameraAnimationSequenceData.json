@@ -1,0 +1,185 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_CameraAnimationSequenceData",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/DT_CameraAnimationSequenceData",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CameraAnimationSequenceData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "SE_CharacterInfo": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_CharacterInfo.SE_CharacterInfo",
+          "SubPathString": ""
+        }
+      },
+      "SE_InfoToLevel": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_InfoToLevel.SE_InfoToLevel",
+          "SubPathString": ""
+        }
+      },
+      "SE_LevelToInfo": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_LevelToInfo.SE_LevelToInfo",
+          "SubPathString": ""
+        }
+      },
+      "SE_InfoTo2DUI": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_InfoTo2DUI.SE_InfoTo2DUI",
+          "SubPathString": ""
+        }
+      },
+      "SE_InfoToFork": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_InfoToFork.SE_InfoToFork",
+          "SubPathString": ""
+        }
+      },
+      "SE_InfoToEquip": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_InfoToEquip.SE_InfoToEquip",
+          "SubPathString": ""
+        }
+      },
+      "SE_InfoToFile": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_InfoToFile.SE_InfoToFile",
+          "SubPathString": ""
+        }
+      },
+      "SE_ForkToInfo": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_ForkToInfo.SE_ForkToInfo",
+          "SubPathString": ""
+        }
+      },
+      "SE_ForkToEquip": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_ForkToEquip.SE_ForkToEquip",
+          "SubPathString": ""
+        }
+      },
+      "SE_ForkTo2DUI": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_ForkTo2DUI.SE_ForkTo2DUI",
+          "SubPathString": ""
+        }
+      },
+      "SE_ForkToFile": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_ForkToFile.SE_ForkToFile",
+          "SubPathString": ""
+        }
+      },
+      "SE_2DUIToInfo": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_2DUIToInfo.SE_2DUIToInfo",
+          "SubPathString": ""
+        }
+      },
+      "SE_2DUIToFork": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_2DUIToFork.SE_2DUIToFork",
+          "SubPathString": ""
+        }
+      },
+      "SE_2DUIToEquip": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_2DUIToEquip.SE_2DUIToEquip",
+          "SubPathString": ""
+        }
+      },
+      "SE_2DUIToFile": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_2DUIToFile.SE_2DUIToFile",
+          "SubPathString": ""
+        }
+      },
+      "SE_EquipToInfo": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_EquipToInfo.SE_EquipToInfo",
+          "SubPathString": ""
+        }
+      },
+      "SE_EquipToFork": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_EquipToFork.SE_EquipToFork",
+          "SubPathString": ""
+        }
+      },
+      "SE_EquipTo2DUI": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_EquipTo2DUI.SE_EquipTo2DUI",
+          "SubPathString": ""
+        }
+      },
+      "SE_EquipToFile": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_EquipToFile.SE_EquipToFile",
+          "SubPathString": ""
+        }
+      },
+      "SE_FileToInfo": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_FileToInfo.SE_FileToInfo",
+          "SubPathString": ""
+        }
+      },
+      "SE_FileToFork": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_FileToFork.SE_FileToFork",
+          "SubPathString": ""
+        }
+      },
+      "SE_FileTo2DUI": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_FileTo2DUI.SE_FileTo2DUI",
+          "SubPathString": ""
+        }
+      },
+      "SE_FileToEquip": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_FileToEquip.SE_FileToEquip",
+          "SubPathString": ""
+        }
+      },
+      "SE_DefaultToCity": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_DefaultToCity.SE_DefaultToCity",
+          "SubPathString": ""
+        }
+      },
+      "SE_CityToDefault": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_CityToDefault.SE_CityToDefault",
+          "SubPathString": ""
+        }
+      },
+      "SE_FishingThrow": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_FishingThrow.SE_FishingThrow",
+          "SubPathString": ""
+        }
+      },
+      "SE_FishingReady": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_FishingReady.SE_FishingReady",
+          "SubPathString": ""
+        }
+      },
+      "SE_FishingFishStruggle": {
+        "Sequence": {
+          "AssetPathName": "/Game/UI/Blueprints/Character/Sequence/SE_FishingFishStruggle.SE_FishingFishStruggle",
+          "SubPathString": ""
+        }
+      }
+    }
+  }
+]

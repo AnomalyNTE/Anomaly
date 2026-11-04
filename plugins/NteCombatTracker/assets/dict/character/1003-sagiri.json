@@ -1,0 +1,1078 @@
+{
+  "format_version": 1,
+  "source": {
+    "generator": "extract-character-data.ps1",
+    "assets_git_revision": "sha256:3c8dd7725bf0e091b5deb658d4f48cdb423a12fae3ae5e68e2a7d02ed42e16af",
+    "tables": [
+      "DataTable/Character/DT_Character.json",
+      "DataTable/skill/DT_GameplayAbilityTipsData.json",
+      "DataTable/skill/DT_SkillDamageData.json",
+      "DataTable/skill/DT_GameplayEffectMappingData.json"
+    ]
+  },
+  "identity": {
+    "kind": "registered",
+    "character_id": 1003,
+    "codename": "Sagiri",
+    "name_zh": "早雾",
+    "asset_aliases": [
+      "003_Sagiri"
+    ],
+    "identifier_aliases": [
+      "Sagiri"
+    ]
+  },
+  "data": {
+    "characters": {
+      "1003": {
+        "attribute": "咒",
+        "codename": "Sagiri",
+        "name_zh": "早雾"
+      }
+    },
+    "ability_tips": {
+      "GA_Sagiri_Evade": {
+        "name_zh": ""
+      },
+      "GA_Sagiri_Melee": {
+        "name_zh": "鬼郎丸头锤"
+      },
+      "GA_Sagiri_Passive_1": {
+        "name_zh": "可以吃吗？"
+      },
+      "GA_Sagiri_Passive_2": {
+        "name_zh": "鬼把戏"
+      },
+      "GA_Sagiri_QTE": {
+        "name_zh": "砸扁你！"
+      },
+      "GA_Sagiri_Skill": {
+        "name_zh": "一口吞食"
+      },
+      "GA_Sagiri_UltraSkill": {
+        "name_zh": "千钧隆重的饕餮宴"
+      }
+    },
+    "skill_damage": {
+      "GE_Player_Sagiri_AirAttack1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 2.5,
+        "UnbalValue": 0.5,
+        "HeterochromeAdd": 4.2,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_X",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.5,
+          0.54,
+          0.583,
+          0.63,
+          0.68,
+          0.735,
+          0.793,
+          0.857,
+          0.925,
+          1.0,
+          1.079,
+          1.166,
+          1.259
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.5,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 2.014,
+        "UnbalValue": 0.401,
+        "HeterochromeAdd": 3.353,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.403,
+          0.435,
+          0.47,
+          0.508,
+          0.548,
+          0.592,
+          0.64,
+          0.691,
+          0.746,
+          0.806,
+          0.87,
+          0.94,
+          1.015
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.403,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 0.69,
+        "UnbalValue": 0.137,
+        "HeterochromeAdd": 1.148,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.138,
+          0.149,
+          0.161,
+          0.174,
+          0.188,
+          0.203,
+          0.219,
+          0.237,
+          0.255,
+          0.276,
+          0.298,
+          0.322,
+          0.348
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.138,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 3.785,
+        "UnbalValue": 0.753,
+        "HeterochromeAdd": 6.302,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.757,
+          0.818,
+          0.883,
+          0.954,
+          1.03,
+          1.112,
+          1.201,
+          1.297,
+          1.401,
+          1.513,
+          1.634,
+          1.765,
+          1.906
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.757,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 3.583,
+        "UnbalValue": 0.713,
+        "HeterochromeAdd": 5.965,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.716,
+          0.773,
+          0.835,
+          0.902,
+          0.974,
+          1.052,
+          1.136,
+          1.227,
+          1.325,
+          1.431,
+          1.546,
+          1.669,
+          1.803
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.716,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 1.654,
+        "UnbalValue": 0.329,
+        "HeterochromeAdd": 2.754,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.331,
+          0.357,
+          0.386,
+          0.417,
+          0.45,
+          0.486,
+          0.525,
+          0.567,
+          0.613,
+          0.662,
+          0.715,
+          0.772,
+          0.834
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.331,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee6_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 0.176,
+        "UnbalValue": 0.035,
+        "HeterochromeAdd": 0.292,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.035,
+          0.038,
+          0.041,
+          0.044,
+          0.048,
+          0.051,
+          0.056,
+          0.06,
+          0.065,
+          0.07,
+          0.076,
+          0.082,
+          0.088
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.035,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 6000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee7_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 5.311,
+        "UnbalValue": 1.057,
+        "HeterochromeAdd": 8.842,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.062,
+          1.147,
+          1.239,
+          1.338,
+          1.445,
+          1.56,
+          1.685,
+          1.82,
+          1.966,
+          2.123,
+          2.293,
+          2.476,
+          2.674
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.062,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 6000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Melee8_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 0.081,
+        "UnbalValue": 0.016,
+        "HeterochromeAdd": 0.135,
+        "GAName": "GA_Sagiri_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.016,
+          0.017,
+          0.019,
+          0.02,
+          0.022,
+          0.024,
+          0.025,
+          0.027,
+          0.03,
+          0.032,
+          0.035,
+          0.037,
+          0.04
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.016,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_PerfectEvadeAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 5.4,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 8.9,
+        "GAName": "GA_Sagiri_ExtremEvadeAtk",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Z",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.14,
+          2.311,
+          2.496,
+          2.696,
+          2.911,
+          3.144,
+          3.396,
+          3.668,
+          3.961,
+          4.278,
+          4.62,
+          4.99,
+          5.389
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.14,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_QTE1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 10.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Sagiri_QTE",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 3.902,
+        "UnbalValue": 0.797,
+        "HeterochromeAdd": 6.546,
+        "GAName": "GA_Sagiri_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.678,
+          1.812,
+          1.957,
+          2.114,
+          2.283,
+          2.466,
+          2.663,
+          2.876,
+          3.106,
+          3.354,
+          3.623,
+          3.912,
+          4.225
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.678,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": true,
+        "VehicleBreakableImpulse": 500000.0
+      },
+      "GE_Player_Sagiri_Skill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 5.398,
+        "UnbalValue": 1.103,
+        "HeterochromeAdd": 9.054,
+        "GAName": "GA_Sagiri_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.322,
+          2.508,
+          2.708,
+          2.925,
+          3.159,
+          3.412,
+          3.685,
+          3.979,
+          4.298,
+          4.642,
+          5.013,
+          5.414,
+          5.847
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.322,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": true,
+        "VehicleBreakableImpulse": 500000.0
+      },
+      "GE_Player_Sagiri_Skill3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 4.159,
+        "UnbalValue": 0.832,
+        "HeterochromeAdd": 6.951,
+        "GAName": "GA_Sagiri_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.188,
+          1.283,
+          1.386,
+          1.497,
+          1.616,
+          1.746,
+          1.885,
+          2.036,
+          2.199,
+          2.375,
+          2.565,
+          2.77,
+          2.992
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.188,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": true,
+        "VehicleBreakableImpulse": 500000.0
+      },
+      "GE_Player_Sagiri_Skill4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 6.681,
+        "UnbalValue": 1.336,
+        "HeterochromeAdd": 11.166,
+        "GAName": "GA_Sagiri_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.909,
+          2.062,
+          2.227,
+          2.405,
+          2.597,
+          2.805,
+          3.029,
+          3.272,
+          3.533,
+          3.816,
+          4.121,
+          4.451,
+          4.807
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.909,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": true,
+        "VehicleBreakableImpulse": 500000.0
+      },
+      "GE_Player_Sagiri_Skill5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 3.161,
+        "UnbalValue": 0.632,
+        "HeterochromeAdd": 5.283,
+        "GAName": "GA_Sagiri_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.903,
+          0.975,
+          1.053,
+          1.138,
+          1.229,
+          1.327,
+          1.433,
+          1.548,
+          1.671,
+          1.805,
+          1.95,
+          2.105,
+          2.274
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.903,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": true,
+        "VehicleBreakableImpulse": 500000.0
+      },
+      "GE_Player_Sagiri_UltraSkill_Damage_LV2": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Sagiri_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03,
+          0.03
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.03,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_UltraSkill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.333,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Sagiri_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.2,
+          1.296,
+          1.4,
+          1.512,
+          1.633,
+          1.763,
+          1.904,
+          2.057,
+          2.221,
+          2.399,
+          2.591,
+          2.798,
+          3.022
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.2,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Sagiri_UltraSkill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_INCANTATION",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.833,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Sagiri_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          3.0,
+          3.24,
+          3.499,
+          3.779,
+          4.081,
+          4.408,
+          4.761,
+          5.141,
+          5.553,
+          5.997,
+          6.477,
+          6.995,
+          7.555
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 3.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      }
+    },
+    "gameplay_effect_mapping": {
+      "Buff_Sagiri_NoBranch": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Buff/Buff_Sagiri_NoBranch.Buff_Sagiri_NoBranch_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3770
+      },
+      "Buff_Sagiri003_Level1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level1/Buff_Sagiri003_Level1.Buff_Sagiri003_Level1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 469
+      },
+      "Buff_Sagiri003_Level2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level2/Buff_Sagiri003_Level2.Buff_Sagiri003_Level2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 470
+      },
+      "Buff_Sagiri003_Level3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level3/Buff_Sagiri003_Level3.Buff_Sagiri003_Level3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 888
+      },
+      "Buff_Sagiri003_Level3_1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level3/Buff_Sagiri003_Level3_1.Buff_Sagiri003_Level3_1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 467
+      },
+      "Buff_Sagiri003_Level4": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level4/Buff_Sagiri003_Level4.Buff_Sagiri003_Level4_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 472
+      },
+      "Buff_Sagiri003_Level4_1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level4/Buff_Sagiri003_Level4_1.Buff_Sagiri003_Level4_1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 471
+      },
+      "Buff_Sagiri003_Level5": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level5/Buff_Sagiri003_Level5.Buff_Sagiri003_Level5_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 865
+      },
+      "Buff_Sagiri003_Level5_1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level5/Buff_Sagiri003_Level5_1.Buff_Sagiri003_Level5_1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 864
+      },
+      "Buff_Sagiri003_Level6": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/Level6/Buff_Sagiri003_Level6.Buff_Sagiri003_Level6_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 473
+      },
+      "Buff_Sagiri003_LevelExtra": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Upgrade/LevelExtra/Buff_Sagiri003_LevelExtra.Buff_Sagiri003_LevelExtra_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 468
+      },
+      "Buff_Sagiri003_Pas1_1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/PassiveEffect/Buff_Sagiri003_Pas1_1.Buff_Sagiri003_Pas1_1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2312
+      },
+      "Buff_Sagiri003_Passive1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/PassiveEffect/Buff_Sagiri003_Passive1.Buff_Sagiri003_Passive1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 911
+      },
+      "Buff_Sagiri003_Passive2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/PassiveEffect/Buff_Sagiri003_Passive2.Buff_Sagiri003_Passive2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 875
+      },
+      "Buff_Sagiri003_QDamUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Buff/Buff_Sagiri003_QDamUp.Buff_Sagiri003_QDamUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4047
+      },
+      "GE_Player_Sagiri_AirAttack1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_AirAttack1_Damage.GE_Player_Sagiri_AirAttack1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 159
+      },
+      "GE_Player_Sagiri_Branch_Kill_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Branch_Kill_Damage.GE_Player_Sagiri_Branch_Kill_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 158
+      },
+      "GE_Player_Sagiri_Branch_Traction": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Branch_Traction.GE_Player_Sagiri_Branch_Traction_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 170
+      },
+      "GE_Player_Sagiri_Melee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee1_Damage.GE_Player_Sagiri_Melee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 157
+      },
+      "GE_Player_Sagiri_Melee1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Melee1_HitBack.GE_Player_Sagiri_Melee1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 169
+      },
+      "GE_Player_Sagiri_Melee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee2_Damage.GE_Player_Sagiri_Melee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 156
+      },
+      "GE_Player_Sagiri_Melee2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Melee2_HitBack.GE_Player_Sagiri_Melee2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 168
+      },
+      "GE_Player_Sagiri_Melee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee3_Damage.GE_Player_Sagiri_Melee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 155
+      },
+      "GE_Player_Sagiri_Melee3_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Melee3_HitBack.GE_Player_Sagiri_Melee3_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 167
+      },
+      "GE_Player_Sagiri_Melee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee4_Damage.GE_Player_Sagiri_Melee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 154
+      },
+      "GE_Player_Sagiri_Melee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee5_Damage.GE_Player_Sagiri_Melee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 153
+      },
+      "GE_Player_Sagiri_Melee5_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Melee5_HitBack.GE_Player_Sagiri_Melee5_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 166
+      },
+      "GE_Player_Sagiri_Melee6_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee6_Damage.GE_Player_Sagiri_Melee6_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 152
+      },
+      "GE_Player_Sagiri_Melee6_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Melee6_HitBack.GE_Player_Sagiri_Melee6_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 165
+      },
+      "GE_Player_Sagiri_Melee7_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee7_Damage.GE_Player_Sagiri_Melee7_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 151
+      },
+      "GE_Player_Sagiri_Melee8_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Melee8_Damage.GE_Player_Sagiri_Melee8_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 150
+      },
+      "GE_Player_Sagiri_PerfectEvadeAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_PerfectEvadeAttack_Damage.GE_Player_Sagiri_PerfectEvadeAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1626
+      },
+      "GE_Player_Sagiri_QTE_Float": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_QTE_Float.GE_Player_Sagiri_QTE_Float_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1037
+      },
+      "GE_Player_Sagiri_QTE1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_QTE1_Damage.GE_Player_Sagiri_QTE1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1012
+      },
+      "GE_Player_Sagiri_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Skill1_Damage.GE_Player_Sagiri_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 149
+      },
+      "GE_Player_Sagiri_Skill1_ShortTraction": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Skill1_ShortTraction.GE_Player_Sagiri_Skill1_ShortTraction_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 164
+      },
+      "GE_Player_Sagiri_Skill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Skill2_Damage.GE_Player_Sagiri_Skill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 148
+      },
+      "GE_Player_Sagiri_Skill2_HitDown": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Skill2_HitDown.GE_Player_Sagiri_Skill2_HitDown_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 163
+      },
+      "GE_Player_Sagiri_Skill3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Skill3_Damage.GE_Player_Sagiri_Skill3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 147
+      },
+      "GE_Player_Sagiri_Skill3_LongTraction": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Skill3_LongTraction.GE_Player_Sagiri_Skill3_LongTraction_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 162
+      },
+      "GE_Player_Sagiri_Skill4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Skill4_Damage.GE_Player_Sagiri_Skill4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 146
+      },
+      "GE_Player_Sagiri_Skill4_Float": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_Skill4_Float.GE_Player_Sagiri_Skill4_Float_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 161
+      },
+      "GE_Player_Sagiri_Skill5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_Skill5_Damage.GE_Player_Sagiri_Skill5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 145
+      },
+      "GE_Player_Sagiri_UltraSkill_Damage_LV2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_UltraSkill_Damage_LV2.GE_Player_Sagiri_UltraSkill_Damage_LV2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 466
+      },
+      "GE_Player_Sagiri_UltraSkill_suppress": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Effect/GE_Player_Sagiri_UltraSkill_suppress.GE_Player_Sagiri_UltraSkill_suppress_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 160
+      },
+      "GE_Player_Sagiri_UltraSkill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_UltraSkill1_Damage.GE_Player_Sagiri_UltraSkill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 957
+      },
+      "GE_Player_Sagiri_UltraSkill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Damage/GE_Player_Sagiri_UltraSkill2_Damage.GE_Player_Sagiri_UltraSkill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 956
+      },
+      "GE_Sagiri_BranchCD1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Buff/GE_Sagiri_BranchCD1.GE_Sagiri_BranchCD1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 143
+      },
+      "GE_Sagiri_BranchCD2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Buff/GE_Sagiri_BranchCD2.GE_Sagiri_BranchCD2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 142
+      },
+      "GE_Sagiri_BranchCD3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Buff/GE_Sagiri_BranchCD3.GE_Sagiri_BranchCD3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 141
+      },
+      "GE_Sagiri_Skill2Float_Effect": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Buff/GE_Sagiri_Skill2Float_Effect.GE_Sagiri_Skill2Float_Effect_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 140
+      },
+      "GE_Sagiri_UltraSkillSuppress_Effect": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_003_Sagiri/Buff/GE_Sagiri_UltraSkillSuppress_Effect.GE_Sagiri_UltraSkillSuppress_Effect_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 139
+      }
+    }
+  },
+  "references": {
+    "unresolved_ability_tips": {
+      "GA_Sagiri_ExtremEvadeAtk": [
+        "GE_Player_Sagiri_PerfectEvadeAttack_Damage"
+      ]
+    }
+  }
+}

@@ -1,0 +1,5906 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_CultivationGuideData",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/CultivationGuide/DT_CultivationGuideData",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CultivationGuideData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1051": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_worldrain",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_wuhuakuang",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpCosmosBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_nvzhu.YH_UI_Development_nvzhu",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1023": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_jingmotingyuan",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_koinobori",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpIncantationBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Cang_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Cang_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Cang_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Cang_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_baizang.YH_UI_Development_baizang",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1003": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_mofeikesi",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_spider",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpIncantationBase",
+          "AtkUp",
+          "AtkAdd",
+          "DamageUpGeneralBase"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Sagiri_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Sagiri_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Sagiri_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Sagiri_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_zaowu.YH_UI_Development_zaowu",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1033": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_yuren",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_snowman",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DefUp",
+          "DefAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Shield_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Shield_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Shield_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Shield_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Shield_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Shield_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Adler_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Adler_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Adler_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Adler_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Shield_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_adele.YH_UI_Development_adele",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1019": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_PaperPlane",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_jiaojuan",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpNatureBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mint019_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mint019_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mint019_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mint019_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_bohe.YH_UI_Development_bohe",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1010": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_TigerTally",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_oulaquantao",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpNatureBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Nanally_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Nanally_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Nanally_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Nanally_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_nanali.YH_UI_Development_nanali",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1039": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_Arachne",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_BitterCake",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "HPMaxUp",
+          "HPMaxAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Mag_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Mag_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Mag_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Mag_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Mag_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Mag_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Fadia_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Fadia_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Fadia_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Fadia_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Mag_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_fadiya.YH_UI_Development_fadiya",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1025": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_wushoutieyu",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_yaodao",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpLakshanaBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_hathor_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_hathor_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_hathor_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_hathor_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_hasuoer.YH_UI_Development_hasuoer",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1052": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_Time",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_wuhuakuang",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpCosmosBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Jin_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Jin_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Jin_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Jin_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_xun.YH_UI_Development_xun",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1008": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_Kite",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_bopu",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpLakshanaBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Skia_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Skia_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Skia_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Skia_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_yi.YH_UI_Development_yi",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1021": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_Castle",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_lingganzhongjiezhe",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "HPMaxUp",
+          "HPMaxAdd",
+          "HealUp"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Heal_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Heal_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Heal_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Heal_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Heal_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Heal_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Edgar_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Edgar_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Edgar_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Edgar_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Heal_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_aidejia.YH_UI_Development_aidejia",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1020": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_BitGame",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_Crowbar",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpPsycheBase",
+          "AtkUp",
+          "AtkAdd",
+          "DamageUpGeneralBase"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Haniel_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Haniel_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Haniel_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Haniel_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_naniya.YH_UI_Development_naniya",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1055": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_Butterfly",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_wuhuakuang",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpNatureBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Kuhara_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Kuhara_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Kuhara_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Kuhara_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_jiuyuan.YH_UI_Development_jiuyuan",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1054": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_BlackBook",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_jiaojuan",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpChaosBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "UnbalIntensityBase"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Daffodill_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Daffodill_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Daffodill_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Daffodill_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_dafudier.YH_UI_Development_dafudier",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1073": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_mamen",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_bopu",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpCosmosBase",
+          "DamageUpGeneralBase"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chiichan073_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chiichan073_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chiichan073_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chiichan073_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_xiaozhni.YH_UI_Development_xiaozhni",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1004": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_Rose",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_jiaojuan",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpChaosBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_lacrimosa_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_lacrimosa_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_lacrimosa_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_lacrimosa_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Chaos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_anhunqu.YH_UI_Development_anhunqu",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1046": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_worldrain",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_wuhuakuang",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpCosmosBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 1
+              }
+            ]
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 1
+              }
+            ]
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 2
+              }
+            ]
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 4
+              }
+            ]
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 6
+              }
+            ]
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 8
+              }
+            ]
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 10
+              }
+            ]
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female051_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female051_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Female046_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female046_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female046_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Female046_Melee",
+                "RecommendLevel": 10
+              }
+            ]
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_nanzhu.YH_UI_Development_nanzhu",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": true
+      },
+      "1070": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_moon",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_oulaquantao",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpPsycheBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Mitsuki_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mitsuki_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mitsuki_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Mitsuki_Skill",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Psyche_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_haiyue.YH_UI_Development_haiyue",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1071": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_GoldWool",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_koinobori",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpLakshanaBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Chaos071_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chaos071_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chaos071_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Chaos071_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Lakshana_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_kaesi.YH_UI_Development_kaesi",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1076": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_LunarPhase",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_koinobori",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpCosmosBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Shinku_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Shinku_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Shinku_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Shinku_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Cosmos_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_zhenhong.YH_UI_Development_zhenhong",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1075": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_Door",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_Castle",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "AtkUp",
+          "HealUp",
+          "DamageUpNatureBase",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Oneiroi_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Oneiroi_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Oneiroi_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "GetEfficiency_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_yiluoyi.YH_UI_Development_yiluoyi",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1036": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_DemonBlade",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_bopu",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpIncantationBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Zankou_Melee",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Zankou_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Zankou_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Zankou_QTE",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Incantation_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_canhong.YH_UI_Development_canhong",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      },
+      "1072": {
+        "RecommendForkList": [
+          {
+            "ForkItemId": "fork_GoldRecord",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_83",
+              "SourceString": "系统推荐",
+              "LocalizedString": "系统推荐"
+            },
+            "SourceID": "ForkLotterynShop"
+          },
+          {
+            "ForkItemId": "fork_oulaquantao",
+            "Desc": {
+              "TableId": "/Game/Text/ST_UI_J.ST_UI_J",
+              "Key": "Cultivation_84",
+              "SourceString": "其他选择",
+              "LocalizedString": "其他选择"
+            },
+            "SourceID": "ForkLotterynShop"
+          }
+        ],
+        "bDisplayText": true,
+        "RecommendAttrList": [
+          "DamageUpNatureBase",
+          "CritBase",
+          "CritDamageBase",
+          "AtkUp",
+          "DamageUpGeneralBase",
+          "AtkAdd"
+        ],
+        "WorldLevelRecommendList": [
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 20,
+            "ForkRecommendLevel": 20,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 1
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 1
+              }
+            ],
+            "CharacterRecommendLevel": 30,
+            "ForkRecommendLevel": 30,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 2
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 2
+              }
+            ],
+            "CharacterRecommendLevel": 40,
+            "ForkRecommendLevel": 40,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 4
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 4
+              }
+            ],
+            "CharacterRecommendLevel": 50,
+            "ForkRecommendLevel": 50,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 6
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 6
+              }
+            ],
+            "CharacterRecommendLevel": 60,
+            "ForkRecommendLevel": 60,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 8
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 8
+              }
+            ],
+            "CharacterRecommendLevel": 70,
+            "ForkRecommendLevel": 70,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          },
+          {
+            "SkillRecommendGradeList": [
+              {
+                "AbilityId": "GA_Radio072_QTE",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Radio072_UltraSkill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Radio072_Skill",
+                "RecommendLevel": 10
+              },
+              {
+                "AbilityId": "GA_Radio072_Melee",
+                "RecommendLevel": 10
+              }
+            ],
+            "CharacterRecommendLevel": 80,
+            "ForkRecommendLevel": 80,
+            "CoreID": "Nature_orange",
+            "CoreLvl": 20,
+            "EquipLvl": 20,
+            "MaleSkillRecommendGradeList": []
+          }
+        ],
+        "SScore": 0.9,
+        "AScore": 0.6,
+        "CharacterIcon": {
+          "AssetPathName": "/Game/UI/UI/Cultivation/Character/YH_UI_Development_lingke.YH_UI_Development_lingke",
+          "SubPathString": ""
+        },
+        "RecommendAttrJumpID": "EquipmentCloneEnter_001_map",
+        "RoleSexChange": false
+      }
+    }
+  }
+]

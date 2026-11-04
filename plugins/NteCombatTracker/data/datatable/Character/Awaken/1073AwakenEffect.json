@@ -1,0 +1,269 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1073AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1073AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1073": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star1_name",
+              "SourceString": "太阳太阳请回答",
+              "LocalizedString": "太阳太阳请回答"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1073_1.1073_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level1/Buff_Chiichan073_Level1.Buff_Chiichan073_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star1_des",
+              "SourceString": "「金谷」和「金谷贷款」的存储上限提升10%。",
+              "LocalizedString": "「金谷」和「金谷贷款」的存储上限提升10%。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star2_name",
+              "SourceString": "烟花，悄然无声",
+              "LocalizedString": "烟花，悄然无声"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1073_2.1073_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level2/Buff_Chiichan073_Level2.Buff_Chiichan073_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star2_des",
+              "SourceString": "当小吱处于「盈余」状态时，每秒可获得当前「金谷」10%的利息。",
+              "LocalizedString": "当小吱处于「盈余」状态时，每秒可获得当前「金谷」10%的利息。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star3_name",
+              "SourceString": "倘若没有雨天",
+              "LocalizedString": "倘若没有雨天"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1073_3.1073_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level3/Buff_Chiichan073_Level3.Buff_Chiichan073_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star3_des",
+              "SourceString": "「金谷K线」中「金谷」价格上涨的概率提高50%。",
+              "LocalizedString": "「金谷K线」中「金谷」价格上涨的概率提高50%。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star4_name",
+              "SourceString": "致饭团·绷带·方斯",
+              "LocalizedString": "致饭团·绷带·方斯"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1073_4.1073_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level4/Buff_Chiichan073_Level4.Buff_Chiichan073_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star4_des",
+              "SourceString": "「金谷」的获取速率提升20%。",
+              "LocalizedString": "「金谷」的获取速率提升20%。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star5_name",
+              "SourceString": "日记的空白页",
+              "LocalizedString": "日记的空白页"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1073_5.1073_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level5/Buff_Chiichan073_Level5.Buff_Chiichan073_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star5_des",
+              "SourceString": "小吱入战后立刻获得当前「金谷」存储上限100%的「金谷」。",
+              "LocalizedString": "小吱入战后立刻获得当前「金谷」存储上限100%的「金谷」。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star6_name",
+              "SourceString": "三十三天",
+              "LocalizedString": "三十三天"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1073_6.1073_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level6/Buff_Chiichan073_Level6.Buff_Chiichan073_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_star6_des",
+              "SourceString": "「金谷」造成的额外光属性异能伤害提高15%。",
+              "LocalizedString": "「金谷」造成的额外光属性异能伤害提高15%。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_starExtra1_name",
+              "SourceString": "是朋友，是家人",
+              "LocalizedString": "是朋友，是家人"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/LevelExtra/Buff_Chiichan073_LevelExtra1.Buff_Chiichan073_LevelExtra1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_starExtra1_des",
+              "SourceString": "「负债」状态下，「金谷」的获取效率额外提升50%。",
+              "LocalizedString": "「负债」状态下，「金谷」的获取效率额外提升50%。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_starExtra2_name",
+              "SourceString": "归乡",
+              "LocalizedString": "归乡"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/LevelExtra/Buff_Chiichan073_LevelExtra2.Buff_Chiichan073_LevelExtra2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Chiichan_SkillDes.Chiichan_SkillDes",
+              "Key": "GA_Chiichan_starExtra2_des",
+              "SourceString": "小吱对目标造成伤害时，降低目标10%光属性异能伤害抗性。",
+              "LocalizedString": "小吱对目标造成伤害时，降低目标10%光属性异能伤害抗性。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

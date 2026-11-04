@@ -1,0 +1,257 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_CharacterUpgradeDataTable",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/DT_CharacterUpgradeDataTable",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterUpgradeData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "character_Upgrade_1": {
+        "NeedExp": 1000
+      },
+      "character_Upgrade_2": {
+        "NeedExp": 300
+      },
+      "character_Upgrade_3": {
+        "NeedExp": 450
+      },
+      "character_Upgrade_4": {
+        "NeedExp": 630
+      },
+      "character_Upgrade_5": {
+        "NeedExp": 880
+      },
+      "character_Upgrade_6": {
+        "NeedExp": 1190
+      },
+      "character_Upgrade_7": {
+        "NeedExp": 1610
+      },
+      "character_Upgrade_8": {
+        "NeedExp": 2090
+      },
+      "character_Upgrade_9": {
+        "NeedExp": 2720
+      },
+      "character_Upgrade_10": {
+        "NeedExp": 3400
+      },
+      "character_Upgrade_11": {
+        "NeedExp": 4250
+      },
+      "character_Upgrade_12": {
+        "NeedExp": 5100
+      },
+      "character_Upgrade_13": {
+        "NeedExp": 6120
+      },
+      "character_Upgrade_14": {
+        "NeedExp": 7040
+      },
+      "character_Upgrade_15": {
+        "NeedExp": 8100
+      },
+      "character_Upgrade_16": {
+        "NeedExp": 9320
+      },
+      "character_Upgrade_17": {
+        "NeedExp": 10250
+      },
+      "character_Upgrade_18": {
+        "NeedExp": 11280
+      },
+      "character_Upgrade_19": {
+        "NeedExp": 12410
+      },
+      "character_Upgrade_20": {
+        "NeedExp": 13650
+      },
+      "character_Upgrade_21": {
+        "NeedExp": 15020
+      },
+      "character_Upgrade_22": {
+        "NeedExp": 16220
+      },
+      "character_Upgrade_23": {
+        "NeedExp": 17520
+      },
+      "character_Upgrade_24": {
+        "NeedExp": 18920
+      },
+      "character_Upgrade_25": {
+        "NeedExp": 20430
+      },
+      "character_Upgrade_26": {
+        "NeedExp": 22060
+      },
+      "character_Upgrade_27": {
+        "NeedExp": 23380
+      },
+      "character_Upgrade_28": {
+        "NeedExp": 24780
+      },
+      "character_Upgrade_29": {
+        "NeedExp": 26270
+      },
+      "character_Upgrade_30": {
+        "NeedExp": 27850
+      },
+      "character_Upgrade_31": {
+        "NeedExp": 29520
+      },
+      "character_Upgrade_32": {
+        "NeedExp": 31000
+      },
+      "character_Upgrade_33": {
+        "NeedExp": 32550
+      },
+      "character_Upgrade_34": {
+        "NeedExp": 34180
+      },
+      "character_Upgrade_35": {
+        "NeedExp": 35890
+      },
+      "character_Upgrade_36": {
+        "NeedExp": 37680
+      },
+      "character_Upgrade_37": {
+        "NeedExp": 39560
+      },
+      "character_Upgrade_38": {
+        "NeedExp": 41540
+      },
+      "character_Upgrade_39": {
+        "NeedExp": 43620
+      },
+      "character_Upgrade_40": {
+        "NeedExp": 45800
+      },
+      "character_Upgrade_41": {
+        "NeedExp": 48090
+      },
+      "character_Upgrade_42": {
+        "NeedExp": 50490
+      },
+      "character_Upgrade_43": {
+        "NeedExp": 53010
+      },
+      "character_Upgrade_44": {
+        "NeedExp": 55660
+      },
+      "character_Upgrade_45": {
+        "NeedExp": 58440
+      },
+      "character_Upgrade_46": {
+        "NeedExp": 61360
+      },
+      "character_Upgrade_47": {
+        "NeedExp": 64430
+      },
+      "character_Upgrade_48": {
+        "NeedExp": 67650
+      },
+      "character_Upgrade_49": {
+        "NeedExp": 71030
+      },
+      "character_Upgrade_50": {
+        "NeedExp": 74580
+      },
+      "character_Upgrade_51": {
+        "NeedExp": 78310
+      },
+      "character_Upgrade_52": {
+        "NeedExp": 82230
+      },
+      "character_Upgrade_53": {
+        "NeedExp": 86340
+      },
+      "character_Upgrade_54": {
+        "NeedExp": 90660
+      },
+      "character_Upgrade_55": {
+        "NeedExp": 95190
+      },
+      "character_Upgrade_56": {
+        "NeedExp": 99950
+      },
+      "character_Upgrade_57": {
+        "NeedExp": 104950
+      },
+      "character_Upgrade_58": {
+        "NeedExp": 110200
+      },
+      "character_Upgrade_59": {
+        "NeedExp": 115710
+      },
+      "character_Upgrade_60": {
+        "NeedExp": 121500
+      },
+      "character_Upgrade_61": {
+        "NeedExp": 127580
+      },
+      "character_Upgrade_62": {
+        "NeedExp": 133960
+      },
+      "character_Upgrade_63": {
+        "NeedExp": 140660
+      },
+      "character_Upgrade_64": {
+        "NeedExp": 147690
+      },
+      "character_Upgrade_65": {
+        "NeedExp": 155070
+      },
+      "character_Upgrade_66": {
+        "NeedExp": 162820
+      },
+      "character_Upgrade_67": {
+        "NeedExp": 170960
+      },
+      "character_Upgrade_68": {
+        "NeedExp": 179510
+      },
+      "character_Upgrade_69": {
+        "NeedExp": 188490
+      },
+      "character_Upgrade_70": {
+        "NeedExp": 197910
+      },
+      "character_Upgrade_71": {
+        "NeedExp": 207810
+      },
+      "character_Upgrade_72": {
+        "NeedExp": 218200
+      },
+      "character_Upgrade_73": {
+        "NeedExp": 229110
+      },
+      "character_Upgrade_74": {
+        "NeedExp": 240570
+      },
+      "character_Upgrade_75": {
+        "NeedExp": 252600
+      },
+      "character_Upgrade_76": {
+        "NeedExp": 265230
+      },
+      "character_Upgrade_77": {
+        "NeedExp": 278490
+      },
+      "character_Upgrade_78": {
+        "NeedExp": 292410
+      },
+      "character_Upgrade_79": {
+        "NeedExp": 307030
+      },
+      "character_Upgrade_80": {
+        "NeedExp": 322380
+      }
+    }
+  }
+]

@@ -1,0 +1,86 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_CharacterFootPrintShoe",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/DT_CharacterFootPrintShoe",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'FootPrintShoe'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "TestShoe1": {
+        "LeftFootPrintMask": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot1_2.T_Role_foot1_2",
+          "SubPathString": ""
+        },
+        "LeftFootPrintNormal": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot1_Norm.T_Role_foot1_Norm",
+          "SubPathString": ""
+        },
+        "RightFootPrintMask": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot1_1.T_Role_foot1_1",
+          "SubPathString": ""
+        },
+        "RightFootPrintNormal": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot1_1_Norm.T_Role_foot1_1_Norm",
+          "SubPathString": ""
+        },
+        "FootPrintSize": {
+          "X": 5.0,
+          "Y": 10.0,
+          "Z": 20.0
+        }
+      },
+      "TestShoe2": {
+        "LeftFootPrintMask": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot2.T_Role_foot2",
+          "SubPathString": ""
+        },
+        "LeftFootPrintNormal": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot2_Norm.T_Role_foot2_Norm",
+          "SubPathString": ""
+        },
+        "RightFootPrintMask": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot2_1.T_Role_foot2_1",
+          "SubPathString": ""
+        },
+        "RightFootPrintNormal": {
+          "AssetPathName": "/Game/FX/Tex/Sence/T_Role_foot2_1_Norm.T_Role_foot2_1_Norm",
+          "SubPathString": ""
+        },
+        "FootPrintSize": {
+          "X": 4.0,
+          "Y": 8.0,
+          "Z": 20.0
+        }
+      },
+      "TestShoe3": {
+        "LeftFootPrintMask": {
+          "AssetPathName": "/Game/TestMaps/XYL/Footprint/Res/ShoeComplexLeft.ShoeComplexLeft",
+          "SubPathString": ""
+        },
+        "LeftFootPrintNormal": {
+          "AssetPathName": "/Game/TestMaps/XYL/Footprint/Res/ShowComplexLeft_Normal.ShowComplexLeft_Normal",
+          "SubPathString": ""
+        },
+        "RightFootPrintMask": {
+          "AssetPathName": "/Game/TestMaps/XYL/Footprint/Res/ShoeComplexRight.ShoeComplexRight",
+          "SubPathString": ""
+        },
+        "RightFootPrintNormal": {
+          "AssetPathName": "/Game/TestMaps/XYL/Footprint/Res/ShowComplexRight_Normal_1_.ShowComplexRight_Normal_1_",
+          "SubPathString": ""
+        },
+        "FootPrintSize": {
+          "X": 5.0,
+          "Y": 10.0,
+          "Z": 20.0
+        }
+      }
+    }
+  }
+]

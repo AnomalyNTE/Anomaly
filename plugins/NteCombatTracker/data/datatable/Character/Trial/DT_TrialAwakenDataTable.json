@@ -1,0 +1,237 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_TrialAwakenDataTable",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Trial/DT_TrialAwakenDataTable",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'TrialAwakenDataTable'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "TrialAwaken1051": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1004": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1019": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1010": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1003": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1033": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1008": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1023": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1039": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1025": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1052": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1055": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1020": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1054": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1021": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1073": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1070": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1071": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1076": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1075": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1036": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      },
+      "TrialAwaken1072": {
+        "EffectIdList": [
+          "Effect1",
+          "Effect2",
+          "Effect3",
+          "Effect4",
+          "Effect5",
+          "Effect6"
+        ]
+      }
+    }
+  }
+]

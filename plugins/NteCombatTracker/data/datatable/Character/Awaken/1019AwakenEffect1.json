@@ -1,0 +1,274 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1019AwakenEffect1",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1019AwakenEffect1",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1019": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star1_name",
+              "SourceString": "特遣行动",
+              "LocalizedString": "特遣行动"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1019_1.1019_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_019_Mint/Upgrade/Level1/New/Buff_Mint019_Level1_New.Buff_Mint019_Level1_New_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star1_des",
+              "SourceString": "「极限反击：焦糖脆片」命中敌人时可重置「变轨技能：奥义·超级连风爪」的冷却时间，该效果每<NumGreen>3</>秒可触发一次。",
+              "LocalizedString": "「极限反击：焦糖脆片」命中敌人时可重置「变轨技能：奥义·超级连风爪」的冷却时间，该效果每<NumGreen>3</>秒可触发一次。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star2_name",
+              "SourceString": "二次补考",
+              "LocalizedString": "二次补考"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1019_2.1019_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_019_Mint/Upgrade/Level2/Buff_Mint019_Level2.Buff_Mint019_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star2_des",
+              "SourceString": "「变轨技能：奥义·超级连风爪」的伤害提升<NumGreen>40%</>。",
+              "LocalizedString": "「变轨技能：奥义·超级连风爪」的伤害提升<NumGreen>40%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star3_name",
+              "SourceString": "全勤奖金",
+              "LocalizedString": "全勤奖金"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1019_3.1019_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_019_Mint/Upgrade/Level3/Buff_Mint019_Level3.Buff_Mint019_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star3_des",
+              "SourceString": "角色对敌人触发「创生」或「覆纹」后，使得薄荷自身攻击力提升<NumGreen>15%</>，该效果持续<NumGreen>15</>秒。",
+              "LocalizedString": "角色对敌人触发「创生」或「覆纹」后，使得薄荷自身攻击力提升<NumGreen>15%</>，该效果持续<NumGreen>15</>秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star4_name",
+              "SourceString": "午休时间",
+              "LocalizedString": "午休时间"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1019_4.1019_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_019_Mint/Upgrade/Level4/Buff_Mint019_Level4.Buff_Mint019_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star4_des",
+              "SourceString": "薄荷对仅存在的单个敌人造成伤害后，使得自身的暴击率提升<NumGreen>12%</>。",
+              "LocalizedString": "薄荷对仅存在的单个敌人造成伤害后，使得自身的暴击率提升<NumGreen>12%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star5_name",
+              "SourceString": "第一直觉",
+              "LocalizedString": "第一直觉"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1019_5.1019_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_019_Mint/Upgrade/Level5/Buff_Mint019_Level5.Buff_Mint019_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star5_des",
+              "SourceString": "薄荷在成功释放「变轨技能：奥义·超级连风爪」后，使得自身的暴击伤害提升<NumGreen>25%</>，该效果可持续<NumGreen>6</>秒。",
+              "LocalizedString": "薄荷在成功释放「变轨技能：奥义·超级连风爪」后，使得自身的暴击伤害提升<NumGreen>25%</>，该效果可持续<NumGreen>6</>秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star6_name",
+              "SourceString": "精英队员",
+              "LocalizedString": "精英队员"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1019_6.1019_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_019_Mint/Upgrade/Level6/Buff_Mint019_Level6.Buff_Mint019_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_star6_des",
+              "SourceString": "薄荷对生命值低于<NumGreen>40%</>的目标造成的伤害额外增加<NumGreen>15%</>。",
+              "LocalizedString": "薄荷对生命值低于<NumGreen>40%</>的目标造成的伤害额外增加<NumGreen>15%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_starExtra1_name",
+              "SourceString": "薄荷波波茶",
+              "LocalizedString": "薄荷波波茶"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Mint019_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Mint019_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Mint019_UltraSkill",
+                "SkillLevel": 1
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_starExtra1_des",
+              "SourceString": "「普通攻击：满分收容术」「变轨技能：奥义·超级连风爪」「极轨终结：奥义· 霹雳疾风斩」的技能等级提升<NumGreen>1</>级。",
+              "LocalizedString": "「普通攻击：满分收容术」「变轨技能：奥义·超级连风爪」「极轨终结：奥义· 霹雳疾风斩」的技能等级提升<NumGreen>1</>级。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_starExtra2_name",
+              "SourceString": "蓬绒绒慕斯",
+              "LocalizedString": "蓬绒绒慕斯"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_019_Mint/Upgrade/LevelExtra/New/Buff_Mint019_LevelExtra_New.Buff_Mint019_LevelExtra_New_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mint_SkillDes.Mint_SkillDes",
+              "Key": "GA_Mint_starExtra2_des",
+              "SourceString": "成功释放「变轨技能：奥义·超级连风爪」后，薄荷额外获得<NumGreen>2</>点环合值。",
+              "LocalizedString": "成功释放「变轨技能：奥义·超级连风爪」后，薄荷额外获得<NumGreen>2</>点环合值。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

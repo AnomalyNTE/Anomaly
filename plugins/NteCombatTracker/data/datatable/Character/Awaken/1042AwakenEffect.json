@@ -1,0 +1,274 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1042AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1042AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1042": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_star1_name",
+              "SourceString": "帮派初建成",
+              "LocalizedString": "帮派初建成"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1010_1.1010_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_042_BlackBird/Upgrade/Buff_BlackBird042_Level1.Buff_BlackBird042_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_Star1_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_star2_name",
+              "SourceString": "第二位成员",
+              "LocalizedString": "第二位成员"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1010_2.1010_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_042_BlackBird/Upgrade/Buff_BlackBird042_Level2.Buff_BlackBird042_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_Star2_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_star3_name",
+              "SourceString": "要叫大姐头",
+              "LocalizedString": "要叫大姐头"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1010_3.1010_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_042_BlackBird/Upgrade/Buff_BlackBird042_Level3.Buff_BlackBird042_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_Star3_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_star4_name",
+              "SourceString": "不是闯祸精",
+              "LocalizedString": "不是闯祸精"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1010_4.1010_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_042_BlackBird/Upgrade/Buff_BlackBird042_Level4.Buff_BlackBird042_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_Star4_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_star5_name",
+              "SourceString": "小弟遍天下",
+              "LocalizedString": "小弟遍天下"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1010_5.1010_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_042_BlackBird/Upgrade/Buff_BlackBird042_Level5.Buff_BlackBird042_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_Star5_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_star6_name",
+              "SourceString": "因为是家人",
+              "LocalizedString": "因为是家人"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1010_6.1010_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_042_BlackBird/Upgrade/Buff_BlackBird042_Level6.Buff_BlackBird042_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_Star6_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_starExtra1_name",
+              "SourceString": "「柯林斯秘辛·上」",
+              "LocalizedString": "「柯林斯秘辛·上」"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_BlackBird_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_BlackBird_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_BlackBird_UltraSkill",
+                "SkillLevel": 1
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_StarExtra1_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Nanally_SkillDes.Nanally_SkillDes",
+              "Key": "GA_Nanally_starExtra2_name",
+              "SourceString": "「柯林斯秘辛·下」",
+              "LocalizedString": "「柯林斯秘辛·下」"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_042_BlackBird/Upgrade/Buff_BlackBird042_Level6_extra.Buff_BlackBird042_Level6_extra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/BlackBird_SkillDes.BlackBird_SkillDes",
+              "Key": "GA_BlackBird_StarExtra2_des",
+              "SourceString": "1",
+              "LocalizedString": "1"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

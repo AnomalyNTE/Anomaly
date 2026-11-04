@@ -1,0 +1,274 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1009AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1009AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1009": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star1_name",
+              "SourceString": "初明凝视",
+              "LocalizedString": "初明凝视"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_1.1009_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_009_Female/Upgrade/Level1/Buff_Female009_Level1.Buff_Female009_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star1_des",
+              "SourceString": "「铭隙鉴刻」可对最近<NumGreen>1</>个等级等于或低于角色的目标造成攻击力*<NumGreen>200%</>的额外伤害，额外伤害无视目标<NumGreen>75%</>防御。",
+              "LocalizedString": "「铭隙鉴刻」可对最近<NumGreen>1</>个等级等于或低于角色的目标造成攻击力*<NumGreen>200%</>的额外伤害，额外伤害无视目标<NumGreen>75%</>防御。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star2_name",
+              "SourceString": "探悉天职",
+              "LocalizedString": "探悉天职"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_009_Female/Upgrade/Level2/Buff_Female009_Level2.Buff_Female009_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star2_des",
+              "SourceString": "成功释放「铭隙鉴刻」后，自身获得<NumGreen>8</>点终结能量。",
+              "LocalizedString": "成功释放「铭隙鉴刻」后，自身获得<NumGreen>8</>点终结能量。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star3_name",
+              "SourceString": "奇异记叙",
+              "LocalizedString": "奇异记叙"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_3.1009_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_009_Female/Upgrade/Level3/Buff_Female009_Level3.Buff_Female009_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star3_des",
+              "SourceString": "「奇零除尽」的暴击率提高<NumGreen>50%</>。",
+              "LocalizedString": "「奇零除尽」的暴击率提高<NumGreen>50%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star4_name",
+              "SourceString": "未决迷数",
+              "LocalizedString": "未决迷数"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_4.1009_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_009_Female/Upgrade/Level4/Buff_Female009_Level4.Buff_Female009_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star4_des",
+              "SourceString": "基于角色自身的基础攻击力，提高「奇零除尽」的伤害，每<NumGreen>1</>点基础攻击力提高<NumGreen>0.10%</>，上限提高<NumGreen>40%</>。",
+              "LocalizedString": "基于角色自身的基础攻击力，提高「奇零除尽」的伤害，每<NumGreen>1</>点基础攻击力提高<NumGreen>0.10%</>，上限提高<NumGreen>40%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star5_name",
+              "SourceString": "默示赋命",
+              "LocalizedString": "默示赋命"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_5.1009_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_009_Female/Upgrade/Level5/New/Buff_Female009_Level5_New.Buff_Female009_Level5_New_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star5_des",
+              "SourceString": "角色触发任意光相关异能环合后，自身攻击力提高<NumGreen>15%</>，持续20秒。",
+              "LocalizedString": "角色触发任意光相关异能环合后，自身攻击力提高<NumGreen>15%</>，持续20秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star6_name",
+              "SourceString": "诓定解放",
+              "LocalizedString": "诓定解放"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_6.1009_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_009_Female/Upgrade/Level6/Buff_Female009_Level6.Buff_Female009_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_Female_star6_des",
+              "SourceString": "「铭隙鉴刻」的额外伤害倍率提升<NumGreen>100%</>。",
+              "LocalizedString": "「铭隙鉴刻」的额外伤害倍率提升<NumGreen>100%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_F_starExtra1_name",
+              "SourceString": "鉴解",
+              "LocalizedString": "鉴解"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Female_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Female_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Female_UltraSkill",
+                "SkillLevel": 1
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_F_starExtra1_des",
+              "SourceString": "「鉴痕」「铭隙鉴刻」「奇零除尽」的技能等级提升<NumGreen>1</>级。",
+              "LocalizedString": "「鉴痕」「铭隙鉴刻」「奇零除尽」的技能等级提升<NumGreen>1</>级。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_F_starExtra2_name",
+              "SourceString": "零示",
+              "LocalizedString": "零示"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_009_Female/Upgrade/LevelExtra/Buff_Female009_LevelExtra.Buff_Female009_LevelExtra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Female_SkillDes.Female_SkillDes",
+              "Key": "GA_F_starExtra2_des",
+              "SourceString": "角色触发任意光相关异能环合后，全队角色攻击力提高7%，持续20秒。",
+              "LocalizedString": "角色触发任意光相关异能环合后，全队角色攻击力提高7%，持续20秒。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

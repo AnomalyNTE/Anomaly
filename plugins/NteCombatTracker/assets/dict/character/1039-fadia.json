@@ -1,0 +1,1413 @@
+{
+  "format_version": 1,
+  "source": {
+    "generator": "extract-character-data.ps1",
+    "assets_git_revision": "sha256:3c8dd7725bf0e091b5deb658d4f48cdb423a12fae3ae5e68e2a7d02ed42e16af",
+    "tables": [
+      "DataTable/Character/DT_Character.json",
+      "DataTable/skill/DT_GameplayAbilityTipsData.json",
+      "DataTable/skill/DT_SkillDamageData.json",
+      "DataTable/skill/DT_GameplayEffectMappingData.json"
+    ]
+  },
+  "identity": {
+    "kind": "registered",
+    "character_id": 1039,
+    "codename": "Fadia",
+    "name_zh": "法帝娅",
+    "asset_aliases": [
+      "039_Fadia"
+    ],
+    "identifier_aliases": [
+      "Fadia"
+    ]
+  },
+  "data": {
+    "characters": {
+      "1039": {
+        "attribute": "魂",
+        "codename": "Fadia",
+        "name_zh": "法帝娅"
+      }
+    },
+    "ability_tips": {
+      "GA_Fadia_Evade": {
+        "name_zh": ""
+      },
+      "GA_Fadia_Melee": {
+        "name_zh": "话语中断的否定"
+      },
+      "GA_Fadia_Passive_1": {
+        "name_zh": "罪感熔炉"
+      },
+      "GA_Fadia_Passive_2": {
+        "name_zh": "拒斥与豪掠"
+      },
+      "GA_Fadia_Passive_3": {
+        "name_zh": "投身损耗的迷狂"
+      },
+      "GA_Fadia_QTE": {
+        "name_zh": "脱格者的嘲弄"
+      },
+      "GA_Fadia_Skill": {
+        "name_zh": "存在证明的体验"
+      },
+      "GA_Fadia_UltraSkill": {
+        "name_zh": "痛苦让位于狂喜"
+      },
+      "GA_Fadia_UltraSkill_Melee": {
+        "name_zh": ""
+      }
+    },
+    "skill_damage": {
+      "GE_Player_Fadia_AirAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 3.0,
+        "UnbalValue": 0.6,
+        "HeterochromeAdd": 5.0,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_X",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.6,
+          0.648,
+          0.7,
+          0.756,
+          0.816,
+          0.882,
+          0.952,
+          1.028,
+          1.111,
+          1.199,
+          1.295,
+          1.399,
+          1.511
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.6,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 7000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 2.707,
+        "UnbalValue": 0.536,
+        "HeterochromeAdd": 4.511,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.433,
+          0.468,
+          0.505,
+          0.545,
+          0.589,
+          0.636,
+          0.687,
+          0.742,
+          0.801,
+          0.866,
+          0.935,
+          1.01,
+          1.09
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.433,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 4500.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 1.859,
+        "UnbalValue": 0.368,
+        "HeterochromeAdd": 3.098,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.297,
+          0.321,
+          0.346,
+          0.374,
+          0.404,
+          0.436,
+          0.471,
+          0.509,
+          0.55,
+          0.594,
+          0.641,
+          0.692,
+          0.748
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.297,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 4500.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 2.247,
+        "UnbalValue": 0.445,
+        "HeterochromeAdd": 3.746,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.36,
+          0.389,
+          0.42,
+          0.453,
+          0.49,
+          0.529,
+          0.571,
+          0.617,
+          0.666,
+          0.72,
+          0.777,
+          0.839,
+          0.907
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.36,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 4500.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 4.819,
+        "UnbalValue": 0.955,
+        "HeterochromeAdd": 8.031,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.771,
+          0.833,
+          0.899,
+          0.971,
+          1.049,
+          1.133,
+          1.223,
+          1.321,
+          1.427,
+          1.541,
+          1.665,
+          1.798,
+          1.942
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.771,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 1.768,
+        "UnbalValue": 0.35,
+        "HeterochromeAdd": 2.947,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.283,
+          0.306,
+          0.33,
+          0.356,
+          0.385,
+          0.416,
+          0.449,
+          0.485,
+          0.524,
+          0.566,
+          0.611,
+          0.66,
+          0.713
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.283,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 6000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee6_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 2.075,
+        "UnbalValue": 0.411,
+        "HeterochromeAdd": 3.459,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.332,
+          0.359,
+          0.387,
+          0.418,
+          0.452,
+          0.488,
+          0.527,
+          0.569,
+          0.615,
+          0.664,
+          0.717,
+          0.774,
+          0.836
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.332,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 6000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee7_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 1.703,
+        "UnbalValue": 0.338,
+        "HeterochromeAdd": 2.839,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.273,
+          0.295,
+          0.318,
+          0.344,
+          0.371,
+          0.401,
+          0.433,
+          0.468,
+          0.505,
+          0.546,
+          0.589,
+          0.637,
+          0.687
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.273,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 13000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Melee8_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 5.022,
+        "UnbalValue": 0.995,
+        "HeterochromeAdd": 8.37,
+        "GAName": "GA_Fadia_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.803,
+          0.867,
+          0.937,
+          1.012,
+          1.092,
+          1.18,
+          1.274,
+          1.376,
+          1.486,
+          1.605,
+          1.734,
+          1.872,
+          2.022
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.803,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 13000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_PerfectEvadeAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 4.5,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 7.4,
+        "GAName": "GA_Fadia_ExtremEvadeAtk",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Z",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.78,
+          1.922,
+          2.076,
+          2.242,
+          2.422,
+          2.615,
+          2.825,
+          3.051,
+          3.295,
+          3.558,
+          3.843,
+          4.15,
+          4.482
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.78,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_QTE1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 7.6,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Fadia_QTE",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 1.742,
+        "UnbalValue": 0.341,
+        "HeterochromeAdd": 2.878,
+        "GAName": "GA_Fadia_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.025,
+          0.027,
+          0.029,
+          0.031,
+          0.034,
+          0.037,
+          0.04,
+          0.043,
+          0.046,
+          0.05,
+          0.054,
+          0.058,
+          0.063
+        ],
+        "StroyBlanceGERate": 0.575,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": true,
+        "VehicleBreakableImpulse": 1500000.0
+      },
+      "GE_Player_Fadia_Skill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 1.742,
+        "UnbalValue": 0.341,
+        "HeterochromeAdd": 2.878,
+        "GAName": "GA_Fadia_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.025,
+          0.027,
+          0.029,
+          0.031,
+          0.034,
+          0.037,
+          0.04,
+          0.043,
+          0.046,
+          0.05,
+          0.054,
+          0.058,
+          0.063
+        ],
+        "StroyBlanceGERate": 0.575,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_Skill3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 1.111,
+        "UnbalValue": 0.217,
+        "HeterochromeAdd": 1.835,
+        "GAName": "GA_Fadia_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.016,
+          0.017,
+          0.019,
+          0.02,
+          0.022,
+          0.024,
+          0.025,
+          0.027,
+          0.03,
+          0.032,
+          0.035,
+          0.037,
+          0.04
+        ],
+        "StroyBlanceGERate": 0.368,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.643,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.039,
+          0.042,
+          0.045,
+          0.049,
+          0.053,
+          0.057,
+          0.062,
+          0.067,
+          0.072,
+          0.078,
+          0.084,
+          0.091,
+          0.098
+        ],
+        "StroyBlanceGERate": 0.897,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.203,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.012,
+          0.013,
+          0.014,
+          0.015,
+          0.016,
+          0.018,
+          0.019,
+          0.021,
+          0.022,
+          0.024,
+          0.026,
+          0.028,
+          0.03
+        ],
+        "StroyBlanceGERate": 0.276,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkill3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 1.045,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.063,
+          0.068,
+          0.073,
+          0.079,
+          0.086,
+          0.093,
+          0.1,
+          0.108,
+          0.117,
+          0.126,
+          0.136,
+          0.147,
+          0.159
+        ],
+        "StroyBlanceGERate": 1.449,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 1.085,
+        "UnbalValue": 0.218,
+        "HeterochromeAdd": 1.803,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.02,
+          0.022,
+          0.023,
+          0.025,
+          0.027,
+          0.029,
+          0.032,
+          0.034,
+          0.037,
+          0.04,
+          0.043,
+          0.047,
+          0.05
+        ],
+        "StroyBlanceGERate": 0.46,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 1.753,
+        "UnbalValue": 0.353,
+        "HeterochromeAdd": 2.913,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.032,
+          0.035,
+          0.037,
+          0.04,
+          0.044,
+          0.047,
+          0.051,
+          0.055,
+          0.059,
+          0.064,
+          0.069,
+          0.075,
+          0.081
+        ],
+        "StroyBlanceGERate": 0.736,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 1.92,
+        "UnbalValue": 0.386,
+        "HeterochromeAdd": 3.19,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.036,
+          0.039,
+          0.042,
+          0.045,
+          0.049,
+          0.053,
+          0.057,
+          0.062,
+          0.067,
+          0.072,
+          0.078,
+          0.084,
+          0.091
+        ],
+        "StroyBlanceGERate": 0.828,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 4000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 0.501,
+        "UnbalValue": 0.101,
+        "HeterochromeAdd": 0.832,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.009,
+          0.01,
+          0.01,
+          0.011,
+          0.012,
+          0.013,
+          0.014,
+          0.015,
+          0.017,
+          0.018,
+          0.019,
+          0.021,
+          0.023
+        ],
+        "StroyBlanceGERate": 0.207,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 0.837,
+        "UnbalValue": 0.168,
+        "HeterochromeAdd": 1.39,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.015,
+          0.016,
+          0.017,
+          0.019,
+          0.02,
+          0.022,
+          0.024,
+          0.026,
+          0.028,
+          0.03,
+          0.032,
+          0.035,
+          0.038
+        ],
+        "StroyBlanceGERate": 0.345,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee6_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 1.219,
+        "UnbalValue": 0.245,
+        "HeterochromeAdd": 2.026,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.023,
+          0.025,
+          0.027,
+          0.029,
+          0.031,
+          0.034,
+          0.036,
+          0.039,
+          0.043,
+          0.046,
+          0.05,
+          0.054,
+          0.058
+        ],
+        "StroyBlanceGERate": 0.529,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee7_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 3.006,
+        "UnbalValue": 0.604,
+        "HeterochromeAdd": 4.994,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.056,
+          0.06,
+          0.065,
+          0.071,
+          0.076,
+          0.082,
+          0.089,
+          0.096,
+          0.104,
+          0.112,
+          0.121,
+          0.131,
+          0.141
+        ],
+        "StroyBlanceGERate": 1.288,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 5000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_UltraSkillMelee8_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHICALLY",
+        "ChargeAdd": 3.2,
+        "UnbalValue": 0.643,
+        "HeterochromeAdd": 5.317,
+        "GAName": "GA_Fadia_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.059,
+          0.064,
+          0.069,
+          0.074,
+          0.08,
+          0.087,
+          0.094,
+          0.101,
+          0.109,
+          0.118,
+          0.127,
+          0.138,
+          0.149
+        ],
+        "StroyBlanceGERate": 1.357,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 4000.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Fadia_ZhouYin_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.005,
+        "UnbalValue": 0.001,
+        "HeterochromeAdd": 0.008,
+        "GAName": "GA_Fadia_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "StroyBlanceGERate": 0.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      }
+    },
+    "gameplay_effect_mapping": {
+      "Buff_Fadia_ChangeState": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/Buff_Fadia_ChangeState.Buff_Fadia_ChangeState_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1210
+      },
+      "Buff_Fadia_GiveUltraMelee": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/Buff_Fadia_GiveUltraMelee.Buff_Fadia_GiveUltraMelee_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1284
+      },
+      "Buff_Fadia_HighQ_DamUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/Buff_Fadia_HighQ_DamUp.Buff_Fadia_HighQ_DamUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1302
+      },
+      "Buff_Fadia_NoDieShareDamage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/Buff_Fadia_NoDieShareDamage.Buff_Fadia_NoDieShareDamage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1193
+      },
+      "Buff_Fadia_ShareOutTeammatesDamage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/Buff_Fadia_ShareOutTeammatesDamage.Buff_Fadia_ShareOutTeammatesDamage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1320
+      },
+      "Buff_Fadia_ZhouYin": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/Buff_Fadia_ZhouYin.Buff_Fadia_ZhouYin_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1306
+      },
+      "Buff_Fadia039_AddEnergy": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/Buff_Fadia039_AddEnergy.Buff_Fadia039_AddEnergy_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2326
+      },
+      "Buff_Fadia039_Level1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/Level1/Buff_Fadia039_Level1.Buff_Fadia039_Level1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1308
+      },
+      "Buff_Fadia039_Level2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/Level2/Buff_Fadia039_Level2.Buff_Fadia039_Level2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1309
+      },
+      "Buff_Fadia039_Level3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/Level3/Buff_Fadia039_Level3.Buff_Fadia039_Level3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1310
+      },
+      "Buff_Fadia039_Level4": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/Level4/Buff_Fadia039_Level4.Buff_Fadia039_Level4_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1311
+      },
+      "Buff_Fadia039_Level5": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/Level5/Buff_Fadia039_Level5.Buff_Fadia039_Level5_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1312
+      },
+      "Buff_Fadia039_Level5CritUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/Level5/Buff_Fadia039_Level5CritUp.Buff_Fadia039_Level5CritUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1321
+      },
+      "Buff_Fadia039_Level6": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/Level6/Buff_Fadia039_Level6.Buff_Fadia039_Level6_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1313
+      },
+      "Buff_Fadia039_LevelExtra": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Upgrade/LevelExtra/Buff_Fadia039_LevelExtra.Buff_Fadia039_LevelExtra_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1314
+      },
+      "Buff_Fadia039_Passive1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/PassiveEffect/Buff_Fadia039_Passive1.Buff_Fadia039_Passive1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1007
+      },
+      "Buff_Fadia039_Passive2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/PassiveEffect/Buff_Fadia039_Passive2.Buff_Fadia039_Passive2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1006
+      },
+      "GE_Fadia_HighQ_RecoverHP": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/GE_Fadia_HighQ_RecoverHP.GE_Fadia_HighQ_RecoverHP_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1303
+      },
+      "GE_Fadia_Q_RecoverEnergy": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/GE_Fadia_Q_RecoverEnergy.GE_Fadia_Q_RecoverEnergy_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1301
+      },
+      "GE_Fadia_Q_RecoverHP": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Buff/GE_Fadia_Q_RecoverHP.GE_Fadia_Q_RecoverHP_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1304
+      },
+      "GE_Player_Fadia_AirAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_AirAttack_Damage.GE_Player_Fadia_AirAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1458
+      },
+      "GE_Player_Fadia_Melee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee1_Damage.GE_Player_Fadia_Melee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1149
+      },
+      "GE_Player_Fadia_Melee1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Melee1_HitBack.GE_Player_Fadia_Melee1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1190
+      },
+      "GE_Player_Fadia_Melee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee2_Damage.GE_Player_Fadia_Melee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1150
+      },
+      "GE_Player_Fadia_Melee2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Melee2_HitBack.GE_Player_Fadia_Melee2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1285
+      },
+      "GE_Player_Fadia_Melee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee3_Damage.GE_Player_Fadia_Melee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1151
+      },
+      "GE_Player_Fadia_Melee3_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Melee3_HitBack.GE_Player_Fadia_Melee3_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1463
+      },
+      "GE_Player_Fadia_Melee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee4_Damage.GE_Player_Fadia_Melee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1152
+      },
+      "GE_Player_Fadia_Melee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee5_Damage.GE_Player_Fadia_Melee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1153
+      },
+      "GE_Player_Fadia_Melee5_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Melee5_HitBack.GE_Player_Fadia_Melee5_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2916
+      },
+      "GE_Player_Fadia_Melee6_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee6_Damage.GE_Player_Fadia_Melee6_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1457
+      },
+      "GE_Player_Fadia_Melee6_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Melee6_HitBack.GE_Player_Fadia_Melee6_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1462
+      },
+      "GE_Player_Fadia_Melee7_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee7_Damage.GE_Player_Fadia_Melee7_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1520
+      },
+      "GE_Player_Fadia_Melee7_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Melee7_HitBack.GE_Player_Fadia_Melee7_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1569
+      },
+      "GE_Player_Fadia_Melee8_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Melee8_Damage.GE_Player_Fadia_Melee8_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1568
+      },
+      "GE_Player_Fadia_Melee8_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Melee8_HitOut.GE_Player_Fadia_Melee8_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1570
+      },
+      "GE_Player_Fadia_PerfectEvade_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_PerfectEvade_HitBack.GE_Player_Fadia_PerfectEvade_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2237
+      },
+      "GE_Player_Fadia_PerfectEvadeAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_PerfectEvadeAttack_Damage.GE_Player_Fadia_PerfectEvadeAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1643
+      },
+      "GE_Player_Fadia_QTE1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_QTE1_Damage.GE_Player_Fadia_QTE1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1148
+      },
+      "GE_Player_Fadia_QTE1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_QTE1_HitBack.GE_Player_Fadia_QTE1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1162
+      },
+      "GE_Player_Fadia_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Skill1_Damage.GE_Player_Fadia_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1154
+      },
+      "GE_Player_Fadia_Skill1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_Skill1_HitBack.GE_Player_Fadia_Skill1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1607
+      },
+      "GE_Player_Fadia_Skill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Skill2_Damage.GE_Player_Fadia_Skill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1605
+      },
+      "GE_Player_Fadia_Skill3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_Skill3_Damage.GE_Player_Fadia_Skill3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3799
+      },
+      "GE_Player_Fadia_UltraSkill_BaseDamage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkill_BaseDamage.GE_Player_Fadia_UltraSkill_BaseDamage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1274
+      },
+      "GE_Player_Fadia_UltraSkill_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkill_HitOut.GE_Player_Fadia_UltraSkill_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1459
+      },
+      "GE_Player_Fadia_UltraSkill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkill1_Damage.GE_Player_Fadia_UltraSkill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1155
+      },
+      "GE_Player_Fadia_UltraSkill1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkill1_HitBack.GE_Player_Fadia_UltraSkill1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1461
+      },
+      "GE_Player_Fadia_UltraSkill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkill2_Damage.GE_Player_Fadia_UltraSkill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1358
+      },
+      "GE_Player_Fadia_UltraSkill2_Float": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkill2_Float.GE_Player_Fadia_UltraSkill2_Float_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1460
+      },
+      "GE_Player_Fadia_UltraSkill3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkill3_Damage.GE_Player_Fadia_UltraSkill3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1359
+      },
+      "GE_Player_Fadia_UltraSkillMelee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee1_Damage.GE_Player_Fadia_UltraSkillMelee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1431
+      },
+      "GE_Player_Fadia_UltraSkillMelee1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkillMelee1_HitBack.GE_Player_Fadia_UltraSkillMelee1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1507
+      },
+      "GE_Player_Fadia_UltraSkillMelee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee2_Damage.GE_Player_Fadia_UltraSkillMelee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1432
+      },
+      "GE_Player_Fadia_UltraSkillMelee2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkillMelee2_HitBack.GE_Player_Fadia_UltraSkillMelee2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1506
+      },
+      "GE_Player_Fadia_UltraSkillMelee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee3_Damage.GE_Player_Fadia_UltraSkillMelee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1433
+      },
+      "GE_Player_Fadia_UltraSkillMelee3_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkillMelee3_HitBack.GE_Player_Fadia_UltraSkillMelee3_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1646
+      },
+      "GE_Player_Fadia_UltraSkillMelee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee4_Damage.GE_Player_Fadia_UltraSkillMelee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1434
+      },
+      "GE_Player_Fadia_UltraSkillMelee4_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkillMelee4_HitBack.GE_Player_Fadia_UltraSkillMelee4_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1505
+      },
+      "GE_Player_Fadia_UltraSkillMelee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee5_Damage.GE_Player_Fadia_UltraSkillMelee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1435
+      },
+      "GE_Player_Fadia_UltraSkillMelee5_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Effect/GE_Player_Fadia_UltraSkillMelee5_HitBack.GE_Player_Fadia_UltraSkillMelee5_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1614
+      },
+      "GE_Player_Fadia_UltraSkillMelee6_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee6_Damage.GE_Player_Fadia_UltraSkillMelee6_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1519
+      },
+      "GE_Player_Fadia_UltraSkillMelee7_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee7_Damage.GE_Player_Fadia_UltraSkillMelee7_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1606
+      },
+      "GE_Player_Fadia_UltraSkillMelee8_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_UltraSkillMelee8_Damage.GE_Player_Fadia_UltraSkillMelee8_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1613
+      },
+      "GE_Player_Fadia_ZhouYin_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_039_Fadia/Damage/GE_Player_Fadia_ZhouYin_Damage.GE_Player_Fadia_ZhouYin_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1307
+      }
+    }
+  },
+  "references": {
+    "unresolved_ability_tips": {
+      "GA_Fadia_ExtremEvadeAtk": [
+        "GE_Player_Fadia_PerfectEvadeAttack_Damage"
+      ]
+    }
+  }
+}

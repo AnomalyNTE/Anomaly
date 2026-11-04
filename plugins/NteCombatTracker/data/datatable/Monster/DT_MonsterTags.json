@@ -1,0 +1,353 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_MonsterTags",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Monster/DT_MonsterTags",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'AITemplateTagsData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "mon_01_BP_World": {
+        "AITemplateName": "mon_01_BP_World",
+        "MonsterTags": [
+          "MM_mon_01_BP"
+        ]
+      },
+      "mon_04_BP_World": {
+        "AITemplateName": "mon_04_BP_World",
+        "MonsterTags": [
+          "MM_mon_04_BP"
+        ]
+      },
+      "mon_02_BP_World": {
+        "AITemplateName": "mon_02_BP_World",
+        "MonsterTags": [
+          "MM_mon_02_BP"
+        ]
+      },
+      "mon_14_BP_World_Interaction": {
+        "AITemplateName": "mon_14_BP_World_Interaction",
+        "MonsterTags": [
+          "MM_mon_014_BP"
+        ]
+      },
+      "mon_025_double_1_BP_World": {
+        "AITemplateName": "mon_025_double_1_BP_World",
+        "MonsterTags": [
+          "MM_mon_025_BP"
+        ]
+      },
+      "mon_025_double_2_BP_World": {
+        "AITemplateName": "mon_025_double_2_BP_World",
+        "MonsterTags": [
+          "MM_mon_025_BP"
+        ]
+      },
+      "mon_011_BP_World": {
+        "AITemplateName": "mon_011_BP_World",
+        "MonsterTags": [
+          "MM_mon_011_BP"
+        ]
+      },
+      "mon_016_BP_World_Interaction_red": {
+        "AITemplateName": "mon_016_BP_World_Interaction_red",
+        "MonsterTags": [
+          "MM_mon_016_BP"
+        ]
+      },
+      "mon_016_BP_World_Interaction": {
+        "AITemplateName": "mon_016_BP_World_Interaction",
+        "MonsterTags": [
+          "MM_mon_016_BP"
+        ]
+      },
+      "mon_023_BP_World": {
+        "AITemplateName": "mon_023_BP_World",
+        "MonsterTags": [
+          "MM_mon_023_BP"
+        ]
+      },
+      "mon_17_BP_World": {
+        "AITemplateName": "mon_17_BP_World",
+        "MonsterTags": [
+          "MM_mon_017_BP"
+        ]
+      },
+      "mon_18_BP_World_Passive_New_Black": {
+        "AITemplateName": "mon_18_BP_World_Passive_New_Black",
+        "MonsterTags": [
+          "MM_mon_018_BP"
+        ]
+      },
+      "mon_26_BP_World": {
+        "AITemplateName": "mon_26_BP_World",
+        "MonsterTags": [
+          "MM_mon_026_BP"
+        ]
+      },
+      "mon_037_BP_World": {
+        "AITemplateName": "mon_037_BP_World",
+        "MonsterTags": [
+          "MM_mon_037_BP"
+        ]
+      },
+      "mon_41_BP_World": {
+        "AITemplateName": "mon_41_BP_World",
+        "MonsterTags": [
+          "MM_mon_41_BP"
+        ]
+      },
+      "mon_038_BP_World": {
+        "AITemplateName": "mon_038_BP_World",
+        "MonsterTags": [
+          "MM_mon_038_BP"
+        ]
+      },
+      "mon_038_BP_World_Passive": {
+        "AITemplateName": "mon_038_BP_World_Passive",
+        "MonsterTags": [
+          "MM_mon_038_BP"
+        ]
+      },
+      "mon_038_BP_World_Street": {
+        "AITemplateName": "mon_038_BP_World_Street",
+        "MonsterTags": [
+          "MM_mon_038_BP"
+        ]
+      },
+      "mon_39_BP_World": {
+        "AITemplateName": "mon_39_BP_World",
+        "MonsterTags": [
+          "MM_mon_39_BP"
+        ]
+      },
+      "mon_24_BP_World": {
+        "AITemplateName": "mon_24_BP_World",
+        "MonsterTags": [
+          "MM_mon_024_BP"
+        ]
+      },
+      "mon_011_BP_World_02": {
+        "AITemplateName": "mon_011_BP_World_02",
+        "MonsterTags": [
+          "MM_mon_011_BP"
+        ]
+      },
+      "mon_019_SadBear_BP_World": {
+        "AITemplateName": "mon_019_SadBear_BP_World",
+        "MonsterTags": [
+          "MM_mon_019_SadBear_BP"
+        ]
+      },
+      "mon_029_BP_World_Interaction": {
+        "AITemplateName": "mon_029_BP_World_Interaction",
+        "MonsterTags": [
+          "MM_mon_029_BP"
+        ]
+      },
+      "mon_27_BP_World": {
+        "AITemplateName": "mon_27_BP_World",
+        "MonsterTags": [
+          "MM_mon_027_BP"
+        ]
+      },
+      "mon_18_2_BP_World": {
+        "AITemplateName": "mon_18_2_BP_World",
+        "MonsterTags": [
+          "MM_mon_018_BP"
+        ]
+      },
+      "mon_39_2_BP_World": {
+        "AITemplateName": "mon_39_2_BP_World",
+        "MonsterTags": [
+          "MM_mon_39_2_BP"
+        ]
+      },
+      "mon_038_2_BP_World": {
+        "AITemplateName": "mon_038_2_BP_World",
+        "MonsterTags": [
+          "MM_mon_038_2_BP"
+        ]
+      },
+      "mon_13_1_BP_World": {
+        "AITemplateName": "mon_13_1_BP_World",
+        "MonsterTags": [
+          "MM_mon_013_BP"
+        ]
+      },
+      "mon_015_BP_Passive": {
+        "AITemplateName": "mon_015_BP_Passive",
+        "MonsterTags": [
+          "MM_mon_015_BP"
+        ]
+      },
+      "mon_020_BP_World": {
+        "AITemplateName": "mon_020_BP_World",
+        "MonsterTags": [
+          "MM_mon_020_BP"
+        ]
+      },
+      "mon_020_BP_World_02": {
+        "AITemplateName": "mon_020_BP_World_02",
+        "MonsterTags": [
+          "MM_mon_020_BP"
+        ]
+      },
+      "mon_012_1_BP_World_Area02_001": {
+        "AITemplateName": "mon_012_1_BP_World_Area02_001",
+        "MonsterTags": [
+          "MM_mon_012_BP"
+        ]
+      },
+      "mon_14_BP_World_AnomalyDoor": {
+        "AITemplateName": "mon_14_BP_World_AnomalyDoor",
+        "MonsterTags": [
+          "MM_mon_014_BP"
+        ]
+      },
+      "mon_016_BP_AnomalyDoor": {
+        "AITemplateName": "mon_016_BP_AnomalyDoor",
+        "MonsterTags": [
+          "MM_mon_016_BP"
+        ]
+      },
+      "mon_33_BP_World": {
+        "AITemplateName": "mon_33_BP_World",
+        "MonsterTags": [
+          "MM_mon_033_BP"
+        ]
+      },
+      "mon_13_horizontal_BP_World": {
+        "AITemplateName": "mon_13_horizontal_BP_World",
+        "MonsterTags": [
+          "MM_mon_013_BP"
+        ]
+      },
+      "mon_012_1_BP_World_Area01_002": {
+        "AITemplateName": "mon_012_1_BP_World_Area01_002",
+        "MonsterTags": [
+          "MM_mon_012_BP"
+        ]
+      },
+      "mon_48_BP_World": {
+        "AITemplateName": "mon_48_BP_World",
+        "MonsterTags": [
+          "MM_mon_048_BP"
+        ]
+      },
+      "mon_13_1_BP_World_Interaction": {
+        "AITemplateName": "mon_13_1_BP_World_Interaction",
+        "MonsterTags": [
+          "MM_mon_013_BP"
+        ]
+      },
+      "mon_24_BP_tree_World": {
+        "AITemplateName": "mon_24_BP_tree_World",
+        "MonsterTags": [
+          "MM_mon_024_BP"
+        ]
+      },
+      "mon_012_1_BP_World_Area02_002": {
+        "AITemplateName": "mon_012_1_BP_World_Area02_002",
+        "MonsterTags": [
+          "MM_mon_012_BP"
+        ]
+      },
+      "mon_012_1_BP_World_AreaSpecial_02": {
+        "AITemplateName": "mon_012_1_BP_World_AreaSpecial_02",
+        "MonsterTags": [
+          "MM_mon_012_BP"
+        ]
+      },
+      "mon_27_BP_World_Passive": {
+        "AITemplateName": "mon_27_BP_World_Passive",
+        "MonsterTags": [
+          "MM_mon_027_BP"
+        ]
+      },
+      "mon_025_BP_World_W103308_02": {
+        "AITemplateName": "mon_025_BP_World_W103308_02",
+        "MonsterTags": [
+          "MM_mon_025_BP"
+        ]
+      },
+      "mon_012_1_BP_World_Area02_003": {
+        "AITemplateName": "mon_012_1_BP_World_Area02_003",
+        "MonsterTags": [
+          "MM_mon_012_BP"
+        ]
+      },
+      "mon_012_1_BP_World_AreaSpecial_01": {
+        "AITemplateName": "mon_012_1_BP_World_AreaSpecial_01",
+        "MonsterTags": [
+          "MM_mon_012_BP"
+        ]
+      },
+      "mon_012_2_Olny": {
+        "AITemplateName": "mon_012_2_Olny",
+        "MonsterTags": [
+          "MM_mon_012_BP"
+        ]
+      },
+      "mon_030_BP_Rain_World": {
+        "AITemplateName": "mon_030_BP_Rain_World",
+        "MonsterTags": [
+          "MM_mon_030_BP"
+        ]
+      },
+      "mon_030_BP_Snow_World": {
+        "AITemplateName": "mon_030_BP_Snow_World",
+        "MonsterTags": [
+          "MM_mon_030_BP"
+        ]
+      },
+      "mon_05_BP_World_OnWall": {
+        "AITemplateName": "mon_05_BP_World_OnWall",
+        "MonsterTags": [
+          "MM_mon_05_BP"
+        ]
+      },
+      "mon_13_BP_World_Interaction": {
+        "AITemplateName": "mon_13_BP_World_Interaction",
+        "MonsterTags": [
+          "MM_mon_013_BP"
+        ]
+      },
+      "mon_13_2_BP_World_Interaction": {
+        "AITemplateName": "mon_13_2_BP_World_Interaction",
+        "MonsterTags": [
+          "MM_mon_013_BP"
+        ]
+      },
+      "mon_13_BP_World": {
+        "AITemplateName": "mon_13_BP_World",
+        "MonsterTags": [
+          "MM_mon_013_BP"
+        ]
+      },
+      "mon_13_1_BP_World_Perform": {
+        "AITemplateName": "mon_13_1_BP_World_Perform",
+        "MonsterTags": [
+          "MM_mon_013_BP"
+        ]
+      },
+      "mon_029_BP_World_Perform": {
+        "AITemplateName": "mon_029_BP_World_Perform",
+        "MonsterTags": [
+          "MM_mon_029_BP"
+        ]
+      },
+      "mon_016_BP_World_Perform": {
+        "AITemplateName": "mon_016_BP_World_Perform",
+        "MonsterTags": [
+          "MM_mon_016_BP"
+        ]
+      }
+    }
+  }
+]

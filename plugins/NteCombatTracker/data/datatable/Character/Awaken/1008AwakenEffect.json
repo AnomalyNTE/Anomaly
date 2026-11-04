@@ -1,0 +1,274 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1008AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1008AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1008": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star1_name",
+              "SourceString": "排斥变节的规程",
+              "LocalizedString": "排斥变节的规程"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1008_1.1008_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_008_Skia/Upgrade/Level1/Buff_Skia008_Level1.Buff_Skia008_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star1_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>自动攻击的伤害倍率提升<NumGreen>60%</>。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>自动攻击的伤害倍率提升<NumGreen>60%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star2_name",
+              "SourceString": "秩序井然的待办",
+              "LocalizedString": "秩序井然的待办"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1008_2.1008_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_008_Skia/Upgrade/Level2/Buff_Skia008_Level2.Buff_Skia008_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star2_des",
+              "SourceString": "翳在释放「变轨技能：潜影追击」后，使自身的暴击率提升<NumGreen>10%</>，抗打断能力提升<NumGreen>50%</>，持续<NumGreen>15</>秒。",
+              "LocalizedString": "翳在释放「变轨技能：潜影追击」后，使自身的暴击率提升<NumGreen>10%</>，抗打断能力提升<NumGreen>50%</>，持续<NumGreen>15</>秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star3_name",
+              "SourceString": "异类处理的草案",
+              "LocalizedString": "异类处理的草案"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1008_3.1008_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_008_Skia/Upgrade/Level3/Buff_Skia008_Level3.Buff_Skia008_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star3_des",
+              "SourceString": "翳对已被<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定的目标造成的伤害提升<NumGreen>4%</>。\r\n如果场上仅有一个被<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定的目标，翳对其造成的伤害额外提升<NumGreen>4%</>。",
+              "LocalizedString": "翳对已被<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定的目标造成的伤害提升<NumGreen>4%</>。\r\n如果场上仅有一个被<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定的目标，翳对其造成的伤害额外提升<NumGreen>4%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star4_name",
+              "SourceString": "划定常规的决议",
+              "LocalizedString": "划定常规的决议"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1008_4.1008_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_008_Skia/Upgrade/Level4/Buff_Skia008_Level4.Buff_Skia008_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star4_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&skiaskill1\">「尾追」</>状态的持续时间延长至<NumGreen>12</>秒。目标每被<hot textstyle=\"TextEXPL\" param=\"nouns&attach\">附着</>1秒，受到的附着伤害提高2%，最高提升至40%。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&skiaskill1\">「尾追」</>状态的持续时间延长至<NumGreen>12</>秒。目标每被<hot textstyle=\"TextEXPL\" param=\"nouns&attach\">附着</>1秒，受到的附着伤害提高2%，最高提升至40%。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star5_name",
+              "SourceString": "社会适应的重任",
+              "LocalizedString": "社会适应的重任"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1008_5.1008_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_008_Skia/Upgrade/Level5/Buff_Skia008_Level5.Buff_Skia008_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star5_des",
+              "SourceString": "目标每被1个<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定，质量提升<NumGreen>50</>点，移动速度降低<NumGreen>20%</>。",
+              "LocalizedString": "目标每被1个<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定，质量提升<NumGreen>50</>点，移动速度降低<NumGreen>20%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star6_name",
+              "SourceString": "无谓形貌的立身",
+              "LocalizedString": "无谓形貌的立身"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1008_6.1008_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_008_Skia/Upgrade/Level6/Buff_Skia008_Level6.Buff_Skia008_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_star6_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&skiaskill2\">「啮逐潜影」</>模式下，触碰已被<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定的敌方目标，使<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>造成的额外伤害倍率提升<NumGreen>20%</>。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&skiaskill2\">「啮逐潜影」</>模式下，触碰已被<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>锁定的敌方目标，使<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>造成的额外伤害倍率提升<NumGreen>20%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_starExtra1_name",
+              "SourceString": "职场生存守则",
+              "LocalizedString": "职场生存守则"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Skia_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Skia_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Skia_UltraSkill",
+                "SkillLevel": 1
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_starExtra1_des",
+              "SourceString": "「普通攻击：拘管格斗术」「变轨技能：潜影追击」「极轨终结：群犬吠形」的技能等级提升<NumGreen>1</>级。",
+              "LocalizedString": "「普通攻击：拘管格斗术」「变轨技能：潜影追击」「极轨终结：群犬吠形」的技能等级提升<NumGreen>1</>级。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_starExtra2_name",
+              "SourceString": "工作模范准则",
+              "LocalizedString": "工作模范准则"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_008_Skia/Upgrade/LevelExtra/Buff_Skia008_LevelExtra.Buff_Skia008_LevelExtra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Skia_SkillDes.Skia_SkillDes",
+              "Key": "GA_Skia_starExtra2_des",
+              "SourceString": "每个<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>降低其锁定目标2%的相异能属性抗性，最多降低6%。",
+              "LocalizedString": "每个<hot textstyle=\"TextEXPL\" param=\"nouns&skiamelee1\">「兽牙影刺」</>降低其锁定目标2%的相异能属性抗性，最多降低6%。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

@@ -1,0 +1,621 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_SkillEffectMutexsDataTable",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Skill/DT_SkillEffectMutexsDataTable",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'SkillEffectMutexsData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1": {
+        "NewEffectType": "ESkillEffectType::Hit",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "2": {
+        "NewEffectType": "ESkillEffectType::floating",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "3": {
+        "NewEffectType": "ESkillEffectType::HitBack",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "hitrotate",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "4": {
+        "NewEffectType": "ESkillEffectType::hitdown",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "hitrotate",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "5": {
+        "NewEffectType": "ESkillEffectType::hitout",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "6": {
+        "NewEffectType": "ESkillEffectType::belinked",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "7": {
+        "NewEffectType": "ESkillEffectType::halfhit",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_None"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "8": {
+        "NewEffectType": "ESkillEffectType::hitrotate",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitrotate",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "9": {
+        "NewEffectType": "ESkillEffectType::traction",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "traction",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "10": {
+        "NewEffectType": "ESkillEffectType::suppress",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Update"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitrotate",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "11": {
+        "NewEffectType": "ESkillEffectType::ArmorBroken",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitrotate",
+              "Value": "Mutex_Oppose"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      },
+      "12": {
+        "NewEffectType": "ESkillEffectType::ChainRestrain",
+        "SkillEffectMutex": {
+          "EffectMutex": [
+            {
+              "Key": "hit",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "floating",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitback",
+              "Value": "Mutex_PlayAndUpdate"
+            },
+            {
+              "Key": "hitdown",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitout",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "belinked",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "halfhit",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "hitrotate",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "traction",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "suppress",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "ArmorBroken",
+              "Value": "Mutex_Interrupt"
+            },
+            {
+              "Key": "ChainRestrain",
+              "Value": "Mutex_Oppose"
+            }
+          ]
+        }
+      }
+    }
+  }
+]

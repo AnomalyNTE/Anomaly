@@ -1,0 +1,274 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1070AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1070AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1070": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star1_name",
+              "SourceString": "未来序曲",
+              "LocalizedString": "未来序曲"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1070_1.1070_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_070_Mitsuki/Upgrade/Buff_Mitsuki070_Level1.Buff_Mitsuki070_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star1_des",
+              "SourceString": "处于<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态时，海月的暴击率提高<NumGreen>15%</>。",
+              "LocalizedString": "处于<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态时，海月的暴击率提高<NumGreen>15%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star2_name",
+              "SourceString": "一支特别的歌",
+              "LocalizedString": "一支特别的歌"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1070_2.1070_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_070_Mitsuki/Upgrade/Buff_Mitsuki070_Level2.Buff_Mitsuki070_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star2_des",
+              "SourceString": "成功进行极限闪避或释放「援护技：不协和音」后，海月将进入持续<NumGreen>5</>秒的<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态。如已处于该状态，则其持续时间在原有基础上延长<NumGreen>5</>秒。<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态最多可持续<NumGreen>12</>秒。",
+              "LocalizedString": "成功进行极限闪避或释放「援护技：不协和音」后，海月将进入持续<NumGreen>5</>秒的<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态。如已处于该状态，则其持续时间在原有基础上延长<NumGreen>5</>秒。<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态最多可持续<NumGreen>12</>秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star3_name",
+              "SourceString": "三重奏的休止符",
+              "LocalizedString": "三重奏的休止符"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1070_3.1070_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_070_Mitsuki/Upgrade/Buff_Mitsuki070_Level3.Buff_Mitsuki070_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star3_des",
+              "SourceString": "处于<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态时，海月释放「极轨终结：众声轮唱」所造成的伤害提高<NumGreen>20%</>。",
+              "LocalizedString": "处于<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态时，海月释放「极轨终结：众声轮唱」所造成的伤害提高<NumGreen>20%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star4_name",
+              "SourceString": "五线谱的空白处",
+              "LocalizedString": "五线谱的空白处"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1070_4.1070_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_070_Mitsuki/Upgrade/Buff_Mitsuki070_Level4.Buff_Mitsuki070_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star4_des",
+              "SourceString": "在释放「普通攻击：顿音」时，海月的防御力增加<NumGreen>20%</>。",
+              "LocalizedString": "在释放「普通攻击：顿音」时，海月的防御力增加<NumGreen>20%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star5_name",
+              "SourceString": "一支平凡的歌",
+              "LocalizedString": "一支平凡的歌"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1070_5.1070_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_070_Mitsuki/Upgrade/Buff_Mitsuki070_Level5.Buff_Mitsuki070_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star5_des",
+              "SourceString": "「极轨终结：众声轮唱」暴击率提高<NumGreen>15%</>。",
+              "LocalizedString": "「极轨终结：众声轮唱」暴击率提高<NumGreen>15%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star6_name",
+              "SourceString": "往日赋格",
+              "LocalizedString": "往日赋格"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1070_6.1070_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_070_Mitsuki/Upgrade/Buff_Mitsuki070_Level6.Buff_Mitsuki070_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_star6_des",
+              "SourceString": "「渐强」效果的最大叠加层数提升至20层。释放「变轨攻击：华彩唱段」后，立即获得10层「渐强」效果。",
+              "LocalizedString": "「渐强」效果的最大叠加层数提升至20层。释放「变轨攻击：华彩唱段」后，立即获得10层「渐强」效果。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_starExtra1_name",
+              "SourceString": "万物于此和声",
+              "LocalizedString": "万物于此和声"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Mitsuki_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Mitsuki_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Mitsuki_UltraSkill",
+                "SkillLevel": 1
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_starExtra1_des",
+              "SourceString": "「普通攻击：清唱」「变轨技能：华彩唱段」「极轨终结：众声轮唱」的技能等级提升<NumGreen>1</>级。",
+              "LocalizedString": "「普通攻击：清唱」「变轨技能：华彩唱段」「极轨终结：众声轮唱」的技能等级提升<NumGreen>1</>级。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_starExtra2_name",
+              "SourceString": "与你一同奏响",
+              "LocalizedString": "与你一同奏响"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_070_Mitsuki/Upgrade/Buff_Mitsuki070_Level6_extra.Buff_Mitsuki070_Level6_extra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Mitsuki_SkillDes.Mitsuki_SkillDes",
+              "Key": "GA_Mitsuki_starExtra2_des",
+              "SourceString": "进入<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态或<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态持续时间延长时，全队的<Hun>魂属性异能伤害</>提升<NumGreen>8%</>，持续<NumGreen>15</>秒，重复获得刷新持续时间。",
+              "LocalizedString": "进入<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态或<hot textstyle=\"TextEXPL\" param=\"nouns&MitsukiSkill\">「华彩」</>状态持续时间延长时，全队的<Hun>魂属性异能伤害</>提升<NumGreen>8%</>，持续<NumGreen>15</>秒，重复获得刷新持续时间。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

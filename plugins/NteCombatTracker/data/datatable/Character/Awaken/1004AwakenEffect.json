@@ -1,0 +1,283 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1004AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1004AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1004": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star6_name",
+              "SourceString": "不加班之宽赦",
+              "LocalizedString": "不加班之宽赦"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1004_6.1004_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/Upgrade/Level6/Buff_Lacrimosa004_Level6.Buff_Lacrimosa004_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star6_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>的伤害倍率提升，当前技能等级下提升至<NumGreen>{0}%</>。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>的伤害倍率提升，当前技能等级下提升至<NumGreen>{0}%</>。"
+            },
+            "GEIdArray": [
+              "GE_Player_Lacrimosa_Blood_Damage_LV6"
+            ]
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star2_name",
+              "SourceString": "闹钟响彻四方",
+              "LocalizedString": "闹钟响彻四方"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1004_2.1004_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/Upgrade/Level2/Buff_Lacrimosa004_Level2.Buff_Lacrimosa004_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star2_des",
+              "SourceString": "安魂曲通过「援护技」入场时，自身造成的伤害提升<NumGreen>15%</>，提升效果持续<NumGreen>15</>秒。",
+              "LocalizedString": "安魂曲通过「援护技」入场时，自身造成的伤害提升<NumGreen>15%</>，提升效果持续<NumGreen>15</>秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star3_name",
+              "SourceString": "冰淇淋在烈阳中融化",
+              "LocalizedString": "冰淇淋在烈阳中融化"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1004_3.1004_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/Upgrade/Level3/Buff_Lacrimosa004_Level3.Buff_Lacrimosa004_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star3_des",
+              "SourceString": "第<NumGreen>5</>段「普通攻击：茄汁金属乐」或「普通攻击：茄汁打击乐」命中目标时，一次性结算目标当前已累积的全部<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>效果。",
+              "LocalizedString": "第<NumGreen>5</>段「普通攻击：茄汁金属乐」或「普通攻击：茄汁打击乐」命中目标时，一次性结算目标当前已累积的全部<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>效果。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star4_name",
+              "SourceString": "威严赫赫番茄酱大王",
+              "LocalizedString": "威严赫赫番茄酱大王"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1004_4.1004_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/PassiveEffect/Buff_Lacrimosa004_Passive1.Buff_Lacrimosa004_Passive1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star4_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>状态的持续时间延长至<NumGreen>6</>秒。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>状态的持续时间延长至<NumGreen>6</>秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star5_name",
+              "SourceString": "强化玻璃径受审判",
+              "LocalizedString": "强化玻璃径受审判"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1004_5.1004_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/Upgrade/Level5/Buff_Lacrimosa004_Level5.Buff_Lacrimosa004_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star5_des",
+              "SourceString": "安魂曲造成<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>伤害时，额外削减目标生命值上限，削减量为本次<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>伤害值的<NumGreen>200%</>。每<NumGreen>3</>秒，安魂曲基于期间造成的<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>伤害回复自身生命值，回复量为期间<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>总伤害值的<NumGreen>1.5%</>。目标受到治疗时，不再移除<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>层数。",
+              "LocalizedString": "安魂曲造成<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>伤害时，额外削减目标生命值上限，削减量为本次<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>伤害值的<NumGreen>200%</>。每<NumGreen>3</>秒，安魂曲基于期间造成的<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>伤害回复自身生命值，回复量为期间<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>总伤害值的<NumGreen>1.5%</>。目标受到治疗时，不再移除<hot textstyle=\"TextEXPL\" param=\"nouns&Lacrimosa_dot\">「噩梦」</>层数。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "L110139",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star1_name",
+              "SourceString": "早起出勤之咏",
+              "LocalizedString": "早起出勤之咏"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1004_1.1004_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/Upgrade/Level1/Buff_Lacrimosa004_Level1.Buff_Lacrimosa004_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_star1_des",
+              "SourceString": "安魂曲释放「变轨技能：恶魔的礼物」后的<NumGreen>5</>秒内，从任意可触发「黯星」「浊燃」「失谐」三种异能环合的角色切换至安魂曲时，无需累积「环合值」，即可自动释放「援护技」，并触发相应环合。该效果每<NumGreen>5</>秒最多触发<NumGreen>1</>次。",
+              "LocalizedString": "安魂曲释放「变轨技能：恶魔的礼物」后的<NumGreen>5</>秒内，从任意可触发「黯星」「浊燃」「失谐」三种异能环合的角色切换至安魂曲时，无需累积「环合值」，即可自动释放「援护技」，并触发相应环合。该效果每<NumGreen>5</>秒最多触发<NumGreen>1</>次。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_starExtra1_name",
+              "SourceString": "困倦的火焰在心中燃烧",
+              "LocalizedString": "困倦的火焰在心中燃烧"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Lacrimosa_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Lacrimosa_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Lacrimosa_UltraSkill",
+                "SkillLevel": 1
+              },
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/Upgrade/LevelExtra/Buff_Lacrimosa004_LevelExtraLv3.Buff_Lacrimosa004_LevelExtraLv3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_starExtra1_des",
+              "SourceString": "「普通攻击：酸甜口味的制裁」「变轨技能：起床气加载中」「变轨技能：恶魔的礼物」「极轨终结：工作日最终审判」的技能等级提升<NumGreen>1</>级。以蝙蝠形态飞行时，耐力消耗降低至<NumGreen>85%</>。",
+              "LocalizedString": "「普通攻击：酸甜口味的制裁」「变轨技能：起床气加载中」「变轨技能：恶魔的礼物」「极轨终结：工作日最终审判」的技能等级提升<NumGreen>1</>级。以蝙蝠形态飞行时，耐力消耗降低至<NumGreen>85%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_starExtra2_name",
+              "SourceString": "美梦的时刻即将来临",
+              "LocalizedString": "美梦的时刻即将来临"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_004_Lacrimosa/Upgrade/LevelExtra/Buff_Lacrimosa004_LevelExtra.Buff_Lacrimosa004_LevelExtra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Lacrimosa_SkillDes.Lacrimosa_SkillDes",
+              "Key": "GA_Lacrimosa_starExtra2_des",
+              "SourceString": "安魂曲造成的伤害，无视目标<NumGreen>20%</>防御力。以蝙蝠形态飞行时，耐力消耗降低至<NumGreen>70%</>。",
+              "LocalizedString": "安魂曲造成的伤害，无视目标<NumGreen>20%</>防御力。以蝙蝠形态飞行时，耐力消耗降低至<NumGreen>70%</>。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

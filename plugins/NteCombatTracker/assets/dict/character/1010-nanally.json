@@ -1,0 +1,2006 @@
+{
+  "format_version": 1,
+  "source": {
+    "generator": "extract-character-data.ps1",
+    "assets_git_revision": "sha256:3c8dd7725bf0e091b5deb658d4f48cdb423a12fae3ae5e68e2a7d02ed42e16af",
+    "tables": [
+      "DataTable/Character/DT_Character.json",
+      "DataTable/skill/DT_GameplayAbilityTipsData.json",
+      "DataTable/skill/DT_SkillDamageData.json",
+      "DataTable/skill/DT_GameplayEffectMappingData.json"
+    ]
+  },
+  "identity": {
+    "kind": "registered",
+    "character_id": 1010,
+    "codename": "nanally",
+    "name_zh": "娜娜莉",
+    "asset_aliases": [
+      "010_Nanally"
+    ],
+    "identifier_aliases": [
+      "Nanally"
+    ]
+  },
+  "data": {
+    "characters": {
+      "1010": {
+        "attribute": "灵",
+        "codename": "nanally",
+        "name_zh": "娜娜莉"
+      }
+    },
+    "ability_tips": {
+      "GA_Nanally_Evade": {
+        "name_zh": "娜娜莉闪避名字"
+      },
+      "GA_Nanally_Melee": {
+        "name_zh": "柯林斯秘传技法"
+      },
+      "GA_Nanally_Passive_1": {
+        "name_zh": "不止「一腔」的热血"
+      },
+      "GA_Nanally_Passive_2": {
+        "name_zh": "绝对「公正」的决斗"
+      },
+      "GA_Nanally_QTE": {
+        "name_zh": "天降正义"
+      },
+      "GA_Nanally_RemoveSkill": {
+        "name_zh": ""
+      },
+      "GA_Nanally_Skill": {
+        "name_zh": "柯林斯·嗷呜术"
+      },
+      "GA_Nanally_UltraSkill": {
+        "name_zh": "柯林斯·终极术"
+      }
+    },
+    "skill_damage": {
+      "GE_Nanally010_Lv1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.6,
+          0.648,
+          0.7,
+          0.756,
+          0.816,
+          0.882,
+          0.952,
+          1.028,
+          1.111,
+          1.199,
+          1.295,
+          1.399,
+          1.511
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.6,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Nanally010_Lv3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.5,
+          0.54,
+          0.583,
+          0.63,
+          0.68,
+          0.735,
+          0.793,
+          0.857,
+          0.925,
+          1.0,
+          1.079,
+          1.166,
+          1.259
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.5,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_AirAttack1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 2.5,
+        "UnbalValue": 0.5,
+        "HeterochromeAdd": 4.2,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_X",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.5,
+          0.54,
+          0.583,
+          0.63,
+          0.68,
+          0.735,
+          0.793,
+          0.857,
+          0.925,
+          1.0,
+          1.079,
+          1.166,
+          1.259
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.5,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_BranchPraojectile_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.7,
+        "UnbalValue": 0.1,
+        "HeterochromeAdd": 1.1,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.13,
+          0.14,
+          0.152,
+          0.164,
+          0.177,
+          0.191,
+          0.206,
+          0.223,
+          0.241,
+          0.26,
+          0.281,
+          0.303,
+          0.327
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.13,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_AirAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.5,
+          0.54,
+          0.583,
+          0.63,
+          0.68,
+          0.735,
+          0.793,
+          0.857,
+          0.925,
+          1.0,
+          1.079,
+          1.166,
+          1.259
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.5,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Branch1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.311,
+          0.336,
+          0.363,
+          0.392,
+          0.423,
+          0.457,
+          0.494,
+          0.533,
+          0.576,
+          0.622,
+          0.671,
+          0.725,
+          0.783
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.311,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Branch2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.22,
+          0.238,
+          0.257,
+          0.277,
+          0.299,
+          0.323,
+          0.349,
+          0.377,
+          0.407,
+          0.44,
+          0.475,
+          0.513,
+          0.554
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.22,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Branch3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.201,
+          0.217,
+          0.234,
+          0.253,
+          0.273,
+          0.295,
+          0.319,
+          0.344,
+          0.372,
+          0.402,
+          0.434,
+          0.469,
+          0.506
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.201,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Branch4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.715,
+          0.772,
+          0.834,
+          0.901,
+          0.973,
+          1.051,
+          1.135,
+          1.225,
+          1.323,
+          1.429,
+          1.544,
+          1.667,
+          1.8
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.715,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Branch5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.466,
+          0.503,
+          0.544,
+          0.587,
+          0.634,
+          0.685,
+          0.739,
+          0.799,
+          0.863,
+          0.932,
+          1.006,
+          1.087,
+          1.173
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.466,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Melee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.25,
+          0.27,
+          0.292,
+          0.315,
+          0.34,
+          0.367,
+          0.397,
+          0.428,
+          0.463,
+          0.5,
+          0.54,
+          0.583,
+          0.63
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.25,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Melee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.225,
+          0.243,
+          0.262,
+          0.283,
+          0.306,
+          0.331,
+          0.357,
+          0.386,
+          0.416,
+          0.45,
+          0.486,
+          0.525,
+          0.567
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.225,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Melee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.425,
+          0.459,
+          0.496,
+          0.535,
+          0.578,
+          0.624,
+          0.674,
+          0.728,
+          0.787,
+          0.85,
+          0.918,
+          0.991,
+          1.07
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.425,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Melee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.4,
+          0.432,
+          0.467,
+          0.504,
+          0.544,
+          0.588,
+          0.635,
+          0.686,
+          0.74,
+          0.8,
+          0.864,
+          0.933,
+          1.007
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.4,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Melee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.317,
+          0.342,
+          0.37,
+          0.399,
+          0.431,
+          0.466,
+          0.503,
+          0.543,
+          0.587,
+          0.634,
+          0.684,
+          0.739,
+          0.798
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.317,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Melee6_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.45,
+          0.486,
+          0.525,
+          0.567,
+          0.612,
+          0.661,
+          0.714,
+          0.771,
+          0.833,
+          0.9,
+          0.972,
+          1.049,
+          1.133
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.45,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Melee7_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.6,
+          0.648,
+          0.7,
+          0.756,
+          0.816,
+          0.882,
+          0.952,
+          1.028,
+          1.111,
+          1.199,
+          1.295,
+          1.399,
+          1.511
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.6,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_PerfectEvadeAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.857,
+          0.926,
+          1.0,
+          1.08,
+          1.166,
+          1.259,
+          1.36,
+          1.469,
+          1.586,
+          1.713,
+          1.85,
+          1.998,
+          2.158
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.857,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_QTE_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.5,
+          1.62,
+          1.75,
+          1.89,
+          2.041,
+          2.204,
+          2.38,
+          2.571,
+          2.776,
+          2.999,
+          3.238,
+          3.497,
+          3.777
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.5,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Cat_Skill_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.24,
+          0.259,
+          0.28,
+          0.302,
+          0.327,
+          0.353,
+          0.381,
+          0.411,
+          0.444,
+          0.48,
+          0.518,
+          0.56,
+          0.604
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.24,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_ExtraAtk1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.231,
+        "UnbalValue": 0.046,
+        "HeterochromeAdd": 0.384,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.06,
+          0.065,
+          0.07,
+          0.076,
+          0.082,
+          0.088,
+          0.095,
+          0.103,
+          0.111,
+          0.12,
+          0.13,
+          0.14,
+          0.151
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.06,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_ExtraAtk2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 2.596,
+        "UnbalValue": 0.515,
+        "HeterochromeAdd": 4.32,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.673,
+          0.727,
+          0.785,
+          0.848,
+          0.916,
+          0.989,
+          1.068,
+          1.153,
+          1.246,
+          1.345,
+          1.453,
+          1.569,
+          1.695
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.673,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_ExtraAtkIntro1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.448,
+        "UnbalValue": 0.089,
+        "HeterochromeAdd": 0.746,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.116,
+          0.125,
+          0.135,
+          0.146,
+          0.158,
+          0.17,
+          0.184,
+          0.199,
+          0.215,
+          0.232,
+          0.25,
+          0.27,
+          0.292
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.116,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_ExtraAtkIntro2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.267,
+        "UnbalValue": 0.648,
+        "HeterochromeAdd": 5.436,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.847,
+          0.915,
+          0.988,
+          1.067,
+          1.152,
+          1.245,
+          1.344,
+          1.452,
+          1.568,
+          1.693,
+          1.829,
+          1.975,
+          2.133
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.847,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_ExtraAtkOutro1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 6.111,
+        "UnbalValue": 1.213,
+        "HeterochromeAdd": 10.169,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.585,
+          1.712,
+          1.849,
+          1.997,
+          2.156,
+          2.329,
+          2.515,
+          2.716,
+          2.934,
+          3.168,
+          3.422,
+          3.696,
+          3.991
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.585,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 1.138,
+        "UnbalValue": 0.226,
+        "HeterochromeAdd": 1.9,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.296,
+          0.32,
+          0.345,
+          0.373,
+          0.403,
+          0.435,
+          0.47,
+          0.507,
+          0.548,
+          0.592,
+          0.639,
+          0.69,
+          0.745
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.296,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee10_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 2.974,
+        "UnbalValue": 0.591,
+        "HeterochromeAdd": 4.962,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.773,
+          0.835,
+          0.902,
+          0.974,
+          1.052,
+          1.136,
+          1.227,
+          1.325,
+          1.431,
+          1.545,
+          1.669,
+          1.802,
+          1.947
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.773,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 1.492,
+        "UnbalValue": 0.297,
+        "HeterochromeAdd": 2.49,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.388,
+          0.419,
+          0.453,
+          0.489,
+          0.528,
+          0.57,
+          0.616,
+          0.665,
+          0.718,
+          0.776,
+          0.838,
+          0.905,
+          0.977
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.388,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.47,
+        "UnbalValue": 0.093,
+        "HeterochromeAdd": 0.784,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.122,
+          0.132,
+          0.142,
+          0.154,
+          0.166,
+          0.179,
+          0.194,
+          0.209,
+          0.226,
+          0.244,
+          0.263,
+          0.284,
+          0.307
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.122,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.806,
+        "UnbalValue": 0.16,
+        "HeterochromeAdd": 1.344,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.21,
+          0.227,
+          0.245,
+          0.265,
+          0.286,
+          0.309,
+          0.333,
+          0.36,
+          0.389,
+          0.42,
+          0.453,
+          0.49,
+          0.529
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.21,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 4.884,
+        "UnbalValue": 0.971,
+        "HeterochromeAdd": 8.151,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.27,
+          1.372,
+          1.481,
+          1.6,
+          1.728,
+          1.866,
+          2.015,
+          2.177,
+          2.351,
+          2.539,
+          2.742,
+          2.961,
+          3.198
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.27,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee6_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.267,
+        "UnbalValue": 0.053,
+        "HeterochromeAdd": 0.446,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.069,
+          0.075,
+          0.08,
+          0.087,
+          0.094,
+          0.101,
+          0.109,
+          0.118,
+          0.128,
+          0.138,
+          0.149,
+          0.161,
+          0.174
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.069,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Melee9_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 2.966,
+        "UnbalValue": 0.59,
+        "HeterochromeAdd": 4.948,
+        "GAName": "GA_Nanally_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.771,
+          0.833,
+          0.899,
+          0.971,
+          1.049,
+          1.133,
+          1.223,
+          1.321,
+          1.427,
+          1.541,
+          1.665,
+          1.798,
+          1.942
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.771,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_PerfectEvadeAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 4.2,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 6.9,
+        "GAName": "GA_Nanally_ExtremEvadeAtk",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Z",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.66,
+          1.793,
+          1.936,
+          2.091,
+          2.258,
+          2.439,
+          2.634,
+          2.845,
+          3.073,
+          3.318,
+          3.584,
+          3.871,
+          4.18
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.66,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_QTE1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 7.0,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_QTE",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 1.26,
+        "UnbalValue": 0.26,
+        "HeterochromeAdd": 2.08,
+        "GAName": "GA_Nanally_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.0,
+          1.08,
+          1.166,
+          1.26,
+          1.36,
+          1.469,
+          1.587,
+          1.714,
+          1.851,
+          1.999,
+          2.159,
+          2.332,
+          2.518
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_UltraSkill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.44,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.931,
+          3.165,
+          3.419,
+          3.692,
+          3.988,
+          4.307,
+          4.651,
+          5.023,
+          5.425,
+          5.859,
+          6.328,
+          6.834,
+          7.381
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.931,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_UltraSkill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.063,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.423,
+          0.457,
+          0.493,
+          0.533,
+          0.575,
+          0.622,
+          0.671,
+          0.725,
+          0.783,
+          0.846,
+          0.913,
+          0.986,
+          1.065
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.423,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Nanally_UltraSkill3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.743,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Nanally_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          4.954,
+          5.35,
+          5.778,
+          6.241,
+          6.74,
+          7.279,
+          7.861,
+          8.49,
+          9.17,
+          9.903,
+          10.695,
+          11.551,
+          12.475
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 4.954,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      }
+    },
+    "gameplay_effect_mapping": {
+      "Buff_Nanally_ExtraAtkTimes": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/Buff_Nanally_ExtraAtkTimes.Buff_Nanally_ExtraAtkTimes_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2873
+      },
+      "Buff_Nanally_ExtraAtkTimesMax": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/Buff_Nanally_ExtraAtkTimesMax.Buff_Nanally_ExtraAtkTimesMax_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2874
+      },
+      "Buff_Nanally010_Level1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level1/Buff_Nanally010_Level1.Buff_Nanally010_Level1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 501
+      },
+      "Buff_Nanally010_Level2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level2/Buff_Nanally010_Level2.Buff_Nanally010_Level2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 502
+      },
+      "Buff_Nanally010_Level3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level3/Buff_Nanally010_Level3.Buff_Nanally010_Level3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 509
+      },
+      "Buff_Nanally010_Level4": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level4/Buff_Nanally010_Level4.Buff_Nanally010_Level4_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 503
+      },
+      "Buff_Nanally010_Level5": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level5/Buff_Nanally010_Level5.Buff_Nanally010_Level5_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 964
+      },
+      "Buff_Nanally010_Level6": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level6/Buff_Nanally010_Level6.Buff_Nanally010_Level6_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 504
+      },
+      "Buff_Nanally010_LevelExtra": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/LevelExtra/Buff_Nanally010_LevelExtra.Buff_Nanally010_LevelExtra_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 499
+      },
+      "Buff_Nanally010_Lv5_AtkUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level5/Buff_Nanally010_Lv5_AtkUp.Buff_Nanally010_Lv5_AtkUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 965
+      },
+      "Buff_Nanally010_Pas2Charge": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/PassiveEffect/Buff_Nanally010_Pas2Charge.Buff_Nanally010_Pas2Charge_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2311
+      },
+      "Buff_Nanally010_Passive1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/PassiveEffect/Buff_Nanally010_Passive1.Buff_Nanally010_Passive1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 855
+      },
+      "Buff_Nanally010_Passive2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/PassiveEffect/Buff_Nanally010_Passive2.Buff_Nanally010_Passive2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1066
+      },
+      "GE_Nanally_CallElement": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/GE_Nanally_CallElement.GE_Nanally_CallElement_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 230
+      },
+      "GE_Nanally_Cat": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/GE_Nanally_Cat.GE_Nanally_Cat_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2898
+      },
+      "GE_Nanally_GrantRemoveSkill": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/GE_Nanally_GrantRemoveSkill.GE_Nanally_GrantRemoveSkill_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 229
+      },
+      "GE_Nanally_WalkOnWall": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/GE_Nanally_WalkOnWall.GE_Nanally_WalkOnWall_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 228
+      },
+      "GE_Nanally010_Lv1_CD": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level1/GE_Nanally010_Lv1_CD.GE_Nanally010_Lv1_CD_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 511
+      },
+      "GE_Nanally010_Lv1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level1/GE_Nanally010_Lv1_Damage.GE_Nanally010_Lv1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 510
+      },
+      "GE_Nanally010_Lv3_CD": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level3/GE_Nanally010_Lv3_CD.GE_Nanally010_Lv3_CD_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 508
+      },
+      "GE_Nanally010_Lv3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Upgrade/Level3/GE_Nanally010_Lv3_Damage.GE_Nanally010_Lv3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 500
+      },
+      "GE_Nanally010_Pas2CD": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/PassiveEffect/GE_Nanally010_Pas2CD.GE_Nanally010_Pas2CD_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2303
+      },
+      "GE_NanallyRemoveSkillCD": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/GE_NanallyRemoveSkillCD.GE_NanallyRemoveSkillCD_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 232
+      },
+      "GE_NanallySpawnProjectileCD": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/GE_NanallySpawnProjectileCD.GE_NanallySpawnProjectileCD_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 231
+      },
+      "GE_Player_Nanally_AirAttack1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_AirAttack1_Damage.GE_Player_Nanally_AirAttack1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 422
+      },
+      "GE_Player_Nanally_BranchPraojectile_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_BranchPraojectile_Damage.GE_Player_Nanally_BranchPraojectile_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 243
+      },
+      "GE_Player_Nanally_Cat_AirAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_AirAttack_Damage.GE_Player_Nanally_Cat_AirAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3131
+      },
+      "GE_Player_Nanally_Cat_Branch1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Branch1_Damage.GE_Player_Nanally_Cat_Branch1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3130
+      },
+      "GE_Player_Nanally_Cat_Branch2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Branch2_Damage.GE_Player_Nanally_Cat_Branch2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3129
+      },
+      "GE_Player_Nanally_Cat_Branch3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Branch3_Damage.GE_Player_Nanally_Cat_Branch3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3128
+      },
+      "GE_Player_Nanally_Cat_Branch4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Branch4_Damage.GE_Player_Nanally_Cat_Branch4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3127
+      },
+      "GE_Player_Nanally_Cat_Branch5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Branch5_Damage.GE_Player_Nanally_Cat_Branch5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3126
+      },
+      "GE_Player_Nanally_Cat_Melee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Melee1_Damage.GE_Player_Nanally_Cat_Melee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3121
+      },
+      "GE_Player_Nanally_Cat_Melee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Melee2_Damage.GE_Player_Nanally_Cat_Melee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3120
+      },
+      "GE_Player_Nanally_Cat_Melee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Melee3_Damage.GE_Player_Nanally_Cat_Melee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3119
+      },
+      "GE_Player_Nanally_Cat_Melee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Melee4_Damage.GE_Player_Nanally_Cat_Melee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3118
+      },
+      "GE_Player_Nanally_Cat_Melee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Melee5_Damage.GE_Player_Nanally_Cat_Melee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3117
+      },
+      "GE_Player_Nanally_Cat_Melee6_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Melee6_Damage.GE_Player_Nanally_Cat_Melee6_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3116
+      },
+      "GE_Player_Nanally_Cat_Melee7_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Melee7_Damage.GE_Player_Nanally_Cat_Melee7_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3115
+      },
+      "GE_Player_Nanally_Cat_PerfectEvadeAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_PerfectEvadeAttack_Damage.GE_Player_Nanally_Cat_PerfectEvadeAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3125
+      },
+      "GE_Player_Nanally_Cat_QTE_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_QTE_Damage.GE_Player_Nanally_Cat_QTE_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3124
+      },
+      "GE_Player_Nanally_Cat_Skill_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/NanallyCat/GE_Player_Nanally_Cat_Skill_Damage.GE_Player_Nanally_Cat_Skill_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3123
+      },
+      "GE_Player_Nanally_ExtraAtk_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_ExtraAtk_HitBack.GE_Player_Nanally_ExtraAtk_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2857
+      },
+      "GE_Player_Nanally_ExtraAtk1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_ExtraAtk1_Damage.GE_Player_Nanally_ExtraAtk1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2855
+      },
+      "GE_Player_Nanally_ExtraAtk1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_ExtraAtk1_HitBack.GE_Player_Nanally_ExtraAtk1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3250
+      },
+      "GE_Player_Nanally_ExtraAtk2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_ExtraAtk2_Damage.GE_Player_Nanally_ExtraAtk2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2854
+      },
+      "GE_Player_Nanally_ExtraAtk3_Float": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_ExtraAtk3_Float.GE_Player_Nanally_ExtraAtk3_Float_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3132
+      },
+      "GE_Player_Nanally_ExtraAtk3_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_ExtraAtk3_HitOut.GE_Player_Nanally_ExtraAtk3_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3249
+      },
+      "GE_Player_Nanally_ExtraAtk4_Float": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_ExtraAtk4_Float.GE_Player_Nanally_ExtraAtk4_Float_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3237
+      },
+      "GE_Player_Nanally_ExtraAtkIntro_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_ExtraAtkIntro_HitBack.GE_Player_Nanally_ExtraAtkIntro_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2856
+      },
+      "GE_Player_Nanally_ExtraAtkIntro1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_ExtraAtkIntro1_Damage.GE_Player_Nanally_ExtraAtkIntro1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2853
+      },
+      "GE_Player_Nanally_ExtraAtkIntro2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_ExtraAtkIntro2_Damage.GE_Player_Nanally_ExtraAtkIntro2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2852
+      },
+      "GE_Player_Nanally_ExtraAtkOutro1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_ExtraAtkOutro1_Damage.GE_Player_Nanally_ExtraAtkOutro1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3236
+      },
+      "GE_Player_Nanally_ExtraAtkOutro2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_ExtraAtkOutro2_Damage.GE_Player_Nanally_ExtraAtkOutro2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2851
+      },
+      "GE_Player_Nanally_ExtraAttack1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_ExtraAttack1_HitBack.GE_Player_Nanally_ExtraAttack1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2992
+      },
+      "GE_Player_Nanally_Melee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee1_Damage.GE_Player_Nanally_Melee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 241
+      },
+      "GE_Player_Nanally_Melee1_Damage_Test": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee1_Damage_Test.GE_Player_Nanally_Melee1_Damage_Test_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 2881
+      },
+      "GE_Player_Nanally_Melee1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_Melee1_HitBack.GE_Player_Nanally_Melee1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 248
+      },
+      "GE_Player_Nanally_Melee10_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee10_Damage.GE_Player_Nanally_Melee10_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 242
+      },
+      "GE_Player_Nanally_Melee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee2_Damage.GE_Player_Nanally_Melee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 240
+      },
+      "GE_Player_Nanally_Melee2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_Melee2_HitBack.GE_Player_Nanally_Melee2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 247
+      },
+      "GE_Player_Nanally_Melee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee3_Damage.GE_Player_Nanally_Melee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 239
+      },
+      "GE_Player_Nanally_Melee3_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_Melee3_HitBack.GE_Player_Nanally_Melee3_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 246
+      },
+      "GE_Player_Nanally_Melee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee4_Damage.GE_Player_Nanally_Melee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 238
+      },
+      "GE_Player_Nanally_Melee4_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_Melee4_HitBack.GE_Player_Nanally_Melee4_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 245
+      },
+      "GE_Player_Nanally_Melee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee5_Damage.GE_Player_Nanally_Melee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 237
+      },
+      "GE_Player_Nanally_Melee5_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_Melee5_HitBack.GE_Player_Nanally_Melee5_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 244
+      },
+      "GE_Player_Nanally_Melee6_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee6_Damage.GE_Player_Nanally_Melee6_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 236
+      },
+      "GE_Player_Nanally_Melee9_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Melee9_Damage.GE_Player_Nanally_Melee9_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 235
+      },
+      "GE_Player_Nanally_PerfectEvadeAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_PerfectEvadeAttack_Damage.GE_Player_Nanally_PerfectEvadeAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1630
+      },
+      "GE_Player_Nanally_QTE_Float": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_QTE_Float.GE_Player_Nanally_QTE_Float_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1017
+      },
+      "GE_Player_Nanally_QTE_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_QTE_HitBack.GE_Player_Nanally_QTE_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 867
+      },
+      "GE_Player_Nanally_QTE_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_QTE_HitOut.GE_Player_Nanally_QTE_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1048
+      },
+      "GE_Player_Nanally_QTE1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_QTE1_Damage.GE_Player_Nanally_QTE1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 882
+      },
+      "GE_Player_Nanally_QTE2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_QTE2_Damage.GE_Player_Nanally_QTE2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 885
+      },
+      "GE_Player_Nanally_QTE3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_QTE3_Damage.GE_Player_Nanally_QTE3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 887
+      },
+      "GE_Player_Nanally_Skill_HitDown": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_Skill_HitDown.GE_Player_Nanally_Skill_HitDown_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 442
+      },
+      "GE_Player_Nanally_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_Skill1_Damage.GE_Player_Nanally_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 234
+      },
+      "GE_Player_Nanally_UltraSkill_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_UltraSkill_HitOut.GE_Player_Nanally_UltraSkill_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 495
+      },
+      "GE_Player_Nanally_UltraSkill_Traction": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_Nanally_UltraSkill_Traction.GE_Player_Nanally_UltraSkill_Traction_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3135
+      },
+      "GE_Player_Nanally_UltraSkill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_UltraSkill1_Damage.GE_Player_Nanally_UltraSkill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 494
+      },
+      "GE_Player_Nanally_UltraSkill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_UltraSkill2_Damage.GE_Player_Nanally_UltraSkill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 493
+      },
+      "GE_Player_Nanally_UltraSkill3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_UltraSkill3_Damage.GE_Player_Nanally_UltraSkill3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 492
+      },
+      "GE_Player_Nanally_UltraSkillPraojectile_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Damage/GE_Player_Nanally_UltraSkillPraojectile_Damage.GE_Player_Nanally_UltraSkillPraojectile_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 233
+      },
+      "GE_Player_NanallyCat_Melee5_HitDown": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_NanallyCat_Melee5_HitDown.GE_Player_NanallyCat_Melee5_HitDown_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3337
+      },
+      "GE_Player_NanallyCat_Melee5_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Effect/GE_Player_NanallyCat_Melee5_HitOut.GE_Player_NanallyCat_Melee5_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3640
+      },
+      "TestBuff_WalkOnWall": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_010_Nanally/Buff/TestBuff_WalkOnWall.TestBuff_WalkOnWall_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 227
+      }
+    }
+  },
+  "references": {
+    "unresolved_ability_tips": {
+      "GA_Nanally_ExtremEvadeAtk": [
+        "GE_Player_Nanally_PerfectEvadeAttack_Damage"
+      ]
+    }
+  }
+}

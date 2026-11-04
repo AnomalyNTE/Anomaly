@@ -1,0 +1,113 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_CharacterFootPrintGround",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/DT_CharacterFootPrintGround",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'FootPrintGround'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "Default": {
+        "FootPrintSurfaceType": "ESurfaceFootPrintType::CanAcceptResidue",
+        "FootPrintType": "EFootPrintType::ColorFootPrint",
+        "FootPrintColor": {
+          "B": 0,
+          "G": 0,
+          "R": 0,
+          "A": 0,
+          "Hex": "000000"
+        },
+        "GroundParticle": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        },
+        "FootPrintLastTime": 5.0
+      },
+      "PM_Muddy": {
+        "FootPrintSurfaceType": "ESurfaceFootPrintType::CanPrintAndResidue",
+        "FootPrintType": "EFootPrintType::DepthFootPrint",
+        "FootPrintColor": {
+          "B": 7,
+          "G": 21,
+          "R": 38,
+          "A": 255,
+          "Hex": "261507"
+        },
+        "GroundParticle": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        },
+        "FootPrintLastTime": 5.0
+      },
+      "PM_Concrete": {
+        "FootPrintSurfaceType": "ESurfaceFootPrintType::CanAcceptResidue",
+        "FootPrintType": "EFootPrintType::ColorFootPrint",
+        "FootPrintColor": {
+          "B": 93,
+          "G": 110,
+          "R": 137,
+          "A": 255,
+          "Hex": "896E5D"
+        },
+        "GroundParticle": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        },
+        "FootPrintLastTime": 5.0
+      },
+      "PM_Sand": {
+        "FootPrintSurfaceType": "ESurfaceFootPrintType::CanPrint",
+        "FootPrintType": "EFootPrintType::DepthFootPrint",
+        "FootPrintColor": {
+          "B": 13,
+          "G": 83,
+          "R": 120,
+          "A": 255,
+          "Hex": "78530D"
+        },
+        "GroundParticle": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        },
+        "FootPrintLastTime": 5.0
+      },
+      "PM_Water": {
+        "FootPrintSurfaceType": "ESurfaceFootPrintType::CanResidue",
+        "FootPrintType": "EFootPrintType::ColorFootPrint",
+        "FootPrintColor": {
+          "B": 121,
+          "G": 112,
+          "R": 71,
+          "A": 255,
+          "Hex": "477079"
+        },
+        "GroundParticle": {
+          "AssetPathName": "/Game/FX/Nia/Scene/Atmosphere/P_Water001.P_Water001",
+          "SubPathString": ""
+        },
+        "FootPrintLastTime": 5.0
+      },
+      "PM_Grass": {
+        "FootPrintSurfaceType": "ESurfaceFootPrintType::NoPrint",
+        "FootPrintType": "EFootPrintType::ColorFootPrint",
+        "FootPrintColor": {
+          "B": 0,
+          "G": 0,
+          "R": 0,
+          "A": 0,
+          "Hex": "000000"
+        },
+        "GroundParticle": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        },
+        "FootPrintLastTime": 5.0
+      }
+    }
+  }
+]

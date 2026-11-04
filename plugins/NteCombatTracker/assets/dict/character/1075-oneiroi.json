@@ -1,0 +1,1833 @@
+{
+  "format_version": 1,
+  "source": {
+    "generator": "extract-character-data.ps1",
+    "assets_git_revision": "sha256:3c8dd7725bf0e091b5deb658d4f48cdb423a12fae3ae5e68e2a7d02ed42e16af",
+    "tables": [
+      "DataTable/Character/DT_Character.json",
+      "DataTable/skill/DT_GameplayAbilityTipsData.json",
+      "DataTable/skill/DT_SkillDamageData.json",
+      "DataTable/skill/DT_GameplayEffectMappingData.json"
+    ]
+  },
+  "identity": {
+    "kind": "registered",
+    "character_id": 1075,
+    "codename": "Oneiroi",
+    "name_zh": "伊洛伊",
+    "asset_aliases": [
+      "075_Oneiroi"
+    ],
+    "identifier_aliases": [
+      "Oneiroi"
+    ]
+  },
+  "data": {
+    "characters": {
+      "1075": {
+        "attribute": "灵",
+        "codename": "Oneiroi",
+        "name_zh": "伊洛伊"
+      }
+    },
+    "ability_tips": {
+      "GA_Oneiroi_Melee": {
+        "name_zh": "分工合作"
+      },
+      "GA_Oneiroi_Passive_1": {
+        "name_zh": "镜象"
+      },
+      "GA_Oneiroi_Passive_2": {
+        "name_zh": "交感性神经系统"
+      },
+      "GA_Oneiroi_Passive_3": {
+        "name_zh": "九千五百万年前的分歧"
+      },
+      "GA_Oneiroi_QTE": {
+        "name_zh": "砰！"
+      },
+      "GA_Oneiroi_Skill": {
+        "name_zh": "未来自我连续性假设"
+      },
+      "GA_Oneiroi_UltraSkill": {
+        "name_zh": "三十八亿年的海市蜃楼"
+      }
+    },
+    "skill_damage": {
+      "GE_Damage_sheep_gun_awaken2": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.104,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Damage_sheep_syringe_awaken2": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857,
+          0.2857
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.104,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Damage_sheep_trumpet_awaken2": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.104,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Oneiroi_Light_WeaponLv1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_DarkFlame",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "None",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          10.0,
+          10.0,
+          10.0,
+          10.0,
+          10.0,
+          10.0,
+          10.0,
+          10.0,
+          0.111,
+          0.12,
+          0.13,
+          0.14,
+          0.151
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.06,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_AirAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 2.3,
+        "UnbalValue": 0.5,
+        "HeterochromeAdd": 3.8,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_X",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.36,
+          0.389,
+          0.42,
+          0.453,
+          0.49,
+          0.529,
+          0.571,
+          0.617,
+          0.666,
+          0.72,
+          0.777,
+          0.839,
+          0.907
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.36,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Branch1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.533,
+        "UnbalValue": 0.1,
+        "HeterochromeAdd": 0.9,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.368,
+          0.397,
+          0.429,
+          0.464,
+          0.501,
+          0.541,
+          0.584,
+          0.631,
+          0.681,
+          0.736,
+          0.794,
+          0.858,
+          0.927
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.368,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Branch2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.3,
+        "UnbalValue": 0.7,
+        "HeterochromeAdd": 2.7,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.884,
+          0.955,
+          1.031,
+          1.114,
+          1.203,
+          1.299,
+          1.403,
+          1.515,
+          1.636,
+          1.767,
+          1.908,
+          2.061,
+          2.226
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.884,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Branch3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.7,
+        "UnbalValue": 0.1,
+        "HeterochromeAdd": 1.1,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.398,
+          0.43,
+          0.464,
+          0.501,
+          0.541,
+          0.585,
+          0.632,
+          0.682,
+          0.737,
+          0.796,
+          0.859,
+          0.928,
+          1.002
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.398,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Branch5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.766,
+        "UnbalValue": 0.186,
+        "HeterochromeAdd": 0.2,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.237,
+          0.256,
+          0.276,
+          0.299,
+          0.322,
+          0.348,
+          0.376,
+          0.406,
+          0.439,
+          0.474,
+          0.512,
+          0.553,
+          0.597
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.237,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_GunAI_QTE_Guang_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_GunAI_QTE_Zhou_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_GunAI_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.555,
+          0.599,
+          0.647,
+          0.699,
+          0.755,
+          0.815,
+          0.881,
+          0.951,
+          1.027,
+          1.109,
+          1.198,
+          1.294,
+          1.398
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.555,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_GunAI_Skill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.416,
+          0.449,
+          0.485,
+          0.524,
+          0.566,
+          0.611,
+          0.66,
+          0.713,
+          0.77,
+          0.832,
+          0.898,
+          0.97,
+          1.048
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.416,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Melee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 2.431,
+        "UnbalValue": 0.484,
+        "HeterochromeAdd": 4.048,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.76,
+          0.821,
+          0.886,
+          0.957,
+          1.034,
+          1.117,
+          1.206,
+          1.303,
+          1.407,
+          1.519,
+          1.641,
+          1.772,
+          1.914
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.76,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Melee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.996,
+        "UnbalValue": 0.198,
+        "HeterochromeAdd": 1.659,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.159,
+          0.172,
+          0.185,
+          0.2,
+          0.216,
+          0.234,
+          0.252,
+          0.272,
+          0.294,
+          0.318,
+          0.343,
+          0.371,
+          0.4
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.159,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Melee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.642,
+        "UnbalValue": 0.128,
+        "HeterochromeAdd": 1.069,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.103,
+          0.111,
+          0.12,
+          0.13,
+          0.14,
+          0.151,
+          0.163,
+          0.177,
+          0.191,
+          0.206,
+          0.222,
+          0.24,
+          0.259
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.103,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Melee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 5.525,
+        "UnbalValue": 1.1,
+        "HeterochromeAdd": 9.2,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.702,
+          0.758,
+          0.819,
+          0.884,
+          0.955,
+          1.031,
+          1.114,
+          1.203,
+          1.299,
+          1.403,
+          1.516,
+          1.637,
+          1.768
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.702,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Melee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 1.989,
+        "UnbalValue": 0.396,
+        "HeterochromeAdd": 3.312,
+        "GAName": "GA_Oneiroi_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.258,
+          0.279,
+          0.301,
+          0.325,
+          0.351,
+          0.379,
+          0.409,
+          0.442,
+          0.478,
+          0.516,
+          0.557,
+          0.602,
+          0.65
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.258,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_PerfectEvadeAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.4,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 5.6,
+        "GAName": "GA_Oneiroi_PerfectEvade",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Z",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.34,
+          1.447,
+          1.563,
+          1.688,
+          1.823,
+          1.969,
+          2.126,
+          2.297,
+          2.48,
+          2.679,
+          2.893,
+          3.124,
+          3.374
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.34,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_QTE_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_QTE",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Skill_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 10.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001,
+          0.0001
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 3.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Skill_Gun_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.3,
+        "UnbalValue": 0.1,
+        "HeterochromeAdd": 0.5,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.5,
+          1.62,
+          1.75,
+          1.89,
+          2.041,
+          2.204,
+          2.38,
+          2.571,
+          2.776,
+          2.999,
+          3.238,
+          3.497,
+          3.777
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.5,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Skill_Syringe_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.614,
+        "UnbalValue": 0.129,
+        "HeterochromeAdd": 1.014,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.179,
+          0.193,
+          0.209,
+          0.225,
+          0.244,
+          0.263,
+          0.284,
+          0.307,
+          0.331,
+          0.358,
+          0.386,
+          0.417,
+          0.451
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.179,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_Skill_Trumpet_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.2,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.4,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.25,
+          1.35,
+          1.458,
+          1.575,
+          1.701,
+          1.837,
+          1.984,
+          2.142,
+          2.314,
+          2.499,
+          2.699,
+          2.915,
+          3.148
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.25,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_SyringeAI_QTE_Guang_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_SyringeAI_QTE_Zhou_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_SyringeAI_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.892,
+          0.963,
+          1.04,
+          1.124,
+          1.214,
+          1.311,
+          1.415,
+          1.529,
+          1.651,
+          1.783,
+          1.926,
+          2.08,
+          2.246
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.892,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_SyringeAI_Skill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.784,
+          1.927,
+          2.081,
+          2.247,
+          2.427,
+          2.621,
+          2.831,
+          3.057,
+          3.302,
+          3.566,
+          3.852,
+          4.16,
+          4.492
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.784,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_TrumpetAI_QTE_Guang_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_TrumpetAI_QTE_Zhou_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_TrumpetAI_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.942,
+          1.017,
+          1.099,
+          1.187,
+          1.282,
+          1.384,
+          1.495,
+          1.614,
+          1.744,
+          1.883,
+          2.034,
+          2.196,
+          2.372
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.942,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_TrumpetAI_Skill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.884,
+          2.035,
+          2.197,
+          2.373,
+          2.563,
+          2.768,
+          2.99,
+          3.229,
+          3.487,
+          3.766,
+          4.067,
+          4.393,
+          4.744
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.884,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_UltraSkill_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 1.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          3.0,
+          3.24,
+          3.499,
+          3.779,
+          4.081,
+          4.408,
+          4.761,
+          5.141,
+          5.553,
+          5.997,
+          6.477,
+          6.995,
+          7.555
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 3.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Oneiroi_UltraSkill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_NATURE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.125,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Oneiroi_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.25,
+          0.27,
+          0.292,
+          0.315,
+          0.34,
+          0.367,
+          0.397,
+          0.428,
+          0.463,
+          0.5,
+          0.54,
+          0.583,
+          0.63
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.25,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      }
+    },
+    "gameplay_effect_mapping": {
+      "Buff_Oneiroi_GunSheep1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_GunSheep1.Buff_Oneiroi_GunSheep1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5537
+      },
+      "Buff_Oneiroi_GunSheep2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_GunSheep2.Buff_Oneiroi_GunSheep2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5538
+      },
+      "Buff_Oneiroi_KillSelf": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_KillSelf.Buff_Oneiroi_KillSelf_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5034
+      },
+      "Buff_Oneiroi_QTE_Treat": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_QTE_Treat.Buff_Oneiroi_QTE_Treat_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4185
+      },
+      "Buff_Oneiroi_SheepQTE": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_SheepQTE.Buff_Oneiroi_SheepQTE_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5355
+      },
+      "Buff_Oneiroi_Skill_AtkUP": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_Skill_AtkUP.Buff_Oneiroi_Skill_AtkUP_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4305
+      },
+      "Buff_Oneiroi_Skill_Awaken2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_Skill_Awaken2.Buff_Oneiroi_Skill_Awaken2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5438
+      },
+      "Buff_Oneiroi_Skill_CantChangePlayer": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_Skill_CantChangePlayer.Buff_Oneiroi_Skill_CantChangePlayer_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5494
+      },
+      "Buff_Oneiroi_Skill_Treat": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_Skill_Treat.Buff_Oneiroi_Skill_Treat_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4304
+      },
+      "Buff_Oneiroi_SyringeSheep1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_SyringeSheep1.Buff_Oneiroi_SyringeSheep1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5539
+      },
+      "Buff_Oneiroi_SyringeSheep2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_SyringeSheep2.Buff_Oneiroi_SyringeSheep2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5540
+      },
+      "Buff_Oneiroi_TrumpetSheep1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_TrumpetSheep1.Buff_Oneiroi_TrumpetSheep1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5541
+      },
+      "Buff_Oneiroi_TrumpetSheep2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_TrumpetSheep2.Buff_Oneiroi_TrumpetSheep2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5542
+      },
+      "Buff_Oneiroi_UltraSkill_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_UltraSkill_Damage.Buff_Oneiroi_UltraSkill_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4941
+      },
+      "Buff_Oneiroi_UltraSkill_RealTreat": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_UltraSkill_RealTreat.Buff_Oneiroi_UltraSkill_RealTreat_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5416
+      },
+      "Buff_Oneiroi_UltraSkill_Treat": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_UltraSkill_Treat.Buff_Oneiroi_UltraSkill_Treat_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4837
+      },
+      "Buff_Oneiroi_UltraSkill_Treat_Period": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi_UltraSkill_Treat_Period.Buff_Oneiroi_UltraSkill_Treat_Period_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4940
+      },
+      "Buff_Oneiroi075_Level1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level1.Buff_Oneiroi075_Level1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3852
+      },
+      "Buff_Oneiroi075_Level1_Moon": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level1_Moon.Buff_Oneiroi075_Level1_Moon_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4958
+      },
+      "Buff_Oneiroi075_Level1_MoonMax": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level1_MoonMax.Buff_Oneiroi075_Level1_MoonMax_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5456
+      },
+      "Buff_Oneiroi075_Level2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level2.Buff_Oneiroi075_Level2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3851
+      },
+      "Buff_Oneiroi075_Level2_Def": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level2_Def.Buff_Oneiroi075_Level2_Def_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5439
+      },
+      "Buff_Oneiroi075_Level3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level3.Buff_Oneiroi075_Level3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3850
+      },
+      "Buff_Oneiroi075_Level3_TreatUP": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level3_TreatUP.Buff_Oneiroi075_Level3_TreatUP_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4346
+      },
+      "Buff_Oneiroi075_Level4": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level4.Buff_Oneiroi075_Level4_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3849
+      },
+      "Buff_Oneiroi075_Level5": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level5.Buff_Oneiroi075_Level5_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3848
+      },
+      "Buff_Oneiroi075_Level5_DamUP": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level5_DamUP.Buff_Oneiroi075_Level5_DamUP_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4216
+      },
+      "Buff_Oneiroi075_Level6": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level6.Buff_Oneiroi075_Level6_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3847
+      },
+      "Buff_Oneiroi075_Level6_extra": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level6_extra.Buff_Oneiroi075_Level6_extra_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3846
+      },
+      "Buff_Oneiroi075_Level6_extra_sheep": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level6_extra_sheep.Buff_Oneiroi075_Level6_extra_sheep_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4270
+      },
+      "Buff_Oneiroi075_Passive1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/PassiveEffect/Buff_Oneiroi075_Passive1.Buff_Oneiroi075_Passive1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3845
+      },
+      "Buff_Oneiroi075_Passive2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/PassiveEffect/Buff_Oneiroi075_Passive2.Buff_Oneiroi075_Passive2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3844
+      },
+      "Buff_Oneiroi075_Passive2_DamUP": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/PassiveEffect/Buff_Oneiroi075_Passive2_DamUP.Buff_Oneiroi075_Passive2_DamUP_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4269
+      },
+      "Buff_Oneiroi075_Passive2_LV4_DamUP": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/PassiveEffect/Buff_Oneiroi075_Passive2_LV4_DamUP.Buff_Oneiroi075_Passive2_LV4_DamUP_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5851
+      },
+      "Buff_Oneiroi075_SheepQTE_CD": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Buff/Buff_Oneiroi075_SheepQTE_CD.Buff_Oneiroi075_SheepQTE_CD_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5297
+      },
+      "GE_Damage_sheep_gun_awaken2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_gun_awaken2.GE_Damage_sheep_gun_awaken2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4318
+      },
+      "GE_Damage_sheep_gun_branch": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_gun_branch.GE_Damage_sheep_gun_branch_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4450
+      },
+      "GE_Damage_sheep_gun_skill": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_gun_skill.GE_Damage_sheep_gun_skill_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4317
+      },
+      "GE_Damage_sheep_syringe_awaken2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_syringe_awaken2.GE_Damage_sheep_syringe_awaken2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4316
+      },
+      "GE_Damage_sheep_syringe_branch": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_syringe_branch.GE_Damage_sheep_syringe_branch_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4449
+      },
+      "GE_Damage_sheep_syringe_melee3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_syringe_melee3.GE_Damage_sheep_syringe_melee3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4448
+      },
+      "GE_Damage_sheep_syringe_skill": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_syringe_skill.GE_Damage_sheep_syringe_skill_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4315
+      },
+      "GE_Damage_sheep_trumpet_awaken2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_trumpet_awaken2.GE_Damage_sheep_trumpet_awaken2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4314
+      },
+      "GE_Damage_sheep_trumpet_branch": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_trumpet_branch.GE_Damage_sheep_trumpet_branch_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4447
+      },
+      "GE_Damage_sheep_trumpet_skill": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Damage_sheep_trumpet_skill.GE_Damage_sheep_trumpet_skill_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4313
+      },
+      "GE_Player_Oneiroi_AirAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_AirAttack_Damage.GE_Player_Oneiroi_AirAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3833
+      },
+      "GE_Player_Oneiroi_AirAttack_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_AirAttack_HitBack.GE_Player_Oneiroi_AirAttack_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3843
+      },
+      "GE_Player_Oneiroi_Branch1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Branch1_Damage.GE_Player_Oneiroi_Branch1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4344
+      },
+      "GE_Player_Oneiroi_Branch1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Branch1_HitBack.GE_Player_Oneiroi_Branch1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4345
+      },
+      "GE_Player_Oneiroi_Branch2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Branch2_Damage.GE_Player_Oneiroi_Branch2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4343
+      },
+      "GE_Player_Oneiroi_Branch3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Branch3_Damage.GE_Player_Oneiroi_Branch3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4342
+      },
+      "GE_Player_Oneiroi_Branch5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Branch5_Damage.GE_Player_Oneiroi_Branch5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5160
+      },
+      "GE_Player_Oneiroi_GunAI_QTE_Guang_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_GunAI_QTE_Guang_Damage.GE_Player_Oneiroi_GunAI_QTE_Guang_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5159
+      },
+      "GE_Player_Oneiroi_GunAI_QTE_Zhou_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_GunAI_QTE_Zhou_Damage.GE_Player_Oneiroi_GunAI_QTE_Zhou_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5158
+      },
+      "GE_Player_Oneiroi_GunAI_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_GunAI_Skill1_Damage.GE_Player_Oneiroi_GunAI_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4701
+      },
+      "GE_Player_Oneiroi_GunAI_Skill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_GunAI_Skill2_Damage.GE_Player_Oneiroi_GunAI_Skill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4700
+      },
+      "GE_Player_Oneiroi_Melee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Melee1_Damage.GE_Player_Oneiroi_Melee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3832
+      },
+      "GE_Player_Oneiroi_Melee1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Melee1_HitBack.GE_Player_Oneiroi_Melee1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3842
+      },
+      "GE_Player_Oneiroi_Melee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Melee2_Damage.GE_Player_Oneiroi_Melee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3831
+      },
+      "GE_Player_Oneiroi_Melee2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Melee2_HitBack.GE_Player_Oneiroi_Melee2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3841
+      },
+      "GE_Player_Oneiroi_Melee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Melee3_Damage.GE_Player_Oneiroi_Melee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3830
+      },
+      "GE_Player_Oneiroi_Melee3_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Melee3_HitBack.GE_Player_Oneiroi_Melee3_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3840
+      },
+      "GE_Player_Oneiroi_Melee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Melee4_Damage.GE_Player_Oneiroi_Melee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3829
+      },
+      "GE_Player_Oneiroi_Melee4_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Melee4_HitBack.GE_Player_Oneiroi_Melee4_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3839
+      },
+      "GE_Player_Oneiroi_Melee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Melee5_Damage.GE_Player_Oneiroi_Melee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3828
+      },
+      "GE_Player_Oneiroi_Melee5_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Melee5_HitBack.GE_Player_Oneiroi_Melee5_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3838
+      },
+      "GE_Player_Oneiroi_Melee5_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Melee5_HitOut.GE_Player_Oneiroi_Melee5_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3837
+      },
+      "GE_Player_Oneiroi_PerfectEvade_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_PerfectEvade_HitBack.GE_Player_Oneiroi_PerfectEvade_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3836
+      },
+      "GE_Player_Oneiroi_PerfectEvadeAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_PerfectEvadeAttack_Damage.GE_Player_Oneiroi_PerfectEvadeAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3827
+      },
+      "GE_Player_Oneiroi_QTE_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_QTE_Damage.GE_Player_Oneiroi_QTE_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3826
+      },
+      "GE_Player_Oneiroi_QTE_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_QTE_HitBack.GE_Player_Oneiroi_QTE_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3835
+      },
+      "GE_Player_Oneiroi_Skill_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Skill_Damage.GE_Player_Oneiroi_Skill_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3825
+      },
+      "GE_Player_Oneiroi_Skill_Gun_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Skill_Gun_Damage.GE_Player_Oneiroi_Skill_Gun_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4826
+      },
+      "GE_Player_Oneiroi_Skill_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Skill_HitBack.GE_Player_Oneiroi_Skill_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3834
+      },
+      "GE_Player_Oneiroi_Skill_Syringe_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Skill_Syringe_Damage.GE_Player_Oneiroi_Skill_Syringe_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4825
+      },
+      "GE_Player_Oneiroi_Skill_Traction": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Effect/GE_Player_Oneiroi_Skill_Traction.GE_Player_Oneiroi_Skill_Traction_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5376
+      },
+      "GE_Player_Oneiroi_Skill_Trumpet_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_Skill_Trumpet_Damage.GE_Player_Oneiroi_Skill_Trumpet_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4824
+      },
+      "GE_Player_Oneiroi_SyringeAI_QTE_Guang_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_SyringeAI_QTE_Guang_Damage.GE_Player_Oneiroi_SyringeAI_QTE_Guang_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5123
+      },
+      "GE_Player_Oneiroi_SyringeAI_QTE_Zhou_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_SyringeAI_QTE_Zhou_Damage.GE_Player_Oneiroi_SyringeAI_QTE_Zhou_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5069
+      },
+      "GE_Player_Oneiroi_SyringeAI_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_SyringeAI_Skill1_Damage.GE_Player_Oneiroi_SyringeAI_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4717
+      },
+      "GE_Player_Oneiroi_SyringeAI_Skill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_SyringeAI_Skill2_Damage.GE_Player_Oneiroi_SyringeAI_Skill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4716
+      },
+      "GE_Player_Oneiroi_TrumpetAI_QTE_Guang_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_TrumpetAI_QTE_Guang_Damage.GE_Player_Oneiroi_TrumpetAI_QTE_Guang_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 5068
+      },
+      "GE_Player_Oneiroi_TrumpetAI_QTE_Zhou_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_TrumpetAI_QTE_Zhou_Damage.GE_Player_Oneiroi_TrumpetAI_QTE_Zhou_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4827
+      },
+      "GE_Player_Oneiroi_TrumpetAI_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_TrumpetAI_Skill1_Damage.GE_Player_Oneiroi_TrumpetAI_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4715
+      },
+      "GE_Player_Oneiroi_TrumpetAI_Skill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_TrumpetAI_Skill2_Damage.GE_Player_Oneiroi_TrumpetAI_Skill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4714
+      },
+      "GE_Player_Oneiroi_UltraSkill_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_UltraSkill_Damage.GE_Player_Oneiroi_UltraSkill_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3824
+      },
+      "GE_Player_Oneiroi_UltraSkill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Damage/GE_Player_Oneiroi_UltraSkill1_Damage.GE_Player_Oneiroi_UltraSkill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4823
+      }
+    }
+  },
+  "references": {
+    "unresolved_ability_tips": {
+      "GA_Oneiroi_PerfectEvade": [
+        "GE_Player_Oneiroi_PerfectEvadeAttack_Damage"
+      ]
+    }
+  }
+}

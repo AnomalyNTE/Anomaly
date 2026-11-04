@@ -1,0 +1,274 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1055AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1055AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1055": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star1_name",
+              "SourceString": "知晓与制衡",
+              "LocalizedString": "知晓与制衡"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1055_1.1055_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_055_Kuhara/Upgrade/Buff_Kuhara055_Level1.Buff_Kuhara055_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star1_des",
+              "SourceString": "场上每有一个缔结<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标，九原的攻击力提升 <NumGreen>5%</>，最多提升至 <NumGreen>15%</>。",
+              "LocalizedString": "场上每有一个缔结<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标，九原的攻击力提升 <NumGreen>5%</>，最多提升至 <NumGreen>15%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star2_name",
+              "SourceString": "过往消息皆为利刃",
+              "LocalizedString": "过往消息皆为利刃"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1055_2.1055_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_055_Kuhara/Upgrade/Buff_Kuhara055_Level2.Buff_Kuhara055_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star2_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的伤害倍率提升 <NumGreen>100%</>。释放「极轨终结：终局清账」触发<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaBudBoom\">「致约清算」</>，会按该玫约已累积的总伤害的<NumGreen>5%</>，为全队回复生命值。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的伤害倍率提升 <NumGreen>100%</>。释放「极轨终结：终局清账」触发<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaBudBoom\">「致约清算」</>，会按该玫约已累积的总伤害的<NumGreen>5%</>，为全队回复生命值。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star3_name",
+              "SourceString": "优势初成",
+              "LocalizedString": "优势初成"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1055_3.1055_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_055_Kuhara/Upgrade/Buff_Kuhara055_Level3.Buff_Kuhara055_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star3_des",
+              "SourceString": "释放「极轨终结：终局清账」触发<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaBudBoom\">「致约清算」</>时，对清算目标额外扣除<NumGreen>4</>点倾陷值。",
+              "LocalizedString": "释放「极轨终结：终局清账」触发<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaBudBoom\">「致约清算」</>时，对清算目标额外扣除<NumGreen>4</>点倾陷值。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star4_name",
+              "SourceString": "出手即致命",
+              "LocalizedString": "出手即致命"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1055_4.1055_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_055_Kuhara/Upgrade/Buff_Kuhara055_Level4.Buff_Kuhara055_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star4_des",
+              "SourceString": "主动触发<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaBudBoom\">「致约清算」</>的伤害倍率提升<NumGreen>50%</>，并变为对范围内目标生效。",
+              "LocalizedString": "主动触发<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaBudBoom\">「致约清算」</>的伤害倍率提升<NumGreen>50%</>，并变为对范围内目标生效。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star5_name",
+              "SourceString": "掌握底细的优越",
+              "LocalizedString": "掌握底细的优越"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1055_5.1055_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_055_Kuhara/Upgrade/Buff_Kuhara055_Level5.Buff_Kuhara055_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star5_des",
+              "SourceString": "九原对缔结了<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标造成的伤害提升 <NumGreen>8%</>。",
+              "LocalizedString": "九原对缔结了<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标造成的伤害提升 <NumGreen>8%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star6_name",
+              "SourceString": "知晓每一条秘密",
+              "LocalizedString": "知晓每一条秘密"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1055_6.1055_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_055_Kuhara/Upgrade/Buff_Kuhara055_Level6.Buff_Kuhara055_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_star6_des",
+              "SourceString": "已缔结<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标，每次释放技能时受到 <NumGreen>200%</> 倍率的伤害，间隔 <NumGreen>5</> 秒生效。",
+              "LocalizedString": "已缔结<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标，每次释放技能时受到 <NumGreen>200%</> 倍率的伤害，间隔 <NumGreen>5</> 秒生效。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Hathor_SkillDes.Hathor_SkillDes",
+              "Key": "GA_Hathor_starExtra1_name",
+              "SourceString": "运力加倍",
+              "LocalizedString": "运力加倍"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Kuhara_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Kuhara_UltraSkill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Kuhara_Melee",
+                "SkillLevel": 1
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_starExtra1_des",
+              "SourceString": "「普通攻击：秘密成型时」、「变轨技能：情报猎手」和「极轨终结：终局清账」的技能等级提升1级。",
+              "LocalizedString": "「普通攻击：秘密成型时」、「变轨技能：情报猎手」和「极轨终结：终局清账」的技能等级提升1级。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Hathor_SkillDes.Hathor_SkillDes",
+              "Key": "GA_Hathor_starExtra2_name",
+              "SourceString": "无阻通行",
+              "LocalizedString": "无阻通行"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_055_Kuhara/Upgrade/Buff_Kuhara055_Level6_extra.Buff_Kuhara055_Level6_extra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Kuhara_SkillDes.Kuhara_SkillDes",
+              "Key": "GA_Kuhara_starExtra2_des",
+              "SourceString": "缔结<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标，灵属性异能抗性降低 <NumGreen>10%</>。",
+              "LocalizedString": "缔结<hot textstyle=\"TextEXPL\" param=\"nouns&KuharaAttachment\">「致命玫约」</>的目标，灵属性异能抗性降低 <NumGreen>10%</>。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

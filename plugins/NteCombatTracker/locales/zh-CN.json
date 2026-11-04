@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "NTE 战斗统计",
+    "plugin.description": "只读的实时伤害/治疗统计，以及统一事件 JSONL 战斗日志和单场 JSON 导出。"
+  }
+}

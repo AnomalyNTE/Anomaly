@@ -1,0 +1,281 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1076AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1076AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1076": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star1_name",
+              "SourceString": "暴雨滂沱的小巷",
+              "LocalizedString": "暴雨滂沱的小巷"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1076_1.1076_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level1.Buff_Shinku076_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star1_des",
+              "SourceString": "真红造成的伤害无视目标<NumGreen>12%</>防御。",
+              "LocalizedString": "真红造成的伤害无视目标<NumGreen>12%</>防御。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star2_name",
+              "SourceString": "凌晨的训练场",
+              "LocalizedString": "凌晨的训练场"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1076_2.1076_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level2.Buff_Shinku076_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star2_des",
+              "SourceString": "「极轨终结」命中后，真红使目标光属性抗性降低<NumGreen>10%</>，持续<NumGreen>20</>秒。",
+              "LocalizedString": "「极轨终结」命中后，真红使目标光属性抗性降低<NumGreen>10%</>，持续<NumGreen>20</>秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star3_name",
+              "SourceString": "夕阳下的海滩",
+              "LocalizedString": "夕阳下的海滩"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1076_3.1076_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level3.Buff_Shinku076_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star3_des",
+              "SourceString": "切换角色不会移除<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuWatch\">「威慑凝视」</>，真红在后台时也会增长凝视层数。",
+              "LocalizedString": "切换角色不会移除<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuWatch\">「威慑凝视」</>，真红在后台时也会增长凝视层数。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star4_name",
+              "SourceString": "雪飘落的坡道",
+              "LocalizedString": "雪飘落的坡道"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1076_4.1076_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level4.Buff_Shinku076_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star4_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuWatch\">「威慑凝视」</>层数上限提升至<NumGreen>16</>层，<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuWatch\">「威慑凝视」</>达到<NumGreen>16</>层时触发的「即瞬猛袭」可获得「承轨反击」或「极限反击」触发的「即瞬猛袭」所附带的额外效果，即强制击退目标并使其短暂瘫痪（对Boss不生效），并对目标再造成一次相当于<NumGreen>20%</>「即瞬猛袭」的伤害。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuWatch\">「威慑凝视」</>层数上限提升至<NumGreen>16</>层，<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuWatch\">「威慑凝视」</>达到<NumGreen>16</>层时触发的「即瞬猛袭」可获得「承轨反击」或「极限反击」触发的「即瞬猛袭」所附带的额外效果，即强制击退目标并使其短暂瘫痪（对Boss不生效），并对目标再造成一次相当于<NumGreen>20%</>「即瞬猛袭」的伤害。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star5_name",
+              "SourceString": "欢声笑语的客厅",
+              "LocalizedString": "欢声笑语的客厅"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1076_5.1076_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level5.Buff_Shinku076_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star5_des",
+              "SourceString": "<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuRage\">「升腾之赤」</>持续期间，真红防御力提升<NumGreen>50%</>，抗打断系数提升<NumGreen>50%</>，并在释放「变轨技能：天降赤锋」后获得相当于自身基础攻击力*300%的生命值回复。",
+              "LocalizedString": "<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuRage\">「升腾之赤」</>持续期间，真红防御力提升<NumGreen>50%</>，抗打断系数提升<NumGreen>50%</>，并在释放「变轨技能：天降赤锋」后获得相当于自身基础攻击力*300%的生命值回复。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star6_name",
+              "SourceString": "赤龙的藏宝地",
+              "LocalizedString": "赤龙的藏宝地"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1076_6.1076_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level6.Buff_Shinku076_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_star6_des",
+              "SourceString": "真红「变轨技能：天降赤锋」、「极轨终结：赤红的处决」和「极轨终结：处决的龙炎」伤害的倍率提升<NumGreen>30%</>，且「变轨技能：天降赤锋」和「极轨终结：赤红的处决」能吸附范围目标。",
+              "LocalizedString": "真红「变轨技能：天降赤锋」、「极轨终结：赤红的处决」和「极轨终结：处决的龙炎」伤害的倍率提升<NumGreen>30%</>，且「变轨技能：天降赤锋」和「极轨终结：赤红的处决」能吸附范围目标。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_starExtra1_name",
+              "SourceString": "蜕变的决心",
+              "LocalizedString": "蜕变的决心"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Shinku_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Shinku_UltraSkill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Shinku_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level3_extra.Buff_Shinku076_Level3_extra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_starExtra1_des",
+              "SourceString": "「普通攻击」、「变轨技能」和「极轨终结」的技能等级提升<NumGreen>1</>级。<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuRage\">「升腾之赤」</>持续期间，真红造成的伤害额外提升<NumGreen>30%</>。",
+              "LocalizedString": "「普通攻击」、「变轨技能」和「极轨终结」的技能等级提升<NumGreen>1</>级。<hot textstyle=\"TextEXPL\" param=\"nouns&ShinkuRage\">「升腾之赤」</>持续期间，真红造成的伤害额外提升<NumGreen>30%</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_starExtra2_name",
+              "SourceString": "赤红的英雄",
+              "LocalizedString": "赤红的英雄"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_076_Shinku/Upgrade/Buff_Shinku076_Level6_extra.Buff_Shinku076_Level6_extra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Shinku_SkillDes.Shinku_SkillDes",
+              "Key": "GA_Shinku_starExtra2_des",
+              "SourceString": "真红暴击率提升<NumGreen>10%</>，造成的伤害无视目标<NumGreen>15%</>防御。",
+              "LocalizedString": "真红暴击率提升<NumGreen>10%</>，造成的伤害无视目标<NumGreen>15%</>防御。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

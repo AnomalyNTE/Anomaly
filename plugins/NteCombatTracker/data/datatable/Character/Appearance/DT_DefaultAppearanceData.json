@@ -1,0 +1,178 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_DefaultAppearanceData",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Appearance/DT_DefaultAppearanceData",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'StaticDefaultAppearanceData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1003": {
+        "DefaultFashionID": "Fashion_1003_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/003_sagiri_1/MeshAsset_Player003.MeshAsset_Player003",
+          "SubPathString": ""
+        }
+      },
+      "1004": {
+        "DefaultFashionID": "Fashion_1004_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/004_lacrimosa/MeshAsset_Player004.MeshAsset_Player004",
+          "SubPathString": ""
+        }
+      },
+      "1008": {
+        "DefaultFashionID": "Fashion_1008_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/008_Skia/MeshAsset_Player008.MeshAsset_Player008",
+          "SubPathString": ""
+        }
+      },
+      "1010": {
+        "DefaultFashionID": "Fashion_1010_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/010_nanally/MeshAsset_Player010.MeshAsset_Player010",
+          "SubPathString": ""
+        }
+      },
+      "1019": {
+        "DefaultFashionID": "Fashion_1019_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/019_mint/MeshAsset_Player019.MeshAsset_Player019",
+          "SubPathString": ""
+        }
+      },
+      "1020": {
+        "DefaultFashionID": "Fashion_1020_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/020_haniel_1/MeshAsset_Player020.MeshAsset_Player020",
+          "SubPathString": ""
+        }
+      },
+      "1021": {
+        "DefaultFashionID": "Fashion_1021_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/021_edgar_1/MeshAsset_Player021.MeshAsset_Player021",
+          "SubPathString": ""
+        }
+      },
+      "1023": {
+        "DefaultFashionID": "Fashion_1023_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/023_cang/MeshAsset_Player023.MeshAsset_Player023",
+          "SubPathString": ""
+        }
+      },
+      "1025": {
+        "DefaultFashionID": "Fashion_1025_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/025_hathor_1/MeshAsset_Player025New.MeshAsset_Player025New",
+          "SubPathString": ""
+        }
+      },
+      "1033": {
+        "DefaultFashionID": "Fashion_1033_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/033_adler_new/MeshAsset_Player033.MeshAsset_Player033",
+          "SubPathString": ""
+        }
+      },
+      "1036": {
+        "DefaultFashionID": "Fashion_1036_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/036_zankou_1/MeshAsset_Player036_new.MeshAsset_Player036_new",
+          "SubPathString": ""
+        }
+      },
+      "1039": {
+        "DefaultFashionID": "Fashion_1039_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/039_fadia/MeshAsset_Player039.MeshAsset_Player039",
+          "SubPathString": ""
+        }
+      },
+      "1046": {
+        "DefaultFashionID": "Fashion_1046_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/046_male/MeshAsset_Player046.MeshAsset_Player046",
+          "SubPathString": ""
+        }
+      },
+      "1051": {
+        "DefaultFashionID": "Fashion_1051_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/051_female/MeshAsset_Player051.MeshAsset_Player051",
+          "SubPathString": ""
+        }
+      },
+      "1052": {
+        "DefaultFashionID": "Fashion_1052_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/052_jin/MeshAsset_Player052.MeshAsset_Player052",
+          "SubPathString": ""
+        }
+      },
+      "1054": {
+        "DefaultFashionID": "Fashion_1054_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/054_daffodill/MeshAsset_Player054.MeshAsset_Player054",
+          "SubPathString": ""
+        }
+      },
+      "1055": {
+        "DefaultFashionID": "Fashion_1055_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/055_kuhara/MeshAsset_Player055.MeshAsset_Player055",
+          "SubPathString": ""
+        }
+      },
+      "1070": {
+        "DefaultFashionID": "Fashion_1070_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/070_mitsuki/MeshAsset_Player070.MeshAsset_Player070",
+          "SubPathString": ""
+        }
+      },
+      "1073": {
+        "DefaultFashionID": "Fashion_1073_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/073_rabbit/MeshAsset_Player073.MeshAsset_Player073",
+          "SubPathString": ""
+        }
+      },
+      "1075": {
+        "DefaultFashionID": "Fashion_1075_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/075_oneir/MeshAsset_Player075.MeshAsset_Player075",
+          "SubPathString": ""
+        }
+      },
+      "1076": {
+        "DefaultFashionID": "Fashion_1076_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/076_shinku/MeshAsset_Player076.MeshAsset_Player076",
+          "SubPathString": ""
+        }
+      },
+      "1071": {
+        "DefaultFashionID": "Fashion_1071_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/071_chaos/MeshAsset_Player071.MeshAsset_Player071",
+          "SubPathString": ""
+        }
+      },
+      "1072": {
+        "DefaultFashionID": "Fashion_1072_0",
+        "PlayerAppearanceAsset": {
+          "AssetPathName": "/Game/Characters/Player/072_radio/MeshAsset_Player072.MeshAsset_Player072",
+          "SubPathString": ""
+        }
+      }
+    }
+  }
+]

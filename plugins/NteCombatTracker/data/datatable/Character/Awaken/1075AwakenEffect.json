@@ -1,0 +1,281 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1075AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1075AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1075": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star1_name",
+              "SourceString": "重复囚徒困境",
+              "LocalizedString": "重复囚徒困境"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1075_1.1075_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level1.Buff_Oneiroi075_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star1_des",
+              "SourceString": "伊洛伊处于后台时，每秒恢复3点「臆想」。\r\n同时「臆想」积攒效率提升30% ，并且入战后获得满额「臆想」。",
+              "LocalizedString": "伊洛伊处于后台时，每秒恢复3点「臆想」。\r\n同时「臆想」积攒效率提升30% ，并且入战后获得满额「臆想」。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star2_name",
+              "SourceString": "策略：「一报还一报」",
+              "LocalizedString": "策略：「一报还一报」"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1075_2.1075_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level2.Buff_Oneiroi075_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star2_des",
+              "SourceString": "任意队友释放技能时，伊洛伊将随机召唤莫尔甫斯/伊刻洛斯/方塔苏斯中的一名，协助攻击1次造成共计200%*伊洛伊自身攻击力的伤害，并使全体友方获得相当于伊洛伊自身攻击力*120%的生命值回复，冷却时间5秒。",
+              "LocalizedString": "任意队友释放技能时，伊洛伊将随机召唤莫尔甫斯/伊刻洛斯/方塔苏斯中的一名，协助攻击1次造成共计200%*伊洛伊自身攻击力的伤害，并使全体友方获得相当于伊洛伊自身攻击力*120%的生命值回复，冷却时间5秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star3_name",
+              "SourceString": "策略特性：善良",
+              "LocalizedString": "策略特性：善良"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1075_3.1075_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level3.Buff_Oneiroi075_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star3_des",
+              "SourceString": "伊洛伊的治疗效果提升36% 。",
+              "LocalizedString": "伊洛伊的治疗效果提升36% 。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star4_name",
+              "SourceString": "策略特性：可激怒",
+              "LocalizedString": "策略特性：可激怒"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1075_4.1075_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level4.Buff_Oneiroi075_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star4_des",
+              "SourceString": "「退行」状态下的小羊们攻击倍率提升\r\n莫尔甫斯：\r\n「再睡会儿」的倍率，提升值相当于基础倍率的30% 。\r\n「多睡会儿」的倍率，提升值相当于基础倍率的30% 。\r\n\r\n伊刻洛斯：\r\n「打一针吧」的倍率提升，提升值相当于基础倍率的30% 。\r\n「多打几针」的倍率提升，提升值相当于基础倍率的30% 。\r\n\r\n方塔苏斯：\r\n「来首歌吧」的倍率提升，提升值相当于基础倍率的30% 。\r\n「不好听吗」的倍率提升，提升值相当于基础倍率的30% 。",
+              "LocalizedString": "「退行」状态下的小羊们攻击倍率提升\r\n莫尔甫斯：\r\n「再睡会儿」的倍率，提升值相当于基础倍率的30% 。\r\n「多睡会儿」的倍率，提升值相当于基础倍率的30% 。\r\n\r\n伊刻洛斯：\r\n「打一针吧」的倍率提升，提升值相当于基础倍率的30% 。\r\n「多打几针」的倍率提升，提升值相当于基础倍率的30% 。\r\n\r\n方塔苏斯：\r\n「来首歌吧」的倍率提升，提升值相当于基础倍率的30% 。\r\n「不好听吗」的倍率提升，提升值相当于基础倍率的30% 。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star5_name",
+              "SourceString": "策略特性：清晰",
+              "LocalizedString": "策略特性：清晰"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1075_5.1075_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level5.Buff_Oneiroi075_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star5_des",
+              "SourceString": "「交感性神经系统」效果追加：基于伊洛伊基础攻击力的15%，提高队伍中角色的攻击力，持续20秒。",
+              "LocalizedString": "「交感性神经系统」效果追加：基于伊洛伊基础攻击力的15%，提高队伍中角色的攻击力，持续20秒。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star6_name",
+              "SourceString": "策略特性：宽容",
+              "LocalizedString": "策略特性：宽容"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1075_6.1075_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level6.Buff_Oneiroi075_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_star6_des",
+              "SourceString": "伊洛伊释放「极轨终结：三十八亿年的海市蜃楼」后复活的角色，获得100%生命值、50点环合值、50点极轨终结能量。",
+              "LocalizedString": "伊洛伊释放「极轨终结：三十八亿年的海市蜃楼」后复活的角色，获得100%生命值、50点环合值、50点极轨终结能量。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_starExtra1_name",
+              "SourceString": "身为万物的灵长",
+              "LocalizedString": "身为万物的灵长"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Oneiroi_Melee",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Oneiroi_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Oneiroi_UltraSkill",
+                "SkillLevel": 1
+              },
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level2_Def.Buff_Oneiroi075_Level2_Def_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_starExtra1_des",
+              "SourceString": "「普通攻击：分工合作」「变轨技能：未来自我连续性假设」「极轨终结：三十八亿年的海市蜃楼」的技能等级提升1级。\r\n伊洛伊在队伍中时，全队的防御力提升30% 。",
+              "LocalizedString": "「普通攻击：分工合作」「变轨技能：未来自我连续性假设」「极轨终结：三十八亿年的海市蜃楼」的技能等级提升1级。\r\n伊洛伊在队伍中时，全队的防御力提升30% 。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_starExtra2_name",
+              "SourceString": "自诩宇宙的精华",
+              "LocalizedString": "自诩宇宙的精华"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_075_Oneiroi/Upgrade/Buff_Oneiroi075_Level6_extra.Buff_Oneiroi075_Level6_extra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Oneiror_SkillDes.Oneiror_SkillDes",
+              "Key": "GA_Oneiroi_starExtra2_des",
+              "SourceString": "伊洛伊在队伍中时，全队暴击伤害提升25%；队伍中每存在一名「退行」状态的队友，伊洛伊造成的伤害提升15%，暴击率提升5% 。",
+              "LocalizedString": "伊洛伊在队伍中时，全队暴击伤害提升25%；队伍中每存在一名「退行」状态的队友，伊洛伊造成的伤害提升15%，暴击率提升5% 。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]

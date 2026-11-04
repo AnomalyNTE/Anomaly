@@ -1,0 +1,2513 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_CharacterBreakthroughDataTable",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/DT_CharacterBreakthroughDataTable",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterBreakthroughData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "Female_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Female_stage_0",
+        "RewardItems": []
+      },
+      "Female_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Female_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Female_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:12,Worldboss_material_02:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Female_stage_2",
+        "RewardItems": []
+      },
+      "Female_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:6,Worldboss_material_02:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Female_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Female_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:12,Worldboss_material_02:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Female_stage_4",
+        "RewardItems": []
+      },
+      "Female_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:6,Worldboss_material_02:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Female_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Female_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:9,Worldboss_material_02:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Female_stage_6",
+        "RewardItems": []
+      },
+      "Mint_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "0",
+        "NeedGolds": "",
+        "ModifyPackID": "Mint_stage_0",
+        "RewardItems": []
+      },
+      "Mint_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Mint_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Mint_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:12,Worldboss_material_03:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Mint_stage_2",
+        "RewardItems": []
+      },
+      "Mint_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:6,Worldboss_material_03:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Mint_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Mint_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:12,Worldboss_material_03:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Mint_stage_4",
+        "RewardItems": []
+      },
+      "Mint_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:6,Worldboss_material_03:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Mint_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Mint_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:9,Worldboss_material_03:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Mint_stage_6",
+        "RewardItems": []
+      },
+      "Sagiri_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Sagiri_stage_0",
+        "RewardItems": []
+      },
+      "Sagiri_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Sagiri_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Sagiri_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:12,Worldboss_material_02:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Sagiri_stage_2",
+        "RewardItems": []
+      },
+      "Sagiri_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:6,Worldboss_material_02:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Sagiri_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Sagiri_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:12,Worldboss_material_02:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Sagiri_stage_4",
+        "RewardItems": []
+      },
+      "Sagiri_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:6,Worldboss_material_02:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Sagiri_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Sagiri_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:9,Worldboss_material_02:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Sagiri_stage_6",
+        "RewardItems": []
+      },
+      "Nanally_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Nanally_stage_0",
+        "RewardItems": []
+      },
+      "Nanally_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Nanally_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Nanally_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:12,Worldboss_material_03:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Nanally_stage_2",
+        "RewardItems": []
+      },
+      "Nanally_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:6,Worldboss_material_03:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Nanally_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Nanally_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:12,Worldboss_material_03:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Nanally_stage_4",
+        "RewardItems": []
+      },
+      "Nanally_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:6,Worldboss_material_03:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Nanally_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Nanally_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:9,Worldboss_material_03:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Nanally_stage_6",
+        "RewardItems": []
+      },
+      "Adler_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Adler_stage_0",
+        "RewardItems": []
+      },
+      "Adler_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Adler_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Adler_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:12,Worldboss_material_04:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Adler_stage_2",
+        "RewardItems": []
+      },
+      "Adler_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:6,Worldboss_material_04:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Adler_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Adler_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:12,Worldboss_material_04:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Adler_stage_4",
+        "RewardItems": []
+      },
+      "Adler_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:6,Worldboss_material_04:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Adler_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Adler_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:9,Worldboss_material_04:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Adler_stage_6",
+        "RewardItems": []
+      },
+      "lacrimosa_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "lacrimosa_stage_0",
+        "RewardItems": []
+      },
+      "lacrimosa_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "lacrimosa_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "lacrimosa_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:12,Worldboss_material_01:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "lacrimosa_stage_2",
+        "RewardItems": []
+      },
+      "lacrimosa_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:6,Worldboss_material_01:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "lacrimosa_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "lacrimosa_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:12,Worldboss_material_01:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "lacrimosa_stage_4",
+        "RewardItems": []
+      },
+      "lacrimosa_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:6,Worldboss_material_01:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "lacrimosa_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "lacrimosa_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:9,Worldboss_material_01:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "lacrimosa_stage_6",
+        "RewardItems": []
+      },
+      "skia_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "skia_stage_0",
+        "RewardItems": []
+      },
+      "skia_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "skia_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "skia_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:12,Worldboss_material_01:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "skia_stage_2",
+        "RewardItems": []
+      },
+      "skia_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:6,Worldboss_material_01:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "skia_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "skia_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:12,Worldboss_material_01:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "skia_stage_4",
+        "RewardItems": []
+      },
+      "skia_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:6,Worldboss_material_01:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "skia_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "skia_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:9,Worldboss_material_01:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "skia_stage_6",
+        "RewardItems": []
+      },
+      "fadia_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "fadia_stage_0",
+        "RewardItems": []
+      },
+      "fadia_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "fadia_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "fadia_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:12,Worldboss_material_04:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "fadia_stage_2",
+        "RewardItems": []
+      },
+      "fadia_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:6,Worldboss_material_04:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "fadia_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "fadia_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:12,Worldboss_material_04:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "fadia_stage_4",
+        "RewardItems": []
+      },
+      "fadia_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:6,Worldboss_material_04:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "fadia_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "fadia_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:9,Worldboss_material_04:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "fadia_stage_6",
+        "RewardItems": []
+      },
+      "Cang_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Cang_stage_0",
+        "RewardItems": []
+      },
+      "Cang_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Cang_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Cang_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:12,Worldboss_material_05:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Cang_stage_2",
+        "RewardItems": []
+      },
+      "Cang_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:6,Worldboss_material_05:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Cang_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Cang_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:12,Worldboss_material_05:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Cang_stage_4",
+        "RewardItems": []
+      },
+      "Cang_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:6,Worldboss_material_05:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Cang_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Cang_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:9,Worldboss_material_05:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Cang_stage_6",
+        "RewardItems": []
+      },
+      "Haniel_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Haniel_stage_0",
+        "RewardItems": []
+      },
+      "Haniel_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Haniel_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Haniel_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:12,Worldboss_material_05:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Haniel_stage_2",
+        "RewardItems": []
+      },
+      "Haniel_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:6,Worldboss_material_05:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Haniel_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Haniel_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:12,Worldboss_material_05:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Haniel_stage_4",
+        "RewardItems": []
+      },
+      "Haniel_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:6,Worldboss_material_05:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Haniel_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Haniel_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:9,Worldboss_material_05:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Haniel_stage_6",
+        "RewardItems": []
+      },
+      "Jin_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Jin_stage_0",
+        "RewardItems": []
+      },
+      "Jin_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Jin_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Jin_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:12,Worldboss_material_01:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Jin_stage_2",
+        "RewardItems": []
+      },
+      "Jin_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:6,Worldboss_material_01:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Jin_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Jin_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:12,Worldboss_material_01:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Jin_stage_4",
+        "RewardItems": []
+      },
+      "Jin_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:6,Worldboss_material_01:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Jin_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Jin_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:9,Worldboss_material_01:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Jin_stage_6",
+        "RewardItems": []
+      },
+      "Hathor_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Hathor_stage_0",
+        "RewardItems": []
+      },
+      "Hathor_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Hathor_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Hathor_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:12,Worldboss_material_06:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Hathor_stage_2",
+        "RewardItems": []
+      },
+      "Hathor_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:6,Worldboss_material_06:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Hathor_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Hathor_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:12,Worldboss_material_06:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Hathor_stage_4",
+        "RewardItems": []
+      },
+      "Hathor_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:6,Worldboss_material_06:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Hathor_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Hathor_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:9,Worldboss_material_06:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Hathor_stage_6",
+        "RewardItems": []
+      },
+      "daffodill_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "daffodill_stage_0",
+        "RewardItems": []
+      },
+      "daffodill_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "daffodill_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "daffodill_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:12,Worldboss_material_02:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "daffodill_stage_2",
+        "RewardItems": []
+      },
+      "daffodill_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:6,Worldboss_material_02:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "daffodill_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "daffodill_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:12,Worldboss_material_02:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "daffodill_stage_4",
+        "RewardItems": []
+      },
+      "daffodill_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:6,Worldboss_material_02:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "daffodill_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "daffodill_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:9,Worldboss_material_02:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "daffodill_stage_6",
+        "RewardItems": []
+      },
+      "edgar_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Edgar_stage_0",
+        "RewardItems": []
+      },
+      "edgar_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Edgar_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "edgar_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:12,Worldboss_material_06:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Edgar_stage_2",
+        "RewardItems": []
+      },
+      "edgar_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:6,Worldboss_material_06:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Edgar_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "edgar_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:12,Worldboss_material_06:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Edgar_stage_4",
+        "RewardItems": []
+      },
+      "edgar_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:6,Worldboss_material_06:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Edgar_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "edgar_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:9,Worldboss_material_06:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Edgar_stage_6",
+        "RewardItems": []
+      },
+      "chiichan_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "chiichan_stage_0",
+        "RewardItems": []
+      },
+      "chiichan_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "chiichan_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "chiichan_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:12,Worldboss_material_07:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "chiichan_stage_2",
+        "RewardItems": []
+      },
+      "chiichan_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:6,Worldboss_material_07:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "chiichan_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "chiichan_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:12,Worldboss_material_07:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "chiichan_stage_4",
+        "RewardItems": []
+      },
+      "chiichan_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:6,Worldboss_material_07:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "chiichan_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "chiichan_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:9,Worldboss_material_07:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "chiichan_stage_6",
+        "RewardItems": []
+      },
+      "Kuhara_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "Kuhara_stage_0",
+        "RewardItems": []
+      },
+      "Kuhara_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "Kuhara_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Kuhara_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:12,Worldboss_material_07:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "Kuhara_stage_2",
+        "RewardItems": []
+      },
+      "Kuhara_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:6,Worldboss_material_07:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "Kuhara_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Kuhara_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:12,Worldboss_material_07:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "Kuhara_stage_4",
+        "RewardItems": []
+      },
+      "Kuhara_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:6,Worldboss_material_07:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "Kuhara_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "Kuhara_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:9,Worldboss_material_07:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "Kuhara_stage_6",
+        "RewardItems": []
+      },
+      "oneiroi_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "oneiroi_stage_0",
+        "RewardItems": []
+      },
+      "oneiroi_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "oneiroi_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "oneiroi_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_02_lv1:12,Worldboss_material_03:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "oneiroi_stage_2",
+        "RewardItems": []
+      },
+      "oneiroi_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:6,Worldboss_material_03:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "oneiroi_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "oneiroi_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_02_lv2:12,Worldboss_material_03:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "oneiroi_stage_4",
+        "RewardItems": []
+      },
+      "oneiroi_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:6,Worldboss_material_03:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "oneiroi_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "oneiroi_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_02_lv3:9,Worldboss_material_03:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "oneiroi_stage_6",
+        "RewardItems": []
+      },
+      "shinku_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "shinku_stage_0",
+        "RewardItems": []
+      },
+      "shinku_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "shinku_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "shinku_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:12,Worldboss_material_02:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "shinku_stage_2",
+        "RewardItems": []
+      },
+      "shinku_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:6,Worldboss_material_02:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "shinku_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "shinku_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:12,Worldboss_material_02:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "shinku_stage_4",
+        "RewardItems": []
+      },
+      "shinku_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:6,Worldboss_material_02:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "shinku_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "shinku_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:9,Worldboss_material_02:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "shinku_stage_6",
+        "RewardItems": []
+      },
+      "mitsuki_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "mitsuki_stage_0",
+        "RewardItems": []
+      },
+      "mitsuki_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "mitsuki_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "mitsuki_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:12,Worldboss_material_05:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "mitsuki_stage_2",
+        "RewardItems": []
+      },
+      "mitsuki_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:6,Worldboss_material_05:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "mitsuki_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "mitsuki_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:12,Worldboss_material_05:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "mitsuki_stage_4",
+        "RewardItems": []
+      },
+      "mitsuki_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:6,Worldboss_material_05:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "mitsuki_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "mitsuki_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:9,Worldboss_material_05:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "mitsuki_stage_6",
+        "RewardItems": []
+      },
+      "chaos_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "chaos_stage_0",
+        "RewardItems": []
+      },
+      "chaos_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "chaos_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "chaos_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:12,Worldboss_material_07:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "chaos_stage_2",
+        "RewardItems": []
+      },
+      "chaos_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:6,Worldboss_material_07:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "chaos_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "chaos_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:12,Worldboss_material_07:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "chaos_stage_4",
+        "RewardItems": []
+      },
+      "chaos_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:6,Worldboss_material_07:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "chaos_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "chaos_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:9,Worldboss_material_07:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "chaos_stage_6",
+        "RewardItems": []
+      },
+      "zankou_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "zankou_stage_0",
+        "RewardItems": []
+      },
+      "zankou_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "zankou_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "zankou_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:12,Worldboss_material_05:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "zankou_stage_2",
+        "RewardItems": []
+      },
+      "zankou_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:6,Worldboss_material_05:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "zankou_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "zankou_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:12,Worldboss_material_05:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "zankou_stage_4",
+        "RewardItems": []
+      },
+      "zankou_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:6,Worldboss_material_05:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "zankou_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "zankou_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:9,Worldboss_material_05:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "zankou_stage_6",
+        "RewardItems": []
+      },
+      "radio_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "radio_stage_0",
+        "RewardItems": []
+      },
+      "radio_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "radio_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "radio_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_01_lv1:12,Worldboss_material_04:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "radio_stage_2",
+        "RewardItems": []
+      },
+      "radio_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:6,Worldboss_material_04:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "radio_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "radio_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_01_lv2:12,Worldboss_material_04:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "radio_stage_4",
+        "RewardItems": []
+      },
+      "radio_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:6,Worldboss_material_04:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "radio_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "radio_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_01_lv3:9,Worldboss_material_04:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "radio_stage_6",
+        "RewardItems": []
+      },
+      "blackbird_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "blackbird_stage_0",
+        "RewardItems": []
+      },
+      "blackbird_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "blackbird_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "blackbird_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_03_lv1:12,Worldboss_material_06:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "blackbird_stage_2",
+        "RewardItems": []
+      },
+      "blackbird_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:6,Worldboss_material_06:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "blackbird_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "blackbird_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_03_lv2:12,Worldboss_material_06:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "blackbird_stage_4",
+        "RewardItems": []
+      },
+      "blackbird_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:6,Worldboss_material_06:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "blackbird_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "blackbird_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_03_lv3:9,Worldboss_material_06:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "blackbird_stage_6",
+        "RewardItems": []
+      },
+      "akane_Breakthrough_0": {
+        "MaxCharacterLevel": 20,
+        "NeedMaxWorldLevel": 0,
+        "NeedItems": "",
+        "NeedGolds": "",
+        "ModifyPackID": "akane_stage_0",
+        "RewardItems": []
+      },
+      "akane_Breakthrough_1": {
+        "MaxCharacterLevel": 30,
+        "NeedMaxWorldLevel": 1,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:5",
+        "NeedGolds": "gold:25000",
+        "ModifyPackID": "akane_stage_1",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "akane_Breakthrough_2": {
+        "MaxCharacterLevel": 40,
+        "NeedMaxWorldLevel": 2,
+        "NeedItems": "OrdinaryMonMaterial_04_lv1:12,Worldboss_material_02:2",
+        "NeedGolds": "gold:50000",
+        "ModifyPackID": "akane_stage_2",
+        "RewardItems": []
+      },
+      "akane_Breakthrough_3": {
+        "MaxCharacterLevel": 50,
+        "NeedMaxWorldLevel": 3,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:6,Worldboss_material_02:8",
+        "NeedGolds": "gold:75000",
+        "ModifyPackID": "akane_stage_3",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "akane_Breakthrough_4": {
+        "MaxCharacterLevel": 60,
+        "NeedMaxWorldLevel": 4,
+        "NeedItems": "OrdinaryMonMaterial_04_lv2:12,Worldboss_material_02:16",
+        "NeedGolds": "gold:100000",
+        "ModifyPackID": "akane_stage_4",
+        "RewardItems": []
+      },
+      "akane_Breakthrough_5": {
+        "MaxCharacterLevel": 70,
+        "NeedMaxWorldLevel": 5,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:6,Worldboss_material_02:24",
+        "NeedGolds": "gold:125000",
+        "ModifyPackID": "akane_stage_5",
+        "RewardItems": [
+          {
+            "UniqueID": {
+              "solt": 0,
+              "serial": 0
+            },
+            "ItemID": "DiceNormal",
+            "Amount": 1,
+            "bHiddenAmount": false,
+            "bIsReplaceItem": false,
+            "ExtraItemNetInfo": {
+              "RandomBaseModifyData": [],
+              "RandomModifyData": []
+            },
+            "AwardItemType": "EItemType::ITEM_TYPE_NONE"
+          }
+        ]
+      },
+      "akane_Breakthrough_6": {
+        "MaxCharacterLevel": 80,
+        "NeedMaxWorldLevel": 6,
+        "NeedItems": "OrdinaryMonMaterial_04_lv3:9,Worldboss_material_02:36",
+        "NeedGolds": "gold:150000",
+        "ModifyPackID": "akane_stage_6",
+        "RewardItems": []
+      }
+    }
+  }
+]

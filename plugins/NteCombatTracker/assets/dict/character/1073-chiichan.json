@@ -1,0 +1,1325 @@
+{
+  "format_version": 1,
+  "source": {
+    "generator": "extract-character-data.ps1",
+    "assets_git_revision": "sha256:3c8dd7725bf0e091b5deb658d4f48cdb423a12fae3ae5e68e2a7d02ed42e16af",
+    "tables": [
+      "DataTable/Character/DT_Character.json",
+      "DataTable/skill/DT_GameplayAbilityTipsData.json",
+      "DataTable/skill/DT_SkillDamageData.json",
+      "DataTable/skill/DT_GameplayEffectMappingData.json"
+    ]
+  },
+  "identity": {
+    "kind": "registered",
+    "character_id": 1073,
+    "codename": "Chiichan",
+    "name_zh": "小吱",
+    "asset_aliases": [
+      "073_Chiichan"
+    ],
+    "identifier_aliases": [
+      "Chiichan073",
+      "Chiichan"
+    ]
+  },
+  "data": {
+    "characters": {
+      "1073": {
+        "attribute": "光",
+        "codename": "Chiichan",
+        "name_zh": "小吱"
+      }
+    },
+    "ability_tips": {
+      "GA_Chiichan073_Melee": {
+        "name_zh": "失乡剑术"
+      },
+      "GA_Chiichan073_Passive_1": {
+        "name_zh": "飞鸟症候群"
+      },
+      "GA_Chiichan073_Passive_2": {
+        "name_zh": "囤积癖"
+      },
+      "GA_Chiichan073_QTE": {
+        "name_zh": "临时入场"
+      },
+      "GA_Chiichan073_Skill": {
+        "name_zh": "粉爪在上原则"
+      },
+      "GA_Chiichan073_UltraSkill": {
+        "name_zh": "零和博弈"
+      }
+    },
+    "skill_damage": {
+      "GE_Player_Chiichan073_AirAttack1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 4.5,
+        "UnbalValue": 0.9,
+        "HeterochromeAdd": 7.5,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_X",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.9,
+          0.972,
+          1.05,
+          1.134,
+          1.224,
+          1.322,
+          1.428,
+          1.542,
+          1.666,
+          1.799,
+          1.943,
+          2.098,
+          2.266
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.9,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Branch_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 3.9,
+        "UnbalValue": 0.8,
+        "HeterochromeAdd": 6.45,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.775,
+          0.837,
+          0.904,
+          0.976,
+          1.054,
+          1.139,
+          1.23,
+          1.328,
+          1.434,
+          1.549,
+          1.673,
+          1.807,
+          1.952
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.775,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Branch2_1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 4.8,
+        "UnbalValue": 0.95,
+        "HeterochromeAdd": 8.0,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.96,
+          1.037,
+          1.12,
+          1.209,
+          1.306,
+          1.411,
+          1.523,
+          1.645,
+          1.777,
+          1.919,
+          2.073,
+          2.238,
+          2.417
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.96,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Branch2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 4.8,
+        "UnbalValue": 0.95,
+        "HeterochromeAdd": 8.0,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.96,
+          1.037,
+          1.12,
+          1.209,
+          1.306,
+          1.411,
+          1.523,
+          1.645,
+          1.777,
+          1.919,
+          2.073,
+          2.238,
+          2.417
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.96,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Melee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 1.727,
+        "UnbalValue": 0.35,
+        "HeterochromeAdd": 2.872,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.345,
+          0.373,
+          0.402,
+          0.435,
+          0.469,
+          0.507,
+          0.547,
+          0.591,
+          0.639,
+          0.69,
+          0.745,
+          0.804,
+          0.869
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.345,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Melee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.855,
+        "UnbalValue": 0.173,
+        "HeterochromeAdd": 1.421,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.171,
+          0.185,
+          0.199,
+          0.215,
+          0.233,
+          0.251,
+          0.271,
+          0.293,
+          0.317,
+          0.342,
+          0.369,
+          0.399,
+          0.431
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.171,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Melee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 2.804,
+        "UnbalValue": 0.568,
+        "HeterochromeAdd": 4.662,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.56,
+          0.605,
+          0.653,
+          0.705,
+          0.762,
+          0.823,
+          0.889,
+          0.96,
+          1.037,
+          1.119,
+          1.209,
+          1.306,
+          1.41
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.56,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Melee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 1.046,
+        "UnbalValue": 0.212,
+        "HeterochromeAdd": 1.739,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.209,
+          0.226,
+          0.244,
+          0.263,
+          0.284,
+          0.307,
+          0.332,
+          0.358,
+          0.387,
+          0.418,
+          0.451,
+          0.487,
+          0.526
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.209,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Melee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 1.987,
+        "UnbalValue": 0.402,
+        "HeterochromeAdd": 3.303,
+        "GAName": "GA_Chiichan073_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.397,
+          0.429,
+          0.463,
+          0.5,
+          0.54,
+          0.583,
+          0.63,
+          0.68,
+          0.735,
+          0.794,
+          0.857,
+          0.926,
+          1.0
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.397,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_PerfectEvadeAttack1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.767,
+        "UnbalValue": 0.833,
+        "HeterochromeAdd": 1.267,
+        "GAName": "GA_Chiichan073_PerfectEvade",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Z",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.3,
+          0.324,
+          0.35,
+          0.378,
+          0.408,
+          0.441,
+          0.476,
+          0.514,
+          0.555,
+          0.6,
+          0.648,
+          0.699,
+          0.755
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.3,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_PerfectEvadeAttack2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 1.533,
+        "UnbalValue": 1.667,
+        "HeterochromeAdd": 2.533,
+        "GAName": "GA_Chiichan073_PerfectEvade",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Z",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.6,
+          0.648,
+          0.7,
+          0.756,
+          0.816,
+          0.882,
+          0.952,
+          1.028,
+          1.111,
+          1.199,
+          1.295,
+          1.399,
+          1.511
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.6,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_QTE_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 8.6,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Chiichan073_QTE",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill1_1Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.966,
+        "UnbalValue": 0.193,
+        "HeterochromeAdd": 1.578,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.19,
+          0.205,
+          0.222,
+          0.239,
+          0.258,
+          0.279,
+          0.302,
+          0.326,
+          0.352,
+          0.38,
+          0.41,
+          0.443,
+          0.478
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.19,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill1_CoinDamage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 1E-06,
+        "AtkRateBaseArray": [
+          0.59,
+          0.637,
+          0.688,
+          0.743,
+          0.803,
+          0.867,
+          0.936,
+          1.011,
+          1.092,
+          1.179,
+          1.274,
+          1.376,
+          1.486
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.59,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 2.034,
+        "UnbalValue": 0.407,
+        "HeterochromeAdd": 3.322,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.4,
+          0.432,
+          0.467,
+          0.504,
+          0.544,
+          0.588,
+          0.635,
+          0.686,
+          0.74,
+          0.8,
+          0.864,
+          0.933,
+          1.007
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.4,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill2_2Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 2.65,
+        "UnbalValue": 0.55,
+        "HeterochromeAdd": 4.45,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.532,
+          0.575,
+          0.621,
+          0.67,
+          0.724,
+          0.782,
+          0.844,
+          0.912,
+          0.985,
+          1.063,
+          1.149,
+          1.24,
+          1.34
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.532,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill2_CoinDamage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 1E-06,
+        "AtkRateBaseArray": [
+          0.59,
+          0.637,
+          0.688,
+          0.743,
+          0.803,
+          0.867,
+          0.936,
+          1.011,
+          1.092,
+          1.179,
+          1.274,
+          1.376,
+          1.486
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.59,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.25,
+          0.27,
+          0.292,
+          0.315,
+          0.34,
+          0.367,
+          0.397,
+          0.428,
+          0.463,
+          0.5,
+          0.54,
+          0.583,
+          0.63
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.25,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 1.419,
+        "UnbalValue": 0.276,
+        "HeterochromeAdd": 2.359,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.283,
+          0.306,
+          0.33,
+          0.356,
+          0.385,
+          0.416,
+          0.449,
+          0.485,
+          0.524,
+          0.566,
+          0.611,
+          0.66,
+          0.713
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.283,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_Skill4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 2.094,
+        "UnbalValue": 0.408,
+        "HeterochromeAdd": 3.48,
+        "GAName": "GA_Chiichan073_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.418,
+          0.451,
+          0.488,
+          0.527,
+          0.569,
+          0.614,
+          0.663,
+          0.716,
+          0.774,
+          0.836,
+          0.902,
+          0.975,
+          1.053
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.418,
+        "AttackBreakLevel": "EBreakableLevel::BL_Middle",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_UltraSkill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.134,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Chiichan073_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.446,
+          0.482,
+          0.52,
+          0.562,
+          0.607,
+          0.655,
+          0.708,
+          0.764,
+          0.826,
+          0.892,
+          0.963,
+          1.04,
+          1.123
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.446,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_UltraSkill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.134,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Chiichan073_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.447,
+          0.483,
+          0.521,
+          0.563,
+          0.608,
+          0.657,
+          0.709,
+          0.766,
+          0.827,
+          0.894,
+          0.965,
+          1.042,
+          1.126
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.447,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Chiichan073_UltraSkill3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_COSMOS",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.831,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Chiichan073_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.771,
+          2.993,
+          3.232,
+          3.491,
+          3.77,
+          4.072,
+          4.397,
+          4.749,
+          5.129,
+          5.539,
+          5.982,
+          6.461,
+          6.978
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.771,
+        "AttackBreakLevel": "EBreakableLevel::BL_High",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": false,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      }
+    },
+    "gameplay_effect_mapping": {
+      "Buff_Chiichan073_Branch_Cheat": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_Branch_Cheat.Buff_Chiichan073_Branch_Cheat_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3656
+      },
+      "Buff_Chiichan073_Branch_Display": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_Branch_Display.Buff_Chiichan073_Branch_Display_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3776
+      },
+      "Buff_Chiichan073_CoinDamgeTrigger": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_CoinDamgeTrigger.Buff_Chiichan073_CoinDamgeTrigger_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4282
+      },
+      "Buff_Chiichan073_CoinDamgeTriggerDelete": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_CoinDamgeTriggerDelete.Buff_Chiichan073_CoinDamgeTriggerDelete_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4283
+      },
+      "Buff_Chiichan073_Crit": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_Crit.Buff_Chiichan073_Crit_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 4276
+      },
+      "Buff_Chiichan073_FangsiGetNum": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_FangsiGetNum.Buff_Chiichan073_FangsiGetNum_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3665
+      },
+      "Buff_Chiichan073_Level1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level1/Buff_Chiichan073_Level1.Buff_Chiichan073_Level1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3453
+      },
+      "Buff_Chiichan073_Level2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level2/Buff_Chiichan073_Level2.Buff_Chiichan073_Level2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3454
+      },
+      "Buff_Chiichan073_Level3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level3/Buff_Chiichan073_Level3.Buff_Chiichan073_Level3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3455
+      },
+      "Buff_Chiichan073_Level3_Extra": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level3/Buff_Chiichan073_Level3_Extra.Buff_Chiichan073_Level3_Extra_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3478
+      },
+      "Buff_Chiichan073_Level4": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level4/Buff_Chiichan073_Level4.Buff_Chiichan073_Level4_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3456
+      },
+      "Buff_Chiichan073_Level5": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level5/Buff_Chiichan073_Level5.Buff_Chiichan073_Level5_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3457
+      },
+      "Buff_Chiichan073_Level6": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/Level6/Buff_Chiichan073_Level6.Buff_Chiichan073_Level6_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3458
+      },
+      "Buff_Chiichan073_LevelExtra1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/LevelExtra/Buff_Chiichan073_LevelExtra1.Buff_Chiichan073_LevelExtra1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3485
+      },
+      "Buff_Chiichan073_LevelExtra2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/LevelExtra/Buff_Chiichan073_LevelExtra2.Buff_Chiichan073_LevelExtra2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3486
+      },
+      "Buff_Chiichan073_LevelExtra2_1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Upgrade/LevelExtra/Buff_Chiichan073_LevelExtra2_1.Buff_Chiichan073_LevelExtra2_1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3795
+      },
+      "Buff_Chiichan073_Passive1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/PassiveEffect/Buff_Chiichan073_Passive1.Buff_Chiichan073_Passive1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3215
+      },
+      "Buff_Chiichan073_Passive2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/PassiveEffect/Buff_Chiichan073_Passive2.Buff_Chiichan073_Passive2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3406
+      },
+      "Buff_Chiichan073_QTE_Display": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_QTE_Display.Buff_Chiichan073_QTE_Display_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3557
+      },
+      "Buff_Chiichan073_SkillDamUpCoin": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_SkillDamUpCoin.Buff_Chiichan073_SkillDamUpCoin_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3405
+      },
+      "Buff_Chiichan073_UltraSkill_BigA": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_UltraSkill_BigA.Buff_Chiichan073_UltraSkill_BigA_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3564
+      },
+      "Buff_Chiichan073_UltraSkill_TimeSlomo": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_UltraSkill_TimeSlomo.Buff_Chiichan073_UltraSkill_TimeSlomo_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3666
+      },
+      "Buff_Chiichan073_UltraSkillDisplay": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_UltraSkillDisplay.Buff_Chiichan073_UltraSkillDisplay_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3715
+      },
+      "Buff_Chiichan073_UltraSkillUpCoin": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Buff/Buff_Chiichan073_UltraSkillUpCoin.Buff_Chiichan073_UltraSkillUpCoin_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3781
+      },
+      "GE_Player_Chiichan073_AirAttack1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_AirAttack1_Damage.GE_Player_Chiichan073_AirAttack1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3387
+      },
+      "GE_Player_Chiichan073_AirAttack1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_AirAttack1_HitBack.GE_Player_Chiichan073_AirAttack1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3403
+      },
+      "GE_Player_Chiichan073_Branch_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Branch_Damage.GE_Player_Chiichan073_Branch_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3716
+      },
+      "GE_Player_Chiichan073_Branch_Traction": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Branch_Traction.GE_Player_Chiichan073_Branch_Traction_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3794
+      },
+      "GE_Player_Chiichan073_Branch2_1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Branch2_1_Damage.GE_Player_Chiichan073_Branch2_1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3796
+      },
+      "GE_Player_Chiichan073_Branch2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Branch2_Damage.GE_Player_Chiichan073_Branch2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3793
+      },
+      "GE_Player_Chiichan073_ExtrenAtk1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_ExtrenAtk1_HitBack.GE_Player_Chiichan073_ExtrenAtk1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3354
+      },
+      "GE_Player_Chiichan073_ExtrenAtk2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_ExtrenAtk2_HitBack.GE_Player_Chiichan073_ExtrenAtk2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3355
+      },
+      "GE_Player_Chiichan073_Melee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Melee1_Damage.GE_Player_Chiichan073_Melee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3108
+      },
+      "GE_Player_Chiichan073_Melee1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Melee1_HitBack.GE_Player_Chiichan073_Melee1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3353
+      },
+      "GE_Player_Chiichan073_Melee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Melee2_Damage.GE_Player_Chiichan073_Melee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3349
+      },
+      "GE_Player_Chiichan073_Melee2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Melee2_HitBack.GE_Player_Chiichan073_Melee2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3500
+      },
+      "GE_Player_Chiichan073_Melee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Melee3_Damage.GE_Player_Chiichan073_Melee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3350
+      },
+      "GE_Player_Chiichan073_Melee3_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Melee3_HitBack.GE_Player_Chiichan073_Melee3_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3499
+      },
+      "GE_Player_Chiichan073_Melee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Melee4_Damage.GE_Player_Chiichan073_Melee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3351
+      },
+      "GE_Player_Chiichan073_Melee4_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Melee4_HitBack.GE_Player_Chiichan073_Melee4_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3498
+      },
+      "GE_Player_Chiichan073_Melee5_1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Melee5_1_HitBack.GE_Player_Chiichan073_Melee5_1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3533
+      },
+      "GE_Player_Chiichan073_Melee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Melee5_Damage.GE_Player_Chiichan073_Melee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3352
+      },
+      "GE_Player_Chiichan073_Melee5_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Melee5_HitBack.GE_Player_Chiichan073_Melee5_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3497
+      },
+      "GE_Player_Chiichan073_MeleeBranch_HitOut": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_MeleeBranch_HitOut.GE_Player_Chiichan073_MeleeBranch_HitOut_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3729
+      },
+      "GE_Player_Chiichan073_PerfectEvadeAttack1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_PerfectEvadeAttack1_Damage.GE_Player_Chiichan073_PerfectEvadeAttack1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3368
+      },
+      "GE_Player_Chiichan073_PerfectEvadeAttack2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_PerfectEvadeAttack2_Damage.GE_Player_Chiichan073_PerfectEvadeAttack2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3367
+      },
+      "GE_Player_Chiichan073_QTE_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_QTE_Damage.GE_Player_Chiichan073_QTE_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3657
+      },
+      "GE_Player_Chiichan073_Skill1_1Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill1_1Damage.GE_Player_Chiichan073_Skill1_1Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3777
+      },
+      "GE_Player_Chiichan073_Skill1_CoinDamage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill1_CoinDamage.GE_Player_Chiichan073_Skill1_CoinDamage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3723
+      },
+      "GE_Player_Chiichan073_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill1_Damage.GE_Player_Chiichan073_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3361
+      },
+      "GE_Player_Chiichan073_Skill1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Skill1_HitBack.GE_Player_Chiichan073_Skill1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3631
+      },
+      "GE_Player_Chiichan073_Skill2_2Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill2_2Damage.GE_Player_Chiichan073_Skill2_2Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3728
+      },
+      "GE_Player_Chiichan073_Skill2_CoinDamage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill2_CoinDamage.GE_Player_Chiichan073_Skill2_CoinDamage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3722
+      },
+      "GE_Player_Chiichan073_Skill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill2_Damage.GE_Player_Chiichan073_Skill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3362
+      },
+      "GE_Player_Chiichan073_Skill2_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Skill2_HitBack.GE_Player_Chiichan073_Skill2_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3630
+      },
+      "GE_Player_Chiichan073_Skill3_1Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill3_1Damage.GE_Player_Chiichan073_Skill3_1Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3778
+      },
+      "GE_Player_Chiichan073_Skill3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill3_Damage.GE_Player_Chiichan073_Skill3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3363
+      },
+      "GE_Player_Chiichan073_Skill3_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Skill3_HitBack.GE_Player_Chiichan073_Skill3_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3629
+      },
+      "GE_Player_Chiichan073_Skill4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill4_Damage.GE_Player_Chiichan073_Skill4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3364
+      },
+      "GE_Player_Chiichan073_Skill4_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_Skill4_HitBack.GE_Player_Chiichan073_Skill4_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3652
+      },
+      "GE_Player_Chiichan073_Skill5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill5_Damage.GE_Player_Chiichan073_Skill5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3365
+      },
+      "GE_Player_Chiichan073_Skill6_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_Skill6_Damage.GE_Player_Chiichan073_Skill6_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3366
+      },
+      "GE_Player_Chiichan073_UltraSkill_Float": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_UltraSkill_Float.GE_Player_Chiichan073_UltraSkill_Float_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3720
+      },
+      "GE_Player_Chiichan073_UltraSkill_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_UltraSkill_HitBack.GE_Player_Chiichan073_UltraSkill_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3719
+      },
+      "GE_Player_Chiichan073_UltraSkill_HitDown": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Effect/GE_Player_Chiichan073_UltraSkill_HitDown.GE_Player_Chiichan073_UltraSkill_HitDown_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3769
+      },
+      "GE_Player_Chiichan073_UltraSkill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_UltraSkill1_Damage.GE_Player_Chiichan073_UltraSkill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3717
+      },
+      "GE_Player_Chiichan073_UltraSkill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_UltraSkill2_Damage.GE_Player_Chiichan073_UltraSkill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3718
+      },
+      "GE_Player_Chiichan073_UltraSkill3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_073_Chiichan/Damage/GE_Player_Chiichan073_UltraSkill3_Damage.GE_Player_Chiichan073_UltraSkill3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3768
+      }
+    }
+  },
+  "references": {
+    "unresolved_ability_tips": {
+      "GA_Chiichan073_PerfectEvade": [
+        "GE_Player_Chiichan073_PerfectEvadeAttack1_Damage",
+        "GE_Player_Chiichan073_PerfectEvadeAttack2_Damage"
+      ]
+    }
+  }
+}

@@ -1,0 +1,283 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_CharacterGeometryTypeDataTable",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/DT_CharacterGeometryTypeDataTable",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterGeometryType'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "EquipmentGeometry_One": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_1",
+          "SourceString": "Ⅰ型驱动",
+          "LocalizedString": "Ⅰ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_29.UI_YH_kongmuicon2-gai_29",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_29.UI_YH_kongmuicon2-gai_29",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Hen2": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_2",
+          "SourceString": "Ⅱ型驱动",
+          "LocalizedString": "Ⅱ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_28.UI_YH_kongmuicon2-gai_28",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_28.UI_YH_kongmuicon2-gai_28",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Shu2": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_2",
+          "SourceString": "Ⅱ型驱动",
+          "LocalizedString": "Ⅱ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_27.UI_YH_kongmuicon2-gai_27",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_27.UI_YH_kongmuicon2-gai_27",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Hen3": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_3",
+          "SourceString": "Ⅲ型驱动",
+          "LocalizedString": "Ⅲ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_18.UI_YH_kongmuicon2-gai_18",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_18.UI_YH_kongmuicon2-gai_18",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Shu3": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_3",
+          "SourceString": "Ⅲ型驱动",
+          "LocalizedString": "Ⅲ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_17.UI_YH_kongmuicon2-gai_17",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_17.UI_YH_kongmuicon2-gai_17",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Hen4": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_4",
+          "SourceString": "Ⅳ型驱动",
+          "LocalizedString": "Ⅳ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_16.UI_YH_kongmuicon2-gai_16",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_16.UI_YH_kongmuicon2-gai_16",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Shu4": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_4",
+          "SourceString": "Ⅳ型驱动",
+          "LocalizedString": "Ⅳ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_30.UI_YH_kongmuicon2-gai_30",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_30.UI_YH_kongmuicon2-gai_30",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_ZhiJiao1": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_3",
+          "SourceString": "Ⅲ型驱动",
+          "LocalizedString": "Ⅲ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_26.UI_YH_kongmuicon2-gai_26",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_26.UI_YH_kongmuicon2-gai_26",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_ZhiJiao2": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_3",
+          "SourceString": "Ⅲ型驱动",
+          "LocalizedString": "Ⅲ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_25.UI_YH_kongmuicon2-gai_25",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_25.UI_YH_kongmuicon2-gai_25",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_ZhiJiao3": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_3",
+          "SourceString": "Ⅲ型驱动",
+          "LocalizedString": "Ⅲ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_24.UI_YH_kongmuicon2-gai_24",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_24.UI_YH_kongmuicon2-gai_24",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_ZhiJiao4": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_3",
+          "SourceString": "Ⅲ型驱动",
+          "LocalizedString": "Ⅲ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_23.UI_YH_kongmuicon2-gai_23",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_23.UI_YH_kongmuicon2-gai_23",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Z1": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_4",
+          "SourceString": "Ⅳ型驱动",
+          "LocalizedString": "Ⅳ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_22.UI_YH_kongmuicon2-gai_22",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_22.UI_YH_kongmuicon2-gai_22",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Z2": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_4",
+          "SourceString": "Ⅳ型驱动",
+          "LocalizedString": "Ⅳ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_21.UI_YH_kongmuicon2-gai_21",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_21.UI_YH_kongmuicon2-gai_21",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Z3": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_4",
+          "SourceString": "Ⅳ型驱动",
+          "LocalizedString": "Ⅳ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_19.UI_YH_kongmuicon2-gai_19",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_19.UI_YH_kongmuicon2-gai_19",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_Z4": {
+        "DisplayName": {
+          "TableId": "/Game/Text/ST_Equipment.ST_Equipment",
+          "Key": "own_grid_4",
+          "SourceString": "Ⅳ型驱动",
+          "LocalizedString": "Ⅳ型驱动"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_20.UI_YH_kongmuicon2-gai_20",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "/Game/UI/UI/Equip/TipsIcon/UI_YH_kongmuicon2-gai_20.UI_YH_kongmuicon2-gai_20",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_CoreL": {
+        "DisplayName": {
+          "CultureInvariantString": "核心「左」"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        }
+      },
+      "EquipmentGeometry_CoreR": {
+        "DisplayName": {
+          "CultureInvariantString": "核心「右」"
+        },
+        "GeometryTypeImage": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        },
+        "GeometryTypeFilterImage": {
+          "AssetPathName": "",
+          "SubPathString": ""
+        }
+      }
+    }
+  }
+]

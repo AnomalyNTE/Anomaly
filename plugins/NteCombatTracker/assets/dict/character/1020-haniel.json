@@ -1,0 +1,873 @@
+{
+  "format_version": 1,
+  "source": {
+    "generator": "extract-character-data.ps1",
+    "assets_git_revision": "sha256:3c8dd7725bf0e091b5deb658d4f48cdb423a12fae3ae5e68e2a7d02ed42e16af",
+    "tables": [
+      "DataTable/Character/DT_Character.json",
+      "DataTable/skill/DT_GameplayAbilityTipsData.json",
+      "DataTable/skill/DT_SkillDamageData.json",
+      "DataTable/skill/DT_GameplayEffectMappingData.json"
+    ]
+  },
+  "identity": {
+    "kind": "registered",
+    "character_id": 1020,
+    "codename": "Haniel",
+    "name_zh": "哈尼娅",
+    "asset_aliases": [
+      "020_Haniel"
+    ],
+    "identifier_aliases": [
+      "Haniel"
+    ]
+  },
+  "data": {
+    "characters": {
+      "1020": {
+        "attribute": "魂",
+        "codename": "Haniel",
+        "name_zh": "哈尼娅"
+      }
+    },
+    "ability_tips": {
+      "GA_Haniel_Melee": {
+        "name_zh": "盖罗塞克特术法"
+      },
+      "GA_Haniel_Passive_1": {
+        "name_zh": "是友情啊"
+      },
+      "GA_Haniel_Passive_2": {
+        "name_zh": "是羁绊啊"
+      },
+      "GA_Haniel_QTE": {
+        "name_zh": "彩蛋时间"
+      },
+      "GA_Haniel_Skill": {
+        "name_zh": "静默月林的守护者"
+      },
+      "GA_Haniel_UltraSkill": {
+        "name_zh": "名为「哈尼娅」的旋律"
+      }
+    },
+    "skill_damage": {
+      "GE_Player_Haniel_Airattack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 2.1,
+        "UnbalValue": 0.4,
+        "HeterochromeAdd": 3.4,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_X",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.82,
+          0.886,
+          0.956,
+          1.033,
+          1.116,
+          1.205,
+          1.301,
+          1.405,
+          1.518,
+          1.639,
+          1.77,
+          1.912,
+          2.065
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.82,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Branch_Damage1": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.88,
+        "UnbalValue": 0.18,
+        "HeterochromeAdd": 1.46,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.36,
+          0.389,
+          0.42,
+          0.453,
+          0.49,
+          0.529,
+          0.571,
+          0.617,
+          0.666,
+          0.72,
+          0.777,
+          0.839,
+          0.907
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.36,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Melee1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 2.625,
+        "UnbalValue": 0.529,
+        "HeterochromeAdd": 4.369,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.419,
+          0.453,
+          0.489,
+          0.528,
+          0.57,
+          0.616,
+          0.665,
+          0.718,
+          0.776,
+          0.838,
+          0.905,
+          0.977,
+          1.055
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.419,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Melee2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.701,
+        "UnbalValue": 0.141,
+        "HeterochromeAdd": 1.166,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.112,
+          0.121,
+          0.131,
+          0.141,
+          0.152,
+          0.165,
+          0.178,
+          0.192,
+          0.207,
+          0.224,
+          0.242,
+          0.261,
+          0.282
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.112,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Melee3_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 3.648,
+        "UnbalValue": 0.735,
+        "HeterochromeAdd": 6.072,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.582,
+          0.629,
+          0.679,
+          0.733,
+          0.792,
+          0.855,
+          0.924,
+          0.997,
+          1.077,
+          1.163,
+          1.256,
+          1.357,
+          1.466
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.582,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Melee4_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.979,
+        "UnbalValue": 0.197,
+        "HeterochromeAdd": 1.629,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.156,
+          0.168,
+          0.182,
+          0.197,
+          0.212,
+          0.229,
+          0.248,
+          0.267,
+          0.289,
+          0.312,
+          0.337,
+          0.364,
+          0.393
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.156,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Melee5_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 3.311,
+        "UnbalValue": 0.667,
+        "HeterochromeAdd": 5.51,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_A",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.528,
+          0.57,
+          0.616,
+          0.665,
+          0.718,
+          0.776,
+          0.838,
+          0.905,
+          0.977,
+          1.055,
+          1.14,
+          1.231,
+          1.33
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.528,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_QTE_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 5.9,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Haniel_QTE",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_H",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          2.0,
+          2.16,
+          2.333,
+          2.519,
+          2.721,
+          2.939,
+          3.174,
+          3.428,
+          3.702,
+          3.998,
+          4.318,
+          4.663,
+          5.036
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 2.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Skill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 1.8,
+        "UnbalValue": 0.35,
+        "HeterochromeAdd": 3.0,
+        "GAName": "GA_Haniel_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.0,
+          1.08,
+          1.166,
+          1.26,
+          1.36,
+          1.469,
+          1.587,
+          1.714,
+          1.851,
+          1.999,
+          2.159,
+          2.332,
+          2.518
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Skill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Haniel_Skill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_E",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.2,
+          0.216,
+          0.233,
+          0.252,
+          0.272,
+          0.294,
+          0.317,
+          0.343,
+          0.37,
+          0.4,
+          0.432,
+          0.466,
+          0.504
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.2,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_UltraSkill_Extra_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Haniel_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.3,
+          0.324,
+          0.35,
+          0.378,
+          0.408,
+          0.441,
+          0.476,
+          0.514,
+          0.555,
+          0.6,
+          0.648,
+          0.699,
+          0.755
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.3,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Ultraskill1_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Haniel_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          3.0,
+          3.24,
+          3.499,
+          3.779,
+          4.081,
+          4.408,
+          4.761,
+          5.141,
+          5.553,
+          5.997,
+          6.477,
+          6.995,
+          7.555
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 3.0,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel_Ultraskill2_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 0.0,
+        "UnbalValue": 0.0,
+        "HeterochromeAdd": 0.0,
+        "GAName": "GA_Haniel_UltraSkill",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Q",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          0.3,
+          0.324,
+          0.35,
+          0.378,
+          0.408,
+          0.441,
+          0.476,
+          0.514,
+          0.555,
+          0.6,
+          0.648,
+          0.699,
+          0.755
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 0.3,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      },
+      "GE_Player_Haniel020_PerfectEvadeAttack_Damage": {
+        "DamageTypeEX": "EExecutionDamageTypeEX::DAMAGE_TYPE_PSYCHE",
+        "ChargeAdd": 2.6,
+        "UnbalValue": 2.5,
+        "HeterochromeAdd": 4.4,
+        "GAName": "GA_Haniel_Melee",
+        "DamageSourceCategory": "EExecutionDamageSourceCategory::DAMAGE_SOURCE_CATEGORY_Z",
+        "FixedCritRate": 0.0,
+        "AtkRateBaseArray": [
+          1.052,
+          1.136,
+          1.227,
+          1.325,
+          1.431,
+          1.546,
+          1.669,
+          1.803,
+          1.947,
+          2.103,
+          2.271,
+          2.453,
+          2.649
+        ],
+        "DefRateBaseArray": [],
+        "HPRateBaseArray": [],
+        "StroyBlanceGERate": 1.052,
+        "AttackBreakLevel": "EBreakableLevel::BL_Low",
+        "bOverrideBreakableDamage": false,
+        "BreakableDamage": 0.0,
+        "bOverrideBreakableImpulse": true,
+        "BreakableImpulse": 0.0,
+        "bOverrideVehicleBreakableImpulse": false,
+        "VehicleBreakableImpulse": 0.0
+      }
+    },
+    "gameplay_effect_mapping": {
+      "Buff_Haniel_Branch": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Branch.Buff_Haniel_Branch_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3259
+      },
+      "Buff_Haniel_Branch_Level1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Branch_Level1.Buff_Haniel_Branch_Level1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3388
+      },
+      "Buff_Haniel_Branch_Overlap": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Branch_Overlap.Buff_Haniel_Branch_Overlap_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3763
+      },
+      "Buff_haniel_LevelExtra": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/Levelex/Buff_haniel_LevelExtra.Buff_haniel_LevelExtra_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1819
+      },
+      "Buff_haniel_LevelExtra_CritDamageUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/Levelex/Buff_haniel_LevelExtra_CritDamageUp.Buff_haniel_LevelExtra_CritDamageUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3567
+      },
+      "Buff_Haniel_Metronome": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Metronome.Buff_Haniel_Metronome_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1826
+      },
+      "Buff_Haniel_Metronome_Start": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Metronome_Start.Buff_Haniel_Metronome_Start_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1825
+      },
+      "Buff_Haniel_Skill_Atkup": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Skill_Atkup.Buff_Haniel_Skill_Atkup_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1741
+      },
+      "Buff_Haniel_Skill_CycleRateRecover": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Skill_CycleRateRecover.Buff_Haniel_Skill_CycleRateRecover_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1740
+      },
+      "Buff_Haniel_Skill_PerfectEvade": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Skill_PerfectEvade.Buff_Haniel_Skill_PerfectEvade_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1739
+      },
+      "Buff_Haniel_Skill_UltraSkill": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_Skill_UltraSkill.Buff_Haniel_Skill_UltraSkill_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3262
+      },
+      "Buff_Haniel_UltraSkill": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_UltraSkill.Buff_Haniel_UltraSkill_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1824
+      },
+      "Buff_Haniel_UltraSkill_Atkup": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_UltraSkill_Atkup.Buff_Haniel_UltraSkill_Atkup_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3491
+      },
+      "Buff_Haniel_UltraSkill_DamageUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_UltraSkill_DamageUp.Buff_Haniel_UltraSkill_DamageUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1823
+      },
+      "Buff_Haniel_UltraSkill_Earphone": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_UltraSkill_Earphone.Buff_Haniel_UltraSkill_Earphone_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3294
+      },
+      "Buff_Haniel_UltraSkill_ExtraAtk": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_UltraSkill_ExtraAtk.Buff_Haniel_UltraSkill_ExtraAtk_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3494
+      },
+      "Buff_Haniel_UltraSkill_ExtraAtk_Child": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/Buff_Haniel_UltraSkill_ExtraAtk_Child.Buff_Haniel_UltraSkill_ExtraAtk_Child_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3495
+      },
+      "Buff_Haniel020_Level1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level1/Buff_Haniel020_Level1.Buff_Haniel020_Level1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1805
+      },
+      "Buff_Haniel020_Level1_damageup": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level1/Buff_Haniel020_Level1_damageup.Buff_Haniel020_Level1_damageup_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1804
+      },
+      "Buff_Haniel020_Level2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level2/Buff_Haniel020_Level2.Buff_Haniel020_Level2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1806
+      },
+      "Buff_Haniel020_Level3": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level3/Buff_Haniel020_Level3.Buff_Haniel020_Level3_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1807
+      },
+      "Buff_Haniel020_Level3_CritDamageUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level3/Buff_Haniel020_Level3_CritDamageUp.Buff_Haniel020_Level3_CritDamageUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1827
+      },
+      "Buff_Haniel020_Level4": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level4/Buff_Haniel020_Level4.Buff_Haniel020_Level4_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1808
+      },
+      "Buff_Haniel020_Level4_DamageUp": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level4/Buff_Haniel020_Level4_DamageUp.Buff_Haniel020_Level4_DamageUp_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3566
+      },
+      "Buff_Haniel020_Level5": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level5/Buff_Haniel020_Level5.Buff_Haniel020_Level5_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1809
+      },
+      "Buff_Haniel020_Level5_DamageUpPsycheBase": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level5/Buff_Haniel020_Level5_DamageUpPsycheBase.Buff_Haniel020_Level5_DamageUpPsycheBase_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3685
+      },
+      "Buff_Haniel020_Level6": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level6/Buff_Haniel020_Level6.Buff_Haniel020_Level6_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1810
+      },
+      "Buff_Haniel020_Level6_DamageResist": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Upgrade/level6/Buff_Haniel020_Level6_DamageResist.Buff_Haniel020_Level6_DamageResist_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1828
+      },
+      "Buff_Haniel020_Passive1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/PassiveEffect/Buff_Haniel020_Passive1.Buff_Haniel020_Passive1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1745
+      },
+      "Buff_Haniel020_Passive2": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/PassiveEffect/Buff_Haniel020_Passive2.Buff_Haniel020_Passive2_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3638
+      },
+      "GE_Haniel_EvadeBeat_CD": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Buff/GE_Haniel_EvadeBeat_CD.GE_Haniel_EvadeBeat_CD_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 1822
+      },
+      "GE_Player_Haniel_Airattack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Airattack_Damage.GE_Player_Haniel_Airattack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3251
+      },
+      "GE_Player_Haniel_Branch_Damage1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Branch_Damage1.GE_Player_Haniel_Branch_Damage1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3313
+      },
+      "GE_Player_Haniel_Melee1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Melee1_Damage.GE_Player_Haniel_Melee1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3041
+      },
+      "GE_Player_Haniel_Melee1_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Effect/GE_Player_Haniel_Melee1_HitBack.GE_Player_Haniel_Melee1_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3042
+      },
+      "GE_Player_Haniel_Melee2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Melee2_Damage.GE_Player_Haniel_Melee2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3040
+      },
+      "GE_Player_Haniel_Melee3_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Melee3_Damage.GE_Player_Haniel_Melee3_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3039
+      },
+      "GE_Player_Haniel_Melee4_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Melee4_Damage.GE_Player_Haniel_Melee4_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3038
+      },
+      "GE_Player_Haniel_Melee5_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Melee5_Damage.GE_Player_Haniel_Melee5_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3037
+      },
+      "GE_Player_Haniel_QTE_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_QTE_Damage.GE_Player_Haniel_QTE_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3044
+      },
+      "GE_Player_Haniel_QTE_HitBack": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Effect/GE_Player_Haniel_QTE_HitBack.GE_Player_Haniel_QTE_HitBack_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3047
+      },
+      "GE_Player_Haniel_Skill_HitBack1": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Effect/GE_Player_Haniel_Skill_HitBack1.GE_Player_Haniel_Skill_HitBack1_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3252
+      },
+      "GE_Player_Haniel_Skill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Skill1_Damage.GE_Player_Haniel_Skill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3261
+      },
+      "GE_Player_Haniel_Skill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Skill2_Damage.GE_Player_Haniel_Skill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3036
+      },
+      "GE_Player_Haniel_UltraSkill_Extra_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_UltraSkill_Extra_Damage.GE_Player_Haniel_UltraSkill_Extra_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3496
+      },
+      "GE_Player_Haniel_Ultraskill1_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Ultraskill1_Damage.GE_Player_Haniel_Ultraskill1_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3260
+      },
+      "GE_Player_Haniel_Ultraskill2_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel_Ultraskill2_Damage.GE_Player_Haniel_Ultraskill2_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3035
+      },
+      "GE_Player_Haniel020_PerfectEvadeAttack_Damage": {
+        "GameplayEffectClass": {
+          "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_020_haniel/Damage/GE_Player_Haniel020_PerfectEvadeAttack_Damage.GE_Player_Haniel020_PerfectEvadeAttack_Damage_C",
+          "SubPathString": ""
+        },
+        "UniqueIndex": 3210
+      }
+    }
+  },
+  "references": {
+    "unresolved_ability_tips": {}
+  }
+}

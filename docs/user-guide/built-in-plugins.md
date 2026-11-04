@@ -168,6 +168,35 @@
 插件只统计当前玩家操控角色造成的伤害。窗口宽度可拖拽，高度自动贴合内容；战斗统计数据
 来自只读 `anomaly.nte.combat` 服务，不修改角色属性或游戏状态。
 
+## NTE Combat Tracker
+
+| | |
+| --- | --- |
+| **ID** | `local.nte.combat-stats` |
+| **作用** | 只读实时战斗统计：三种 DPS、承伤与治疗、按账号隔离的 JSONL 战斗日志，以及单场战斗 JSON 导出。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.json`、`anomaly.nte.combat`；`anomaly.core`、`anomaly.runtime-info`、`anomaly.nte.build`、`anomaly.nte.skills`、`anomaly.websocket`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.ue5.world`（均为 V1，可选） |
+| **需要 Profile** | 是（战斗事件流来自已验证的 NTE Combat 服务） |
+
+与伤害仪表盘不同，这个插件的**数值显示在独立的 Overlay 进程里**，不占用游戏内菜单：插件
+只负责采集，通过宿主的 `anomaly.websocket` 把快照发给随包分发的 `NteCombatTracker.exe`。
+Overlay 用 Direct2D 自绘，提供输出 / 承伤 / 治疗 / 受疗四个页签、角色 → 来源 → 逐次命中
+三级下钻、可排序表头、按账号分组的历史浏览、`Ctrl+Shift+F12` 锁定穿透和托盘菜单。
+
+统计口径：
+
+- 遭遇 DPS = 本场伤害 ÷ 最后活动到开场的时长（空闲时间计入）；
+- 角色活跃 DPS = 该角色伤害 ÷ 首次命中到末次命中；
+- 滚动 10 秒 DPS 在开场阶段分母小于 10 秒，满 10 秒后才是真正的移动平均。
+
+战斗日志写入 `%LOCALAPPDATA%\NTECombatStats\logs\v2\accounts\<uid>\`，每个 Report 目录
+只对应一场 Encounter，带 `report.json` / `events-*.jsonl` / `index.json`（SHA-256 完整性
+清单）。`PARTIAL`、`OVERFLOW`、`CURSOR_GAP` 与写入队列丢失都会把该场标记为不完整。
+
+已知限制：Runtime 目前不提供治疗事件，`healing_capture_status` 固定为 `unavailable`，
+治疗与受疗页签恒为 0——这**不代表**实际没有治疗；时间戳是客户端接收时间，不是服务器
+判定时间；账号 UID 通过只读抓取 `TextBlock_RoleID` 控件得到，游戏更新可能使其退化为
+`_unknown`。插件严格只读，不申请内存写入、技能调用或外部网络能力。
+
 ## Quick Ultimate
 
 | | |

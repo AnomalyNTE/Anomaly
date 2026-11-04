@@ -1,0 +1,515 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "DT_SkillLimitPropData",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Skill/DT_SkillLimitPropData",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'LimitPropertyData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1": {
+        "LimitTag": {
+          "TagName": "State.Property.ImmuneDamage"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantBeDamage"
+      },
+      "2": {
+        "LimitTag": {
+          "TagName": "State.Property.ImmuneAniState"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantPassiveEffect"
+      },
+      "3": {
+        "LimitTag": {
+          "TagName": "State.Property.IgnoreCantBeDamage"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::IgnoreCantBeDamage"
+      },
+      "4": {
+        "LimitTag": {
+          "TagName": "State.Property.CantMove"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantMove"
+      },
+      "5": {
+        "LimitTag": {
+          "TagName": "State.Property.CantJump"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantJump"
+      },
+      "NewRow_15": {
+        "LimitTag": {
+          "TagName": "State.Property.CantJump.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIJump"
+      },
+      "NewRow_16": {
+        "LimitTag": {
+          "TagName": "State.Property.CantJump.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUIJump"
+      },
+      "6": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseMelee"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseMelee"
+      },
+      "NewRow_7": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseMelee.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIMelee"
+      },
+      "NewRow_6": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseMelee.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUIMelee"
+      },
+      "NewRow_5": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseMelee.ForbidSpecialUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidMeleeSpecialUI"
+      },
+      "7": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseSkill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseSkill"
+      },
+      "NewRow": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseSkill.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUISkill"
+      },
+      "NewRow_0": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseSkill.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUISkill"
+      },
+      "NewRow_3": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseSkill.ForbidSpecialUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidSkillSpecialUI"
+      },
+      "8": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseEvade"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseEvadeSkill"
+      },
+      "NewRow_17": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseEvade.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIEvadeSkill"
+      },
+      "NewRow_18": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseEvade.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUIEvadeSkill"
+      },
+      "9": {
+        "LimitTag": {
+          "TagName": "State.Property.CantInput"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantInput"
+      },
+      "10": {
+        "LimitTag": {
+          "TagName": "State.Property.CantVines"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantVines"
+      },
+      "11": {
+        "LimitTag": {
+          "TagName": "State.Property.CantSurmount"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantSurmount"
+      },
+      "12": {
+        "LimitTag": {
+          "TagName": "State.Property.CantBeSelect"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantBeSelected"
+      },
+      "13": {
+        "LimitTag": {
+          "TagName": "State.Property.CantSecondJump"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantSecondJump"
+      },
+      "14": {
+        "LimitTag": {
+          "TagName": "State.Property.IgnoreDownDamage"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantCalcFallDamage"
+      },
+      "15": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseUltSkill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseUltSkill"
+      },
+      "NewRow_2": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseUltSkill.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIUltraSkill"
+      },
+      "NewRow_1": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseUltSkill.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUIUltraSkill"
+      },
+      "NewRow_4": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseUltSkill.ForbidSpecialUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUltraSkillSpecialUI"
+      },
+      "16": {
+        "LimitTag": {
+          "TagName": "State.Property.CantCalcFallDamage"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantCalcFallDamage"
+      },
+      "17": {
+        "LimitTag": {
+          "TagName": "State.Property.CantRun"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantRun"
+      },
+      "18": {
+        "LimitTag": {
+          "TagName": "State.Property.IgnoreSuperArmor"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::IgnoreSuperArmor"
+      },
+      "19": {
+        "LimitTag": {
+          "TagName": "State.Property.CantGliding"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantGliding"
+      },
+      "20": {
+        "LimitTag": {
+          "TagName": "State.Property.CantChangePlayer"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantChangePlayer"
+      },
+      "21": {
+        "LimitTag": {
+          "TagName": "State.Property.CantDynamicGravity"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantDynamicGravity"
+      },
+      "22": {
+        "LimitTag": {
+          "TagName": "State.Property.HideInteractUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::DisableInteract"
+      },
+      "32": {
+        "LimitTag": {
+          "TagName": "State.Property.CantSneak"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantSneak"
+      },
+      "33": {
+        "LimitTag": {
+          "TagName": "State.Property.CantTransformFly"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantTransformFly"
+      },
+      "34": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseAim"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseAnim"
+      },
+      "35": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseAim.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIAnim"
+      },
+      "36": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseAim.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUIAnim"
+      },
+      "37": {
+        "LimitTag": {
+          "TagName": "State.Property.IgnoreUseAbilityDetectionConditions"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::IgnoreUseAbilityDetectionConditions"
+      },
+      "38": {
+        "LimitTag": {
+          "TagName": "State.Property.CantLookInput"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantLookInput"
+      },
+      "39": {
+        "LimitTag": {
+          "TagName": "State.Property.CantDrive"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantDrive"
+      },
+      "NewRow_8": {
+        "LimitTag": {
+          "TagName": "State.Property.IgnoreTimeDilationEffect"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::IgnoreTimeDilationEffect"
+      },
+      "NewRow_9": {
+        "LimitTag": {
+          "TagName": "State.Property.ShowLockBloodText"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::ShowLockBloodText"
+      },
+      "NewRow_10": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseForkSkill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseForkSkill"
+      },
+      "NewRow_11": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseForkSkill.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIForkSkill"
+      },
+      "NewRow_12": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseForkSkill.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUIForkSkill"
+      },
+      "NewRow_13": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseForkSkill.ForbidSpecialUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidForkSkillSpecialUI"
+      },
+      "NewRow_19": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseAbyssCardSkill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseAbyssCardSkill"
+      },
+      "NewRow_20": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseUltSubSkill.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIUltSubSkill"
+      },
+      "NewRow_21": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseUltSubSkill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseUltSubSkill"
+      },
+      "NewRow_22": {
+        "LimitTag": {
+          "TagName": "State.Property.CantMoveToTarget"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantMoveToTarget"
+      },
+      "CantSprint": {
+        "LimitTag": {
+          "TagName": "State.Property.CantSprint"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantSprint"
+      },
+      "NewRow_23": {
+        "LimitTag": {
+          "TagName": "State.Property.JinEffectOff"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantJinEffect"
+      },
+      "NewRow_24": {
+        "LimitTag": {
+          "TagName": "State.Property.CantSummonVehicle"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantSummonVehicle"
+      },
+      "NewRow_25": {
+        "LimitTag": {
+          "TagName": "State.Property.VisibleInSceneCapture"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::VisibleInSceneCaptureOnly"
+      },
+      "NewRow_26": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseSwitchSkill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseGSkill"
+      },
+      "NewRow_27": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseSwitchSkill.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIGSkill"
+      },
+      "NewRow_28": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseSwitchSkill.ForbidUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantForbidUIGSkill"
+      },
+      "NewRow_29": {
+        "LimitTag": {
+          "TagName": "State.Property.CantLeisureState"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantLeisureState"
+      },
+      "NewRow_30": {
+        "LimitTag": {
+          "TagName": "State.Property.CantCrime"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantCrime"
+      },
+      "NewRow_31": {
+        "LimitTag": {
+          "TagName": "State.Property.CantFirstPerson"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantEnterFirstPerson"
+      },
+      "NewRow_32": {
+        "LimitTag": {
+          "TagName": "State.Property.IgnoreForcePassiveEffect"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::IgnoreForcePassiveEffect"
+      },
+      "NewRow_33": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseDrone"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseDrone"
+      },
+      "NewRow_14": {
+        "LimitTag": {
+          "TagName": "State.Property.CantReduceHP"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantReduceHP"
+      },
+      "NewRow_34": {
+        "LimitTag": {
+          "TagName": "State.Property.CantSummonCompanionNPC"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantSummonCompanionNPC"
+      },
+      "NewRow_35": {
+        "LimitTag": {
+          "TagName": "State.Property.CantAddCrime"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantAddCrime"
+      },
+      "NewRow_36": {
+        "LimitTag": {
+          "TagName": "State.Property.OpenHalfHit"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::OpenHalfHit"
+      },
+      "CantEnterSelfie": {
+        "LimitTag": {
+          "TagName": "State.Property.CantEnterSelfie"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantEnterSelfie"
+      },
+      "CantBeAggro": {
+        "LimitTag": {
+          "TagName": "State.Property.CantBeAggro"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantBeAggro"
+      },
+      "IgnoreCantBeAggro": {
+        "LimitTag": {
+          "TagName": "State.Property.IgnoreCantBeAggro"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::IgnoreCantBeAggro"
+      },
+      "NewRow_37": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseExtraUltSkill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseExtraUltSkill"
+      },
+      "NewRow_38": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseGSKill"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantUseGSkill"
+      },
+      "NewRow_39": {
+        "LimitTag": {
+          "TagName": "State.Property.CantUseGSKill.HiddenUI"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantHideUIGSkill"
+      },
+      "CantChangeIntoCharacter": {
+        "LimitTag": {
+          "TagName": "State.Property.CantChangeIntoCharacter"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantChangeIntoCharacter"
+      },
+      "ExcludeIgnoreCamera": {
+        "LimitTag": {
+          "TagName": "State.Property.ExcludeIgnoreCamera"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::ExcludeIgnoreCamera"
+      },
+      "SkipHeterochromeConsume": {
+        "LimitTag": {
+          "TagName": "State.Property.SkipHeterochromeConsume"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::SkipHeterochromeConsume"
+      },
+      "SkipHeterochromeReaction": {
+        "LimitTag": {
+          "TagName": "State.Property.SkipHeterochromeReaction"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::SkipHeterochromeReaction"
+      },
+      "NewRow_40": {
+        "LimitTag": {
+          "TagName": "State.Property.ReactionOnMainCharacter"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::ReactionOnMainCharacter"
+      },
+      "NewRow_41": {
+        "LimitTag": {
+          "TagName": "State.Property.NotIgnoreUseAbilityDetectionConditions"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::NotIgnoreUseAbilityDetectionConditions"
+      },
+      "NewRow_42": {
+        "LimitTag": {
+          "TagName": "State.Property.CantBeDiscoveredWhileStealing"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantBeDiscoveredWhileStealing"
+      },
+      "NewRow_43": {
+        "LimitTag": {
+          "TagName": "State.Property.CantLongPressFly"
+        },
+        "LimitPropertyType": "ECharacterLimitProptiesType::CantLongPressFly"
+      }
+    }
+  }
+]

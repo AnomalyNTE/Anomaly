@@ -1,0 +1,274 @@
+[
+  {
+    "Type": "DataTable",
+    "Name": "1021AwakenEffect",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'DataTable'",
+    "Package": "/Game/DataTable/Character/Awaken/1021AwakenEffect",
+    "Properties": {
+      "RowStruct": {
+        "ObjectName": "Class'CharacterAwakenEffectData'",
+        "ObjectPath": "/Script/HTGame"
+      }
+    },
+    "Rows": {
+      "1021": {
+        "AwakenEffectStructList": [
+          {
+            "EffectID": "Effect1",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star1_name",
+              "SourceString": "热爱异象的观察员",
+              "LocalizedString": "热爱异象的观察员"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1021_1.1021_1",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_021_Edgar/Upgrade/Buff_Edgar021_Level1.Buff_Edgar021_Level1_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star1_des",
+              "SourceString": "任意队友释放「援护技」时，埃德嘉获得一把<hot textstyle=\"TextEXPL\" param=\"nouns&EdgarKey\">「真理之匙」</>。",
+              "LocalizedString": "任意队友释放「援护技」时，埃德嘉获得一把<hot textstyle=\"TextEXPL\" param=\"nouns&EdgarKey\">「真理之匙」</>。"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect2",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star2_name",
+              "SourceString": "尚在实习的异象猎人",
+              "LocalizedString": "尚在实习的异象猎人"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1021_2.1021_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_021_Edgar/Upgrade/Buff_Edgar021_Level2.Buff_Edgar021_Level2_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star2_des",
+              "SourceString": "持续使用「变轨技能：狂流」导致的冷却延长最多<NumGreen>3</>秒",
+              "LocalizedString": "持续使用「变轨技能：狂流」导致的冷却延长最多<NumGreen>3</>秒"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star3_name",
+              "SourceString": "伊波恩侦探之一",
+              "LocalizedString": "伊波恩侦探之一"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1021_3.1021_3",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_021_Edgar/Upgrade/Buff_Edgar021_Level3.Buff_Edgar021_Level3_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star3_des",
+              "SourceString": "「变轨技能：狂流」对当前生命低于<NumGreen>30%</>的队友治疗效果提高<NumGreen>15%</>",
+              "LocalizedString": "「变轨技能：狂流」对当前生命低于<NumGreen>30%</>的队友治疗效果提高<NumGreen>15%</>"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect4",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star4_name",
+              "SourceString": "熟练的计划制定家",
+              "LocalizedString": "熟练的计划制定家"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1021_4.1021_4",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_021_Edgar/Upgrade/Buff_Edgar021_Level4.Buff_Edgar021_Level4_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star4_des",
+              "SourceString": "「变轨技能：狂流」伤害提高<NumGreen>50%</>",
+              "LocalizedString": "「变轨技能：狂流」伤害提高<NumGreen>50%</>"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect5",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star5_name",
+              "SourceString": "古董店灯火的守望者",
+              "LocalizedString": "古董店灯火的守望者"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1021_5.1021_5",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_021_Edgar/Upgrade/Buff_Edgar021_Level5.Buff_Edgar021_Level5_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star5_des",
+              "SourceString": "埃德嘉生命上限提高<NumGreen>20%</>",
+              "LocalizedString": "埃德嘉生命上限提高<NumGreen>20%</>"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "Effect6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star6_name",
+              "SourceString": "好奇星球的来客",
+              "LocalizedString": "好奇星球的来客"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1021_6.1021_6",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_021_Edgar/Upgrade/Buff_Edgar021_Level6.Buff_Edgar021_Level6_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Effect",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_star6_des",
+              "SourceString": "「极轨终结：芬尼根守灵夜」范围内全体队友防御提高<NumGreen>15%</>",
+              "LocalizedString": "「极轨终结：芬尼根守灵夜」范围内全体队友防御提高<NumGreen>15%</>"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_3",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_starExtra1_name",
+              "SourceString": "热忱求知",
+              "LocalizedString": "热忱求知"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "SkillName": "GA_Edgar_QTE",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Edgar_Skill",
+                "SkillLevel": 1
+              },
+              {
+                "SkillName": "GA_Edgar_UltraSkill",
+                "SkillLevel": 1
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_starExtra1_des",
+              "SourceString": "「变轨技能：狂流」「极轨终结：芬尼根守灵夜」「援护技：知识的重量」的技能等级提升<NumGreen>1</>级",
+              "LocalizedString": "「变轨技能：狂流」「极轨终结：芬尼根守灵夜」「援护技：知识的重量」的技能等级提升<NumGreen>1</>级"
+            },
+            "GEIdArray": []
+          },
+          {
+            "EffectID": "resonance_6",
+            "AwakenUnlockQuest": "None",
+            "Title": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_starExtra2_name",
+              "SourceString": "敏锐洞察",
+              "LocalizedString": "敏锐洞察"
+            },
+            "AwakenIcon": {
+              "AssetPathName": "/Game/UI/UI/player/YH_UI_juexingICON/1009_2.1009_2",
+              "SubPathString": ""
+            },
+            "ModifyDataList": [
+              {
+                "Buff": {
+                  "AssetPathName": "/Game/Blueprints/Abilities/Player/Ability_021_Edgar/Upgrade/Buff_Edgar021_Level6_extra.Buff_Edgar021_Level6_extra_C",
+                  "SubPathString": ""
+                },
+                "bReliveNeedAddAgain": false
+              }
+            ],
+            "AwakenType": "EAwakenEffect::Awaken_Resonance",
+            "Desc": {
+              "TableId": "/Game/Text/PlayerSkillDes/Edgar_SkillDes.Edgar_SkillDes",
+              "Key": "GA_Edgar_starExtra2_des",
+              "SourceString": "队友的安危牵动着埃德嘉的思绪。任意队友损失<NumGreen>3%</>最大生命值可转换为<NumGreen>1</>点「极轨终结：芬尼根守灵夜」的充能值，最多可转换<NumGreen>20</>点，释放「极轨终结：芬尼根守灵夜」后重置。",
+              "LocalizedString": "队友的安危牵动着埃德嘉的思绪。任意队友损失<NumGreen>3%</>最大生命值可转换为<NumGreen>1</>点「极轨终结：芬尼根守灵夜」的充能值，最多可转换<NumGreen>20</>点，释放「极轨终结：芬尼根守灵夜」后重置。"
+            },
+            "GEIdArray": []
+          }
+        ]
+      }
+    }
+  }
+]
