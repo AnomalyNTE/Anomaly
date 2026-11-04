@@ -2590,7 +2590,9 @@ nlohmann::json BlenderExecute(Context &context, const std::string &path,
   context.blender_frame.valid = true;
   ApplyBlenderMorphs(context, context.blender_frame.faces);
   context.blender_sequence = sequence;
-  return {{"ok", true}, {"sequence", context.blender_sequence}};
+  return {{"ok", true}, {"sequence", context.blender_sequence},
+          {"camera_loaded",
+           context.camera_loaded.load(std::memory_order_acquire)}};
 }
 
 bool BlenderSend(SOCKET socket, const std::string &text) noexcept {
