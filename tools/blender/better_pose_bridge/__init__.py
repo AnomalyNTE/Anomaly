@@ -693,7 +693,12 @@ def _subject_world_focus(armature, depsgraph):
     high = Vector((max(point.x for point in points),
                    max(point.y for point in points),
                    max(point.z for point in points)))
-    return (low + high) * 0.5
+    # A camera framing a standing character aims at the upper chest, not the
+    # geometric center of the bone bounds. The latter sits around the waist and
+    # tilts the generated shot noticeably downward versus an authored MMD camera.
+    return Vector(((low.x + high.x) * 0.5,
+                   (low.y + high.y) * 0.5,
+                   low.z + (high.z - low.z) * 0.8))
 
 
 def _camera_key(scene, camera):
