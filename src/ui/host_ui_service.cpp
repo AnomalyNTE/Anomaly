@@ -1376,6 +1376,49 @@ void ANOMALY_CALL OverlayText(void*, float x, float y, AnomalyStringViewV1 value
         value.data, value.data + value.size);
 }
 
+int ANOMALY_CALL DrawScreenPrimitives(
+    void*, const AnomalyUiScreenPrimitiveV1* primitives, const std::size_t count) {
+    constexpr std::size_t kMaximumPrimitives = 1U << 20U;
+    if (primitives == nullptr || count == 0 || count > kMaximumPrimitives)
+        return 0;
+    ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+    for (std::size_t index{}; index != count; ++index) {
+        const auto& primitive = primitives[index];
+        if (primitive.struct_size < sizeof(primitive) ||
+            !std::isfinite(primitive.x) || !std::isfinite(primitive.y) ||
+            !std::isfinite(primitive.width) || !std::isfinite(primitive.height) ||
+            !std::isfinite(primitive.thickness))
+            return 0;
+        const ImVec2 first(primitive.x, primitive.y);
+        if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE) {
+            draw_list->AddLine(
+                first, ImVec2(primitive.width, primitive.height),
+                primitive.color_rgba,
+                primitive.thickness > 0.0F ? primitive.thickness : 1.0F);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT) {
+            draw_list->AddRectFilled(
+                first, ImVec2(first.x + primitive.width, first.y + primitive.height),
+                primitive.color_rgba);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_RECT) {
+            draw_list->AddRect(
+                first, ImVec2(first.x + primitive.width, first.y + primitive.height),
+                primitive.color_rgba, 0.0F, 0,
+                primitive.thickness > 0.0F ? primitive.thickness : 1.0F);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_CIRCLE) {
+            if (!(primitive.width > 0.0F)) return 0;
+            draw_list->AddCircleFilled(first, primitive.width, primitive.color_rgba);
+        } else if (primitive.kind == ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_CIRCLE) {
+            if (!(primitive.width > 0.0F)) return 0;
+            draw_list->AddCircle(
+                first, primitive.width, primitive.color_rgba, 0,
+                primitive.thickness > 0.0F ? primitive.thickness : 1.0F);
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 const AnomalyUiServiceV1 kUiService{
     sizeof(AnomalyUiServiceV1), ANOMALY_UI_SERVICE_V1_VERSION, nullptr,
     SetNextWindowSize, BeginWindow, EndWindow, Text, Button, DrawEntityBbox,
@@ -1388,7 +1431,8 @@ const AnomalyUiServiceV1 kUiService{
     BeginTabBar, BeginTabItem, EndTabItem, EndTabBar,
     TextWrapped, BeginChildAutoFitY, SliderFloatEnabled, SetNextItemWidth,
     OverlayViewportSize, OverlayGlass, OverlayRectFilled, OverlayLine, OverlayCircle,
-    OverlayRingSector, OverlayMeasureText, OverlayText, OverlayGlassRingSector};
+    OverlayRingSector, OverlayMeasureText, OverlayText, OverlayGlassRingSector,
+    DrawScreenPrimitives};
 
 }  // namespace
 

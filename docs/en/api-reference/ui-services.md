@@ -6,7 +6,9 @@ Headers: `services/ui.h` (`anomaly.ui`) and `services/ui_resources.h` (`window` 
 
 - **ID**: `"anomaly.ui"` · **Version** 1 · **capability** `ui`
 
-`anomaly.ui` publishes only `AnomalyUiServiceV1`. Except for `developer_mode_enabled`, the UI calls in the table are valid only inside the current `on_draw` callback; `developer_mode_enabled` can also be called from `on_update`.
+`anomaly.ui` publishes only `AnomalyUiServiceV1`. Window and widget calls are valid only inside the
+current `on_draw` callback; `draw_screen_primitives` is also valid in `on_overlay`.
+`developer_mode_enabled` can also be called from `on_update`.
 
 ### Common types
 
@@ -27,7 +29,24 @@ typedef struct AnomalyEspBoxStyleV1 {
     float thickness; float outline_thickness;
 } AnomalyEspBoxStyleV1;
 // AnomalyEspBoxFlagsV1: ANOMALY_ESP_BOX_V1_NONE = 0, ANOMALY_ESP_BOX_V1_OUTLINE = 1<<0
+
+typedef enum AnomalyUiScreenPrimitiveKindV1 {
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE = 1,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT = 2,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_RECT = 3,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_CIRCLE = 4,
+    ANOMALY_UI_SCREEN_PRIMITIVE_V1_OUTLINE_CIRCLE = 5
+} AnomalyUiScreenPrimitiveKindV1;
+
+typedef struct AnomalyUiScreenPrimitiveV1 {
+    uint32_t struct_size; uint32_t kind; uint32_t color_rgba;
+    float x, y, width, height, thickness;
+} AnomalyUiScreenPrimitiveV1;
 ```
+
+For `LINE`, `x/y` and `width/height` are its two endpoints. A rectangle uses `x/y` as its top-left
+corner and `width/height` as its size. A circle uses `x/y` as its centre and `width` as its radius.
+`thickness` applies to lines and outlined shapes.
 
 ### Service table
 
@@ -78,6 +97,7 @@ typedef struct AnomalyUiServiceV1 {
     int  (ANOMALY_CALL *begin_child_auto_fit_y)(void* user, AnomalyStringViewV1 id, float width, float max_height);
     int  (ANOMALY_CALL *slider_float_enabled)(void* user, AnomalyStringViewV1 label, float* value, float minimum, float maximum, int enabled);
     void (ANOMALY_CALL *set_next_item_width)(void* user, float width);
+    int  (ANOMALY_CALL *draw_screen_primitives)(void* user, const AnomalyUiScreenPrimitiveV1* primitives, size_t count);
 } AnomalyUiServiceV1;
 ```
 
@@ -94,6 +114,7 @@ typedef struct AnomalyUiServiceV1 {
 | `draw_entity_bbox` | Projects an axis-aligned world box using the Unreal rotator convention and draws it in the foreground; returns 1 only when it is visible |
 | `draw_entity_box3d` | Projects and draws all 12 edges of a world box |
 | `draw_entity_label` | Projects the box and draws a centered label above its 2D bounds |
+| `draw_screen_primitives` | Submits screen-space lines, rectangles, or circles below plugin windows; valid inside `on_draw` or `on_overlay` |
 
 > [!NOTE]
 > `draw_entity_*` (ESP drawing) requires the `entity-esp` capability. They are kept only for ABI v1 compatibility; new plugins should use the Game-thread draw callbacks of [`anomaly.ue5.ahud`](ue5-services.md#anomalyue5ahud). `Entity ESP` already follows that path. The `ui` that `AnomalyPluginDescriptorV1::on_draw` receives is an `AnomalyUiServiceV1*`.
@@ -135,6 +156,17 @@ typedef enum AnomalyUiTabItemFlagsV1 {
 `begin_table` accepts only `AnomalyUiTableFlagsV1` in `flags`. Use `ANOMALY_UI_TABLE_V1_SIZING_FIXED_FIT` to fit column widths to their content instead of stretching the columns of one row to the available width. `same_line(0, spacing)` gives a fixed small gap between adjacent widgets; `set_cursor_pos_x` takes a window-local X coordinate. Check the trailing fields of the service table with `struct_size` before calling them, so the plugin stays compatible with V1 hosts that do not yet provide these optional widgets.
 
 `set_next_item_width(width)` affects only the next input or slider. A negative width reserves space from the current content region right edge; for example, `-52` leaves 52 pixels for the label while the input fills the rest. Native step buttons keep their normal size. Check `struct_size` and the callback before use. `begin_child` accepts `ANOMALY_UI_CHILD_V1_AUTO_RESIZE_Y` (`1u << 5u`) to size its height to actual content rather than filling the remaining height.
+
+`draw_screen_primitives` is an append-only batch drawing entry point. Build the complete array in
+plugin-owned storage and submit it once; the host copies the drawing data during the call and does not
+retain the array pointer. The primitives render below plugin windows, so menus occlude world markers as
+they do on the AHUD path. Batched drawing avoids one AHUD `ProcessEvent` per primitive and is better
+suited to skeletons, trails, and large debug overlays. Keep the existing drawing path as a fallback
+when either the host or plugin does not advertise this field.
+
+An overlay that must remain visible after its plugin window closes should submit from
+`AnomalyPluginDescriptorV1::on_overlay`, not `on_draw`. `on_overlay` is independent of catalog-window
+visibility and is intended for persistent skeletons, trails, and debug markers.
 
 ---
 

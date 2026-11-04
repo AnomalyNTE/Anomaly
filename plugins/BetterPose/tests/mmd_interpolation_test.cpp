@@ -162,6 +162,18 @@ int main() {
                   Near(end.distance, 10.0) && Near(end.view_angle, 70.0),
               "camera endpoint is exact");
 
+  auto adjacent_keys = document.camera;
+  adjacent_keys[1].frame = adjacent_keys[0].frame + 1;
+  const auto hard_cut = mb::SampleCameraTrack(adjacent_keys, 0.5, true);
+  const auto continuous = mb::SampleCameraTrack(adjacent_keys, 0.5, false);
+  ok &= Check(hard_cut.valid && Near(hard_cut.position[0], 0.0) &&
+                  Near(hard_cut.rotation[0], 0.0) &&
+                  Near(hard_cut.distance, 0.0),
+              "adjacent camera keys hold the previous shot");
+  ok &= Check(continuous.valid && continuous.position[0] > 0.0 &&
+                  continuous.position[0] < 10.0,
+              "continuous camera mode interpolates adjacent keys");
+
   if (!ok)
     return 1;
   std::cout << "PASS MMD bone/camera Bezier parsing and sampling\n";

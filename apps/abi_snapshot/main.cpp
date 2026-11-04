@@ -931,7 +931,8 @@ std::string BuildSnapshot() {
          {"on_stop", offsetof(AnomalyPluginDescriptorV1, on_stop)},
          {"on_unload", offsetof(AnomalyPluginDescriptorV1, on_unload)},
          {"on_update", offsetof(AnomalyPluginDescriptorV1, on_update)},
-         {"on_draw", offsetof(AnomalyPluginDescriptorV1, on_draw)}},
+         {"on_draw", offsetof(AnomalyPluginDescriptorV1, on_draw)},
+         {"on_overlay", offsetof(AnomalyPluginDescriptorV1, on_overlay)}},
         false);
     AppendStruct(
         output,
@@ -1393,7 +1394,8 @@ std::string BuildSnapshot() {
          {"overlay_ring_sector", offsetof(AnomalyUiServiceV1, overlay_ring_sector)},
          {"overlay_measure_text", offsetof(AnomalyUiServiceV1, overlay_measure_text)},
          {"overlay_text", offsetof(AnomalyUiServiceV1, overlay_text)},
-         {"overlay_glass_ring_sector", offsetof(AnomalyUiServiceV1, overlay_glass_ring_sector)}},
+         {"overlay_glass_ring_sector", offsetof(AnomalyUiServiceV1, overlay_glass_ring_sector)},
+         {"draw_screen_primitives", offsetof(AnomalyUiServiceV1, draw_screen_primitives)}},
         false);
     AppendStruct(
         output,

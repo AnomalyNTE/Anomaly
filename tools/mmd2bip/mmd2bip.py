@@ -322,14 +322,11 @@ def build_mapping(mm_names, skel=None, pmx_positions=None, manual_mappings=None,
     finger joint silently failed to map and the hands stayed in their captured
     pose even though the motion does carry finger tracks.
 
-    When the skeleton is available the finger chains are aligned by cumulative
-    length instead of by index. This rig has FOUR bones per finger
+    When the skeleton is available, the common no-0 three-joint chain is
+    right-aligned to the final three target joints. This rig has FOUR bones per finger
     (Finger1, Finger11, Finger12, Finger13) while MMD has THREE (人指１/２/３), so
-    mapping by index left the actual fingertip bone (Finger13) undriven and bent
-    the finger from one joint too early -- the whole hand looked wrong no matter
-    what the rest pose was. The leading target bone that MMD has no counterpart
-    for is emitted as a static track, which holds the rest local rotation and so
-    follows the hand rigidly.
+    the leading metacarpal stays at rest and 1/2/3 drive Finger11/12/13.
+    Other source/target cardinalities may still use cumulative-length alignment.
     """
     reference_name = {canonical_bone_name(name): name for name in mm_names}
     table_names = set(reference_name)
@@ -380,13 +377,30 @@ def build_mapping(mm_names, skel=None, pmx_positions=None, manual_mappings=None,
                 and all(has(s) for s in inverse + prefix)):
             sources = [s for s in sources if has(s)] or ["下半身"]
             dir_src = "下半身"
-        if target == "Bip001-Spine1" and not has(dir_src) \
-                and has("上半身3") and has("上半身2"):
+        # Unity Miku and Tda Append expose two upper-body joints aligned almost
+        # vertically, while `腰` often has a diagonal deformation tail pointing at
+        # `下半身`. Correcting the target pelvis against that tail turns a normal hip
+        # rotation into a visible torso twist. Keep the mapped rotation unchanged and
+        # use the more stable two-section upper-body rest direction.
+        if target == "Bip001-Pelvis" and has("上半身") and has("上半身2") \
+                and not has("上半身3"):
+            dir_src = "上半身"
+        # StandardRig uses 上半身/上半身2/上半身3. Unity Miku has only
+        # 上半身/上半身2, whose chest joint is still near the middle of the torso.
+        # Mapping it to Spine2 collapses the middle target section during a strong
+        # twist; align both two-section layouts to Spine1 and leave Spine2 rigid.
+        if target == "Bip001-Spine1" and not has(dir_src) and has("上半身2"):
             sources = ["上半身2"]
             dir_src = "上半身2"
         if target == "Bip001-Spine2" and has("上半身3"):
             sources = ["上半身3"]
             dir_src = "上半身3"
+        elif (target == "Bip001-Spine2" and not has("上半身1")
+              and has("上半身2")):
+            # The same 上半身2 track already drives Spine1 in this two-section
+            # reference; mapping it again would apply the chest rotation twice.
+            sources = []
+            dir_src = ""
         if target in ("Bip001-L-Clavicle", "Bip001-R-Clavicle"):
             side = "左" if target == "Bip001-L-Clavicle" else "右"
             sources = [s for s in (side + "肩P", dir_src) if has(s)]
@@ -459,6 +473,36 @@ def build_mapping(mm_names, skel=None, pmx_positions=None, manual_mappings=None,
                     table[-1]["sources"].append(tip_source)
                     if not table[-1]["dir"]:
                         table[-1]["dir"] = tip_source
+                continue
+            # MMD index/ring/pinky motions commonly carry 1/2/3 without a 0
+            # metacarpal. The game rig has four joints (base, 1, 2, 3), so those
+            # three authored curls must align to the last three targets. Using
+            # reference bone lengths here made Endfield's evenly spaced
+            # StandardRig map 1 -> base and skip the middle joint, which visibly
+            # deformed the hand even though Unity Miku mapped correctly.
+            if vmd_digits and len(vmd_digits) + 1 == len(chain):
+                first_digit = canonical_bone_name(vmd_digits[0])[-1]
+                target_offset = (
+                    0 if first_digit == "0" else len(chain) - len(vmd_digits)
+                )
+                for source_index, source in enumerate(vmd_digits):
+                    table.append({
+                        "target": chain[target_offset + source_index],
+                        "sources": [source],
+                        "dir": source,
+                        "position": False,
+                    })
+                if tip_source and table:
+                    last = next(
+                        (
+                            entry
+                            for entry in reversed(table)
+                            if entry["target"] == chain[-1]
+                        ),
+                        None,
+                    )
+                    if last is not None and tip_source not in last["sources"]:
+                        last["sources"].append(tip_source)
                 continue
             target_fractions = cumulative_fractions([
                 math.sqrt(sum(c * c for c in skel[n]["baseLocal"]["translation"]))
@@ -1288,9 +1332,10 @@ def main() -> int:
                          "computing that hanging direction")
     ap.add_argument("--finger-mapping", choices=("aligned", "positional"),
                     default="aligned",
-                    help="aligned = chains matched by cumulative length and the tips "
-                         "driven (current); positional = the older index mapping that "
-                         "drove Finger1/Finger11/Finger12 and left the tip bone alone. "
+                    help="aligned = three authored 1/2/3 joints map to the target's "
+                         "last three finger bones and the tip is included (current); "
+                         "positional = the older index mapping that drove "
+                         "Finger1/Finger11/Finger12 and left the tip bone alone. "
                          "Kept so the two can be compared on one character")
     ap.add_argument("--finger-roll", choices=("own", "hand", "world"),
                     default="hand",
@@ -1678,7 +1723,15 @@ def main() -> int:
                     if hand is not None:
                         base = rest_crot[hand["index"]]
             have = qrot(base, u)                      # captured direction, component
-            rest_crot[i] = qmul(qswing(have, want), base)
+            correction = qswing(have, want)
+            if b["name"] == "Bip001-Pelvis" and canonical_bone_name(m["dir"]) != "腰":
+                waist_direction = (mmd_mapped_dirs.get("腰") or mmd_dirs.get("腰"))
+                if waist_direction is not None:
+                    waist_want = qrot(A_AXIS, waist_direction)
+                    if ang_between(have, waist_want) <= 90.0:
+                        correction = qnorm(qslerp(
+                            correction, qswing(have, waist_want), 0.25))
+            rest_crot[i] = qmul(correction, base)
             if "Finger" in b["name"] and args.finger_twist:
                 # Twist about the bone's own axis: only the geometry's rotation
                 # around the finger changes, never where the finger points.

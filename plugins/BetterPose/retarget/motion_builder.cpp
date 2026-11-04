@@ -253,6 +253,14 @@ void QuaternionSlerp(const double a[4], const double b[4], double t, double out[
   QuaternionNormalize(out);
 }
 
+Quat QuaternionSlerp(const Quat &a, const Quat &b, const double t) {
+  const double left[4] = {a.x, a.y, a.z, a.w};
+  const double right[4] = {b.x, b.y, b.z, b.w};
+  double out[4]{};
+  QuaternionSlerp(left, right, t, out);
+  return Quat{out[0], out[1], out[2], out[3]};
+}
+
 // ------------------------------------------------------------------- skeleton / model
 
 struct Bone {
@@ -1313,7 +1321,8 @@ bool SampleTrack(const VmdTrack &track, double frame, double out_rotation[4],
   return true;
 }
 
-VmdCameraPose SampleCameraTrack(const std::vector<VmdCameraKey> &keys, const double frame) {
+VmdCameraPose SampleCameraTrack(const std::vector<VmdCameraKey> &keys, const double frame,
+                                const bool adjacent_cut) {
   VmdCameraPose result;
   if (keys.empty())
     return result;
@@ -1346,6 +1355,10 @@ VmdCameraPose SampleCameraTrack(const std::vector<VmdCameraKey> &keys, const dou
   }
   const VmdCameraKey &first = keys[low];
   const VmdCameraKey &second = keys[high];
+  if (adjacent_cut && second.frame - first.frame == 1) {
+    copy(first);
+    return result;
+  }
   const double span = static_cast<double>(second.frame) - static_cast<double>(first.frame);
   const double blend = span > 1e-9
                            ? (frame - static_cast<double>(first.frame)) / span
@@ -1973,21 +1986,36 @@ std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &referen
       }
       if (hip_on_pelvis && present("下半身"))
         sources.push_back("下半身");
+      // A two-section upper torso (Unity Miku, Tda Append) keeps its two spine joints
+      // almost vertically aligned, while the waist's authored tail often points diagonally
+      // at the matching lower-body joint. Using that diagonal as the pelvis rest direction
+      // makes an otherwise valid hip turn read as a severe torso twist. Keep the source
+      // rotation unchanged, but express the pelvis around the upper-body direction.
+      if (present("上半身") && present("上半身2") &&
+          !present("上半身3")) {
+        direction = "上半身";
+      }
     } else if (std::string(entry.target) == "Bip001-Spine") {
       if (present(entry.source))
         sources.push_back(entry.source);
       if (hip_on_pelvis && present("下半身"))
         prefix_inverse.push_back("下半身");
     } else if (std::string(entry.target) == "Bip001-Spine1" &&
-               !present(entry.source) && present("上半身3") && present("上半身2")) {
-      // Three-segment StandardRig spine names the sections 上半身/上半身2/上半身3.
-      // The older two-segment naming used 上半身/上半身1/上半身2. Keep all three target
-      // sections driven instead of dropping the upper-chest 上半身3 track.
+               !present(entry.source) && present("上半身2")) {
+      // StandardRig spells its chain 上半身/上半身2/上半身3. Unity Miku uses only
+      // 上半身/上半身2, but that chest joint still sits near the middle of the torso.
+      // Driving target Spine2 there makes the middle target section collapse under an
+      // otherwise valid twist; align both two-section layouts to Spine1 instead.
       sources.push_back("上半身2");
       direction = "上半身2";
     } else if (std::string(entry.target) == "Bip001-Spine2" && present("上半身3")) {
       sources.push_back("上半身3");
       direction = "上半身3";
+    } else if (std::string(entry.target) == "Bip001-Spine2" &&
+               !present("上半身1") && present("上半身2")) {
+      // 上半身2 already drives Spine1 for the two-section Unity layout. Reusing it on
+      // Spine2 applies the same chest rotation twice and skips the middle target joint.
+      continue;
     } else if (entry.target == std::string("Bip001-L-Clavicle") ||
                entry.target == std::string("Bip001-R-Clavicle")) {
       const std::string side =
@@ -2108,6 +2136,37 @@ std::vector<MappingEntry> BuildMapping(const std::vector<ReferenceBone> &referen
           table.back().sources.push_back(tip_source);
           if (table.back().direction.empty())
             table.back().direction = tip_source;
+        }
+        continue;
+      }
+      // Unity and ordinary MMD rigs commonly author three finger joints
+      // (1/2/3) while the game has four (base/1/2/3). These curls must occupy
+      // the last three target joints. Cumulative-length alignment based on the
+      // selected reference made the evenly spaced Endfield StandardRig map
+      // 1 -> base and leave the middle target static, visibly twisting the
+      // whole hand. A chain that starts at 0 remains left-aligned instead.
+      if (!vmd_digits.empty() &&
+          vmd_digits.size() + 1 == targets.size()) {
+        const char first_digit =
+            CanonicalBoneName(vmd_digits.front()).back();
+        const std::size_t target_offset =
+            first_digit == '0' ? 0 : targets.size() - vmd_digits.size();
+        for (std::size_t index{}; index != vmd_digits.size(); ++index) {
+          MappingEntry entry;
+          entry.target = targets[target_offset + index];
+          entry.sources = {vmd_digits[index]};
+          entry.direction = vmd_digits[index];
+          table.push_back(std::move(entry));
+        }
+        if (!tip_source.empty()) {
+          const auto last = std::find_if(
+              table.rbegin(), table.rend(), [&](const MappingEntry &entry) {
+                return entry.target == targets.back();
+              });
+          if (last != table.rend() &&
+              std::find(last->sources.begin(), last->sources.end(),
+                        tip_source) == last->sources.end())
+            last->sources.push_back(tip_source);
         }
         continue;
       }
@@ -3028,10 +3087,34 @@ Result BuildMotion(const Input &input) {
       ++direction_skipped;
       continue;
     }
+    // Two-section Miku/Tda references keep almost the whole stable upper-body direction
+    // on the pelvis, but retain a small part of the original diagonal waist axis so the
+    // waist still reads as alive. This is deliberately fixed: it is a visual conversion
+    // rule, not another user-facing motion setting.
+    constexpr double kWaistTwistBlend = 0.25;
+    Quat correction = Swing(have, want);
+    if (bone.name == "Bip001-Pelvis" &&
+        CanonicalBoneName(entry_target->second) != CanonicalBoneName("腰")) {
+      const auto mapped_waist = reference_mapped_directions.find("腰");
+      const auto fallback_waist = reference_directions.find("腰");
+      const Vec3 *waist_direction =
+          mapped_waist != reference_mapped_directions.end()
+              ? &mapped_waist->second
+              : (fallback_waist != reference_directions.end()
+                     ? &fallback_waist->second
+                     : nullptr);
+      if (waist_direction != nullptr) {
+        const Vec3 waist_want = Rotate(kAxisChange, *waist_direction);
+        if (AngleBetween(have, waist_want) <= 90.0) {
+          correction = QuaternionSlerp(
+              correction, Swing(have, waist_want), kWaistTwistBlend);
+        }
+      }
+    }
     // The correction swings the *uncorrected* component rotation onto the target
     // direction, and the resulting bone-local rotation is what the pose is built from
     // (mmd2bip.py:872-894).
-    const Quat corrected = Multiply(Swing(have, want), rest_crot_cap[bone.index]);
+    const Quat corrected = Multiply(correction, rest_crot_cap[bone.index]);
     rest_local[bone.index] = Multiply(Conjugate(parent_corrected), corrected);
     rest_crot[bone.index] = corrected;
     ++direction_corrected;

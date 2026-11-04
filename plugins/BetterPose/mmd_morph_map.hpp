@@ -114,6 +114,16 @@ inline std::vector<Resolved> Resolve(const std::vector<std::string> &mmd_names,
   out.reserve(mmd_names.size());
   for (const auto &mmd : mmd_names) {
     Resolved resolved{mmd, {}};
+    // Blender's .bpmotion export records the character's own face-target
+    // names. Those are already final targets, so they bypass the VMD name
+    // table and drive the matching catalogue entry directly.
+    const std::int64_t direct = find(mmd);
+    if (direct >= 0) {
+      resolved.drives.push_back(
+          {static_cast<std::uint32_t>(direct), 1.0F});
+      out.push_back(std::move(resolved));
+      continue;
+    }
     const auto rule = std::find_if(Rules().begin(), Rules().end(),
                                    [&](const Rule &r) { return r.mmd == mmd; });
     if (rule != Rules().end()) {

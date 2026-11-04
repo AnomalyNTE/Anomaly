@@ -11,7 +11,8 @@ typedef AnomalyStatusV1 (ANOMALY_CALL *AnomalyPluginEntryV1Fn)(
     AnomalyPluginDescriptorV1* descriptor);
 ```
 
-入口应校验 `descriptor->struct_size >= sizeof(*descriptor)`，然后原样填入所有字段。
+入口应先校验 `descriptor->struct_size` 至少覆盖基础字段和 `on_draw`，再填入这些字段。V1 尾部新增字段
+只能在宿主提供的 `struct_size` 覆盖对应位置时写入，以保持旧宿主兼容。
 
 ### `AnomalyPluginDescriptorV1`
 
@@ -26,6 +27,7 @@ typedef struct AnomalyPluginDescriptorV1 {
     void (ANOMALY_CALL *on_unload)(void* plugin_context);
     void (ANOMALY_CALL *on_update)(void* plugin_context, double delta_seconds);
     void (ANOMALY_CALL *on_draw)(void* plugin_context, const AnomalyUiServiceV1* ui);
+    void (ANOMALY_CALL *on_overlay)(void* plugin_context, const AnomalyUiServiceV1* ui);
 } AnomalyPluginDescriptorV1;
 ```
 
@@ -39,6 +41,10 @@ typedef struct AnomalyPluginDescriptorV1 {
 | `on_unload` | 卸载前清理 |
 | `on_update` | 每 tick 逻辑更新（Game 域）；可为 `NULL` |
 | `on_draw` | 每帧绘制（Render 域）；可为 `NULL` |
+| `on_overlay` | 每个渲染帧调用（Render 域），不受插件窗口是否打开影响；只用于 `draw_screen_primitives` 等持久世界覆盖层，可为 `NULL` |
+
+`on_overlay` 是 V1 描述符尾部的可选字段。宿主只有在 `struct_size` 覆盖该字段且回调非空时才会调用；
+插件需要兼容旧宿主时可保留 `on_draw` 中的降级绘制路径。
 
 回调的线程域见[插件开发 · 生命周期](../developer-guide/plugin-development.md#3-生命周期与入口)。
 

@@ -631,7 +631,7 @@
       }
     },
     "AnomalyPluginDescriptorV1": {
-      "size": 120,
+      "size": 128,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -646,7 +646,8 @@
         "on_stop": 88,
         "on_unload": 96,
         "on_update": 104,
-        "on_draw": 112
+        "on_draw": 112,
+        "on_overlay": 120
       }
     },
     "AnomalyCoreServiceV1": {
@@ -1043,7 +1044,7 @@
       }
     },
     "AnomalyUiServiceV1": {
-      "size": 440,
+      "size": 448,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -1101,7 +1102,8 @@
         "overlay_ring_sector": 408,
         "overlay_measure_text": 416,
         "overlay_text": 424,
-        "overlay_glass_ring_sector": 432
+        "overlay_glass_ring_sector": 432,
+        "draw_screen_primitives": 440
       }
     },
     "AnomalyWindowSpecV1": {

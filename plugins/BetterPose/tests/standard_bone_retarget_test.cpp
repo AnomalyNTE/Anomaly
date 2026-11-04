@@ -222,6 +222,41 @@ std::vector<std::uint8_t> VmdWithFingerAliasAndTip() {
   return bytes;
 }
 
+std::vector<std::uint8_t> VmdWithThreeDigitIndexFinger() {
+  std::vector<std::uint8_t> bytes;
+  Fixed(bytes, "Vocaloid Motion Data 0002", 30);
+  Fixed(bytes, "three digit finger fixture", 20);
+  Pod<std::uint32_t>(bytes, 3);
+  const auto track = [&](const std::uint8_t digit,
+                         const float rotation_y) {
+    FixedBytes(bytes, {0x8D, 0xB6, 0x90, 0x6C, 0x8E, 0x77, 0x82,
+                       digit},
+               15);
+    Pod<std::uint32_t>(bytes, 0);
+    const float position[3] = {};
+    for (const float value : position)
+      Pod(bytes, value);
+    const float rotation[4] = {0.0F, rotation_y, 0.0F, 0.98480775F};
+    for (const float value : rotation)
+      Pod(bytes, value);
+    std::array<std::uint8_t, 64> interpolation{};
+    for (std::size_t channel = 0; channel < 4; ++channel) {
+      interpolation[channel + 8] = static_cast<std::uint8_t>(127);
+      interpolation[channel + 12] = static_cast<std::uint8_t>(127);
+    }
+    bytes.insert(bytes.end(), interpolation.begin(), interpolation.end());
+  };
+  track(0x50, 0.0871557F);
+  track(0x51, 0.17364818F);
+  track(0x52, 0.25881905F);
+  Pod<std::uint32_t>(bytes, 0);
+  Pod<std::uint32_t>(bytes, 0);
+  Pod<std::uint32_t>(bytes, 0);
+  Pod<std::uint32_t>(bytes, 0);
+  Pod<std::uint32_t>(bytes, 0);
+  return bytes;
+}
+
 std::vector<std::uint8_t> VmdWithFourDigitRingFinger() {
   std::vector<std::uint8_t> bytes;
   Fixed(bytes, "Vocaloid Motion Data 0002", 30);
@@ -504,6 +539,28 @@ int main() {
                   referenced_tip !=
                       referenced_finger_report.mapped_reference_tracks.end(),
               "reference-aware audit reports the exact mapped fingertip target");
+  const auto three_digit_vmd = VmdWithThreeDigitIndexFinger();
+  const auto three_digit_mapping =
+      mb::AnalyzeVmdCompatibilityForReference(
+          three_digit_vmd, kReference, kSkeleton, {}, {}, 2);
+  const auto mapped_digit = [&](const std::string &source) {
+    return std::find_if(
+        three_digit_mapping.mapped_reference_tracks.begin(),
+        three_digit_mapping.mapped_reference_tracks.end(),
+        [&source](const auto &track) { return track.name == source; });
+  };
+  const auto first_digit = mapped_digit("左人指１");
+  const auto second_digit = mapped_digit("左人指２");
+  const auto third_digit = mapped_digit("左人指３");
+  ok &= Check(
+      three_digit_mapping.ok &&
+          first_digit != three_digit_mapping.mapped_reference_tracks.end() &&
+          first_digit->target.find("Bip001-L-Finger11") != std::string::npos &&
+          second_digit != three_digit_mapping.mapped_reference_tracks.end() &&
+          second_digit->target.find("Bip001-L-Finger12") != std::string::npos &&
+          third_digit != three_digit_mapping.mapped_reference_tracks.end() &&
+          third_digit->target.find("Bip001-L-Finger13") != std::string::npos,
+      "three authored finger joints align to the final three game joints");
   const auto referenced_four_digit =
       mb::AnalyzeVmdCompatibilityForReference(
           four_digit_vmd, kReference, kSkeleton, {}, {}, 0);
@@ -759,6 +816,39 @@ int main() {
                              rest.at(i).get<double>());
     ok &= Check(difference > 0.05,
                 "upper-chest 上半身3 drives the third target spine section");
+  }
+
+  json two_section_reference = json::parse(kReference);
+  for (auto &bone : two_section_reference.at("bones")) {
+    if (bone.at("name") == "上半身3")
+      bone["name"] = "上半身3 (not present)";
+  }
+  mb::Input two_section_input = input;
+  two_section_input.reference_pmx_json = two_section_reference.dump();
+  two_section_input.vmd_bytes =
+      VmdWithBone({0x8F, 0xE3, 0x94, 0xBC, 0x90, 0x67, 0x32}, 0.0F, 0.17364818F);
+  const mb::Result two_section_result = mb::BuildMotion(two_section_input);
+  ok &= Check(two_section_result.ok,
+              "two-section spine reference motion converts");
+  if (two_section_result.ok) {
+    const json two_section = json::parse(two_section_result.motion_json);
+    const auto difference = [&two_section](const char *name) {
+      const auto track = two_section.at("bones").find(name);
+      if (track == two_section.at("bones").end())
+        return 0.0;
+      const auto rest = two_section.at("rest").find(name);
+      if (rest == two_section.at("rest").end())
+        return 0.0;
+      double total = 0.0;
+      for (std::size_t i = 0; i < 4; ++i)
+        total += std::abs(track->at(0).at(i).get<double>() -
+                          rest->at(i).get<double>());
+      return total;
+    };
+    ok &= Check(difference("Bip001-Spine1") > 0.05,
+                "two-section 上半身2 drives the middle target spine section");
+    ok &= Check(difference("Bip001-Spine2") < 1e-6,
+                "two-section 上半身2 is not applied again on the upper target spine");
   }
 
   mb::Input shoulder_input = input;
