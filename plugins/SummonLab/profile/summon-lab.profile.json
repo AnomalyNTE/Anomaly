@@ -1,0 +1,200 @@
+{
+  "$schema": "https://anomaly.dev/schemas/plugin-profile.schema.json",
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "summon-lab-v2",
+  "layout": {
+    "objectFlags": 8,
+    "objectInternalIndex": 12,
+    "objectClass": 16,
+    "objectName": 24,
+    "fieldClassName": 0,
+    "attributeProperty": 16,
+    "objectOuter": 32,
+    "classDefaultObject": 272,
+    "characterAbilitySystem": 2368,
+    "characterAttributeSet": 2376,
+    "attributeBaseValue": 8,
+    "attributeCurrentValue": 12,
+    "attributeDataSize": 16,
+    "structSuper": 64,
+    "structProperties": 80,
+    "structSize": 88,
+    "fieldNext": 24,
+    "fieldClass": 8,
+    "fieldName": 32,
+    "propertyArrayDim": 48,
+    "propertyElementSize": 52,
+    "propertyOffset": 68,
+    "propertyStruct": 112,
+    "arrayInner": 120,
+    "containerOwner": 264,
+    "spawnedAttributes": 4272,
+    "mirrorGetterSlot": 8,
+    "mirrorVtable": 0,
+    "mirrorObject": 24,
+    "mirrorValues": 8,
+    "mirrorValueCount": 16,
+    "mirrorValueStride": 32,
+    "mirrorValueName": 0,
+    "mirrorValueData": 8,
+    "mirrorValueBytes": 16,
+    "mirrorValueCapacity": 20,
+    "mirrorValueDataCapacity": 20,
+    "mirrorValueCompressed": 24,
+    "characterForNetSize": 40,
+    "diagnosticSummonIndex": 36,
+    "objectArrayCount": 20,
+    "objectsPerChunk": 65536,
+    "objectItemSize": 24,
+    "objectItemObject": 0,
+    "objectItemFlags": 8,
+    "objectRootFlag": 1073741824
+  },
+  "symbols": [
+    {
+      "name": "mirror-owner-getter",
+      "candidates": [
+        {
+          "pattern": "48 8B 41 18 C3",
+          "entry": "48 8B 41 18 C3",
+          "values": {},
+          "provenance": "Both 1.4b live inspection and supplied 1.5a IDA confirm the FHTReplicatedObjectPropertyContainer virtual object getter at vtable slot +8: MOV RAX,[RCX+0x18]; RET. This short body is not globally unique. Validate these entry bytes only at the getter address obtained from the serial-validated registered ASC's incoming container; do not globally scan it as a hook target. The container Owner field is +0x18 in both SDKs."
+        }
+      ]
+    },
+    {
+      "name": "duel-current-chase-range",
+      "candidates": [
+        {
+          "pattern": "F3 0F 11 89 08 08 00 00 C3",
+          "entry": "F3 0F 11 89 08 08 00 00 C3",
+          "values": { "currentChaseRange": 2056 },
+          "provenance": "The reflected HTAIController.SetCurChaseRange writes the current range at +0x808. Unique setter body in live 1.4b PID 44236 at 0x147D2A7B0 and supplied 1.5a IDA at 0x147FA2E40. Native ShouldLeaveBattle and target search read this range; a default of 6000 can end a graph battle when Bosses separate. Validate this setter before temporarily expanding the range and restore its prior value when the battle ends."
+        }
+      ]
+    },
+    {
+      "name": "monster-scene-row",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 83 EC 30 4C 8B 71 30 48 8B DA 48 63 41 38 49 8D 2C C6",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 83 EC 30",
+          "values": {},
+          "provenance": "1.4b PID 44236: unique entry 0x1488357C0. Supplied 1.5a IDA: 0x148B6FF80, identical entry and ABI (HTSceneSolelyDataAsset*, FName by value) -> borrowed FMonsterStaticData*. Iterates MonsterArrayDataTable and validates its RowStruct. Both actor and hybrid attribute initialization return before GAS initialization when this returns null. Original scene results always take priority; only plugin-scoped or registered local FT config IDs may fall back to the rooted FinalTower asset."
+        }
+      ]
+    },
+    {
+      "name": "monster-property-pack",
+      "candidates": [
+        {
+          "pattern": "48 89 54 24 10 53 56 41 56 48 83 EC 30 45 8B F0 48 8B DA 48 8B F1 48 85 D2 75 0B 33 C0 48 83 C4 30 41 5E 5E 5B C3",
+          "entry": "48 89 54 24 10 53 56 41 56 48 83 EC 30 45 8B F0 48 8B DA 48 8B F1 48 85 D2",
+          "values": {},
+          "provenance": "1.4b PID 44236: unique entry 0x1487F5450. Supplied 1.5a IDA: 0x148B37050. ABI (HTGameData*, FName by value, int kind, UObject* worldContext) -> borrowed FPackIDStaticData*. Kind 1 selects monster data; the FT provider is normally consulted only in FinalTower scene mode 7. Preserve successful native results and other kinds; supply the native FT pack only for a known local FT config when the original lookup misses."
+        }
+      ]
+    },
+    {
+      "name": "final-tower-property-pack",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 30 48 8B B9 50 04 00 00 33 ED 48 8B DA 48 85 FF",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 30 48 8B B9 50 04 00 00",
+          "values": {},
+          "provenance": "1.4b PID 44236: unique entry 0x147996CD0. Supplied 1.5a IDA: 0x147B3A4C0. ABI (HTFinalTowerDataAsset*, FName by value) -> borrowed FPackIDStaticData*. Reads MonsterFTPackDataTable at +0x450 in both supplied SDKs and validates its row type. The plugin independently resolves RowStruct and HPMaxBase by reflected field name, type and size before using a result. FT data is obtained through HTGameData.GetFinalTowerDataAsset, never an offline absolute address."
+        }
+      ]
+    },
+    {
+      "name": "object-item-set-flags",
+      "candidates": [
+        {
+          "pattern": "40 53 56 48 83 EC 48 48 8B D9 48 89 7C 24 70 48 8D 0D ?? ?? ?? ?? 8B FA FF 15 ?? ?? ?? ?? 8B 43 08 A9 00 00 50 6E",
+          "entry": "40 53 56 48 83 EC 48 48 8B D9 48 89 7C 24 70",
+          "values": {},
+          "provenance": "1.4b PID 44236: unique entry 0x1417EB6E0, also used by the existing HiFiVehicleMusic texture owner. Supplied 1.5a IDA byte scan: unique entry 0x141815F10. FUObjectItem::SetFlags(item, int32 flags) registers the GC barrier and atomically adds flags. Both SDKs retain 24-byte object items and 65536 objects per chunk. Acquire a serial-validated object handle, check the item's object identity, retain only our added RootSet bit, and clear it after all config hooks are drained."
+        }
+      ]
+    },
+    {
+      "name": "object-array-reference",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3",
+          "entry": "48 8B 05",
+          "values": {
+            "displacementOffset": 3,
+            "instructionSize": 7
+          },
+          "provenance": "Read-only RIP-relative MOV reference inside the native UObject index accessor. Unique in 1.4b PID 44236 at 0x1418CF1E9 and in the supplied 1.5a IDA image at 0x1418F9AB9. This is not a callable function entry. Resolve the signed disp32 at +3 relative to +7; the target is FChunkedFixedUObjectArray::Objects. Validate the target count, chunk, exact UObject pointer and object handle before touching its RootSet bit."
+        }
+      ]
+    },
+    {
+      "name": "attribute-base-input",
+      "candidates": [
+        {
+          "pattern": "F3 0F 11 54 24 18 53 56 57 48 81 EC 90 00 00 00 48 8B B1 08 01 00 00 48 8B FA 48 8B D9 48 85 F6",
+          "entry": "F3 0F 11 54 24 18 53 56 57 48 81 EC 90 00 00 00 48 8B B1 08 01 00 00",
+          "values": {},
+          "provenance": "Both supplied 1.4b and 1.5a SDKs retain SpawnedAttributes +0x10B0. 1.4b anomaly-cli PID 31332 on 2026-11-02: unique .text entry 0x1450B5330; live disassembly confirms NewBaseValue in XMM2, Owner ASC +0x108, base storage and aggregator update before notifications. PreAttributeChange-only overrides reproduced HPCurrent 666 -> 434856 while MaxHP/MaxHPTemp remained 436870. The supplied 1.5a IDA dump locates the same function at 0x1450E3120 with an identical body prefix from +6, including Owner +0x108, but its first five bytes already contain a jump outside the dumped image. That dump cannot validate the original prologue. Keep the exact unhooked signature and validator; an altered entry disables summoning instead of chaining an unverified jump. Confirm the clean entry and gameplay behavior against the released 1.5 process."
+        }
+      ]
+    },
+    {
+      "name": "summon-registration",
+      "candidates": [
+        {
+          "pattern": "45 8B CC 48 8D 54 24 30 4C 8B C7 48 8B CB E8 ?? ?? ?? ?? 41 B0 01",
+          "callOffset": 14,
+          "entry": "40 53 48 83 EC 60 48 8B 42 1C 48 8B D9 0F 10 02 48 89 44 24 3C",
+          "values": {},
+          "provenance": "1.4b live code and the supplied 1.5a IDA database: the unique SummonAI call registers the original 40-byte leader identity, class CDO and summon index. The call pattern, parameter registers and entry bytes are unchanged. Compatibility experiment: live 1.4b PID 44236 ServerSummonAI_HybridMode wrapper 0x147E73010 calls controller implementation slot +0x1338 (not validation at +0x1330), implementation 0x147E8F730 calls 0x147E82100. The creation function derives config ID from CDO->Class->Name minus _C at 0x147E825AA and registers the unchanged leader plus summon index at 0x147E826A0. Supplied 1.5a 0x1480B2B70 confirms the same separation. The donor CDO also supplies native defense, passives and tags; this is not restoration of FT mechanics. Both SDK CoreUObject_classes.hpp files declare UClass::ClassDefaultObject +0x110. Load the real donor class, validate CDO flag, exact class and object handle, and replace only the CDO argument during an explicitly opted-in FT BirthScope. Never mutate a class/default object or change the identity, index, current world or persistent FT state. The source blueprint is catalog game data; query its scene HP at runtime and bound requested HP by the independently received native maximum. Verified in live 1.4b on 2026-11-04: FT_BP_Boss_37_Stage1_C with Boss_32_BP donor and requested HP 999999 received native MaxHP/MaxHPTemp 2080615, configured InitialHPPercent 0.480626643, then native fight replies 999619, 999344 and continuing down to 989656 with deadState 0. Each reply matched the next local HP reading; the user confirmed normal survival. This evidence covers the explicit compatibility path, not native FT attributes or 1.5 gameplay."
+        }
+      ]
+    },
+    {
+      "name": "local-attribute-mirror",
+      "candidates": [
+        {
+          "pattern": "4D 85 C0 0F 84 ?? ?? ?? ?? 48 8B C4 48 89 50 10 48 89 48 08 55 53 57 48 8D A8 28 FF FF FF 48 81 EC C0 01 00 00",
+          "entry": "4D 85 C0 0F 84 03 04 00 00 48 8B C4 48 89 50 10 48 89 48 08 55 53 57",
+          "values": {
+            "recordSize": 88,
+            "campCount": 7,
+            "birthAttributeCount": 155
+          },
+          "provenance": "1.4b SDK and live reads on 2026-11-03: FHTReplicatedObjectPropertyContainer is 0x58 bytes; ECampDefinition has 7 usable camps; GameplayAttributeSet has 155 fields. MaxHPTemp is one uncompressed float. Boss_07 native maximum 436870 differs from custom GAS maximum 100000; native SetHP replies clamp absolute HP to that GAS cap. InitialHPPercent 0.228901044 yielded first native remaining-HP reply 99637; independent reads showed HP100000 ->99561 and unbalance70 ->69.318 before any break."
+        },
+        {
+          "pattern": "4D 85 C0 0F 84 ?? ?? ?? ?? 48 8B C4 48 89 50 10 48 89 48 08 55 53 41 54 48 8D A8 18 FF FF FF 48 81 EC D0 01 00 00",
+          "entry": "4D 85 C0 0F 84 B2 04 00 00 48 8B C4 48 89 50 10 48 89 48 08 55 53 41 54",
+          "values": {
+            "recordSize": 96,
+            "campCount": 9,
+            "birthAttributeCount": 156
+          },
+          "provenance": "Supplied 1.5a SDK and IDA on 2026-11-04: unique native mirror entry and caller stepping by 0x60. FHTReplicatedObjectPropertyContainer adds GameplayModuleId at +0x54; Owner +0x18, Properties +8 and 0x20-byte entries remain unchanged. ECampDefinition adds CampH and CampI; GameplayAttributeSet adds FollowUpDamage. The native mirror uses network-property deserialization. The float property vtable at 0x14B9E1550 identifies its C++ type as float; NetSerializeItem at slot +200 calls SerializeItem at +192, whose 0x1417A3640 implementation consumes four bytes. Custom HP still requires an uncompressed positive finite scalar. Addresses document offline evidence only; gameplay validation awaits the 1.5 release."
+        }
+      ]
+    },
+    {
+      "name": "monster-default-level",
+      "candidates": [
+        {
+          "pattern": "4C 8B C3 48 8B D7 48 8B C8 E8 ?? ?? ?? ?? 49 8B 16 49 8B CE 8B F8 FF 92 A0 0A 00 00",
+          "callOffset": 9,
+          "entry": "48 89 5C 24 10 48 89 74 24 20 4C 89 44 24 18 57 48 83 EC 40 48 8B F2 48 8B F9 48 85 D2",
+          "values": {},
+          "provenance": "1.4b live reads on 2026-11-04: unique SummonAI call site 0x147CCEC55 calls 0x14954E910 with HTPlayerState*, UWorld*, FName by value. The query selects MonsterStaticData.MonsterLevel, WorldLevelArray, clone difficulty or abyss difficulty. SummonAI then skips SetCharacterLevel for a player leader when the requested level is 0. Boss_32_BP resolves to the world-level 7 configuration: level 75, HPMaxBase 2080615, AtkBase 1481. Its spawned actor incorrectly retained CDO level 1 while the attribute pack was already correct. Supplied 1.5a IDA confirms the same unique call pattern at 0x147F47985, target 0x149AE7B30, argument registers, entry bytes and skipped assignment for a player leader. Addresses document offline evidence only. Runtime resolution uses the signature, rel32 call and entry validator; only the query is called, with no hook or table modification."
+        }
+      ]
+    }
+  ],
+  "provenance": "Shared layout was independently compared against the supplied 1.4b and 1.5a Dumper-7 SDKs on 2026-11-04: CoreUObject_classes.hpp (UObject, UStruct, UClass), Basic.hpp (FFieldClass, FField, FProperty, FStructProperty, FArrayProperty, TUObjectArray and FUObjectItem size/object), HTGame_classes.hpp (AHTAbilityCharacter ability-system and attribute-set pointers), GameplayAbilities_classes.hpp (SpawnedAttributes), GameplayAbilities_structs.hpp (FGameplayAttribute and FGameplayAttributeData), and HottaFramework_structs.hpp (mirror container and property entry). UnrealContainers.hpp declares the same pointer/int32/int32 TArray layout in both versions. Flags +8 inside FUObjectItem, container owner +0x108, virtual getter slot +8 and the identity summon-index slot are supported by the per-symbol native-code evidence, not by unnamed SDK padding. Eleven parameter structures were checked member-by-member against both HTGame_parameters.hpp and Engine_parameters.hpp; their fixed call ABI is represented by named C++ types rather than hand-written buffer offsets. All memory offsets are loaded from this profile with range, alignment and non-overlap checks; no compiled offset fallback exists. The mirror candidates preserve the 1.4b 88-byte/7-camp/155-attribute and 1.5a 96-byte/9-camp/156-attribute variants. FollowUpDamage is selected by reflected name; UI preset indices intentionally retain their prior order. This covers static 1.5a preparation only; the clean released 1.5 entry and gameplay still require live validation. Native SummonAI registers the original leader identity and summon index but omits the opponent-summoner configuration step. Both supplied SDKs retain the 0x34-byte ServerConfigureSummonedAI_HybridMode parameter block. Its 1.4b live implementation and 1.5a IDA implementation accept InitialHPPercent=-1 to update camp without resetting HP. CampType and fallback attribute-set pointers moved and are now read by reflected name/type/size. The local mirror must resolve the exact registered ASC through its verified +0x18 object getter. Only custom birth MaxHP/MaxHPTemp are filtered; MaxHPTemp seeds one native HP configuration on the next Game update. Other fields, combat authority, HP commits and AI scripts stay native. Candidates are selected by unique signatures and exact entry checks, never by build identity. Passive FT health observation only. Both supplied 1.4b and 1.5a Basic.hpp define FStructProperty::Struct +0x70 and FArrayProperty::InnerProperty +0x78; CoreUObject_classes.hpp defines UStruct::Size +0x58. Live 1.4b PID 44236 reflection independently verified ClientSetReplicatedTargetData.TargetDataContainer and ClientFightDataArray's inner type. Resolve RPC members and array stride by reflected name/type/size; 1.5 replaces fCurHealth with nested DamageDisplayInfo.CurrentHp. Refuse unsupported metadata. The 40-byte FCharacterForNet copies its leader's first 36 bytes and replaces the last int32 with summon index: independently verified in live 1.4b code at 0x147D4C990 and offline 1.5a at 0x147FC7360. Observe only exact registered controller/leader/index matches, with bounded logs, no invocation or parameter changes. Addresses are evidence only.",
+  "unavailable": "Disable features whose symbols or layouts fail validation. Never guess a layout, fall back to compiled signatures, or write post-spawn attributes."
+}
