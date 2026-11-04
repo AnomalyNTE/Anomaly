@@ -1620,7 +1620,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         ${ANOMALY_NTE_COMBAT_DIR}/src/combat_export.cpp
         ${ANOMALY_NTE_COMBAT_DIR}/src/history_reader.cpp
         ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_model.cpp
-        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_publish_policy.cpp)
+        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_publish_policy.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_text_catalog.cpp)
     target_include_directories(anomaly_nte_combat_model PUBLIC
         "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src")
     target_compile_options(anomaly_nte_combat_model PRIVATE /W4 /permissive- /EHsc /utf-8)
@@ -1637,6 +1638,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_nte_combat_engine Anomaly::sdk)
 
     # Overlay 是独立 GUI 进程：Direct2D/DirectWrite/WIC 自绘，不受宿主 ImGui 能力限制。
+    # 文案目录来自 anomaly_nte_combat_model，Overlay 与离线夹具共用同一份实现。
     add_executable(anomaly_nte_combat_overlay WIN32
         ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_app.cpp)
     target_compile_definitions(anomaly_nte_combat_overlay PRIVATE
@@ -1650,7 +1652,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
 
     anomaly_add_plugin(anomaly_builtin_nte_combat_tracker
         SOURCES ${ANOMALY_NTE_COMBAT_DIR}/src/plugin.cpp
-                ${ANOMALY_NTE_COMBAT_DIR}/src/character_attribute_source.cpp
+            ${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src/character_attribute_source.cpp
         MANIFEST ${ANOMALY_NTE_COMBAT_DIR}/manifest.json
         PACKAGE_NAME NteCombatTracker
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteCombatTracker")
@@ -1668,49 +1670,30 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         RUNTIME DESTINATION "Anomaly/plugins/NteCombatTracker" COMPONENT GameRuntime)
 
     if(ANOMALY_BUILD_TEST_FIXTURES)
-        # 离线夹具：采集引擎、日志仓库、覆盖层协议与 UID 探测都可以在没有游戏进程的情况下验证。
+        # 离线夹具：采集引擎/日志仓库 与 界面模型/协议/ABI 两组各自在没有游戏进程时验证。
         set(ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR
             "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}")
-        function(anomaly_nte_combat_fixture target source test_name libraries)
-            add_executable(${target} "${ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR}/tests/${source}")
+        # One fixture executable per dependency group; each test source defines its
+        # own entry point through NTE_TEST_GROUP and links the group's libraries.
+        function(anomaly_nte_combat_test_fixture target test_name source libraries)
+            add_executable(${target}
+                "${ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR}/tests/${source}")
             target_include_directories(${target} PRIVATE
                 "${ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR}/src")
             target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc /utf-8)
             target_compile_definitions(${target} PRIVATE
+                UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
                 NTE_TEST_SOURCE_DIR="${ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR}")
             target_link_libraries(${target} PRIVATE ${libraries})
             add_test(NAME ${test_name} COMMAND ${target})
         endfunction()
 
-        anomaly_nte_combat_fixture(anomaly_nte_combat_account_identity_fixture
-            account_identity_tests.cpp nte_account_identity anomaly_nte_combat_engine)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_stats_fixture
-            combat_stats_engine_tests.cpp nte_combat_stats_engine anomaly_nte_combat_engine)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_damage_log_fixture
-            damage_log_tests.cpp nte_damage_log anomaly_nte_combat_engine)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_diagnostics_fixture
-            developer_diagnostics_tests.cpp nte_developer_diagnostics anomaly_nte_combat_engine)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_color_map_fixture
-            attribute_color_map_tests.cpp nte_attribute_color_map anomaly_nte_combat_engine)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_protocol_fixture
-            overlay_protocol_tests.cpp nte_overlay_protocol anomaly_nte_combat_protocol)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_model_fixture
-            overlay_model_tests.cpp nte_overlay_model anomaly_nte_combat_model)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_publish_policy_fixture
-            overlay_publish_policy_tests.cpp nte_overlay_publish_policy anomaly_nte_combat_model)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_history_reader_fixture
-            history_reader_tests.cpp nte_history_reader anomaly_nte_combat_model)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_settings_fixture
-            app_settings_tests.cpp nte_app_settings anomaly_nte_combat_model)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_export_fixture
-            combat_export_tests.cpp nte_combat_export anomaly_nte_combat_model)
-        # 这两个夹具直接面对插件 ABI 的形状，需要 SDK 头与宿主声明的 v1.8 尾部。
-        anomaly_nte_combat_fixture(anomaly_nte_combat_sdk_compat_fixture
-            sdk_compat_tests.cpp nte_sdk_compat Anomaly::sdk)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_display_name_fixture
-            display_name_abi_tests.cpp nte_display_name_abi Anomaly::sdk)
-        anomaly_nte_combat_fixture(anomaly_nte_combat_uid_detector_fixture
-            uid_detector_tests.cpp nte_uid_detector anomaly_nte_combat_uid)
+        anomaly_nte_combat_test_fixture(anomaly_nte_combat_engine_fixture
+            nte_engine nte_engine_tests.cpp
+            "anomaly_nte_combat_engine;Anomaly::sdk;nlohmann_json::nlohmann_json")
+        anomaly_nte_combat_test_fixture(anomaly_nte_combat_surface_fixture
+            nte_surface nte_surface_tests.cpp
+            "anomaly_nte_combat_model;anomaly_nte_combat_uid;Anomaly::sdk;nlohmann_json::nlohmann_json")
     endif()
 
     anomaly_add_plugin(anomaly_builtin_nte_free_fly

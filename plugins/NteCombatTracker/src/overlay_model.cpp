@@ -267,12 +267,12 @@ double PlayerBarFraction(
 
 const std::array<SummaryColumn, 6>& OutgoingSummaryColumns() noexcept {
     static constexpr std::array<SummaryColumn, 6> columns{{
-        {L"角色", SortColumn::Character, 1.7F},      // i18n-data: overlay 进程文案表
-        {L"总伤害", SortColumn::Damage, 1.05F},      // i18n-data
-        {L"DPS", SortColumn::EncounterDps, 0.85F},
-        {L"DPS%", SortColumn::Share, 0.8F},
-        {L"暴击%", SortColumn::CriticalRate, 0.8F},  // i18n-data
-        {L"最高伤害", SortColumn::MaximumHit, 1.7F}, // i18n-data
+        {"overlay.col.character", L"Character", SortColumn::Character, 1.7F},
+        {"overlay.col.total_damage", L"Total damage", SortColumn::Damage, 1.05F},
+        {"overlay.col.dps", L"DPS", SortColumn::EncounterDps, 0.85F},
+        {"overlay.col.dps_share", L"DPS%", SortColumn::Share, 0.8F},
+        {"overlay.col.critical_rate", L"Crit%", SortColumn::CriticalRate, 0.8F},
+        {"overlay.col.max_hit", L"Max hit", SortColumn::MaximumHit, 1.7F},
     }};
     return columns;
 }
@@ -295,13 +295,14 @@ float PlayerNameInset(const float scale) noexcept {
 
 std::wstring FooterSummary(const FooterPage page, const FooterData& data) {
     switch (page) {
+    // Numeric summary only: the caller localizes the surrounding copy.
     case FooterPage::Live:
-        return std::format(L"{}人｜{:.0f}dps", data.live_players, data.live_dps);  // i18n-data
+        return std::format(L"{:.0f} dps | {} players", data.live_dps, data.live_players);
     case FooterPage::HistoryList:
-        return std::format(L"{}场历史战斗", data.history_count);  // i18n-data
+        return std::format(L"{} encounters", data.history_count);
     case FooterPage::HistoryDetail:
-        return std::format(L"{}人｜{:.0f}dps",  // i18n-data
-            data.history_players, data.history_dps);
+        return std::format(L"{:.0f} dps | {} players",
+            data.history_dps, data.history_players);
     }
     return {};
 }

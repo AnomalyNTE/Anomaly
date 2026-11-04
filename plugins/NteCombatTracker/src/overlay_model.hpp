@@ -118,7 +118,10 @@ struct FooterLayout {
 };
 
 struct SummaryColumn {
-    std::wstring_view label;
+    // Catalog key; the overlay resolves it, keeping this library free of the
+    // process-wide text catalog.
+    std::string_view key;
+    std::wstring_view fallback;
     SortColumn sort;
     float weight;
 };

@@ -35,6 +35,10 @@ struct NteOverlaySnapshot {
         std::uint32_t connected_clients{};
         std::uint64_t published_messages{};
         std::uint64_t transport_dropped_messages{};
+        // Active Host locale, so the overlay process can load the same catalog
+        // the plugin resolved. The overlay is a separate executable and has no
+        // Host services of its own.
+        std::string locale{"zh-CN"};
         Snapshot combat;
     };
 
@@ -57,6 +61,7 @@ struct NteOverlaySnapshot {
     const std::uint32_t connected_clients{};
     const std::uint64_t published_messages{};
     const std::uint64_t transport_dropped_messages{};
+    const std::string locale;
     const Snapshot combat;
 };
 

@@ -17,6 +17,7 @@
 
 #include <anomaly/sdk/anomaly_sdk.h>
 #include <anomaly/sdk/cpp.hpp>
+#include <anomaly/sdk/localization.hpp>
 
 #include <algorithm>
 #include <array>
@@ -31,6 +32,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -150,6 +152,9 @@ struct Context {
     std::uint64_t pending_dropped_last_sequence{};
     const AnomalyWebSocketServiceV1* websocket{};
     const AnomalyCoreServiceV1* core{};
+    // Resolved once in Load; the active language is fixed for the process.
+    anomaly::sdk::Localizer localizer;
+    std::string locale{"zh-CN"};
     // Empty when the live character table could not be read; rows then keep
     // their identity colour instead of an attribute colour.
     std::string character_attribute_error;
@@ -998,6 +1003,7 @@ NteOverlaySnapshot MakeOverlaySnapshot(
     data.published_messages = server.published_messages;
     data.transport_dropped_messages =
         server.dropped_messages + g_context.local_overlay_drops;
+    data.locale = g_context.locale;
     data.combat = std::move(stats);
     return NteOverlaySnapshot(std::move(data));
 }
@@ -2120,6 +2126,43 @@ void Text(const AnomalyUiServiceV1* ui, const std::string& value) {
     ui->text(ui->user, anomaly::sdk::StringView(value));
 }
 
+// Localizer arguments are strings; numbers go through this so a format call
+// never needs a printf specifier.
+[[nodiscard]] std::string FormatUnsigned(const unsigned long long value) {
+    std::array<char, 32> buffer{};
+    std::snprintf(buffer.data(), buffer.size(), "%llu", value);
+    return buffer.data();
+}
+
+// Button labels go through the UI service as a view, so the translated string
+// is owned here for the duration of the call rather than by a temporary.
+class ScopedLabel final {
+public:
+    ScopedLabel(const std::string_view catalog_key, const std::string_view fallback)
+        : text_(g_context.localizer.Text(catalog_key, fallback)) {}
+
+    [[nodiscard]] AnomalyStringViewV1 View() const noexcept {
+        return anomaly::sdk::StringView(std::string_view(text_));
+    }
+
+private:
+    std::string text_;
+};
+
+// Localized UI text. The key and the English fallback are given together so a
+// missing catalog or a placeholder mismatch silently yields the fallback, which
+// is the Host's documented behaviour; Chinese exists only in locales/*.json.
+template <typename... Args>
+void TextLocalized(const AnomalyUiServiceV1* ui, const std::string_view key,
+                   const std::string_view fallback, Args... args) {
+    const std::array<std::string_view, sizeof...(Args)> arguments{
+        std::string_view(args)...};
+    const std::string text = g_context.localizer.Format(
+        key, fallback, std::span<const std::string_view>(arguments));
+    Text(ui, text.c_str());
+}
+
+// Formats a value that is not user copy (an identifier, a path, a number).
 template <typename... Args>
 void TextFormat(const AnomalyUiServiceV1* ui, const char* format, Args... args) {
     std::array<char, 512> buffer{};
@@ -2165,120 +2208,115 @@ void QueueDebugClear(const bool damage, const bool skills, const bool all) {
 void DrawDeveloperPage(
     const AnomalyUiServiceV1* ui, const RenderState& render) {
     const auto& uid = render.uid_detector;
-    Text(ui, "Account and UID detection");
-    TextFormat(ui, "Active account UID: %s",
-        uid.active_account_uid.empty() ? "unresolved" :
-            uid.active_account_uid.c_str());
-    TextFormat(ui, "Detected UID: %s / phase: %s",
+    TextLocalized(ui, "developer.account.heading", "Account and UID detection");
+    TextLocalized(ui, "developer.account.active_uid", "Active account UID: {0}",
+        uid.active_account_uid.empty() ? "unresolved" : uid.active_account_uid.c_str());
+    TextLocalized(ui, "developer.account.detected_uid", "Detected UID: {0} / phase: {1}",
         uid.detected_uid.empty() ? "unresolved" : uid.detected_uid.c_str(),
         UidPhaseName(uid.phase));
-    TextFormat(ui,
-        "Missing services: %s / missing signatures: %s",
+    TextLocalized(ui, "developer.account.missing", "Missing services: {0} / missing signatures: {1}",
         uid.missing_services.empty() ? "none" : uid.missing_services.c_str(),
         uid.missing_bindings.empty() ? "none" : uid.missing_bindings.c_str());
-    TextFormat(ui,
-        "Objects generation=%llu count=%u / scan=%u/%u / widgets=%llu",
-        static_cast<unsigned long long>(uid.object_generation), uid.object_count,
-        uid.scan_cursor, uid.scan_start,
-        static_cast<unsigned long long>(uid.tracked_widgets));
-    TextFormat(ui, "Reads ok=%llu failed=%llu / last failure phase: %s / %s",
-        static_cast<unsigned long long>(uid.successful_reads),
-        static_cast<unsigned long long>(uid.failed_reads),
+    TextLocalized(ui, "developer.account.objects", "Objects generation={0} count={1} / scan={2}/{3} / widgets={4}",
+        FormatUnsigned(uid.object_generation), FormatUnsigned(uid.object_count),
+        FormatUnsigned(uid.scan_cursor), FormatUnsigned(uid.scan_start),
+        FormatUnsigned(uid.tracked_widgets));
+    TextLocalized(ui, "developer.account.reads", "Reads ok={0} failed={1} / last failure phase: {2} / {3}",
+        FormatUnsigned(uid.successful_reads), FormatUnsigned(uid.failed_reads),
         UidPhaseName(uid.last_failure_phase),
         uid.last_failure.empty() ? "none" : uid.last_failure.c_str());
-    TextFormat(ui, "Retry status: %s / next=%llu",
+    TextLocalized(ui, "developer.account.retry", "Retry status: {0} / next={1}",
         uid.retry_status.empty() ? "none" : uid.retry_status.c_str(),
-        static_cast<unsigned long long>(uid.next_retry_tick));
+        FormatUnsigned(uid.next_retry_tick));
 
     if (ui->separator != nullptr) ui->separator(ui->user);
-    Text(ui, "Capture status");
+    TextLocalized(ui, "developer.capture.heading", "Capture status");
     if (render.developer.current_map) {
         const auto& map = *render.developer.current_map;
-        TextFormat(ui,
-            "Current map: name=%s / name_id=%u / handle=%llu:%llu / status=%s",
+        TextLocalized(ui, "developer.map.line", "Current map: name={0} / name_id={1} / handle={2}:{3} / status={4}",
             map.technical_name.empty() ? "unresolved" : map.technical_name.c_str(),
-            map.name_id,
-            static_cast<unsigned long long>(map.handle.id),
-            static_cast<unsigned long long>(map.handle.generation),
+            FormatUnsigned(map.name_id),
+            FormatUnsigned(map.handle.id),
+            FormatUnsigned(map.handle.generation),
             map.status.c_str());
     } else {
-        Text(ui, "Current map: unavailable");
+        TextLocalized(ui, "developer.map.unavailable", "Current map: unavailable");
     }
     if (render.developer.current_target) {
         const auto& target = *render.developer.current_target;
-        TextFormat(ui,
-            "Current target: %s / monster_id=%s / config_id=%s / handle=%llu:%llu",
+        TextLocalized(ui, "developer.target.line", "Current target: {0} / monster_id={1} / config_id={2} / handle={3}:{4}",
             target.display_name.empty() ? "unresolved" : target.display_name.c_str(),
             target.monster_id.empty() ? "unresolved" : target.monster_id.c_str(),
             target.enemy_config_id.empty() ? "unresolved" :
                 target.enemy_config_id.c_str(),
-            static_cast<unsigned long long>(target.handle.id),
-            static_cast<unsigned long long>(target.handle.generation));
-        TextFormat(ui, "  target_path=%s",
+            FormatUnsigned(target.handle.id),
+            FormatUnsigned(target.handle.generation));
+        TextLocalized(ui, "developer.target.path", "  target_path={0}",
             target.technical_path.empty() ? "unresolved" :
                 target.technical_path.c_str());
     } else {
-        Text(ui, "Current target: none");
+        TextLocalized(ui, "developer.target.none", "Current target: none");
     }
     if (render.snapshot) {
-        TextFormat(ui,
-            "Combat status=%s · latest=%llu · cursor=%llu · report=%s · encounter=%s",
+        TextLocalized(ui, "developer.combat.status", "Combat status={0} · latest={1} · cursor={2} · report={3} · encounter={4}",
             render.snapshot->capture_status.c_str(),
-            static_cast<unsigned long long>(render.snapshot->latest_event_sequence),
-            static_cast<unsigned long long>(render.event_cursor_sequence),
+            FormatUnsigned(render.snapshot->latest_event_sequence),
+            FormatUnsigned(render.event_cursor_sequence),
             render.snapshot->report_id.empty() ? "none" : render.snapshot->report_id.c_str(),
             render.snapshot->encounter_id.empty() ? "none" :
                 render.snapshot->encounter_id.c_str());
     } else {
-        Text(ui, "Combat snapshot has not been published yet");
+        TextLocalized(ui, "developer.combat.unpublished", "Combat snapshot has not been published yet");
     }
-    TextFormat(ui,
-        "Log worker running=%d ready=%d queue=%llu dropped=%llu",
-        render.log.running ? 1 : 0, render.log.ready ? 1 : 0,
-        static_cast<unsigned long long>(render.log.queue_depth),
-        static_cast<unsigned long long>(render.log.dropped_events));
-    TextFormat(ui, "Skill snapshot: %s / frame=%llu",
+    TextLocalized(ui, "developer.log.worker", "Log worker running={0} ready={1} queue={2} dropped={3}",
+        FormatUnsigned(render.log.running ? 1 : 0),
+        FormatUnsigned(render.log.ready ? 1 : 0),
+        FormatUnsigned(render.log.queue_depth),
+        FormatUnsigned(render.log.dropped_events));
+    TextLocalized(ui, "developer.skills.snapshot", "Skill snapshot: {0} / frame={1}",
         render.skill_capture_status.c_str(),
-        static_cast<unsigned long long>(render.skill_frame_sequence));
-    Text(ui, "Skill records come from read-only snapshot deltas, not an authoritative cast stream.");
+        FormatUnsigned(render.skill_frame_sequence));
+    TextLocalized(ui, "developer.skills.note", "Skill records come from read-only snapshot deltas, not an authoritative cast stream.");
 
     if (ui->button != nullptr) {
-        if (ui->button(ui->user, anomaly::sdk::StringView("Clear damage log"), 0, 0)) {
+        if (ui->button(ui->user, ScopedLabel("developer.button.clear_damage", "Clear damage log").View(),
+                0, 0)) {
             QueueDebugClear(true, false, false);
         }
         if (nte::sdk_compat::HasField<AnomalyUiServiceV1,
                 decltype(AnomalyUiServiceV1::same_line)>(
                 ui, offsetof(AnomalyUiServiceV1, same_line)) &&
             ui->same_line != nullptr) ui->same_line(ui->user, 0, -1);
-        if (ui->button(ui->user, anomaly::sdk::StringView("Clear skill log"), 0, 0)) {
+        if (ui->button(ui->user, ScopedLabel("developer.button.clear_skills", "Clear skill log").View(),
+                0, 0)) {
             QueueDebugClear(false, true, false);
         }
         if (nte::sdk_compat::HasField<AnomalyUiServiceV1,
                 decltype(AnomalyUiServiceV1::same_line)>(
                 ui, offsetof(AnomalyUiServiceV1, same_line)) &&
             ui->same_line != nullptr) ui->same_line(ui->user, 0, -1);
-        if (ui->button(ui->user, anomaly::sdk::StringView("Clear all"), 0, 0)) {
+        if (ui->button(ui->user, ScopedLabel("developer.button.clear_all", "Clear all").View(), 0, 0)) {
             QueueDebugClear(false, false, true);
         }
     }
 
-    Text(ui, "ID to name mapping export");
-    Text(ui, "Export the static full mapping plus the SDK name_id mappings observed in this run.");
-    if (ui->button != nullptr && ui->button(
-            ui->user, anomaly::sdk::StringView("Export ID to name mapping"), 0, 0)) {
+    TextLocalized(ui, "developer.export.heading", "ID to name mapping export");
+    TextLocalized(ui, "developer.export.note", "Export the static full mapping plus the SDK name_id mappings observed in this run.");
+    if (ui->button != nullptr && ui->button(ui->user,
+            ScopedLabel("developer.button.export_names", "Export ID to name mapping").View(), 0, 0)) {
         QueueIdNameExport();
     }
     if (!render.id_name_export_status.empty()) {
-        TextFormat(ui, "%s", render.id_name_export_status.c_str());
+        Text(ui, render.id_name_export_status.c_str());
     }
     if (!render.id_name_export_error.empty()) {
-        TextFormat(ui, "%s", render.id_name_export_error.c_str());
+        Text(ui, render.id_name_export_error.c_str());
     }
 
     if (ui->separator != nullptr) ui->separator(ui->user);
-    TextFormat(ui, "Raw damage events (%llu/256, overwritten %llu)",
-        static_cast<unsigned long long>(render.developer.damage_records.size()),
-        static_cast<unsigned long long>(render.developer.damage_overwritten));
+    TextLocalized(ui, "developer.damage.heading", "Raw damage events ({0}/256, overwritten {1})",
+        FormatUnsigned(render.developer.damage_records.size()),
+        FormatUnsigned(render.developer.damage_overwritten));
     const bool has_children = ui->begin_child != nullptr && ui->end_child != nullptr;
     const bool damage_child = !has_children || ui->begin_child(
         ui->user, anomaly::sdk::StringView("debug-damage-events"), 0, 180, 0);
@@ -2330,9 +2368,9 @@ void DrawDeveloperPage(
     }
     if (has_children) ui->end_child(ui->user);
 
-    TextFormat(ui, "Unified combat events (%llu/256, overwritten %llu)",
-        static_cast<unsigned long long>(render.developer.combat_event_records.size()),
-        static_cast<unsigned long long>(render.developer.combat_event_overwritten));
+    TextLocalized(ui, "developer.combat.heading", "Unified combat events ({0}/256, overwritten {1})",
+        FormatUnsigned(render.developer.combat_event_records.size()),
+        FormatUnsigned(render.developer.combat_event_overwritten));
     const bool event_child = !has_children || ui->begin_child(
         ui->user, anomaly::sdk::StringView("debug-combat-events"), 0, 220, 0);
     if (event_child) {
@@ -2371,9 +2409,9 @@ void DrawDeveloperPage(
     }
     if (has_children) ui->end_child(ui->user);
 
-    TextFormat(ui, "Skill snapshot deltas (%llu/256, overwritten %llu)",
-        static_cast<unsigned long long>(render.developer.skill_records.size()),
-        static_cast<unsigned long long>(render.developer.skill_overwritten));
+    TextLocalized(ui, "developer.skills.heading", "Skill snapshot deltas ({0}/256, overwritten {1})",
+        FormatUnsigned(render.developer.skill_records.size()),
+        FormatUnsigned(render.developer.skill_overwritten));
     const bool skill_child = !has_children || ui->begin_child(
         ui->user, anomaly::sdk::StringView("debug-skill-events"), 0, 180, 0);
     if (skill_child) {
@@ -2424,33 +2462,39 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     if (!window) return;
 
     const auto DrawSettings = [&]() {
-    Text(ui, "Overlay settings");
-    if (ui->button != nullptr && ui->button(
-            ui->user, anomaly::sdk::StringView(
-                !render.overlay_error.empty() ? "Retry overlay launch" :
-                    (render.overlay_enabled ? "Close overlay" : "Open overlay")),
-            0.0F, 0.0F)) {
-        std::scoped_lock lock(g_context.mutex);
-        g_context.toggle_overlay_requested = true;
+    TextLocalized(ui, "settings.overlay.heading", "Overlay settings");
+    if (ui->button != nullptr) {
+        const std::string_view key = !render.overlay_error.empty()
+            ? "settings.overlay.retry"
+            : (render.overlay_enabled ? "settings.overlay.close" : "settings.overlay.open");
+        const std::string_view fallback = !render.overlay_error.empty()
+            ? "Retry overlay launch"
+            : (render.overlay_enabled ? "Close overlay" : "Open overlay");
+        if (ui->button(ui->user, ScopedLabel(key, fallback).View(), 0.0F, 0.0F)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.toggle_overlay_requested = true;
+        }
     }
 
     auto settings = render.overlay_settings;
     bool settings_changed{};
     if (ui->checkbox != nullptr) {
-        const auto checkbox = [&](const char* label, bool& value) {
+        const auto checkbox = [&](const std::string_view key,
+                                  const std::string_view fallback, bool& value) {
             int checked = value ? 1 : 0;
-            if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &checked)) {
+            if (ui->checkbox(ui->user, ScopedLabel(key, fallback).View(), &checked)) {
                 value = checked != 0;
                 settings_changed = true;
             }
         };
-        checkbox("Lock / click-through", settings.locked);
-        checkbox("Collapse", settings.collapsed);
-        checkbox("Always on top", settings.topmost);
-        checkbox("Hide when idle", settings.hide_idle);
+        checkbox("settings.checkbox.lock", "Lock / click-through", settings.locked);
+        checkbox("settings.checkbox.collapse", "Collapse", settings.collapsed);
+        checkbox("settings.checkbox.topmost", "Always on top", settings.topmost);
+        checkbox("settings.checkbox.hide_idle", "Hide when idle", settings.hide_idle);
         if (render.developer_available) {
             int developer_checked = render.developer.enabled ? 1 : 0;
-            if (ui->checkbox(ui->user, anomaly::sdk::StringView("Developer mode"),
+            if (ui->checkbox(ui->user,
+                    ScopedLabel("settings.checkbox.developer", "Developer mode").View(),
                     &developer_checked)) {
                 render.developer.enabled = developer_checked != 0;
                 std::scoped_lock lock(g_context.mutex);
@@ -2460,10 +2504,10 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     }
     if (ui->slider_float != nullptr) {
         settings_changed = ui->slider_float(ui->user,
-            anomaly::sdk::StringView("Opacity"), &settings.opacity,
+            ScopedLabel("settings.slider.opacity", "Opacity").View(), &settings.opacity,
             0.4F, 1.0F) != 0 || settings_changed;
         settings_changed = ui->slider_float(ui->user,
-            anomaly::sdk::StringView("UI scale"), &settings.ui_scale,
+            ScopedLabel("settings.slider.ui_scale", "UI scale").View(), &settings.ui_scale,
             0.75F, 2.0F) != 0 || settings_changed;
     }
     if (settings_changed) {
@@ -2472,22 +2516,24 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     }
 
     if (ui->separator != nullptr) ui->separator(ui->user);
-    Text(ui, "Statistics storage");
+    TextLocalized(ui, "settings.storage.heading", "Statistics storage");
     const bool input_available = nte::sdk_compat::HasField<AnomalyUiServiceV1,
             decltype(AnomalyUiServiceV1::input_text)>(
             ui, offsetof(AnomalyUiServiceV1, input_text)) &&
         ui->input_text != nullptr;
     if (input_available) {
-        if (ui->input_text(ui->user, anomaly::sdk::StringView("Storage path"),
+        if (ui->input_text(ui->user,
+                ScopedLabel("settings.input.storage_path", "Storage path").View(),
                 path_input.data(), path_input.size(), 0)) {
             std::scoped_lock lock(g_context.mutex);
             g_context.log_root_input = path_input;
         }
     } else {
-        TextFormat(ui, "Storage path: %s", render.log_root.c_str());
+        TextLocalized(ui, "settings.storage.path", "Storage path: {0}",
+            render.log_root.c_str());
     }
-    if (ui->button != nullptr && ui->button(
-            ui->user, anomaly::sdk::StringView("Apply path"), 0.0F, 0.0F)) {
+    if (ui->button != nullptr && ui->button(ui->user,
+            ScopedLabel("settings.button.apply_path", "Apply path").View(), 0.0F, 0.0F)) {
         std::scoped_lock lock(g_context.mutex);
         g_context.requested_log_root = path_input.data();
     }
@@ -2497,42 +2543,47 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         ui->same_line != nullptr) {
         ui->same_line(ui->user, 0.0F, -1.0F);
     }
-    if (ui->button != nullptr && ui->button(
-            ui->user, anomaly::sdk::StringView("Open data folder"), 0.0F, 0.0F)) {
+    if (ui->button != nullptr && ui->button(ui->user,
+            ScopedLabel("settings.button.open_data", "Open data folder").View(), 0.0F, 0.0F)) {
         std::scoped_lock lock(g_context.mutex);
         g_context.open_log_root_requested = true;
     }
     if (input_available) {
-        if (ui->input_text(ui->user, anomaly::sdk::StringView("Export directory"),
+        if (ui->input_text(ui->user,
+                ScopedLabel("settings.input.export_dir", "Export directory").View(),
                 export_path_input.data(), export_path_input.size(), 0)) {
             std::scoped_lock lock(g_context.mutex);
             g_context.export_root_input = export_path_input;
         }
     } else {
-        TextFormat(ui, "Export directory: %s", render.export_root.empty() ?
-            "not configured" : render.export_root.c_str());
+        TextLocalized(ui, "settings.storage.export", "Export directory: {0}",
+            render.export_root.empty() ? "not configured" : render.export_root.c_str());
     }
-    if (ui->button != nullptr && ui->button(
-            ui->user, anomaly::sdk::StringView("Apply export directory"), 0.0F, 0.0F)) {
+    if (ui->button != nullptr && ui->button(ui->user,
+            ScopedLabel("settings.button.apply_export", "Apply export directory").View(),
+            0.0F, 0.0F)) {
         std::scoped_lock lock(g_context.mutex);
         g_context.apply_export_root_requested = true;
         g_context.requested_export_root = export_path_input.data();
     }
     if (!render.settings_status.empty()) {
-        TextFormat(ui, "%s", render.settings_status.c_str());
+        Text(ui, render.settings_status.c_str());
     }
     if (!render.settings_error.empty()) {
-        TextFormat(ui, "Settings error: %s", render.settings_error.c_str());
+        TextLocalized(ui, "settings.error.settings", "Settings error: {0}",
+            render.settings_error.c_str());
     }
     if (!render.character_attribute_error.empty()) {
-        TextFormat(ui, "Character attribute error: %s",
+        TextLocalized(ui, "settings.error.attribute", "Character attribute error: {0}",
             render.character_attribute_error.c_str());
     }
     if (!render.overlay_error.empty()) {
-        TextFormat(ui, "Overlay launch error: %s", render.overlay_error.c_str());
+        TextLocalized(ui, "settings.error.overlay", "Overlay launch error: {0}",
+            render.overlay_error.c_str());
     }
     if (!render.log.last_error.empty()) {
-        TextFormat(ui, "Storage error: %s", render.log.last_error.c_str());
+        TextLocalized(ui, "settings.error.storage", "Storage error: {0}",
+            render.log.last_error.c_str());
     }
     };
 
@@ -2544,7 +2595,7 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     if (!tabs_available) {
         DrawSettings();
         if (render.developer_available && render.developer.enabled) {
-            Text(ui, "The current Anomaly UI service has no tabs; the developer page is unavailable.");
+            TextLocalized(ui, "settings.developer.unavailable", "The current Anomaly UI service has no tabs; the developer page is unavailable.");
         }
         return;
     }
@@ -2554,7 +2605,8 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         DrawSettings();
         return;
     }
-    if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView("Settings"),
+    if (ui->begin_tab_item(ui->user,
+            ScopedLabel("settings.tab.settings", "Settings").View(),
             nullptr, ANOMALY_UI_TAB_ITEM_V1_NONE, 1)) {
         DrawSettings();
         ui->end_tab_item(ui->user);
@@ -2566,6 +2618,27 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         ui->end_tab_item(ui->user);
     }
     ui->end_tab_bar(ui->user);
+}
+
+// The overlay runs in its own process with no Host services, so it needs the
+// active locale to pick the same catalog the plugin resolved.
+[[nodiscard]] std::string ResolveLocale(const anomaly::sdk::Host* services) {
+    const auto localization = services->Query<AnomalyLocalizationServiceV1>(
+        ANOMALY_LOCALIZATION_SERVICE_V1_ID, ANOMALY_LOCALIZATION_SERVICE_V1_VERSION);
+    if (!localization || localization->locale == nullptr) return "zh-CN";
+    std::size_t size = 0;
+    if (localization->locale(localization->user, nullptr, &size).code ==
+        ANOMALY_STATUS_V1_OK) {
+        return "zh-CN";
+    }
+    if (size <= 1 || size > 64) return "zh-CN";
+    std::string buffer(size, '\0');
+    if (localization->locale(localization->user, buffer.data(), &size).code !=
+        ANOMALY_STATUS_V1_OK) {
+        return "zh-CN";
+    }
+    while (!buffer.empty() && buffer.back() == '\0') buffer.pop_back();
+    return buffer.empty() ? "zh-CN" : buffer;
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
@@ -2586,6 +2659,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.ui = ui.get();
     g_context.core = core.get();
     g_context.websocket = websocket.get();
+    g_context.localizer = anomaly::sdk::Localizer(host);
+    g_context.locale = ResolveLocale(&services);
     ResetState();
     *context = &g_context;
     return anomaly::sdk::Ok();

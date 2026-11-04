@@ -4,6 +4,7 @@
 #include "overlay_control.hpp"
 #include "overlay_model.hpp"
 #include "overlay_protocol.hpp"
+#include "overlay_text_catalog.hpp"
 #include "history_reader.hpp"
 #include "log_worker.hpp"
 #include "plugin_version.hpp"
@@ -137,7 +138,9 @@ struct App {
     HINTERNET cancelled_request{};
     std::mutex snapshot_mutex;
     std::optional<NteOverlaySnapshot> snapshot;
-    std::string connection_status{"正在连接 Runtime…"};  // i18n-data
+    // Replaced by the catalog value once the first snapshot arrives; the
+    // literal here is the English fallback used before that.
+    std::string connection_status{"Connecting to the Runtime…"};
     std::chrono::steady_clock::time_point last_snapshot{};
     std::atomic_bool lifetime_guarded{};
     bool connected{};
@@ -175,11 +178,55 @@ struct App {
     bool history_expansion_initialized{};
     nte::combat_stats::AttributeColorMap attribute_colors;
     std::string attribute_color_error;
+    // Overlay copy resolved from the catalog the plugin ships. Lookups fall back
+    // to the English literal at each call site, so a missing catalog degrades to
+    // English rather than blank text.
+    nte::combat_stats::overlay::TextCatalog text;
+    std::string text_locale;
+    std::filesystem::path executable_root;
 };
 
 std::wstring Utf16(const std::string& text);
 
 App g_app;
+// Catalog patterns carry `{0}` placeholders. std::format needs a compile-time
+// pattern while catalog text is only known at run time, so this uses vformat
+// rather than string concatenation: the placeholder stays in the catalog and the
+// value is substituted, which is what the i18n rules require.
+[[nodiscard]] std::wstring Substitute(const std::wstring_view pattern,
+                                      const std::wstring_view value) {
+    return std::vformat(pattern, std::make_wformat_args(value));
+}
+
+// Narrow variant for messages that are stored as UTF-8.
+[[nodiscard]] std::string Substitute(const std::string_view pattern,
+                                     const std::string_view value) {
+    return std::vformat(pattern, std::make_format_args(value));
+}
+// This process has no Host services, so it cannot construct an
+// anomaly::sdk::Localizer. The adapter resolves the same catalog file the
+// plugin ships; the plugin stays the single Host-service Localizer source.
+// Call sites go through this adapter with a literal key and English fallback,
+// so the i18n gate can match both literally.
+struct OverlayCatalogText {
+    [[nodiscard]] std::wstring Text(const std::string_view catalog_key,
+                                    const std::string_view fallback) const {
+        return g_app.text.Text(catalog_key, fallback);
+    }
+};
+const OverlayCatalogText localizer;
+
+// UTF-16 to UTF-8 for values that are stored narrow (status strings, chrome).
+[[nodiscard]] std::string Narrow(const std::wstring_view wide) {
+    if (wide.empty()) return {};
+    const int count = WideCharToMultiByte(
+        CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    if (count <= 0) return {};
+    std::string narrow(static_cast<std::size_t>(count), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
+        narrow.data(), count, nullptr, nullptr);
+    return narrow;
+}
 
 std::size_t HistoryEncounterCount(
     const std::vector<nte::combat_stats::overlay::AccountHistoryGroup>& groups) {
@@ -189,7 +236,8 @@ std::size_t HistoryEncounterCount(
 }
 
 std::wstring AccountLabel(const nte::account::AccountIdentity& account) {
-    return account.known() ? L"UID " + Utf16(account.uid) : L"未识别账号";  // i18n-data
+    return account.known() ? L"UID " + Utf16(account.uid)
+                           : localizer.Text("overlay.account.unknown", "Unknown account");
 }
 
 std::wstring Utf16(const std::string& text) {
@@ -311,14 +359,16 @@ std::wstring CompactNumber(const double value) {
 }
 
 std::wstring StateText(const NteOverlaySnapshot& snapshot) {
-    if (!snapshot.capture_available) return L"采集不可用";  // i18n-data
-    switch (snapshot.combat.state) {
-    case EncounterState::Idle: return L"等待战斗";  // i18n-data
-    case EncounterState::Active: return L"Active";
-    case EncounterState::Closing: return L"正在关闭记录";  // i18n-data
-    case EncounterState::Completed: return L"Completed";
+    if (!snapshot.capture_available) {
+        return localizer.Text("overlay.state.capture_unavailable", "Capture unavailable");
     }
-    return L"等待战斗";  // i18n-data
+    switch (snapshot.combat.state) {
+    case EncounterState::Idle: return localizer.Text("overlay.state.idle", "Waiting for combat");
+    case EncounterState::Active: return localizer.Text("overlay.state.active", "Active");
+    case EncounterState::Closing: return localizer.Text("overlay.state.closing", "Closing log");
+    case EncounterState::Completed: return localizer.Text("overlay.state.completed", "Completed");
+    }
+    return localizer.Text("overlay.state.idle", "Waiting for combat");
 }
 
 std::wstring CellText(const PlayerRow& row, const SortColumn column) {
@@ -514,18 +564,23 @@ void RenderOverlay() {
         add_target(manual_rect, UiAction::ManualEnd);
     }
     DrawTextLine(target.Get(), scaled_small.Get(), manual_enabled ? text.Get() : muted.Get(),
-        L"结束", manual_rect);  // i18n-data
-    std::wstring title = g_app.page == ViewPage::Live ? L"当前战斗" : L"历史战斗";  // i18n-data
+        localizer.Text("overlay.button.end", "End"), manual_rect);
+    std::wstring title = g_app.page == ViewPage::Live
+        ? localizer.Text("overlay.title.live", "Current encounter")
+        : localizer.Text("overlay.title.history", "Encounter history");
     std::wstring time = L"00:00";
     std::wstring target_name;
     if (g_app.page == ViewPage::HistoryDetail && history_detail) {
         const int seconds = static_cast<int>(history_detail->summary.duration_seconds);
         time = std::format(L"{:02}:{:02}", seconds / 60, seconds % 60);
         target_name = Utf16(history_detail->summary.end_reason);
-        if (!history_detail->summary.complete) target_name += L" ⚠ 数据不完整";  // i18n-data
+        if (!history_detail->summary.complete) {
+            target_name += L" ⚠ " + localizer.Text("overlay.badge.incomplete", "data incomplete");
+        }
     } else if (g_app.page == ViewPage::HistoryList) {
-        target_name = std::format(
-            L"{} 场已结束战斗", HistoryEncounterCount(history));  // i18n-data
+        target_name = Substitute(
+            localizer.Text("overlay.history.count", "{0} completed encounters"),
+            std::to_wstring(HistoryEncounterCount(history)));
         if (!history_error.empty()) {
             target_name += L" ⚠ " + Utf16(history_error);
         }
@@ -533,7 +588,8 @@ void RenderOverlay() {
         const int seconds = static_cast<int>(snapshot->combat.duration_seconds);
         time = std::format(L"{:02}:{:02}", seconds / 60, seconds % 60);
         target_name = snapshot->primary_target.empty()
-            ? (connected ? StateText(*snapshot) : L"连接断开")  // i18n-data
+            ? (connected ? StateText(*snapshot)
+                         : localizer.Text("overlay.state.disconnected", "Disconnected"))
             : Utf16(snapshot->primary_target);
         if (snapshot->combat.quality.partial || snapshot->combat.quality.overflow ||
             snapshot->combat.quality.cursor_gap ||
@@ -542,11 +598,15 @@ void RenderOverlay() {
             g_app.settings.active_tab == DataTab::HealingDone ||
             g_app.settings.active_tab == DataTab::HealingReceived;
         if (healing_tab && snapshot->healing_capture_status != "available") {
-            target_name += L"｜治疗采集不可用";  // i18n-data
+            target_name += L" | " +
+                localizer.Text("overlay.badge.healing_unavailable", "healing capture unavailable");
         }
     }
     if (!g_app.action_status.empty()) target_name = Utf16(g_app.action_status);
-    if (!g_app.attribute_color_error.empty()) target_name += L"｜属性颜色不可用";  // i18n-data
+    if (!g_app.attribute_color_error.empty()) {
+        target_name += L" | " +
+            localizer.Text("overlay.badge.attribute_unavailable", "attribute colors unavailable");
+    }
     DrawTextLine(target.Get(), scaled_bold.Get(), accent.Get(), time,
         to_d2d_rect(title_layout.time));
     DrawTextLine(target.Get(), scaled_bold.Get(), text.Get(), title,
@@ -593,16 +653,16 @@ void RenderOverlay() {
             const D2D1_RECT_F healing_received = to_d2d_rect(footer_layout.healing_received_tab);
             DrawTextLine(target.Get(), scaled_tab.Get(),
                 g_app.settings.active_tab == DataTab::Outgoing ? accent.Get() : text.Get(),
-                L"输出", outgoing);  // i18n-data
+                localizer.Text("overlay.tab.outgoing", "Damage"), outgoing);
             DrawTextLine(target.Get(), scaled_tab.Get(),
                 g_app.settings.active_tab == DataTab::Incoming ? accent.Get() : text.Get(),
-                L"承伤", incoming);  // i18n-data
+                localizer.Text("overlay.tab.incoming", "Taken"), incoming);
             DrawTextLine(target.Get(), scaled_tab.Get(),
                 g_app.settings.active_tab == DataTab::HealingDone ? accent.Get() : text.Get(),
-                L"治疗", healing_done);  // i18n-data
+                localizer.Text("overlay.tab.healing_done", "Healing"), healing_done);
             DrawTextLine(target.Get(), scaled_tab.Get(),
                 g_app.settings.active_tab == DataTab::HealingReceived ? accent.Get() : text.Get(),
-                L"受疗", healing_received);  // i18n-data
+                localizer.Text("overlay.tab.healing_received", "Healed"), healing_received);
             for (const auto& tab : {outgoing, incoming, healing_done, healing_received}) {
                 target->DrawLine(D2D1::Point2F(tab.right, tab.top),
                     D2D1::Point2F(tab.right, tab.bottom), separator.Get(), scale);
@@ -633,7 +693,7 @@ void RenderOverlay() {
             to_d2d_rect(footer_layout.summary));
 
         if (g_app.page == ViewPage::HistoryList) {
-            draw_cells({L"账号 / 时间", L"时长", L"输出", L"承伤", L"DPS", L"结束原因", L"质量"},  // i18n-data
+            draw_cells({localizer.Text("overlay.col.account_time", "Account / Time"), localizer.Text("overlay.col.duration", "Duration"), localizer.Text("overlay.col.outgoing", "Damage"), localizer.Text("overlay.col.taken", "Taken"), L"DPS", localizer.Text("overlay.col.end_reason", "End reason"), localizer.Text("overlay.col.quality", "Quality")},
                 {1.8F, 0.7F, 0.9F, 0.9F, 0.9F, 1.2F, 0.7F},
                 D2D1::RectF(0, top, layout.width, top + header_height),
                 scaled_small.Get(), muted.Get(), true);
@@ -667,7 +727,9 @@ void RenderOverlay() {
                         nte::account::DirectoryName(item.account));
                     draw_cells({std::wstring(expanded ? L"▾  " : L"▸  ") +
                             AccountLabel(item.account),
-                        std::format(L"{} 场", item.encounter_count), L"", L"", L"", L"", L""},  // i18n-data
+                        Substitute(
+                            localizer.Text("overlay.list.count", "{0} encounters"),
+                            std::to_wstring(item.encounter_count)), L"", L"", L"", L"", L""},
                         {1.8F, 0.7F, 0.9F, 0.9F, 0.9F, 1.2F, 0.7F}, rect,
                         scaled_regular.Get(), accent.Get());
                 } else if (item.encounter) {
@@ -678,7 +740,7 @@ void RenderOverlay() {
                         CompactNumber(static_cast<double>(encounter.incoming_damage)),
                         CompactNumber(encounter.encounter_dps),
                         Utf16(encounter.end_reason),
-                        encounter.complete ? L"完整" : L"缺失"},  // i18n-data
+                        encounter.complete ? localizer.Text("overlay.quality.complete", "Complete") : localizer.Text("overlay.quality.missing", "Missing")},
                         {1.8F, 0.7F, 0.9F, 0.9F, 0.9F, 1.2F, 0.7F}, rect,
                         scaled_regular.Get(),
                         encounter.complete ? text.Get() : warning.Get());
@@ -687,7 +749,7 @@ void RenderOverlay() {
             }
             if (g_app.displayed_history.empty()) {
                 DrawTextLine(target.Get(), scaled_regular.Get(), muted.Get(),
-                    history_error.empty() ? L"暂无历史战斗" : Utf16(history_error),  // i18n-data
+                    history_error.empty() ? localizer.Text("overlay.history.empty", "No completed encounters") : Utf16(history_error),
                     D2D1::RectF(12 * scale, top + 10 * scale,
                         layout.width - 12 * scale, content_bottom));
             }
@@ -715,11 +777,11 @@ void RenderOverlay() {
                 g_app.page == ViewPage::HistoryDetail) {
                 const D2D1_RECT_F back = D2D1::RectF(
                     0, top, 58 * scale, top + header_height);
-                DrawTextLine(target.Get(), scaled_regular.Get(), text.Get(), L"‹ 返回", back);  // i18n-data
+                DrawTextLine(target.Get(), scaled_regular.Get(), text.Get(), localizer.Text("overlay.nav.back", "‹ Back"), back);
                 add_target(back, UiAction::Back);
                 std::wstring breadcrumb = g_app.drill == DrillLevel::Players
-                    ? L"历史战斗" : L"角色 / 来源";  // i18n-data
-                if (g_app.drill == DrillLevel::Events) breadcrumb += L" / 命中";  // i18n-data
+                    ? localizer.Text("overlay.title.history", "Encounter history") : localizer.Text("overlay.col.character_source", "Character / Source");
+                if (g_app.drill == DrillLevel::Events) breadcrumb += L" / " + localizer.Text("overlay.drill.hits", "hits");
                 DrawTextLine(target.Get(), scaled_small.Get(), muted.Get(), breadcrumb,
                     D2D1::RectF(60 * scale, top, layout.width, top + header_height));
                 top += header_height;
@@ -750,15 +812,15 @@ void RenderOverlay() {
                 total_rows = g_app.displayed_players.size();
                 for (const auto& column :
                      nte::combat_stats::overlay::OutgoingSummaryColumns()) {
-                    outgoing_headers.emplace_back(column.label);
+                    outgoing_headers.emplace_back(localizer.Text(column.key, Narrow(column.fallback)));
                     outgoing_weights.push_back(column.weight);
                 }
                 draw_cells(g_app.settings.active_tab == DataTab::Outgoing
                         ? outgoing_headers
                         : (g_app.settings.active_tab == DataTab::HealingDone ||
                            g_app.settings.active_tab == DataTab::HealingReceived)
-                            ? std::vector<std::wstring>{L"角色", L"治疗", L"HPS", L"占比", L"次数", L"平均", L"最大"}  // i18n-data
-                            : std::vector<std::wstring>{L"角色", L"承伤", L"占比", L"次数", L"平均", L"最大"},  // i18n-data
+                            ? std::vector<std::wstring>{localizer.Text("overlay.col.character", "Character"), localizer.Text("overlay.col.healing", "Healing"), localizer.Text("overlay.col.hps", "HPS"), localizer.Text("overlay.col.share", "Share"), localizer.Text("overlay.col.count", "Count"), localizer.Text("overlay.col.average", "Avg"), localizer.Text("overlay.col.max", "Max")}
+                            : std::vector<std::wstring>{localizer.Text("overlay.col.character", "Character"), localizer.Text("overlay.col.taken", "Taken"), localizer.Text("overlay.col.share", "Share"), localizer.Text("overlay.col.count", "Count"), localizer.Text("overlay.col.average", "Avg"), localizer.Text("overlay.col.max", "Max")},
                     g_app.settings.active_tab == DataTab::Outgoing
                         ? outgoing_weights
                         : (g_app.settings.active_tab == DataTab::HealingDone ||
@@ -809,7 +871,7 @@ void RenderOverlay() {
                 if (g_app.drill == DrillLevel::Sources) {
                     g_app.displayed_sources = std::move(grouped_sources);
                     total_rows = g_app.displayed_sources.size();
-                    draw_cells({L"来源", healing ? L"治疗" : L"伤害", L"次数", L"平均", L"最大"},  // i18n-data
+                    draw_cells({localizer.Text("overlay.col.source", "Source"), healing ? localizer.Text("overlay.col.healing", "Healing") : localizer.Text("overlay.col.damage", "Damage"), localizer.Text("overlay.col.count", "Count"), localizer.Text("overlay.col.average", "Avg"), localizer.Text("overlay.col.max", "Max")},
                         {2.5F, 1.1F, 0.8F, 1.0F, 1.0F},
                         D2D1::RectF(0, top, layout.width, top + header_height),
                         scaled_small.Get(), muted.Get(), true);
@@ -818,11 +880,11 @@ void RenderOverlay() {
                         events, g_app.selected_player, direction, event_kind,
                         g_app.selected_source);
                     total_rows = g_app.displayed_events.size();
-                    draw_cells({L"相对/接收时间", healing ? L"治疗" : L"最终",  // i18n-data
-                            healing ? L"基础/原始" : L"基础/显示",  // i18n-data
-                            healing ? L"" : L"标记",  // i18n-data
+                    draw_cells({localizer.Text("overlay.col.relative_time", "Relative / Received"), healing ? localizer.Text("overlay.col.healing", "Healing") : localizer.Text("overlay.col.final", "Final"),
+                            healing ? localizer.Text("overlay.col.base_raw", "Base / Raw") : localizer.Text("overlay.col.base_display", "Base / Display"),
+                            healing ? L"" : localizer.Text("overlay.col.flags", "Flags"),
                             direction == nte::combat_stats::overlay::DetailDirection::Outgoing
-                                ? L"目标" : L"来源角色"},  // i18n-data
+                                ? localizer.Text("overlay.col.target", "Target") : localizer.Text("overlay.col.source_character", "Source character")},
                         {2.3F, 1.0F, 1.4F, 0.8F, 1.8F},
                         D2D1::RectF(0, top, layout.width, top + header_height),
                         scaled_small.Get(), muted.Get(), true);
@@ -959,13 +1021,13 @@ void RenderOverlay() {
                     std::wstring flags;
                     if (event.kind == nte::combat_stats::CombatEventKind::Damage &&
                         (event.flags & nte::combat_stats::kDamageFlagCritical) != 0)
-                        flags += L"暴";  // i18n-data
+                        flags += localizer.Text("overlay.flag.critical", "C");
                     if (event.kind == nte::combat_stats::CombatEventKind::Damage &&
                         (event.flags & nte::combat_stats::kDamageFlagHeadHit) != 0)
-                        flags += L"头";  // i18n-data
+                        flags += localizer.Text("overlay.flag.head", "H");
                     if (event.kind == nte::combat_stats::CombatEventKind::Damage &&
                         (event.flags & nte::combat_stats::kDamageFlagWeakUnbalance) != 0)
-                        flags += L"弱";  // i18n-data
+                        flags += localizer.Text("overlay.flag.weak", "W");
                     const bool critical =
                         event.kind == nte::combat_stats::CombatEventKind::Damage &&
                         (event.flags & nte::combat_stats::kDamageFlagCritical) != 0;
@@ -987,8 +1049,8 @@ void RenderOverlay() {
             }
             if (total_rows == 0) {
                 const std::wstring message = g_app.page == ViewPage::HistoryDetail &&
-                        !history_detail ? L"正在加载历史战斗…" :  // i18n-data
-                    (snapshot ? L"暂无数据" : Utf16(status));  // i18n-data
+                        !history_detail ? localizer.Text("overlay.history.loading", "Loading encounter history…") :
+                    (snapshot ? localizer.Text("overlay.state.no_data", "No data") : Utf16(status));
                 DrawTextLine(target.Get(), scaled_regular.Get(), muted.Get(), message,
                     D2D1::RectF(12 * scale, top + 10 * scale,
                         layout.width - 12 * scale, content_bottom));
@@ -1067,7 +1129,7 @@ struct HttpHandle {
 
 void ReceiveSnapshots(const std::stop_token stop) {
     while (!stop.stop_requested()) {
-        SetConnectionStatus("正在连接 Runtime…", false);  // i18n-data
+        SetConnectionStatus(Narrow(localizer.Text("overlay.conn.connecting", "Connecting to the Runtime...")), false);
         HttpHandle session(WinHttpOpen(nte::build::kOverlayUserAgent,
             WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME,
             WINHTTP_NO_PROXY_BYPASS, 0));
@@ -1094,17 +1156,17 @@ void ReceiveSnapshots(const std::stop_token stop) {
             }
         }
         if (!request_ready) {
-            SetConnectionStatus("Runtime WebSocket 未连接", false);  // i18n-data
+            SetConnectionStatus(Narrow(localizer.Text("overlay.conn.not_connected", "Runtime WebSocket is not connected")), false);
             for (int i = 0; i < 20 && !stop.stop_requested(); ++i) Sleep(100);
             continue;
         }
         HttpHandle socket(WinHttpWebSocketCompleteUpgrade(request.value, 0));
         if (!socket.value) {
-            SetConnectionStatus("WebSocket 握手失败", false);  // i18n-data
+            SetConnectionStatus(Narrow(localizer.Text("overlay.conn.handshake_failed", "WebSocket handshake failed")), false);
             Sleep(1000);
             continue;
         }
-        SetConnectionStatus("已连接，等待 NTE 数据", true);  // i18n-data
+        SetConnectionStatus(Narrow(localizer.Text("overlay.conn.awaiting_data", "Connected, waiting for NTE data")), true);
         {
             std::scoped_lock lock(g_app.socket_mutex);
             g_app.active_socket = socket.value;
@@ -1160,7 +1222,14 @@ void ReceiveSnapshots(const std::stop_token stop) {
                 }
                 g_app.snapshot.emplace(std::move(*parsed));
                 g_app.last_snapshot = std::chrono::steady_clock::now();
-                g_app.connection_status = "已连接";  // i18n-data
+                // The locale arrives with each snapshot; reload only when it
+                // actually changes, since the Host fixes it per process.
+                if (!g_app.executable_root.empty() && g_app.text_locale != g_app.snapshot->locale) {
+                    g_app.text_locale = g_app.snapshot->locale;
+                    g_app.text.Load(g_app.executable_root, g_app.text_locale);
+                }
+                g_app.connection_status =
+                    Narrow(localizer.Text("overlay.state.connected", "Connected"));
             }
             if (redraw) PostMessageW(g_app.window, kSnapshotMessage, 0, 0);
         }
@@ -1170,7 +1239,7 @@ void ReceiveSnapshots(const std::stop_token stop) {
         }
         WinHttpWebSocketClose(socket.value, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,
             nullptr, 0);
-        SetConnectionStatus("连接断开，正在重连…", false);  // i18n-data
+        SetConnectionStatus(Narrow(localizer.Text("overlay.conn.reconnecting", "Disconnected, reconnecting...")), false);
         for (int i = 0; i < 10 && !stop.stop_requested(); ++i) Sleep(100);
     }
 }
@@ -1377,31 +1446,31 @@ std::optional<std::filesystem::path> SelectExportDirectory(std::string& error) {
     HRESULT result = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
         CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
     if (FAILED(result)) {
-        error = "无法打开目录选择器";  // i18n-data
+        error = Narrow(localizer.Text("overlay.export.err_open", "Cannot open the folder picker"));
         return std::nullopt;
     }
     DWORD options{};
     if (FAILED(dialog->GetOptions(&options)) || FAILED(dialog->SetOptions(
             options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST))) {
-        error = "无法配置目录选择器";  // i18n-data
+        error = Narrow(localizer.Text("overlay.export.err_config", "Cannot configure the folder picker"));
         return std::nullopt;
     }
-    dialog->SetTitle(L"选择 NTE 战斗数据导出目录");  // i18n-data
+    dialog->SetTitle(localizer.Text("overlay.dialog.export_dir", "Select NTE combat export directory").c_str());
     result = dialog->Show(g_app.window);
     if (result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return std::nullopt;
     if (FAILED(result)) {
-        error = "选择导出目录失败";  // i18n-data
+        error = Narrow(localizer.Text("overlay.export.err_select", "Selecting the export folder failed"));
         return std::nullopt;
     }
     ComPtr<IShellItem> item;
     if (FAILED(dialog->GetResult(&item))) {
-        error = "无法读取选择的导出目录";  // i18n-data
+        error = Narrow(localizer.Text("overlay.export.err_read", "Cannot read the selected export folder"));
         return std::nullopt;
     }
     PWSTR selected{};
     if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) ||
         selected == nullptr) {
-        error = "选择的导出目录不是文件系统路径";  // i18n-data
+        error = Narrow(localizer.Text("overlay.export.err_not_fs", "The selected export folder is not a filesystem path"));
         return std::nullopt;
     }
     std::filesystem::path path(selected);
@@ -1452,23 +1521,31 @@ void RunExport(const std::stop_token stop, ExportRequest request) {
             std::chrono::milliseconds>(std::chrono::system_clock::now()
                 .time_since_epoch()).count();
         std::filesystem::path written;
+        // Success is tracked by the return value, not by sniffing a translated
+        // prefix: the message text now depends on the active catalog.
+        bool exported = false;
         if (nte::combat_stats::overlay::WriteCombatExport(
                 request.export_root, *detail, nte::build::kPluginVersion,
                 exported_utc_ms, written, error, stop)) {
-            error = "导出完成：" + nte::settings::PathToUtf8(written);  // i18n-data
+            exported = true;
+            error = Substitute(
+                Narrow(localizer.Text("overlay.export.done", "Export complete: {0}")),
+                nte::settings::PathToUtf8(written));
         }
+        if (stop.stop_requested()) return;
+        {
+            std::scoped_lock lock(g_app.snapshot_mutex);
+            g_app.export_result_status = exported
+                ? std::move(error)
+                : Substitute(Narrow(localizer.Text("overlay.export.failed", "Export failed: {0}")), error);
+            g_app.export_in_progress = false;
+        }
+        if (g_app.window != nullptr) {
+            PostMessageW(g_app.window, kExportCompleteMessage, 0, 0);
+        }
+        return;
     } else if (error.empty() && !stop.stop_requested()) {
-        error = "未找到已结束的战斗日志";  // i18n-data
-    }
-    if (stop.stop_requested()) return;
-    {
-        std::scoped_lock lock(g_app.snapshot_mutex);
-        g_app.export_result_status = error.starts_with("导出完成：") ?  // i18n-data
-            std::move(error) : "导出失败：" + error;  // i18n-data
-        g_app.export_in_progress = false;
-    }
-    if (g_app.window != nullptr) {
-        PostMessageW(g_app.window, kExportCompleteMessage, 0, 0);
+        error = Narrow(localizer.Text("overlay.export.err_none", "No completed encounter log was found"));
     }
 }
 
@@ -1483,7 +1560,7 @@ void BeginExport() {
         nte::settings::PluginSettingsPath(),
         nte::damage_log::DefaultLogRoot(), settings_error);
     if (!settings_error.empty()) {
-        g_app.action_status = "导出失败：" + settings_error;  // i18n-data
+        g_app.action_status = Substitute(Narrow(localizer.Text("overlay.export.failed", "Export failed: {0}")), settings_error);
         RenderOverlay();
         return;
     }
@@ -1492,14 +1569,14 @@ void BeginExport() {
         const auto selected = SelectExportDirectory(selection_error);
         if (!selected) {
             if (!selection_error.empty()) {
-                g_app.action_status = "导出失败：" + selection_error;  // i18n-data
+                g_app.action_status = Substitute(Narrow(localizer.Text("overlay.export.failed", "Export failed: {0}")), selection_error);
                 RenderOverlay();
             }
             return;
         }
         std::string prepare_error;
         if (!nte::settings::PrepareLogRoot(*selected, prepare_error)) {
-            g_app.action_status = "导出失败：导出目录不可用：" + prepare_error;  // i18n-data
+            g_app.action_status = Substitute(Narrow(localizer.Text("overlay.export.failed_dir", "Export failed: the export folder is unavailable: {0}")), prepare_error);
             RenderOverlay();
             return;
         }
@@ -1507,7 +1584,7 @@ void BeginExport() {
         if (!nte::settings::UpdatePluginExportRoot(
                 nte::settings::PluginSettingsPath(), settings.log_root,
                 selected, merged, settings_error)) {
-            g_app.action_status = "导出失败：无法保存导出目录：" + settings_error;  // i18n-data
+            g_app.action_status = Substitute(Narrow(localizer.Text("overlay.export.failed_save", "Export failed: cannot save the export folder: {0}")), settings_error);
             RenderOverlay();
             return;
         }
@@ -1519,7 +1596,7 @@ void BeginExport() {
         g_app.export_in_progress = true;
     }
     if (g_app.export_worker.joinable()) g_app.export_worker.join();
-    g_app.action_status = "正在导出当前战斗…";  // i18n-data
+    g_app.action_status = Narrow(localizer.Text("overlay.export.running", "Exporting the current encounter..."));
     RenderOverlay();
     g_app.export_worker = std::jthread(RunExport, ExportRequest{
         settings.log_root, *settings.export_root,
@@ -1529,23 +1606,23 @@ void BeginExport() {
 void ShowContextMenu(const POINT screen) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING | (g_app.settings.locked ? MF_CHECKED : 0),
-        MenuToggleLock, L"锁定 / 点击穿透\tCtrl+Shift+F12");  // i18n-data
+        MenuToggleLock, (localizer.Text("overlay.menu.lock", "Lock / click-through") + L"\tCtrl+Shift+F12").c_str());
     AppendMenuW(menu, MF_STRING | (g_app.settings.collapsed ? MF_CHECKED : 0),
-        MenuToggleCollapsed, L"折叠");  // i18n-data
+        MenuToggleCollapsed, localizer.Text("overlay.menu.collapse", "Collapse").c_str());
     AppendMenuW(menu, MF_STRING | (g_app.settings.topmost ? MF_CHECKED : 0),
-        MenuToggleTopmost, L"置顶");  // i18n-data
+        MenuToggleTopmost, localizer.Text("overlay.menu.topmost", "Always on top").c_str());
     AppendMenuW(menu, MF_STRING | (g_app.settings.hide_idle ? MF_CHECKED : 0),
-        MenuToggleHideIdle, L"离战隐藏");  // i18n-data
+        MenuToggleHideIdle, localizer.Text("overlay.menu.hide_idle", "Hide when idle").c_str());
     HMENU opacity = CreatePopupMenu();
     AppendMenuW(opacity, MF_STRING, MenuOpacity60, L"60%");
     AppendMenuW(opacity, MF_STRING, MenuOpacity75, L"75%");
     AppendMenuW(opacity, MF_STRING, MenuOpacity90, L"90%");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(opacity), L"透明度");  // i18n-data
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(opacity), localizer.Text("overlay.menu.opacity", "Opacity").c_str());
     HMENU scale = CreatePopupMenu();
     AppendMenuW(scale, MF_STRING, MenuScale100, L"100%");
     AppendMenuW(scale, MF_STRING, MenuScale125, L"125%");
     AppendMenuW(scale, MF_STRING, MenuScale150, L"150%");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(scale), L"界面缩放");  // i18n-data
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(scale), localizer.Text("overlay.menu.ui_scale", "UI scale").c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     std::string export_report;
     std::string export_encounter;
@@ -1553,10 +1630,10 @@ void ShowContextMenu(const POINT screen) {
     const bool can_export = CurrentExportTarget(
         export_account, export_report, export_encounter);
     AppendMenuW(menu, MF_STRING | (can_export ? 0 : MF_GRAYED),
-        MenuExportCurrent, L"导出当前");  // i18n-data
+        MenuExportCurrent, localizer.Text("overlay.menu.export_current", "Export current").c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, MenuHide, L"隐藏");  // i18n-data
-    AppendMenuW(menu, MF_STRING, MenuExit, L"退出");  // i18n-data
+    AppendMenuW(menu, MF_STRING, MenuHide, localizer.Text("overlay.menu.hide", "Hide").c_str());
+    AppendMenuW(menu, MF_STRING, MenuExit, localizer.Text("overlay.menu.exit", "Exit").c_str());
     const UINT command = TrackPopupMenu(menu,
         TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
         screen.x, screen.y, 0, g_app.window, nullptr);
@@ -1615,9 +1692,9 @@ void HandleUiAction(const HitTarget& target) {
     switch (target.action) {
     case UiAction::ManualEnd:
         if (g_app.manual_end_event != nullptr && SetEvent(g_app.manual_end_event)) {
-            g_app.action_status = "正在结束当前统计…";  // i18n-data
+            g_app.action_status = Narrow(localizer.Text("overlay.end.running", "Ending the current encounter..."));
         } else {
-            g_app.action_status = "手动结束失败：插件控制通道不可用";  // i18n-data
+            g_app.action_status = Narrow(localizer.Text("overlay.end.err_channel", "Manual end failed: the plugin control channel is unavailable"));
         }
         break;
     case UiAction::ToggleHistory:
@@ -1849,14 +1926,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
             if (g_app.snapshot) control_status = g_app.snapshot->control_status;
         }
         if (control_status == "manual_end_completed") {
-            g_app.action_status = "当前统计已结束并写入历史";  // i18n-data
+            g_app.action_status = Narrow(localizer.Text("overlay.end.done", "The encounter was ended and written to history"));
         } else if (control_status == "manual_end_failed") {
-            g_app.action_status = "手动结束失败：战斗日志未能完整写入";  // i18n-data
+            g_app.action_status = Narrow(localizer.Text("overlay.end.err_log", "Manual end failed: the combat log was not written completely"));
         } else if (has_snapshot &&
-                   !g_app.action_status.starts_with("正在导出") &&  // i18n-data
-                   !g_app.action_status.starts_with("导出完成") &&  // i18n-data
-                   !g_app.action_status.starts_with("导出失败") &&  // i18n-data
-                   (!active || g_app.action_status != "正在结束当前统计…")) {  // i18n-data
+                   g_app.export_in_progress == false &&
+
+
+                   (!active || !g_app.action_status.empty())) {
             g_app.action_status.clear();
         }
         if (g_app.page == ViewPage::Live) {
@@ -2248,6 +2325,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (executable_length != 0 && executable_length < executable_path.size()) {
         const auto executable_root =
             std::filesystem::path(executable_path.data()).parent_path();
+        g_app.executable_root = executable_root;
         g_app.attribute_colors = nte::combat_stats::AttributeColorMap::Load(
             executable_root / "assets/attribute_colors.json",
             g_app.attribute_color_error);

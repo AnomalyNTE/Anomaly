@@ -308,6 +308,7 @@ NteOverlaySnapshot::NteOverlaySnapshot(Data data)
       connected_clients(data.connected_clients),
       published_messages(data.published_messages),
       transport_dropped_messages(data.transport_dropped_messages),
+      locale(std::move(data.locale)),
       combat(std::move(data.combat)) {}
 
 std::string SerializeOverlaySnapshot(const NteOverlaySnapshot& snapshot) {
@@ -380,7 +381,8 @@ std::string SerializeOverlaySnapshot(const NteOverlaySnapshot& snapshot) {
         {"transport", {{"port", snapshot.websocket_port},
                        {"connected_clients", snapshot.connected_clients},
                        {"published_messages", Decimal(snapshot.published_messages)},
-                       {"dropped_messages", Decimal(snapshot.transport_dropped_messages)}}}};
+                       {"dropped_messages", Decimal(snapshot.transport_dropped_messages)}}},
+        {"locale", snapshot.locale}};
     std::string result = document.dump();
     while (result.size() > kMaximumOverlayMessageBytes &&
            !document["recent_events"].empty()) {
@@ -512,6 +514,9 @@ std::optional<NteOverlaySnapshot> ParseOverlaySnapshot(
             transport.at("published_messages"), "transport.published_messages");
         result.transport_dropped_messages = ParseDecimal<std::uint64_t>(
             transport.at("dropped_messages"), "transport.dropped_messages");
+        // Optional so an older producer still parses; the overlay then falls
+        // back to its built-in catalog.
+        result.locale = document.value("locale", std::string{"zh-CN"});
         return NteOverlaySnapshot(std::move(result));
     } catch (const std::exception& exception) {
         error = exception.what();
