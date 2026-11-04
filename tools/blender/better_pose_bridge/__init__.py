@@ -715,6 +715,7 @@ def _camera_key(scene, camera):
     relative = (sampled_armature.matrix_world.inverted() @ matrix.translation
                 if armature else matrix.translation)
     rotation = matrix.to_quaternion()
+    forward = rotation @ Vector((0.0, 0.0, -1.0))
     horizontal_fov = math.degrees(sampled_camera.data.angle)
     vertical_fov = math.degrees(2.0 * math.atan(
         math.tan(math.radians(horizontal_fov) * 0.5) / (16.0 / 9.0)))
@@ -727,6 +728,8 @@ def _camera_key(scene, camera):
                   [value * 100.0 for value in matrix.translation]),
               "relative_position": _blender_to_ue_vector(
                   [value * 100.0 for value in relative]),
+              "forward": _blender_to_ue_vector(
+                  [forward.x, forward.y, forward.z]),
               "rotation": _blender_to_ue_quaternion(
                   [rotation.x, rotation.y, rotation.z, rotation.w])}
     packet.update(_camera_delta(scene, scene.camera))

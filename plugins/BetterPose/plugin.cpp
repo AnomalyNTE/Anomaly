@@ -7504,6 +7504,40 @@ void *ANOMALY_CALL CameraPovDetour(void *self, void *first, void *second) noexce
                       delta;
                 }
               }
+              if (context->blender_camera_forward_valid.load(
+                      std::memory_order_acquire) &&
+                  context->blender_camera_anchor_valid.load(
+                      std::memory_order_acquire)) {
+                const double basis_yaw =
+                    context->blender_camera_base_yaw.load(
+                        std::memory_order_acquire);
+                const double forward_x =
+                    context->blender_camera_forward[0].load(
+                        std::memory_order_acquire);
+                const double forward_y =
+                    context->blender_camera_forward[1].load(
+                        std::memory_order_acquire);
+                const double forward_z =
+                    context->blender_camera_forward[2].load(
+                        std::memory_order_acquire);
+                const double cos_yaw = std::cos(basis_yaw);
+                const double sin_yaw = std::sin(basis_yaw);
+                const double world_x =
+                    forward_x * cos_yaw - forward_y * sin_yaw;
+                const double world_y =
+                    forward_x * sin_yaw + forward_y * cos_yaw;
+                const double planar =
+                    std::sqrt(world_x * world_x + world_y * world_y);
+                if (planar > 1e-6) {
+                  out_rotation[0] =
+                      std::atan2(forward_z, planar) *
+                      kCameraRadiansToDegrees;
+                  out_rotation[1] =
+                      std::atan2(world_y, world_x) *
+                      kCameraRadiansToDegrees;
+                  out_rotation[2] = 0.0;
+                }
+              }
             }
           } else if (correction_mode) {
             const bool track_base =
