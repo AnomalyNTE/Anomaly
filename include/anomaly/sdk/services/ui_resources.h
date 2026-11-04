@@ -51,7 +51,10 @@ typedef enum AnomalyGlyphRangeV1 {
     ANOMALY_GLYPH_RANGE_V1_LATIN = 1,
     ANOMALY_GLYPH_RANGE_V1_CYRILLIC = 2,
     ANOMALY_GLYPH_RANGE_V1_JAPANESE = 3,
-    ANOMALY_GLYPH_RANGE_V1_CHINESE_FULL = 4
+    ANOMALY_GLYPH_RANGE_V1_CHINESE_FULL = 4,
+    // The Basic Multilingual Plane private use area (U+E000..U+F8FF), where icon fonts
+    // such as Material Symbols place their glyphs.
+    ANOMALY_GLYPH_RANGE_V1_PRIVATE_USE = 5
 } AnomalyGlyphRangeV1;
 
 typedef struct AnomalyFontRequestV1 {
@@ -212,6 +215,12 @@ typedef struct AnomalyTextureServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *draw)(
         void* user, AnomalyGenerationHandleV1 handle, float width, float height,
         uint32_t tint_rgba);
+    // Optional append-only: draws the texture on the foreground of the main viewport at
+    // (x, y) in viewport pixels, above every window, like the anomaly.ui overlay calls.
+    // Valid only during on_draw.
+    AnomalyStatusV1 (ANOMALY_CALL *draw_overlay)(
+        void* user, AnomalyGenerationHandleV1 handle, float x, float y, float width,
+        float height, uint32_t tint_rgba);
 } AnomalyTextureServiceV1;
 
 typedef struct AnomalyInputServiceV1 {
