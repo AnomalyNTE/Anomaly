@@ -1,5 +1,4 @@
 {
-  "$schema": "https://anomaly.dev/schemas/plugin-profile.schema.json",
   "schemaVersion": 1,
   "game": "nte",
   "module": "HTGame.exe",
@@ -71,7 +70,9 @@
         {
           "pattern": "F3 0F 11 89 08 08 00 00 C3",
           "entry": "F3 0F 11 89 08 08 00 00 C3",
-          "values": { "currentChaseRange": 2056 },
+          "values": {
+            "currentChaseRange": 2056
+          },
           "provenance": "The reflected HTAIController.SetCurChaseRange writes the current range at +0x808. Unique setter body in live 1.4b PID 44236 at 0x147D2A7B0 and supplied 1.5a IDA at 0x147FA2E40. Native ShouldLeaveBattle and target search read this range; a default of 6000 can end a graph battle when Bosses separate. Validate this setter before temporarily expanding the range and restore its prior value when the battle ends."
         }
       ]
@@ -195,6 +196,7 @@
       ]
     }
   ],
+  "$schema": "https://anomaly.dev/schemas/plugin-profile.schema.json",
   "provenance": "Shared layout was independently compared against the supplied 1.4b and 1.5a Dumper-7 SDKs on 2026-11-04: CoreUObject_classes.hpp (UObject, UStruct, UClass), Basic.hpp (FFieldClass, FField, FProperty, FStructProperty, FArrayProperty, TUObjectArray and FUObjectItem size/object), HTGame_classes.hpp (AHTAbilityCharacter ability-system and attribute-set pointers), GameplayAbilities_classes.hpp (SpawnedAttributes), GameplayAbilities_structs.hpp (FGameplayAttribute and FGameplayAttributeData), and HottaFramework_structs.hpp (mirror container and property entry). UnrealContainers.hpp declares the same pointer/int32/int32 TArray layout in both versions. Flags +8 inside FUObjectItem, container owner +0x108, virtual getter slot +8 and the identity summon-index slot are supported by the per-symbol native-code evidence, not by unnamed SDK padding. Eleven parameter structures were checked member-by-member against both HTGame_parameters.hpp and Engine_parameters.hpp; their fixed call ABI is represented by named C++ types rather than hand-written buffer offsets. All memory offsets are loaded from this profile with range, alignment and non-overlap checks; no compiled offset fallback exists. The mirror candidates preserve the 1.4b 88-byte/7-camp/155-attribute and 1.5a 96-byte/9-camp/156-attribute variants. FollowUpDamage is selected by reflected name; UI preset indices intentionally retain their prior order. This covers static 1.5a preparation only; the clean released 1.5 entry and gameplay still require live validation. Native SummonAI registers the original leader identity and summon index but omits the opponent-summoner configuration step. Both supplied SDKs retain the 0x34-byte ServerConfigureSummonedAI_HybridMode parameter block. Its 1.4b live implementation and 1.5a IDA implementation accept InitialHPPercent=-1 to update camp without resetting HP. CampType and fallback attribute-set pointers moved and are now read by reflected name/type/size. The local mirror must resolve the exact registered ASC through its verified +0x18 object getter. Only custom birth MaxHP/MaxHPTemp are filtered; MaxHPTemp seeds one native HP configuration on the next Game update. Other fields, combat authority, HP commits and AI scripts stay native. Candidates are selected by unique signatures and exact entry checks, never by build identity. Passive FT health observation only. Both supplied 1.4b and 1.5a Basic.hpp define FStructProperty::Struct +0x70 and FArrayProperty::InnerProperty +0x78; CoreUObject_classes.hpp defines UStruct::Size +0x58. Live 1.4b PID 44236 reflection independently verified ClientSetReplicatedTargetData.TargetDataContainer and ClientFightDataArray's inner type. Resolve RPC members and array stride by reflected name/type/size; 1.5 replaces fCurHealth with nested DamageDisplayInfo.CurrentHp. Refuse unsupported metadata. The 40-byte FCharacterForNet copies its leader's first 36 bytes and replaces the last int32 with summon index: independently verified in live 1.4b code at 0x147D4C990 and offline 1.5a at 0x147FC7360. Observe only exact registered controller/leader/index matches, with bounded logs, no invocation or parameter changes. Addresses are evidence only.",
   "unavailable": "Disable features whose symbols or layouts fail validation. Never guess a layout, fall back to compiled signatures, or write post-spawn attributes."
 }

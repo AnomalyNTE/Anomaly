@@ -76,7 +76,7 @@ if (!symbol) { /* 记录 symbol.error，停用依赖功能 */ return; }
 `contract` 是语义合同，不是 Build identity，`provenance` 和 `unavailable` 记录证据及降级策略。
 新增目录后重新 configure 并构建；配置更新随新的包 generation 生效，不写回 profile。
 完整字段与 C ABI 见 [profile 服务](../api-reference/platform-services.md#anomalyprofile)，
-单文件示例见 [`SummonLab/profile/summon-lab.profile.json`](../../plugins/SummonLab/profile/summon-lab.profile.json)。
+单文件示例见 [`SummonLab/profile/compatibility.profile.json`](../../plugins/SummonLab/profile/compatibility.profile.json)。
 
 源码入口：`<anomaly/sdk/anomaly_sdk.h>`（C）或 `<anomaly/sdk/cpp.hpp>`（C++，提供 `Host`、`ServiceRef`、`UiWindow` 等轻量 wrapper）。
 

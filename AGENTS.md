@@ -135,7 +135,7 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 ## 插件 Profile（强制）
 
 采用「Profile 保存兼容数据，宿主统一加载，插件校验后使用」的设计模式。可参考
-[`plugins/SummonLab/profile/summon-lab.profile.json`](plugins/SummonLab/profile/summon-lab.profile.json)
+[`plugins/SummonLab/profile/compatibility.profile.json`](plugins/SummonLab/profile/compatibility.profile.json)
 和 [`plugins/SummonLab/native_layout.hpp`](plugins/SummonLab/native_layout.hpp) 的职责划分。
 
 - 兼容配置放在与 `manifest.json` 同级的 `profile/`；相关功能优先共用一个 profile，通过 `symbols`

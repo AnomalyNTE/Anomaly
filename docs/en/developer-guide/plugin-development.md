@@ -60,7 +60,7 @@ const auto symbol = anomaly::sdk::ResolveProfileSymbol(signature, core, profile,
 if (!symbol) { /* Report symbol.error; disable the feature. */ return; }
 ```
 
-The shared resolver validates a unique candidate, optional E8 relative call and exact entry bytes. Ambiguous matches and changed entries are rejected. `contract` identifies semantic support, never Build identity; `provenance` and `unavailable` record evidence and degradation policy. Configure again after adding the directory, then rebuild. Changes take effect in a new package generation; never write back to profiles. See the [profile service](../api-reference/platform-services.md#anomalyprofile) for the C ABI and fields, and [`SummonLab/profile/summon-lab.profile.json`](../../../plugins/SummonLab/profile/summon-lab.profile.json) for a combined example.
+The shared resolver validates a unique candidate, optional E8 relative call and exact entry bytes. Ambiguous matches and changed entries are rejected. `contract` identifies semantic support, never Build identity; `provenance` and `unavailable` record evidence and degradation policy. Configure again after adding the directory, then rebuild. Changes take effect in a new package generation; never write back to profiles. See the [profile service](../api-reference/platform-services.md#anomalyprofile) for the C ABI and fields, and [`SummonLab/profile/compatibility.profile.json`](../../../plugins/SummonLab/profile/compatibility.profile.json) for a combined example.
 
 Source entry points: `<anomaly/sdk/anomaly_sdk.h>` (C) or `<anomaly/sdk/cpp.hpp>` (C++, which provides lightweight wrappers such as `Host`, `ServiceRef` and `UiWindow`).
 

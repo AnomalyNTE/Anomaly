@@ -3460,7 +3460,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     g_context.events = events.get();
     g_context.has_invoke = HasInvoke(g_context.events);
 
-    const auto loaded = anomaly::sdk::LoadProfile(query, "summon-lab.profile.json");
+    const auto loaded = anomaly::sdk::LoadProfile(query, "compatibility.profile.json");
     if (loaded && ValidateSummonProfile(loaded.value(), &g_layout)) {
         const auto& profile = loaded.value();
         g_layout_ready = true;
