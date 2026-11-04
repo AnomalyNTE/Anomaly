@@ -110,6 +110,11 @@ struct ClassEntry {
     std::string search_text;
 };
 
+struct BlueprintOptions {
+    std::string default_display_name;
+    std::string normal_combat_blueprint;
+};
+
 enum class BlueprintConfigState { Pending, Unavailable, NotApplicable, NoHealth, Available };
 
 struct BlueprintConfigCheck {
@@ -233,6 +238,7 @@ struct Context {
 
     // 离线生成的蓝图目录（assets/summonable.json）
     std::vector<ClassEntry> catalog;
+    std::map<std::string, BlueprintOptions, std::less<>> blueprint_options;
     char catalog_filter[64]{};
     bool catalog_loaded{};
     std::uint64_t selected_record_id{};
@@ -437,6 +443,7 @@ bool LoadCatalog() {
     }
 
     std::vector<ClassEntry> parsed;
+    std::map<std::string, BlueprintOptions, std::less<>> options;
     parsed.reserve(static_cast<std::size_t>(root.value("count", 0)) + 16);
     for (const auto& group : *groups) {
         if (!group.is_object()) continue;
@@ -454,12 +461,26 @@ bool LoadCatalog() {
             const std::string class_path = prefix + package + "." + name;
             parsed.push_back(ClassEntry{label, class_path,
                                         label + "\n" + class_path + "\n" + names.family});
+            BlueprintOptions entry_options;
+            if (item.value("useCatalogName", false)) entry_options.default_display_name = display_name;
+            entry_options.normal_combat_blueprint = item.value("normalCombatBlueprint", std::string{});
+            if (!entry_options.default_display_name.empty() || !entry_options.normal_combat_blueprint.empty())
+                options.emplace(class_path, std::move(entry_options));
         }
+    }
+    for (const auto& [class_path, entry_options] : options) {
+        const auto& alternative = entry_options.normal_combat_blueprint;
+        if (entry_options.default_display_name.size() >= kDisplayNameCapacity ||
+            (!alternative.empty() && (alternative.size() >= kPathCapacity || alternative == class_path ||
+                std::none_of(parsed.begin(), parsed.end(), [&](const auto& entry) {
+                    return entry.path == alternative;
+                })))) return false;
     }
 
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.catalog = std::move(parsed);
+        g_context.blueprint_options = std::move(options);
         const auto ft = root.find("finalTower");
         if (ft != root.end()) {
             // Asset paths and row aliases are game data, alongside the blueprint catalog.
@@ -2235,6 +2256,12 @@ SummonResult SummonOne() {
         if (compatibility)
             server_combat_blueprint = g_context.final_tower_combat_blueprint;
         display_name = g_context.display_name;
+        if (display_name[0] == '\0') {
+            const auto entry = g_context.blueprint_options.find(path);
+            if (entry != g_context.blueprint_options.end())
+                std::snprintf(display_name.data(), display_name.size(), "%s",
+                    entry->second.default_display_name.c_str());
+        }
         presets = g_context.birth_presets;
     }
 
@@ -3445,6 +3472,7 @@ void ResetState() {
     g_context.last_result = {};
     g_context.last_result_failed = false;
     g_context.catalog.clear();
+    g_context.blueprint_options.clear();
     g_context.catalog_filter[0] = '\0';
     g_context.catalog_loaded = false;
     g_context.selected_record_id = 0;
@@ -3600,6 +3628,7 @@ void WrappedText(const AnomalyUiServiceV1* ui, std::string_view text) {
 void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
     BlueprintConfigState state;
     std::string source;
+    std::string normal_combat_blueprint;
     {
         std::scoped_lock lock(g_context.mutex);
         if (g_context.class_path[0] == '\0') return;
@@ -3607,6 +3636,9 @@ void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
         state = !g_context.session_world_ready ? BlueprintConfigState::Unavailable :
             check.path != g_context.class_path.data() ? BlueprintConfigState::Pending : check.state;
         if (check.path == g_context.class_path.data()) source = check.source;
+        const auto entry = g_context.blueprint_options.find(g_context.class_path.data());
+        if (entry != g_context.blueprint_options.end())
+            normal_combat_blueprint = entry->second.normal_combat_blueprint;
     }
     const auto& localizer = g_context.localizer;
     std::string text;
@@ -3631,6 +3663,18 @@ void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
     if (!source.empty()) {
         const std::array<std::string_view, 1> args{source};
         WrappedText(ui, localizer.Format("catalog.config_source", "FT config: {0}", args));
+    }
+    if (!normal_combat_blueprint.empty()) {
+        WrappedText(ui, localizer.Text("catalog.story_balance",
+            "Story balance can ignore monster damage"));
+        const std::string name = MonsterConfigName(normal_combat_blueprint);
+        const std::array<std::string_view, 1> args{name};
+        const auto label = localizer.Format("catalog.normal_combat_variant", "Use combat variant: {0}", args);
+        if (ActionButton(ui, label.c_str(), true)) {
+            std::scoped_lock lock(g_context.mutex);
+            std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s",
+                normal_combat_blueprint.c_str());
+        }
     }
     if (state == BlueprintConfigState::Unavailable) {
         const auto retry = localizer.Text("catalog.config_retry", "Recheck");
