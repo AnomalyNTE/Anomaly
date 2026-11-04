@@ -117,32 +117,32 @@ int ControlTrackPriority(const std::string_view name) {
   const auto has = [&lower](const std::string_view needle) {
     return lower.find(needle) != std::string::npos;
   };
-  if (has("\u63e1") || has("\u62f3") || has("grip"))  // i18n-data: MMD control-track keyword, matched against VMD data
+  if (has("握") || has("拳") || has("grip"))  // i18n-data: MMD control-track keyword, matched against VMD data
     return 100;
-  if (has("\u5f35") || has("\u5f20") || has("\u5f00\u624b") || has("\u958b\u624b") ||  // i18n-data: MMD control-track keyword, matched against VMD data
+  if (has("張") || has("张") || has("开手") || has("開手") ||  // i18n-data: MMD control-track keyword, matched against VMD data
       has("spread"))
     return 95;
   if (has("hand") || has("finger") || has("controller") ||
       has("control_") || has("ctrl"))
     return 70;
-  if (has("\u624b") || has("\u6307")) {  // i18n-data: MMD control-track keyword, matched against VMD data
-    if (has("\u624b\u9996") || has("\u624b\u5148") || has("\u624b\u6369") || has("\u624b\u6307") ||  // i18n-data: MMD control-track keyword, matched against VMD data
-        has("\u89aa\u6307") || has("\u4eba\u6307") || has("\u4eba\u5dee\u6307") || has("\u4e2d\u6307") ||  // i18n-data: MMD control-track keyword, matched against VMD data
-        has("\u85ac\u6307") || has("\u5c0f\u6307"))  // i18n-data: MMD control-track keyword, matched against VMD data
+  if (has("手") || has("指")) {  // i18n-data: MMD control-track keyword, matched against VMD data
+    if (has("手首") || has("手先") || has("手捩") || has("手指") ||  // i18n-data: MMD control-track keyword, matched against VMD data
+        has("親指") || has("人指") || has("人差指") || has("中指") ||  // i18n-data: MMD control-track keyword, matched against VMD data
+        has("薬指") || has("小指"))  // i18n-data: MMD control-track keyword, matched against VMD data
       return 0;
     return 45;
   }
-  if (has("\u8155ik") || has("arm_ik") || has("arm ik") || has("\u8996\u7dda") ||  // i18n-data: MMD control-track keyword, matched against VMD data
-      has("\u89c6\u7ebf"))  // i18n-data: MMD control-track keyword, matched against VMD data
+  if (has("腕ik") || has("arm_ik") || has("arm ik") || has("視線") ||  // i18n-data: MMD control-track keyword, matched against VMD data
+      has("视线"))  // i18n-data: MMD control-track keyword, matched against VMD data
     return 60;
   return 0;
 }
 
 bool IsStructuralControlTrack(const std::string_view name) {
   static constexpr std::string_view kNames[] = {
-      "\u8170", "\u80a9", "\u8db3", "\u3072\u3056", "\u8db3\u9996", "\u3064\u307e\u5148", "\u9996", "\u982d", "\u80f8",  // i18n-data: MMD control-track keyword, matched against VMD data
-      "\u8155", "\u3072\u3058", "\u6369", "\u88dc\u52a9", "\u30ad\u30e3\u30f3\u30bb\u30eb", "IK", "\u64cd\u4f5c\u4e2d\u5fc3",  // i18n-data: MMD control-track keyword, matched against VMD data
-      "\u4e21\u76ee", "\u5de6\u76ee", "\u53f3\u76ee"};  // i18n-data: MMD control-track keyword, matched against VMD data
+      "腰", "肩", "足", "ひざ", "足首", "つま先", "首", "頭", "胸",  // i18n-data: MMD control-track keyword, matched against VMD data
+      "腕", "ひじ", "捩", "補助", "キャンセル", "IK", "操作中心",  // i18n-data: MMD control-track keyword, matched against VMD data
+      "両目", "左目", "右目"};  // i18n-data: MMD control-track keyword, matched against VMD data
   for (const auto value : kNames)
     if (name.find(value) != std::string_view::npos)
       return true;
