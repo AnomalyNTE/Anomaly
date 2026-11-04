@@ -79,6 +79,12 @@ constexpr std::string_view kSettingsSchema = R"json(
     "displayUid":{"type":"string","minLength":1,"maxLength":1024},
     "prefixText":{"type":"string","maxLength":1024},
     "hideLatency":{"type":"boolean"},
+    "colorEnabled":{"type":"boolean"},
+    "textColor":{"type":"array","minItems":4,"maxItems":4,"items":{"type":"number","minimum":0,"maximum":1}},
+    "rainbowEnabled":{"type":"boolean"},
+    "rainbowPeriod":{"type":"number","minimum":0.5,"maximum":10},
+    "typingEnabled":{"type":"boolean"},
+    "typingInterval":{"type":"number","minimum":0.05,"maximum":0.5},
     "detectedUid":{"type":"string","pattern":"^[0-9]{1,20}$"},
     "prefixNameId":{"type":"integer","minimum":1,"maximum":4294967295}
   }
@@ -136,7 +142,7 @@ struct ColorSettings final {
     std::uint64_t revision{};
     bool enabled{};
     bool rainbow{};
-    SlateColor value{};
+    SlateColor value{{1.0F, 1.0F, 1.0F, 1.0F}};
 };
 
 struct TypingFrame final {
@@ -172,6 +178,14 @@ struct LatencyWidgetPair final {
     std::uintptr_t outer{};
     AnomalyGenerationHandleV1 text{};
     AnomalyGenerationHandleV1 image{};
+};
+
+struct TrackedLatencyWidget final {
+    AnomalyGenerationHandleV1 handle{};
+    std::uintptr_t outer{};
+    bool text{};
+    bool original_captured{};
+    std::uint8_t original_visibility{};
 };
 
 enum class ApplyResult : std::uint8_t {
@@ -227,13 +241,8 @@ struct Context final {
     std::size_t latency_candidate_count{};
     std::uint32_t latency_text_name_id{};
     std::uint32_t latency_image_name_id{};
-    bool latency_probe_found{};
-    AnomalyGenerationHandleV1 latency_text_handle{};
-    AnomalyGenerationHandleV1 latency_image_handle{};
-    std::uint8_t latency_text_original_visibility{};
-    std::uint8_t latency_image_original_visibility{};
-    bool latency_original_captured{};
-    bool latency_action_confirmed{};
+    std::array<TrackedLatencyWidget, kMaximumTrackedWidgets> latency_widgets{};
+    std::size_t latency_widget_count{};
     std::uint32_t scan_batch_size{kObjectBatchSize};
     std::uint32_t target_name_id{};
     std::uint32_t target_prefix_name_id{};
@@ -528,6 +537,15 @@ bool PersistSettings(
             {"hideLatency", settings.hide_latency},
             {"displayUid", settings.display_uid}};
         if (!settings.prefix_text.empty()) json["prefixText"] = settings.prefix_text;
+        const auto color = context.color_settings.load(std::memory_order_acquire);
+        json["colorEnabled"] = color && color->enabled;
+        json["textColor"] = color
+            ? nlohmann::json(color->value.rgba)
+            : nlohmann::json::array({1.0F, 1.0F, 1.0F, 1.0F});
+        json["rainbowEnabled"] = color && color->rainbow;
+        json["rainbowPeriod"] = context.rainbow_period.load(std::memory_order_acquire);
+        json["typingEnabled"] = context.typing_enabled.load(std::memory_order_acquire);
+        json["typingInterval"] = context.typing_interval.load(std::memory_order_acquire);
         const std::uint64_t detected =
             context.detected_uid.load(std::memory_order_acquire);
         if (detected != 0) json["detectedUid"] = std::to_string(detected);
@@ -564,10 +582,13 @@ void ANOMALY_CALL PersistSettingsTask(
 }
 
 bool ScheduleSettingsPersist(Context& context) noexcept {
+    context.save_state.store(1U, std::memory_order_release);
     AnomalyGenerationHandleV1 task{};
     const AnomalyStatusV1 status = context.scheduler->schedule(
         context.scheduler->user, 0, PersistSettingsTask, &context, &task);
-    return status.code == ANOMALY_STATUS_V1_OK && task.id != 0;
+    const bool scheduled = status.code == ANOMALY_STATUS_V1_OK && task.id != 0;
+    if (!scheduled) context.save_state.store(3U, std::memory_order_release);
+    return scheduled;
 }
 
 void RecordDetectedUid(Context& context, const std::uint64_t detected) noexcept {
@@ -650,7 +671,7 @@ bool LoadSettings(Context& context) noexcept {
             return false;
         }
         const auto json = nlohmann::json::parse(document.begin(), document.begin() + copied);
-        if (!json.is_object() || json.size() < 2 || json.size() > 7 ||
+        if (!json.is_object() || json.size() < 2 || json.size() > 13 ||
             !json.contains("enabled") || !json.at("enabled").is_boolean() ||
             (json.contains("hidePrefix") && !json.at("hidePrefix").is_boolean()) ||
             !json.contains("displayUid") || !json.at("displayUid").is_string() ||
@@ -667,6 +688,28 @@ bool LoadSettings(Context& context) noexcept {
             json.value("prefixText", std::string{}),
             json.value("hideLatency", false));
         if (!settings) return false;
+        auto color = std::make_shared<ColorSettings>();
+        color->revision = 1;
+        color->enabled = json.value("colorEnabled", false);
+        color->rainbow = json.value("rainbowEnabled", false);
+        if (json.contains("textColor") &&
+            (!json.at("textColor").is_array() || json.at("textColor").size() != 4))
+            return false;
+        const auto rgba = json.value("textColor", std::array<float, 4>{1, 1, 1, 1});
+        for (std::size_t i = 0; i < rgba.size(); ++i) {
+            if (!std::isfinite(rgba[i]) || rgba[i] < 0 || rgba[i] > 1) return false;
+            color->value.rgba[i] = rgba[i];
+        }
+        const float period = json.value("rainbowPeriod", 3.0F);
+        const float interval = json.value("typingInterval", 0.12F);
+        if (!std::isfinite(period) || period < 0.5F || period > 10.0F ||
+            !std::isfinite(interval) || interval < 0.05F || interval > 0.5F)
+            return false;
+        context.color_settings.store(color, std::memory_order_release);
+        std::copy(rgba.begin(), rgba.end(), context.color_editor);
+        context.rainbow_period.store(period, std::memory_order_release);
+        context.typing_enabled.store(json.value("typingEnabled", false), std::memory_order_release);
+        context.typing_interval.store(interval, std::memory_order_release);
         if (json.contains("detectedUid")) {
             const std::uint64_t detected = ParseUid(
                 json.at("detectedUid").get_ref<const std::string&>());
@@ -1551,16 +1594,12 @@ void ProbeLatencyWidget(Context& context) noexcept {
     if (context.latency_probe_generation != generation) {
         context.latency_probe_generation = generation;
         context.latency_probe_cursor = count;
-        context.latency_probe_found = false;
-        context.latency_text_handle = {};
-        context.latency_image_handle = {};
-        context.latency_original_captured = false;
+        context.latency_widget_count = 0;
         context.latency_text_name_id = 0;
         context.latency_image_name_id = 0;
         context.latency_candidate_count = 0;
         context.next_latency_probe_tick = 0;
     }
-    if (context.latency_probe_found) return;
     if (context.latency_probe_cursor == 0) {
         if (context.update_tick < context.next_latency_probe_tick) return;
         context.latency_probe_cursor = count;
@@ -1571,7 +1610,7 @@ void ProbeLatencyWidget(Context& context) noexcept {
     // retrying that lookup every tick stalls the Game thread indefinitely.
     context.latency_probe_cursor = (std::min)(context.latency_probe_cursor, count);
     const std::uint32_t end = context.latency_probe_cursor -
-        (std::min)(context.latency_probe_cursor, kObjectBatchSize);
+        (std::min)(context.latency_probe_cursor, kNamedObjectBatchSize);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
     while (context.latency_probe_cursor > end) {
         if (std::chrono::steady_clock::now() >= deadline) break;
@@ -1612,6 +1651,16 @@ void ProbeLatencyWidget(Context& context) noexcept {
         if (text) candidate.text = snapshot.handle;
         else candidate.image = snapshot.handle;
         if (candidate.text.id == 0 || candidate.image.id == 0) continue;
+        const auto already_tracked = [&context](const AnomalyGenerationHandleV1 handle) {
+            const auto tracked_end = context.latency_widgets.begin() + context.latency_widget_count;
+            return std::any_of(context.latency_widgets.begin(), tracked_end,
+                [handle](const auto& tracked) {
+                    return tracked.handle.id == handle.id &&
+                        tracked.handle.generation == handle.generation;
+                });
+        };
+        // Do not read an already bound FText again during world teardown.
+        if (already_tracked(candidate.text) && already_tracked(candidate.image)) continue;
         std::uintptr_t text_widget{}, image_widget{};
         std::wstring value;
         if (ResolveTextBlockAddress(context, candidate.text,
@@ -1622,10 +1671,15 @@ void ProbeLatencyWidget(Context& context) noexcept {
             ReadObjectOuter(image_widget) == outer &&
             ReadWidgetText(context, text_widget, value) && value.size() <= 16 &&
             value.find(L"ms") != std::wstring::npos) {
-            context.latency_text_handle = candidate.text;
-            context.latency_image_handle = candidate.image;
-            context.latency_probe_found = true;
-            break;
+            // Old and new HUD trees can coexist. Retain every validated pair
+            // and keep scanning for replacements even while old handles live.
+            for (const bool is_text : {true, false}) {
+                const auto handle = is_text ? candidate.text : candidate.image;
+                if (already_tracked(handle)) continue;
+                if (context.latency_widget_count == context.latency_widgets.size()) break;
+                context.latency_widgets[context.latency_widget_count++] =
+                    {handle, outer, is_text};
+            }
         }
     }
     if (context.latency_probe_cursor == 0)
@@ -3054,70 +3108,36 @@ bool SetWidgetVisibility(Context& context, const std::uintptr_t widget,
 }
 
 void ApplyLatencyVisibility(Context& context, const bool hide) noexcept {
-    if (!context.latency_probe_found) return;
-    std::uintptr_t text_widget{};
-    if (!ResolveTextBlockAddress(context, context.latency_text_handle,
-                                 text_widget)) {
-        context.latency_probe_found = false;
-        context.latency_text_handle = {};
-        context.latency_image_handle = {};
-        context.latency_original_captured = false;
-        context.latency_probe_cursor = context.objects->count(context.objects->user);
-        context.latency_candidate_count = 0;
-        return;
-    }
-    std::uintptr_t image_widget{};
-    if (!ResolveObjectAddress(context, context.latency_image_handle,
-                              image_widget) ||
-        ReadObjectOuter(text_widget) == 0 ||
-        ReadObjectOuter(text_widget) != ReadObjectOuter(image_widget) ||
-        ReadObjectNameIdRaw(image_widget) != context.latency_image_name_id) {
-        context.latency_probe_found = false;
-        context.latency_text_handle = {};
-        context.latency_image_handle = {};
-        context.latency_original_captured = false;
-        context.latency_probe_cursor = context.objects->count(context.objects->user);
-        context.latency_candidate_count = 0;
-        return;
-    }
-    if (hide) {
-        if (!context.latency_original_captured) {
-            const auto text_visibility = ReadVisibilityField(text_widget);
-            const auto image_visibility = ReadVisibilityField(image_widget);
-            // A hot reload can inherit the Collapsed state left by the prior
-            // plugin generation. Treat that state as our own and restore the
-            // game's normal Visible state when the option is switched off.
-            context.latency_text_original_visibility =
-                text_visibility == 1 ? 0 : text_visibility;
-            context.latency_image_original_visibility =
-                image_visibility == 1 ? 0 : image_visibility;
-            context.latency_original_captured = true;
-            context.latency_action_confirmed = false;
+    const auto generation = context.objects->generation(context.objects->user);
+    for (std::size_t index = 0; index < context.latency_widget_count;) {
+        auto& tracked = context.latency_widgets[index];
+        std::uintptr_t widget{};
+        const bool valid = tracked.handle.generation == generation &&
+            (tracked.text ? ResolveTextBlockAddress(context, tracked.handle, widget)
+                          : ResolveObjectAddress(context, tracked.handle, widget)) &&
+            ReadObjectOuter(widget) == tracked.outer &&
+            ReadObjectNameIdRaw(widget) == (tracked.text
+                ? context.latency_text_name_id : context.latency_image_name_id);
+        if (!valid) {
+            context.latency_widgets[index] = context.latency_widgets[--context.latency_widget_count];
+            continue;
         }
-        const bool text_ok = ReadVisibilityField(text_widget) == 1 ||
-            SetWidgetVisibility(context, text_widget, 1);
-        const bool image_ok = ReadVisibilityField(image_widget) == 1 ||
-            SetWidgetVisibility(context, image_widget, 1);
-        if (text_ok && image_ok && !context.latency_action_confirmed) {
-            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-                "FakeUID: TextPing and ImagePing hidden");
-            context.latency_action_confirmed = true;
+        if (hide) {
+            const auto visibility = ReadVisibilityField(widget);
+            const bool first_apply = !tracked.original_captured;
+            if (first_apply) {
+                // A hot reload may inherit our previous Collapsed state.
+                tracked.original_visibility = visibility == 1 ? 0 : visibility;
+                tracked.original_captured = true;
+            }
+            if (first_apply || visibility != 1)
+                static_cast<void>(SetWidgetVisibility(context, widget, 1));
+        } else if (tracked.original_captured) {
+            if (ReadVisibilityField(widget) == tracked.original_visibility ||
+                SetWidgetVisibility(context, widget, tracked.original_visibility))
+                tracked.original_captured = false;
         }
-    } else if (context.latency_original_captured) {
-        const bool text_ok = ReadVisibilityField(text_widget) ==
-                context.latency_text_original_visibility ||
-            SetWidgetVisibility(context, text_widget,
-                context.latency_text_original_visibility);
-        const bool image_ok = ReadVisibilityField(image_widget) ==
-                context.latency_image_original_visibility ||
-            SetWidgetVisibility(context, image_widget,
-                context.latency_image_original_visibility);
-        if (text_ok && image_ok) {
-            context.latency_original_captured = false;
-            context.latency_action_confirmed = false;
-            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-                "FakeUID: TextPing and ImagePing restored");
-        }
+        ++index;
     }
 }
 
@@ -3147,8 +3167,8 @@ void ANOMALY_CALL Update(void* user, double) {
             ValidateRoleIDAnchor(*context);
         }
         ScanForWidgets(*context);
-        if (current_settings->hide_latency || context->latency_original_captured) {
-            ProbeLatencyWidget(*context);
+        if (current_settings->hide_latency || context->latency_widget_count != 0) {
+            if (current_settings->hide_latency) ProbeLatencyWidget(*context);
             ApplyLatencyVisibility(*context, current_settings->hide_latency);
         }
         static_cast<void>(EnsureTextHookSnapshot(
@@ -3515,7 +3535,7 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
             std::string error;
             const bool reverted = settings && ApplySettings(
                 context, false, settings->hide_prefix,
-                settings->display_uid, error, {}, settings->hide_latency);
+                settings->display_uid, error, settings->prefix_text, settings->hide_latency);
             ResetEditor(context);
             context.ui_status = reverted
                 ? (error.empty()
@@ -3542,13 +3562,13 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
                 active_settings->enabled, active_settings->hide_prefix,
                 active_settings->display_uid, error,
                 active_settings->prefix_text, hide_latency != 0);
-            context.ui_status = applied
-                ? context.localizer.Text("status.latency_saved", "Latency setting saved")
+            context.ui_status = applied && error.empty()
+                ? context.localizer.Text("status.applied_saving", "Applied; saving")
                 : LocalizeUiStatus(context, error);
         }
     }
     if (ui.separator) ui.separator(ui.user);
-    DrawText(ui, context.localizer.Text("hint.color_session", "Text color (current game session)"));
+    DrawText(ui, context.localizer.Text("hint.color", "Text color (saved automatically when applied)"));
     if (ui.color_edit4) {
         const std::string label = context.localizer.Label(
             "field.text_color", "Text color", "text-color");
@@ -3565,6 +3585,7 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
                 next->value.rgba[i] = (std::clamp)(context.color_editor[i], 0.0F, 1.0F);
             next->value.rule = 0;  // SlateCore.UseColor_Specified
             context.color_settings.store(next, std::memory_order_release);
+            static_cast<void>(ScheduleSettingsPersist(context));
             context.ui_status = context.localizer.Text(
                 "status.color_applied", "Color applied; waiting for the HUD to refresh");
         } catch (...) { context.ui_status = context.localizer.Text(
@@ -3575,8 +3596,12 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
         try {
             const auto previous = context.color_settings.load(std::memory_order_acquire);
             auto next = std::make_shared<ColorSettings>();
+            if (previous) *next = *previous;
             next->revision = previous ? previous->revision + 1 : 1;
+            next->enabled = false;
+            next->rainbow = false;
             context.color_settings.store(next, std::memory_order_release);
+            static_cast<void>(ScheduleSettingsPersist(context));
             context.ui_status = context.localizer.Text(
                 "status.color_restored", "Default color restored");
         } catch (...) { context.ui_status = context.localizer.Text(
@@ -3596,6 +3621,7 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
                 next->revision = current ? current->revision + 1 : 1;
                 next->rainbow = rainbow != 0;
                 context.color_settings.store(next, std::memory_order_release);
+                static_cast<void>(ScheduleSettingsPersist(context));
                 context.ui_status = next->rainbow
                     ? context.localizer.Text("status.rgb_on", "RGB cycle enabled")
                     : context.localizer.Text("status.rgb_off", "RGB cycle disabled");
@@ -3609,9 +3635,11 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
             "field.rgb_period", "RGB cycle period (seconds)", "rgb-period");
         if (ui.slider_float(ui.user,
                 anomaly::sdk::StringView(label),
-                &period, 0.5F, 10.0F) != 0)
+                &period, 0.5F, 10.0F) != 0) {
             context.rainbow_period.store((std::clamp)(period, 0.5F, 10.0F),
                                          std::memory_order_release);
+            static_cast<void>(ScheduleSettingsPersist(context));
+        }
     }
     if (ui.separator) ui.separator(ui.user);
     DrawText(ui, context.localizer.Text("hint.dynamic_uid",
@@ -3624,6 +3652,7 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
                 anomaly::sdk::StringView(label),
                 &typing) != 0) {
             context.typing_enabled.store(typing != 0, std::memory_order_release);
+            static_cast<void>(ScheduleSettingsPersist(context));
             context.settings_revision.fetch_add(1, std::memory_order_acq_rel);
             const auto text_settings = ReadSettings(context);
             context.ui_status = typing != 0
@@ -3639,9 +3668,11 @@ void DrawEditor(Context& context, const AnomalyUiServiceV1& ui) {
             "field.typing_interval", "Seconds per character", "typing-interval");
         if (ui.slider_float(ui.user,
                 anomaly::sdk::StringView(label),
-                &interval, 0.05F, 0.5F) != 0)
+                &interval, 0.05F, 0.5F) != 0) {
             context.typing_interval.store((std::clamp)(interval, 0.05F, 0.5F),
                                           std::memory_order_release);
+            static_cast<void>(ScheduleSettingsPersist(context));
+        }
     }
     if (!context.ui_status.empty()) {
         DrawText(ui, context.ui_status);

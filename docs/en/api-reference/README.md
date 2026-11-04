@@ -116,7 +116,7 @@ Many functions that return variable-length data use a signature of the form `(..
 | `anomaly.scheduler` | 1 | `scheduler` | [scheduler](platform-services.md#anomalyscheduler) |
 | `anomaly.commands` | 1 | `commands` | [commands](platform-services.md#anomalycommands) |
 | `anomaly.notifications` | 1 | `notifications` | [notifications](platform-services.md#anomalynotifications) |
-| `anomaly.interop.signature` | 1 | `interop-signature` | [signature](interop-and-memory.md#anomalyinteropsignature) |
+| `anomaly.interop.signature` | 1 / 2 / 3 | `interop-signature` | [signature](interop-and-memory.md#anomalyinteropsignature) |
 | `anomaly.interop.hook` | 1 | `interop-hook` | [hook](interop-and-memory.md#anomalyinterophook) |
 | `anomaly.interop.patch` | 1 | `interop-patch` | [patch](interop-and-memory.md#anomalyinteroppatch) |
 | `anomaly.ipc` | 1 | `ipc` | [ipc](ipc.md) |

@@ -83,7 +83,7 @@ public:
     [[nodiscard]] std::string Learn(
         const SignatureScanContext& context, std::string_view contract,
         std::string_view original_pattern, std::uintptr_t instruction,
-        std::stop_token stop = {});
+        std::stop_token stop = {}, bool original_unique = false);
 
     // Opt-in member learning. Resolves the entire declaration before publishing
     // any field; unlike the address-only API, declared member operands may move.

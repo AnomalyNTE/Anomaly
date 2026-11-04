@@ -297,14 +297,37 @@ std::vector<std::uintptr_t> ScanSection(
     if (found == sections.end() || found->virtual_size == 0) {
         return {};
     }
-    if (!HasRange(found->base, found->virtual_size, false)) return {};
-    const auto* const mapped = reinterpret_cast<const std::uint8_t*>(found->base);
+    return ScanSection(*found, pattern, limit);
+}
+
+std::vector<std::uintptr_t> ScanSection(
+    const SectionInfo& section,
+    const Pattern& pattern,
+    std::size_t limit) {
+    if (section.virtual_size == 0 || !HasRange(section.base, section.virtual_size, false)) return {};
+    const auto* const mapped = reinterpret_cast<const std::uint8_t*>(section.base);
     const auto offsets = pattern.FindAll(
-        std::span<const std::uint8_t>(mapped, found->virtual_size), limit);
+        std::span<const std::uint8_t>(mapped, section.virtual_size), limit);
     std::vector<std::uintptr_t> addresses;
     addresses.reserve(offsets.size());
     for (const auto offset : offsets) {
-        addresses.push_back(found->base + offset);
+        addresses.push_back(section.base + offset);
+    }
+    return addresses;
+}
+
+std::vector<std::vector<std::uintptr_t>> ScanSectionBatch(
+    const SectionInfo& section,
+    std::span<const Pattern> patterns,
+    std::size_t limit) {
+    std::vector<std::vector<std::uintptr_t>> addresses(patterns.size());
+    if (section.virtual_size == 0 || !HasRange(section.base, section.virtual_size, false)) return addresses;
+    const auto* const mapped = reinterpret_cast<const std::uint8_t*>(section.base);
+    const auto offsets = Pattern::FindAllBatch(
+        std::span<const std::uint8_t>(mapped, section.virtual_size), patterns, limit);
+    for (std::size_t index = 0; index < offsets.size(); ++index) {
+        addresses[index].reserve(offsets[index].size());
+        for (const auto offset : offsets[index]) addresses[index].push_back(section.base + offset);
     }
     return addresses;
 }

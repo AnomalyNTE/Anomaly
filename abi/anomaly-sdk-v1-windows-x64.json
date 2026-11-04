@@ -30,6 +30,8 @@
     "ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION": 1,
     "ANOMALY_SIGNATURE_SERVICE_V1_VERSION": 1,
     "ANOMALY_SIGNATURE_SERVICE_V2_VERSION": 2,
+    "ANOMALY_SIGNATURE_SERVICE_V3_VERSION": 3,
+    "ANOMALY_SIGNATURE_BATCH_MAX_PATTERNS_V3": 128,
     "ANOMALY_SIGNATURE_LAYOUT_MAX_FIELDS_V2": 32,
     "ANOMALY_SIGNATURE_LAYOUT_MAX_WITNESSES_V2": 32,
     "ANOMALY_HOOK_SERVICE_V1_VERSION": 1,
@@ -979,6 +981,18 @@
         "user": 8,
         "resolve": 16,
         "resolve_layout": 24
+      }
+    },
+    "AnomalySignatureServiceV3": {
+      "size": 40,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "resolve": 16,
+        "resolve_layout": 24,
+        "resolve_batch": 32
       }
     },
     "AnomalyHookServiceV1": {
@@ -2265,6 +2279,7 @@
     { "id": "anomaly.notifications", "version": 1, "table": "AnomalyNotificationsServiceV1" },
     { "id": "anomaly.interop.signature", "version": 1, "table": "AnomalySignatureServiceV1" },
     { "id": "anomaly.interop.signature", "version": 2, "table": "AnomalySignatureServiceV2" },
+    { "id": "anomaly.interop.signature", "version": 3, "table": "AnomalySignatureServiceV3" },
     { "id": "anomaly.interop.hook", "version": 1, "table": "AnomalyHookServiceV1" },
     { "id": "anomaly.interop.patch", "version": 1, "table": "AnomalyPatchServiceV1" },
     { "id": "anomaly.ui", "version": 1, "table": "AnomalyUiServiceV1" },

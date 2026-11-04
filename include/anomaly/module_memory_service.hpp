@@ -25,6 +25,14 @@ public:
         std::string_view section_name,
         const ue5mem::Pattern& pattern,
         std::size_t limit) const;
+    [[nodiscard]] std::vector<std::uintptr_t> ScanSection(
+        const ue5mem::SectionInfo& section,
+        const ue5mem::Pattern& pattern,
+        std::size_t limit) const;
+    [[nodiscard]] std::vector<std::vector<std::uintptr_t>> ScanSectionBatch(
+        const ue5mem::SectionInfo& section,
+        std::span<const ue5mem::Pattern> patterns,
+        std::size_t limit) const;
 
     [[nodiscard]] std::optional<std::uintptr_t> ResolveRipRelative(
         std::uintptr_t instruction,

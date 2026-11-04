@@ -136,4 +136,71 @@ std::vector<std::size_t> Pattern::FindAll(
     return matches;
 }
 
+std::vector<std::vector<std::size_t>> Pattern::FindAllBatch(
+    std::span<const std::uint8_t> bytes,
+    std::span<const Pattern> patterns,
+    std::size_t limit) {
+    std::vector<std::vector<std::size_t>> results(patterns.size());
+    if (limit == 0 || patterns.empty()) return results;
+
+    // Two-byte frequencies select rare fixed anchors. The second pass tests
+    // all patterns while walking the section once.
+    std::vector<std::uint32_t> frequencies(65536);
+    for (std::size_t offset = 0; offset + 1 < bytes.size(); ++offset) {
+        const auto key = static_cast<std::uint16_t>(bytes[offset] | (bytes[offset + 1] << 8));
+        ++frequencies[key];
+    }
+    struct Entry {
+        std::size_t pattern;
+        std::size_t anchor_offset;
+        int next;
+    };
+    std::vector<int> heads(65536, -1);
+    std::vector<Entry> entries;
+    entries.reserve(patterns.size());
+    for (std::size_t index = 0; index < patterns.size(); ++index) {
+        const auto& pattern = patterns[index];
+        if (pattern.anchor_.size() < 2 || pattern.Size() > bytes.size()) {
+            results[index] = pattern.FindAll(bytes, limit);
+            continue;
+        }
+        std::size_t best{};
+        std::uint32_t best_frequency = UINT32_MAX;
+        for (std::size_t pos = 0; pos + 1 < pattern.anchor_.size(); ++pos) {
+            const auto key = static_cast<std::uint16_t>(
+                pattern.anchor_[pos] | (pattern.anchor_[pos + 1] << 8));
+            if (frequencies[key] < best_frequency) {
+                best = pos;
+                best_frequency = frequencies[key];
+            }
+        }
+        if (best_frequency == 0) continue;
+        const auto key = static_cast<std::uint16_t>(
+            pattern.anchor_[best] | (pattern.anchor_[best + 1] << 8));
+        entries.push_back({index, pattern.anchor_offset_ + best, heads[key]});
+        heads[key] = static_cast<int>(entries.size() - 1);
+    }
+    for (std::size_t pos = 0; pos + 1 < bytes.size(); ++pos) {
+        const auto key = static_cast<std::uint16_t>(bytes[pos] | (bytes[pos + 1] << 8));
+        for (int entry = heads[key]; entry >= 0; entry = entries[entry].next) {
+            const auto& selected = entries[entry];
+            auto& matches = results[selected.pattern];
+            const auto& pattern = patterns[selected.pattern];
+            if (matches.size() == limit || pos < selected.anchor_offset) continue;
+            const std::size_t offset = pos - selected.anchor_offset;
+            if (offset > bytes.size() - pattern.Size()) continue;
+            bool matched = true;
+            for (std::size_t byte = 0; byte < pattern.Size(); ++byte) {
+                const auto& expected = pattern.bytes_[byte];
+                if ((bytes[offset + byte] & expected.mask) != expected.value) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) matches.push_back(offset);
+        }
+    }
+    return results;
+}
+
 }  // namespace ue5mem

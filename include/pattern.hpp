@@ -20,6 +20,10 @@ public:
     [[nodiscard]] std::vector<std::size_t> FindAll(
         std::span<const std::uint8_t> bytes,
         std::size_t limit = 256) const;
+    [[nodiscard]] static std::vector<std::vector<std::size_t>> FindAllBatch(
+        std::span<const std::uint8_t> bytes,
+        std::span<const Pattern> patterns,
+        std::size_t limit = 2);
     [[nodiscard]] std::size_t Size() const noexcept { return bytes_.size(); }
     [[nodiscard]] std::span<const PatternByte> Bytes() const noexcept { return bytes_; }
 

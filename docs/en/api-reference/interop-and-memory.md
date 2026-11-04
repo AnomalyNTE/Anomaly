@@ -20,7 +20,7 @@ See [`anomaly.core`](lifecycle-and-core.md#anomalycore) for the signature. New p
 
 ## `anomaly.interop.signature`
 
-- **ID**: `"anomaly.interop.signature"` · **Version** 1 / 2 · **capability** `interop-signature`
+- **ID**: `"anomaly.interop.signature"` · **Version** 1 / 2 / 3 · **capability** `interop-signature`
 
 ```c
 typedef struct AnomalySignatureServiceV1 {
@@ -105,6 +105,21 @@ C++ plugins can use the `FieldSeed` / `MemberUse` / `Witness` declarations and `
 [`anomaly/sdk/signature.hpp`](../../../include/anomaly/sdk/signature.hpp). The returned snapshot is held
 locally by the plugin; `address(id)` / `offset(id)` lookups perform no scanning and no disk access;
 querying an undeclared ID throws `std::out_of_range`.
+
+### Version 3: batched signature resolution
+
+Querying version 3 returns `AnomalySignatureServiceV3`, retaining V1 `resolve` and V2
+`resolve_layout` while adding `resolve_batch`. On Lifecycle / Worker, it scans up to 128
+patterns in one module section and reports `OK`, `NOT_FOUND`, or `CONFLICT` plus a unique
+address for each. Existing learning and recovery still apply per pattern. Older hosts and
+callers continue to use V1/V2.
+
+```c
+AnomalyStatusV1 (ANOMALY_CALL *resolve_batch)(
+    void* user, AnomalyStringViewV1 module_name, AnomalyStringViewV1 section_name,
+    const AnomalyStringViewV1* patterns, uint32_t count,
+    uint32_t* status_codes, uintptr_t* addresses);
+```
 
 ---
 

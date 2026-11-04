@@ -178,6 +178,17 @@ bool ValidCachedPattern(std::string_view original,
     return true;
 }
 
+bool ImpliesPattern(const ue5mem::Pattern& known, const ue5mem::Pattern& required) {
+    const auto known_bytes = known.Bytes();
+    const auto required_bytes = required.Bytes();
+    return known_bytes.size() >= required_bytes.size() &&
+        std::equal(required_bytes.begin(), required_bytes.end(), known_bytes.begin(),
+            [](const auto& expected, const auto& actual) {
+                return (actual.mask & expected.mask) == expected.mask &&
+                    ((actual.value ^ expected.value) & expected.mask) == 0;
+            });
+}
+
 bool RelativeBranch(const hde64s& code) {
     return (code.flags & F_RELATIVE) && (code.flags & (F_IMM8 | F_IMM32));
 }
@@ -309,7 +320,8 @@ std::vector<CalleeAnchor> LearnCalleeAnchors(const SignatureScanContext& context
 // extra scans. Callee evidence, when needed, remains inside every tested prefix.
 std::string CompactRecipe(const SignatureScanContext& context, std::string_view pattern,
                           std::uintptr_t instruction, std::span<const CalleeAnchor> anchors,
-                          std::size_t declaration_size, std::stop_token stop) {
+                          std::size_t declaration_size, std::stop_token stop,
+                          const ue5mem::Pattern& declaration, bool original_unique) {
     const auto parsed = ue5mem::Pattern::Parse(pattern);
     const auto bytes = parsed.Bytes();
     std::size_t minimum = declaration_size;
@@ -329,10 +341,15 @@ std::string CompactRecipe(const SignatureScanContext& context, std::string_view 
     std::size_t low{}, high = ends.size() - 1;
     while (low < high && !stop.stop_requested()) {
         const auto middle = low + (high - low) / 2;
-        const auto matches = context.scan(prefix(middle), kMaximumAnchorCandidates);
-        const bool unique = matches.size() < kMaximumAnchorCandidates &&
-            std::ranges::find(matches, instruction) != matches.end() &&
-            AnchorSurvivors(context, matches, anchors) == 1;
+        const auto candidate = prefix(middle);
+        bool unique = original_unique &&
+            ImpliesPattern(ue5mem::Pattern::Parse(candidate), declaration);
+        if (!unique) {
+            const auto matches = context.scan(candidate, kMaximumAnchorCandidates);
+            unique = matches.size() < kMaximumAnchorCandidates &&
+                std::ranges::find(matches, instruction) != matches.end() &&
+                AnchorSurvivors(context, matches, anchors) == 1;
+        }
         if (unique) high = middle;
         else low = middle + 1;
     }
@@ -792,11 +809,42 @@ SignatureRecovery SignatureUpdater::Recover(
 
 std::string SignatureUpdater::Learn(
     const SignatureScanContext& context, std::string_view contract,
-    std::string_view original_pattern, std::uintptr_t instruction, std::stop_token stop) {
+    std::string_view original_pattern, std::uintptr_t instruction, std::stop_token stop,
+    bool original_unique) {
     if (stop.stop_requested()) return "signature learning cancelled";
     if (!ExecutableSection(context) || instruction < context.section.base ||
         instruction - context.section.base >= context.section.virtual_size) {
         return "signature learning requires an instruction in the declared executable section";
+    }
+    const auto key = RecipeKey(context, contract, original_pattern);
+    std::string cached;
+    std::string extended;
+    bool anchored{};
+    {
+        std::scoped_lock lock(impl_->mutex_);
+        impl_->Load();
+        if (const auto found = impl_->records_.find(key); found != impl_->records_.end())
+            cached = found->second;
+        if (const auto found = impl_->extended_records_.find(key);
+            found != impl_->extended_records_.end()) extended = found->second;
+        anchored = impl_->anchor_records_.contains(key);
+    }
+    // The caller already found the declared signature uniquely. If its prior
+    // unanchored recovery evidence still matches here, relearning adds only
+    // repeated full-section scans and a possible cache write.
+    if (!cached.empty() && !anchored) {
+        const auto declaration = ue5mem::Pattern::Parse(original_pattern);
+        const auto compact = ue5mem::Pattern::Parse(cached);
+        if (original_unique && ImpliesPattern(compact, declaration)) {
+            const auto& evidence = extended.empty() ? cached : extended;
+            const auto pattern = ue5mem::Pattern::Parse(evidence);
+            if (pattern.Size() <= context.section.virtual_size - (instruction - context.section.base)) {
+                std::vector<std::uint8_t> current(pattern.Size());
+                if (context.read(instruction, current.data(), current.size()) &&
+                    !stop.stop_requested() && pattern.FindAll(current, 1) == std::vector<std::size_t>{0})
+                    return {};
+            }
+        }
     }
     const auto size = (std::min)(kWindowBytes,
         context.section.virtual_size - (instruction - context.section.base));
@@ -813,7 +861,10 @@ std::string SignatureUpdater::Learn(
     auto learned = Normalize(source);
     if (learned.empty()) return "insufficient instruction evidence for signature learning";
     if (stop.stop_requested()) return "signature learning cancelled";
-    const auto matches = context.scan(learned, kMaximumAnchorCandidates);
+    const auto matches = original_unique &&
+            ImpliesPattern(ue5mem::Pattern::Parse(learned), declaration)
+        ? std::vector<std::uintptr_t>{instruction}
+        : context.scan(learned, kMaximumAnchorCandidates);
     if (matches.empty() || matches.size() >= kMaximumAnchorCandidates ||
         std::ranges::find(matches, instruction) == matches.end())
         return "learned instruction signature is ambiguous";
@@ -826,9 +877,9 @@ std::string SignatureUpdater::Learn(
     if (stop.stop_requested()) return "signature learning cancelled";
     const auto full = learned;
     learned = CompactRecipe(context, learned, instruction, anchors,
-        ue5mem::Pattern::Parse(Normalize(declaration.Bytes(), {}, 0, 0)).Size(), stop);
+        ue5mem::Pattern::Parse(Normalize(declaration.Bytes(), {}, 0, 0)).Size(), stop,
+        declaration, original_unique);
     if (stop.stop_requested()) return "signature learning cancelled";
-    const auto key = RecipeKey(context, contract, original_pattern);
     std::scoped_lock lock(impl_->mutex_);
     impl_->Load();
     const auto found = impl_->records_.find(key);

@@ -186,6 +186,10 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_SIGNATURE_SERVICE_V2_VERSION\": ");
     AppendUnsigned(output, ANOMALY_SIGNATURE_SERVICE_V2_VERSION);
+    output.append(",\n    \"ANOMALY_SIGNATURE_SERVICE_V3_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_SIGNATURE_SERVICE_V3_VERSION);
+    output.append(",\n    \"ANOMALY_SIGNATURE_BATCH_MAX_PATTERNS_V3\": ");
+    AppendUnsigned(output, ANOMALY_SIGNATURE_BATCH_MAX_PATTERNS_V3);
     output.append(",\n    \"ANOMALY_SIGNATURE_LAYOUT_MAX_FIELDS_V2\": ");
     AppendUnsigned(output, ANOMALY_SIGNATURE_LAYOUT_MAX_FIELDS_V2);
     output.append(",\n    \"ANOMALY_SIGNATURE_LAYOUT_MAX_WITNESSES_V2\": ");
@@ -1270,6 +1274,18 @@ std::string BuildSnapshot() {
          {"user", offsetof(AnomalySignatureServiceV2, user)},
          {"resolve", offsetof(AnomalySignatureServiceV2, resolve)},
          {"resolve_layout", offsetof(AnomalySignatureServiceV2, resolve_layout)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalySignatureServiceV3",
+        sizeof(AnomalySignatureServiceV3),
+        alignof(AnomalySignatureServiceV3),
+        {{"struct_size", offsetof(AnomalySignatureServiceV3, struct_size)},
+         {"service_version", offsetof(AnomalySignatureServiceV3, service_version)},
+         {"user", offsetof(AnomalySignatureServiceV3, user)},
+         {"resolve", offsetof(AnomalySignatureServiceV3, resolve)},
+         {"resolve_layout", offsetof(AnomalySignatureServiceV3, resolve_layout)},
+         {"resolve_batch", offsetof(AnomalySignatureServiceV3, resolve_batch)}},
         false);
     AppendStruct(
         output,
@@ -2587,6 +2603,8 @@ std::string BuildSnapshot() {
         ANOMALY_SIGNATURE_SERVICE_V1_VERSION, "AnomalySignatureServiceV1", false);
     AppendService(output, ANOMALY_SIGNATURE_SERVICE_V2_ID,
         ANOMALY_SIGNATURE_SERVICE_V2_VERSION, "AnomalySignatureServiceV2", false);
+    AppendService(output, ANOMALY_SIGNATURE_SERVICE_V3_ID,
+        ANOMALY_SIGNATURE_SERVICE_V3_VERSION, "AnomalySignatureServiceV3", false);
     AppendService(output, ANOMALY_HOOK_SERVICE_V1_ID,
         ANOMALY_HOOK_SERVICE_V1_VERSION, "AnomalyHookServiceV1", false);
     AppendService(output, ANOMALY_PATCH_SERVICE_V1_ID,

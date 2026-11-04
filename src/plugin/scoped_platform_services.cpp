@@ -1289,25 +1289,26 @@ AnomalyStatusV1 ScopedPlatformServices::ResolveSignature(
         if (module.empty()) return InvalidArgument("module name is not UTF-8");
         const auto module_info = impl_->memory_services_.memory->FindModule(module);
         if (!module_info) return Status(ANOMALY_STATUS_V1_NOT_FOUND, "module is not loaded");
+        const auto sections = impl_->memory_services_.memory->EnumerateSections(*module_info);
+        const auto section = std::ranges::find_if(sections, [&](const auto& value) {
+            return value.name == section_name;
+        });
+        if (section == sections.end()) return Status(ANOMALY_STATUS_V1_NOT_FOUND, "section is not loaded");
         const ue5mem::Pattern parsed = impl_->memory_services_.patterns->Parse(pattern);
         auto matches = impl_->memory_services_.patterns->ScanSection(
-            *module_info, section_name, parsed, 2);
+            *section, parsed, 2);
         std::shared_ptr<SignatureUpdater> updater;
         std::optional<SignatureScanContext> scan_context;
         if (allow_recovery_io && !owner.state_directory.empty()) {
-            const auto sections = impl_->memory_services_.memory->EnumerateSections(*module_info);
-            const auto section = std::ranges::find_if(sections, [&](const auto& value) {
-                return value.name == section_name;
-            });
-            if (section != sections.end() && (section->characteristics & IMAGE_SCN_MEM_EXECUTE)) {
+            if (section->characteristics & IMAGE_SCN_MEM_EXECUTE) {
                 updater = impl_->SignatureKnowledge(owner.state_directory);
                 scan_context = SignatureScanContext{*module_info, *section,
                     [&](auto target, auto output, auto size) {
                         return impl_->memory_services_.memory->ReadMemoryInto(target, output, size);
                     },
                     [&](auto text, auto limit) {
-                        return impl_->memory_services_.patterns->ScanSection(*module_info,
-                            section_name, impl_->memory_services_.patterns->Parse(text), limit);
+                        return impl_->memory_services_.patterns->ScanSection(
+                            *section, impl_->memory_services_.patterns->Parse(text), limit);
                     }};
             }
         }
@@ -1321,7 +1322,8 @@ AnomalyStatusV1 ScopedPlatformServices::ResolveSignature(
             // Knowledge persistence is optional; its failure cannot invalidate
             // an otherwise successful exact signature resolution.
             try {
-                static_cast<void>(updater->Learn(*scan_context, "plugin-signature-v1", pattern, matches.front()));
+                static_cast<void>(updater->Learn(
+                    *scan_context, "plugin-signature-v1", pattern, matches.front(), {}, true));
             } catch (const std::exception&) {
             }
         }
@@ -1329,6 +1331,89 @@ AnomalyStatusV1 ScopedPlatformServices::ResolveSignature(
         return Status(ANOMALY_STATUS_V1_OK);
     } catch (...) {
         return Status(ANOMALY_STATUS_V1_FAILED, "signature preflight failed");
+    }
+}
+
+AnomalyStatusV1 ScopedPlatformServices::ResolveSignatures(
+    const ScopedPluginServiceOwner& owner,
+    const std::string_view module_name,
+    const std::string_view section_name,
+    const AnomalyStringViewV1* patterns,
+    const std::uint32_t count,
+    std::uint32_t* status_codes,
+    std::uintptr_t* addresses,
+    const bool allow_recovery_io) noexcept {
+    if (count == 0 || count > ANOMALY_SIGNATURE_BATCH_MAX_PATTERNS_V3 ||
+        patterns == nullptr || status_codes == nullptr || addresses == nullptr)
+        return InvalidArgument("invalid signature batch");
+    std::fill_n(status_codes, count, ANOMALY_STATUS_V1_NOT_FOUND);
+    std::fill_n(addresses, count, std::uintptr_t{});
+    if (owner.scope == nullptr || !IsSafeToken(module_name) || !IsSafeToken(section_name) ||
+        !impl_->memory_services_.memory || !impl_->memory_services_.patterns)
+        return InvalidArgument();
+    if (!allow_recovery_io)
+        return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "batch resolution requires Lifecycle or Worker");
+    try {
+        std::vector<ue5mem::Pattern> parsed;
+        parsed.reserve(count);
+        for (std::uint32_t index = 0; index < count; ++index) {
+            const auto text = patterns[index].data
+                ? std::string_view(patterns[index].data, patterns[index].size) : std::string_view{};
+            if (!IsText(text) || text.size() > 1024) return InvalidArgument("invalid signature pattern");
+            parsed.push_back(impl_->memory_services_.patterns->Parse(text));
+        }
+        const std::wstring module = WideUtf8(module_name);
+        if (module.empty()) return InvalidArgument("module name is not UTF-8");
+        const auto module_info = impl_->memory_services_.memory->FindModule(module);
+        if (!module_info) return Status(ANOMALY_STATUS_V1_NOT_FOUND, "module is not loaded");
+        const auto sections = impl_->memory_services_.memory->EnumerateSections(*module_info);
+        const auto section = std::ranges::find_if(sections, [&](const auto& value) {
+            return value.name == section_name;
+        });
+        if (section == sections.end()) return Status(ANOMALY_STATUS_V1_NOT_FOUND, "section is not loaded");
+        const auto matches = impl_->memory_services_.patterns->ScanSectionBatch(*section, parsed, 2);
+        std::shared_ptr<SignatureUpdater> updater;
+        std::optional<SignatureScanContext> scan_context;
+        if (!owner.state_directory.empty() && (section->characteristics & IMAGE_SCN_MEM_EXECUTE)) {
+            updater = impl_->SignatureKnowledge(owner.state_directory);
+            scan_context = SignatureScanContext{*module_info, *section,
+                [&](auto target, auto output, auto size) {
+                    return impl_->memory_services_.memory->ReadMemoryInto(target, output, size);
+                },
+                [&](auto text, auto limit) {
+                    return impl_->memory_services_.patterns->ScanSection(
+                        *section, impl_->memory_services_.patterns->Parse(text), limit);
+                }};
+        }
+        for (std::uint32_t index = 0; index < count; ++index) {
+            if (matches[index].size() > 1) {
+                status_codes[index] = ANOMALY_STATUS_V1_CONFLICT;
+                continue;
+            }
+            const auto text = std::string_view(patterns[index].data, patterns[index].size);
+            if (matches[index].size() == 1) {
+                addresses[index] = matches[index].front();
+                status_codes[index] = ANOMALY_STATUS_V1_OK;
+                if (updater) {
+                    try {
+                        static_cast<void>(updater->Learn(
+                            *scan_context, "plugin-signature-v1", text, addresses[index], {}, true));
+                    } catch (const std::exception&) {
+                    }
+                }
+            } else if (updater) {
+                const auto recovered = updater->Recover(*scan_context, "plugin-signature-v1", text);
+                if (recovered.instruction != 0) {
+                    addresses[index] = recovered.instruction;
+                    status_codes[index] = ANOMALY_STATUS_V1_OK;
+                }
+            }
+        }
+        return Status(ANOMALY_STATUS_V1_OK);
+    } catch (const std::invalid_argument&) {
+        return InvalidArgument("signature pattern is invalid");
+    } catch (...) {
+        return Status(ANOMALY_STATUS_V1_FAILED, "signature batch failed");
     }
 }
 
@@ -1407,7 +1492,7 @@ AnomalyStatusV1 ScopedPlatformServices::ResolveSignatureLayout(
                 return impl_->memory_services_.memory->ReadMemoryInto(target, output, size);
             },
             [&](auto pattern, auto limit) {
-                return impl_->memory_services_.patterns->ScanSection(*module_info, section_name,
+                return impl_->memory_services_.patterns->ScanSection(*section,
                     impl_->memory_services_.patterns->Parse(pattern), limit);
             }};
         const auto resolved = impl_->SignatureKnowledge(owner.state_directory)->ResolveLayout(scan_context, definition);

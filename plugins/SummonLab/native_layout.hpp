@@ -16,7 +16,14 @@ using SoftClassRef = std::array<std::uint8_t, 40>;
 using MirrorEntry = std::array<std::uint8_t, 32>;
 using MirrorBuffer = std::array<std::uint8_t, 96>;
 using Vector = std::array<double, 3>;
-struct alignas(16) Transform { std::array<double, 12> data{}; };
+struct alignas(16) Transform {
+    std::array<double, 4> rotation{};
+    Vector translation{};
+    double translation_padding{};
+    Vector scale{};
+    double scale_padding{};
+};
+struct TeleportParameters { Vector location{}, rotation{}; std::uint8_t result{}; };
 struct NativeString { const wchar_t* data{}; std::int32_t count{}, capacity{}; };
 struct MakeSoftClassPath { NativeString input; SoftClassPath result{}; };
 struct ConvertSoftClass { SoftClassPath input{}; SoftClassRef result{}; };
@@ -52,6 +59,9 @@ static_assert(sizeof(SummonParameters) == 208 && sizeof(ConfigureSummon) == 52);
 static_assert(sizeof(MakeSoftClassPath) == 48 && sizeof(ConvertSoftClass) == 72 && sizeof(LoadClass) == 48);
 static_assert(sizeof(HealthMaximum) == 8 && sizeof(Transform) == 96 && sizeof(TextProperty) == 32);
 static_assert(sizeof(ObjectBool) == 16 && sizeof(BoolProperty) == 24);
+static_assert(offsetof(Transform, translation) == 32 && offsetof(Transform, scale) == 64);
+static_assert(offsetof(SummonParameters, offset) == 48 && offsetof(SummonParameters, transform) == 96);
+static_assert(sizeof(TeleportParameters) == 56 && offsetof(TeleportParameters, result) == 48);
 
 // Numeric offsets come only from the host-loaded profile. No compiled fallback.
 #define SUMMON_MEMORY_FIELDS(X) \

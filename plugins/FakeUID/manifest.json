@@ -69,6 +69,7 @@
   ],
   "capabilities": [
     "configuration",
+    "memory-read",
     "interop-signature",
     "interop-hook",
     "scheduler",
