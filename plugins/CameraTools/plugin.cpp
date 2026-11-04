@@ -95,6 +95,7 @@ struct Context final {
   std::atomic_bool camera_position_valid{};
   std::atomic_bool streaming_source_follows_camera{};
   bool streaming_source_armed{};
+  bool streaming_source_unavailable_reported{};
   const AnomalyUe5StreamingSourceServiceV1 *streaming_source{};
   std::atomic_bool developer_mode{};
   std::atomic_bool teleport_pending{};
@@ -422,6 +423,9 @@ bool StreamingSourceMethodsAvailable(
     const AnomalyUe5StreamingSourceServiceV1 *service) noexcept {
   return service != nullptr &&
          service->service_version >= ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION &&
+         HasField<AnomalyUe5StreamingSourceServiceV1,
+                  decltype(AnomalyUe5StreamingSourceServiceV1::clear_override)>(
+             service, offsetof(AnomalyUe5StreamingSourceServiceV1, clear_override)) &&
          service->set_override != nullptr && service->clear_override != nullptr;
 }
 
@@ -430,9 +434,16 @@ void SyncStreamingSourceOverride(Context &context) noexcept {
       context.enabled.load(std::memory_order_acquire) &&
       context.active.load(std::memory_order_acquire) &&
       context.streaming_source_follows_camera.load(std::memory_order_acquire);
+  // The optional service can be published after this plugin's Load callback.
+  if (follows && !StreamingSourceMethodsAvailable(context.streaming_source)) {
+    context.streaming_source = Query<AnomalyUe5StreamingSourceServiceV1>(
+        context.host, ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID,
+        ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION);
+  }
   if (!StreamingSourceMethodsAvailable(context.streaming_source)) {
-    if (context.streaming_source_armed || follows) {
-      context.streaming_source_armed = false;
+    if ((context.streaming_source_armed || follows) &&
+        !context.streaming_source_unavailable_reported) {
+      context.streaming_source_unavailable_reported = true;
       Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
           "streaming override unavailable: the anomaly.ue5.streaming-source service "
           "is not published for this Profile");
@@ -440,6 +451,7 @@ void SyncStreamingSourceOverride(Context &context) noexcept {
     context.streaming_source_armed = false;
     return;
   }
+  context.streaming_source_unavailable_reported = false;
   if (!follows) {
     if (context.streaming_source_armed) {
       context.streaming_source_armed = false;
