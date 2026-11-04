@@ -69,6 +69,7 @@ constexpr std::uint64_t kMaxPrivateGrowthBudgetBytes = 4ULL * 1024ULL * 1024ULL 
 void Usage() {
     std::cerr << "usage: anomaly-test-host --watcher-fixture | --config-watcher-fixture | "
                  "--hook-stop-order-fixture "
+                 "--enablement-drain-fixture "
                  "--parallel-stage-fixture | "
                  "--plugin <package-or-root> [--reload N] [--ticks N] "
                  "[--duration-seconds N] [--tick-interval-ms N] [--reload-every-ticks N] "
@@ -474,6 +475,98 @@ bool VerifyHookStopOrderFixture(const std::filesystem::path& root) {
     return true;
 }
 
+bool VerifyEnablementDrainFixture(const std::filesystem::path& root) {
+    constexpr wchar_t kHoldVariable[] =
+        L"ANOMALY_HOOK_FIXTURE_HOLD_MS";
+    const DWORD previous_size =
+        GetEnvironmentVariableW(kHoldVariable, nullptr, 0);
+    std::wstring previous;
+    if (previous_size != 0) {
+        previous.resize(previous_size);
+        const DWORD written = GetEnvironmentVariableW(
+            kHoldVariable, previous.data(), previous_size);
+        if (written == 0 || written >= previous_size)
+            previous.clear();
+    }
+    SetEnvironmentVariableW(kHoldVariable, L"1600");
+
+    const auto inline_dispatch = [](
+        std::string, std::uint64_t, std::function<void()> callback) -> bool {
+        if (!callback) return false;
+        callback();
+        return true;
+    };
+    auto probe = std::make_shared<HookStopOrderProbe>();
+    bool valid{};
+    {
+        ue5mem::PluginManager manager(
+            root, root, {}, {}, {}, inline_dispatch, inline_dispatch, {},
+            std::make_unique<RejectBatchHookBackend>(probe));
+        manager.LoadAll();
+        auto loaded = manager.Plugins();
+        auto plugin = std::ranges::find_if(loaded, [](const auto& view) {
+            return view.id == "anomaly.test.hook-lifecycle";
+        });
+        if (plugin != loaded.end() && plugin->state == "disabled" &&
+            manager.SetEnabled(plugin->id, true)) {
+            loaded = manager.Plugins();
+            plugin = std::ranges::find_if(loaded, [](const auto& view) {
+                return view.id == "anomaly.test.hook-lifecycle";
+            });
+        }
+        if (plugin == loaded.end() || plugin->state != "active") {
+            std::cerr << "enablement drain fixture plugin did not activate\n";
+        } else {
+            const auto started = std::chrono::steady_clock::now();
+            const bool disabled = manager.SetEnabled(plugin->id, false);
+            const auto elapsed = std::chrono::duration_cast<
+                std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started);
+            const bool quarantined = std::ranges::any_of(
+                manager.Plugins(), [](const auto& view) {
+                    return view.id == "anomaly.test.hook-lifecycle" &&
+                        view.state == "quarantined";
+                });
+            valid = disabled && !quarantined &&
+                elapsed >= std::chrono::milliseconds(1200) &&
+                probe->individual_disable_calls.load() == 1 &&
+                probe->remove_calls.load() == 1;
+            if (!valid) {
+                wchar_t stage[64]{};
+                GetEnvironmentVariableW(
+                    L"ANOMALY_HOOK_FIXTURE_STAGE", stage,
+                    static_cast<DWORD>(std::size(stage)));
+                std::string stage_utf8;
+                const int stage_size = WideCharToMultiByte(
+                    CP_UTF8, 0, stage, -1, nullptr, 0, nullptr, nullptr);
+                if (stage_size > 1) {
+                    stage_utf8.resize(
+                        static_cast<std::size_t>(stage_size - 1));
+                    static_cast<void>(WideCharToMultiByte(
+                        CP_UTF8, 0, stage, -1, stage_utf8.data(),
+                        stage_size, nullptr, nullptr));
+                }
+                std::cerr
+                    << "enablement drain fixture failed: disabled="
+                    << (disabled ? 1 : 0)
+                    << " quarantined=" << (quarantined ? 1 : 0)
+                    << " elapsed_ms=" << elapsed.count()
+                    << " individual_disable_calls="
+                    << probe->individual_disable_calls.load()
+                    << " remove_calls=" << probe->remove_calls.load()
+                    << " stage=" << stage_utf8
+                    << '\n';
+            }
+        }
+    }
+    SetEnvironmentVariableW(
+        kHoldVariable, previous.empty() ? nullptr : previous.c_str());
+    SetEnvironmentVariableW(L"ANOMALY_HOOK_FIXTURE_STAGE", nullptr);
+    if (valid)
+        std::cout << "ok plugin_enablement_drain timeout=5000 drain=1\n";
+    return valid;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -481,6 +574,7 @@ int wmain(int argc, wchar_t** argv) {
     bool watcher_fixture{};
     bool config_watcher_fixture{};
     bool hook_stop_order_fixture{};
+    bool enablement_drain_fixture{};
     bool parallel_stage_fixture{};
     bool enablement_fixture{};
     int reloads = 1;
@@ -494,6 +588,7 @@ int wmain(int argc, wchar_t** argv) {
         if (argument == L"--watcher-fixture") watcher_fixture = true;
         else if (argument == L"--config-watcher-fixture") config_watcher_fixture = true;
         else if (argument == L"--hook-stop-order-fixture") hook_stop_order_fixture = true;
+        else if (argument == L"--enablement-drain-fixture") enablement_drain_fixture = true;
         else if (argument == L"--parallel-stage-fixture") parallel_stage_fixture = true;
         else if (argument == L"--enablement-fixture") enablement_fixture = true;
         else if (argument == L"--plugin" && index + 1 < argc) input = argv[++index];
@@ -576,6 +671,15 @@ int wmain(int argc, wchar_t** argv) {
         if (!ok) {
             std::cerr << "plugin hook stop order fixture failed\n";
             return 13;
+        }
+        return 0;
+    }
+    if (enablement_drain_fixture) {
+        const bool ok = VerifyEnablementDrainFixture(root);
+        if (!staging.empty()) std::filesystem::remove_all(staging, error);
+        if (!ok) {
+            std::cerr << "plugin enablement drain fixture failed\n";
+            return 14;
         }
         return 0;
     }

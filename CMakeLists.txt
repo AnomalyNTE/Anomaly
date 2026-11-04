@@ -1157,6 +1157,9 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     add_test(NAME plugin_hook_stop_order
         COMMAND anomaly_test_host --hook-stop-order-fixture --plugin
             "$<TARGET_FILE_DIR:anomaly_test_hook_lifecycle_plugin>")
+    add_test(NAME plugin_enablement_drain
+        COMMAND anomaly_test_host --enablement-drain-fixture --plugin
+            "$<TARGET_FILE_DIR:anomaly_test_hook_lifecycle_plugin>")
     add_executable(anomaly_profile_compatibility_fixture apps/test_host/profile_compatibility_fixture.cpp)
     target_link_libraries(anomaly_profile_compatibility_fixture PRIVATE anomaly_symbol_resolver nlohmann_json::nlohmann_json)
     target_compile_options(anomaly_profile_compatibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)

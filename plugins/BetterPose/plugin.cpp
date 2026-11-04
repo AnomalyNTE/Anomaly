@@ -1754,6 +1754,7 @@ struct Context final {
     bool kawaii_configured{};
     bool kawaii_init_attempted{};
     bool kawaii_retry_pending{};
+    bool kawaii_retry_exhausted{};
     std::uint32_t kawaii_limit_retry_count{};
     bool kawaii_budget_disabled{};
     bool kawaii_tick_option_overridden{};
@@ -12171,6 +12172,8 @@ bool ConfigureKawaiiPhysics(Context &context,
                             Context::ExtraMesh &extra) noexcept {
   if (extra.kawaii_configured && !extra.kawaii_retry_pending)
     return extra.kawaii_configured;
+  if (extra.kawaii_retry_exhausted)
+    return false;
   const std::uint64_t now = GetTickCount64();
   if (extra.kawaii_attempted &&
       extra.kawaii_retry_after_ms != 0 &&
@@ -12194,6 +12197,7 @@ bool ConfigureKawaiiPhysics(Context &context,
     } else {
       extra.kawaii_retry_pending = false;
       extra.kawaii_retry_after_ms = 0;
+      extra.kawaii_retry_exhausted = true;
       RestoreKawaiiInitialization(context, extra);
       LogDiagnostic(context, "betterpose kawaii node " + Hex(extra.object) +
                                  " unavailable after retries: " +
@@ -12347,7 +12351,8 @@ bool ConfigureKawaiiPhysics(Context &context,
 void StepKawaiiRetry(Context &context) noexcept {
   const std::uint64_t now = GetTickCount64();
   for (auto &extra : context.extra_meshes) {
-    if (!extra.kawaii_retry_pending ||
+    if (extra.kawaii_retry_exhausted ||
+        !extra.kawaii_retry_pending ||
         extra.kawaii_retry_after_ms == 0 ||
         now < extra.kawaii_retry_after_ms)
       continue;
@@ -13281,6 +13286,7 @@ void WriteExtraMeshes(Context &context,
       continue;
     const std::uint64_t kawaii_now = GetTickCount64();
     if (extra.used_hierarchy && !extra.kawaii_configured &&
+        !extra.kawaii_retry_exhausted &&
         (!extra.kawaii_attempted ||
          extra.kawaii_retry_after_ms == 0 ||
          kawaii_now >= extra.kawaii_retry_after_ms)) {

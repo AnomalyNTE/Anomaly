@@ -112,6 +112,7 @@ anomaly::ThreadLocalScalar<std::unique_lock<std::mutex>*> g_lifecycle_plugin_loc
 
 constexpr std::wstring_view kPluginCacheOwnerFile{L".owner.lock"};
 constexpr std::size_t kMaximumNteEscMenuButtonIconBytes = 1024U * 1024U;
+constexpr std::chrono::milliseconds kEnablementStopTimeout{5000};
 constexpr std::array<std::uint8_t, 8> kPngSignature{
     0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU};
 
@@ -1859,6 +1860,29 @@ AnomalyStatusV1 InvokeScopedPlatform(void* user, Callback&& callback) noexcept {
     }
 }
 
+// EndHookCallback is the completion half of an already-issued hook lease.
+// Acquiring another ordinary callback lease here deadlocks stop: the host has
+// already frozen new callback sources while it waits for the outstanding hook
+// lease to end. The platform service validates the callback-lease owner and
+// generation before releasing it.
+template <typename Callback>
+AnomalyStatusV1 InvokeHookCallbackCompletion(
+    void* user, Callback&& callback) noexcept {
+    auto* context = static_cast<PluginServiceContext*>(user);
+    if (!ValidServiceContext(context) || context->platform == nullptr) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+            "plugin service context is invalid");
+    }
+    try {
+        return callback(*context);
+    } catch (...) {
+        return StatusV1(
+            ANOMALY_STATUS_V1_FAILED,
+            "hook callback completion failed");
+    }
+}
+
 template <typename Callback>
 AnomalyStatusV1 InvokeStateIoService(void* user, Callback&& callback) noexcept {
     if (IsSynchronousStateIoForbidden()) {
@@ -2584,7 +2608,7 @@ AnomalyStatusV1 ANOMALY_CALL BeginHookCallbackV1(
 
 AnomalyStatusV1 ANOMALY_CALL EndHookCallbackV1(
     void* user, AnomalyGenerationHandleV1 callback_lease) {
-    return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
+    return InvokeHookCallbackCompletion(user, [&](PluginServiceContext& context) {
         return context.platform->EndHookCallback(ScopedPlatformOwner(context), callback_lease);
     });
 }
@@ -5134,7 +5158,7 @@ bool PluginManager::ReconcileEnablement(
         const std::size_t index = static_cast<std::size_t>(
             std::distance(plugins_.begin(), found));
         if (!UnloadIndicesWithDeadline(
-                {index}, true, std::chrono::milliseconds(1000))) {
+                {index}, true, kEnablementStopTimeout)) {
             stopped = false;
             protect_required_dependencies(id);
         }
