@@ -26,6 +26,11 @@ struct Layout {
 };
 inline Layout native_layout;
 inline anomaly::plugins::CompatibilityProfile compatibility;
+// Optional: a missing/unsupported rotation path must not disable the existing tools.
+// The 1.4b and 1.5a native bodies share the rotation ABI and vtable slot, but
+// have different prologues. Resolve their separate Profile candidates uniquely.
+inline std::uint32_t process_view_rotation_slot{};
+inline constexpr std::string_view kProcessViewRotation = "processViewRotation";
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
         if (!compatibility.Load(host, "compatibility.profile.json", "camera-tools-v1")) return false;
@@ -48,6 +53,13 @@ inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
         parsed.kMouseYNameId = compatibility.Value("kMouseYNameId", 65536);
         parsed.kMouse2DNameId = compatibility.Value("kMouse2DNameId", 65536);
         native_layout = parsed;
+        process_view_rotation_slot = 0;
+        if (const auto* candidate = compatibility.Selected(kProcessViewRotation)) {
+            const auto slot = candidate->values.find("vtableSlot");
+            if (slot != candidate->values.end() && slot->second != 0 &&
+                slot->second <= 16384 && slot->second % sizeof(std::uintptr_t) == 0)
+                process_view_rotation_slot = slot->second;
+        }
         return true;
     } catch (...) { return false; }
 }

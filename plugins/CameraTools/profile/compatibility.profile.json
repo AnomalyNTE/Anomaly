@@ -25,6 +25,21 @@
   },
   "symbols": [
     {
+      "name": "processViewRotation",
+      "candidates": [
+        {
+          "pattern": "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 81 EC 80 00 00 00 48 8B B9 ?? ?? ?? ?? 4D 8B F1 44 0F 29 40 C8 49 8B E8 44 0F 28 C1 48 8B F1",
+          "entry": "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 81 EC 80 00 00 00",
+          "values": { "vtableSlot": 2232 }
+        },
+        {
+          "pattern": "48 8B C4 48 89 58 18 56 57 41 57 48 81 EC D0 00 00 00 48 8B 99 ?? ?? ?? ?? 4D 8B F9 44 0F 29 40 B8 49 8B F0 44 0F 28 C1 48 8B F9 48 85 DB",
+          "entry": "48 8B C4 48 89 58 18 56 57 41 57 48 81 EC D0 00 00 00",
+          "values": { "vtableSlot": 2232 }
+        }
+      ]
+    },
+    {
       "name": "kGWorldPattern",
       "candidates": [
         {
