@@ -43,6 +43,10 @@ typedef struct AnomalyPluginDescriptorV1 {
 | `on_draw` | 每帧绘制（Render 域）；可为 `NULL` |
 | `on_overlay` | 每个渲染帧调用（Render 域），不受插件窗口是否打开影响；只用于 `draw_screen_primitives` 等持久世界覆盖层，可为 `NULL` |
 
+停用或热重载时，宿主先冻结普通回调来源并等待已在执行的回调结束，再调用 `on_stop`。插件在
+`on_stop` 中仍可释放自己注册的 hook 和其他 scoped 资源；宿主随后回收剩余资源作为兜底。若兜底
+回收仍无法安全 drain，插件 generation 会进入 quarantine，而不会直接卸载其 DLL。
+
 `on_overlay` 是 V1 描述符尾部的可选字段。宿主只有在 `struct_size` 覆盖该字段且回调非空时才会调用；
 插件需要兼容旧宿主时可保留 `on_draw` 中的降级绘制路径。
 

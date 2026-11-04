@@ -340,6 +340,24 @@ int main() {
   ApplyMotionPoseDirect(context);
   Check(std::abs(b.buffer1[0].translation[2]-37)<1e-6,
         "Blender cm-delta root was not added to the reference root");
+  context.blender_active.store(true);
+  const std::array<double, 3> blender_root{11.0, 22.0, 33.0};
+  for (std::size_t axis{}; axis != 3; ++axis)
+    context.requested_root_offset[axis].store(blender_root[axis]);
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.bone_angles.assign(3, {0.0, 0.0, 0.0});
+  }
+  context.pose_override_enabled.store(true);
+  ApplyPoseOverridesDirect(context);
+  for (std::size_t axis{}; axis != 3; ++axis) {
+    Check(std::abs(context.motion_applied_offset[axis].load() -
+                   blender_root[axis]) < 1e-6 &&
+              std::abs(context.motion_authored_offset[axis].load() -
+                       blender_root[axis]) < 1e-6,
+          "Blender root motion was not published to the camera track");
+  }
+  context.blender_active.store(false);
   context.ref_locals[0] = saved_head_reference;
   context.ref_locals[1] = saved_root_reference;
   const auto local_pose_document=nlohmann::json::parse(R"json({
@@ -1152,6 +1170,51 @@ int main() {
               std::abs(gizmo_centre[1] - 230.0) < 1e-6 &&
               std::abs(gizmo_centre[2] - 140.0) < 1e-6,
           "fixed origin gizmo did not use the adjusted world position");
+
+    const auto tracked_camera_at_anchor = [&](const double anchor_x) {
+      Context tracked;
+      tracked.core = &core;
+      tracked.camera_enabled.store(true);
+      tracked.camera_loaded.store(true);
+      tracked.camera_origin_follow.store(true);
+      tracked.camera_yaw.store(0.0);
+      tracked.mmd_unit_cm.store(10.0);
+      tracked.camera_logged_second.store(2.0);
+      for (int axis{}; axis != 3; ++axis) {
+        const double current = axis == 1 ? 20.0 : 0.0;
+        tracked.motion_applied_offset[axis].store(current);
+        tracked.motion_authored_offset[axis].store(current);
+        tracked.camera_character_root_world[axis].store(
+            axis == 0 ? 100.0 : axis == 1 ? 200.0 : 0.0);
+        tracked.camera_anchor_root_world[axis].store(
+            axis == 0 ? anchor_x : axis == 1 ? 200.0 : 0.0);
+        tracked.camera_anchor_applied_offset[axis].store(0.0);
+      }
+      tracked.camera_character_root_valid.store(true);
+      tracked.camera_anchor_root_valid.store(true);
+      double fov = 60.0;
+      Register(fov);
+      std::array<double, 3> location{};
+      std::array<double, 3> rotation{};
+      const double feet[3]{};
+      const double centre[3]{0.0, 0.0, 100.0};
+      const double game_location[3]{0.0, -400.0, 140.0};
+      const double game_rotation[3]{};
+      const double file_position[3]{0.0, 10.0, 0.0};
+      const double file_rotation[3]{};
+      DriveCameraTrack(
+          tracked, feet, centre, true, game_location, game_rotation,
+          file_position, file_rotation, 20.0, 60.0,
+          reinterpret_cast<std::uintptr_t>(location.data()),
+          reinterpret_cast<std::uintptr_t>(rotation.data()),
+          reinterpret_cast<std::uintptr_t>(&fov), location.data(),
+          rotation.data());
+      return location;
+    };
+    const auto anchor_a = tracked_camera_at_anchor(0.0);
+    const auto anchor_b = tracked_camera_at_anchor(500.0);
+    Check(anchor_a == anchor_b,
+          "camera track distance changed with the frame used to create its anchor");
   }
   {
     Context keyframe_drive;

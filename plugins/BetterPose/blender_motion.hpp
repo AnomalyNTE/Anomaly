@@ -49,6 +49,22 @@ struct CameraSample {
   double fov{};
 };
 
+struct MmdCameraKey {
+  std::uint32_t frame{};
+  double distance{};
+  std::array<double, 3> position{};
+  std::array<double, 3> rotation{};
+  struct Curve {
+    double x1{};
+    double y1{};
+    double x2{1.0};
+    double y2{1.0};
+  };
+  std::array<Curve, 6> curves{};
+  double view_angle{};
+  bool perspective{};
+};
+
 struct Frame {
   double time{};
   std::array<double, 3> root{};
@@ -65,6 +81,7 @@ struct Document {
   std::vector<std::string> bone_names;
   std::vector<std::int32_t> bone_parents;
   std::vector<Frame> frames;
+  std::optional<std::vector<MmdCameraKey>> camera_track;
 };
 
 struct MmdBuildReport {
@@ -73,14 +90,6 @@ struct MmdBuildReport {
   std::size_t offset_tracks{};
   std::size_t morph_tracks{};
   std::size_t camera_keys{};
-};
-
-struct MmdCameraKey {
-  std::uint32_t frame{};
-  double distance{};
-  std::array<double, 3> position{};
-  std::array<double, 3> rotation{};
-  double view_angle{};
 };
 
 namespace detail {
@@ -98,6 +107,129 @@ inline bool Finite3(const nlohmann::json &value, std::array<double, 3> &out) {
     out[axis] = value[axis].get<double>();
   }
   return true;
+}
+
+inline bool ParseCameraTrack(const nlohmann::json &value,
+                             std::vector<MmdCameraKey> &keys,
+                             std::string &error) {
+  keys.clear();
+  const nlohmann::json *items = nullptr;
+  if (value.is_array()) {
+    items = &value;
+  } else if (value.is_object()) {
+    const auto found = value.find("keys");
+    if (found != value.end()) {
+      if (!found->is_array()) {
+        error = "Invalid Blender motion camera track";
+        return false;
+      }
+      items = &*found;
+    }
+  } else {
+    error = "Invalid Blender motion camera track";
+    return false;
+  }
+  if (items == nullptr || items->empty()) {
+    error.clear();
+    return true;
+  }
+  if (items->size() > kMaximumFrames) {
+    error = "Invalid Blender motion frame count";
+    return false;
+  }
+  keys.reserve(items->size());
+  for (const auto &item : *items) {
+    if (!item.is_object() || !item.contains("frame") ||
+        !item["frame"].is_number_integer()) {
+      error = "Invalid Blender motion camera track";
+      return false;
+    }
+    const auto raw_frame = item["frame"].get<long long>();
+    if (raw_frame < 0 || raw_frame > 600000) {
+      error = "Invalid Blender motion camera track";
+      return false;
+    }
+    MmdCameraKey key;
+    key.frame = static_cast<std::uint32_t>(raw_frame);
+    key.distance = item.value("distance", 0.0);
+    std::array<double, 3> position{};
+    std::array<double, 3> rotation{};
+    if (!std::isfinite(key.distance) || std::abs(key.distance) > 100000.0 ||
+        !Finite3(item.value("position", nlohmann::json::array()), position) ||
+        !Finite3(item.value("rotation", nlohmann::json::array()), rotation)) {
+      error = "Blender motion camera track contains invalid values";
+      return false;
+    }
+    key.position = position;
+    key.rotation = rotation;
+    key.view_angle = static_cast<double>(
+        std::clamp<std::int64_t>(item.value("view_angle", 0LL), 1LL, 179LL));
+    key.perspective = item.value("perspective", true);
+    if (item.contains("curves")) {
+      const auto &curves = item["curves"];
+      if (!curves.is_array() || curves.size() != key.curves.size()) {
+        error = "Blender motion camera track contains invalid values";
+        return false;
+      }
+      for (std::size_t index{}; index != key.curves.size(); ++index) {
+        const auto &curve = curves[index];
+        if (!curve.is_object()) {
+          error = "Blender motion camera track contains invalid values";
+          return false;
+        }
+        auto &target = key.curves[index];
+        for (const auto &property :
+             {std::pair{"x1", &target.x1}, std::pair{"y1", &target.y1},
+              std::pair{"x2", &target.x2}, std::pair{"y2", &target.y2}}) {
+          const auto found = curve.find(property.first);
+          if (found == curve.end())
+            continue;
+          if (!Finite(*found)) {
+            error = "Blender motion camera track contains invalid values";
+            return false;
+          }
+          *property.second = std::clamp(found->get<double>(), 0.0, 1.0);
+        }
+      }
+    }
+    keys.push_back(key);
+  }
+  std::stable_sort(keys.begin(), keys.end(),
+                   [](const auto &left, const auto &right) {
+                     return left.frame < right.frame;
+                   });
+  error.clear();
+  return true;
+}
+
+inline MmdCameraKey CameraKeyFromSample(const std::uint32_t frame,
+                                        const CameraSample &camera,
+                                        const double unit_cm) {
+  constexpr double kPi = 3.14159265358979323846;
+  const double yaw = camera.yaw * kPi / 180.0;
+  const double pitch = camera.pitch * kPi / 180.0;
+  const std::array<double, 3> direction{
+      std::cos(pitch) * std::cos(yaw),
+      std::cos(pitch) * std::sin(yaw),
+      std::sin(pitch),
+  };
+  // Undo MMD -> Blender: local=(x,-z,y), then mirror X.
+  const std::array<double, 3> target_mmd{
+      -camera.focus[0] / unit_cm,
+      camera.focus[2] / unit_cm,
+      -camera.focus[1] / unit_cm,
+  };
+  const std::array<double, 3> forward_mmd{
+      -direction[0], direction[2], -direction[1]};
+  MmdCameraKey key;
+  key.frame = frame;
+  key.position = target_mmd;
+  key.rotation[0] = std::asin(std::clamp(-forward_mmd[1], -1.0, 1.0));
+  key.rotation[1] = std::atan2(forward_mmd[0], forward_mmd[2]);
+  key.rotation[2] = 0.0;
+  key.distance = camera.distance / unit_cm;
+  key.view_angle = std::clamp(camera.fov, 1.0, 179.0);
+  return key;
 }
 
 inline keyframes::Quat Normalize(keyframes::Quat q) {
@@ -206,6 +338,14 @@ inline bool Parse(const std::string &text,
   if (!std::isfinite(parsed.length) || parsed.length < 0.0) {
     error = "Invalid Blender motion duration";
     return false;
+  }
+  const auto camera_track = root.find("camera_track");
+  if (camera_track != root.end() && !camera_track->is_null()) {
+    std::vector<MmdCameraKey> keys;
+    if (!detail::ParseCameraTrack(*camera_track, keys, error))
+      return false;
+    if (!keys.empty())
+      parsed.camera_track = std::move(keys);
   }
 
   const auto names = root.find("bone_names");
@@ -395,39 +535,27 @@ inline bool Parse(const std::string &text,
 inline bool BuildCameraKeys(const Document &source, const double unit_cm,
                             std::vector<MmdCameraKey> &keys,
                             std::string &error) {
+  constexpr double kPi = 3.14159265358979323846;
   keys.clear();
+  if (source.camera_track.has_value()) {
+    keys = *source.camera_track;
+    error.clear();
+    return true;
+  }
   if (!std::isfinite(unit_cm) || unit_cm <= 1e-6) {
     error = "Camera import failed: invalid character unit scale";
     return false;
   }
-  constexpr double kPi = 3.14159265358979323846;
   double previous_yaw = 0.0;
   bool have_previous_yaw = false;
   for (const auto &frame : source.frames) {
     if (!frame.camera)
       continue;
-    const auto &camera = *frame.camera;
-    const double yaw = camera.yaw * kPi / 180.0;
-    const double pitch = camera.pitch * kPi / 180.0;
-    const std::array<double, 3> direction{
-        std::cos(pitch) * std::cos(yaw),
-        std::cos(pitch) * std::sin(yaw),
-        std::sin(pitch),
-    };
-    // Undo MMD -> Blender: local=(x,-z,y), then mirror X.
-    const std::array<double, 3> target_mmd{
-        -camera.focus[0] / unit_cm,
-        camera.focus[2] / unit_cm,
-        -camera.focus[1] / unit_cm,
-    };
-    const std::array<double, 3> forward_mmd{
-        -direction[0], direction[2], -direction[1]};
-    MmdCameraKey key;
-    key.frame = static_cast<std::uint32_t>(std::clamp<long long>(
-        std::llround(frame.time * kMmdFramesPerSecond), 0, 600000));
-    key.position = target_mmd;
-    key.rotation[0] = std::asin(std::clamp(-forward_mmd[1], -1.0, 1.0));
-    key.rotation[1] = std::atan2(forward_mmd[0], forward_mmd[2]);
+    const auto frame_number = static_cast<std::uint32_t>(
+        std::clamp<long long>(
+            std::llround(frame.time * kMmdFramesPerSecond), 0, 600000));
+    MmdCameraKey key =
+        detail::CameraKeyFromSample(frame_number, *frame.camera, unit_cm);
     // atan2 returns every yaw in [-pi, pi]. A camera smoothly crossing that boundary
     // otherwise appears to spin almost a full turn in one frame because the sampler
     // interpolates the Euler components directly. Keep the same direction while
@@ -440,12 +568,6 @@ inline bool BuildCameraKeys(const Document &source, const double unit_cm,
     }
     previous_yaw = key.rotation[1];
     have_previous_yaw = true;
-    key.rotation[2] = 0.0;
-    key.distance = camera.distance / unit_cm;
-    // BetterPose .bpmotion stores Blender's MMD camera FOV in MMD's vertical
-    // convention. The old bridge accidentally swapped horizontal and vertical
-    // FOV here, which visibly zoomed the lower body on export.
-    key.view_angle = std::clamp(camera.fov, 1.0, 179.0);
     const auto existing = std::lower_bound(
         keys.begin(), keys.end(), key.frame,
         [](const MmdCameraKey &value, const std::uint32_t wanted) {

@@ -648,6 +648,8 @@
     "blender.message.85": "导入 Blender 动作为 MMD",
     "blender.message.86": "Blender 正在接管姿态；请在 Blender 中编辑骨骼，游戏内调节会被忽略",
     "blender.message.87": "导入 Blender 为 MMD",
+    "blender.message.88": "Blender 已连接；使用当前 CameraTrack 并叠加实时修正",
+    "blender.message.89": "Blender 镜头已导入：{0} 个关键帧（{1}）",
     "blender.controls_pose": "Blender 正在接管姿态；请在 Blender 中编辑骨骼，游戏内调节会被忽略"
   }
 }

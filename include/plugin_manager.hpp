@@ -1,6 +1,7 @@
 #pragma once
 
 #include "anomaly/sdk/anomaly_sdk.h"
+#include "anomaly/hook_manager.hpp"
 #include "anomaly/plugin_file_watcher.hpp"
 #include "anomaly/plugin_config_watcher.hpp"
 #include "anomaly/plugin_enablement.hpp"
@@ -162,7 +163,8 @@ public:
         std::shared_ptr<anomaly::StructuredLogger> logger = {},
         anomaly::HotkeyDispatcher input_dispatcher = {},
         UiResourceWorkerDispatcher ui_resource_worker_dispatcher = {},
-        anomaly::IpcPost ipc_post = {});
+        anomaly::IpcPost ipc_post = {},
+        std::unique_ptr<anomaly::HookBackend> hook_backend = {});
     ~PluginManager();
 
     PluginManager(const PluginManager&) = delete;
