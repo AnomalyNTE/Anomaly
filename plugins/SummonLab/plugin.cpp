@@ -223,6 +223,7 @@ struct Context {
     int hostile{};
     int pet{};
     int aggressive{};
+    int ignore_player{};
     int ft_compatibility{};
 
     // Game-thread-only scratch. Native Conv_StringToText replaces its previous
@@ -2218,6 +2219,7 @@ SummonResult SummonOne() {
     bool pet{};
     bool aggressive{};
     bool compatibility{};
+    bool ignore_player{};
     std::string server_combat_blueprint;
     std::array<char, kDisplayNameCapacity> display_name{};
     std::array<BirthPreset, kBirthAttributeNames.size()> presets{};
@@ -2228,6 +2230,7 @@ SummonResult SummonOne() {
         hostile = g_context.hostile != 0;
         pet = g_context.pet != 0;
         aggressive = g_context.aggressive != 0;
+        ignore_player = g_context.ignore_player != 0;
         compatibility = g_context.ft_compatibility != 0 && MonsterConfigName(path).starts_with("FT_");
         if (compatibility)
             server_combat_blueprint = g_context.final_tower_combat_blueprint;
@@ -2400,6 +2403,35 @@ SummonResult SummonOne() {
             static_cast<void>(InvokeByPath(ai_handle, kPathDestroyActor, nullptr, 0));
             std::snprintf(result.detail, sizeof(result.detail),
                           "summon: AddSummonedAI failed");
+            return result;
+        }
+    }
+
+    if (ignore_player) {
+        AnomalyGenerationHandleV1 controller{};
+        std::uintptr_t controller_pointer{}, player_pointer{}, player_state{}, target{};
+        bool ignored = InvokeByPath(pawn, "/Script/Engine.Pawn:GetController",
+            &controller_pointer, sizeof(controller_pointer)) &&
+            HandleFromPointer(controller_pointer, &controller) &&
+            InvokeByPath(controller, "/Script/Engine.Controller:K2_GetPawn",
+                &player_pointer, sizeof(player_pointer)) && player_pointer != 0 &&
+            InvokeByPath(controller, "/Script/HTGame.HTPlayerController:GetHTPlayerState",
+                &player_state, sizeof(player_state)) && player_state != 0 &&
+            // The native ignore list stores the PlayerState, surviving character switches.
+            InvokeByPath(ai_handle, "/Script/HTGame.HTAICharacter:SetIgnoredAggroTarget",
+                &player_pointer, sizeof(player_pointer)) &&
+            InvokeByPath(ai_handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
+                &target, sizeof(target));
+        if (ignored && (target == player_pointer || target == player_state)) {
+            target = 0;
+            ignored = InvokeByPath(ai_handle, "/Script/HTGame.HTAICharacter:SetCurrentAggroTarget",
+                &target, sizeof(target));
+        }
+        if (!ignored) {
+            static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
+            const auto message = g_context.localizer.Text("summon.ignore_player_failed",
+                "Could not exclude the player as a target; summon removed");
+            std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
             return result;
         }
     }
@@ -3249,6 +3281,7 @@ void ConsumeSpawnRequest() {
         g_context.hostile = request["hostile"].get<bool>() ? 1 : 0;
         g_context.pet = 0;
         g_context.aggressive = 1;
+        g_context.ignore_player = 0;
     }
     static_cast<void>(PushOp(PendingOp{OpKind::Summon, 0}));
 }
@@ -3407,6 +3440,7 @@ void ResetState() {
     g_context.hostile = 0;
     g_context.pet = 0;
     g_context.aggressive = 0;
+    g_context.ignore_player = 0;
     g_context.ft_compatibility = 0;
     g_context.last_result = {};
     g_context.last_result_failed = false;
@@ -3883,6 +3917,8 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
             const auto aggressive = localizer.Text("param.aggressive", "Aggressive");
             ui->checkbox(ui->user, anomaly::sdk::StringView(aggressive), &g_context.aggressive);
+            const auto ignore_player = localizer.Text("param.ignore_player", "Do not target the player");
+            ui->checkbox(ui->user, anomaly::sdk::StringView(ignore_player), &g_context.ignore_player);
         }
         if (MonsterConfigName(path).starts_with("FT_")) {
             if (ui->checkbox != nullptr) {
