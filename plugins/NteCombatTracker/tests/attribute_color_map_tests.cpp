@@ -1,4 +1,5 @@
 #include "attribute_color_map.hpp"
+#include "character_identity.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -15,48 +16,37 @@ void Check(const bool condition, const char* message) {
     ++failures;
 }
 
-void RepositoryDictionaryProvidesAllAttributeColors() {
+void RepositoryAssetProvidesAllAttributeColors() {
     std::string error;
     const auto colors = nte::combat_stats::AttributeColorMap::Load(
         std::filesystem::path(NTE_TEST_SOURCE_DIR) / "assets/attribute_colors.json",
         error);
 
-    Check(error.empty(), "the checked-in attribute color dictionary should load");
-    Check(colors.Find("灵") == 0x3EBDA1U, "灵 should use its teal representative color");
-    Check(colors.Find("相") == 0xCBBD39U, "相 should use its gold representative color");
-    Check(colors.Find("暗") == 0x5E58BDU, "暗 should use its violet representative color");
-    Check(colors.Find("光") == 0xBCBCBCU, "光 should use its silver representative color");
-    Check(colors.Find("魂") == 0x3E98C5U, "魂 should use its blue representative color");
-    Check(colors.Find("咒") == 0xD0455EU, "咒 should use its crimson representative color");
-    Check(!colors.Find("未知").has_value(),
-        "an unknown attribute should not invent a representative color");
+    Check(error.empty(), "the checked-in attribute color asset should load");
+    Check(colors.Find("NATURE") == 0x3EBDA1U, "NATURE should use its teal color");
+    Check(colors.Find("LAKSHANA") == 0xCBBD39U, "LAKSHANA should use its gold color");
+    Check(colors.Find("CHAOS") == 0x5E58BDU, "CHAOS should use its violet color");
+    Check(colors.Find("COSMOS") == 0xBCBCBCU, "COSMOS should use its silver color");
+    Check(colors.Find("PSYCHE") == 0x3E98C5U, "PSYCHE should use its blue color");
+    Check(colors.Find("INCANTATION") == 0xD0455EU, "INCANTATION should use its crimson color");
+    Check(!colors.Find("UNKNOWN").has_value(),
+        "an unknown attribute should not invent a color");
 }
 
-void CharacterDictionaryIsUsedOnlyForAttributeColorLookup() {
-    const auto root = std::filesystem::path(NTE_TEST_SOURCE_DIR);
-    std::string error;
-    const auto colors = nte::combat_stats::AttributeColorMap::Load(
-        root / "assets/attribute_colors.json",
-        root / "assets/characters.json", error);
-    Check(error.empty() &&
-              colors.FindParticipant("/Game/Player/player_003_Sagiri_C") == 0xD0455EU,
-        "participant technical paths should resolve character attribute colors");
-    Check(!colors.FindParticipant("/Game/Enemy/monster_C").has_value(),
-        "non-character paths should not resolve localized identity data");
-}
-
-void MissingCharacterDirectoryKeepsColorFallback() {
-    const auto root = std::filesystem::path(NTE_TEST_SOURCE_DIR);
-    std::string error;
-    const auto colors = nte::combat_stats::AttributeColorMap::Load(
-        root / "assets/attribute_colors.json",
-        root / "assets/missing-characters.json",
-        error);
-    Check(!error.empty(),
-        "a missing character dictionary should expose a clear error");
-    Check(colors.Find("灵") == 0x3EBDA1U &&
-              !colors.FindParticipant("/Game/Player/player_003_Sagiri_C").has_value(),
-        "attribute colors should stay usable while participant colors fall back");
+// The character id is derived from the participant object path, which is the
+// only identity the combat stream carries. Guard the mapping the runtime lookup
+// depends on.
+void CharacterIdIsRecoveredFromParticipantPath() {
+    Check(nte::combat_stats::CharacterIdFromPath(
+              "/Game/Blueprints/Character/Player/Player_003_Sagiri.Player_003_Sagiri_C") ==
+              "1003",
+        "player_003 should map to the DT_Character row 1003");
+    Check(nte::combat_stats::CharacterIdFromPath("player_021_edgar") == "1021",
+        "player_021 should map to the DT_Character row 1021");
+    Check(nte::combat_stats::CharacterIdFromPath("/Game/Enemy/monster_C").empty(),
+        "a non-character path has no character id");
+    Check(nte::combat_stats::CharacterIdFromPath("player_CC_001").empty(),
+        "a malformed player segment has no character id");
 }
 
 std::filesystem::path TemporaryRoot() {
@@ -75,11 +65,11 @@ void Write(const std::filesystem::path& path, const std::string_view content) {
 void LowercaseHexIsAccepted() {
     const auto root = TemporaryRoot();
     const auto path = root / "attribute_colors.json";
-    Write(path, R"({"灵":"#2f9f89","相":"#b67817","暗":"#625daf","光":"#699a87","魂":"#326fbf","咒":"#b61e3a"})");
+    Write(path, R"({"NATURE":"#2f9f89","LAKSHANA":"#b67817","CHAOS":"#625daf","COSMOS":"#699a87","PSYCHE":"#326fbf","INCANTATION":"#b61e3a"})");
     std::string error;
     const auto colors = nte::combat_stats::AttributeColorMap::Load(path, error);
-    Check(error.empty() && colors.Find("灵") == 0x2F9F89U &&
-              colors.Find("咒") == 0xB61E3AU,
+    Check(error.empty() && colors.Find("NATURE") == 0x2F9F89U &&
+              colors.Find("INCANTATION") == 0xB61E3AU,
         "lowercase hexadecimal colors should be accepted");
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
@@ -91,27 +81,27 @@ void InvalidDictionariesDegradeSafely() {
     std::string error;
 
     auto colors = nte::combat_stats::AttributeColorMap::Load(path, error);
-    Check(!error.empty() && !colors.Find("灵").has_value(),
+    Check(!error.empty() && !colors.Find("NATURE").has_value(),
         "a missing dictionary should return an empty map with an error");
 
-    Write(path, R"({"灵":"#2F9F89","相":"#B67817","暗":"#625DAF","光":"#699A87","魂":"#326FBF"})");
+    Write(path, R"({"NATURE":"#2F9F89","LAKSHANA":"#B67817","CHAOS":"#625DAF","COSMOS":"#699A87","PSYCHE":"#326FBF"})");
     colors = nte::combat_stats::AttributeColorMap::Load(path, error);
-    Check(!error.empty() && !colors.Find("灵").has_value(),
+    Check(!error.empty() && !colors.Find("NATURE").has_value(),
         "a dictionary missing a required attribute should be rejected atomically");
 
-    Write(path, R"({"灵":"#2F9F89","相":"#B67817","暗":"#625DAF","光":"#699A87","魂":"#326FBF","咒":""})");
+    Write(path, R"({"NATURE":"#2F9F89","LAKSHANA":"#B67817","CHAOS":"#625DAF","COSMOS":"#699A87","PSYCHE":"#326FBF","INCANTATION":""})");
     colors = nte::combat_stats::AttributeColorMap::Load(path, error);
-    Check(!error.empty() && !colors.Find("灵").has_value(),
+    Check(!error.empty() && !colors.Find("NATURE").has_value(),
         "an empty color should reject the complete dictionary");
 
-    Write(path, R"({"灵":"#2F9F89","相":"#B67817","暗":"#625DAF","光":"#699A87","魂":"#326FBF","咒":"#B61E3Z"})");
+    Write(path, R"({"NATURE":"#2F9F89","LAKSHANA":"#B67817","CHAOS":"#625DAF","COSMOS":"#699A87","PSYCHE":"#326FBF","INCANTATION":"#B61E3Z"})");
     colors = nte::combat_stats::AttributeColorMap::Load(path, error);
-    Check(!error.empty() && !colors.Find("灵").has_value(),
+    Check(!error.empty() && !colors.Find("NATURE").has_value(),
         "a non-hexadecimal color should reject the complete dictionary");
 
-    Write(path, R"({"灵":"#2F9F89","灵":"#000000","相":"#B67817","暗":"#625DAF","光":"#699A87","魂":"#326FBF","咒":"#B61E3A"})");
+    Write(path, R"({"NATURE":"#2F9F89","NATURE":"#000000","LAKSHANA":"#B67817","CHAOS":"#625DAF","COSMOS":"#699A87","PSYCHE":"#326FBF","INCANTATION":"#B61E3A"})");
     colors = nte::combat_stats::AttributeColorMap::Load(path, error);
-    Check(!error.empty() && !colors.Find("灵").has_value(),
+    Check(!error.empty() && !colors.Find("NATURE").has_value(),
         "duplicate attribute keys should be rejected");
 
     std::error_code ignored;
@@ -121,9 +111,8 @@ void InvalidDictionariesDegradeSafely() {
 }  // namespace
 
 int main() {
-    RepositoryDictionaryProvidesAllAttributeColors();
-    CharacterDictionaryIsUsedOnlyForAttributeColorLookup();
-    MissingCharacterDirectoryKeepsColorFallback();
+    RepositoryAssetProvidesAllAttributeColors();
+    CharacterIdIsRecoveredFromParticipantPath();
     LowercaseHexIsAccepted();
     InvalidDictionariesDegradeSafely();
     if (failures != 0) return 1;

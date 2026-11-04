@@ -135,9 +135,12 @@ CombatStatsEngine::PlayerAggregate& CombatStatsEngine::ConfirmControlledActor(
     const std::string& object_path,
     const std::string& display_name,
     const std::string& name_origin,
-    const std::string& resource_version) {
-    const bool resolved = IsResolvedParticipant(object_path);
-    const std::string identity = resolved ? PathIdentity(object_path) : HandleIdentity(handle);
+    const std::string& resource_version,
+    const std::string& attribute_path) {
+    // The attribute keys off the object path; the identity key and label may
+    // legitimately hold a display name, so they cannot be reused for it.
+    const bool resolved = IsResolvedParticipant(attribute_path);
+    const std::string identity = resolved ? PathIdentity(attribute_path) : HandleIdentity(handle);
     if (resolved) {
         const auto previous_key = confirmed_actor_keys_.find(handle);
         if (previous_key != confirmed_actor_keys_.end() && previous_key->second != identity) {
@@ -210,6 +213,7 @@ CombatStatsEngine::PlayerAggregate& CombatStatsEngine::ConfirmControlledActor(
     PlayerAggregate& aggregate = confirmed_controlled_actors_[identity];
     aggregate.handle = handle;
     if (resolved) aggregate.object_path = object_path;
+    if (IsResolvedParticipant(attribute_path)) aggregate.attribute_path = attribute_path;
     if (aggregate.label.empty() || resolved) {
         aggregate.label = display_name.empty()
             ? ParticipantLabel(aggregate.object_path, handle) : display_name;
@@ -281,13 +285,15 @@ bool CombatStatsEngine::AcceptEvent(const CombatEvent& event, const TimePoint no
     if (outgoing) {
         outgoing_player = &ConfirmControlledActor(event.attacker, event.attacker_name,
             event.attacker_display_name, event.attacker_name_origin,
-            event.name_resource_version);
+            event.name_resource_version,
+            event.attacker_path.empty() ? event.attacker_name : event.attacker_path);
     }
     PlayerAggregate* incoming_player{};
     if (incoming) {
         incoming_player = &ConfirmControlledActor(event.victim, event.victim_name,
             event.victim_display_name, event.victim_name_origin,
-            event.name_resource_version);
+            event.name_resource_version,
+            event.victim_path.empty() ? event.victim_name : event.victim_path);
     }
     if (relevant && real_damage) last_activity_ = now;
     if (event.kind == CombatEventKind::BuffAdd) {
@@ -486,6 +492,10 @@ void CombatStatsEngine::ClearEncounter() {
     quality_ = {};
 }
 
+void CombatStatsEngine::SetAttributeResolver(AttributeResolver resolver) {
+    attribute_resolver_ = std::move(resolver);
+}
+
 void CombatStatsEngine::Reset() {
     ClearEncounter();
     combatant_ = {};
@@ -586,6 +596,10 @@ Snapshot CombatStatsEngine::BuildSnapshot(const TimePoint now) const {
         row.identity_key = identity;
         row.handle = aggregate.handle;
         row.object_path = aggregate.object_path;
+        row.attribute = attribute_resolver_
+            ? attribute_resolver_(aggregate.attribute_path.empty()
+                  ? aggregate.object_path : aggregate.attribute_path)
+            : std::string{};
         row.label = aggregate.label;
         row.display_name = aggregate.display_name;
         row.name_origin = aggregate.name_origin;

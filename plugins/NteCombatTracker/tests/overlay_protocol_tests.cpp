@@ -60,6 +60,7 @@ NteOverlaySnapshot ExampleSnapshot() {
     player.identity_key = "path:/Game/角色/player_001_C";
     player.handle = {std::numeric_limits<std::uint64_t>::max(), 7};
     player.object_path = "/Game/角色/player_001_C";
+    player.attribute = "INCANTATION";
     player.label = "角色甲";
     player.display_name = "角色甲";
     player.name_origin = "resource";
@@ -168,6 +169,8 @@ void RoundTripPreservesVersionedNteSnapshot() {
         Check(player.incoming_damage == 45 && player.incoming_positive_hits == 3 &&
                   player.maximum_incoming_hit == 20 && player.incoming_share == 100.0,
               "optional incoming player metrics should round-trip");
+        Check(player.attribute == "INCANTATION",
+              "the resolved element attribute should round-trip with the row");
         Check(player.healing_done == 600 && player.healing_done_events == 3 &&
                   player.healing_received == 200 &&
                   player.healing_received_events == 2 &&
@@ -277,7 +280,7 @@ void ParserRejectsWrongProtocolAndAcceptsUnknownFields() {
           "unknown fields should be ignored");
 
     json = nte::combat_stats::SerializeOverlaySnapshot(ExampleSnapshot());
-    const std::string channel = "local.nte.combat-stats.overlay";
+    const std::string channel = "local.nte.nte-combat-tracker.overlay";
     json.replace(json.find(channel), channel.size(), "foreign.channel");
     Check(!nte::combat_stats::ParseOverlaySnapshot(json, error).has_value(),
           "foreign channels must be rejected");

@@ -3,12 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
-#include <algorithm>
 #include <charconv>
-#include <cctype>
 #include <fstream>
-#include <iomanip>
-#include <sstream>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -26,13 +22,6 @@ namespace {
         throw std::runtime_error("color must use hexadecimal #RRGGBB format");
     }
     return color;
-}
-
-std::string Lower(std::string value) {
-    std::ranges::transform(value, value.begin(), [](const unsigned char character) {
-        return static_cast<char>(std::tolower(character));
-    });
-    return value;
 }
 
 }  // namespace
@@ -66,10 +55,10 @@ AttributeColorMap AttributeColorMap::Load(
             throw std::runtime_error("attribute color dictionary root must be an object");
         }
 
-        // 属性名是 dict/attribute_colors.json 的键，必须与上游数据逐字一致；
-        // 改变它们会破坏字典匹配，因此不参与本地化（i18n-data）。
+        // Keys are the ECharacterElementType suffixes the plugin resolves from
+        // the live DT_Character rows; they are game identifiers, not UI copy.
         static constexpr std::array<std::string_view, 6> required{
-            "灵", "相", "暗", "光", "魂", "咒"};  // i18n-data
+            "CHAOS", "COSMOS", "INCANTATION", "LAKSHANA", "NATURE", "PSYCHE"};
         if (dictionary.size() != required.size()) {
             throw std::runtime_error(
                 "attribute color dictionary must contain exactly six attributes");
@@ -90,61 +79,12 @@ AttributeColorMap AttributeColorMap::Load(
     return result;
 }
 
-AttributeColorMap AttributeColorMap::Load(
-    const std::filesystem::path& color_path,
-    const std::filesystem::path& character_path,
-    std::string& error) {
-    AttributeColorMap result = Load(color_path, error);
-    if (!error.empty()) return result;
-    try {
-        std::ifstream stream(character_path, std::ios::binary);
-        if (!stream) {
-            throw std::runtime_error("character attribute table is unavailable: " +
-                character_path.string());
-        }
-        const auto document = nlohmann::json::parse(stream);
-        if (!document.contains("characters") ||
-            !document.at("characters").is_object()) {
-            throw std::runtime_error("character attribute table has no characters object");
-        }
-        for (const auto& [id_text, value] : document.at("characters").items()) {
-            const auto id = std::stoul(id_text);
-            if (id < 1000 || id > 1999) continue;
-            const std::string codename = value.at("codename").get<std::string>();
-            const std::string attribute = value.at("attribute").get<std::string>();
-            if (!result.colors_.contains(attribute)) {
-                throw std::runtime_error("unknown character attribute: " + attribute);
-            }
-            std::ostringstream token;
-            token << "player_" << std::setw(3) << std::setfill('0')
-                  << id - 1000 << '_' << codename;
-            result.participant_attributes_.emplace(Lower(token.str()), attribute);
-        }
-        if (result.participant_attributes_.empty()) {
-            throw std::runtime_error("character attribute table contains no characters");
-        }
-    } catch (const std::exception& exception) {
-        result.participant_attributes_.clear();
-        error = exception.what();
-    }
-    return result;
-}
-
 std::optional<std::uint32_t> AttributeColorMap::Find(
     const std::string_view attribute) const {
     const auto found = colors_.find(std::string(attribute));
     return found == colors_.end()
         ? std::nullopt
         : std::optional<std::uint32_t>{found->second};
-}
-
-std::optional<std::uint32_t> AttributeColorMap::FindParticipant(
-    const std::string_view technical_path) const {
-    const std::string lower = Lower(std::string(technical_path));
-    for (const auto& [token, attribute] : participant_attributes_) {
-        if (lower.find(token) != std::string::npos) return Find(attribute);
-    }
-    return std::nullopt;
 }
 
 }  // namespace nte::combat_stats

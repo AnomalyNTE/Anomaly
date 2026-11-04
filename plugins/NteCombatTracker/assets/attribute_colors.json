@@ -1,8 +1,8 @@
 {
-  "灵": "#3ebda1",
-  "相": "#cbbd39",
-  "暗": "#5e58bd",
-  "光": "#bcbcbc",
-  "魂": "#3e98c5",
-  "咒": "#d0455e"
+  "CHAOS": "#5e58bd",
+  "COSMOS": "#bcbcbc",
+  "INCANTATION": "#d0455e",
+  "LAKSHANA": "#cbbd39",
+  "NATURE": "#3ebda1",
+  "PSYCHE": "#3e98c5"
 }

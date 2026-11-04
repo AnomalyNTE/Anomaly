@@ -138,16 +138,17 @@ void LiveAndHistoricalRowsResolveTheSameAttributeColor() {
     std::string color_error;
     const auto colors = AttributeColorMap::Load(
         std::filesystem::path(NTE_TEST_SOURCE_DIR) / "assets/attribute_colors.json",
-        std::filesystem::path(NTE_TEST_SOURCE_DIR) /
-            "assets/characters.json",
         color_error);
     Check(color_error.empty(),
         "repository appearance resources should load for row color resolution");
 
+    // The plugin resolves the element from the live DT_Character row and ships
+    // it with the row; the overlay only maps it to a colour.
     PlayerRow live;
     live.object_path = "/Game/NTE/Characters/player_076_shinku_C";
     live.identity_key = "path:/Game/NTE/Characters/player_076_shinku_C";
     live.label = "真红";
+    live.attribute = "COSMOS";
     PlayerRow historical = live;
     historical.identity_key = "recorded:historical-row";
     historical.label = "recorded-name";
@@ -155,10 +156,16 @@ void LiveAndHistoricalRowsResolveTheSameAttributeColor() {
     const auto live_color = ResolvePlayerDisplayColor(live, colors);
     const auto historical_color = ResolvePlayerDisplayColor(
         historical, colors);
-    const auto expected = colors.Find("光");
+    const auto expected = colors.Find("COSMOS");
     Check(expected.has_value() && live_color == *expected &&
               historical_color == live_color,
         "live and historical rows for one character should share its attribute color");
+
+    PlayerRow unresolved = live;
+    unresolved.attribute.clear();
+    Check(ResolvePlayerDisplayColor(unresolved, colors) ==
+              StablePlayerColor(unresolved.identity_key),
+        "a row without a resolved attribute keeps its stable identity colour");
 }
 
 void HealingRowsSortAndAverageByDirection() {

@@ -3,7 +3,7 @@
 Anomaly 的内建战斗统计插件：只读实时伤害/治疗统计、独立 Overlay 进程，以及落在本地的
 高保真 JSONL 战斗日志与单场 JSON 导出。
 
-插件 ID `local.nte.combat-stats` 保持不变，已安装的用户升级时仍按同一身份更新。
+插件 ID `local.nte.nte-combat-tracker` 保持不变，已安装的用户升级时仍按同一身份更新。
 
 > [!NOTE]
 > 这是内建插件，源码就在本仓库。它的构建信息登记在仓库根 `CMakeLists.txt` 的
@@ -18,7 +18,7 @@ plugins/NteCombatTracker/
   locales/zh-CN.json      中文目录（window.title / plugin.description）
   src/                    插件 DLL、Overlay 与采集引擎的源码
   tests/                  15 个离线夹具，随 -DANOMALY_BUILD_TEST_FIXTURES=ON 构建
-  assets/                 属性配色与角色属性表（仅用于行配色，不是名称来源）
+  assets/                 仅属性配色表（角色属性在运行时从 DT_Character 读取）
   cmake/plugin_version.hpp.in
 ```
 
@@ -39,8 +39,32 @@ plugins/NteCombatTracker/
 
 对象路径只作临时标签、**不进名称缓存**，否则真名到位后会被路径长期占位。
 
-`assets/characters.json` 与 `assets/attribute_colors.json` 只提供**行配色**所需的
-角色 id → codename + attribute 映射，不参与任何名称解析。
+`assets/attribute_colors.json` 只提供**行配色**：六个属性的代表色，不参与任何名称解析。
+
+## 角色属性来源
+
+角色的属性（灵/相/暗/光/魂/咒）**不在本地字典里**，运行时从游戏自己的
+`DT_Character` 行读取：
+
+| 步骤 | 途径 |
+| --- | --- |
+| 定位表对象 | `anomaly.ue5.objects` → `find_exact("/Game/DataTable/Character/DT_Character.DT_Character")` |
+| 句柄 → 对象地址 | 插件解析 `GObjects` 签名（`anomaly.interop.signature`）后读注册表 |
+| 逐行读取 | `anomaly.core` → `read_memory` 遍历 `UDataTable::RowMap` |
+| 字段偏移 | 走行结构体的 `ChildProperties` 链（含 `SuperStruct`）解析 `CharacterElementType` |
+| 行 ↔ 角色 | 角色对象路径里的 `player_003` 对应行键 `1003` |
+
+`ElementData.CharacterElementType` 是 1 字节枚举，值映射到
+`ECharacterElementType` 的后缀（`CHAOS`/`COSMOS`/`INCANTATION`/`LAKSHANA`/`NATURE`/`PSYCHE`）。
+**宿主 ABI 没有属性查询接口**，其反射读（`entities`/`actors`）只覆盖 `bool`、`FName` 和
+`USceneComponent*` 三种类型，读不到这个枚举——所以走 DataTable。
+
+属性表读不到时（表未加载、签名失效、无 `memory-read` 授权）不报错也不阻塞：该行退回
+稳定的身份配色，其余功能照常。插件启动时读一次，不逐帧重读。
+
+`assets/attribute_colors.json` 是这六种属性的代表色，键是上面的枚举后缀，不是中文名。
+
+新增角色**不需要改插件**——表里加了行就能读到。只有游戏新增属性种类时才需要补配色。
 
 ## 构建与验证
 
@@ -60,16 +84,6 @@ ctest --test-dir .build\windows-vs2022 -C RelWithDebInfo -R nte_
 pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin NteCombatTracker
 ```
 
-## 角色字典维护
-## 角色属性表维护
-
-`assets/characters.json` 只服务行配色：角色 id → codename + attribute。它由字典快照手工
-收敛而来，条目数量少且变化很慢；**显示名不在这里**。
-
-`assets/attribute_colors.json` 是六个属性的代表色，键必须与游戏数据逐字一致。
-
-新增角色时在两处各补一行即可，不需要重新生成整棵树。历史上从 DataTable 生成整份字典的
-脚本已随本地名称方案一并移除。
 ## 实现要点
 
 - **双进程**：插件采集并通过宿主 `anomaly.websocket` 发布 JSON 快照；Overlay 以 WinHTTP

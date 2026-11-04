@@ -4,6 +4,7 @@
 #include <chrono>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <optional>
@@ -103,6 +104,10 @@ struct CombatEvent : CombatEventData {
     std::string victim_name;
     std::string victim_display_name;
     std::string victim_name_origin;
+    // Raw object paths, kept alongside the display names because the character
+    // attribute lookup keys off the player_NNN segment rather than the name.
+    std::string attacker_path;
+    std::string victim_path;
 };
 
 struct DamageEvent : CombatEvent {
@@ -162,6 +167,9 @@ struct PlayerRow {
     Handle handle;
     std::string object_path;
     std::string label;
+    // ECharacterElementType suffix resolved from the live DT_Character row, or
+    // empty when the character could not be matched.
+    std::string attribute;
     std::string display_name;
     std::string name_origin;
     std::string name_resource_version;
@@ -295,6 +303,13 @@ struct Snapshot {
 
 class CombatStatsEngine {
 public:
+    // Resolves a participant's element from its object path. Supplied by the
+    // plugin, which owns the live DT_Character lookup; the engine stays free of
+    // host services and of any character table of its own.
+    using AttributeResolver = std::function<std::string(const std::string& object_path)>;
+
+    void SetAttributeResolver(AttributeResolver resolver);
+
     void ObserveCombatant(const Combatant& combatant, TimePoint now);
     [[nodiscard]] bool IsRelevant(Handle world, Handle attacker, Handle victim) const;
     bool AcceptDamage(const DamageEvent& event, TimePoint now);
@@ -311,6 +326,9 @@ private:
     struct PlayerAggregate {
         Handle handle;
         std::string object_path;
+        // Object path used for the attribute lookup; object_path may hold a
+        // display name once the Host resolves one.
+        std::string attribute_path;
         std::string label;
         std::string display_name;
         std::string name_origin;
@@ -345,10 +363,12 @@ private:
         const std::string& object_path,
         const std::string& display_name,
         const std::string& name_origin,
-        const std::string& resource_version);
+        const std::string& resource_version,
+        const std::string& attribute_path);
     void ClearEncounter();
 
     EncounterState state_{EncounterState::Idle};
+    AttributeResolver attribute_resolver_;
     Combatant combatant_;
     std::unordered_set<Handle, HandleHash> controlled_characters_;
     std::unordered_set<Handle, HandleHash> engaged_actors_;

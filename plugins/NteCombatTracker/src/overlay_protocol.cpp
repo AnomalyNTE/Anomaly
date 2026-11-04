@@ -86,6 +86,7 @@ Json PlayerToJson(const PlayerRow& row) {
                     {"generation", Decimal(row.handle.generation)}}},
         {"object_path", row.object_path},
         {"label", row.label},
+        {"attribute", row.attribute},
         {"display_name", row.display_name},
         {"name_origin", row.name_origin},
         {"name_resource_version", row.name_resource_version},
@@ -133,6 +134,7 @@ PlayerRow PlayerFromJson(const Json& value) {
         handle.at("generation"), "players.handle.generation");
     row.object_path = value.at("object_path").get<std::string>();
     row.label = value.at("label").get<std::string>();
+    row.attribute = value.value("attribute", std::string{});
     row.display_name = value.value("display_name", row.label);
     row.name_origin = value.value("name_origin", std::string{"technical"});
     row.name_resource_version = value.value(

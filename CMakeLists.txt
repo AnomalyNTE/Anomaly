@@ -1650,6 +1650,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
 
     anomaly_add_plugin(anomaly_builtin_nte_combat_tracker
         SOURCES ${ANOMALY_NTE_COMBAT_DIR}/src/plugin.cpp
+                ${ANOMALY_NTE_COMBAT_DIR}/src/character_attribute_source.cpp
         MANIFEST ${ANOMALY_NTE_COMBAT_DIR}/manifest.json
         PACKAGE_NAME NteCombatTracker
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteCombatTracker")

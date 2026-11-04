@@ -9,23 +9,21 @@
 
 namespace nte::combat_stats {
 
+// The six attribute colours. This is pure presentation and stays a checked-in
+// asset keyed by the game's ECharacterElementType suffix. The character to
+// attribute relation is not stored here: the plugin resolves it from the live
+// DT_Character rows and ships the element with each player row.
 class AttributeColorMap {
 public:
     [[nodiscard]] static AttributeColorMap Load(
         const std::filesystem::path& path,
         std::string& error);
-    [[nodiscard]] static AttributeColorMap Load(
-        const std::filesystem::path& color_path,
-        const std::filesystem::path& character_path,
-        std::string& error);
+
     [[nodiscard]] std::optional<std::uint32_t> Find(
         std::string_view attribute) const;
-    [[nodiscard]] std::optional<std::uint32_t> FindParticipant(
-        std::string_view technical_path) const;
 
 private:
     std::unordered_map<std::string, std::uint32_t> colors_;
-    std::unordered_map<std::string, std::string> participant_attributes_;
 };
 
 }  // namespace nte::combat_stats

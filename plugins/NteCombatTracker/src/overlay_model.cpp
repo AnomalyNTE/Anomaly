@@ -252,7 +252,9 @@ std::uint32_t ResolvePlayerDisplayColor(
     const auto identity = player.identity_key.empty()
         ? std::string_view(player.label)
         : std::string_view(player.identity_key);
-    return PlayerDisplayColor(colors.FindParticipant(player.object_path), identity);
+    // The plugin resolves the attribute from the live DT_Character row and
+    // ships it with the row; this process only maps it to a colour.
+    return PlayerDisplayColor(colors.Find(player.attribute), identity);
 }
 
 double PlayerBarFraction(
