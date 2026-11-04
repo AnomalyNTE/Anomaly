@@ -83,6 +83,10 @@ private:
     CoreMemoryServices services_;
 };
 
+// Commits the selected layout atomically; failure leaves the recipe unchanged.
+[[nodiscard]] bool SelectProfileLayout(
+    BuildProfile& profile, const SymbolMemory& memory, std::string& error);
+
 struct SymbolValidationResult {
     bool valid{};
     std::string message;

@@ -62,10 +62,13 @@ struct SignatureLayoutResolution {
 };
 
 // Learns instruction structure from successful resolutions. Relative branches
-// and RIP addresses can move; member and stack displacements stay fixed so
+// and RIP addresses can move; declared fixed member/stack displacements stay fixed so
 // existing consumers can keep using their original field offsets.
 // Recovery requires an exact, unique match of the remaining instruction bytes;
-// the caller must still run its address/ABI/semantic validators before Learn.
+// shared wrappers may additionally require learned direct branch-target evidence.
+// Compact windows retain declared operands and their intentional wildcards;
+// full windows disambiguate new clones. The caller must still run its
+// address/ABI/semantic validators before Learn.
 // Call from Worker/Lifecycle only: these operations scan memory and persist state.
 class SignatureUpdater final {
 public:

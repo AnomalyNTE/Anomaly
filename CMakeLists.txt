@@ -553,7 +553,7 @@ target_compile_definitions(
     anomaly_symbol_resolver PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_symbol_resolver PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
-    anomaly_symbol_resolver PUBLIC anomaly_build_profile anomaly_internal_memory_services
+    anomaly_symbol_resolver PUBLIC anomaly_build_profile anomaly_internal_memory_services anomaly_artifact_crypto
     anomaly_signature_updater)
 
 add_library(anomaly_ue5_ftext STATIC src/game/ue5/ue5_ftext.cpp)
@@ -1148,6 +1148,11 @@ target_link_libraries(anomaly_test_host PRIVATE
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
     enable_testing()
+    add_executable(anomaly_profile_compatibility_fixture apps/test_host/profile_compatibility_fixture.cpp)
+    target_link_libraries(anomaly_profile_compatibility_fixture PRIVATE anomaly_symbol_resolver nlohmann_json::nlohmann_json)
+    target_compile_options(anomaly_profile_compatibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+    add_test(NAME profile_compatibility COMMAND anomaly_profile_compatibility_fixture
+        "${CMAKE_SOURCE_DIR}/profiles/nte/nte-current.json")
     add_executable(anomaly_d3d12_interop_fixture
         apps/render_fixture/d3d12_interop_fixture.cpp)
     target_include_directories(anomaly_d3d12_interop_fixture PRIVATE include src)
@@ -1709,7 +1714,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             ue5mem_core anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
             anomaly_adapter_services anomaly_plugin_runtime
             anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
-            anomaly_i18n nlohmann_json::nlohmann_json)
+            anomaly_i18n anomaly_plugin_profile nlohmann_json::nlohmann_json)
         add_dependencies(anomaly_ui_overlay_fixture anomaly_builtin_status_bar)
         add_test(NAME status_bar_real_host_overlay
             COMMAND anomaly_ui_overlay_fixture "$<TARGET_FILE_DIR:anomaly_builtin_status_bar>")
