@@ -191,7 +191,8 @@ struct AlbumSchema final {
 };
 inline bool Load(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!Compatibility.Load(host, "compatibility.profile.json", "hifi-vehicle-music-v1", {"ProcessEvent.entry"})) return false;
+        if (!Compatibility.Load(host, "compatibility.profile.json", "hifi-vehicle-music-v1",
+                                {"ProcessEvent.entry"}, true)) return false;
         NativeLayout next;
         next.kPawnControllerOffset = Compatibility.Value("kPawnControllerOffset", 65536, 1);
         next.kPlayerControllerPlayerOffset = Compatibility.Value("kPlayerControllerPlayerOffset", 65536, 1);

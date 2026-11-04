@@ -295,6 +295,8 @@ public:
 private:
     struct LoadedPlugin;
     bool LoadCatalogEntry(const anomaly::PluginCatalogEntry& entry);
+    bool LoadStagedCatalogEntry(
+        const anomaly::PluginCatalogEntry& entry, anomaly::PluginShadowResult staged);
     void LogImpl(
         AnomalyCoreLogLevelV1 level,
         std::string message,

@@ -1572,6 +1572,7 @@ struct PluginServiceContext {
     AnomalyNteEscMenuButtonServiceV1 nte_esc_menu_button{};
     AnomalySignatureServiceV1 signature{};
     AnomalySignatureServiceV2 signature_v2{};
+    AnomalySignatureServiceV3 signature_v3{};
     AnomalyHookServiceV1 hook{};
     AnomalyPatchServiceV1 patch{};
     const AnomalyUiServiceV1* ui{};
@@ -2531,6 +2532,17 @@ AnomalyStatusV1 ANOMALY_CALL ResolveSignatureLayoutV2(
         return context.platform->ResolveSignatureLayout(
             ScopedPlatformOwner(context), request, addresses, address_count, offsets, offset_count,
             !IsSynchronousStateIoForbidden());
+    });
+}
+
+AnomalyStatusV1 ANOMALY_CALL ResolveSignaturesV3(
+    void* user, AnomalyStringViewV1 module_name, AnomalyStringViewV1 section_name,
+    const AnomalyStringViewV1* patterns, std::uint32_t count,
+    std::uint32_t* status_codes, std::uintptr_t* addresses) {
+    return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
+        return context.platform->ResolveSignatures(
+            ScopedPlatformOwner(context), ServiceString(module_name), ServiceString(section_name),
+            patterns, count, status_codes, addresses, !IsSynchronousStateIoForbidden());
     });
 }
 
@@ -3568,6 +3580,10 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
         *service = &context->nte_esc_menu_button;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
+    if (id == ANOMALY_SIGNATURE_SERVICE_V3_ID && minimum_version == ANOMALY_SIGNATURE_SERVICE_V3_VERSION) {
+        *service = &context->signature_v3;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
     if (id == ANOMALY_SIGNATURE_SERVICE_V2_ID && minimum_version == ANOMALY_SIGNATURE_SERVICE_V2_VERSION) {
         *service = &context->signature_v2;
         return StatusV1(ANOMALY_STATUS_V1_OK);
@@ -4371,6 +4387,11 @@ bool PluginManager::LoadCatalogEntry(const anomaly::PluginCatalogEntry& entry) {
     if (!entry.manifest) return false;
     anomaly::PluginShadowResult staged;
     RunPluginLoadStep([&] { staged = shadow_store_.Stage(entry); });
+    return LoadStagedCatalogEntry(entry, std::move(staged));
+}
+
+bool PluginManager::LoadStagedCatalogEntry(
+    const anomaly::PluginCatalogEntry& entry, anomaly::PluginShadowResult staged) {
     if (!staged.Ok()) {
         Log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
             "package shadow failed for " + std::string(entry.Id()) + ": " + staged.error);
@@ -4508,6 +4529,9 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
     plugin.service_context.signature_v2 = {
         sizeof(AnomalySignatureServiceV2), ANOMALY_SIGNATURE_SERVICE_V2_VERSION,
         &plugin.service_context, ResolveSignatureV1, ResolveSignatureLayoutV2};
+    plugin.service_context.signature_v3 = {
+        sizeof(AnomalySignatureServiceV3), ANOMALY_SIGNATURE_SERVICE_V3_VERSION,
+        &plugin.service_context, ResolveSignatureV1, ResolveSignatureLayoutV2, ResolveSignaturesV3};
     plugin.service_context.hook = {
         sizeof(AnomalyHookServiceV1), ANOMALY_HOOK_SERVICE_V1_VERSION,
         &plugin.service_context,
@@ -4871,6 +4895,7 @@ void PluginManager::LoadAll() {
             Log(ANOMALY_CORE_LOG_LEVEL_V1_ERROR, "dependency blocked " + node.id + ": " + diagnostic);
         }
     }
+    std::vector<const anomaly::PluginCatalogEntry*> candidates;
     for (const std::string& id : plan.load_order) {
         const anomaly::PluginCatalogEntry* entry = catalog.Find(id);
         const auto decision = enablement.find(id);
@@ -4878,7 +4903,26 @@ void PluginManager::LoadAll() {
             disabled_view(*entry, "disabled", decision->second.reason);
             continue;
         }
-        loaded = entry != nullptr && LoadCatalogEntry(*entry) && loaded;
+        if (entry != nullptr) candidates.push_back(entry);
+        else loaded = false;
+    }
+    // Package copies are independent. Keep DLL entry, host services and
+    // dependency-ordered activation on Lifecycle, while staging later packages.
+    constexpr std::size_t kParallelStages = 4;
+    std::array<std::future<anomaly::PluginShadowResult>, kParallelStages> stages;
+    const auto launch = [&](std::size_t index) {
+        stages[index % kParallelStages] = std::async(
+            std::launch::async, [this, entry = candidates[index]] {
+                return shadow_store_.Stage(*entry);
+            });
+    };
+    for (std::size_t i = 0; i < (std::min)(candidates.size(), kParallelStages); ++i)
+        launch(i);
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        anomaly::PluginShadowResult staged;
+        RunPluginLoadStep([&] { staged = stages[i % kParallelStages].get(); });
+        if (i + kParallelStages < candidates.size()) launch(i + kParallelStages);
+        loaded = LoadStagedCatalogEntry(*candidates[i], std::move(staged)) && loaded;
     }
 
     if (plan.load_order.empty()) {
@@ -6434,7 +6478,7 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
                 ServiceCandidate{ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID,
                     plugin.service_context.nte_esc_menu_button.service_version, true},
                 ServiceCandidate{ANOMALY_SIGNATURE_SERVICE_V1_ID,
-                    plugin.service_context.signature_v2.service_version, true},
+                    plugin.service_context.signature_v3.service_version, true},
                 ServiceCandidate{ANOMALY_HOOK_SERVICE_V1_ID,
                     plugin.service_context.hook.service_version, true},
                 ServiceCandidate{ANOMALY_PATCH_SERVICE_V1_ID,

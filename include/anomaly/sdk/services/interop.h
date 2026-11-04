@@ -6,6 +6,9 @@
 #define ANOMALY_SIGNATURE_SERVICE_V1_VERSION 1u
 #define ANOMALY_SIGNATURE_SERVICE_V2_ID ANOMALY_SIGNATURE_SERVICE_V1_ID
 #define ANOMALY_SIGNATURE_SERVICE_V2_VERSION 2u
+#define ANOMALY_SIGNATURE_SERVICE_V3_ID ANOMALY_SIGNATURE_SERVICE_V1_ID
+#define ANOMALY_SIGNATURE_SERVICE_V3_VERSION 3u
+#define ANOMALY_SIGNATURE_BATCH_MAX_PATTERNS_V3 128u
 #define ANOMALY_SIGNATURE_LAYOUT_MAX_FIELDS_V2 32u
 #define ANOMALY_SIGNATURE_LAYOUT_MAX_WITNESSES_V2 32u
 #define ANOMALY_HOOK_SERVICE_V1_ID "anomaly.interop.hook"
@@ -104,6 +107,25 @@ typedef struct AnomalySignatureServiceV2 {
         uintptr_t* addresses, uint32_t address_count,
         uint32_t* offsets, uint32_t offset_count);
 } AnomalySignatureServiceV2;
+
+typedef struct AnomalySignatureServiceV3 {
+    uint32_t struct_size;
+    uint32_t service_version;
+    void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *resolve)(
+        void* user, AnomalyStringViewV1 module_name, AnomalyStringViewV1 section_name,
+        AnomalyStringViewV1 pattern, uintptr_t* address);
+    AnomalyStatusV1 (ANOMALY_CALL *resolve_layout)(
+        void* user, const AnomalySignatureLayoutRequestV2* request,
+        uintptr_t* addresses, uint32_t address_count,
+        uint32_t* offsets, uint32_t offset_count);
+    /* Lifecycle/Worker only. Each result is independently OK, NOT_FOUND, or
+       CONFLICT; addresses are zero unless the corresponding result is OK. */
+    AnomalyStatusV1 (ANOMALY_CALL *resolve_batch)(
+        void* user, AnomalyStringViewV1 module_name, AnomalyStringViewV1 section_name,
+        const AnomalyStringViewV1* patterns, uint32_t count,
+        uint32_t* status_codes, uintptr_t* addresses);
+} AnomalySignatureServiceV3;
 
 typedef struct AnomalyHookServiceV1 {
     uint32_t struct_size;

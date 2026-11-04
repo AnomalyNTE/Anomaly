@@ -59,9 +59,19 @@ void CheckCompactRecovery() {
         0xB8,0x11,0,0,0,0xC3};
     std::copy(body.begin(),body.end(),image.bytes.begin());
     auto context=Context(image);
+    std::size_t scans{};
+    const auto scan = context.scan;
+    context.scan = [&](auto pattern, auto limit) {
+        ++scans;
+        return scan(pattern, limit);
+    };
     anomaly::SignatureUpdater updater({});
     const std::string declaration="48 89 5C 24 08 48 89 6C 24 10";
-    Require(updater.Learn(context,"compact",declaration,0x10000).empty(),"short declaration may learn a unique longer window");
+    Require(updater.Learn(context,"compact",declaration,0x10000,{},true).empty(),"short declaration may learn a unique longer window");
+    Require(scans == 0, "uniquely matched declaration should not rescan its stronger evidence");
+    const auto initial_scans = scans;
+    Require(updater.Learn(context,"compact",declaration,0x10000,{},true).empty() && scans == initial_scans,
+        "unchanged cached evidence should not rescan the section");
     image.bytes[33]=0x22;
     Require(updater.Recover(context,"compact",declaration).instruction==0x10000,"unrelated body edit must preserve learned prefix");
     std::copy_n(image.bytes.begin(),body.size(),image.bytes.begin()+128);

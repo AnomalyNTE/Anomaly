@@ -20,7 +20,7 @@
 
 ## `anomaly.interop.signature`
 
-- **ID**：`"anomaly.interop.signature"` · **版本** 1 / 2 · **capability** `interop-signature`
+- **ID**：`"anomaly.interop.signature"` · **版本** 1 / 2 / 3 · **capability** `interop-signature`
 
 ```c
 typedef struct AnomalySignatureServiceV1 {
@@ -93,6 +93,20 @@ prologue 打散）在成功结果里发布为地址 0，且不提供字段证据
 C++ 插件可使用 [`anomaly/sdk/signature.hpp`](../../include/anomaly/sdk/signature.hpp) 中的
 `FieldSeed` / `MemberUse` / `Witness` 声明及 `ResolveLayout`。返回快照由插件本地持有，
 `address(id)` / `offset(id)` 查找不扫描、不访问磁盘；查询未声明的 ID 会抛出 `std::out_of_range`。
+
+### 版本 3：批量解析签名
+
+查询版本 3 返回 `AnomalySignatureServiceV3`，保留 V1 `resolve` 和 V2 `resolve_layout`，
+追加 `resolve_batch`。它在 Lifecycle / Worker 中对同一模块和节区的最多 128 条签名
+批量扫描，逐条返回 `OK`、`NOT_FOUND` 或 `CONFLICT` 及唯一地址；原有学习和恢复仍逐条生效。
+旧版宿主或不支持批量的调用方继续使用 V1/V2。
+
+```c
+AnomalyStatusV1 (ANOMALY_CALL *resolve_batch)(
+    void* user, AnomalyStringViewV1 module_name, AnomalyStringViewV1 section_name,
+    const AnomalyStringViewV1* patterns, uint32_t count,
+    uint32_t* status_codes, uintptr_t* addresses);
+```
 
 ---
 

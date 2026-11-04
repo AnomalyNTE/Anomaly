@@ -2,6 +2,7 @@
 
 #include "anomaly/plugin_catalog.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -38,7 +39,7 @@ public:
 
 private:
     std::filesystem::path root_;
-    std::uint64_t next_generation_{1};
+    std::atomic<std::uint64_t> next_generation_{1};
 };
 
 }  // namespace anomaly

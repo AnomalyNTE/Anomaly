@@ -1,6 +1,7 @@
 #include "anomaly/host_ui_service.hpp"
 #include "anomaly/plugin_config_watcher.hpp"
 #include "anomaly/plugin_file_watcher.hpp"
+#include "anomaly/plugin_shadow_store.hpp"
 #include "pattern.hpp"
 #include "plugin_manager.hpp"
 
@@ -14,10 +15,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -63,6 +66,7 @@ constexpr std::uint64_t kMaxPrivateGrowthBudgetBytes = 4ULL * 1024ULL * 1024ULL 
 
 void Usage() {
     std::cerr << "usage: anomaly-test-host --watcher-fixture | --config-watcher-fixture | "
+                 "--parallel-stage-fixture | "
                  "--plugin <package-or-root> [--reload N] [--ticks N] "
                  "[--duration-seconds N] [--tick-interval-ms N] [--reload-every-ticks N] "
                  "[--private-growth-budget-bytes N]\n";
@@ -105,8 +109,17 @@ bool VerifyPatternMatcher() {
     if (overlap.FindAll(bytes, 1) != std::vector<std::size_t>{7}) return false;
 
     const auto wildcard = ue5mem::Pattern::Parse("??");
-    return wildcard.FindAll(std::span(bytes).first(3), 2) ==
-        std::vector<std::size_t>{0, 1};
+    if (wildcard.FindAll(std::span(bytes).first(3), 2) !=
+        std::vector<std::size_t>{0, 1}) return false;
+    const std::array batch{
+        ue5mem::Pattern::Parse("A? ?B CC"),
+        ue5mem::Pattern::Parse("7F 7F"),
+        ue5mem::Pattern::Parse("??"),
+        ue5mem::Pattern::Parse("A1 2B"),
+        ue5mem::Pattern::Parse("?? A1 2B CC A?"),
+        ue5mem::Pattern::Parse("00 00")};
+    return ue5mem::Pattern::FindAllBatch(bytes, batch, 2) ==
+        std::vector<std::vector<std::size_t>>{{1, 4}, {7, 8}, {0, 1}, {1}, {0}, {}};
 }
 
 bool VerifyPluginFileWatcher() {
@@ -262,6 +275,54 @@ bool VerifyPluginConfigFileWatcher() {
     return valid;
 }
 
+bool VerifyConcurrentShadowStaging() {
+    const auto root = std::filesystem::temp_directory_path() /
+        (L"anomaly-parallel-stage-fixture-" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    anomaly::PluginShadowStore store(root / L"shadow");
+    std::vector<anomaly::PluginCatalogEntry> entries;
+    entries.reserve(8);
+    for (int i = 0; i < 8; ++i) {
+        auto package = root / (L"Package" + std::to_wstring(i));
+        std::filesystem::create_directories(package, error);
+        if (error) return false;
+        {
+            std::ofstream output(package / L"plugin.dll", std::ios::binary);
+            output << "fixture " << i;
+            if (!output) return false;
+        }
+        anomaly::PluginCatalogEntry entry;
+        entry.package_root = std::move(package);
+        entry.status = anomaly::PluginCatalogStatus::Valid;
+        entry.manifest.emplace();
+        entry.manifest->id = "fixture-" + std::to_string(i);
+        entry.manifest->entry = "plugin.dll";
+        entries.push_back(std::move(entry));
+    }
+    std::vector<std::future<anomaly::PluginShadowResult>> pending;
+    for (const auto& entry : entries) {
+        pending.push_back(std::async(std::launch::async, [&store, &entry] {
+            return store.Stage(entry);
+        }));
+    }
+    std::set<std::uint64_t> generations;
+    bool valid = true;
+    for (std::size_t i = 0; i < pending.size(); ++i) {
+        const auto staged = pending[i].get();
+        if (!staged.Ok() || !generations.insert(staged.shadow->generation).second) {
+            valid = false;
+            continue;
+        }
+        std::ifstream input(staged.shadow->entry_file, std::ios::binary);
+        std::string contents;
+        std::getline(input, contents);
+        valid &= contents == "fixture " + std::to_string(i);
+    }
+    std::filesystem::remove_all(root, error);
+    return valid;
+}
+
 bool VerifyEnablementConfigReload(const std::filesystem::path& root) {
     const auto inline_dispatch = [](
         std::string, std::uint64_t, std::function<void()> callback) -> bool {
@@ -316,6 +377,7 @@ int wmain(int argc, wchar_t** argv) {
     std::filesystem::path input;
     bool watcher_fixture{};
     bool config_watcher_fixture{};
+    bool parallel_stage_fixture{};
     bool enablement_fixture{};
     int reloads = 1;
     int ticks = 3;
@@ -327,6 +389,7 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring_view argument(argv[index]);
         if (argument == L"--watcher-fixture") watcher_fixture = true;
         else if (argument == L"--config-watcher-fixture") config_watcher_fixture = true;
+        else if (argument == L"--parallel-stage-fixture") parallel_stage_fixture = true;
         else if (argument == L"--enablement-fixture") enablement_fixture = true;
         else if (argument == L"--plugin" && index + 1 < argc) input = argv[++index];
         else if (argument == L"--reload" && index + 1 < argc) reloads = _wtoi(argv[++index]);
@@ -357,6 +420,14 @@ int wmain(int argc, wchar_t** argv) {
             return 11;
         }
         std::cout << "ok plugin_config_file_watcher idle_quiet=1 change_delivered=2\n";
+        return 0;
+    }
+    if (parallel_stage_fixture) {
+        if (!VerifyConcurrentShadowStaging()) {
+            std::cerr << "parallel shadow staging fixture failed\n";
+            return 13;
+        }
+        std::cout << "ok parallel_shadow_staging packages=8\n";
         return 0;
     }
     if (input.empty() || reloads < 0 || ticks < 0 || duration_seconds < 0 ||

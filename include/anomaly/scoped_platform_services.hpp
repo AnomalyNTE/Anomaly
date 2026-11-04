@@ -172,6 +172,15 @@ public:
         std::string_view pattern,
         std::uintptr_t* address,
         bool allow_recovery_io = true) noexcept;
+    [[nodiscard]] AnomalyStatusV1 ResolveSignatures(
+        const ScopedPluginServiceOwner& owner,
+        std::string_view module_name,
+        std::string_view section_name,
+        const AnomalyStringViewV1* patterns,
+        std::uint32_t count,
+        std::uint32_t* status_codes,
+        std::uintptr_t* addresses,
+        bool allow_recovery_io = true) noexcept;
     [[nodiscard]] AnomalyStatusV1 ResolveSignatureLayout(
         const ScopedPluginServiceOwner& owner,
         const AnomalySignatureLayoutRequestV2* request,

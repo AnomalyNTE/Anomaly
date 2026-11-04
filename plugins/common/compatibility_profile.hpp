@@ -13,7 +13,8 @@ class CompatibilityProfile final {
 public:
     bool Load(const AnomalyHostApiV1* api, std::string_view filename,
               std::string_view contract,
-              std::initializer_list<std::string_view> known_entries = {}) noexcept {
+              std::initializer_list<std::string_view> known_entries = {},
+              bool batch_signatures = false) noexcept {
         try {
             const sdk::Host host(api);
             auto loaded = sdk::LoadProfile(host, filename);
@@ -23,12 +24,43 @@ public:
                 parsed.section != ".text" || parsed.contract != contract) return false;
             const auto core = host.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID);
             const auto signatures = host.Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID);
+            const auto batch_service = batch_signatures
+                ? host.Query<AnomalySignatureServiceV3>(
+                    ANOMALY_SIGNATURE_SERVICE_V3_ID, ANOMALY_SIGNATURE_SERVICE_V3_VERSION)
+                : sdk::ServiceRef<AnomalySignatureServiceV3>{};
+            std::map<std::string_view, std::size_t, std::less<>> pattern_indices;
+            std::vector<AnomalyStringViewV1> patterns;
+            if (batch_service) {
+                for (const auto& symbol : parsed.symbols) {
+                    if (std::find(known_entries.begin(), known_entries.end(), symbol.name) != known_entries.end()) continue;
+                    for (const auto& candidate : symbol.candidates) {
+                        if (pattern_indices.emplace(candidate.pattern, patterns.size()).second)
+                            patterns.push_back(sdk::StringView(candidate.pattern));
+                    }
+                }
+            }
+            std::vector<std::uint32_t> status_codes(patterns.size());
+            std::vector<std::uintptr_t> batch_addresses(patterns.size());
+            const bool batch = batch_service && batch_service->struct_size >= sizeof(AnomalySignatureServiceV3) &&
+                batch_service->resolve_batch && patterns.size() >= 16 &&
+                patterns.size() <= ANOMALY_SIGNATURE_BATCH_MAX_PATTERNS_V3 &&
+                sdk::Succeeded(batch_service->resolve_batch(batch_service->user,
+                    sdk::StringView(parsed.module), sdk::StringView(parsed.section),
+                    patterns.data(), static_cast<std::uint32_t>(patterns.size()),
+                    status_codes.data(), batch_addresses.data()));
             std::map<std::string, std::uintptr_t, std::less<>> addresses;
             std::map<std::string, std::size_t, std::less<>> selections;
             for (const auto& symbol : parsed.symbols) {
                 if (std::find(known_entries.begin(), known_entries.end(), symbol.name) != known_entries.end())
                     continue; // Validate at an object/vtable-owned address, never globally scan a short body.
-                const auto resolved = sdk::ResolveProfileSymbol(signatures.get(), core.get(), parsed, symbol.name);
+                const auto resolved = batch
+                    ? sdk::ResolveProfileSymbolWith(core.get(), parsed, symbol.name,
+                        [&](const sdk::ProfileCandidate& candidate, std::uintptr_t* address) {
+                            const auto index = pattern_indices.at(candidate.pattern);
+                            *address = batch_addresses[index];
+                            return AnomalyStatusV1{status_codes[index], 0, {nullptr, 0}};
+                        })
+                    : sdk::ResolveProfileSymbol(signatures.get(), core.get(), parsed, symbol.name);
                 if (symbol.name == "layout" && !resolved) return false;
                 addresses.emplace(symbol.name, resolved.address);
                 if (resolved) selections.emplace(symbol.name,

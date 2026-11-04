@@ -44,6 +44,14 @@ std::vector<std::uintptr_t> ScanSection(
     std::string_view section_name,
     const Pattern& pattern,
     std::size_t limit);
+std::vector<std::uintptr_t> ScanSection(
+    const SectionInfo& section,
+    const Pattern& pattern,
+    std::size_t limit);
+std::vector<std::vector<std::uintptr_t>> ScanSectionBatch(
+    const SectionInfo& section,
+    std::span<const Pattern> patterns,
+    std::size_t limit);
 std::optional<std::uintptr_t> ResolveRipRelative(
     std::uintptr_t instruction,
     std::size_t displacement_offset,

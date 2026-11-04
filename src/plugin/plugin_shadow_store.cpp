@@ -64,7 +64,7 @@ PluginShadowResult PluginShadowStore::Stage(const PluginCatalogEntry& entry) {
     std::uint64_t generation{};
     std::filesystem::path destination;
     do {
-        generation = next_generation_++;
+        generation = next_generation_.fetch_add(1, std::memory_order_relaxed);
         destination = plugin_root / std::to_wstring(generation);
         error.clear();
     } while (std::filesystem::exists(destination, error) && !error);

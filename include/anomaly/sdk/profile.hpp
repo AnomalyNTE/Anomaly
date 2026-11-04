@@ -194,12 +194,11 @@ struct ProfileSymbolResult final {
 
 // Uses existing scoped signature and memory services. A match is published only
 // when exactly one candidate passes its declared entry-byte check.
-[[nodiscard]] inline ProfileSymbolResult ResolveProfileSymbol(
-    const AnomalySignatureServiceV1* signatures, const AnomalyCoreServiceV1* core,
-    const Profile& profile, std::string_view name) {
-    if (signatures == nullptr || signatures->struct_size < sizeof(AnomalySignatureServiceV1) ||
-        signatures->service_version < ANOMALY_SIGNATURE_SERVICE_V1_VERSION || signatures->resolve == nullptr ||
-        core == nullptr || core->struct_size < offsetof(AnomalyCoreServiceV1, read_memory) + sizeof(core->read_memory) ||
+template <typename Resolve>
+[[nodiscard]] inline ProfileSymbolResult ResolveProfileSymbolWith(
+    const AnomalyCoreServiceV1* core, const Profile& profile,
+    std::string_view name, Resolve&& resolve) {
+    if (core == nullptr || core->struct_size < offsetof(AnomalyCoreServiceV1, read_memory) + sizeof(core->read_memory) ||
         core->service_version < ANOMALY_CORE_SERVICE_V1_VERSION || core->read_memory == nullptr)
         return {0, nullptr, "signature or memory service is unavailable"};
     const ProfileSymbol* symbol{};
@@ -208,11 +207,10 @@ struct ProfileSymbolResult final {
     ProfileSymbolResult result;
     for (const auto& candidate : symbol->candidates) {
         std::uintptr_t address{};
-        const auto status = signatures->resolve(signatures->user, StringView(profile.module),
-            StringView(profile.section), StringView(candidate.pattern), &address);
-        if (status.code == ANOMALY_STATUS_V1_CONFLICT)
+        const auto scan_status = resolve(candidate, &address);
+        if (scan_status.code == ANOMALY_STATUS_V1_CONFLICT)
             return {0, nullptr, "profile signature is ambiguous"};
-        if (!Succeeded(status) || address == 0) continue;
+        if (!Succeeded(scan_status) || address == 0) continue;
         if (candidate.call_offset) {
             std::array<std::uint8_t, 5> call{};
             if (!Succeeded(core->read_memory(core->user, address + *candidate.call_offset,
@@ -231,6 +229,19 @@ struct ProfileSymbolResult final {
     }
     if (!result) result.error = "no profile candidate passed validation";
     return result;
+}
+
+[[nodiscard]] inline ProfileSymbolResult ResolveProfileSymbol(
+    const AnomalySignatureServiceV1* signatures, const AnomalyCoreServiceV1* core,
+    const Profile& profile, std::string_view name) {
+    if (signatures == nullptr || signatures->struct_size < sizeof(AnomalySignatureServiceV1) ||
+        signatures->service_version < ANOMALY_SIGNATURE_SERVICE_V1_VERSION || signatures->resolve == nullptr)
+        return {0, nullptr, "signature or memory service is unavailable"};
+    return ResolveProfileSymbolWith(core, profile, name,
+        [&](const ProfileCandidate& candidate, std::uintptr_t* address) {
+            return signatures->resolve(signatures->user, StringView(profile.module),
+                StringView(profile.section), StringView(candidate.pattern), address);
+        });
 }
 
 }  // namespace anomaly::sdk
