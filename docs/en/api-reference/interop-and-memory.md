@@ -38,6 +38,16 @@ instructions and attempt recovery when the original signature has zero matches. 
 members and stack displacements and does not update field constants inside the plugin. Game / Render
 calls perform no learning, recovery, or state file I/O.
 
+Learned windows preserve declared operand wildcards and are shortened only after retaining the
+declaration's complete instructions and fixed member displacements. The full window remains
+available to distinguish newly duplicated prefixes.
+Shared instruction templates can require up to two direct call or branch target fingerprints.
+Mismatched anchors, truncated candidate enumeration and unresolved ambiguity reject recovery.
+Persisted anchors must identify decoded branch instruction boundaries.
+
+Member learning also recognizes MOVSS/MOVSD scalar reads and writes. XMM writes preserve general
+register object tracking; direct and indirect calls invalidate volatile aliases. Width changes fail.
+
 ### Version 2: resolve addresses and field layouts together
 
 Querying version 2 returns a separate `AnomalySignatureServiceV2`, which keeps the original `resolve` and adds:

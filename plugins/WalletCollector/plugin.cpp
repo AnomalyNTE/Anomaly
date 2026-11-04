@@ -1223,12 +1223,9 @@ bool ReadPointerAt(Context& context, const std::uintptr_t base,
 
 bool ResolveSignature(Context& context, const std::string_view pattern,
                       std::uintptr_t& address) noexcept {
-  address = 0;
-  return SignatureReady(context.signature) &&
-         context.signature->resolve(
-             context.signature->user, anomaly::sdk::StringView(kModuleName),
-             anomaly::sdk::StringView(kTextSection), anomaly::sdk::StringView(pattern),
-             &address).code == ANOMALY_STATUS_V1_OK && address != 0;
+  (void)context;
+  address = compatibility.Address(pattern);
+  return address != 0;
 }
 
 bool ResolveRipRelative(Context& context, const std::string_view pattern,
@@ -1278,14 +1275,14 @@ std::uint64_t EncodeFName(const FNameValue value) noexcept {
 
 bool RefreshRegistry(Context& context) noexcept {
   if (context.g_objects_address == 0 &&
-      !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
+      !ResolveRipRelative(context, kGObjectsPattern, native_layout.kGObjectsAddend,
                           context.g_objects_address)) return false;
   ObjectRegistry next{};
-  if (!ReadPointerAt(context, context.g_objects_address, kObjectItemsOffset, next.items) ||
-      !Read(context, context.g_objects_address + kObjectCountOffset, next.count) ||
-      !Read(context, context.g_objects_address + kObjectMaxCountOffset, next.max_count) ||
-      !Read(context, context.g_objects_address + kObjectMaxChunksOffset, next.max_chunks) ||
-      !Read(context, context.g_objects_address + kObjectNumChunksOffset, next.num_chunks) ||
+  if (!ReadPointerAt(context, context.g_objects_address, native_layout.kObjectItemsOffset, next.items) ||
+      !Read(context, context.g_objects_address + native_layout.kObjectCountOffset, next.count) ||
+      !Read(context, context.g_objects_address + native_layout.kObjectMaxCountOffset, next.max_count) ||
+      !Read(context, context.g_objects_address + native_layout.kObjectMaxChunksOffset, next.max_chunks) ||
+      !Read(context, context.g_objects_address + native_layout.kObjectNumChunksOffset, next.num_chunks) ||
       next.count == 0 || next.count > kMaximumObjectCount || next.max_count < next.count ||
       next.num_chunks == 0 || next.num_chunks > next.max_chunks ||
       next.num_chunks > kMaximumObjectChunks) return false;
@@ -1370,8 +1367,8 @@ bool FindDataAsset(Context& context) {
     return false;
 
   const std::uint32_t index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
-  const std::uint32_t chunk_index = index / kObjectChunkSize;
-  const std::uint32_t within_chunk = index % kObjectChunkSize;
+  const std::uint32_t chunk_index = index / native_layout.kObjectChunkSize;
+  const std::uint32_t within_chunk = index % native_layout.kObjectChunkSize;
   if (index >= context.registry.count || chunk_index >= context.registry.num_chunks)
     return false;
   std::uintptr_t chunk{};
@@ -1381,10 +1378,10 @@ bool FindDataAsset(Context& context) {
           static_cast<std::ptrdiff_t>(chunk_index * sizeof(void*)), chunk) ||
       !ReadPointerAt(
           context, chunk,
-          static_cast<std::ptrdiff_t>(within_chunk) * kObjectItemStride, object))
+          static_cast<std::ptrdiff_t>(within_chunk) * native_layout.kObjectItemStride, object))
     return false;
   std::uintptr_t table{};
-  if (!ReadPointerAt(context, object, kDataAssetRandomItemTableOffset, table))
+  if (!ReadPointerAt(context, object, native_layout.kDataAssetRandomItemTableOffset, table))
     return false;
   context.data_asset = object;
   context.data_table = table;
@@ -1397,31 +1394,31 @@ bool ScanDataTable(Context& context) {
     return false;
   ArrayHeader header{};
   std::uintptr_t row_map_address{};
-  if (!AddSignedAddress(context.data_table, kDataTableRowMapOffset, row_map_address) ||
+  if (!AddSignedAddress(context.data_table, native_layout.kDataTableRowMapOffset, row_map_address) ||
       !Read(context, row_map_address, header) || header.count <= 0 ||
       header.count > static_cast<std::int32_t>(kMaximumDataTableRows) ||
       header.capacity < header.count || header.data == 0) return false;
-  const std::size_t byte_count = static_cast<std::size_t>(header.count) * kDataTableRowStride;
+  const std::size_t byte_count = static_cast<std::size_t>(header.count) * native_layout.kDataTableRowStride;
   std::vector<std::uint8_t> elements(byte_count);
   if (!ReadBytes(context, header.data, elements.data(), elements.size())) return false;
 
   std::vector<RoutePoint> discovered;
   discovered.reserve(static_cast<std::size_t>(header.count));
   for (std::int32_t index{}; index < header.count; ++index) {
-    const std::size_t offset = static_cast<std::size_t>(index) * kDataTableRowStride;
+    const std::size_t offset = static_cast<std::size_t>(index) * native_layout.kDataTableRowStride;
     FNameValue row_id{};
     std::uintptr_t row{};
     std::memcpy(&row_id, elements.data() + offset, sizeof(row_id));
-    std::memcpy(&row, elements.data() + offset + kDataTableRowPointerOffset, sizeof(row));
+    std::memcpy(&row, elements.data() + offset + native_layout.kDataTableRowPointerOffset, sizeof(row));
     if (row == 0 || row_id.comparison_index == 0) continue;
     std::string level_name;
     std::uintptr_t level_address{};
-    if (!AddAddress(row, kRandomItemLevelNameOffset, level_address) ||
+    if (!AddAddress(row, native_layout.kRandomItemLevelNameOffset, level_address) ||
         !ReadUtf16Array(context, level_address, level_name)) continue;
     FNameValue random_type{};
-    if (!Read(context, row + kRandomItemTypeNameOffset, random_type)) continue;
+    if (!Read(context, row + native_layout.kRandomItemTypeNameOffset, random_type)) continue;
     std::array<double, 3> center{};
-    const auto translation = row + kRandomItemTransformOffset + kTransformTranslationOffset;
+    const auto translation = row + native_layout.kRandomItemTransformOffset + native_layout.kTransformTranslationOffset;
     if (!Read(context, translation, center[0]) || !Read(context, translation + 8U, center[1]) ||
         !Read(context, translation + 16U, center[2]) ||
         !std::ranges::all_of(center, [](const double value) {
@@ -1465,11 +1462,11 @@ bool ResolvePlayerState(Context& context, std::uintptr_t& player_state) {
   std::uintptr_t local_player{};
   std::uintptr_t controller{};
   return Read(context, context.g_world_address, world) && world != 0 &&
-      ReadPointerAt(context, world, kWorldGameInstanceOffset, game_instance) &&
-      ReadPointerAt(context, game_instance, kGameInstanceLocalPlayersOffset, local_players) &&
+      ReadPointerAt(context, world, native_layout.kWorldGameInstanceOffset, game_instance) &&
+      ReadPointerAt(context, game_instance, native_layout.kGameInstanceLocalPlayersOffset, local_players) &&
       Read(context, local_players, local_player) && local_player != 0 &&
-      ReadPointerAt(context, local_player, kLocalPlayerControllerOffset, controller) &&
-      ReadPointerAt(context, controller, kControllerPlayerStateOffset, player_state);
+      ReadPointerAt(context, local_player, native_layout.kLocalPlayerControllerOffset, controller) &&
+      ReadPointerAt(context, controller, native_layout.kControllerPlayerStateOffset, player_state);
 }
 
 bool ResolveRandomItemRecords(Context& context, const std::uintptr_t player_state) {
@@ -1488,7 +1485,7 @@ bool ResolveRandomItemRecords(Context& context, const std::uintptr_t player_stat
   std::uintptr_t owner_vtable{};
   std::uintptr_t find_record_address{};
   if (!Read(context, owner_address, owner_vtable) || owner_vtable == 0 ||
-      !Read(context, owner_vtable + kRecordOwnerFindRecordVtableOffset,
+      !Read(context, owner_vtable + native_layout.kRecordOwnerFindRecordVtableOffset,
             find_record_address) || find_record_address == 0) return false;
   const auto find_record = reinterpret_cast<FindRecord>(find_record_address);
   auto* fixed = find_record(owner, "RandomItemFixedRecord");
@@ -1529,17 +1526,17 @@ bool ReadRecordSelections(Context& context, const std::uintptr_t record,
   std::uintptr_t descriptors{};
   std::uintptr_t store{};
   std::uintptr_t descriptor{};
-  if (!Read(context, record + kRecordOwnerOffset, owner) || owner == 0 ||
-      !Read(context, record + kRecordIndexOffset, record_index) || record_index < 0 ||
+  if (!Read(context, record + native_layout.kRecordOwnerOffset, owner) || owner == 0 ||
+      !Read(context, record + native_layout.kRecordIndexOffset, record_index) || record_index < 0 ||
       record_index > 4096 ||
-      !Read(context, owner + kRecordDescriptorTableOffset, descriptors) || descriptors == 0 ||
+      !Read(context, owner + native_layout.kRecordDescriptorTableOffset, descriptors) || descriptors == 0 ||
       !AddAddress(descriptors,
-                  static_cast<std::uint64_t>(record_index) * kRecordDescriptorStride,
+                  static_cast<std::uint64_t>(record_index) * native_layout.kRecordDescriptorStride,
                   descriptor) ||
-      !Read(context, descriptor + kRecordDescriptorStoreOffset, store) || store == 0)
+      !Read(context, descriptor + native_layout.kRecordDescriptorStoreOffset, store) || store == 0)
     return false;
   ArrayHeader rows{};
-  if (!Read(context, store + kRecordStoreRowsOffset, rows) || rows.count < 0 ||
+  if (!Read(context, store + native_layout.kRecordStoreRowsOffset, rows) || rows.count < 0 ||
       rows.count > static_cast<std::int32_t>(kMaximumRecordRows) ||
       rows.capacity < rows.count ||
       rows.capacity > static_cast<std::int32_t>(kMaximumRecordRows) ||
@@ -1552,7 +1549,7 @@ bool ReadRecordSelections(Context& context, const std::uintptr_t record,
   std::uintptr_t vtable{};
   std::uintptr_t get_string_address{};
   if (!Read(context, record, vtable) || vtable == 0 ||
-      !Read(context, vtable + kRecordGetStringVtableOffset, get_string_address) ||
+      !Read(context, vtable + native_layout.kRecordGetStringVtableOffset, get_string_address) ||
       get_string_address == 0) return false;
   using GetString = const char* (*)(void*, std::int32_t, std::int32_t);
   const auto get_string = reinterpret_cast<GetString>(get_string_address);
@@ -1663,6 +1660,7 @@ void RestartScan(Context& context) noexcept {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) {
+    if (!LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
   if (host == nullptr || plugin_context == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   auto* context = new (std::nothrow) Context();
   if (context == nullptr) return Status(ANOMALY_STATUS_V1_FAILED);

@@ -1,4 +1,5 @@
 #include "anomaly/symbol_resolver.hpp"
+#include "anomaly/artifact_crypto.hpp"
 #include "anomaly/signature_updater.hpp"
 
 #include <algorithm>
@@ -7,11 +8,40 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
 namespace anomaly {
 namespace {
+
+// Learned recipes are keyed by the declaration they were learned for. Hashing the whole
+// profile meant that editing a single layout value threw away every symbol's recipe and
+// silently dropped the resolver back to plain pattern matching; hashing the declaration
+// itself keeps the knowledge across layout and feature edits while still refusing to
+// reuse a recipe after the pattern or its resolve rule changed.
+std::string SymbolDeclarationContract(const ProfileSymbol& symbol) {
+    std::string text;
+    text.reserve(symbol.pattern.size() + symbol.section.size() + 96);
+    text += symbol.section;
+    text.push_back('\n');
+    text += symbol.pattern;
+    text.push_back('\n');
+    text += std::to_string(static_cast<int>(symbol.resolve.kind));
+    text.push_back(':');
+    text += std::to_string(symbol.resolve.offset);
+    text.push_back(':');
+    text += std::to_string(symbol.resolve.instruction_size);
+    text.push_back(':');
+    text += std::to_string(symbol.resolve.addend);
+    text.push_back('\n');
+    for (const auto& validator : symbol.validators) {
+        text += validator;
+        text.push_back(',');
+    }
+    const auto digest = Sha256Hex(std::as_bytes(std::span(text)));
+    return "symbol:" + digest.substr(0, 32);
+}
 
 bool IsReadableProtection(DWORD protection) noexcept {
     if ((protection & (PAGE_GUARD | PAGE_NOACCESS)) != 0) return false;
@@ -1358,6 +1388,43 @@ void ResolveFeatures(
 
 }  // namespace
 
+bool SelectProfileLayout(BuildProfile& profile, const SymbolMemory& memory, std::string& error) {
+    error.clear();
+    if (profile.layout_candidates.empty()) return true;
+    const ProfileLayoutCandidate* selected{};
+    for (const auto& candidate : profile.layout_candidates) {
+        const auto module = memory.FindModule(candidate.module);
+        if (!module) continue;
+        const auto matches = memory.Scan(*module, candidate.section, candidate.pattern, 2);
+        if (matches.size() > 1) {
+            error = "layout signature is ambiguous";
+            return false;
+        }
+        if (matches.empty() || candidate.entry.empty()) continue;
+        std::vector<std::uint8_t> actual(candidate.entry.size());
+        if (!memory.Read(matches.front(), actual.data(), actual.size()) || actual != candidate.entry)
+            continue;
+        if (selected != nullptr) {
+            error = "multiple layout candidates matched";
+            return false;
+        }
+        selected = &candidate;
+    }
+    if (selected == nullptr) {
+        error = "no layout candidate passed signature and entry validation";
+        return false;
+    }
+    for (const auto& [name, pattern] : selected->symbol_patterns) {
+        if (!profile.symbols.contains(name)) {
+            error = "layout candidate references undeclared symbol " + name;
+            return false;
+        }
+    }
+    for (const auto& [key, value] : selected->values) profile.layout.insert_or_assign(key, value);
+    for (const auto& [name, pattern] : selected->symbol_patterns) profile.symbols.at(name).pattern = pattern;
+    return true;
+}
+
 LiveSymbolMemory::LiveSymbolMemory(CoreMemoryServices services)
     : services_(NormalizeCoreMemoryServices(std::move(services))) {}
 
@@ -1677,7 +1744,7 @@ ProfileResolutionSnapshot SymbolResolver::Resolve(
             [&](auto pattern, auto limit) {
                 return memory_->Scan(*module, definition.section, pattern, limit);
             }};
-        const std::string contract = profile->source_hash + ":" + id;
+        const std::string contract = SymbolDeclarationContract(definition) + ":" + id;
         bool recovery_attempted{};
         bool using_recovery{};
         std::string recovery_pattern;

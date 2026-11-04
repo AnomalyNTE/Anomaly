@@ -104,7 +104,7 @@ void ANOMALY_CALL Observe(void*,uintptr_t object,uintptr_t function,void* parame
     try {
         if(function && function==exit_watch_fn.load()) {exit_swallowed.fetch_add(1);return;}
         if(object!=observed_ps.load() || !return_entrance.load() || !parameters) return;
-        const Reader r{names};const auto name=r.NameAt(function+24);
+        const Reader r{names};const auto name=r.NameAt(function+scene_profile::native_layout.ObjectName);
         if((name=="OnMainPlayerTransferFinish" || name=="OnFinishTransfered") && r.Function(function,name,1,8)) {
             FName id{};std::memcpy(&id,parameters,8);if(NameKey(id)==return_entrance.load()) return_ack=NameKey(id);
         }
@@ -112,13 +112,13 @@ void ANOMALY_CALL Observe(void*,uintptr_t object,uintptr_t function,void* parame
 }
 bool Rows(const Reader& r,uintptr_t table,const char* type,std::vector<Row>& result) {
     uintptr_t structure{};MapHeader header{};
-    if(!table || !r.IsA(table,"DataTable") || !r.Read(table+40,structure) || r.NameAt(structure+24)!=type ||
-       !r.Read(table+48,header) || header.count<0 || header.count>8192 || header.capacity<header.count ||
+    if(!table || !r.IsA(table,"DataTable") || !r.Read(table+scene_profile::native_layout.DataTableType,structure) || r.NameAt(structure+scene_profile::native_layout.ObjectName)!=type ||
+       !r.Read(table+scene_profile::native_layout.DataTableMap,header) || header.count<0 || header.count>8192 || header.capacity<header.count ||
        header.bits<header.count || header.bits>65536 || header.max_bits<header.bits ||
        (!header.flags && header.count>128) || (header.count && !header.data)) return false;
     std::vector<Row> all(header.count);std::vector<uint32_t> bits((header.count+31)/32);
-    if(header.count && (core->read_memory(core->user,header.data,{reinterpret_cast<uint8_t*>(all.data()),all.size()*24}).code!=0 ||
-       core->read_memory(core->user,header.flags?header.flags:table+64,{reinterpret_cast<uint8_t*>(bits.data()),bits.size()*4}).code!=0)) return false;
+    if(header.count && (core->read_memory(core->user,header.data,{reinterpret_cast<uint8_t*>(all.data()),all.size()*sizeof(Row)}).code!=0 ||
+       core->read_memory(core->user,header.flags?header.flags:table+scene_profile::native_layout.DataTableMap+scene_profile::native_layout.MapInlineBits,{reinterpret_cast<uint8_t*>(bits.data()),bits.size()*4}).code!=0)) return false;
     result.clear();
     for(int i=0;i<header.count;++i) if(bits[i/32]&(1u<<(i%32))) {if(all[i].key.id && all[i].data) result.push_back(all[i]);}
     return true;
@@ -138,15 +138,11 @@ uintptr_t TextString(uintptr_t function,uintptr_t text) {
 std::string Text(const Reader& r,uintptr_t address) {
     char buffer[1024]{};size_t bytes=sizeof(buffer);
     if(names->resolve_ftext_utf8 && names->resolve_ftext_utf8(names->user,address,buffer,&bytes).code==0 && buffer[0]) return buffer;
-    if(!text_string) {
-        const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-        if(sig && sig->resolve) sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),
-            StringView("40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B 0B 48 8B 01 48 83 C4 20"),&text_string);
-    }
+    text_string=scene_profile::compatibility.Address("TextToString");
     const auto string=text_string?TextString(text_string,address):0;return string?WideString(r,string):std::string{};
 }
 bool Layout(const Reader& r,uintptr_t table,const char* field,int offset,int size) {
-    uintptr_t structure{};return r.Read(table+40,structure) && r.Property(structure,field,offset,size);
+    uintptr_t structure{};return r.Read(table+scene_profile::native_layout.DataTableType,structure) && r.Property(structure,field,offset,size);
 }
 Entry* Scene(std::string_view key) {
     if(!building) return nullptr;
@@ -159,25 +155,25 @@ bool StartCatalog(const Reader& r,uintptr_t util) {
     FName home{};const auto home_offset=Field(r,gd,"BigWorldLevelID",8);
     if(home_offset>=0 && r.Read(gd+home_offset,home)) big_world=r.Name(home);
     const auto levels=Child(r,gd,"LevelConfigDataTable"),transfers=Child(r,Child(r,gd,"TeleportDataAsset"),"TransferDataTable");
-    if(!Layout(r,levels,"SceneType",8,1) || !Layout(r,levels,"Title",16,16) ||
-       !Layout(r,levels,"SingleExtensionData",112,16) || !Rows(r,levels,"LevelConfigData",level_rows)) return false;
+    if(!Layout(r,levels,"SceneType",scene_profile::native_layout.LevelType,1) || !Layout(r,levels,"Title",scene_profile::native_layout.LevelTitle,16) ||
+       !Layout(r,levels,"SingleExtensionData",scene_profile::native_layout.LevelExtension,16) || !Rows(r,levels,"LevelConfigData",level_rows)) return false;
     if(big_world.empty()) {
         // The loaded SDK's BigWorldLevelID is unset. Use the world verified in
         // the current NTE build only when that outdoor map exists in its catalog.
         for(const auto& row:level_rows) {
             uint8_t type{};
-            if(r.Name(row.key)=="XL_map_bigworld_test" && r.Read(row.data+8,type) && type==0) {
+            if(r.Name(row.key)=="XL_map_bigworld_test" && r.Read(row.data+scene_profile::native_layout.LevelType,type) && type==0) {
                 big_world=r.Name(row.key);Log("scene-loader big-world fallback="+big_world);break;
             }
         }
     }
-    if(transfers && Layout(r,transfers,"BelongLevelName",112,16) && Layout(r,transfers,"Transform",16,96) &&
-       Layout(r,transfers,"TransferCondition",176,16)) Rows(r,transfers,"StaticTransformData",transfer_rows);
+    if(transfers && Layout(r,transfers,"BelongLevelName",scene_profile::native_layout.TransferLevel,16) && Layout(r,transfers,"Transform",scene_profile::native_layout.TransferTransform,96) &&
+       Layout(r,transfers,"TransferCondition",scene_profile::native_layout.TransferCondition,16)) Rows(r,transfers,"StaticTransformData",transfer_rows);
     uintptr_t clones{};const auto clone_get=Fn(r,"HTGame","HTUtil","GetCloneSystemDataAsset",1,8);
     if(clone_get && Invoke(r,util,clone_get,&clones)) {
         clones=Child(r,clones,"DT_CloneSystemData");
-        if(clones && Layout(r,clones,"CloneID",8,8) && Layout(r,clones,"CloneType",0x49,1) &&
-           Layout(r,clones,"CloneLevelInstance",0x68,40)) Rows(r,clones,"CloneSystemData",clone_rows);
+        if(clones && Layout(r,clones,"CloneID",scene_profile::native_layout.CloneId,8) && Layout(r,clones,"CloneType",scene_profile::native_layout.CloneType,1) &&
+           Layout(r,clones,"CloneLevelInstance",scene_profile::native_layout.CloneMap,40)) Rows(r,clones,"CloneSystemData",clone_rows);
     }
     level_table=Handle(r,levels);transfer_table=transfers?Handle(r,transfers):AnomalyGenerationHandleV1{};
     clone_table=clones?Handle(r,clones):AnomalyGenerationHandleV1{};
@@ -192,15 +188,15 @@ void BuildCatalog(const Reader& r,uintptr_t util) {
         const auto end=std::min(level_cursor+8,level_rows.size());
         for(;level_cursor<end;++level_cursor) {
             const auto row=level_rows[level_cursor];Entry entry{};entry.id=row.key;entry.key=r.Name(row.key);
-            if(!r.Read(row.data+8,entry.type)) continue;
-            entry.title=Text(r,row.data+16);if(entry.title.empty()) entry.title=entry.key;
+            if(!r.Read(row.data+scene_profile::native_layout.LevelType,entry.type)) continue;
+            entry.title=Text(r,row.data+scene_profile::native_layout.LevelTitle);if(entry.title.empty()) entry.title=entry.key;
             uintptr_t extension{},data{};
-            if(entry.type==2 && r.Read(row.data+112,extension) && r.Read(row.data+120,data) && extension && data &&
-               r.NameAt(extension+24)=="SingleLevelExtensionData" && r.Property(extension,"EnterTransformID",80,8)) {
+            if(entry.type==2 && r.Read(row.data+scene_profile::native_layout.LevelExtension,extension) && r.Read(row.data+scene_profile::native_layout.LevelExtension+scene_profile::native_layout.InstancedStructData,data) && extension && data &&
+               r.NameAt(extension+scene_profile::native_layout.ObjectName)=="SingleLevelExtensionData" && r.Property(extension,"EnterTransformID",scene_profile::native_layout.SingleEntrance,8)) {
                 FName entrance{};
-                if(r.Read(data+80,entrance) && entrance.id) entry.routes.push_back({row.key,scene::RouteKind::Single,0,1,T("route.default","Default entrance")});
-                if(r.Property(extension,"ExitMapName",0,16) && r.Property(extension,"Translation",40,24) &&
-                   WideString(r,data)==big_world && r.Read(data+40,entry.exit_position)) entry.exit_to_world=true;
+                if(r.Read(data+scene_profile::native_layout.SingleEntrance,entrance) && entrance.id) entry.routes.push_back({row.key,scene::RouteKind::Single,0,1,T("route.default","Default entrance")});
+                if(r.Property(extension,"ExitMapName",scene_profile::native_layout.SingleExitMap,16) && r.Property(extension,"Translation",scene_profile::native_layout.SingleExitPosition,24) &&
+                   WideString(r,data)==big_world && r.Read(data+scene_profile::native_layout.SingleExitPosition,entry.exit_position)) entry.exit_to_world=true;
             }
             building->scenes.push_back(std::move(entry));
         }
@@ -210,10 +206,10 @@ void BuildCatalog(const Reader& r,uintptr_t util) {
         if(!Resolve(r,objects,transfer_table)) transfer_cursor=transfer_rows.size();
         const auto end=std::min(transfer_cursor+64,transfer_rows.size());
         for(;transfer_cursor<end;++transfer_cursor) {
-            const auto row=transfer_rows[transfer_cursor];const auto target=WideString(r,row.data+112);
+            const auto row=transfer_rows[transfer_cursor];const auto target=WideString(r,row.data+scene_profile::native_layout.TransferLevel);
             if(auto* entry=Scene(target)) entry->routes.push_back({row.key,scene::RouteKind::Transfer,0,1,r.Name(row.key)});
             uintptr_t condition{};std::array<double,3> position{};
-            if(target==big_world && r.Read(row.data+176,condition) && !condition && r.Read(row.data+48,position))
+            if(target==big_world && r.Read(row.data+scene_profile::native_layout.TransferCondition,condition) && !condition && r.Read(row.data+scene_profile::native_layout.TransferPosition,position))
                 return_points.push_back({row.key,position});
         }
         return;
@@ -223,15 +219,15 @@ void BuildCatalog(const Reader& r,uintptr_t util) {
         const auto end=std::min(clone_cursor+8,clone_rows.size());
         for(;clone_cursor<end;++clone_cursor) {
             const auto row=clone_rows[clone_cursor];uint8_t cross{},type{};FName id{},map{};
-            if(!r.Read(row.data+16,cross) || !cross || !r.Read(row.data+8,id) || !id.id ||
-               !r.Read(row.data+0x49,type) || type>=27 || !r.Read(row.data+0x68+16,map)) continue;
+            if(!r.Read(row.data+scene_profile::native_layout.CloneCross,cross) || !cross || !r.Read(row.data+scene_profile::native_layout.CloneId,id) || !id.id ||
+               !r.Read(row.data+scene_profile::native_layout.CloneType,type) || type>=27 || !r.Read(row.data+scene_profile::native_layout.CloneMap+scene_profile::native_layout.SoftAssetName,map)) continue;
             auto* entry=Scene(r.Name(map));if(!entry) continue;
             int32_t difficulty{1};RowArray nodes{};
             const auto node_type=Find(r,"/Script/HTGame.CloneSystemSubNodeData");
-            if(node_type && r.Property(node_type,"DifficultyLevel",124,4) && r.Read(row.data+0x58,nodes) && nodes.data && nodes.count>0)
-                r.Read(nodes.data+124,difficulty);
+            if(node_type && r.Property(node_type,"DifficultyLevel",scene_profile::native_layout.NodeDifficulty,4) && r.Read(row.data+scene_profile::native_layout.CloneNodes,nodes) && nodes.data && nodes.count>0)
+                r.Read(nodes.data+scene_profile::native_layout.NodeDifficulty,difficulty);
             if(difficulty<1) difficulty=1;
-            auto label=Text(r,row.data+0x38);if(label.empty()) label=r.Name(id);
+            auto label=Text(r,row.data+scene_profile::native_layout.CloneTitle);if(label.empty()) label=r.Name(id);
             entry->routes.push_back({id,scene::RouteKind::Clone,type,difficulty,
                 F("route.difficulty","{0} / Difficulty {1}",{label,std::to_string(difficulty)})});
         }
@@ -258,18 +254,16 @@ bool RemoveDelegate(uintptr_t function,uintptr_t list,int index) {
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 bool DetachErrorExit(const Reader& r,uintptr_t widget,uintptr_t hud) {
-    const auto sig=Host(api).Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID).get();
-    if(!sig || !sig->resolve) return false;
-    const auto resolve=[&](uintptr_t& address,const char* pattern) {
-        return address || sig->resolve(sig->user,StringView("HTGame.exe"),StringView(".text"),StringView(pattern),&address).code==0;
+    const auto resolve=[](uintptr_t& address,const char* symbol) {
+        address=scene_profile::compatibility.Address(symbol);return address!=0;
     };
-    if(!resolve(error_exit_exec,"40 53 48 83 EC 20 48 8D 59 ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 ?? 48 8B CB E8 ?? ?? ?? ?? C7 80 ?? ?? ?? ?? ?? ?? ?? ?? 80 3D ?? ?? ?? ?? ?? 72 ?? 48 8D 15 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 48 8B C8 E8") ||
-       !resolve(delegate_remove,"48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC 20 48 8B 29 48 8B F9 48 63 F2 48 8B DE 48 C1 E3 04") ||
-       !resolve(deactivate_signal,"40 57 48 83 EC 40 80 B9 ?? ?? ?? ?? ?? 48 8B F9 0F 85 ?? ?? ?? ?? 80 B9 ?? ?? ?? ?? ?? 0F 84 ?? ?? ?? ?? 48 8B 01")) return false;
+    if(!resolve(error_exit_exec,"error_exit_exec") ||
+       !resolve(delegate_remove,"delegate_remove") ||
+       !resolve(deactivate_signal,"deactivate_signal")) return false;
     // The validated deactivation implementation broadcasts this native delegate
     // list. Derive its offset from LEA RCX,[RDI+offset], rather than assuming a UI layout.
     std::array<uint8_t,7> lea{};int32_t offset{};
-    if(!r.Read(deactivate_signal+0x125,lea) || lea[0]!=0x48 || lea[1]!=0x8d || lea[2]!=0x8f) return false;
+    if(!r.Read(deactivate_signal+scene_profile::native_layout.DeactivateDelegateInstruction,lea) || lea[0]!=0x48 || lea[1]!=0x8d || lea[2]!=0x8f) return false;
     std::memcpy(&offset,lea.data()+3,4);
     if(offset<0x3e0 || offset>0x800) return false;
     struct List {uintptr_t data;int32_t count,capacity,compact_threshold,lock_depth;} list{};
@@ -278,15 +272,15 @@ bool DetachErrorExit(const Reader& r,uintptr_t widget,uintptr_t hud) {
     const auto owner=Handle(r,hud);if(!owner.id) return false;
     for(int i=list.count-1;i>=0;--i) {
         uintptr_t instance{},vtable{},execute{};uint32_t units{},index{},serial{};
-        if(!r.Read(list.data+16*i,instance) || !r.Read(list.data+16*i+8,units) || units!=2 ||
-           !r.Read(instance,vtable) || !r.Read(vtable+96,execute) || execute!=error_exit_exec ||
-           !r.Read(instance+24,index) || !r.Read(instance+28,serial) ||
+        if(!r.Read(list.data+scene_profile::native_layout.DelegateStride*i,instance) || !r.Read(list.data+scene_profile::native_layout.DelegateStride*i+scene_profile::native_layout.DelegateUnits,units) || units!=2 ||
+           !r.Read(instance,vtable) || !r.Read(vtable+scene_profile::native_layout.DelegateExecute,execute) || execute!=error_exit_exec ||
+           !r.Read(instance+scene_profile::native_layout.DelegateIndex,index) || !r.Read(instance+scene_profile::native_layout.DelegateSerial,serial) ||
            index!=ANOMALY_UE5_OBJECT_HANDLE_INDEX(owner) || serial!=ANOMALY_UE5_OBJECT_HANDLE_SERIAL(owner)) continue;
         // Use the game's delegate removal/destructor, preserving its allocator and
         // all other listeners (input focus, UI stack, widget pooling).
         if(!RemoveDelegate(delegate_remove,widget+offset,i)) return false;
         int32_t remaining{};
-        if(!r.Read(widget+offset+8,remaining) || remaining!=list.count-1) return false;
+        if(!r.Read(widget+offset+scene_profile::native_layout.ArrayCount,remaining) || remaining!=list.count-1) return false;
         Log("scene-loader detached scene error return-to-login listener");return true;
     }
     return false;
@@ -306,11 +300,11 @@ bool DismissSceneError(const Reader& r,uintptr_t pc) {
         else allocated=map.inline_bits[i/32];
         if(!(allocated&(1u<<(i%32)))) continue;
         uintptr_t type{};FName key{};
-        if(!r.Read(map.data+24*i,type) || !r.Read(map.data+24*i+8,key)) continue;
+        if(!r.Read(map.data+scene_profile::native_layout.MapEntryStride*i,type) || !r.Read(map.data+scene_profile::native_layout.MapEntryStride*i+scene_profile::native_layout.MapValue,key)) continue;
         bool message_box=false;
         for(int depth=0;type && depth<32;++depth) {
-            if(r.NameAt(type+24)=="HTUI_MessageBox") {message_box=true;break;}
-            if(!r.Read(type+64,type)) break;
+            if(r.NameAt(type+scene_profile::native_layout.ObjectName)=="HTUI_MessageBox") {message_box=true;break;}
+            if(!r.Read(type+scene_profile::native_layout.StructSuper,type)) break;
         }
         if(!message_box) continue;
         const auto label=r.Name(key);if(label.empty() || label.size()>128) continue;
@@ -407,9 +401,9 @@ void ReadLayers(const Reader& r,uintptr_t world) {
     std::vector<LayerRow> rows;
     for(const auto instance:instances) {
         if(!instance) continue;
-        LayerRow row{};row.instance=r.NameAt(instance+24);if(row.instance.empty()) continue;
+        LayerRow row{};row.instance=r.NameAt(instance+scene_profile::native_layout.ObjectName);if(row.instance.empty()) continue;
         const auto asset_offset=Field(r,instance,"DataLayerAsset",8);uintptr_t asset{};
-        if(asset_offset>=0 && r.Read(instance+asset_offset,asset) && asset) row.asset=r.NameAt(asset+24);
+        if(asset_offset>=0 && r.Read(instance+asset_offset,asset) && asset) row.asset=r.NameAt(asset+scene_profile::native_layout.ObjectName);
         if(row.asset.empty()) row.asset=row.instance;
         LayerStateQuery query{instance,0xFF};if(Invoke(r,manager,state_fn,&query)) row.state=query.state;
         rows.push_back(std::move(row));
@@ -424,15 +418,15 @@ void ReadLayers(const Reader& r,uintptr_t world) {
 bool ScanPlayerStateRpcs(const Reader& r) {
     const auto function_class=Find(r,"/Script/CoreUObject.Function");
     uint32_t count{};uintptr_t chunks{};
-    if(!function_class || !r.Read(registry+36,count) || count>16*1024*1024 || !r.Read(registry+16,chunks) || !chunks) return true;
+    if(!function_class || !r.Read(registry+scene_profile::native_layout.RegistryCount,count) || count>16*1024*1024 || !r.Read(registry+scene_profile::native_layout.RegistryItems,chunks) || !chunks) return true;
     const auto end=std::min<int32_t>(rpc_scan_cursor+6000,static_cast<int32_t>(count));
     for(;rpc_scan_cursor<end;++rpc_scan_cursor) {
         uintptr_t chunk{},object{},cls{},owner{};
-        if(!r.Read(chunks+8*(rpc_scan_cursor/65536),chunk) || !chunk || !r.Read(chunk+24*(rpc_scan_cursor%65536),object) ||
-           !object || !r.Read(object+16,cls) || cls!=function_class) continue;
-        const auto name=r.NameAt(object+24);
+        if(!r.Read(chunks+8*(rpc_scan_cursor/scene_profile::native_layout.ChunkSize),chunk) || !chunk || !r.Read(chunk+scene_profile::native_layout.ItemStride*(rpc_scan_cursor%scene_profile::native_layout.ChunkSize),object) ||
+           !object || !r.Read(object+scene_profile::native_layout.ObjectClass,cls) || cls!=function_class) continue;
+        const auto name=r.NameAt(object+scene_profile::native_layout.ObjectName);
         if(name!="ClientDataLayerRPC" && name!="ServerRequestExitSingleLevelSceneRPC") continue;
-        if(!r.Read(object+32,owner) || r.NameAt(owner+24)!="HTPlayerState") continue;
+        if(!r.Read(object+scene_profile::native_layout.ObjectOuter,owner) || r.NameAt(owner+scene_profile::native_layout.ObjectName)!="HTPlayerState") continue;
         if(name=="ClientDataLayerRPC" && r.Function(object,name,1,32)) layer_rpc=Handle(r,object);
         if(name=="ServerRequestExitSingleLevelSceneRPC" && r.Function(object,name,2,9)) exit_rpc=Handle(r,object);
         if(Resolve(r,objects,layer_rpc) && Resolve(r,objects,exit_rpc)) {rpc_scan_cursor=0;return true;}
@@ -457,8 +451,8 @@ uintptr_t ExitRpc(const Reader& r) {
 void ReleaseExitHold() {
     if(!exit_held) return;
     exit_watch_fn=0;
-    const bool restored=WriteMemory(exit_held_fn+0xB0,&exit_saved_flags,sizeof(exit_saved_flags)) &&
-        WriteMemory(exit_held_fn+0xD8,&exit_saved_func,sizeof(exit_saved_func));
+    const bool restored=WriteMemory(exit_held_fn+scene_profile::native_layout.FunctionFlags,&exit_saved_flags,sizeof(exit_saved_flags)) &&
+        WriteMemory(exit_held_fn+scene_profile::native_layout.FunctionNative,&exit_saved_func,sizeof(exit_saved_func));
     exit_held=false;
     Log(std::string("scene-loader released exit request")+(restored?"":" (restore failed)"));
 }
@@ -467,13 +461,13 @@ bool HoldExit(const Reader& r) {
     const auto fn=ExitRpc(r);if(!fn) return false;  // still scanning
     uint32_t flags{},check_flags{};uintptr_t func{},check_func{};
     const auto stub=reinterpret_cast<uintptr_t>(&NoOpNative);
-    if(!r.Read(fn+0xB0,flags) || !r.Read(fn+0xD8,func) || !scene::CanHoldExit(flags) || !Executable(func)) {
+    if(!r.Read(fn+scene_profile::native_layout.FunctionFlags,flags) || !r.Read(fn+scene_profile::native_layout.FunctionNative,func) || !scene::CanHoldExit(flags) || !Executable(func)) {
         exit_hold_unavailable=true;Log("scene-loader exit hold refused flags="+std::to_string(flags));return false;
     }
     const auto held_flags=scene::HeldExitFlags(flags);
-    if(!WriteMemory(fn+0xD8,&stub,sizeof(stub)) || !WriteMemory(fn+0xB0,&held_flags,sizeof(held_flags)) ||
-       !r.Read(fn+0xD8,check_func) || !r.Read(fn+0xB0,check_flags) || check_func!=stub || check_flags!=held_flags) {
-        WriteMemory(fn+0xB0,&flags,sizeof(flags));WriteMemory(fn+0xD8,&func,sizeof(func));
+    if(!WriteMemory(fn+scene_profile::native_layout.FunctionNative,&stub,sizeof(stub)) || !WriteMemory(fn+scene_profile::native_layout.FunctionFlags,&held_flags,sizeof(held_flags)) ||
+       !r.Read(fn+scene_profile::native_layout.FunctionNative,check_func) || !r.Read(fn+scene_profile::native_layout.FunctionFlags,check_flags) || check_func!=stub || check_flags!=held_flags) {
+        WriteMemory(fn+scene_profile::native_layout.FunctionFlags,&flags,sizeof(flags));WriteMemory(fn+scene_profile::native_layout.FunctionNative,&func,sizeof(func));
         exit_hold_unavailable=true;Log("scene-loader exit hold write failed");return false;
     }
     exit_saved_flags=flags;exit_saved_func=func;exit_held_fn=fn;exit_held=true;exit_watch_fn=fn;
@@ -521,6 +515,11 @@ bool EnsureWindow() {
     return windows->register_window(windows->user,&spec,&window).code==0 && window.id;
 }
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host,void** context) noexcept {
+    if (!scene_profile::LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+    const auto& layout=scene_profile::native_layout;
+    if(layout.MapSize!=sizeof(MapHeader) || layout.RowStride!=sizeof(Row) ||
+       layout.MapInlineBits!=offsetof(MapHeader,inline_bits) || layout.MapBitsData!=offsetof(MapHeader,flags))
+        return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     api=host;localizer=anomaly::sdk::Localizer(host);core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
     names=Host(host).Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID,2).get();
     objects=Host(host).Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get();
@@ -566,7 +565,7 @@ void ANOMALY_CALL Update(void*,double) noexcept {
             if(force_return.load() && ForceReturn(r,Resolve(r,objects,cached_ps),Resolve(r,objects,cached_pc),now)) {Publish(false);return;}
         } else return_queued_at=0;
         if(!world || !util) {Publish(false);return;}
-        FName world_name{};r.Read(world+24,world_name);world_name.number=0;current_scene=r.Name(world_name);
+        FName world_name{};r.Read(world+scene_profile::native_layout.ObjectName,world_name);world_name.number=0;current_scene=r.Name(world_name);
         if(layer_snapshot && layer_snapshot->scene!=current_scene) {
             // Layers belong to one world; drop the list and any job when the scene changes.
             layer_snapshot={};layer_job=LayerJob::None;layer_commands.clear();layer_recheck_at=0;

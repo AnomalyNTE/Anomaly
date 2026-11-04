@@ -284,7 +284,9 @@ void ValidateReflectionFeatureContract(
             "must require " + std::string(required_validator));
     }
     for (const std::string_view key : required_layout) {
-        if (profile.layout.contains(std::string(key))) continue;
+        if (profile.layout.contains(std::string(key)) ||
+            (!profile.layout_candidates.empty() && std::ranges::all_of(profile.layout_candidates,
+                [key](const auto& candidate) { return candidate.values.contains(key); }))) continue;
         AddDiagnostic(
             result, source, "/layout/" + std::string(key),
             std::string(feature) + " requires this layout field");
@@ -738,6 +740,32 @@ BuildProfileParseResult ParseBuildProfile(
             for (auto iterator = document.at("layout").begin();
                  iterator != document.at("layout").end(); ++iterator) {
                 profile.layout.emplace(iterator.key(), iterator.value().get<std::int64_t>());
+            }
+        }
+        if (document.contains("layoutCandidates")) {
+            std::set<std::string> required_keys;
+            for (const auto& input : document.at("layoutCandidates")) {
+                ProfileLayoutCandidate candidate;
+                candidate.module = WideUtf8(input.at("module").get<std::string>());
+                candidate.section = input.at("section").get<std::string>();
+                candidate.pattern = input.at("pattern").get<std::string>();
+                static_cast<void>(ue5mem::Pattern::Parse(candidate.pattern));
+                std::istringstream bytes(input.at("entry").get<std::string>());
+                unsigned byte{};
+                while (bytes >> std::hex >> byte) candidate.entry.push_back(static_cast<std::uint8_t>(byte));
+                candidate.values = input.at("values").get<decltype(candidate.values)>();
+                candidate.symbol_patterns = input.at("symbolPatterns").get<decltype(candidate.symbol_patterns)>();
+                std::set<std::string> keys;
+                for (const auto& [key, value] : candidate.values) keys.insert(key);
+                if (profile.layout_candidates.empty()) required_keys = keys;
+                else if (keys != required_keys)
+                    AddDiagnostic(result, source, "/layoutCandidates", "all candidates must declare the same layout keys");
+                for (const auto& [name, pattern] : candidate.symbol_patterns) {
+                    static_cast<void>(ue5mem::Pattern::Parse(pattern));
+                    if (!profile.symbols.contains(name))
+                        AddDiagnostic(result, source, "/layoutCandidates", "unknown symbol " + name);
+                }
+                profile.layout_candidates.push_back(std::move(candidate));
             }
         }
         static_cast<void>(ParseFeatureStringLists(

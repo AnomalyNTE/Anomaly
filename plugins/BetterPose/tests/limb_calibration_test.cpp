@@ -1,4 +1,5 @@
 #include "../plugin.cpp"
+#include "../../../apps/test_host/plugin_profile_fixture_host.hpp"
 
 #include <algorithm>
 #include <array>
@@ -170,6 +171,8 @@ limb::AllSettings OneLimb(const std::size_t index) {
 }  // namespace
 
 int main() {
+  anomaly::testing::ProfileHost profile_host("BetterPose");
+  if (!better_pose_profile::LoadCompatibility(&profile_host.api)) { std::cerr << profile_host.error; return 1; }
   {
     Rig rig;
     const auto original = rig.locals;

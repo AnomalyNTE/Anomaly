@@ -214,7 +214,8 @@ FeatureValidationResult ValidateCombatReflectionLayout(
         "dataTable.rowMapNum", "dataTable.rowMapNumFree", "dataTable.rowMapMax",
         "dataTable.rowMapElementStride", "dataTable.rowMapRowOffset",
         "dataTable.rowMapInlineFlags", "dataTable.rowMapFlagsData",
-        "dataTable.rowMapFlagsNum", "dataTable.rowMapFlagsMax"});
+        "dataTable.rowMapFlagsNum", "dataTable.rowMapFlagsMax",
+        "gameData.size", "abilityData.size", "skillDamage.size", "abilityCharacter.size", "aiCharacter.size", "playerState.size", "gameplayAbilityTips.size", "gameplayEffectTips.size", "monsterData.size", "abilitySystem.size", "abilitySpawnActor.size", "dataTable.size"});
     if (!required.valid) return required;
 
     const auto value = [&profile](const std::string_view key) {
@@ -242,10 +243,13 @@ FeatureValidationResult ValidateCombatReflectionLayout(
         active_effects_size == 0 || active_effects_size > 4096U ||
         value("activeGameplayEffects.arrayReplicationKey") + sizeof(std::int32_t) > active_effects_size ||
         value("activeGameplayEffects.items") + 16U > active_effects_size ||
-        value("abilitySystem.activeGameplayEffects") + active_effects_size > 0x2588U ||
+        value("abilitySystem.activeGameplayEffects") + active_effects_size >
+            value("abilitySystem.size") ||
         value("buffs.maxCount") == 0 || value("buffs.maxCount") > 4096U ||
-        value("abilitySpawnActor.triggerAbilityHandle") + sizeof(std::int32_t) > 0x4A0U ||
-        value("abilitySpawnActor.savedTriggerSkillCDO") + sizeof(std::uintptr_t) > 0x4A0U) {
+        value("abilitySpawnActor.triggerAbilityHandle") + sizeof(std::int32_t) >
+            value("abilitySpawnActor.size") ||
+        value("abilitySpawnActor.savedTriggerSkillCDO") + sizeof(std::uintptr_t) >
+            value("abilitySpawnActor.size")) {
         return {false, "combat callback layout is internally inconsistent"};
     }
     constexpr std::uint64_t kDamageTextInfoSize = 72U;
@@ -259,23 +263,23 @@ FeatureValidationResult ValidateCombatReflectionLayout(
                                      const std::uint64_t field_size) {
         return value(key) <= structure_size && field_size <= structure_size - value(key);
     };
-    if (!field_fits("gameData.abilityDataAsset", 0x23C0U, 8U) ||
-        !field_fits("abilityData.skillDamageDataTable", 0xD58U, 8U) ||
-        !field_fits("skillDamage.gaName", 0x78U, 8U) ||
-        !field_fits("gameData.characterDataTable", 0x23C0U, 8U) ||
-        !field_fits("gameData.gameplayAbilityTipsDataTable", 0x23C0U, 8U) ||
-        !field_fits("gameData.gameplayEffectTipsDataTable", 0x23C0U, 8U) ||
-        !field_fits("abilityCharacter.abilitySystemComponent", 0x1440U, 8U) ||
-        !field_fits("abilityCharacter.characterConfigId", 0x1D80U, 8U) ||
-        !field_fits("playerState.roleName", 0x470U, 16U) ||
-        !field_fits("gameplayAbilityTips.name", 0xB8U, 16U) ||
-        !field_fits("gameplayAbilityTips.gameplayAbility", 0xB8U, 0x28U) ||
-        !field_fits("gameplayEffectTips.name", 0x88U, 16U) ||
-        !field_fits("gameplayEffectTips.geParamName", 0x88U, 8U) ||
-        !field_fits("monsterData.textName", 0x118U, 16U)) {
+    if (!field_fits("gameData.abilityDataAsset", value("gameData.size"), 8U) ||
+        !field_fits("abilityData.skillDamageDataTable", value("abilityData.size"), 8U) ||
+        !field_fits("skillDamage.gaName", value("skillDamage.size"), 8U) ||
+        !field_fits("gameData.characterDataTable", value("gameData.size"), 8U) ||
+        !field_fits("gameData.gameplayAbilityTipsDataTable", value("gameData.size"), 8U) ||
+        !field_fits("gameData.gameplayEffectTipsDataTable", value("gameData.size"), 8U) ||
+        !field_fits("abilityCharacter.abilitySystemComponent", value("abilityCharacter.size"), 8U) ||
+        !field_fits("abilityCharacter.characterConfigId", value("aiCharacter.size"), 8U) ||
+        !field_fits("playerState.roleName", value("playerState.size"), 16U) ||
+        !field_fits("gameplayAbilityTips.name", value("gameplayAbilityTips.size"), 16U) ||
+        !field_fits("gameplayAbilityTips.gameplayAbility", value("gameplayAbilityTips.size"), 0x28U) ||
+        !field_fits("gameplayEffectTips.name", value("gameplayEffectTips.size"), 16U) ||
+        !field_fits("gameplayEffectTips.geParamName", value("gameplayEffectTips.size"), 8U) ||
+        !field_fits("monsterData.textName", value("monsterData.size"), 16U)) {
         return {false, "combat display-name table layout is internally inconsistent"};
     }
-    if (value("dataTable.rowMap") + 0x50U > 0x23C0U ||
+    if (value("dataTable.rowMap") + 0x50U > value("dataTable.size") ||
         value("dataTable.rowMapData") + sizeof(std::uintptr_t) > 0x50U ||
         value("dataTable.rowMapNum") + sizeof(std::int32_t) > 0x50U ||
         value("dataTable.rowMapNumFree") + sizeof(std::int32_t) > 0x50U ||
@@ -604,22 +608,27 @@ FeatureValidationResult ValidateNavigationInputAbi(
         0x48, 0x83, 0xEC, 0x20});
     constexpr auto kPatchedPrologueSuffix = std::to_array<std::uint8_t>({
         0x18, 0x57, 0x48, 0x83, 0xEC, 0x20});
-    constexpr auto kGetPlayerCharacterCall = std::to_array<std::uint8_t>({
-        0x48, 0x8B, 0x03, 0x48, 0x8B, 0xCB, 0xFF, 0x90,
-        0x98, 0x14, 0x00, 0x00, 0x48, 0x8B, 0xD8});
-    constexpr auto kIgnoreMoveCall = std::to_array<std::uint8_t>({
+    // The three virtual dispatch sites stay byte-identical across builds; only the
+    // encoded slot offsets move, and those are compared against the profile below so a
+    // new build needs a Profile change rather than another edit here.
+    constexpr auto kGetPlayerCharacterOpcode = std::to_array<std::uint8_t>({
+        0x48, 0x8B, 0x03, 0x48, 0x8B, 0xCB, 0xFF, 0x90});
+    constexpr auto kGetPlayerCharacterResult = std::to_array<std::uint8_t>({
+        0x48, 0x8B, 0xD8});
+    constexpr auto kIgnoreMoveOpcode = std::to_array<std::uint8_t>({
         0x4C, 0x8B, 0x10, 0x44, 0x0F, 0xB6, 0xCE, 0x41,
         0xB0, 0x01, 0x40, 0x0F, 0xB6, 0xD7, 0x48, 0x8B,
-        0xC8, 0x41, 0xFF, 0x92, 0xD0, 0x0F, 0x00, 0x00});
-    constexpr auto kLimitInputCall = std::to_array<std::uint8_t>({
+        0xC8, 0x41, 0xFF, 0x92});
+    constexpr auto kLimitInputOpcode = std::to_array<std::uint8_t>({
         0x48, 0x8B, 0x03, 0x44, 0x0F, 0xB6, 0xCE, 0x41,
         0xB0, 0x01, 0x40, 0x0F, 0xB6, 0xD7, 0x48, 0x8B,
-        0xCB, 0xFF, 0x90, 0x08, 0x10, 0x00, 0x00});
+        0xCB, 0xFF, 0x90});
     if ((!MatchesBytes(memory, target->address, kPrologue) &&
          !MatchesBytes(memory, target->address + 0x0EU, kPatchedPrologueSuffix)) ||
-        !MatchesBytes(memory, target->address + 0x2EU, kGetPlayerCharacterCall) ||
-        !MatchesBytes(memory, target->address + 0x47U, kIgnoreMoveCall) ||
-        !MatchesBytes(memory, target->address + 0x5FU, kLimitInputCall)) {
+        !MatchesBytes(memory, target->address + 0x2EU, kGetPlayerCharacterOpcode) ||
+        !MatchesBytes(memory, target->address + 0x3AU, kGetPlayerCharacterResult) ||
+        !MatchesBytes(memory, target->address + 0x47U, kIgnoreMoveOpcode) ||
+        !MatchesBytes(memory, target->address + 0x5FU, kLimitInputOpcode)) {
         return {false, "navigation input ABI instruction contract changed"};
     }
 
@@ -1477,6 +1486,14 @@ public:
 
         if (selected && !WaitForProfileSections(*selected, stop_token)) {
             return false;
+        }
+
+        if (selected) {
+            std::string failure;
+            if (!SelectProfileLayout(*selected, *memory_, failure)) {
+                diagnostics_.push_back("profile layout unavailable: " + failure);
+                selected.reset();
+            }
         }
 
         SymbolResolverOptions resolver_options;

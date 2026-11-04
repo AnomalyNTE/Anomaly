@@ -221,14 +221,8 @@ void ANOMALY_CALL FadeSetterDetour(void *self, float, float) noexcept {
 bool ResolveRegistry(Context &context) noexcept {
   if (context.registry != 0) return true;
   if (!SignatureReady(context.signature)) return false;
-  std::uintptr_t instruction{};
-  if (context.signature->resolve(
-          context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
-          anomaly::sdk::StringView(".text"),
-          anomaly::sdk::StringView(kGObjectsPattern), &instruction)
-          .code != ANOMALY_STATUS_V1_OK ||
-      instruction == 0)
-    return false;
+  const auto instruction = compatibility.Address(kGObjectsPattern);
+  if (instruction == 0) return false;
   std::int32_t displacement{};
   if (!Read(context, instruction + kRipDisplacementOffset, displacement))
     return false;
@@ -236,19 +230,14 @@ bool ResolveRegistry(Context &context) noexcept {
                         kRipInstructionSize + displacement;
   if (resolved <= 0) return false;
   context.registry =
-      static_cast<std::uintptr_t>(resolved) + kGObjectsAddend;
+      static_cast<std::uintptr_t>(resolved) + native_layout.kGObjectsAddend;
   return true;
 }
 
 bool ResolveGWorld(Context &context) noexcept {
   if (context.g_world_address != 0) return true;
-  std::uintptr_t instruction{};
-  if (context.signature->resolve(
-          context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
-          anomaly::sdk::StringView(".text"),
-          anomaly::sdk::StringView(kGWorldPattern), &instruction)
-          .code != ANOMALY_STATUS_V1_OK || instruction == 0)
-    return false;
+  const auto instruction = compatibility.Address(kGWorldPattern);
+  if (instruction == 0) return false;
   std::int32_t displacement{};
   if (!Read(context, instruction + kRipDisplacementOffset, displacement))
     return false;
@@ -266,15 +255,15 @@ bool ObjectFromHandle(Context &context, const AnomalyGenerationHandleV1 handle,
   const auto index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(handle);
   std::int32_t count{};
   std::uintptr_t chunks{};
-  if (!Read(context, context.registry + kObjectCountOffset, count) ||
+  if (!Read(context, context.registry + native_layout.kObjectCountOffset, count) ||
       count <= 0 || static_cast<std::uint32_t>(count) > kMaximumObjectCount ||
       index >= static_cast<std::uint32_t>(count) ||
-      !Read(context, context.registry + kObjectChunksOffset, chunks) ||
+      !Read(context, context.registry + native_layout.kObjectChunksOffset, chunks) ||
       chunks == 0)
     return false;
-  const std::uint32_t chunk_index = index >> kObjectChunkBits;
+  const std::uint32_t chunk_index = index >> native_layout.kObjectChunkBits;
   const std::uint32_t item_index =
-      index & ((1U << kObjectChunkBits) - 1U);
+      index & ((1U << native_layout.kObjectChunkBits) - 1U);
   std::uintptr_t chunk{};
   if (!Read(context, chunks + static_cast<std::uintptr_t>(chunk_index) *
                                     sizeof(std::uintptr_t),
@@ -282,12 +271,12 @@ bool ObjectFromHandle(Context &context, const AnomalyGenerationHandleV1 handle,
       chunk == 0)
     return false;
   const auto item = chunk + static_cast<std::uintptr_t>(item_index) *
-                                kObjectItemStride;
+                                native_layout.kObjectItemStride;
   std::uintptr_t candidate{};
   std::uint32_t serial{};
-  if (!Read(context, item + kObjectItemPointerOffset, candidate) ||
+  if (!Read(context, item + native_layout.kObjectItemPointerOffset, candidate) ||
       candidate == 0 ||
-      !Read(context, item + kObjectItemSerialOffset, serial) ||
+      !Read(context, item + native_layout.kObjectItemSerialOffset, serial) ||
       serial != ANOMALY_UE5_OBJECT_HANDLE_SERIAL(handle))
     return false;
   object = candidate;
@@ -322,22 +311,22 @@ bool FindCameraField(Context &context, const std::uintptr_t type,
                      const std::int32_t size, std::uint32_t &offset) noexcept {
   std::uintptr_t field{};
   // Match the host reflection query's Profile-backed PropertyLink/FField chain.
-  if (!Read(context, type + kUStructPropertyLinkOffset, field)) return false;
+  if (!Read(context, type + native_layout.kUStructPropertyLinkOffset, field)) return false;
   for (unsigned count{}; field != 0 && count < 2048; ++count) {
-    if (NameEquals(context, field + kFFieldNameOffset, name)) {
+    if (NameEquals(context, field + native_layout.kFFieldNameOffset, name)) {
       std::uintptr_t field_class{};
       std::int32_t field_size{}, field_offset{};
-      if (!Read(context, field + kFFieldClassOffset, field_class) ||
+      if (!Read(context, field + native_layout.kFFieldClassOffset, field_class) ||
           !NameEquals(context, field_class, field_type) ||
-          !Read(context, field + kFPropertyElementSizeOffset, field_size) ||
+          !Read(context, field + native_layout.kFPropertyElementSizeOffset, field_size) ||
           field_size != size ||
-          !Read(context, field + kFPropertyOffsetOffset, field_offset) ||
+          !Read(context, field + native_layout.kFPropertyOffsetOffset, field_offset) ||
           field_offset < 0)
         return false;
       offset = static_cast<std::uint32_t>(field_offset);
       return true;
     }
-    if (!Read(context, field + kFFieldNextOffset, field)) return false;
+    if (!Read(context, field + native_layout.kFFieldNextOffset, field)) return false;
   }
   return false;
 }
@@ -425,7 +414,7 @@ bool ApplyCamera(Context &context) noexcept {
   std::int32_t index{};
   AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
   std::uintptr_t live{};
-  if (!Read(context, manager + kObjectInternalIndexOffset, index) || index < 0 ||
+  if (!Read(context, manager + native_layout.kObjectInternalIndexOffset, index) || index < 0 ||
       context.objects->snapshot_at(context.objects->user,
                                    static_cast<std::uint32_t>(index),
                                    &snapshot).code != ANOMALY_STATUS_V1_OK ||
@@ -436,10 +425,10 @@ bool ApplyCamera(Context &context) noexcept {
       saved.handle.generation != snapshot.handle.generation) {
     if (!RestoreCamera(context)) return false;
     std::uintptr_t type{};
-    if (!Read(context, manager + kObjectClassOffset, type)) return false;
+    if (!Read(context, manager + native_layout.kObjectClassOffset, type)) return false;
     unsigned depth{};
     while (type != 0 && type != layout.manager_class && depth++ < 64)
-      if (!Read(context, type + kUStructSuperOffset, type)) return false;
+      if (!Read(context, type + native_layout.kUStructSuperOffset, type)) return false;
     if (type != layout.manager_class) return false;
     SavedCamera next{};
     for (std::size_t i{}; i < next.floats.size(); ++i)
@@ -497,10 +486,10 @@ bool ResolveNativeTarget(Context &context, const std::string_view path,
   std::uint8_t num_params{};
   std::uint16_t param_bytes{};
   std::uintptr_t thunk{};
-  if (!Read(context, function + kUFunctionNumParmsOffset, num_params) ||
-      !Read(context, function + kUFunctionParmsSizeOffset, param_bytes) ||
+  if (!Read(context, function + native_layout.kUFunctionNumParmsOffset, num_params) ||
+      !Read(context, function + native_layout.kUFunctionParmsSizeOffset, param_bytes) ||
       num_params != expected_params || param_bytes != expected_param_bytes ||
-      !Read(context, function + kUFunctionExecOffset, thunk) || thunk == 0)
+      !Read(context, function + native_layout.kUFunctionExecOffset, thunk) || thunk == 0)
     return false;
   std::uint8_t code[kThunkScanBytes]{};
   if (!ReadBytes(context, thunk, code, sizeof(code))) {
@@ -621,6 +610,7 @@ AnomalyStatusV1 Load(const AnomalyHostApiV1 *host, void **plugin_context) {
   if (host == nullptr || plugin_context == nullptr)
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   *plugin_context = nullptr;
+  if (!LoadCompatibility(host)) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
   auto *context = new (std::nothrow) Context();
   if (context == nullptr) return Status(ANOMALY_STATUS_V1_FAILED);
   context->core = Query<AnomalyCoreServiceV1>(

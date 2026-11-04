@@ -8,23 +8,91 @@
   "audience": "developer",
   "version": "1.5.0",
   "entry": "plugin.dll",
-  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
-  "games": ["nte"],
-  "builds": ["nte-*"],
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
   "loadPhase": "game-ready",
   "services": [
-    {"id": "anomaly.ui", "minVersion": 1},
-    {"id": "anomaly.localization", "minVersion": 1},
-    {"id": "anomaly.config", "minVersion": 1},
-    {"id": "anomaly.input", "minVersion": 1, "optional": true},
-    {"id": "anomaly.json", "minVersion": 1, "optional": true},
-    {"id": "anomaly.scheduler", "minVersion": 1, "optional": true},
-    {"id": "anomaly.plugin-state", "minVersion": 1, "optional": true},
-    {"id": "anomaly.core", "minVersion": 1, "optional": true},
-    {"id": "anomaly.interop.signature", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
-    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true}
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.config",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.input",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.plugin-state",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.core",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player-teleport",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    }
   ],
-  "capabilities": ["ui", "configuration", "input", "json", "scheduler", "memory-read", "interop-signature", "nte-session-snapshot", "nte-player-snapshot", "nte-player-teleport"]
+  "capabilities": [
+    "ui",
+    "configuration",
+    "input",
+    "json",
+    "scheduler",
+    "memory-read",
+    "interop-signature",
+    "nte-session-snapshot",
+    "nte-player-snapshot",
+    "nte-player-teleport"
+  ]
 }

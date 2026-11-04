@@ -42,11 +42,6 @@ constexpr std::array<std::string_view, 2> kOracleAssets{{
     "/Game/DataAssets/OracleDataAsset.OracleDataAsset"}};
 
 constexpr std::uint32_t kMaximumPoints = 32768;
-constexpr std::array<std::uint32_t, 18> kGenericPositionOffsets{{
-    0x20, 0x30, 0x40, 0x50, 0x60, 0x70,
-    0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0,
-    0xE0, 0xF0, 0x100, 0x110, 0x120, 0x130}};
-constexpr std::array<std::uint32_t, 6> kGenericLevelOffsets{{0, 8, 16, 24, 32, 40}};
 
 enum class PointKind : std::uint8_t { teleport, monster, oracle_stone, wallet };
 
@@ -183,14 +178,9 @@ bool ReadPointerAt(Context& context, const std::uintptr_t base, const std::ptrdi
 
 bool ResolveSignature(Context& context, const std::string_view pattern,
                       std::uintptr_t& address) noexcept {
-    address = 0;
-    if (!HasField<AnomalySignatureServiceV1, decltype(AnomalySignatureServiceV1::resolve)>(
-            context.signature, offsetof(AnomalySignatureServiceV1, resolve)) ||
-        context.signature->resolve == nullptr) return false;
-    return context.signature->resolve(
-        context.signature->user, anomaly::sdk::StringView(kModuleName),
-        anomaly::sdk::StringView(kTextSection), anomaly::sdk::StringView(pattern), &address).code ==
-        ANOMALY_STATUS_V1_OK && address != 0;
+    (void)context;
+  address = compatibility.Address(pattern);
+  return address != 0;
 }
 
 bool RefreshRegistry(Context& context) noexcept {
@@ -204,14 +194,14 @@ bool RefreshRegistry(Context& context) noexcept {
         const auto resolved = static_cast<std::intptr_t>(instruction) +
             static_cast<std::intptr_t>(kRipInstructionSize) + displacement;
         if (resolved <= 0 || !AddSignedAddress(static_cast<std::uintptr_t>(resolved),
-                                                kGObjectsAddend, context.g_objects)) return false;
+                                                native_layout.kGObjectsAddend, context.g_objects)) return false;
     }
     ObjectRegistry next{};
-    if (!ReadPointerAt(context, context.g_objects, kObjectItemsOffset, next.items) ||
-        !Read(context, context.g_objects + kObjectCountOffset, next.count) ||
-        !Read(context, context.g_objects + kObjectMaxCountOffset, next.max_count) ||
-        !Read(context, context.g_objects + kObjectMaxChunksOffset, next.max_chunks) ||
-        !Read(context, context.g_objects + kObjectNumChunksOffset, next.num_chunks) ||
+    if (!ReadPointerAt(context, context.g_objects, native_layout.kObjectItemsOffset, next.items) ||
+        !Read(context, context.g_objects + native_layout.kObjectCountOffset, next.count) ||
+        !Read(context, context.g_objects + native_layout.kObjectMaxCountOffset, next.max_count) ||
+        !Read(context, context.g_objects + native_layout.kObjectMaxChunksOffset, next.max_chunks) ||
+        !Read(context, context.g_objects + native_layout.kObjectNumChunksOffset, next.num_chunks) ||
         next.count == 0 || next.count > kMaximumObjectCount || next.max_count < next.count ||
         next.num_chunks == 0 || next.num_chunks > next.max_chunks ||
         next.num_chunks > kMaximumObjectChunks) return false;
@@ -254,7 +244,7 @@ std::string Lowercase(std::string value) {
 
 bool ReadObjectName(Context& context, const std::uintptr_t object, std::string& name) {
     FNameValue value{};
-    if (!Read(context, object + kObjectNameOffset, value)) return false;
+    if (!Read(context, object + native_layout.kObjectNameOffset, value)) return false;
     name = RenderFName(context, value);
     return !name.empty();
 }
@@ -262,7 +252,7 @@ bool ReadObjectName(Context& context, const std::uintptr_t object, std::string& 
 bool IsDataTable(Context& context, const std::uintptr_t object) {
     std::uintptr_t class_object{};
     std::string class_name;
-    return ReadPointerAt(context, object, kObjectClassOffset, class_object) &&
+    return ReadPointerAt(context, object, native_layout.kObjectClassOffset, class_object) &&
         ReadObjectName(context, class_object, class_name) && class_name == "DataTable";
 }
 
@@ -270,13 +260,13 @@ bool ReadObjectPointerAt(Context& context, const std::uint32_t index,
                          std::uintptr_t& object) {
     object = 0;
     if (index >= context.registry.count) return false;
-    const auto chunk_index = index / kObjectChunkSize;
-    const auto within_chunk = index % kObjectChunkSize;
+    const auto chunk_index = index / native_layout.kObjectChunkSize;
+    const auto within_chunk = index % native_layout.kObjectChunkSize;
     std::uintptr_t chunk{};
     return ReadPointerAt(context, context.registry.items,
                          static_cast<std::ptrdiff_t>(chunk_index * sizeof(void*)), chunk) &&
         ReadPointerAt(context, chunk,
-                      static_cast<std::ptrdiff_t>(within_chunk * kObjectItemStride), object);
+                      static_cast<std::ptrdiff_t>(within_chunk * native_layout.kObjectItemStride), object);
 }
 
 bool ReadDataTableRows(Context& context, const std::uintptr_t table,
@@ -284,7 +274,7 @@ bool ReadDataTableRows(Context& context, const std::uintptr_t table,
     rows.clear();
     ArrayHeader header{};
     std::uintptr_t row_map{};
-    if (!AddAddress(table, kDataTableRowMapOffset, row_map) ||
+    if (!AddAddress(table, native_layout.kDataTableRowMapOffset, row_map) ||
         !Read(context, row_map, header) || header.count <= 0 ||
         header.count > static_cast<std::int32_t>(kMaximumDataTableRows) ||
         header.capacity < header.count || header.data == 0) return false;
@@ -294,9 +284,9 @@ bool ReadDataTableRows(Context& context, const std::uintptr_t table,
     std::int32_t flags_max{};
     std::uintptr_t flags_data{};
     bool have_flags =
-        Read(context, row_map + 40, flags_num) && Read(context, row_map + 44, flags_max) &&
+        Read(context, row_map + native_layout.kMapBitCount, flags_num) && Read(context, row_map + native_layout.kMapBitCapacity, flags_max) &&
         flags_num >= header.count && flags_max >= flags_num &&
-        ((Read(context, row_map + 32, flags_data) && flags_data != 0) ||
+        ((Read(context, row_map + native_layout.kMapBitsData, flags_data) && flags_data != 0) ||
          flags_num <= 128);
     if (have_flags) {
         const auto word_count = static_cast<std::size_t>((flags_num + 31) / 32);
@@ -304,23 +294,23 @@ bool ReadDataTableRows(Context& context, const std::uintptr_t table,
         if (flags_data != 0) {
             have_flags = ReadBytes(context, flags_data, flags.data(),
                                    flags.size() * sizeof(std::uint32_t));
-        } else if (!ReadBytes(context, row_map + 16, flags.data(),
+        } else if (!ReadBytes(context, row_map + native_layout.kMapInlineBits, flags.data(),
                               flags.size() * sizeof(std::uint32_t))) {
             have_flags = false;
         }
     }
 
-    const auto byte_count = static_cast<std::size_t>(header.count) * kDataTableRowStride;
+    const auto byte_count = static_cast<std::size_t>(header.count) * native_layout.kDataTableRowStride;
     std::vector<std::uint8_t> elements(byte_count);
     if (!ReadBytes(context, header.data, elements.data(), elements.size())) return false;
     rows.reserve(static_cast<std::size_t>(header.count));
     for (std::int32_t index{}; index < header.count; ++index) {
         if (have_flags && (flags[static_cast<std::size_t>(index) / 32U] &
                 (1U << (static_cast<std::uint32_t>(index) & 31U))) == 0) continue;
-        const auto offset = static_cast<std::size_t>(index) * kDataTableRowStride;
+        const auto offset = static_cast<std::size_t>(index) * native_layout.kDataTableRowStride;
         RowReference reference{};
         std::memcpy(&reference.id, elements.data() + offset, sizeof(reference.id));
-        std::memcpy(&reference.row, elements.data() + offset + kDataTableRowPointerOffset,
+        std::memcpy(&reference.row, elements.data() + offset + native_layout.kDataTableRowPointerOffset,
                      sizeof(reference.row));
         if (reference.id.comparison_index != 0 && reference.row != 0)
             rows.push_back(reference);
@@ -356,7 +346,7 @@ bool DiscoverDataTables(Context& context, std::vector<DataTableDescriptor>& tabl
         if (!ReadObjectPointerAt(context, index, object) || !IsDataTable(context, object)) continue;
         std::uintptr_t row_struct{};
         std::string row_struct_name;
-        if (!ReadPointerAt(context, object, kDataTableRowStructOffset, row_struct) ||
+        if (!ReadPointerAt(context, object, native_layout.kDataTableRowStructOffset, row_struct) ||
             !ReadObjectName(context, row_struct, row_struct_name)) continue;
         tables.push_back({object, row_struct, object_name, std::move(row_struct_name)});
     }
@@ -421,14 +411,14 @@ bool FindObjectPointer(Context& context, const std::string_view path, std::uintp
     const std::uint64_t encoded_index = handle.id & 0xFFFFFFFFULL;
     if (encoded_index == 0) return false;
     const std::uint32_t index = static_cast<std::uint32_t>(encoded_index - 1U);
-    const std::uint32_t chunk_index = index / kObjectChunkSize;
-    const std::uint32_t within_chunk = index % kObjectChunkSize;
+    const std::uint32_t chunk_index = index / native_layout.kObjectChunkSize;
+    const std::uint32_t within_chunk = index % native_layout.kObjectChunkSize;
     if (index >= context.registry.count || chunk_index >= context.registry.num_chunks) return false;
     std::uintptr_t chunk{};
     return ReadPointerAt(context, context.registry.items,
                          static_cast<std::ptrdiff_t>(chunk_index * sizeof(void*)), chunk) &&
         ReadPointerAt(context, chunk,
-                      static_cast<std::ptrdiff_t>(within_chunk * kObjectItemStride), object);
+                      static_cast<std::ptrdiff_t>(within_chunk * native_layout.kObjectItemStride), object);
 }
 
 bool ReadPosition(const std::vector<std::uint8_t>& row, const std::uint32_t offset,
@@ -451,15 +441,60 @@ bool ReadPosition(const std::vector<std::uint8_t>& row, const std::uint32_t offs
     });
 }
 
-std::string ReadLevel(Context& context, const std::uintptr_t row,
-                      const std::vector<std::uint8_t>& bytes) {
-    for (const auto offset : kGenericLevelOffsets) {
-        if (offset + sizeof(std::uintptr_t) > bytes.size()) continue;
-        std::uintptr_t field{};
-        std::memcpy(&field, bytes.data() + offset, sizeof(field));
-        if (field == 0) continue;
-        const std::string value = ReadTextAt(context, row + offset);
-        if (!value.empty() && value.size() <= 2048) return value;
+// Only declared, typed fields may supply coordinates or level names.
+std::vector<std::uint32_t> ReflectedFields(Context& context, std::uintptr_t structure,
+                                         bool positions) {
+    std::vector<std::uint32_t> offsets;
+    std::int32_t record_size{};
+    std::uintptr_t property{};
+    if (!Read(context, structure + native_layout.kStructSize, record_size) ||
+        record_size <= 0 || record_size > kMaximumRowBytes ||
+        !Read(context, structure + native_layout.kStructPropertyLink, property)) return offsets;
+    for (std::size_t i{}; property && i < 128; ++i) {
+        FNameValue name{}, type_name{};
+        std::uintptr_t type{};
+        std::int32_t offset{}, size{};
+        if (!Read(context, property + native_layout.kPropertyName, name) ||
+            !Read(context, property + native_layout.kPropertyClass, type) || !type ||
+            !Read(context, type, type_name) ||
+            !Read(context, property + native_layout.kPropertyOffset, offset) ||
+            !Read(context, property + native_layout.kPropertyElementSize, size)) break;
+        const auto field = Lowercase(RenderFName(context,name));
+        const auto kind = RenderFName(context,type_name);
+        if (offset >= 0 && size > 0 && offset <= record_size && size <= record_size-offset) {
+            if (!positions && kind == "StrProperty" && size == sizeof(ArrayHeader) &&
+                (field.find("level") != std::string::npos || field.find("map") != std::string::npos))
+                offsets.push_back(static_cast<std::uint32_t>(offset));
+            if (positions && kind == "StructProperty" &&
+                (field.find("location") != std::string::npos || field.find("position") != std::string::npos ||
+                 field.find("transform") != std::string::npos || field.find("spawnpoint") != std::string::npos ||
+                 field.find("coordinate") != std::string::npos)) {
+                std::uintptr_t value_type{};
+                std::string value_name;
+                if (Read(context, property + native_layout.kStructPropertyStruct, value_type) && value_type &&
+                    ReadObjectName(context,value_type,value_name)) {
+                    if (value_name == "Vector" && size == sizeof(double)*3)
+                        offsets.push_back(static_cast<std::uint32_t>(offset));
+                    else if (value_name == "Transform" && size == sizeof(double)*12 &&
+                             native_layout.kTransformTranslationOffset + sizeof(double)*3 <= static_cast<std::uint32_t>(size))
+                        offsets.push_back(static_cast<std::uint32_t>(offset) + native_layout.kTransformTranslationOffset);
+                }
+            }
+        }
+        std::uintptr_t next{};
+        if (!Read(context,property + native_layout.kPropertyNext,next) || next == property) break;
+        property=next;
+    }
+    return offsets;
+}
+
+std::string ReadLevel(Context& context, std::uintptr_t row,
+                      const std::vector<std::uint8_t>& bytes,
+                      const std::vector<std::uint32_t>& fields) {
+    for (const auto offset : fields) {
+        if (offset + sizeof(ArrayHeader) > bytes.size()) continue;
+        const auto value=ReadTextAt(context,row+offset);
+        if (!value.empty()) return value;
     }
     return {};
 }
@@ -502,40 +537,44 @@ bool ScanDataTable(Context& context, const std::string_view path, const std::uin
                    const std::string_view required_tag = {}) {
     std::uintptr_t table{};
     if (!ResolveTable(context, path, table_offset, table)) return false;
+    std::uintptr_t structure{};
+    std::int32_t record_size{};
+    if (!Read(context, table + native_layout.kDataTableRowStructOffset, structure) || !structure ||
+        !Read(context, structure + native_layout.kStructSize, record_size) ||
+        record_size <= 0 || record_size > kMaximumRowBytes) return false;
+    const auto position_fields=ReflectedFields(context,structure,true);
+    const auto level_fields=ReflectedFields(context,structure,false);
     std::vector<RowReference> rows;
     if (!ReadDataTableRows(context, table, rows)) return false;
     for (const RowReference& reference : rows) {
         const FNameValue row_id = reference.id;
         const std::uintptr_t row = reference.row;
-        std::vector<std::uint8_t> bytes(kMaximumRowBytes);
-        if (!ReadBytes(context, row, bytes.data(), bytes.size())) {
-            bytes.resize(0x100);
-            if (!ReadBytes(context, row, bytes.data(), bytes.size())) continue;
-        }
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(record_size));
+        if (!ReadBytes(context, row, bytes.data(), bytes.size())) continue;
         const std::string id = RenderFName(context, row_id);
         if (id.empty()) continue;
         std::array<double, 3> position{};
-        std::string map = ReadLevel(context, row, bytes);
+        std::string map = ReadLevel(context, row, bytes, level_fields);
         std::string type;
         if (kind == PointKind::wallet) {
-            if (kRandomItemTypeOffset + sizeof(FNameValue) > bytes.size()) continue;
+            if (native_layout.kRandomItemTypeOffset + sizeof(FNameValue) > bytes.size()) continue;
             FNameValue type_name{};
-            std::memcpy(&type_name, bytes.data() + kRandomItemTypeOffset, sizeof(type_name));
+            std::memcpy(&type_name, bytes.data() + native_layout.kRandomItemTypeOffset, sizeof(type_name));
             type = RenderFName(context, type_name);
             if (!type.starts_with("InteractBox_") && !type.starts_with("PropBox_")) continue;
-            if (!ReadPosition(bytes, kRandomItemTransformOffset + kTransformTranslationOffset,
+            if (!ReadPosition(bytes, native_layout.kRandomItemTransformOffset + native_layout.kTransformTranslationOffset,
                               position)) continue;
         } else {
             if (!required_tag.empty()) {
                 FNameValue row_type{};
-                if (kRandomItemTypeOffset + sizeof(row_type) <= bytes.size())
-                    std::memcpy(&row_type, bytes.data() + kRandomItemTypeOffset, sizeof(row_type));
+                if (native_layout.kRandomItemTypeOffset + sizeof(row_type) <= bytes.size())
+                    std::memcpy(&row_type, bytes.data() + native_layout.kRandomItemTypeOffset, sizeof(row_type));
                 const std::string type_name = RenderFName(context, row_type);
                 if (id.find(required_tag) == std::string::npos &&
                     type_name.find(required_tag) == std::string::npos) continue;
             }
             bool found{};
-            for (const auto candidate : kGenericPositionOffsets) {
+            for (const auto candidate : position_fields) {
                 if (ReadPosition(bytes, candidate, position)) {
                     found = true;
                     break;
@@ -555,15 +594,15 @@ bool ScanTeleportTable(Context& context, const DataTableDescriptor& descriptor,
     std::vector<RowReference> rows;
     if (!ReadDataTableRows(context, descriptor.table, rows)) return false;
     for (const RowReference& reference : rows) {
-        std::vector<std::uint8_t> bytes(kTeleportOverrideTranslationOffset + sizeof(double) * 3U);
+        std::vector<std::uint8_t> bytes(native_layout.kTeleportOverrideTranslationOffset + sizeof(double) * 3U);
         if (!ReadBytes(context, reference.row, bytes.data(), bytes.size())) continue;
         std::uint8_t can_teleport{};
-        std::memcpy(&can_teleport, bytes.data() + kTeleportCanTeleportOffset,
+        std::memcpy(&can_teleport, bytes.data() + native_layout.kTeleportCanTeleportOffset,
                     sizeof(can_teleport));
         if (can_teleport == 0) continue;
-        const std::uint8_t overridden = bytes[kTeleportOverrideTransformOffset];
+        const std::uint8_t overridden = bytes[native_layout.kTeleportOverrideTransformOffset];
         const auto position_offset = overridden != 0
-            ? kTeleportOverrideTranslationOffset : kTeleportTransformTranslationOffset;
+            ? native_layout.kTeleportOverrideTranslationOffset : native_layout.kTeleportTransformTranslationOffset;
         std::array<double, 3> position{};
         std::memcpy(position.data(), bytes.data() + position_offset, sizeof(position));
         if (!std::all_of(position.begin(), position.end(), [](const double value) {
@@ -572,58 +611,13 @@ bool ScanTeleportTable(Context& context, const DataTableDescriptor& descriptor,
         const std::string id = RenderFName(context, reference.id);
         if (id.empty()) continue;
         const std::string map = ReadTextAt(
-            context, reference.row + kTeleportBelongsLevelOffset);
+            context, reference.row + native_layout.kTeleportBelongsLevelOffset);
         Point point{PointKind::teleport, id, map, descriptor.object_name, position};
         static_cast<void>(AddUnique(output, keys, std::move(point)));
     }
     return true;
 }
 
-std::vector<std::uint32_t> ReflectedPositionOffsets(Context& context,
-                                                    const DataTableDescriptor& descriptor) {
-    std::vector<std::uint32_t> offsets;
-    std::uintptr_t property{};
-    if (!ReadPointerAt(context, descriptor.row_struct, 112, property)) return offsets;
-    for (std::size_t index{}; property != 0 && index < 128; ++index) {
-        FNameValue property_name{};
-        std::uint32_t property_offset{};
-        std::uintptr_t property_class{};
-        if (!Read(context, property + 32, property_name) ||
-            !Read(context, property + 68, property_offset) ||
-            !ReadPointerAt(context, property, 8, property_class)) break;
-        const std::string name = Lowercase(RenderFName(context, property_name));
-        std::string class_name;
-        static_cast<void>(ReadObjectName(context, property_class, class_name));
-        class_name = Lowercase(class_name);
-        const bool coordinate_name = name.find("location") != std::string::npos ||
-            name.find("position") != std::string::npos ||
-            name.find("transform") != std::string::npos ||
-            name.find("spawnpoint") != std::string::npos ||
-            name.find("spawn_point") != std::string::npos ||
-            name.find("coordinate") != std::string::npos;
-        if (coordinate_name) {
-            if (name.find("transform") != std::string::npos) {
-                offsets.push_back(property_offset + kTransformTranslationOffset);
-            } else if (class_name.find("structproperty") != std::string::npos) {
-                std::uintptr_t structure{};
-                std::string structure_name;
-                if (ReadPointerAt(context, property, 112, structure) &&
-                    ReadObjectName(context, structure, structure_name) &&
-                    Lowercase(structure_name).find("transform") != std::string::npos) {
-                    offsets.push_back(property_offset + kTransformTranslationOffset);
-                } else {
-                    offsets.push_back(property_offset);
-                }
-            } else {
-                offsets.push_back(property_offset);
-            }
-        }
-        if (!ReadPointerAt(context, property, 40, property)) break;
-    }
-    std::sort(offsets.begin(), offsets.end());
-    offsets.erase(std::unique(offsets.begin(), offsets.end()), offsets.end());
-    return offsets;
-}
 
 bool ScanDiscoveredMonsterTable(Context& context, const DataTableDescriptor& descriptor,
                                 std::vector<Point>& output,
@@ -635,11 +629,15 @@ bool ScanDiscoveredMonsterTable(Context& context, const DataTableDescriptor& des
     if (table_tag.find("monster") == std::string::npos &&
         table_tag.find("spawn") == std::string::npos &&
         table_tag.find("spawner") == std::string::npos) return false;
-    const auto position_offsets = ReflectedPositionOffsets(context, descriptor);
+    const auto position_offsets = ReflectedFields(context, descriptor.row_struct, true);
+    const auto level_fields = ReflectedFields(context, descriptor.row_struct, false);
+    std::int32_t record_size{};
+    if (!Read(context, descriptor.row_struct + native_layout.kStructSize, record_size) ||
+        record_size <= 0 || record_size > kMaximumRowBytes) return false;
     if (position_offsets.empty()) return false;
     bool added{};
     for (const RowReference& reference : rows) {
-        std::vector<std::uint8_t> bytes(kMaximumRowBytes);
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(record_size));
         if (!ReadBytes(context, reference.row, bytes.data(), bytes.size())) continue;
         std::array<double, 3> position{};
         bool found_position{};
@@ -652,7 +650,7 @@ bool ScanDiscoveredMonsterTable(Context& context, const DataTableDescriptor& des
         if (!found_position) continue;
         const std::string id = RenderFName(context, reference.id);
         if (id.empty()) continue;
-        std::string map = ReadLevel(context, reference.row, bytes);
+        std::string map = ReadLevel(context, reference.row, bytes, level_fields);
         if (map.empty()) map = descriptor.object_name;
         Point point{PointKind::monster, id, std::move(map), descriptor.object_name, position};
         added = AddUnique(output, keys, std::move(point)) || added;
@@ -663,7 +661,7 @@ bool ScanDiscoveredMonsterTable(Context& context, const DataTableDescriptor& des
 bool ScanOracleStoneTable(Context& context, std::vector<Point>& output,
                           std::unordered_set<std::string>& keys) {
     std::uintptr_t table{};
-    if (!ResolveTable(context, kTreasureboxAsset, kOracleStoneDataAssetTableOffset, table))
+    if (!ResolveTable(context, kTreasureboxAsset, native_layout.kOracleStoneDataAssetTableOffset, table))
         return false;
     std::vector<RowReference> rows;
     if (!ReadDataTableRows(context, table, rows)) return false;
@@ -671,13 +669,13 @@ bool ScanOracleStoneTable(Context& context, std::vector<Point>& output,
         const FNameValue row_id = reference.id;
         const std::uintptr_t row = reference.row;
         std::array<double, 3> position{};
-        if (!Read(context, row + kOracleStoneLocationOffset, position) ||
+        if (!Read(context, row + native_layout.kOracleStoneLocationOffset, position) ||
             !std::all_of(position.begin(), position.end(), [](const double value) {
                 return std::isfinite(value) && std::abs(value) < 20000000.0;
             })) continue;
         const std::string id = RenderFName(context, row_id);
         if (id.empty()) continue;
-        const std::string map = ReadTextAt(context, row + kOracleStoneLevelOffset);
+        const std::string map = ReadTextAt(context, row + native_layout.kOracleStoneLevelOffset);
         Point point{PointKind::oracle_stone, id, map,
                     std::string(kTreasureboxAsset), position};
         static_cast<void>(AddUnique(output, keys, std::move(point)));
@@ -734,7 +732,7 @@ void ScanAll(Context& context) {
     if (!oracle_ok) oracle_ok = ScanOracleStoneTable(context, next, keys);
     if (!oracle_ok) {
         for (const auto path : kOracleAssets) {
-            if (ScanDataTable(context, path, kRandomItemTableOffset, PointKind::oracle_stone,
+            if (ScanDataTable(context, path, native_layout.kRandomItemTableOffset, PointKind::oracle_stone,
                               next, keys, "Oracle")) {
                 oracle_ok = true;
                 break;
@@ -742,7 +740,7 @@ void ScanAll(Context& context) {
         }
     }
     const bool wallet_ok = ScanDataTable(
-        context, kRandomItemAsset, kRandomItemTableOffset, PointKind::wallet, next, keys);
+        context, kRandomItemAsset, native_layout.kRandomItemTableOffset, PointKind::wallet, next, keys);
     std::array<bool, 4> found{teleport_ok, monster_ok, oracle_ok, wallet_ok};
     const std::size_t point_count = next.size();
     {
@@ -926,6 +924,7 @@ void Draw(Context& context, const AnomalyUiServiceV1* ui) {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) {
+    if (!LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
     if (host == nullptr || plugin_context == nullptr) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     auto* context = new (std::nothrow) Context;
     if (context == nullptr) return {ANOMALY_STATUS_V1_FAILED, 0, {}};

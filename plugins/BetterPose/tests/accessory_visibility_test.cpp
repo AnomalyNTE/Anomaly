@@ -1,4 +1,5 @@
 #include "../plugin.cpp"
+#include "../../../apps/test_host/plugin_profile_fixture_host.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -37,7 +38,9 @@ void __fastcall Event(void* object, void* function, void* parameters) {
     ++component.destroy_calls;
   }
 }
+void __fastcall Event(void*,void*,void*);
 AnomalyStatusV1 ANOMALY_CALL ReadMemory(void*,std::uintptr_t address,AnomalyMutableByteSpanV1 bytes) {
+  if (address == reinterpret_cast<std::uintptr_t>(Event)) return anomaly::testing::RecordedProcessEventEntry(bytes);
   std::memcpy(bytes.data,reinterpret_cast<void*>(address),bytes.size);
   return anomaly::sdk::Ok();
 }
@@ -61,15 +64,17 @@ AnomalyStatusV1 ANOMALY_CALL Find(void*,AnomalyStringViewV1 name,AnomalyGenerati
 }
 
 int main() {
+  anomaly::testing::ProfileHost profile_host("BetterPose");
+  if (!better_pose_profile::LoadCompatibility(&profile_host.api)) { std::cerr << profile_host.error; return 1; }
   using namespace fixture;
   Context context;
   AnomalyCoreServiceV1 core{};
-  core.struct_size=sizeof(core); core.read_memory=ReadMemory; core.write_memory=WriteMemory;
+  core.struct_size=sizeof(core); core.service_version=1; core.read_memory=ReadMemory; core.write_memory=WriteMemory;
   context.core=&core;
   AnomalyUe5ObjectsServiceV1 objects{};
   objects.struct_size=sizeof(objects); objects.find_exact=Find; context.objects=&objects;
   std::array<std::uintptr_t,80> vtable{};
-  vtable[kProcessEventVtableSlot]=reinterpret_cast<std::uintptr_t>(Event);
+  vtable[native_layout.kProcessEventVtableSlot]=reinterpret_cast<std::uintptr_t>(Event);
   Component source{reinterpret_cast<std::uintptr_t>(vtable.data())};
   Component replacement{source.vtable};
   std::array<std::uint8_t,Count*24> slots{};

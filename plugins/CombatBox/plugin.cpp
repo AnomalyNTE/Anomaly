@@ -1,3 +1,4 @@
+#include "native_layout.hpp"
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/interop.h"
@@ -29,27 +30,28 @@
 #include <vector>
 
 namespace {
+using combatbox_profile::native_layout;
+using combatbox_profile::compatibility;
 
 namespace combat = anomaly::plugins::combat;
 
 constexpr std::string_view kTablePath =
     "/Game/DataTable/Treasurebox/DT_TreasureboxConfig.DT_TreasureboxConfig";
 
-constexpr std::ptrdiff_t kDataTableRowMapOffset = 0x30;
-constexpr std::uint32_t kDataTableRowStride = 24;
-constexpr std::uint32_t kDataTableRowPointerOffset = 8;
-constexpr std::ptrdiff_t kCoordOffset = 48;
 
-constexpr std::string_view kGObjectsPattern =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
-constexpr std::ptrdiff_t kGObjectsAddend = -16;
+
+
+
+
+constexpr std::string_view kGObjectsPattern = "kGObjectsPattern";
+
 constexpr std::uint32_t kRipDisplacementOffset = 3;
 constexpr std::uint32_t kRipInstructionSize = 7;
-constexpr std::ptrdiff_t kObjectItemsOffset = 16;
-constexpr std::ptrdiff_t kObjectCountOffset = 36;
-constexpr std::ptrdiff_t kObjectNumChunksOffset = 44;
-constexpr std::uint32_t kObjectChunkSize = 65536;
-constexpr std::uint32_t kObjectItemStride = 24;
+
+
+
+
+
 constexpr std::size_t kMaximumNameBytes = 1024;
 
 constexpr double kTeleportZOffset = 60.0;
@@ -76,13 +78,13 @@ constexpr double kFallOutBelowPointCentimeters = 100.0;
 // 高楼/新区域的地图常常还没流式加载完，玩家会真的往下掉。**不能等**：等下去会摔死
 // （用户实测），所以检测到就立刻重传，一直传到落地为止。次数只是防止真无解时死循环，
 // 见过怪之后计数会清零（已经站稳开打，不该被之前的掉落惩罚）。
-constexpr std::uint32_t kFallOutMaximumRetries = 10;
+
 // 两次重传之间的最小间隔：只用来防止同一帧里反复下发传送。
 constexpr auto kFallOutRetryDelay = std::chrono::milliseconds(1200);
 constexpr double kProgressCheckIntervalSeconds = 3.0;
 constexpr double kProgressThresholdCentimeters = 80.0;
 constexpr double kReissueDelaySeconds = 4.0;
-constexpr std::uint32_t kMaximumMapLandmarks = 4096;
+
 
 struct RawName final {
     std::int32_t comparison_index{};
@@ -400,15 +402,8 @@ bool ResolveRipRelative(
     const std::ptrdiff_t addend, std::uintptr_t& address) noexcept {
     address = 0;
     if (!SignatureReady(context.signature)) return false;
-    std::uintptr_t instruction{};
-    if (context.signature->resolve(
-            context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
-            anomaly::sdk::StringView(".text"),
-            anomaly::sdk::StringView(pattern), &instruction)
-            .code != ANOMALY_STATUS_V1_OK ||
-        instruction == 0) {
-        return false;
-    }
+    const auto instruction=compatibility.Address(pattern);
+    if (!instruction) return false;
     std::int32_t displacement{};
     if (!Read(reinterpret_cast<const void*>(instruction + kRipDisplacementOffset),
               displacement)) {
@@ -432,22 +427,22 @@ void* ObjectAt(const std::uintptr_t g_objects, const std::uint32_t index) noexce
     std::int32_t count{};
     std::int32_t num_chunks{};
     std::uintptr_t items{};
-    if (!Read(reinterpret_cast<const void*>(g_objects + kObjectItemsOffset), items) ||
+    if (!Read(reinterpret_cast<const void*>(g_objects + native_layout.kObjectItemsOffset), items) ||
         items == 0 ||
-        !Read(reinterpret_cast<const void*>(g_objects + kObjectCountOffset), count) ||
-        !Read(reinterpret_cast<const void*>(g_objects + kObjectNumChunksOffset),
+        !Read(reinterpret_cast<const void*>(g_objects + native_layout.kObjectCountOffset), count) ||
+        !Read(reinterpret_cast<const void*>(g_objects + native_layout.kObjectNumChunksOffset),
               num_chunks) ||
         count <= 0 || index >= static_cast<std::uint32_t>(count) || num_chunks <= 0) {
         return nullptr;
     }
-    const auto chunk_index = index / kObjectChunkSize;
-    const auto within = index % kObjectChunkSize;
+    const auto chunk_index = index / native_layout.kObjectChunkSize;
+    const auto within = index % native_layout.kObjectChunkSize;
     if (chunk_index >= static_cast<std::uint32_t>(num_chunks)) return nullptr;
     const auto chunk = ReadPointer(reinterpret_cast<const void*>(
         items + static_cast<std::uintptr_t>(chunk_index) * sizeof(void*)));
     if (!chunk) return nullptr;
     return ReadPointer(reinterpret_cast<const std::uint8_t*>(chunk) +
-        static_cast<std::uintptr_t>(within) * kObjectItemStride);
+        static_cast<std::uintptr_t>(within) * native_layout.kObjectItemStride);
 }
 
 std::string ResolveName(
@@ -507,7 +502,7 @@ bool RefreshLandmarkCatalog(Context& context) noexcept {
     if (sequence == 0) return false;
     if (context.landmarks_sequence == sequence) return true;
     const std::uint32_t count = service->count(service->user);
-    if (count > kMaximumMapLandmarks) return false;
+    if (count > native_layout.kMaximumMapLandmarks) return false;
     std::vector<MapLandmark> landmarks;
     landmarks.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index) {
@@ -626,7 +621,7 @@ void ReadTable(Context& context) {
         return;
     }
     if (context.g_objects_address == 0 &&
-        !ResolveRipRelative(context, kGObjectsPattern, kGObjectsAddend,
+        !ResolveRipRelative(context, kGObjectsPattern, -static_cast<std::ptrdiff_t>(native_layout.kGObjectsSubtract),
                             context.g_objects_address)) {
         std::lock_guard<std::mutex> lock(context.mutex);
         const std::array reason{std::string_view("GObjects not resolved")};
@@ -649,7 +644,7 @@ void ReadTable(Context& context) {
         std::int32_t capacity{};
     } header;
     if (!Read(reinterpret_cast<const void*>(
-                  reinterpret_cast<std::uintptr_t>(table_object) + kDataTableRowMapOffset),
+                  reinterpret_cast<std::uintptr_t>(table_object) + native_layout.kDataTableRowMapOffset),
               header) ||
         header.count <= 0 || header.capacity < header.count || header.data == 0) {
         std::lock_guard<std::mutex> lock(context.mutex);
@@ -660,17 +655,17 @@ void ReadTable(Context& context) {
     }
     for (std::int32_t i = 0; i < header.count; ++i) {
         const auto element = header.data +
-            static_cast<std::uintptr_t>(i) * kDataTableRowStride;
+            static_cast<std::uintptr_t>(i) * native_layout.kDataTableRowStride;
         RawName row_id{};
         std::uintptr_t row{};
         if (!Read(reinterpret_cast<const void*>(element), row_id) ||
             row_id.comparison_index == 0) continue;
-        if (!Read(reinterpret_cast<const void*>(element + kDataTableRowPointerOffset),
+        if (!Read(reinterpret_cast<const void*>(element + native_layout.kDataTableRowPointerOffset),
                   row) || row == 0) continue;
         double x{}, y{}, z{};
-        Read(reinterpret_cast<const void*>(row + kCoordOffset), x);
-        Read(reinterpret_cast<const void*>(row + kCoordOffset + 8), y);
-        Read(reinterpret_cast<const void*>(row + kCoordOffset + 16), z);
+        Read(reinterpret_cast<const void*>(row + native_layout.kCoordOffset), x);
+        Read(reinterpret_cast<const void*>(row + native_layout.kCoordOffset + 8), y);
+        Read(reinterpret_cast<const void*>(row + native_layout.kCoordOffset + 16), z);
         if (x == 0.0 && y == 0.0 && z == 0.0) continue;
         Point p;
         p.row_name = ResolveName(
@@ -1091,10 +1086,10 @@ void TickCombat(Context& context, std::chrono::steady_clock::time_point now) {
     // 时间一到就会直接跳过（实测：传几次就跳过 ✗）。
     context.combat_started_at = now;
     context.fallout_retry_at = now + kFallOutRetryDelay;
-        if (context.fallout_retries < kFallOutMaximumRetries) {
+        if (context.fallout_retries < native_layout.kFallOutMaximumRetries) {
             ++context.fallout_retries;
             const std::string retries = std::to_string(context.fallout_retries);
-            const std::string maximum = std::to_string(kFallOutMaximumRetries);
+            const std::string maximum = std::to_string(native_layout.kFallOutMaximumRetries);
             RetryCurrentPoint(context, now);
             std::lock_guard<std::mutex> lock(context.mutex);
             const std::array args{std::string_view(retries), std::string_view(maximum),
@@ -1410,6 +1405,7 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_ui) {
 }  // namespace
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) {
+    if (!combatbox_profile::LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     if (!host || !plugin_context || host->api_major != ANOMALY_PLUGIN_API_V1_MAJOR) {
         return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
     }

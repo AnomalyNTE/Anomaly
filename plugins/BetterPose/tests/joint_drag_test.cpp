@@ -1,4 +1,5 @@
 #include "../plugin.cpp"
+#include "../../../apps/test_host/plugin_profile_fixture_host.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -674,6 +675,8 @@ void BoneTooltip() {
 }  // namespace fixture
 
 int main() {
+  anomaly::testing::ProfileHost profile_host("BetterPose");
+  if (!better_pose_profile::LoadCompatibility(&profile_host.api)) { std::cerr << profile_host.error; return 1; }
   fixture::RotatorRoundTrip();
   fixture::DragFollowsCursor(fixture::Camera{}, "axis-aligned camera projects the joint");
   fixture::DragFollowsCursor(fixture::TiltedCamera{}, "tilted camera projects the joint");

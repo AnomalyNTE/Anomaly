@@ -172,12 +172,10 @@ Game/Render 返回 `UNAVAILABLE`。输入必须是 UTF-8 相对 `.json` 路径�
 | `game` / `module` / `section` | 游戏标识、模块名与 PE 节名 |
 | `contract` | 插件实现的语义合同；不包含或匹配 Build identity |
 | `layout` | 名称到 uint32 的共享偏移、尺寸与种子 |
-| `symbols` | 1–128 个 `{name, candidates}`，每个符号 1–16 个候选 |
+| `symbols` | 0–128 个 `{name, candidates}`，每个符号 1–16 个候选 |
 | 候选 `pattern` / `entry` | 空格分隔的十六进制字节；仅 pattern 允许 `??`，entry 必须精确 |
 | 候选 `callOffset` | 可选 E8 rel32 指令位置，必须落在 pattern 范围内 |
 | 候选 `values` | 该候选特有的 uint32 布局数据 |
-| `provenance` | 根与每个候选必填的来源依据 |
-| `unavailable` | 验证失败时的降级说明，由插件执行对应策略 |
 
 C++ `ResolveProfileSymbol(signature, core, profile, name)` 使用现有 signature/memory 服务，
 检查唯一候选、可选 E8 rel32 目标与精确入口字节；失败返回空结果和 `error`，不安装 Hook。

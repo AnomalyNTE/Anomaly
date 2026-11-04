@@ -1,4 +1,4 @@
-﻿// Anomaly 插件：NTE 时间加速（本地世界时间膨胀）
+// Anomaly 插件：NTE 时间加速（本地世界时间膨胀）
 // =============================================================================
 // 功能：把本地世界时间倍率设为 N 倍 —— 动画、物理、本地移动、演出整体变快，玩家角色同样变快。
 //      到点 / 关窗 / 「立即恢复」/ Stop / Unload 都会恢复 1 倍。
@@ -14,10 +14,11 @@
 //            → ULevel + 0x2B0        (ULevel::WorldSettings) → HTWorldSettings
 //          PlayerController 由 process-event 回调给出（官方 ABI 只在这条路上暴露裸地址）。
 //
-// 备选函数（本插件不使用，仅记录）：
-//          HTWorldSettings::SetWorldTimeDilation  实现 0x14883E520（r8b=bNextTick，先写 +0x5E0）
-//          AWorldSettings::SetTimeDilation        实现 0x144ABDDE0（钳位后写 +0x400）
-//          HTCharacter::SetCustomTimeDilation     槽 +0xAD0，内部生效值取 min(1.0, arr[4..8])
+// 备选函数（本插件不使用，仅记录。下列函数地址与槽位取自 1.4b 构建，
+//          1.5a 未复核，勿直接使用；重扫见交付说明的待重扫清单）：
+//          HTWorldSettings::SetWorldTimeDilation  （r8b=bNextTick，先写 +0x5E0）
+//          AWorldSettings::SetTimeDilation        （钳位后写 +0x400）
+//          HTCharacter::SetCustomTimeDilation     内部生效值取 min(1.0, arr[4..8])
 //                                                 ⇒ 上界恒为 1.0，只能减速，不能用于加速
 //
 // 安全设计：
@@ -33,6 +34,7 @@
 //      窗口恒开（对齐内建插件），无需回窗热键。
 
 #include "anomaly/sdk/cpp.hpp"
+#include "native_layout.hpp"
 #include "anomaly/sdk/localization.hpp"
 
 #include <windows.h>
@@ -49,6 +51,7 @@
 #include <string_view>
 
 namespace {
+using namespace timeaccel_profile;
 
 using anomaly::sdk::Host;
 using anomaly::sdk::StringView;
@@ -66,19 +69,19 @@ constexpr std::uint32_t kCondFirstUseEver = 4u;
 constexpr char kControllerClassName[] = "BP_PlayerControllerBase_C";
 
 // UObject 布局
-constexpr std::uintptr_t kClassPrivateOffset = 0x10;
-constexpr std::uintptr_t kNamePrivateOffset = 0x18;
-constexpr std::uintptr_t kOuterPrivateOffset = 0x20;
+
+
+
 
 // 指针链（均为反射属性，不是魔数）
-constexpr std::uintptr_t kLevelWorldSettingsOffset = 0x2B0;  // ULevel::WorldSettings
+  // ULevel::WorldSettings
 
 // HTWorldSettings 自己的世界倍率（非反射私有成员）
-constexpr std::uintptr_t kWorldDilationOffset = 0x5E0;
+
 // 引擎标准字段（仅供显示/自检，写入走 +0x5E0）
-constexpr std::uintptr_t kEngineTimeDilationOffset = 0x400;
-constexpr std::uintptr_t kMinDilationOffset = 0x40C;
-constexpr std::uintptr_t kMaxDilationOffset = 0x410;
+
+
+
 
 constexpr double kMinMultiplier = 0.05;
 constexpr double kMaxMultiplier = 20.0;
@@ -216,7 +219,7 @@ bool WriteWorldDilation(float value) {
     State& s = g_state;
     if (!LooksLikePointer(s.ws)) return false;
 
-    const std::uintptr_t address = s.ws + kWorldDilationOffset;
+    const std::uintptr_t address = s.ws + native_layout.kWorldDilationOffset;
     bool ok = false;
 
     if (g_core != nullptr && g_core->write_memory != nullptr) {
@@ -282,8 +285,8 @@ void StopAccel(const char* reason) {
 bool ClassNameMatches(std::uintptr_t object, std::uint32_t name_id) {
     if (object == 0 || name_id == 0) return false;
     std::uintptr_t cls = 0;
-    if (!SafeReadPtr(object + kClassPrivateOffset, &cls) || cls == 0) return false;
-    return SafeReadU32(cls + kNamePrivateOffset) == name_id;
+    if (!SafeReadPtr(object + native_layout.kClassPrivateOffset, &cls) || cls == 0) return false;
+    return SafeReadU32(cls + native_layout.kNamePrivateOffset) == name_id;
 }
 
 void ANOMALY_CALL OnProcessEvent(void* user, std::uintptr_t object, std::uintptr_t function,
@@ -305,7 +308,7 @@ void ResolveWorldSettings() {
     if (!LooksLikePointer(s.controller)) return;
 
     std::uintptr_t level = 0;
-    if (!SafeReadPtr(s.controller + kOuterPrivateOffset, &level) || !LooksLikePointer(level)) {
+    if (!SafeReadPtr(s.controller + native_layout.kOuterPrivateOffset, &level) || !LooksLikePointer(level)) {
         s.level = 0;
         s.ws = 0;
         return;
@@ -313,7 +316,7 @@ void ResolveWorldSettings() {
     s.level = level;
 
     std::uintptr_t ws = 0;
-    if (!SafeReadPtr(level + kLevelWorldSettingsOffset, &ws) || !LooksLikePointer(ws)) {
+    if (!SafeReadPtr(level + native_layout.kLevelWorldSettingsOffset, &ws) || !LooksLikePointer(ws)) {
         s.ws = 0;
         return;
     }
@@ -1040,6 +1043,7 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui_v1) {
 
 // ------------------------------- 生命周期 ------------------------------------
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
+    if (!LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     if (context == nullptr) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *context = nullptr;
 
@@ -1156,11 +1160,11 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
     // 采样当前值（界面自检：世界倍率与引擎 TimeDilation 应当相等）。
     if (s.ws != 0) {
         float v = 1.0F;
-        if (SafeReadF32(s.ws + kWorldDilationOffset, &v)) s.observed = v;
+        if (SafeReadF32(s.ws + native_layout.kWorldDilationOffset, &v)) s.observed = v;
         float e = 1.0F;
-        if (SafeReadF32(s.ws + kEngineTimeDilationOffset, &e)) s.engine_value = e;
+        if (SafeReadF32(s.ws + native_layout.kEngineTimeDilationOffset, &e)) s.engine_value = e;
         float mx = 20.0F;
-        if (SafeReadF32(s.ws + kMaxDilationOffset, &mx)) s.max_dilation = mx;
+        if (SafeReadF32(s.ws + native_layout.kMaxDilationOffset, &mx)) s.max_dilation = mx;
     }
 
     // 请求处理：一律在 on_update（游戏线程）里真正写。

@@ -1,4 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
+#include "native_layout.hpp"
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/interop.h"
 #include "anomaly/sdk/localization.hpp"
@@ -33,6 +34,7 @@
 #pragma comment(lib, "uuid.lib")
 
 namespace {
+using namespace nteteleport_profile;
 
 using Microsoft::WRL::ComPtr;
 
@@ -48,22 +50,27 @@ constexpr std::size_t kPointsPerPage = 10;
 
 // Tracked map target read chain. These offsets mirror the validated UE5/NTE
 // layout used by the active profile and the 5.6.1-0+UE5-HT SDK dump.
-constexpr std::string_view kGWorldPattern =
-    "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
+constexpr std::string_view kGWorldPattern = "kGWorldPattern";
 constexpr std::uint32_t kRipDisplacementOffset = 3;
 constexpr std::uint32_t kRipInstructionSize = 7;
-constexpr std::uint32_t kWorldGameInstanceOffset = 0x230;
-constexpr std::uint32_t kGameInstanceLocalPlayersOffset = 0x38;
-constexpr std::uint32_t kLocalPlayerControllerOffset = 0x30;
-constexpr std::uint32_t kControllerPlayerStateOffset = 0x2D0;
+
+
+
+
 // HTPlayerState.CurNavigationPathEffect (BP_NavigationPathActor_C) ->
 // LastRequestParam (the navigation request) -> GoalLocation (FVector, double
 // precision = 24 bytes). HT 1.4 dropped NavPathEffectParam.GoalLocation and
 // leaves the player state's own CurrentPathEffectParam empty while tracking, so
 // the tracked position now lives on the navigation actor that draws the route.
-constexpr std::uint32_t kPlayerStateCurNavigationPathEffectOffset = 0x19C8;
-constexpr std::uint32_t kNavPathActorLastRequestParamOffset = 0x4F0;
-constexpr std::uint32_t kNavPathRequestGoalLocationOffset = 0x28;
+//
+// CurNavigationPathEffect moved in 1.5a: HTPlayerState is a game class, and the
+// dump puts the property at 7024 (0x1B70) in 5.6.1-0+UE5-HT-1.5a against 6600
+// (0x19C8) in 5.6.1-0+UE5-HT-1.4b, which is the value this constant used to
+// carry. LastRequestParam is unchanged at 1264 (0x4F0) on
+// ANavigationPathEffectActor in both builds.
+
+
+
 // NTE streams world-partition cells around the local player controller's
 // streaming-source update - the same call the camera tools hook for their free
 // camera. Moving the player before those cells exist drops the character
@@ -489,12 +496,8 @@ bool ReadPointerAt(const std::uintptr_t base, const std::uint64_t offset,
 }
 
 bool ResolveSignature(const std::string_view pattern, std::uintptr_t& address) noexcept {
-    address = 0;
-    if (!SignatureMethodsAvailable(g_context.signature)) return false;
-    return g_context.signature->resolve(
-        g_context.signature->user, anomaly::sdk::StringView("HTGame.exe"),
-        anomaly::sdk::StringView(".text"), anomaly::sdk::StringView(pattern), &address).code ==
-        ANOMALY_STATUS_V1_OK && address != 0;
+    address = compatibility.Address(pattern);
+    return address != 0;
 }
 
 bool ResolveGWorld() noexcept {
@@ -521,22 +524,22 @@ bool ReadTrackedTarget(double position[3]) noexcept {
     std::uintptr_t controller{};
     std::uintptr_t player_state{};
     if (!ReadValue(g_context.g_world_address, world) || world == 0 ||
-        !ReadPointerAt(world, kWorldGameInstanceOffset, game_instance) ||
-        !ReadPointerAt(game_instance, kGameInstanceLocalPlayersOffset, local_players) ||
+        !ReadPointerAt(world, native_layout.kWorldGameInstanceOffset, game_instance) ||
+        !ReadPointerAt(game_instance, native_layout.kGameInstanceLocalPlayersOffset, local_players) ||
         !ReadValue(local_players, local_player) || local_player == 0 ||
-        !ReadPointerAt(local_player, kLocalPlayerControllerOffset, controller) ||
-        !ReadPointerAt(controller, kControllerPlayerStateOffset, player_state)) {
+        !ReadPointerAt(local_player, native_layout.kLocalPlayerControllerOffset, controller) ||
+        !ReadPointerAt(controller, native_layout.kControllerPlayerStateOffset, player_state)) {
         return false;
     }
     std::uintptr_t nav_actor{};
     if (!ReadPointerAt(
-            player_state, kPlayerStateCurNavigationPathEffectOffset, nav_actor)) {
+            player_state, native_layout.kPlayerStateCurNavigationPathEffectOffset, nav_actor)) {
         return false;
     }
     std::uintptr_t goal_location{};
     if (!AddAddress(nav_actor,
-                    kNavPathActorLastRequestParamOffset +
-                        kNavPathRequestGoalLocationOffset,
+                    native_layout.kNavPathActorLastRequestParamOffset +
+                        native_layout.kNavPathRequestGoalLocationOffset,
                     goal_location)) {
         return false;
     }
@@ -1997,6 +2000,7 @@ std::string FormatPosition(const std::array<double, 3>& position) {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
+    if (!LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     if (context == nullptr) return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     const auto ui = QueryService<AnomalyUiServiceV1>(
         host, ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);

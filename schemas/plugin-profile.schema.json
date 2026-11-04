@@ -4,7 +4,7 @@
   "title": "Anomaly Plugin Compatibility Profile",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "game", "module", "section", "contract", "layout", "symbols", "provenance", "unavailable"],
+  "required": ["schemaVersion", "game", "module", "section", "contract", "layout", "symbols"],
   "properties": {
     "$schema": { "type": "string", "maxLength": 512 },
     "schemaVersion": { "const": 1 },
@@ -14,7 +14,7 @@
     "contract": { "$ref": "#/definitions/id" },
     "layout": { "$ref": "#/definitions/values" },
     "symbols": {
-      "type": "array", "minItems": 1, "maxItems": 128,
+      "type": "array", "minItems": 0, "maxItems": 128,
       "items": {
         "type": "object", "additionalProperties": false,
         "required": ["name", "candidates"],
@@ -26,13 +26,10 @@
           }
         }
       }
-    },
-    "provenance": { "$ref": "#/definitions/description" },
-    "unavailable": { "$ref": "#/definitions/description" }
+    }
   },
   "definitions": {
     "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$" },
-    "description": { "type": "string", "minLength": 1, "maxLength": 16384 },
     "values": {
       "type": "object", "maxProperties": 256,
       "propertyNames": { "$ref": "#/definitions/id" },
@@ -40,7 +37,7 @@
     },
     "candidate": {
       "type": "object", "additionalProperties": false,
-      "required": ["pattern", "entry", "values", "provenance"],
+      "required": ["pattern", "entry", "values"],
       "properties": {
         "pattern": {
           "type": "string", "minLength": 2, "maxLength": 4096,
@@ -51,8 +48,7 @@
           "pattern": "^[A-Fa-f0-9]{2}( [A-Fa-f0-9]{2})*$"
         },
         "callOffset": { "type": "integer", "minimum": 0, "maximum": 4096 },
-        "values": { "$ref": "#/definitions/values" },
-        "provenance": { "$ref": "#/definitions/description" }
+        "values": { "$ref": "#/definitions/values" }
       }
     }
   }

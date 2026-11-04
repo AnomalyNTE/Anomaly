@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+// Header of one UE TSparseArray-backed TMap, as used by UDataTable::RowMap and by the
+// inventory container maps: Data +0, Num +8, Max +12, InlineAllocationFlags +16,
+// AllocationFlags.Data +32, NumBits +40, MaxBits +44, FirstFreeIndex +48, NumFreeIndices +52.
 struct HudMapHeader {
     std::uintptr_t data{};std::int32_t count{},capacity{};
     std::uint32_t inline_bits[4]{};std::uintptr_t extra_bits{};

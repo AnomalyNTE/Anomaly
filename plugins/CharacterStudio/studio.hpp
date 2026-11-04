@@ -317,7 +317,7 @@ private:
         return transform;
     }
     void Preflight() {
-        for (const auto& [path, unused] : ue_.resource().at("functions").items()) {
+        for (const auto& [path, unused] : ue_.contracts()) {
             static_cast<void>(unused);
             ue_.Bind(path);
         }

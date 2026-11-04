@@ -184,12 +184,12 @@ inline bool Parse(const std::string &text,
   ignored_samples = 0;
   const auto root = nlohmann::json::parse(text, nullptr, false);
   if (root.is_discarded() || !root.is_object()) {
-    error = "Blender 文件不是有效的 JSON";
+    error = "Blender file is not valid JSON";
     return false;
   }
   if (root.value("format", std::string{}) != std::string(kFormat) ||
       root.value("version", 0U) != kVersion) {
-    error = "请选择 Better Pose .bpmotion 文件";
+    error = "Choose a Better Pose .bpmotion file";
     return false;
   }
 
@@ -200,24 +200,24 @@ inline bool Parse(const std::string &text,
   parsed.bone_positions_are_deltas =
       root.value("bone_position_mode", std::string{}) == "delta";
   if (!std::isfinite(parsed.fps) || parsed.fps < 1.0 || parsed.fps > 240.0) {
-    error = "Blender 动作帧率无效";
+    error = "Invalid Blender motion frame rate";
     return false;
   }
   if (!std::isfinite(parsed.length) || parsed.length < 0.0) {
-    error = "Blender 动作长度无效";
+    error = "Invalid Blender motion duration";
     return false;
   }
 
   const auto names = root.find("bone_names");
   if (names != root.end() && names->is_array()) {
     if (names->size() > kMaximumBones) {
-      error = "Blender 动作骨骼数量过多";
+      error = "Too many Blender motion bones";
       return false;
     }
     parsed.bone_names.reserve(names->size());
     for (const auto &name : *names) {
       if (!name.is_string() || name.get_ref<const std::string &>().empty()) {
-        error = "Blender 动作骨骼名称无效";
+        error = "Invalid Blender motion bone name";
         return false;
       }
       parsed.bone_names.push_back(name.get<std::string>());
@@ -226,7 +226,7 @@ inline bool Parse(const std::string &text,
   if (parsed.bone_names.empty())
     parsed.bone_names = fallback_bone_names;
   if (parsed.bone_names.empty() || parsed.bone_names.size() > kMaximumBones) {
-    error = "Blender 动作缺少可用骨骼";
+    error = "Blender motion contains no usable bones";
     return false;
   }
 
@@ -236,7 +236,7 @@ inline bool Parse(const std::string &text,
     parsed.bone_parents.reserve(parents->size());
     for (const auto &parent : *parents) {
       if (!parent.is_number_integer()) {
-        error = "Blender 动作骨骼父级无效";
+        error = "Invalid Blender motion bone parent";
         return false;
       }
       parsed.bone_parents.push_back(parent.get<std::int32_t>());
@@ -246,7 +246,7 @@ inline bool Parse(const std::string &text,
   const auto frames = root.find("frames");
   if (frames == root.end() || !frames->is_array() || frames->empty() ||
       frames->size() > kMaximumFrames) {
-    error = "Blender 动作帧数无效";
+    error = "Invalid Blender motion frame count";
     return false;
   }
 
@@ -256,17 +256,17 @@ inline bool Parse(const std::string &text,
     for (const auto &item : *frames) {
       if (!item.is_object() || !item.contains("time") ||
           !detail::Finite(item["time"])) {
-        error = "Blender 动作帧缺少有效时间";
+        error = "Blender motion frame has no valid time";
         return false;
       }
       Frame frame;
       frame.time = item["time"].get<double>();
       if (frame.time < 0.0 || frame.time <= previous_time) {
-        error = "Blender 动作时间轴必须从零开始并严格递增";
+        error = "Blender timeline must start at zero and increase strictly";
         return false;
       }
       if (parsed.frames.empty() && frame.time > 1e-6) {
-        error = "Blender 动作时间轴必须从零开始";
+        error = "Blender timeline must start at zero";
         return false;
       }
       previous_time = frame.time;
@@ -274,7 +274,7 @@ inline bool Parse(const std::string &text,
       const auto frame_root = item.find("root");
       if (frame_root != item.end() &&
           !detail::Finite3(*frame_root, frame.root)) {
-        error = "Blender 动作根位移无效";
+        error = "Invalid Blender motion root translation";
         return false;
       }
 
@@ -283,7 +283,7 @@ inline bool Parse(const std::string &text,
         if (!camera->is_object() || !camera->contains("focus") ||
             !camera->contains("yaw") || !camera->contains("pitch") ||
             !camera->contains("distance") || !camera->contains("fov")) {
-          error = "Blender 动作镜头轨道无效";
+          error = "Invalid Blender motion camera track";
           return false;
         }
         CameraSample sample;
@@ -292,7 +292,7 @@ inline bool Parse(const std::string &text,
             !detail::Finite((*camera)["pitch"]) ||
             !detail::Finite((*camera)["distance"]) ||
             !detail::Finite((*camera)["fov"])) {
-          error = "Blender 动作镜头轨道包含无效数值";
+          error = "Blender motion camera track contains invalid values";
           return false;
         }
         sample.yaw = (*camera)["yaw"].get<double>();
@@ -306,7 +306,7 @@ inline bool Parse(const std::string &text,
       const auto bones = item.find("bones");
       if (bones != item.end()) {
         if (!bones->is_array()) {
-          error = "Blender 动作骨骼帧无效";
+          error = "Invalid Blender motion bone frame";
           return false;
         }
         std::set<std::uint32_t> seen;
@@ -369,7 +369,7 @@ inline bool Parse(const std::string &text,
       const auto faces = item.find("faces");
       if (faces != item.end()) {
         if (!faces->is_object() || faces->size() > kMaximumBones) {
-          error = "Blender 动作表情轨道无效";
+          error = "Invalid Blender motion expression track";
           return false;
         }
         for (auto face = faces->begin(); face != faces->end(); ++face) {
@@ -383,7 +383,7 @@ inline bool Parse(const std::string &text,
       parsed.frames.push_back(std::move(frame));
     }
   } catch (...) {
-    error = "Blender 动作数据损坏";
+    error = "Corrupt Blender motion data";
     return false;
   }
 
@@ -397,7 +397,7 @@ inline bool BuildCameraKeys(const Document &source, const double unit_cm,
                             std::string &error) {
   keys.clear();
   if (!std::isfinite(unit_cm) || unit_cm <= 1e-6) {
-    error = "镜头导入失败：角色单位比例无效";
+    error = "Camera import failed: invalid character unit scale";
     return false;
   }
   constexpr double kPi = 3.14159265358979323846;
@@ -468,12 +468,12 @@ inline bool BuildMmdDocument(
   using Json = nlohmann::json;
   report = {};
   if (source.bone_names.empty() || source.frames.empty()) {
-    error = "Blender 动作没有可导入的内容";
+    error = "Blender motion has no importable content";
     return false;
   }
   if (target_bone_names.size() != reference_locals.size() ||
       target_bone_names.empty()) {
-    error = "当前角色参考姿态尚未就绪";
+    error = "Current character reference pose is not ready";
     return false;
   }
 
@@ -551,7 +551,7 @@ inline bool BuildMmdDocument(
     tracks.push_back(std::move(track));
   }
   if (tracks.empty()) {
-    error = "Blender 动作与当前角色没有匹配骨骼";
+    error = "Blender motion has no bones matching this character";
     return false;
   }
 
@@ -709,7 +709,7 @@ inline bool BuildMmdDocument(
     error.clear();
     return true;
   } catch (const std::exception &exception) {
-    error = std::string("Blender 动作转换失败：") + exception.what();
+    error = std::string("Blender motion conversion failed: ") + exception.what();
     return false;
   }
 }

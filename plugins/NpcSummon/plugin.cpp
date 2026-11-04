@@ -1,12 +1,13 @@
 // NPC 召唤 · 阶段三:链路修正 + NPC 类发现
 //
-// 仍然是**纯只读**:扫签名、读内存、查快照、解析名字,不写内存、不调用游戏函数。
+// 原生调用须先通过 Profile 入口校验与反射参数校验。
 // 本版三件事:
 //   1. 修 names 服务版本(反向查找 find_utf8 是 v2 才有的字段)
 //   2. 诊断 ProcessEvent 签名:多组 pattern 变体逐一试,看哪一组能命中
 //   3. 用 anomaly.nte.actors 枚举世界里的 actor,统计类名,找出「路人 / 市民」这类可召唤目标
 #include "anomaly/sdk/anomaly_sdk.h"
 #include "anomaly/sdk/localization.hpp"
+#include "plugins/NpcSummon/native_layout.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -822,64 +823,45 @@ static int g_pending_open_records = 0;
 // 链路探测(布局 + 签名)
 // ---------------------------------------------------------------------------
 
-static const char* kGObjectsPattern =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
-static const char* kGWorldPattern =
-    "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
-
-// ProcessEvent 序言候选:由长到短逐一试,定位哪一组能被签名服务命中
-static const char* kProcessEventPatterns[] = {
-    "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
-    "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00",
-    "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30",
-    "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00",
-    "48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00",
-    "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC",
-};
-static const int kProcessEventPatternCount =
-    (int)(sizeof(kProcessEventPatterns) / sizeof(kProcessEventPatterns[0]));
-
 static uintptr_t g_gobjects_items = 0u;
 static uintptr_t g_process_event = 0u;
 static uintptr_t g_gworld_slot = 0u;
 
 // mode 1(chunk 指针表) + stride 24 已在上一次真机探测中由 idx=1/1000 双向验证
 static uintptr_t object_by_index(uint32_t index) {
-    const uint32_t chunk_index = index / 65536u;
-    const uint32_t within = index % 65536u;
+    const uint32_t chunk_index = index / npc_profile::Layout.L_objectsPerChunk;
+    const uint32_t within = index % npc_profile::Layout.L_objectsPerChunk;
     uintptr_t chunk = 0u;
     uintptr_t item = 0u;
     uintptr_t object = 0u;
     if (g_gobjects_items == 0u) return 0u;
-    if (!read_value(g_gobjects_items + (uintptr_t)chunk_index * 8u, &chunk) || chunk == 0u) return 0u;
-    item = chunk + (uintptr_t)within * 24u;
+    if (!read_value(g_gobjects_items + (uintptr_t)chunk_index * sizeof(uintptr_t), &chunk) || chunk == 0u) return 0u;
+    item = chunk + (uintptr_t)within * npc_profile::Layout.L_objectItemSize;
     if (!read_value(item, &object)) return 0u;
     return object;
 }
 
 static void signature_probe(void) {
     uintptr_t insn = 0u;
-    int i;
-
     if (g_signature == NULL || g_signature->resolve == NULL) {
         pipe_add("chain: interop.signature is unavailable");
         return;
     }
 
-    if (ok(g_signature->resolve(g_signature->user, sv("HTGame.exe"), sv(".text"), sv(kGObjectsPattern), &insn))) {
-        uintptr_t slot = resolve_rip32(insn, 3, 7);
+    if ((insn = npc_profile::Compatibility.Address("kGObjectsPattern")) != 0) {
+        uintptr_t slot = resolve_rip32(insn, npc_profile::Layout.L_ripDisplacement, npc_profile::Layout.L_ripInstructionSize);
         uintptr_t items = 0u;
         if (slot != 0u && read_value(slot, &items)) g_gobjects_items = items;
         pipe_add("GObjects slot=0x%llX items=0x%llX (gobjects_struct=0x%llX)",
             (unsigned long long)slot, (unsigned long long)g_gobjects_items,
-            (unsigned long long)((slot != 0u) ? slot - 16u : 0u));
+            (unsigned long long)((slot != 0u) ? slot - npc_profile::Layout.L_objectsStructItems : 0u));
     } else {
         pipe_add("GObjects signature not found");
     }
 
     insn = 0u;
-    if (ok(g_signature->resolve(g_signature->user, sv("HTGame.exe"), sv(".text"), sv(kGWorldPattern), &insn))) {
-        uintptr_t slot = resolve_rip32(insn, 3, 7);
+    if ((insn = npc_profile::Compatibility.Address("kGWorldPattern")) != 0) {
+        uintptr_t slot = resolve_rip32(insn, npc_profile::Layout.L_ripDisplacement, npc_profile::Layout.L_ripInstructionSize);
         uintptr_t world = 0u;
         g_gworld_slot = slot;
         if (slot != 0u) (void)read_value(slot, &world);
@@ -888,24 +870,10 @@ static void signature_probe(void) {
         pipe_add("GWorld signature not found");
     }
 
-    for (i = 0; i < kProcessEventPatternCount; ++i) {
-        uintptr_t address = 0u;
-        size_t pattern_length = strlen(kProcessEventPatterns[i]);
-        AnomalyStatusV1 result = g_signature->resolve(
-            g_signature->user, sv("HTGame.exe"), sv(".text"), sv(kProcessEventPatterns[i]), &address);
-        if (ok(result) && address != 0u) {
-            uint8_t head[4] = {0, 0, 0, 0};
-            (void)read_bytes(address, head, 4);
-            pipe_add("ProcessEvent hit[#%d len=%u]=0x%llX head=%02X %02X %02X %02X",
-                i, (unsigned)pattern_length, (unsigned long long)address,
-                head[0], head[1], head[2], head[3]);
-            // 只认 #0(profile 里的完整签名)。#1~#5 是通用函数序言,任何同款序言的函数
-            // 都会命中,2026-10-18 就是这样拿到了一个假入口(调用后返回值全 0,随后崩溃)。
-            if (i == 0 && g_process_event == 0u) g_process_event = address;
-        } else {
-            pipe_add("ProcessEvent miss[#%d len=%u status=%u]", i, (unsigned)pattern_length, result.code);
-        }
-    }
+    const auto tail = npc_profile::Compatibility.Address("ProcessEvent");
+    g_process_event = tail >= npc_profile::Layout.L_processEventEntryBack
+        ? tail - npc_profile::Layout.L_processEventEntryBack : 0;
+
 }
 
 // ---------------------------------------------------------------------------
@@ -1257,23 +1225,6 @@ static void report_top_classes(void) {
 // ---------------------------------------------------------------------------
 
 // profile 里验证过的布局偏移
-static const int32_t L_world_gameInstance = 560;
-static const int32_t L_gameInstance_localPlayers = 56;
-static const int32_t L_localPlayer_controller = 48;
-static const int32_t L_object_internalIndex = 12;
-static const int32_t L_object_class = 16;
-static const int32_t L_object_name = 24;
-static const int32_t L_object_outer = 32;
-static const int32_t L_actor_rootComponent = 456;
-static const int32_t L_uclass_classDefaultObject = 272;
-static const int32_t L_struct_superStruct = 64;
-static const int32_t L_struct_children = 72;
-static const int32_t L_field_next = 40;
-static const int32_t L_field_name = 32;
-static const int32_t L_function_flags = 176;
-static const int32_t L_function_numParms = 180;
-static const int32_t L_function_parmsSize = 182;
-static const int32_t L_function_returnValueOffset = 184;
 static const uint32_t FUNC_NATIVE = 0x400u;
 
 static uintptr_t g_world = 0u;
@@ -1281,21 +1232,24 @@ static uintptr_t g_controller = 0u;
 static uintptr_t g_controller_class = 0u;
 
 static uintptr_t object_by_handle(AnomalyGenerationHandleV1 handle) {
-    if (handle.id == 0u) return 0u;
+    if (handle.id == 0u || g_objects == nullptr || g_objects->snapshot_by_handle == nullptr) return 0u;
+    AnomalyUe5ObjectSnapshotV1 snapshot{};
+    snapshot.struct_size=sizeof(snapshot);
+    if (!ok(g_objects->snapshot_by_handle(g_objects->user, handle, &snapshot))) return 0u;
     return object_by_index((uint32_t)handle.id - 1u);
 }
 
 static int object_name(uintptr_t object, char* buffer, size_t capacity) {
     uint32_t name_id = 0u;
     if (object == 0u || g_names == NULL) return 0;
-    if (!read_value(object + (uintptr_t)L_object_name, &name_id)) return 0;
+    if (!read_value(object + (uintptr_t)npc_profile::Layout.L_object_name, &name_id)) return 0;
     return resolve_name(name_id, buffer, capacity);
 }
 
 static int object_class_name(uintptr_t object, char* buffer, size_t capacity) {
     uintptr_t cls = 0u;
     if (object == 0u) return 0;
-    if (!read_value(object + (uintptr_t)L_object_class, &cls) || cls == 0u) return 0;
+    if (!read_value(object + (uintptr_t)npc_profile::Layout.L_object_class, &cls) || cls == 0u) return 0;
     return object_name(cls, buffer, capacity);
 }
 
@@ -1311,7 +1265,7 @@ static int classify_actor(uintptr_t actor, const char* class_name, char* root_ou
     root_cls[0] = '\0';
     if (root_out != NULL && root_capacity > 0) root_out[0] = '\0';
     if (actor == 0u) return -1;
-    if (!read_value(actor + (uintptr_t)L_actor_rootComponent, &root)) return -1;
+    if (!read_value(actor + (uintptr_t)npc_profile::Layout.L_actor_rootComponent, &root)) return -1;
     if (root == 0u) {
         if (root_out != NULL && root_capacity > 0) snprintf(root_out, root_capacity, "empty");
         return 0;
@@ -1399,11 +1353,11 @@ static int looks_like_module_pointer(uintptr_t value) {
 static int ffield_or_object_name(uintptr_t address, char* buffer, size_t capacity) {
     uint32_t name_id = 0u;
     if (address == 0u) return 0;
-    if (read_value(address + (uintptr_t)L_field_name, &name_id) && name_id != 0u &&
+    if (read_value(address + (uintptr_t)npc_profile::Layout.L_field_name, &name_id) && name_id != 0u &&
         resolve_name(name_id, buffer, capacity)) {
         return 1;
     }
-    if (read_value(address + (uintptr_t)L_object_name, &name_id) && name_id != 0u &&
+    if (read_value(address + (uintptr_t)npc_profile::Layout.L_object_name, &name_id) && name_id != 0u &&
         resolve_name(name_id, buffer, capacity)) {
         return 1;
     }
@@ -1442,7 +1396,7 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
         if (!object_name(cls, cls_name, sizeof(cls_name))) {
             snprintf(cls_name, sizeof(cls_name), "<?>");
         }
-        (void)read_value(cls + (uintptr_t)L_struct_children, &children);
+        (void)read_value(cls + (uintptr_t)npc_profile::Layout.L_struct_children, &children);
         pipe_add("%s[%d] class=%s children=0x%llX", label, depth, cls_name,
             (unsigned long long)children);
 
@@ -1461,10 +1415,10 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
                         uint16_t return_offset = 0u;
                         int probe_offset;
                         hits++;
-                        (void)read_value(child + (uintptr_t)L_function_flags, &flags);
-                        (void)read_value(child + (uintptr_t)L_function_numParms, &num_parms);
-                        (void)read_value(child + (uintptr_t)L_function_parmsSize, &parms_size);
-                        (void)read_value(child + (uintptr_t)L_function_returnValueOffset, &return_offset);
+                        (void)read_value(child + (uintptr_t)npc_profile::Layout.L_function_flags, &flags);
+                        (void)read_value(child + (uintptr_t)npc_profile::Layout.L_function_numParms, &num_parms);
+                        (void)read_value(child + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &parms_size);
+                        (void)read_value(child + (uintptr_t)npc_profile::Layout.L_function_returnValueOffset, &return_offset);
                         pipe_add("  ★ UFunction=0x%llX name=%s flags=0x%X native=%d parms=%u size=%u retOff=%u",
                             (unsigned long long)child, field_name, flags,
                             (flags & FUNC_NATIVE) ? 1 : 0, (unsigned)num_parms,
@@ -1479,7 +1433,7 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
                         }
                     }
                 }
-                if (!read_value(child + (uintptr_t)L_field_next, &child)) break;
+                if (!read_value(child + (uintptr_t)npc_profile::Layout.L_field_next, &child)) break;
                 index++;
             }
             pipe_add("   %s fields=%d Summon hits=%d", cls_name, index, hits);
@@ -1490,7 +1444,7 @@ static void dump_class_hierarchy(uintptr_t uclass, const char* label) {
             pipe_add("   %s children empty (fingerprint scan on the first two levels only)", cls_name);
         }
 
-        if (!read_value(cls + (uintptr_t)L_struct_superStruct, &cls)) break;
+        if (!read_value(cls + (uintptr_t)npc_profile::Layout.L_struct_superStruct, &cls)) break;
         depth++;
     }
     pipe_add("%s total Summon* hits=%d", label, total_summon);
@@ -1521,10 +1475,6 @@ static void function_path_probe(void) {
     }
 }
 
-static const int32_t L_property_elementSize = 52;
-static const int32_t L_property_offsetInternal = 68;
-static const int32_t L_ffield_next = 24;
-static const int32_t L_ffield_class = 8;
 
 // 读出某个 UFunction 的完整调用签名:头部字段 + 参数链(FProperty) + 函数体指针候选
 static void dump_function_layout(const char* path) {
@@ -1547,10 +1497,10 @@ static void dump_function_layout(const char* path) {
         pipe_add("layout %s: resolving the handle to an address failed", path);
         return;
     }
-    (void)read_value(func + (uintptr_t)L_function_flags, &flags);
-    (void)read_value(func + (uintptr_t)L_function_numParms, &num_parms);
-    (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
-    (void)read_value(func + (uintptr_t)L_function_returnValueOffset, &return_offset);
+    (void)read_value(func + (uintptr_t)npc_profile::Layout.L_function_flags, &flags);
+    (void)read_value(func + (uintptr_t)npc_profile::Layout.L_function_numParms, &num_parms);
+    if (!read_value(func + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &parms_size)) return;
+    (void)read_value(func + (uintptr_t)npc_profile::Layout.L_function_returnValueOffset, &return_offset);
     pipe_add("=== %s @0x%llX flags=0x%X native=%d numParms=%u parmsSize=%u retOff=%u ===",
         path, (unsigned long long)func, flags, (flags & FUNC_NATIVE) ? 1 : 0,
         (unsigned)num_parms, (unsigned)parms_size, (unsigned)return_offset);
@@ -1576,16 +1526,16 @@ static void dump_function_layout(const char* path) {
                 int32_t p_size = 0;
                 pname[0] = '\0';
                 (void)ffield_or_object_name(field, pname, sizeof(pname));
-                (void)read_value(field + (uintptr_t)L_ffield_class, &pclass);
+                (void)read_value(field + (uintptr_t)npc_profile::Layout.L_ffield_class, &pclass);
                 tname[0] = '\0';
                 if (pclass != 0u && !object_name(pclass, tname, sizeof(tname))) {
                     snprintf(tname, sizeof(tname), "<?>");
                 }
-                (void)read_value(field + (uintptr_t)L_property_offsetInternal, &p_offset);
-                (void)read_value(field + (uintptr_t)L_property_elementSize, &p_size);
+                (void)read_value(field + (uintptr_t)npc_profile::Layout.L_property_offsetInternal, &p_offset);
+                (void)read_value(field + (uintptr_t)npc_profile::Layout.L_property_elementSize, &p_size);
                 pipe_add("    param[%d] %-24s : %-18s offset=%d size=%d", i, pname, tname,
                     p_offset, p_size);
-                if (!read_value(field + (uintptr_t)L_ffield_next, &field)) break;
+                if (!read_value(field + (uintptr_t)npc_profile::Layout.L_ffield_next, &field)) break;
                 i++;
             }
             chain_found++;
@@ -1607,207 +1557,28 @@ static void dump_function_layout(const char* path) {
 // ProcessEvent 定位(靠「被 MinHook 改写过」这一特征判定)与调用测试
 // ---------------------------------------------------------------------------
 
-// Runtime 自报的 ue5.ProcessEvent RVA(来自 0.2.0 日志的 symbols 表)。
-// 0.27 的 A/B 实测证明它指向的不是 ProcessEvent(头字节 60 48 85 C0…,x64 下 0x60 不是
-// 合法指令入口):经它调用 GetTransform 会让栈帧被写坏,6~9 秒后 GS cookie 检查失败,
-// 崩溃签名 0xc0000409 / FAST_FAIL_STACK_COOKIE_CHECK_FAILURE。现在只作诊断输出,禁止用于调用。
-static const uintptr_t kProcessEventRva = 0x18AACD0ull;
-
 static uintptr_t g_process_event_fn = 0u;
 static int g_call_pending = 0;
 static char g_call_result[220] = {0};
-
 typedef void (*ProcessEventFn)(void* object, void* function, void* parms);
-
-static uintptr_t module_base(void) {
-    return (uintptr_t)GetModuleHandleA("HTGame.exe");
-}
-
-// MinHook 的内联 hook 会把函数头改成 jmp 系列指令
-static int looks_hooked(const uint8_t* bytes, int count) {
-    if (count >= 5 && bytes[0] == 0xE9) return 1;                                  // jmp rel32
-    if (count >= 6 && bytes[0] == 0xFF && bytes[1] == 0x25) return 1;              // jmp [rip+disp32]
-    if (count >= 12 && bytes[0] == 0x48 && bytes[1] == 0xB8 && bytes[10] == 0xFF && bytes[11] == 0xE0) {
-        return 1;                                                                  // mov rax,imm64; jmp rax
-    }
-    return 0;
-}
 
 // 字段是函数(UFunction)还是属性(FProperty)?函数的字段类名含 Function
 static int is_function_field(uintptr_t field) {
     uintptr_t field_class = 0u;
     char class_name[80];
     if (field == 0u) return 0;
-    if (!read_value(field + (uintptr_t)L_object_class, &field_class) || field_class == 0u) return 0;
+    if (!read_value(field + (uintptr_t)npc_profile::Layout.L_object_class, &field_class) || field_class == 0u) return 0;
     class_name[0] = '\0';
     if (!object_name(field_class, class_name, sizeof(class_name))) return 0;
     return (strstr(class_name, "Function") != NULL) ? 1 : 0;
 }
 
-// 入口健全性检查:拒绝明显不是函数开头的字节。
-//   0x60 = x64 下非法指令(0.27 那个 base+RVA 候选正是 60 48 85 C0…)
-//   全 0x00 / 0xCC 填充 = 没映射到代码
-static int looks_like_code_entry(const uint8_t* bytes, int count) {
-    int i;
-    int nonzero = 0;
-    if (count < 4) return 0;
-    if (bytes[0] == 0x60) return 0;
-    for (i = 0; i < count; ++i) {
-        if (bytes[i] != 0x00 && bytes[i] != 0xCC) nonzero = 1;
-    }
-    return nonzero;
-}
-
-// ---------------------------------------------------------------------------
-// ProcessEvent 语义锚点扫描
-// ---------------------------------------------------------------------------
-// 游戏更新会重编译,函数序言(压栈/开栈帧的大小)一变,profile 的长签名就失效 ——
-// 2026-10-18 更新后 #0 长签名 status=3,只剩通用序言能命中,拿到的是假入口。
-// 这里改按「语义骨架」找,这三段是 ProcessEvent 的逻辑核心,不随编译变化:
-//   锚点 A: F7 82 B0 00 00 00 00 04 00 00
-//           test dword ptr [rdx+0B0h], 400h —— UFunction::FunctionFlags & FUNC_Native
-//   锚点 B: C1 E8 1E —— shr eax,1Eh(开头判断 UObject 标志)
-//   锚点 C: 48 33 C5 —— 栈 cookie 校验(xor reg, rsp)
-// 只在 PE 异常目录(.pdata)登记的函数起点上找候选,避免把函数中段当入口。
-static const uint8_t kPeNativeTest[10] = {0xF7,0x82,0xB0,0x00,0x00,0x00,0x00,0x04,0x00,0x00};
-static const uint8_t kPeFlagShift[3] = {0xC1,0xE8,0x1E};
-static const uint8_t kPeCookie[3] = {0x48,0x33,0xC5};
-
-typedef struct RtfEntryV1 {
-    uint32_t begin;
-    uint32_t end;
-    uint32_t unwind;
-} RtfEntryV1;
-
-static uintptr_t g_pe_anchor_cache = 0u;
-static int g_pe_anchor_done = 0;
-
-static int window_has(const uint8_t* p, size_t n, const uint8_t* needle, size_t needle_len) {
-    size_t i = 0u;
-    if (needle_len == 0u || n < needle_len) return 0;
-    // 用 memchr 找首字节(内部是 SIMD),避免对几十万个函数逐字节扫
-    while (i + needle_len <= n) {
-        const uint8_t* hit = (const uint8_t*)memchr(p + i, needle[0], n - needle_len + 1u - i);
-        if (hit == NULL) return 0;
-        if (memcmp(hit, needle, needle_len) == 0) return 1;
-        i = (size_t)(hit - p) + 1u;
-    }
-    return 0;
-}
-
-static uintptr_t find_process_event_by_anchors(char* note, size_t note_size) {
-    uint8_t* base = (uint8_t*)GetModuleHandleA("HTGame.exe");
-    IMAGE_DOS_HEADER* dos;
-    IMAGE_NT_HEADERS64* nt;
-    IMAGE_DATA_DIRECTORY* dir;
-    RtfEntryV1* table;
-    uint32_t count;
-    uint32_t i;
-    uintptr_t best = 0u;
-    size_t best_size = 0u;
-    int hits = 0;
-
-    if (note != NULL && note_size > 0u) note[0] = '\0';
-    if (base == NULL) {
-        if (note != NULL && note_size > 0u) snprintf(note, note_size, "anchor scan: module base unavailable");
-        return 0u;
-    }
-    dos = (IMAGE_DOS_HEADER*)base;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        if (note != NULL && note_size > 0u) snprintf(note, note_size, "anchor scan: unrecognized DOS header");
-        return 0u;
-    }
-    nt = (IMAGE_NT_HEADERS64*)(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) {
-        if (note != NULL && note_size > 0u) snprintf(note, note_size, "anchor scan: unrecognized NT header");
-        return 0u;
-    }
-    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
-    if (dir->VirtualAddress == 0u || dir->Size < sizeof(RtfEntryV1)) {
-        if (note != NULL && note_size > 0u) {
-            snprintf(note, note_size, "anchor scan: no .pdata (size=%lu), cannot anchor on function starts",
-                (unsigned long)dir->Size);
-        }
-        return 0u;
-    }
-    table = (RtfEntryV1*)(base + dir->VirtualAddress);
-    count = (uint32_t)(dir->Size / sizeof(RtfEntryV1));
-    for (i = 0; i < count; ++i) {
-        uint32_t begin = table[i].begin;
-        uint32_t end = table[i].end;
-        const uint8_t* p;
-        size_t size;
-        size_t window;
-        if (begin >= end) continue;
-        size = (size_t)(end - begin);
-        if (size < 24u || size > 0x20000u) continue;
-        p = base + begin;
-        window = (size < 0x200u) ? size : 0x200u;
-        if (!window_has(p, window, kPeNativeTest, sizeof(kPeNativeTest))) continue;
-        if (!window_has(p, window, kPeFlagShift, sizeof(kPeFlagShift))) continue;
-        if (!window_has(p, window, kPeCookie, sizeof(kPeCookie))) continue;
-        ++hits;
-        if (size > best_size) {
-            best_size = size;
-            best = (uintptr_t)p;
-        }
-    }
-    if (note != NULL && note_size > 0u) {
-        snprintf(note, note_size, "anchor scan: .pdata=%lu functions, hits=%d, chosen=0x%llX",
-            (unsigned long)count, hits, (unsigned long long)best);
-    }
-    return best;
-}
-
-// 候选自检:入口像代码、函数体里同时有「FUNC_Native 检查」和「标志右移」
-static int pe_candidate_ok(uintptr_t address) {
-    uint8_t buf[0x200];
-    if (address == 0u) return 0;
-    memset(buf, 0, sizeof(buf));
-    if (!read_bytes(address, buf, sizeof(buf))) return 0;
-    if (!looks_like_code_entry(buf, 16)) return 0;
-    if (!window_has(buf, sizeof(buf), kPeNativeTest, sizeof(kPeNativeTest))) return 0;
-    if (!window_has(buf, sizeof(buf), kPeFlagShift, sizeof(kPeFlagShift))) return 0;
-    return 1;
-}
-
+// Only the unique, entry-validated Profile symbol is callable.
 static void process_event_probe(void) {
-    uintptr_t base = module_base();
-    uintptr_t sig = g_process_event;
-    uintptr_t scanned = 0u;
-    char note[260];
-
-    // 1) 官方完整签名(#0)—— 游戏更新后可能失效
-    // 2) 语义锚点扫描 —— 不依赖函数序言,作为兜底
-    if (g_pe_anchor_done == 0) {
-        g_pe_anchor_cache = find_process_event_by_anchors(note, sizeof(note));
-        g_pe_anchor_done = 1;
-        if (note[0] != '\0') pipe_add("%s", note);
-    } else {
-        pipe_add("anchor scan: reusing the cached result 0x%llX", (unsigned long long)g_pe_anchor_cache);
-    }
-    scanned = g_pe_anchor_cache;
-
-    pipe_add("module base=0x%llX signature=0x%llX anchor=0x%llX",
-        (unsigned long long)base, (unsigned long long)sig, (unsigned long long)scanned);
-
-    g_process_event_fn = 0u;
-    if (scanned != 0u && pe_candidate_ok(scanned)) {
-        g_process_event_fn = scanned;
-        pipe_add("PE: using the anchor scan 0x%llX", (unsigned long long)g_process_event_fn);
-    } else if (sig != 0u && pe_candidate_ok(sig)) {
-        g_process_event_fn = sig;
-        pipe_add("PE: using the signature hit 0x%llX (anchor self-check passed)", (unsigned long long)g_process_event_fn);
-    } else if (sig != 0u) {
-        // 2026-10-18 的崩溃就是这条:签名命中的函数体里没有 ProcessEvent 的锚点
-        pipe_add("PE: signature hit 0x%llX but the body has no ProcessEvent anchor - refused",
-            (unsigned long long)sig);
-    } else {
-        pipe_add("PE: no usable entry - spawn calls are disabled this run (never called, to avoid corrupting the game stack)");
-    }
-    stage_log("PE chosen=0x%llX mode=%d signature=0x%llX anchor=0x%llX",
-        (unsigned long long)g_process_event_fn, g_test_mode,
-        (unsigned long long)sig, (unsigned long long)scanned);
+    g_process_event_fn = npc_profile::Compatibility.MatchesEntry(g_core, "ProcessEvent.entry", g_process_event, true)
+        ? g_process_event : 0;
+    pipe_add("ProcessEvent profile entry=%llX; calls %s", (unsigned long long)g_process_event_fn,
+        g_process_event_fn ? "enabled" : "unavailable");
 }
 
 // controller 实例的字段表:给 AIClass / LeaderNetCharacter 找现成值来源
@@ -1825,7 +1596,7 @@ static void controller_field_dump(void) {
         return;
     }
     cls = object_by_handle(handle);
-    if (cls == 0u || !read_value(cls + (uintptr_t)L_struct_children, &child) || child == 0u) return;
+    if (cls == 0u || !read_value(cls + (uintptr_t)npc_profile::Layout.L_struct_children, &child) || child == 0u) return;
 
     pipe_add("---- HTPlayerController fields (reference for parameter values) ----");
     while (child != 0u && index < 400 && emitted < 26) {
@@ -1837,15 +1608,15 @@ static void controller_field_dump(void) {
                 if (strstr(fname, kKeys[k]) != NULL) {
                     int32_t p_offset = -1;
                     int32_t p_size = 0;
-                    (void)read_value(child + (uintptr_t)L_property_offsetInternal, &p_offset);
-                    (void)read_value(child + (uintptr_t)L_property_elementSize, &p_size);
+                    (void)read_value(child + (uintptr_t)npc_profile::Layout.L_property_offsetInternal, &p_offset);
+                    (void)read_value(child + (uintptr_t)npc_profile::Layout.L_property_elementSize, &p_size);
                     pipe_add("  field %-34s offset=%-5d size=%d", fname, p_offset, p_size);
                     emitted++;
                     break;
                 }
             }
         }
-        if (!read_value(child + (uintptr_t)L_field_next, &child)) break;
+        if (!read_value(child + (uintptr_t)npc_profile::Layout.L_field_next, &child)) break;
         index++;
     }
     if (emitted == 0) pipe_add("  (no matching field name found)");
@@ -1875,8 +1646,8 @@ static int run_call_test(void) {
         snprintf(g_call_result, sizeof(g_call_result), "skipped: function address conversion failed");
         return 0;
     }
-    (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
-    (void)read_value(func + (uintptr_t)L_function_returnValueOffset, &return_offset);
+    if (!read_value(func + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &parms_size)) return 0;
+    (void)read_value(func + (uintptr_t)npc_profile::Layout.L_function_returnValueOffset, &return_offset);
     if (parms_size == 0u || parms_size > (uint16_t)sizeof(parms)) {
         snprintf(g_call_result, sizeof(g_call_result), "skipped: parmsSize=%u is out of range", (unsigned)parms_size);
         return 0;
@@ -1945,7 +1716,7 @@ static int run_softclassref_test(void) {
     }
     lib_class = object_by_handle(lib_handle);
     if (lib_class != 0u) {
-        (void)read_value(lib_class + (uintptr_t)L_uclass_classDefaultObject, &lib_cdo);
+        (void)read_value(lib_class + (uintptr_t)npc_profile::Layout.L_uclass_classDefaultObject, &lib_cdo);
     }
     if (lib_cdo == 0u ||
         !ok(g_objects->find_exact(g_objects->user,
@@ -1965,10 +1736,10 @@ static int run_softclassref_test(void) {
         return 0;
     }
 
-    (void)read_value(func1 + (uintptr_t)L_function_parmsSize, &size1);
-    (void)read_value(func1 + (uintptr_t)L_function_returnValueOffset, &ret1);
-    (void)read_value(func2 + (uintptr_t)L_function_parmsSize, &size2);
-    (void)read_value(func2 + (uintptr_t)L_function_returnValueOffset, &ret2);
+    (void)read_value(func1 + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &size1);
+    (void)read_value(func1 + (uintptr_t)npc_profile::Layout.L_function_returnValueOffset, &ret1);
+    (void)read_value(func2 + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &size2);
+    (void)read_value(func2 + (uintptr_t)npc_profile::Layout.L_function_returnValueOffset, &ret2);
     if (size1 == 0u || size2 == 0u || size1 > (uint16_t)sizeof(parms1) ||
         size2 > (uint16_t)sizeof(parms2) || ret1 + 32u > size1) {
         snprintf(g_call_result, sizeof(g_call_result),
@@ -2047,7 +1818,6 @@ static int run_softclassref_test(void) {
     return 1;
 }
 
-static const int32_t L_controller_pawn = 776;
 
 // 前置声明(这些 helper 定义在本节之后)
 static uintptr_t get_pawn(void);
@@ -2068,37 +1838,57 @@ static uintptr_t library_cdo(const char* class_path);
 
 typedef struct ParamInfo {
     char name[72];
+    char type[72];
+    char structure[72];
     int32_t offset;
     int32_t size;
 } ParamInfo;
 
 // 读一个 UFunction 的参数表(名字/偏移/大小)。参数链实测固定落在 +0x50
 static int read_function_params(uintptr_t func, ParamInfo* params) {
-    uintptr_t field = 0u;
-    int i = 0;
-    if (func == 0u) return 0;
-    if (!read_value(func + 0x50u, &field) || field == 0u) return 0;
-    while (field != 0u && i < MAX_PARAMS) {
-        params[i].name[0] = '\0';
-        (void)ffield_or_object_name(field, params[i].name, sizeof(params[i].name));
-        params[i].offset = -1;
-        params[i].size = 0;
-        (void)read_value(field + (uintptr_t)L_property_offsetInternal, &params[i].offset);
-        (void)read_value(field + (uintptr_t)L_property_elementSize, &params[i].size);
-        i++;
-        if (!read_value(field + (uintptr_t)L_ffield_next, &field)) break;
+    uintptr_t field{};
+    uint16_t size{};
+    uint8_t expected{};
+    if (!func || !read_value(func+npc_profile::Layout.L_function_parmsSize,&size) ||
+        !read_value(func+npc_profile::Layout.L_function_numParms,&expected) || expected>MAX_PARAMS ||
+        !read_value(func+npc_profile::Layout.L_struct_childProperties,&field)) return 0;
+    int count{};
+    for (int visited{}; field && visited<128; ++visited) {
+        uint64_t flags{};
+        uintptr_t type{},next{};
+        uint32_t name{},type_name{};
+        if (!read_value(field+npc_profile::Layout.L_propertyFlags,&flags) ||
+            !read_value(field+npc_profile::Layout.L_ffield_next,&next) || next==field) return 0;
+        if (flags & 0x80) { // CPF_Parm, a reflected semantic flag.
+            if (count>=MAX_PARAMS) return 0;
+            auto& p=params[count]; p={};
+            if (!read_value(field+npc_profile::Layout.L_field_name,&name) ||
+                !resolve_name(name,p.name,sizeof(p.name)) ||
+                !read_value(field+npc_profile::Layout.L_ffield_class,&type) || !type ||
+                !read_value(type,&type_name) || !resolve_name(type_name,p.type,sizeof(p.type)) ||
+                !read_value(field+npc_profile::Layout.L_property_offsetInternal,&p.offset) ||
+                !read_value(field+npc_profile::Layout.L_property_elementSize,&p.size) ||
+                p.offset<0 || p.size<=0 || p.offset>size || p.size>size-p.offset) return 0;
+            if (strcmp(p.type,"StructProperty")==0) {
+                uintptr_t structure{};
+                if (!read_value(field+npc_profile::Layout.L_structPropertyStruct,&structure) ||
+                    !object_name(structure,p.structure,sizeof(p.structure))) return 0;
+            }
+            ++count;
+        }
+        field=next;
     }
-    return i;
+    return count==expected ? count : 0;
 }
 
 // 按参数名写入值;返回是否写入成功
 static int set_param_by_name(
     const ParamInfo* params, int count, uint8_t* parms, size_t capacity,
-    const char* name, const void* value, int32_t value_size) {
+    const char* name, const void* value, int32_t value_size, const char* type = nullptr, const char* structure = nullptr) {
     int i;
     for (i = 0; i < count; ++i) {
         if (strcmp(params[i].name, name) != 0) continue;
-        if (params[i].offset < 0 || (size_t)params[i].offset + (size_t)value_size > capacity) return 0;
+        if ((type && strcmp(params[i].type,type)!=0) || (structure && strcmp(params[i].structure,structure)!=0) || params[i].size != value_size || params[i].offset < 0 || (size_t)params[i].offset + (size_t)value_size > capacity) return 0;
         memcpy(parms + params[i].offset, value, (size_t)value_size);
         return 1;
     }
@@ -2149,7 +1939,7 @@ static uintptr_t find_class_from_world(const char* class_name_substring) {
             if (strstr(cls, class_name_substring) == NULL) continue;
             actor = object_by_handle(page[i].handle);
             if (actor == 0u) continue;
-            if (read_value(actor + (uintptr_t)L_object_class, &uclass) && uclass != 0u) {
+            if (read_value(actor + (uintptr_t)npc_profile::Layout.L_object_class, &uclass) && uclass != 0u) {
                 return uclass;
             }
         }
@@ -2225,7 +2015,7 @@ static int run_spawn(int do_call) {
         if (!object_name(npc_class, cls_name, sizeof(cls_name))) {
             snprintf(cls_name, sizeof(cls_name), "<?>");
         }
-        if (read_value(npc_class + (uintptr_t)L_object_outer, &outer) && outer != 0u) {
+        if (read_value(npc_class + (uintptr_t)npc_profile::Layout.L_object_outer, &outer) && outer != 0u) {
             if (!object_name(outer, outer_name, sizeof(outer_name))) {
                 snprintf(outer_name, sizeof(outer_name), "<?>");
             }
@@ -2368,7 +2158,7 @@ static int read_actor_bottom(uintptr_t actor, uint8_t* buf, size_t capacity, dou
         if (!ok(g_objects->find_exact(g_objects->user, sv(kPaths[path_index]), &handle))) continue;
         func = object_by_handle(handle);
         if (func == 0u) continue;
-        (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
+        if (!read_value(func + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &parms_size)) return 0;
         if (parms_size == 0u || parms_size > (uint16_t)capacity) continue;
         count = read_function_params(func, params);
         if (count <= 0) continue;
@@ -2437,7 +2227,7 @@ static int move_actor_z(uintptr_t actor, double dz) {
     }
     func = object_by_handle(handle);
     if (func == 0u) return 0;
-    (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
+    if (!read_value(func + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &parms_size)) return 0;
     if (parms_size == 0u || parms_size > (uint16_t)sizeof(buf)) return 0;
     count = read_function_params(func, params);
     if (count <= 0) return 0;
@@ -2569,7 +2359,7 @@ static int actor_looks_alive(uintptr_t actor) {
     uintptr_t uclass = 0u;
     char name[128];
     if (actor == 0u) return 0;
-    if (!read_value(actor + (uintptr_t)L_object_class, &uclass) || uclass == 0u) return 0;
+    if (!read_value(actor + (uintptr_t)npc_profile::Layout.L_object_class, &uclass) || uclass == 0u) return 0;
     if (g_names == NULL) return 1;   // 无法校验时不拦,避免误伤正常路径
     if (!object_name(uclass, name, sizeof(name))) return 0;
     return name[0] != '\0' ? 1 : 0;
@@ -2627,7 +2417,6 @@ static int spawn_uclass(uintptr_t npc_class) {
         double px = 0.0, py = 0.0, pz = 0.0;
         double fx = 0.0, fy = 0.0, fz = 0.0;
         int translation_offset = -1;
-        int off;
         memset(loc, 0, sizeof(loc));
         memset(fwd, 0, sizeof(fwd));
 
@@ -2636,17 +2425,8 @@ static int spawn_uclass(uintptr_t npc_class) {
             memcpy(&px, loc + r_loc, 8);
             memcpy(&py, loc + r_loc + 8u, 8);
             memcpy(&pz, loc + r_loc + 16u, 8);
-            for (off = 0; off + 24 <= 96; off += 8) {
-                double vx = 0.0, vy = 0.0, vz = 0.0;
-                memcpy(&vx, xform + r_xf + off, 8);
-                memcpy(&vy, xform + r_xf + off + 8u, 8);
-                memcpy(&vz, xform + r_xf + off + 16u, 8);
-                if (vx > px - 1.0 && vx < px + 1.0 && vy > py - 1.0 && vy < py + 1.0 &&
-                    vz > pz - 1.0 && vz < pz + 1.0) {
-                    translation_offset = off;
-                    break;
-                }
-            }
+            if (r_xf + npc_profile::Layout.L_transformSize <= sizeof(xform))
+                translation_offset = static_cast<int>(npc_profile::Layout.L_transformTranslation);
         }
         if (call_by_path(pawn, "/Script/Engine.Actor:GetActorForwardVector",
                 fwd, sizeof(fwd), &r_fwd)) {
@@ -2801,7 +2581,7 @@ static int spawn_uclass(uintptr_t npc_class) {
         root_cls[0] = '\0';
         g_spawn_root_class[0] = '\0';
         g_spawn_has_model = 1;
-        if (read_value(spawned + (uintptr_t)L_actor_rootComponent, &root) && root != 0u) {
+        if (read_value(spawned + (uintptr_t)npc_profile::Layout.L_actor_rootComponent, &root) && root != 0u) {
             if (!object_class_name(root, root_cls, sizeof(root_cls))) {
                 snprintf(root_cls, sizeof(root_cls), "<?>");
             }
@@ -2868,7 +2648,7 @@ static int run_spawn_class(int index) {
             (unsigned long long)g_class_entries[index].sample.id);
         return 0;
     }
-    if (!read_value(actor + (uintptr_t)L_object_class, &uclass) || uclass == 0u) {
+    if (!read_value(actor + (uintptr_t)npc_profile::Layout.L_object_class, &uclass) || uclass == 0u) {
         snprintf(g_call_result, sizeof(g_call_result), "%s",
             g_localizer.Text("text.uclass_unreadable",
                 "The selected class UClass could not be read").c_str());
@@ -3053,7 +2833,7 @@ static void unsubscribe_capture(void) {
 static uintptr_t get_pawn(void) {
     uintptr_t pawn = 0u;
     if (g_controller == 0u) return 0u;
-    if (!read_value(g_controller + (uintptr_t)L_controller_pawn, &pawn)) return 0u;
+    if (!read_value(g_controller + (uintptr_t)npc_profile::Layout.L_controller_pawn, &pawn)) return 0u;
     return pawn;
 }
 
@@ -3080,13 +2860,15 @@ static int call_by_path(
     }
     // 注意:无参数且无返回值的函数(如 K2_DestroyActor) parmsSize 就是 0,那是合法的。
     // 早期版本把 0 当失败,导致「清除失效」。
-    (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
+    if (!read_value(func + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &parms_size)) return 0;
     if (parms_size > (uint16_t)capacity) {
         stage_log("CALL abort %s : parmsSize=%u > capacity=%u", path, (unsigned)parms_size,
             (unsigned)capacity);
         return 0;
     }
-    (void)read_value(func + (uintptr_t)L_function_returnValueOffset, ret_off);
+    if (!read_value(func + (uintptr_t)npc_profile::Layout.L_function_returnValueOffset, ret_off) ||
+        (*ret_off != 0xFFFF && *ret_off >= parms_size) ||
+        !npc_profile::Compatibility.MatchesEntry(g_core,"ProcessEvent.entry",g_process_event_fn,true)) return 0;
     fn_name[0] = '\0';
     if (!object_name(func, fn_name, sizeof(fn_name))) {
         snprintf(fn_name, sizeof(fn_name), "<?>");
@@ -3107,7 +2889,7 @@ static uintptr_t library_cdo(const char* class_path) {
         return 0u;
     }
     cls = object_by_handle(handle);
-    if (cls != 0u) (void)read_value(cls + (uintptr_t)L_uclass_classDefaultObject, &cdo);
+    if (cls != 0u) (void)read_value(cls + (uintptr_t)npc_profile::Layout.L_uclass_classDefaultObject, &cdo);
     {
         char nm[120];
         nm[0] = '\0';
@@ -3243,15 +3025,21 @@ static int run_summon(int do_call) {
             "SUMMON step 3 all failed: SpawnTransform stays empty (all zero), continuing");
     }
 
-    // 4) 组装参数
+    // Assemble only a reflected SummonAI parameter contract.
+    AnomalyGenerationHandleV1 summon_handle{};
+    if (!ok(g_objects->find_exact(g_objects->user, sv("/Script/HTGame.HTAbilityCharacter:SummonAI"), &summon_handle)))
+        SUMMON_FAIL("SummonAI reflection unavailable");
+    ParamInfo summon_params[MAX_PARAMS]{};
+    const auto summon_function = object_by_handle(summon_handle);
+    const auto summon_count = read_function_params(summon_function, summon_params);
     memset(parms, 0, sizeof(parms));
-    memcpy(parms + 0, ai_class, 40u);
-    if (r_loc + 24u <= sizeof(loc)) memcpy(parms + 48, loc + r_loc, 24u);
-    memcpy(parms + 76, &level, 4);
-    memcpy(parms + 80, &level, 4);
-    if (transform_ok != 0 && r_xf + 96u <= sizeof(xform)) {
-        memcpy(parms + 96, xform + r_xf, 96u);
-    }
+    if (!transform_ok || r_loc + 24u > sizeof(loc) || r_xf + npc_profile::Layout.L_transformSize > sizeof(xform) ||
+        !set_param_by_name(summon_params, summon_count, parms, sizeof(parms), "AIClass", ai_class, sizeof(ai_class), "SoftClassProperty") ||
+        !set_param_by_name(summon_params, summon_count, parms, sizeof(parms), "SpawnOffsetLocation", loc + r_loc, 24, "StructProperty", "Vector") ||
+        !set_param_by_name(summon_params, summon_count, parms, sizeof(parms), "AICharacterLevel", &level, sizeof(level), "IntProperty") ||
+        !set_param_by_name(summon_params, summon_count, parms, sizeof(parms), "NewSkillLevel", &level, sizeof(level), "IntProperty") ||
+        !set_param_by_name(summon_params, summon_count, parms, sizeof(parms), "SpawnTransform", xform + r_xf, npc_profile::Layout.L_transformSize, "StructProperty", "Transform"))
+        SUMMON_FAIL("SummonAI parameter contract mismatch");
     {
         double px = 0.0, py = 0.0, pz = 0.0;
         memcpy(&px, loc + r_loc, 8);
@@ -3277,7 +3065,8 @@ static int run_summon(int do_call) {
         SUMMON_FAIL("⑤ failed: the SummonAI call entry is unavailable (bad path or parmsSize)");
     }
     SUMMON_LOG(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "SUMMON returned: no crash");
-    memcpy(&generated, parms + 200, 8);
+    if (r_sum + sizeof(generated) > sizeof(parms)) SUMMON_FAIL("SummonAI return offset is invalid");
+    memcpy(&generated, parms + r_sum, sizeof(generated));
     snprintf(g_call_result, sizeof(g_call_result),
         "⑤ SummonAI done: ReturnValue=0x%llX(%s) retOff=%u",
         (unsigned long long)generated, (generated != 0u) ? "actor acquired" : "empty",
@@ -3329,7 +3118,7 @@ static int run_softclass_test(void) {
     if (ok(g_objects->find_exact(g_objects->user, sv("/Script/Engine.KismetSystemLibrary"), &lib_handle))) {
         lib_class = object_by_handle(lib_handle);
         if (lib_class != 0u) {
-            (void)read_value(lib_class + (uintptr_t)L_uclass_classDefaultObject, &lib_cdo);
+            (void)read_value(lib_class + (uintptr_t)npc_profile::Layout.L_uclass_classDefaultObject, &lib_cdo);
         }
     }
     if (lib_cdo == 0u) {
@@ -3337,8 +3126,8 @@ static int run_softclass_test(void) {
         return 0;
     }
 
-    (void)read_value(func + (uintptr_t)L_function_parmsSize, &parms_size);
-    (void)read_value(func + (uintptr_t)L_function_returnValueOffset, &return_offset);
+    if (!read_value(func + (uintptr_t)npc_profile::Layout.L_function_parmsSize, &parms_size)) return 0;
+    (void)read_value(func + (uintptr_t)npc_profile::Layout.L_function_returnValueOffset, &return_offset);
     if (parms_size == 0u || parms_size > (uint16_t)sizeof(parms)) {
         snprintf(g_call_result, sizeof(g_call_result), "② skipped: parmsSize=%u is out of range", (unsigned)parms_size);
         return 0;
@@ -3408,16 +3197,16 @@ static void world_chain_probe(void) {
     }
     pipe_add("world chain: world=0x%llX", (unsigned long long)g_world);
 
-    if (!read_value(g_world + (uintptr_t)L_world_gameInstance, &game_instance) || game_instance == 0u) {
-        pipe_add("world chain: reading gameInstance failed (offset %d)", L_world_gameInstance);
+    if (!read_value(g_world + (uintptr_t)npc_profile::Layout.L_world_gameInstance, &game_instance) || game_instance == 0u) {
+        pipe_add("world chain: reading gameInstance failed (offset %d)", npc_profile::Layout.L_world_gameInstance);
         return;
     }
-    if (!read_value(game_instance + (uintptr_t)L_gameInstance_localPlayers, &players_data) ||
+    if (!read_value(game_instance + (uintptr_t)npc_profile::Layout.L_gameInstance_localPlayers, &players_data) ||
         players_data == 0u) {
-        pipe_add("world chain: reading the localPlayers array failed (offset %d)", L_gameInstance_localPlayers);
+        pipe_add("world chain: reading the localPlayers array failed (offset %d)", npc_profile::Layout.L_gameInstance_localPlayers);
         return;
     }
-    if (!read_value(game_instance + (uintptr_t)L_gameInstance_localPlayers + 8u, &players_num)) {
+    if (!read_value(game_instance + (uintptr_t)npc_profile::Layout.L_gameInstance_localPlayers + 8u, &players_num)) {
         players_num = 0u;
     }
     pipe_add("world chain: gameInstance=0x%llX localPlayers data=0x%llX num=%u",
@@ -3428,8 +3217,8 @@ static void world_chain_probe(void) {
         pipe_add("world chain: reading localPlayer[0] failed");
         return;
     }
-    if (!read_value(local_player + (uintptr_t)L_localPlayer_controller, &controller) || controller == 0u) {
-        pipe_add("world chain: reading the controller failed (offset %d)", L_localPlayer_controller);
+    if (!read_value(local_player + (uintptr_t)npc_profile::Layout.L_localPlayer_controller, &controller) || controller == 0u) {
+        pipe_add("world chain: reading the controller failed (offset %d)", npc_profile::Layout.L_localPlayer_controller);
         return;
     }
     namebuf[0] = '\0';
@@ -3438,7 +3227,7 @@ static void world_chain_probe(void) {
     }
     pipe_add("world chain: controller=0x%llX class=%s", (unsigned long long)controller, namebuf);
 
-    if (!read_value(controller + (uintptr_t)L_object_class, &controller_class) || controller_class == 0u) {
+    if (!read_value(controller + (uintptr_t)npc_profile::Layout.L_object_class, &controller_class) || controller_class == 0u) {
         pipe_add("world chain: reading the controller UClass failed");
         return;
     }
@@ -3587,6 +3376,7 @@ static AnomalyStatusV1 ANOMALY_CALL plugin_load(
     if (g_core == NULL || g_ui == NULL || g_window == NULL) {
         return mk_status(ANOMALY_STATUS_V1_UNAVAILABLE);
     }
+    if (!npc_profile::Load(host)) return mk_status(ANOMALY_STATUS_V1_UNAVAILABLE);
     test_mode_load();
     stage_log("NPC Summon 1.1.0 (settings persistence) loaded mode=%d", g_test_mode);
     *plugin_context = (void*)g_probes;
