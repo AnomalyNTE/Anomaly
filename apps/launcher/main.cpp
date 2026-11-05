@@ -2217,6 +2217,26 @@ void LauncherRefreshMods(
             entry.path = item.path();
             entry.directory = true;
             entry.enabled = LauncherStripDisabled(name) == name;
+            {
+                // A folder counts as disabled when every container inside carries the marker.
+                bool has_container = false;
+                bool all_disabled = true;
+                std::error_code scan;
+                for (const auto& file :
+                    std::filesystem::recursive_directory_iterator(item.path(), scan)) {
+                    if (!file.is_regular_file(scan)) continue;
+                    const std::string inner = LauncherNarrow(file.path().filename());
+                    std::string lower = inner;
+                    std::transform(lower.begin(), lower.end(), lower.begin(),
+                        [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    const bool container = lower.ends_with(".pak") || lower.ends_with(".utoc") ||
+                        lower.ends_with(".ucas");
+                    const bool disabled = lower.ends_with(".disabled");
+                    if (container || disabled) has_container = has_container || container || disabled;
+                    if (container) all_disabled = false;
+                }
+                if (has_container) entry.enabled = !all_disabled;
+            }
             entry.icon_path = item.path();
             LauncherReadModJson(item.path(), entry);
             LauncherReadModNotes(item.path(), entry);
@@ -2293,21 +2313,35 @@ bool LauncherSetModEnabled(const LauncherSnapshot& snapshot, const LauncherModEn
     const auto directory = LauncherModsDirectory(snapshot);
     if (!std::filesystem::is_directory(directory, error)) return false;
     if (entry.directory) {
-        // Names come from JSON as UTF-8; fs::path(std::string) would read them as ANSI and rename
-        // the folder to mojibake (and could throw while doing so).
-        const std::wstring base = LauncherWiden(LauncherStripDisabled(entry.name));
-        std::filesystem::path target = entry.path;
-        if (enabled) {
-            target = directory / base;
-        } else {
-            target = directory / (base + L".disabled");
-        }
+        // Renaming the folder does nothing: the engine scans Paks recursively, so a `.disabled`
+        // folder is still mounted. Toggle the container file names instead.
+        bool touched = false;
         try {
-            std::filesystem::rename(entry.path, target, error);
+            for (const auto& file : std::filesystem::recursive_directory_iterator(entry.path, error)) {
+                if (!file.is_regular_file(error)) continue;
+                const std::wstring full = file.path().wstring();
+                const std::wstring name = file.path().filename().wstring();
+                std::wstring lower = name;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                    [](const wchar_t c) { return static_cast<wchar_t>(c >= L'A' && c <= L'Z' ? c + 32 : c); });
+                const bool is_container = lower.ends_with(L".pak") || lower.ends_with(L".utoc") ||
+                    lower.ends_with(L".ucas");
+                const bool is_disabled = lower.ends_with(L".disabled");
+                if (enabled && is_disabled) {
+                    std::wstring stripped = full.substr(0, full.size() - 9);  // ".disabled"
+                    std::error_code inner;
+                    std::filesystem::rename(file.path(), stripped, inner);
+                    touched = touched || !inner;
+                } else if (!enabled && is_container) {
+                    std::error_code inner;
+                    std::filesystem::rename(file.path(), full + L".disabled", inner);
+                    touched = touched || !inner;
+                }
+            }
         } catch (...) {
             return false;
         }
-        return !error;
+        return touched;
     }
     for (const auto& item : std::filesystem::directory_iterator(directory, error)) {
         if (item.is_directory(error) || !LauncherIsModFile(item.path())) continue;
