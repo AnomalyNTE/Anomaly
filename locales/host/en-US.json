@@ -553,6 +553,27 @@
     "notice.agree": "I have read and accept these notes",
     "notice.confirm": "Accept and continue",
     "notice.welcome": "Welcome to Anomaly",
-    "notice.exit": "Not now"
+    "notice.exit": "Not now",
+    "launcher.mods.list_view": "List view",
+    "launcher.mods.grid_view": "Grid view",
+    "launcher.mods.select_all": "Select all / none",
+    "launcher.mods.bulk_enable": "Enable selected",
+    "launcher.mods.bulk_disable": "Disable selected",
+    "launcher.mods.bulk_uninstall": "Uninstall selected",
+    "launcher.mods.check_updates": "Check for updates",
+    "launcher.mods.checking": "Checking…",
+    "launcher.mods.notes": "Notes",
+    "launcher.mods.save": "Save",
+    "launcher.mods.associate": "Link",
+    "launcher.mods.installed": "Installed",
+    "launcher.mods.reinstall": "Reinstall",
+    "launcher.mods.update": "Update",
+    "launcher.mods.page": "Page",
+    "launcher.mods.needs_lua": "May need Lua (inactive)",
+    "launcher.browse.hide_nsfw": "Hide NSFW",
+    "launcher.browse.all_categories": "All categories",
+    "launcher.browse.loaded_only": "Loaded:",
+    "launcher.browse.game_running": "Game is running: install disabled",
+    "launcher.mods.install": "Install"
   }
 }

@@ -4043,7 +4043,7 @@ void DrawBrowseMode(
     static bool mature_loaded{};
     std::vector<std::string> category_ids;
     std::vector<const char*> category_labels;
-    category_labels.push_back("全部分类");
+    category_labels.push_back(Text(translator, anomaly::MessageId::LauncherBrowseAllCategories));
     for (const auto& [id, name] : g_gb_categories) {
         category_ids.push_back(id);
         category_labels.push_back(name.c_str());
@@ -4086,7 +4086,7 @@ void DrawBrowseMode(
         }).detach();
     }
     ImGui::SameLine();
-    if (ImGui::Checkbox("隐藏 NSFW", &hide_mature)) {
+    if (ImGui::Checkbox(Text(translator, anomaly::MessageId::LauncherBrowseHideNsfw), &hide_mature)) {
         LauncherSavePref("hideMature", hide_mature);
     }
     ImGui::SameLine();
@@ -4126,7 +4126,7 @@ void DrawBrowseMode(
     }
     ImGui::SameLine();
 
-    ImGui::TextDisabled("已加载内：");
+    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherBrowseLoadedOnly));
     ImGui::SameLine();
     const char* client_labels[] = {"名称", "下载", "大小", "时间"};
     for (int mode = 0; mode < 4; ++mode) {
@@ -4270,7 +4270,8 @@ void DrawBrowseMode(
         ImGui::TextDisabled("%s", info.c_str());
         ImGui::SameLine();
         if (!item.page_url.empty()) {
-            if (ImGui::Button((std::string("页面") + "##page" + item.id).c_str())) {
+            if (ImGui::Button((std::string(Text(translator, anomaly::MessageId::LauncherModsPage)) + "##page" +
+                item.id).c_str())) {
                 const std::wstring url(item.page_url.begin(), item.page_url.end());
                 ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             }
@@ -4278,11 +4279,11 @@ void DrawBrowseMode(
         }
         const bool installed = installed_ids.count(item.id) != 0;
         if (installed && !(install_running && install_target == item.id)) {
-            ImGui::TextDisabled("已安装");
+            ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsInstalled));
             ImGui::SameLine();
         }
         if (game_running) {
-            ImGui::TextDisabled("游戏运行中，无法安装");
+            ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherBrowseGameRunning));
         } else if (install_running && install_target == item.id) {
             // The row is already wide; put the progress on its own line so the cancel button is
             // never pushed outside the window.
@@ -4305,7 +4306,9 @@ void DrawBrowseMode(
             if (ImGui::Button((std::string("取消") + "##cancel" + item.id).c_str())) {
                 g_download_cancel.store(true);
             }
-        } else if (ImGui::Button((std::string(installed ? "重装" : "安装") + "##ins" + item.id).c_str()) &&
+        } else if (ImGui::Button((std::string(installed ? Text(translator, anomaly::MessageId::LauncherModsReinstall)
+                : Text(translator, anomaly::MessageId::LauncherModsInstall)) +
+                "##ins" + item.id).c_str()) &&
             !install_running) {
             install_running = true;
             install_target = item.id;
@@ -4456,8 +4459,8 @@ void DrawModsMode(
         ImGui::SameLine();
     };
     if (check_running) {
-        ImGui::TextDisabled("检查中…");
-    } else if (ImGui::Button("检查更新")) {
+        ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsChecking));
+    } else if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsCheckUpdates))) {
         check_running = true;
         std::thread([] {
             std::vector<LauncherModEntry> copy;
@@ -4476,27 +4479,27 @@ void DrawModsMode(
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(game_running);
-    if (ImGui::Button("全选 / 全不选")) {
+    if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsSelectAll))) {
         bool all = true;
         for (const auto& entry : mods) all = all && entry.selected;
         for (auto& entry : mods) entry.selected = !all;
     }
     ImGui::SameLine();
-    if (ImGui::Button("批量启用")) {
+    if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsBulkEnable))) {
         for (const auto& entry : mods) {
             if (entry.selected && !entry.enabled) LauncherSetModEnabled(snapshot, entry, true);
         }
         LauncherRefreshMods(snapshot, mods);
     }
     ImGui::SameLine();
-    if (ImGui::Button("批量禁用")) {
+    if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsBulkDisable))) {
         for (const auto& entry : mods) {
             if (entry.selected && entry.enabled) LauncherSetModEnabled(snapshot, entry, false);
         }
         LauncherRefreshMods(snapshot, mods);
     }
     ImGui::SameLine();
-    if (ImGui::Button("批量卸载")) {
+    if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsBulkUninstall))) {
         std::size_t selected{};
         for (const auto& entry : mods) {
             if (entry.selected) ++selected;
@@ -4508,7 +4511,8 @@ void DrawModsMode(
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button(grid_view ? "列表视图" : "网格视图")) {
+    if (ImGui::Button(grid_view ? Text(translator, anomaly::MessageId::LauncherModsListView)
+            : Text(translator, anomaly::MessageId::LauncherModsGridView))) {
         grid_view = !grid_view;
         LauncherSavePref("gridView", grid_view);
     }
@@ -4607,7 +4611,8 @@ void DrawModsMode(
             ImGui::SameLine();
             if (!entry.remote_version.empty() &&
                 (entry.version.empty() || entry.remote_version != entry.version)) {
-                if (ImGui::Button((std::string("更新") + "##gu" + entry.name).c_str())) {
+                if (ImGui::Button((std::string(Text(translator, anomaly::MessageId::LauncherModsUpdate)) + "##gu" +
+                entry.name).c_str())) {
                     import_message = LauncherUpdateMod(snapshot, entry);
                     LauncherRefreshMods(snapshot, mods);
                     ImGui::EndGroup();
@@ -4645,7 +4650,8 @@ void DrawModsMode(
             static_cast<double>(entry.bytes) / (1024.0 * 1024.0), meta.c_str());
         if (entry.needs_lua) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "· 可能需 Lua（不生效）");
+            ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "· %s",
+                Text(translator, anomaly::MessageId::LauncherModsNeedsLua));
         }
         // Every action is a button inside a disabled scope: the click is evaluated first and the
         // action runs afterwards, so a disabled scope never spans an early return.
@@ -4675,7 +4681,8 @@ void DrawModsMode(
         }
         ImGui::SameLine();
         const bool notes_clicked = ImGui::Button(
-            (std::string("备注") + "##notes" + entry.name).c_str());
+            (std::string(Text(translator, anomaly::MessageId::LauncherModsNotes)) + "##notes" +
+                entry.name).c_str());
         if (notes_clicked) {
             notes_source = entry.name;
             std::snprintf(notes_name_buffer, sizeof(notes_name_buffer), "%s",
@@ -4714,7 +4721,8 @@ void DrawModsMode(
             ImGui::SameLine();
             ImGui::BeginDisabled(game_running);
             const bool update_clicked = ImGui::Button(
-                (std::string("更新") + "##u" + entry.name).c_str());
+                (std::string(Text(translator, anomaly::MessageId::LauncherModsUpdate)) + "##u" +
+                entry.name).c_str());
             ImGui::EndDisabled();
             if (update_clicked) {
                 import_message = LauncherUpdateMod(snapshot, entry);
@@ -4803,7 +4811,7 @@ void DrawModsMode(
         ImGui::SetNextItemWidth(Scale(240.0f));
         ImGui::InputText("##notes-id", notes_id_buffer, sizeof(notes_id_buffer));
         ImGui::SameLine();
-        if (ImGui::Button("关联")) {
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsAssociate))) {
             for (const auto& entry : mods) {
                 if (entry.name != notes_source) continue;
                 std::string raw = notes_id_buffer;
@@ -4825,7 +4833,7 @@ void DrawModsMode(
                 break;
             }
         }
-        if (ImGui::Button("保存")) {
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsSave))) {
             for (const auto& entry : mods) {
                 if (entry.name != notes_source) continue;
                 LauncherWriteModNotes(entry.icon_path, notes_name_buffer, notes_buffer,

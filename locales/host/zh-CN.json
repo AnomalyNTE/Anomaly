@@ -553,6 +553,27 @@
     "notice.agree": "我已阅读并同意以上说明",
     "notice.confirm": "同意并继续",
     "notice.welcome": "欢迎使用 Anomaly",
-    "notice.exit": "暂不使用"
+    "notice.exit": "暂不使用",
+    "launcher.mods.list_view": "列表视图",
+    "launcher.mods.grid_view": "网格视图",
+    "launcher.mods.select_all": "全选 / 全不选",
+    "launcher.mods.bulk_enable": "批量启用",
+    "launcher.mods.bulk_disable": "批量禁用",
+    "launcher.mods.bulk_uninstall": "批量卸载",
+    "launcher.mods.check_updates": "检查更新",
+    "launcher.mods.checking": "检查中…",
+    "launcher.mods.notes": "备注",
+    "launcher.mods.save": "保存",
+    "launcher.mods.associate": "关联",
+    "launcher.mods.installed": "已安装",
+    "launcher.mods.reinstall": "重装",
+    "launcher.mods.update": "更新",
+    "launcher.mods.page": "页面",
+    "launcher.mods.needs_lua": "可能需 Lua（不生效）",
+    "launcher.browse.hide_nsfw": "隐藏 NSFW",
+    "launcher.browse.all_categories": "全部分类",
+    "launcher.browse.loaded_only": "已加载内：",
+    "launcher.browse.game_running": "游戏运行中，无法安装",
+    "launcher.mods.install": "安装"
   }
 }
