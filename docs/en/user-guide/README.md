@@ -15,6 +15,7 @@ This is how you use Anomaly day to day: how to install it, where to find plugins
 7. [Themes and backgrounds](theme.md) — swap color schemes (including the Milk Frog theme), apply background images and stickers, and build layouts with the web editor.
 8. [Diagnostics CLI](diagnostics-cli.md) — inspect Runtime, Profile, and memory state with `anomaly-cli`.
 9. [NTE Build Profile](nte-profiles.md) — why features that depend on the game's structures may be temporarily unavailable.
+10. [Mods](mods.md) — manage `Paks/~mods` from the launcher and learn the mod-loading switch.
 
 ## Terminology quick reference
 
