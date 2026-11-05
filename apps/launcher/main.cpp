@@ -1518,6 +1518,22 @@ const char* ClientLauncherFileName(const anomaly::launcher::NteClient client) no
         ? "NTEGlobalLauncher.exe" : "NTELauncher.exe";
 }
 
+
+// File and network helpers run on worker threads and have no translator parameter, but they still
+// produce user-visible text. The UI stores the active translator here each frame; lookups are
+// read-only after start-up, so concurrent reads are safe.
+const anomaly::Translator* g_translator{};
+
+std::string Tr(const anomaly::MessageId id) {
+    return g_translator != nullptr ? std::string(g_translator->Text(id)) : std::string{};
+}
+
+std::string Tr(const anomaly::MessageId id, std::initializer_list<std::string_view> arguments) {
+    if (g_translator == nullptr) return {};
+    return g_translator->Format(id, std::span<const std::string_view>(arguments.begin(),
+        arguments.size()));
+}
+
 std::string Format(
     const anomaly::Translator& translator, anomaly::MessageId id,
     std::initializer_list<std::string_view> arguments) {
@@ -2543,20 +2559,20 @@ bool LauncherExtractArchive(const std::filesystem::path& archive,
 std::string LauncherImportZip(
     const LauncherSnapshot& snapshot, HWND window, const std::filesystem::path& archive) {
     (void)window;
-    if (LauncherGameRunning()) return "游戏正在运行，无法导入（请先退出游戏）";
+    if (LauncherGameRunning()) return Tr(anomaly::MessageId::LauncherMsgImportGameRunning);
     std::error_code error;
 
     // Same pipeline as the online installer: sniff the archive format, extract with tar or 7-Zip,
     // then copy the whole tree so companion assets survive.
     const auto kind = LauncherArchiveOf(archive);
-    if (kind == LauncherArchiveKind::Unknown) return "不是可识别的压缩包（zip / 7z / rar）";
+    if (kind == LauncherArchiveKind::Unknown) return Tr(anomaly::MessageId::LauncherMsgUnsupportedArchive);
 
     const auto staging = std::filesystem::temp_directory_path(error) / L"anomaly-mod-import";
     std::filesystem::remove_all(staging, error);
     std::filesystem::create_directories(staging, error);
     if (!LauncherExtractArchive(archive, staging)) {
         std::filesystem::remove_all(staging, error);
-        return "解压失败（zip 用内置 tar，7z/rar 需要 7-Zip）";
+        return Tr(anomaly::MessageId::LauncherMsgExtractFailed);
     }
 
     // Folder name: the archive stem, sanitised and converted properly (UTF-8 -> wide).
@@ -2587,7 +2603,7 @@ std::string LauncherImportZip(
 
     if (copied == 0) {
         std::filesystem::remove_all(target, error);
-        return "压缩包里没有可导入的文件";
+        return Tr(anomaly::MessageId::LauncherMsgNoImportFiles);
     }
 
     // Source record: prefer mod.json's modLink, otherwise keep what we can.
@@ -2617,11 +2633,12 @@ std::string LauncherImportZip(
         }
     }
 
-    std::string message = "已导入 " + std::to_string(copied) + " 个文件到 " + display_name + "；重启游戏后生效";
+    std::string message = Tr(anomaly::MessageId::LauncherMsgImported,
+        {std::to_string(copied), display_name});
     if (pak_files == 0) {
-        message = "导入完成但没有 pak/utoc/ucas——它可能是 Aurora 脚本或模块，不会生效";
+        message = Tr(anomaly::MessageId::LauncherMsgNoPakImported);
     } else if (lua_files > 0) {
-        message += "；含 " + std::to_string(lua_files) + " 个 Lua 脚本，脚本不会生效";
+        message += Tr(anomaly::MessageId::LauncherMsgLuaNotRun, {std::to_string(lua_files)});
     }
     return message;
 }
@@ -3105,11 +3122,11 @@ bool LauncherHttpDownload(const std::wstring& host, const std::wstring& path,
 std::string LauncherUpdateMod(
     const LauncherSnapshot& snapshot, const LauncherModEntry& entry) {
     const std::string id = LauncherGameBananaId(entry.link);
-    if (id.empty()) return "没有 GameBanana 来源，无法自动更新";
+    if (id.empty()) return Tr(anomaly::MessageId::LauncherMsgNoSource);
     const std::wstring profile_path = std::wstring(L"/apiv11/Mod/") +
         std::wstring(id.begin(), id.end()) + L"/ProfilePage";
     const std::string body = LauncherHttpGet(L"gamebanana.com", profile_path);
-    if (body.empty()) return "获取下载地址失败";
+    if (body.empty()) return Tr(anomaly::MessageId::LauncherMsgFetchDownloadFailed);
     std::string download;
     const auto key = body.find("\"_sDownloadUrl\"");
     if (key != std::string::npos) {
@@ -3121,7 +3138,7 @@ std::string LauncherUpdateMod(
             download = download.substr(1, download.size() - 2);
         }
     }
-    if (download.empty()) return "该 mod 页面没有可下载文件";
+    if (download.empty()) return Tr(anomaly::MessageId::LauncherMsgNoDownloadableFile);
 
     std::error_code error;
     const auto archive = std::filesystem::temp_directory_path(error) / L"anomaly-mod-update.zip";
@@ -3130,7 +3147,7 @@ std::string LauncherUpdateMod(
     const std::wstring scheme = L"https://gamebanana.com";
     if (download_path.rfind(scheme, 0) == 0) download_path = download_path.substr(scheme.size());
     if (!LauncherHttpDownload(download_host, download_path, archive)) {
-        return "下载失败";
+        return Tr(anomaly::MessageId::LauncherMsgDownloadFailed);
     }
 
     const auto target = LauncherModsDirectory(snapshot) / entry.name;
@@ -3153,7 +3170,7 @@ std::string LauncherUpdateMod(
     if (!LauncherRunAndWait(
             L"tar.exe -xf \"" + archive.wstring() + L"\" -C \"" + staging.wstring() + L"\"",
             120000)) {
-        return "解压失败";
+        return Tr(anomaly::MessageId::LauncherMsgExtractFailed);
     }
     std::size_t copied{};
     for (const auto& item : std::filesystem::recursive_directory_iterator(staging, error)) {
@@ -3731,7 +3748,7 @@ bool LauncherFetchFileFallback(const std::string& mod_id, LauncherGbFile& file,
 // Downloads one GameBanana mod straight into ~mods/<name>/ and records its source.
 std::string LauncherInstallFromGameBanana(
     const LauncherSnapshot& snapshot, const std::string& mod_id, const std::string& display_name) {
-    if (LauncherGameRunning()) return "游戏正在运行，无法安装（请先退出游戏）";
+    if (LauncherGameRunning()) return Tr(anomaly::MessageId::LauncherMsgInstallGameRunning);
     const std::wstring profile_path = std::wstring(L"/apiv11/Mod/") +
         std::wstring(mod_id.begin(), mod_id.end()) + L"/ProfilePage";
     std::string body = LauncherHttpGet(L"gamebanana.com", profile_path);
@@ -3741,7 +3758,7 @@ std::string LauncherInstallFromGameBanana(
     }
     if (body.empty()) {
         LauncherUpdateLog("install: page fetch (direct) empty for mod " + mod_id);
-        return "获取页面失败";
+        return Tr(anomaly::MessageId::LauncherMsgFetchPageFailed);
     }
     // Some packs are only a shell: the pak mounts, but the actual effect comes from a Lua script the
     // page tells you to use. The description is the only place that says so, so check it.
@@ -3767,7 +3784,7 @@ std::string LauncherInstallFromGameBanana(
         // ProfilePage omits `_aFiles` for some mods; the /Files endpoint still has them.
         if (!LauncherFetchFileFallback(mod_id, file, version)) {
             LauncherUpdateLog("install: no files for mod " + mod_id);
-            return "该 mod 没有可下载文件（页面与 /Files 接口都为空）";
+            return Tr(anomaly::MessageId::LauncherMsgNoFilesAnywhere);
         }
         LauncherUpdateLog("install: used /Files fallback for mod " + mod_id);
     }
@@ -3779,18 +3796,18 @@ std::string LauncherInstallFromGameBanana(
     if (!LauncherDownloadUrl(file.url, archive)) {
         if (g_download_cancel.load()) {
             std::filesystem::remove(archive, error);
-            return "已取消";
+            return Tr(anomaly::MessageId::LauncherMsgCancelled);
         }
         LauncherUpdateLog("install: WinHTTP failed, trying curl: " + file.url);
         if (!LauncherDownloadWithCurl(file.url, archive)) {
             LauncherUpdateLog("install: curl failed " + file.url);
-            return "下载失败（WinHTTP 与 curl 都失败，详见 logs\launcher-update.log）";
+            return Tr(anomaly::MessageId::LauncherMsgDownloadFailedBoth);
         }
     }
     if (LauncherArchiveOf(archive) == LauncherArchiveKind::Unknown) {
         std::filesystem::remove(archive, error);
         LauncherUpdateLog("install: not an archive " + file.url);
-        return "下载到的不是压缩包（可能是错误页）";
+        return Tr(anomaly::MessageId::LauncherMsgNotAnArchive);
     }
 
     const std::wstring folder_name = LauncherSafeFolderName(display_name);
@@ -3804,12 +3821,12 @@ std::string LauncherInstallFromGameBanana(
         std::filesystem::remove(archive, error);
         std::filesystem::remove_all(staging, error);
         std::filesystem::remove_all(target, error);
-        return "已取消";
+        return Tr(anomaly::MessageId::LauncherMsgCancelled);
     }
     if (!LauncherExtractArchive(archive, staging)) {
         std::filesystem::remove(archive, error);
         std::filesystem::remove_all(staging, error);
-        return "解压失败（zip 用内置 tar，7z/rar 需要 7-Zip）";
+        return Tr(anomaly::MessageId::LauncherMsgExtractFailedHint);
     }
     // Copy the whole tree, not just the pak triplet: some mods ship companion assets (image sets,
     // scripts) that a tool reads at runtime, and dropping them silently breaks the mod.
@@ -3844,7 +3861,7 @@ std::string LauncherInstallFromGameBanana(
     if (copied == 0 || pak_files == 0) {
         std::filesystem::remove_all(target, error);
         if (pak_files == 0 && lua_files == 0) {
-            return "压缩包里没有 pak/utoc/ucas（可能是 Aurora 模块或工具包）";
+            return Tr(anomaly::MessageId::LauncherMsgNoPakAurora);
         }
         // A Lua-only pack still gets installed so it can be tracked and flagged; it just will not
         // do anything until a Lua runtime exists.
@@ -3874,16 +3891,15 @@ std::string LauncherInstallFromGameBanana(
     }
     LauncherWriteAuroraSource(target, mod_id, file.id, file.name, file.md5, author, display_name,
         needs_lua_runtime);
-    std::string message = "已安装 " + display_name + "（" + std::to_string(copied) +
-        " 个文件）；重启游戏后生效";
+    std::string message = Tr(anomaly::MessageId::LauncherMsgInstalled,
+        {display_name, std::to_string(copied)});
     if (needs_lua_runtime) {
-        message += "；注意：该 mod 页面写着需要 Lua/Aurora，**没有对应运行时不会生效**";
+        message += Tr(anomaly::MessageId::LauncherMsgNeedsLuaWarn);
     } else if (lua_files > 0) {
-        message += "；其中含 " + std::to_string(lua_files) +
-            " 个 Lua 脚本——**脚本部分不会生效**（本框架没有 Lua 运行时）";
+        message += Tr(anomaly::MessageId::LauncherMsgLuaPartial, {std::to_string(lua_files)});
     } else if (companion_files > 0) {
-        message += "；含 " + std::to_string(companion_files) +
-            " 个配套资源，通常需要对应工具（如 NTEUiSwap Plus）才会显示效果";
+        message += Tr(anomaly::MessageId::LauncherMsgCompanion,
+            {std::to_string(companion_files)});
     }
     return message;
 }
@@ -4341,6 +4357,7 @@ void DrawModsMode(
     const anomaly::Translator& translator) {
     (void)window;
     (void)controller;
+    g_translator = &translator;
     g_decode_budget = 1;  // one image per frame
     static std::vector<LauncherModEntry> mods;
     static bool refreshed{};
