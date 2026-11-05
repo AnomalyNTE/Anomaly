@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "baseClass": "/Script/HTGame.HTAICharacter",
+  "nameTable": "/Game/Text/ST_ActorName.ST_ActorName",
+  "excludedBlueprints": [
+    "/Game/Blueprints/Character/Monster/mon_Lacrimosa_Boss.mon_Lacrimosa_Boss_C"
+  ],
+  "blueprints": {
+    "/Game/Blueprints/Character/Monster/mon_nanally/mon_nanally_BP.mon_nanally_BP_C": {
+      "useCatalogName": true
+    },
+    "/Game/Blueprints/Character/Monster/mon_nanally/mon_nanally_BP_q110150.mon_nanally_BP_q110150_C": {
+      "useCatalogName": true,
+      "normalCombatBlueprint": "/Game/Blueprints/Character/NPC/NPC_011/Date/mon_nanally_BP_WJ1004.mon_nanally_BP_WJ1004_C"
+    },
+    "/Game/Blueprints/Character/NPC/NPC_011/Date/mon_nanally_BP_WJ1004.mon_nanally_BP_WJ1004_C": {
+      "useCatalogName": true
+    }
+  },
+  "finalTower": {
+    "sceneDataAsset": "/Game/Maps_4N/DataTable/DA_SceneSolely_FT.DA_SceneSolely_FT",
+    "serverCombatBlueprint": "/Game/Blueprints/Character/Monster/Boss_32/Boss_32_BP.Boss_32_BP_C",
+    "configAliases": {
+      "FT_BP_Boss_37": "FT_BP_Boss_37_Stage1"
+    }
+  },
+  "nameAliases": {
+    "mon_nanally": "NPC_011_Name",
+    "boss_28": "CNPC_116006_Name",
+    "boss_28_challenge_easy": "CNPC_116006_1_Name",
+    "boss_28_challenge_normal": "CNPC_116006_2_Name",
+    "boss_28_challenge_hard": "CNPC_116006_3_Name",
+    "boss_28_woman_challenge_easy": "CNPC_116006_1_Name",
+    "boss_28_woman_challenge_normal": "CNPC_116006_2_Name",
+    "boss_28_woman_challenge_hard": "CNPC_116006_3_Name",
+    "boss_32": "NPC_022_Name",
+    "boss_33_056summon": "mon_56_Name",
+    "boss_34b_maki": "boss_34maki_Name",
+    "mon_51": "NPC_074_A_Name"
+  }
+}

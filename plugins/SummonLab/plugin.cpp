@@ -3,6 +3,7 @@
 #include <anomaly/sdk/services/core.h>
 #include <anomaly/sdk/services/interop.h>
 #include <anomaly/sdk/services/nte.h>
+#include <anomaly/sdk/services/platform.h>
 #include <anomaly/sdk/services/ui.h>
 #include <anomaly/sdk/services/ue5.h>
 
@@ -27,6 +28,8 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
+#include <chrono>
 #include <mutex>
 
 #include <nlohmann/json.hpp>
@@ -131,6 +134,7 @@ struct ClassEntry {
 };
 
 struct BlueprintOptions {
+    bool use_catalog_name{};
     std::string default_display_name;
     std::string normal_combat_blueprint;
 };
@@ -249,6 +253,20 @@ struct Context {
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyHookServiceV1* hooks{};
+    const AnomalyUe5AssetsServiceV1* assets{};
+    const AnomalySchedulerServiceV1* scheduler{};
+    const AnomalyStorageServiceV1* storage{};
+    std::string catalog_base, catalog_name_table;
+    std::set<std::string, std::less<>> catalog_exclusions;
+    std::map<std::string, std::string, std::less<>> catalog_name_aliases;
+    std::map<std::string, BlueprintOptions, std::less<>> catalog_policy;
+    using CatalogLabels = std::map<std::string, std::string, std::less<>>;
+    std::atomic<std::shared_ptr<const CatalogLabels>> catalog_labels;
+    std::atomic<bool> catalog_stop{false}, catalog_busy{false}, catalog_refresh_requested{true};
+    bool catalog_preparing{}; // Game only
+    std::chrono::steady_clock::time_point catalog_preparation_started;
+    AnomalyGenerationHandleV1 catalog_task{};
+    std::array<char, 160> catalog_scan_status{};
     std::array<NativeCombatHook, 5> local_combat_hooks{};
     struct DamageReportLayout {
         std::uint32_t size{}, source{}, target{}, effect{}, damage{}, hp{};
@@ -306,7 +324,7 @@ struct Context {
     // DLL generation rather than guessing an ITextData destructor on unload.
     NameTextConversion name_text;
 
-    // 离线生成的蓝图目录（assets/summonable.json）
+    // Immutable catalog contents are prepared on Worker and swapped under the mutex
     std::vector<ClassEntry> catalog;
     std::map<std::string, BlueprintOptions, std::less<>> blueprint_options;
     char catalog_filter[64]{};
@@ -466,10 +484,7 @@ bool FindLocalPawn(AnomalyGenerationHandleV1* out) {
 
 // ---------------------------------------------------------------- 蓝图目录
 
-// 目录来自离线导出：FModel 把 HT/Content/Blueprints 全量导成 JSON，脚本按
-// Super ／ SuperStruct 链结合 dump 出来的 SDK 头，挑出继承 HTAICharacter 的蓝图，
-// 落成 assets/summonable.json。运行时只读这份目录，不再扫内存注册表——
-// 未加载的蓝图类根本不在注册表里，扫不出完整清单。
+// Only gameplay policy is shipped; the class/name catalog comes from ue5.assets.
 // 宿主把整个插件包原样复制到 .cache\<pid>\packages\<id>\<generation>\ 再加载 DLL，
 // assets/ 在 DLL 旁边；profile/ 由宿主的 anomaly.profile 服务加载。
 std::wstring PackagePath(const wchar_t* relative_path) {
@@ -491,81 +506,191 @@ std::wstring PackagePath(const wchar_t* relative_path) {
     return std::filesystem::is_regular_file(path, error) ? path.wstring() : std::wstring{};
 }
 
-bool LoadCatalog() {
-    const std::wstring path = PackagePath(L"assets/summonable.json");
-    if (path.empty()) {
-        return false;
+bool LoadCatalogPolicy() {
+    const auto path = PackagePath(L"assets/catalog-policy.json");
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    const auto root = nlohmann::json::parse(input, nullptr, false);
+    if (!root.is_object() || root.value("schemaVersion", 0) != 1) return false;
+    g_context.catalog_base = root.at("baseClass").get<std::string>();
+    g_context.catalog_name_table = root.at("nameTable").get<std::string>();
+    g_context.catalog_exclusions = root.at("excludedBlueprints").get<std::set<std::string, std::less<>>>();
+    for (const auto& [key, value] : root.at("blueprints").items()) {
+        BlueprintOptions options;
+        options.use_catalog_name = value.value("useCatalogName", false);
+        options.normal_combat_blueprint = value.value("normalCombatBlueprint", std::string{});
+        g_context.catalog_policy.emplace(key, std::move(options));
     }
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        return false;
-    }
-    const std::string document((std::istreambuf_iterator<char>(in)),
-                               std::istreambuf_iterator<char>());
-    in.close();
+    g_context.catalog_name_aliases = root.at("nameAliases").get<decltype(g_context.catalog_name_aliases)>();
+    const auto& ft = root.at("finalTower");
+    g_context.final_tower_scene_asset = ft.at("sceneDataAsset").get<std::string>();
+    g_context.final_tower_aliases = ft.at("configAliases").get<std::map<std::string, std::string, std::less<>>>();
+    g_context.final_tower_combat_blueprint = ft.at("serverCombatBlueprint").get<std::string>();
+    return true;
+}
 
-    const auto root = nlohmann::json::parse(document, nullptr, false);
-    if (root.is_discarded() || !root.is_object()) {
-        return false;
-    }
-    if (root.value("schemaVersion", 0) != 1) {
-        return false;
-    }
-    const auto groups = root.find("groups");
-    if (groups == root.end() || !groups->is_array()) {
-        return false;
-    }
+void SetScanStatus(const char* key, const char* fallback, std::string_view argument = {}) {
+    const std::array<std::string_view, 1> args{argument};
+    const auto text = argument.empty() ? g_context.localizer.Text(key, fallback) :
+        g_context.localizer.Format(key, fallback, args);
+    std::scoped_lock lock(g_context.mutex);
+    std::snprintf(g_context.catalog_scan_status.data(), g_context.catalog_scan_status.size(), "%s", text.c_str());
+}
 
+void LogCatalogFailure(const AnomalyStatusV1& status) {
+    // Preserve the service's diagnostic detail without adding technical UI text.
+    if (g_context.core && g_context.core->log && status.message.data && status.message.size)
+        g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, status.message);
+}
+
+constexpr char kCatalogCacheFile[] = "catalog-cache.json";
+struct CatalogCollection {
+    std::vector<std::string> paths;
+    std::map<std::string, std::string, std::less<>> names;
+};
+
+bool PublishCatalog(CatalogCollection& collection) {
+    if (collection.paths.empty() || collection.names.empty()) return false;
+    std::sort(collection.paths.begin(), collection.paths.end());
+    collection.paths.erase(std::unique(collection.paths.begin(), collection.paths.end()), collection.paths.end());
+    auto table = std::make_shared<summon_lab::ActorNameTable>();
+    std::set<std::string> ambiguous;
+    for (const auto& [key, name] : collection.names) {
+        if (name.empty()) continue;
+        auto identity = summon_lab::NameIdentity(key);
+        if (identity.empty() || ambiguous.contains(identity)) continue;
+        const auto [at, added] = table->emplace(identity, name);
+        if (!added && at->second != name) { table->erase(at); ambiguous.insert(std::move(identity)); }
+    }
+    for (const auto& [identity, key] : g_context.catalog_name_aliases) {
+        const auto name = collection.names.find(key);
+        if (name != collection.names.end() && !name->second.empty())
+            table->insert_or_assign(summon_lab::NameIdentity(identity), name->second);
+    }
     std::vector<ClassEntry> parsed;
-    std::map<std::string, BlueprintOptions, std::less<>> options;
-    parsed.reserve(static_cast<std::size_t>(root.value("count", 0)) + 16);
-    for (const auto& group : *groups) {
-        if (!group.is_object()) continue;
-        const std::string prefix = group.value("prefix", std::string{});
-        const auto items = group.find("entries");
-        if (items == group.end() || !items->is_array()) continue;
-        for (const auto& item : *items) {
-            if (!item.is_object()) continue;
-            const std::string name = item.value("n", std::string{});
-            const std::string package = item.value("p", std::string{});
-            if (name.empty() || package.empty()) continue;
-            const auto names = summon_lab::ResolveBlueprintNames(name, g_context.localizer);
-            const std::string& display_name = names.specific.empty() ? names.family : names.specific;
-            const std::string label = display_name.empty() ? name : display_name + " | " + name;
-            const std::string class_path = prefix + package + "." + name;
-            parsed.push_back(ClassEntry{label, class_path,
-                                        label + "\n" + class_path + "\n" + names.family});
-            BlueprintOptions entry_options;
-            if (item.value("useCatalogName", false)) entry_options.default_display_name = display_name;
-            entry_options.normal_combat_blueprint = item.value("normalCombatBlueprint", std::string{});
-            if (!entry_options.default_display_name.empty() || !entry_options.normal_combat_blueprint.empty())
-                options.emplace(class_path, std::move(entry_options));
-        }
+    parsed.reserve(collection.paths.size());
+    auto labels = std::make_shared<Context::CatalogLabels>();
+    auto options = g_context.catalog_policy;
+    for (const auto& path : collection.paths) {
+        if (path.size() > kPathCapacity - 1 || !path.starts_with('/') || !path.ends_with("_C") ||
+            path.find('\0') != std::string::npos || path.find('.') == std::string::npos) return false;
+        if (g_context.catalog_exclusions.contains(path)) continue;
+        const auto name = path.substr(path.rfind('.') + 1);
+        const auto names = summon_lab::ResolveBlueprintNames(name, *table);
+        const auto& display = names.specific.empty() ? names.family : names.specific;
+        const auto label = display.empty() ? name : display + " | " + name;
+        parsed.push_back({label, path, label + "\n" + path + "\n" + names.family});
+        labels->emplace(path, label);
+        if (auto it = options.find(path); it != options.end() && it->second.use_catalog_name)
+            it->second.default_display_name = display;
     }
-    for (const auto& [class_path, entry_options] : options) {
-        const auto& alternative = entry_options.normal_combat_blueprint;
-        if (entry_options.default_display_name.size() >= kDisplayNameCapacity ||
-            (!alternative.empty() && (alternative.size() >= kPathCapacity || alternative == class_path ||
-                std::none_of(parsed.begin(), parsed.end(), [&](const auto& entry) {
-                    return entry.path == alternative;
-                })))) return false;
+    for (auto& [path, option] : options) {
+        if (option.default_display_name.size() >= kDisplayNameCapacity) return false;
+        auto& alternative = option.normal_combat_blueprint;
+        if (alternative.size() >= kPathCapacity || (!alternative.empty() && alternative == path)) return false;
+        if (!alternative.empty() && !labels->contains(alternative)) alternative.clear();
     }
-
+    if (parsed.empty() || g_context.catalog_stop.load(std::memory_order_acquire)) return false;
     {
         std::scoped_lock lock(g_context.mutex);
-        g_context.catalog = std::move(parsed);
-        g_context.blueprint_options = std::move(options);
-        const auto ft = root.find("finalTower");
-        if (ft != root.end()) {
-            // Asset paths and row aliases are game data, alongside the blueprint catalog.
-            g_context.final_tower_scene_asset = ft->at("sceneDataAsset").get<std::string>();
-            g_context.final_tower_aliases = ft->at("configAliases").get<
-                std::map<std::string, std::string, std::less<>>>();
-            g_context.final_tower_combat_blueprint = ft->value("serverCombatBlueprint", std::string{});
-        }
+        g_context.catalog.swap(parsed);
+        g_context.blueprint_options.swap(options);
         g_context.catalog_loaded = true;
+        g_context.catalog_labels.store(std::move(labels), std::memory_order_release);
     }
     return true;
+}
+
+void LoadCatalogCache() {
+    if (!g_context.storage || g_context.catalog_base.empty()) return;
+    std::size_t size{};
+    const auto storage = g_context.storage;
+    const auto path = anomaly::sdk::StringView(kCatalogCacheFile);
+    if (storage->read(storage->user, path, {}, &size).code != ANOMALY_STATUS_V1_OK ||
+        size == 0 || size > 4U * 1024U * 1024U) return;
+    std::vector<std::uint8_t> bytes(size);
+    if (storage->read(storage->user, path, {bytes.data(), bytes.size()}, &size).code != ANOMALY_STATUS_V1_OK) return;
+    const auto root = nlohmann::json::parse(bytes.begin(), bytes.begin() + size, nullptr, false);
+    if (!root.is_object() || root.value("schemaVersion", 0) != 1 ||
+        root.value("baseClass", std::string{}) != g_context.catalog_base ||
+        root.value("nameTable", std::string{}) != g_context.catalog_name_table) return;
+    CatalogCollection collection;
+    collection.paths = root.at("classes").get<std::vector<std::string>>();
+    collection.names = root.at("names").get<decltype(collection.names)>();
+    if (PublishCatalog(collection)) SetScanStatus("catalog.scan.cached", "Cached catalog");
+}
+
+int ANOMALY_CALL CollectAssetClass(void* user, AnomalyStringViewV1 path) noexcept {
+    try {
+        if (g_context.catalog_stop.load(std::memory_order_acquire)) return 0;
+        static_cast<CatalogCollection*>(user)->paths.emplace_back(path.data, path.size);
+        return 1;
+    } catch (...) { return 0; }
+}
+int ANOMALY_CALL CollectAssetName(void* user, AnomalyStringViewV1 key, AnomalyStringViewV1 name) noexcept {
+    try {
+        if (g_context.catalog_stop.load(std::memory_order_acquire)) return 0;
+        static_cast<CatalogCollection*>(user)->names.emplace(std::string(key.data, key.size), std::string(name.data, name.size));
+        return 1;
+    } catch (...) { return 0; }
+}
+
+void ANOMALY_CALL RefreshCatalogWorker(void*, AnomalyGenerationHandleV1) noexcept {
+    struct Complete { ~Complete() { g_context.catalog_busy.store(false, std::memory_order_release); } } complete;
+    try {
+        CatalogCollection collection;
+        const auto assets = g_context.assets;
+        auto result = assets->enumerate_derived(assets->user, anomaly::sdk::StringView(g_context.catalog_base), CollectAssetClass, &collection);
+        if (result.code == ANOMALY_STATUS_V1_OK)
+            result = assets->enumerate_string_table(assets->user, anomaly::sdk::StringView(g_context.catalog_name_table), CollectAssetName, &collection);
+        if (g_context.catalog_stop.load(std::memory_order_acquire)) return;
+        if (result.code != ANOMALY_STATUS_V1_OK || !PublishCatalog(collection)) {
+            LogCatalogFailure(result);
+            SetScanStatus("catalog.scan.failed", "Catalog refresh failed");
+            return;
+        }
+        const auto document = nlohmann::json{{"schemaVersion", 1}, {"baseClass", g_context.catalog_base},
+            {"nameTable", g_context.catalog_name_table}, {"classes", collection.paths}, {"names", collection.names}}.dump();
+        const auto storage = g_context.storage;
+        if (!storage || storage->write_atomic(storage->user, anomaly::sdk::StringView(kCatalogCacheFile),
+                {reinterpret_cast<const std::uint8_t*>(document.data()), document.size()}).code != ANOMALY_STATUS_V1_OK) {
+            SetScanStatus("catalog.scan.cache_failed", "Catalog ready, cache unavailable");
+            return;
+        }
+        SetScanStatus("catalog.scan.done", "Catalog ready: {0} classes", std::to_string(collection.paths.size()));
+    } catch (...) { SetScanStatus("catalog.scan.failed", "Catalog refresh failed"); }
+}
+
+void AdvanceCatalogPreparation() {
+    if (g_context.catalog_stop.load(std::memory_order_acquire)) return;
+    if (!g_context.catalog_preparing && !g_context.catalog_busy.load(std::memory_order_acquire) &&
+        g_context.catalog_refresh_requested.exchange(false, std::memory_order_acq_rel)) {
+        g_context.catalog_preparing = true;
+        g_context.catalog_preparation_started = std::chrono::steady_clock::now();
+        g_context.catalog_busy.store(true, std::memory_order_release);
+        SetScanStatus("catalog.scan.running", "Refreshing catalog");
+    }
+    if (!g_context.catalog_preparing) return;
+    const auto assets = g_context.assets;
+    if (!assets || !g_context.scheduler || g_context.catalog_base.empty()) {
+        SetScanStatus("catalog.scan.unavailable", "Asset registry is unavailable");
+        g_context.catalog_preparing = false;
+        g_context.catalog_busy.store(false, std::memory_order_release);
+        return;
+    }
+    auto result = assets->prepare_class(assets->user, anomaly::sdk::StringView(g_context.catalog_base));
+    if (result.code == ANOMALY_STATUS_V1_OK)
+        result = assets->prepare_string_table(assets->user, anomaly::sdk::StringView(g_context.catalog_name_table));
+    if (result.code == ANOMALY_STATUS_V1_UNAVAILABLE &&
+        std::chrono::steady_clock::now() - g_context.catalog_preparation_started < std::chrono::seconds(30)) return;
+    g_context.catalog_preparing = false;
+    if (result.code == ANOMALY_STATUS_V1_OK)
+        result = g_context.scheduler->schedule(g_context.scheduler->user, 0, RefreshCatalogWorker, nullptr, &g_context.catalog_task);
+    if (result.code != ANOMALY_STATUS_V1_OK) {
+        LogCatalogFailure(result);
+        SetScanStatus("catalog.scan.failed", "Catalog refresh failed");
+        g_context.catalog_busy.store(false, std::memory_order_release);
+    }
 }
 
 // ---------------------------------------------------------------- 软类引用
@@ -3854,7 +3979,8 @@ void DrainOne() {
 void EnsureServices() {
     if (g_context.host == nullptr) return;
     if (g_context.objects != nullptr && g_context.session != nullptr &&
-        g_context.player != nullptr && g_context.names != nullptr)
+        g_context.player != nullptr && g_context.names != nullptr &&
+        g_context.assets != nullptr)
         return;
 
     const anomaly::sdk::Host query(g_context.host);
@@ -3874,6 +4000,11 @@ void EnsureServices() {
         g_context.names = query.Query<AnomalyUe5NamesServiceV1>(
             ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION).get();
     }
+    if (g_context.assets == nullptr) {
+        g_context.assets = query.Query<AnomalyUe5AssetsServiceV1>(
+            ANOMALY_UE5_ASSETS_SERVICE_V1_ID, ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION).get();
+    }
+
 }
 
 }  // namespace
@@ -3940,6 +4071,18 @@ void ResetState() {
     g_context.blueprint_options.clear();
     g_context.catalog_filter[0] = '\0';
     g_context.catalog_loaded = false;
+    g_context.catalog_labels.store({}, std::memory_order_release);
+    g_context.catalog_base.clear();
+    g_context.catalog_name_table.clear();
+    g_context.catalog_policy.clear();
+    g_context.catalog_exclusions.clear();
+    g_context.catalog_name_aliases.clear();
+    g_context.catalog_stop.store(false, std::memory_order_release);
+    g_context.catalog_busy.store(false, std::memory_order_release);
+    g_context.catalog_refresh_requested.store(true, std::memory_order_release);
+    g_context.catalog_preparing = false;
+    g_context.catalog_task = {};
+    g_context.catalog_scan_status = {};
     g_context.selected_record_id = 0;
     g_context.management_page = 0;
     g_context.management_blueprint.clear();
@@ -3983,6 +4126,12 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION).get();
     g_context.names = query.Query<AnomalyUe5NamesServiceV1>(
         ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION).get();
+    g_context.assets = query.Query<AnomalyUe5AssetsServiceV1>(
+        ANOMALY_UE5_ASSETS_SERVICE_V1_ID, ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION).get();
+    g_context.scheduler = query.Query<AnomalySchedulerServiceV1>(
+        ANOMALY_SCHEDULER_SERVICE_V1_ID, ANOMALY_SCHEDULER_SERVICE_V1_VERSION).get();
+    g_context.storage = query.Query<AnomalyStorageServiceV1>(
+        ANOMALY_STORAGE_SERVICE_V1_ID, ANOMALY_STORAGE_SERVICE_V1_VERSION).get();
 
     TransferLocalBirths(false);
 
@@ -4013,7 +4162,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
             anomaly::sdk::StringView(loaded ? "Unsupported SummonLab profile contract or layout" : loaded.error()));
     }
-    static_cast<void>(LoadCatalog());
+    try {
+        if (LoadCatalogPolicy()) LoadCatalogCache();
+    } catch (...) { SetScanStatus("catalog.scan.failed", "Catalog refresh failed"); }
     ConsumeSpawnRequest();
 
     return anomaly::sdk::Ok();
@@ -4021,6 +4172,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t) {
     if (context != &g_context) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
+    g_context.catalog_stop.store(true, std::memory_order_release);
+    if (g_context.scheduler && g_context.catalog_task.id)
+        static_cast<void>(g_context.scheduler->cancel(g_context.scheduler->user, g_context.catalog_task));
     if (g_context.events != nullptr && g_context.health_observer.id != 0) {
         const auto status = g_context.events->unsubscribe(g_context.events->user, g_context.health_observer);
         if (status.code != ANOMALY_STATUS_V1_OK && status.code != ANOMALY_STATUS_V1_NOT_FOUND) return status;
@@ -4066,6 +4220,7 @@ void ANOMALY_CALL Update(void* /*context*/, double delta_seconds) {
     ++g_context.frame_counter;
     EnsureServices();
     UpdateSessionState();
+    if (g_context.session_world_ready) AdvanceCatalogPreparation();
     if (!g_context.session_world_ready || !g_layout_ready) return;
     ResolveFinalTowerHealthEvents();
     // The host runs on_update at its Game tick boundary. Do not invoke spawn
@@ -4183,6 +4338,19 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
         std::scoped_lock lock(g_context.mutex);
         ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.class_path.data(),
                        g_context.class_path.size(), 0);
+    }
+
+    const auto rescan_label = localizer.Text("catalog.scan", "Refresh catalog");
+    if (ActionButton(ui, rescan_label.c_str(), !g_context.catalog_busy.load(std::memory_order_acquire)))
+        g_context.catalog_refresh_requested.store(true, std::memory_order_release);
+    std::array<char, 160> scan_status;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        scan_status = g_context.catalog_scan_status;
+    }
+    if (scan_status[0]) {
+        if (ui->same_line) ui->same_line(ui->user, 0, 10);
+        ui->text(ui->user, anomaly::sdk::StringView(scan_status.data()));
     }
 
     if (!loaded) {
@@ -4507,11 +4675,13 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
 }
 
 std::string BlueprintLabel(std::string_view path) {
+    const auto labels = g_context.catalog_labels.load(std::memory_order_acquire);
+    if (labels) {
+        if (const auto found = labels->find(path); found != labels->end()) return found->second;
+    }
     const auto separator = path.find_last_of("/.");
     const auto name = separator == std::string_view::npos ? path : path.substr(separator + 1);
-    const auto names = summon_lab::ResolveBlueprintNames(name, g_context.localizer);
-    const auto& alias = names.specific.empty() ? names.family : names.specific;
-    return alias.empty() ? std::string(name) : alias + " | " + std::string(name);
+    return std::string(name);
 }
 
 void DrawAggroEditor(const AnomalyUiServiceV1* ui, bool ready,
