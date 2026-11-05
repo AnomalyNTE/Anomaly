@@ -111,21 +111,45 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
     }
 }
 
-void DrawContent(void* context, const AnomalyUiServiceV1* ui) {
-    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.accessories", "Accessories", "category-accessories")), 0, 0)) category = 1;
-    ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.glider", "Glider", "category-glider")), 0, 0)) category = 2;
-    ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.awakening", "Awakening", "category-awakening")), 0, 0)) category = 3;
-    ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.plates", "Plates", "category-plates")), 0, 0)) category = 4;
-    ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.vehicle", "Vehicle", "category-vehicle")), 0, 0)) category = 5;
-    if (category == 5) lite_vehicle::Draw(ui);
-    else if (category == 4) lite_plates::Draw(ui);
-    else if (category == 3) lite_awakening::Draw(ui);
-    else if (cosmetics_started) CosmeticsDraw(context, ui, category);
-    else ui->text(ui->user, StringView(lite_i18n::localizer.Text("cosmetics.unavailable", "The accessory/glider interface is unavailable for this game build.")));
+bool DrawContent(void* context, const AnomalyUiServiceV1* ui) {
+    const bool has_tabs = ui->struct_size >= offsetof(AnomalyUiServiceV1, end_tab_bar) +
+        sizeof(ui->end_tab_bar) && ui->begin_tab_bar && ui->begin_tab_item &&
+        ui->end_tab_item && ui->end_tab_bar;
+    if (!has_tabs) {
+        ui->text(ui->user, StringView(lite_i18n::localizer.Text("error.tabs", "This host does not provide tab controls. Please update Anomaly.")));
+        return false;
+    }
+    if (!ui->begin_tab_bar(ui->user, StringView("##skin-changer-lite-tabs"),
+            ANOMALY_UI_TAB_BAR_V1_FITTING_POLICY_RESIZE_DOWN)) return false;
+    struct EndTabBar {
+        const AnomalyUiServiceV1* ui;
+        ~EndTabBar() { ui->end_tab_bar(ui->user); }
+    } end_bar{ui};
+    struct Page { int category; const char* key; const char* fallback; const char* id; };
+    constexpr Page pages[]{
+        {1, "tab.accessories", "Accessories", "category-accessories"},
+        {2, "tab.glider", "Glider", "category-glider"},
+        {3, "tab.awakening", "Awakening", "category-awakening"},
+        {4, "tab.plates", "Plates", "category-plates"},
+        {5, "tab.vehicle", "Vehicle", "category-vehicle"}
+    };
+    bool visible{};
+    for (const auto& page : pages) {
+        const auto label = lite_i18n::localizer.Label(page.key, page.fallback, page.id);
+        if (!ui->begin_tab_item(ui->user, StringView(label), nullptr, 0, 1)) continue;
+        struct EndTabItem {
+            const AnomalyUiServiceV1* ui;
+            ~EndTabItem() { ui->end_tab_item(ui->user); }
+        } end_item{ui};
+        category = page.category;
+        visible = true;
+        if (category == 5) lite_vehicle::Draw(ui);
+        else if (category == 4) lite_plates::Draw(ui);
+        else if (category == 3) lite_awakening::Draw(ui);
+        else if (cosmetics_started) CosmeticsDraw(context, ui, category);
+        else ui->text(ui->user, StringView(lite_i18n::localizer.Text("cosmetics.unavailable", "The accessory/glider interface is unavailable for this game build.")));
+    }
+    return visible;
 }
 
 void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
@@ -137,8 +161,7 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
         }
     } visibility;
     try {
-        if (!ui || !ui->begin_window || !ui->end_window || !ui->button ||
-            !ui->same_line || !ui->text) return;
+        if (!ui || !ui->begin_window || !ui->end_window || !ui->text) return;
         if (EnsureWindow()) {
             AnomalyWindowStateV1 state{sizeof(state)};
             if (window_service->state(window_service->user, window_handle,
@@ -149,12 +172,12 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
             struct EndWindow {
                 ~EndWindow() { static_cast<void>(window_service->end(window_service->user, window_handle)); }
             } end_window;
-            if (visible != 0) { visibility.content = true; DrawContent(context, ui); }
+            if (visible != 0) visibility.content = DrawContent(context, ui);
             return;
         }
         if (fallback_open == 0) return;
         UiWindow window(ui, lite_i18n::localizer.Text("window.title", "SkinChanger Lite"), &fallback_open);
-        if (window) { visibility.content = true; DrawContent(context, ui); }
+        if (window) visibility.content = DrawContent(context, ui);
     } catch (...) {}
 }
 }
@@ -163,7 +186,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPlug
     if (!descriptor || descriptor->struct_size < sizeof(*descriptor)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("b1ank.skin-changer"), anomaly::sdk::StringView("SkinChanger Lite"),
-        anomaly::sdk::StringView("b1ank"), anomaly::sdk::StringView("0.1.44"),
+        anomaly::sdk::StringView("b1ank"), anomaly::sdk::StringView("0.1.45"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

@@ -5,7 +5,7 @@
   "description": "Local accessory, glider, awakening, license plate and vehicle appearance previews.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.1.44",
+  "version": "0.1.45",
   "entry": "plugin.dll",
   "api": {
     "major": 1,

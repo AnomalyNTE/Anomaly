@@ -103,7 +103,7 @@
     "slot.head": "头部",
     "slot.legs": "腿部",
     "tab.accessories": "配饰",
-    "tab.awakening": "解锁觉醒",
+    "tab.awakening": "觉醒",
     "tab.glider": "滑翔翼",
     "tab.plates": "车牌",
     "tab.vehicle": "载具",
@@ -149,6 +149,7 @@
     "cosmetic.placement.front": "身体前侧",
     "cosmetic.placement.back": "背部",
     "cosmetic.placement.legs": "腿部",
-    "cosmetic.placement.unknown": "未知"
+    "cosmetic.placement.unknown": "未知",
+    "error.tabs": "当前框架不支持标签栏，请更新 Anomaly。"
   }
 }
