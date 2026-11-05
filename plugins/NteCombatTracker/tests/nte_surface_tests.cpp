@@ -10,6 +10,7 @@
 #include "combat_export.hpp"
 #include "damage_log.hpp"
 #include "history_reader.hpp"
+#include "native_layout.hpp"
 #include "overlay_model.hpp"
 #include "overlay_protocol.hpp"
 #include "overlay_publish_policy.hpp"
@@ -17,9 +18,14 @@
 #include "sdk_compat.hpp"
 #include "uid_detector.hpp"
 
+#include "../../common/compatibility_profile.hpp"
+#include "../../../apps/test_host/plugin_profile_fixture_host.hpp"
+
 #include <anomaly/sdk/anomaly_sdk.h>
 
+#include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1874,7 +1880,181 @@ void MissingInterfaceDegradesWithoutCrashing() {
     NTE_CHECK(none.empty(), "without the path interface there is nothing to fall back to");
 }
 
-// UID 探测依赖宿主 ue5.text 服务；下面的伪运行时按用例编排读取时机与失败。
+// ---------------------------------------------------------------------------
+// Compatibility profile fixtures.
+//
+// Every signature, game-object offset, vtable slot and record size/stride the
+// UID detector uses is declared in profile/compatibility.profile.json. These
+// cases load that file through the host package reader and schema validator
+// (ProfileHost), so a stale or misparsed profile cannot silently agree with a
+// copied constant.
+// ---------------------------------------------------------------------------
+
+[[nodiscard]] nte::native::Layout ParseShippedLayout(std::string& error) {
+    error.clear();
+    anomaly::testing::ProfileHost host("NteCombatTracker");
+    anomaly::plugins::CompatibilityProfile profile;
+    if (!profile.Load(&host.api, "compatibility.profile.json",
+            "nte-combat-tracker-v1")) {
+        error = "the shipped profile contract was rejected";
+        return {};
+    }
+    return nte::native::ParseLayout(profile, error);
+}
+
+[[nodiscard]] const nte::native::Layout& ShippedLayout() {
+    static const nte::native::Layout layout = [] {
+        std::string error;
+        auto parsed = ParseShippedLayout(error);
+        if (!error.empty()) std::cerr << "profile fixture: " << error << '\n';
+        return parsed;
+    }();
+    return layout;
+}
+
+// Turns a profile pattern ("48 8B 05 ?? ...") into concrete bytes. Wildcards map
+// to 0xCC so an injected pattern never matches a run of zero padding.
+[[nodiscard]] std::vector<std::uint8_t> PatternBytes(const std::string_view pattern) {
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(pattern.size() / 3U + 1U);
+    for (std::size_t index{}; index + 1 < pattern.size(); index += 3) {
+        const std::string_view token = pattern.substr(index, 2);
+        if (token == "??") {
+            bytes.push_back(0xCC);
+            continue;
+        }
+        unsigned value{};
+        const auto parsed = std::from_chars(token.data(), token.data() + 2, value, 16);
+        if (parsed.ec != std::errc{} || parsed.ptr != token.data() + 2) return {};
+        bytes.push_back(static_cast<std::uint8_t>(value));
+    }
+    return bytes;
+}
+
+void ShippedProfileIsAcceptedByTheHostReader() {
+    anomaly::testing::ProfileHost host("NteCombatTracker");
+    const auto loaded = anomaly::sdk::LoadProfile(
+        anomaly::sdk::Host(&host.api), "compatibility.profile.json");
+    NTE_CHECK(static_cast<bool>(loaded), "the shipped profile must load through the SDK reader");
+    if (!loaded) {
+        std::cerr << "profile load error: " << loaded.error() << '\n';
+        return;
+    }
+    NTE_CHECK(loaded.value().contract == "nte-combat-tracker-v1",
+        "the shipped profile must declare the contract the plugin implements");
+    anomaly::plugins::CompatibilityProfile profile;
+    NTE_CHECK(profile.Load(&host.api, "compatibility.profile.json",
+                  "nte-combat-tracker-v1"),
+        "the production compatibility loader must accept the shipped profile");
+    std::string error;
+    const auto layout = nte::native::ParseLayout(profile, error);
+    NTE_CHECK(error.empty(), error.c_str());
+    NTE_CHECK(layout.object_chunk_size != 0 && layout.object_item_stride != 0,
+        "the parsed layout must expose a usable object registry shape");
+}
+
+void ShippedProfileLayoutMatchesTheCheckedInJson() {
+    const auto path = std::filesystem::path(NTE_TEST_SOURCE_DIR) /
+        "profile" / "compatibility.profile.json";
+    std::ifstream stream(path, std::ios::binary);
+    NTE_CHECK(static_cast<bool>(stream), "the shipped profile file must be present");
+    if (!stream) return;
+    nlohmann::json document;
+    try {
+        stream >> document;
+    } catch (const std::exception&) {
+        NTE_CHECK(false, "the shipped profile must be valid JSON");
+        return;
+    }
+    std::string error;
+    const auto layout = ParseShippedLayout(error);
+    NTE_CHECK(error.empty(), error.c_str());
+    if (!error.empty()) return;
+    const auto values = document.at("layout");
+    const auto value = [&values](const char* key) {
+        return values.at(key).get<std::uint32_t>();
+    };
+    NTE_CHECK(layout.object_name_offset == value("kObjectNameOffset"),
+        "the parsed object name offset must match the shipped JSON");
+    NTE_CHECK(layout.text_field_offset == value("kTextFieldOffset"),
+        "the parsed text field offset must match the shipped JSON");
+    NTE_CHECK(layout.set_text_vtable_offset == value("kSetTextVtableOffset"),
+        "the parsed vtable slot must match the shipped JSON");
+    NTE_CHECK(layout.object_item_stride == value("kObjectItemStride"),
+        "the parsed object item stride must match the shipped JSON");
+    NTE_CHECK(layout.object_chunk_size == value("kObjectChunkSize"),
+        "the parsed object chunk size must match the shipped JSON");
+    NTE_CHECK(layout.instanced_struct_data == value("kInstancedStructData"),
+        "the parsed FInstancedStruct payload offset must match the shipped JSON");
+    NTE_CHECK(layout.row_stride == value("kRowStride"),
+        "the parsed DataTable row stride must match the shipped JSON");
+    NTE_CHECK(layout.field_next == value("kFieldNext"),
+        "the parsed FField next offset must match the shipped JSON");
+    NTE_CHECK(layout.diagnostic_slot_step == value("kDiagnosticSlotStep"),
+        "the parsed diagnostic slot step must match the shipped JSON");
+    NTE_CHECK(layout.gobjects_addend ==
+            -static_cast<std::int32_t>(value("kGObjectsAddendMagnitude")),
+        "the parsed GObjects addend must be the negated profile magnitude");
+}
+
+void ShippedProfileSymbolsResolveAndValidateEntries() {
+    anomaly::testing::ProfileHost host("NteCombatTracker");
+    const auto loaded = anomaly::sdk::LoadProfile(
+        anomaly::sdk::Host(&host.api), "compatibility.profile.json");
+    NTE_CHECK(static_cast<bool>(loaded), "the shipped profile must load through the SDK reader");
+    if (!loaded) return;
+    auto profile = loaded.value();
+
+    // Build a synthetic .text image that contains every declared pattern so the
+    // production resolver has a deterministic hit.
+    host.image.assign(0x400, std::uint8_t{0x90});
+    std::vector<std::pair<std::string, std::uintptr_t>> expected;
+    std::size_t cursor = 0x100;
+    for (const auto& symbol : profile.symbols) {
+        const auto bytes = PatternBytes(symbol.candidates.front().pattern);
+        NTE_CHECK(!bytes.empty(), "every declared pattern must parse as hexadecimal bytes");
+        if (bytes.empty()) return;
+        cursor = (cursor + 0xFU) & ~static_cast<std::size_t>(0xFU);
+        if (cursor + bytes.size() > host.image.size()) {
+            NTE_CHECK(false, "the synthetic image must hold every declared pattern");
+            return;
+        }
+        std::copy(bytes.begin(), bytes.end(),
+            host.image.begin() + static_cast<std::ptrdiff_t>(cursor));
+        expected.emplace_back(symbol.name, 0x10000U + cursor);
+        cursor += bytes.size() + 0x20U;
+    }
+
+    anomaly::plugins::CompatibilityProfile compatibility;
+    NTE_CHECK(compatibility.Load(&host.api, "compatibility.profile.json",
+                  "nte-combat-tracker-v1"),
+        "the production loader must accept and resolve the shipped profile");
+    for (const auto& [name, address] : expected) {
+        NTE_CHECK(compatibility.Address(name) == address,
+            "each declared profile symbol must resolve to its injected entry point");
+    }
+
+    // Entry-byte validation must reject a profile whose recorded entry no longer
+    // matches the image instead of using the address blindly.
+    auto mutated = profile;
+    const auto symbol = std::find_if(mutated.symbols.begin(), mutated.symbols.end(),
+        [](const auto& item) { return item.name == "kGObjectsPattern"; });
+    NTE_CHECK(symbol != mutated.symbols.end(), "the profile must declare kGObjectsPattern");
+    if (symbol == mutated.symbols.end() || symbol->candidates.empty() ||
+        symbol->candidates.front().entry.empty()) {
+        return;
+    }
+    symbol->candidates.front().entry.at(0) ^= 0xFF;
+    const auto rejected = anomaly::sdk::ResolveProfileSymbol(
+        &host.signatures, &host.core, mutated, "kGObjectsPattern");
+    NTE_CHECK(!rejected, "a changed entry byte must reject the profile candidate");
+}
+
+// --- UID detector fixture ---------------------------------------------------
+//
+// The fake runtime is built from the shipped profile: object names, the text
+// slot, the vtable slot, the item stride and the GObjects accessor all come from
+// `nte::native::Layout`. Only the fake function addresses are test-owned wiring.
 constexpr std::uint32_t kRoleIdName = 42;
 constexpr std::uint32_t kOtherName = 43;
 
@@ -1929,29 +2109,46 @@ struct FakeRuntime {
         AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(AnomalyUe5ObjectSnapshotV1)};
     };
 
-    FakeRuntime() {
+    FakeRuntime() : layout(ShippedLayout()) {
         host.struct_size = sizeof(host);
         host.host_context = this;
         host.query_service = QueryService;
 
-        signature = {sizeof(signature), ANOMALY_SIGNATURE_SERVICE_V1_VERSION,
-            this, ResolveSignature};
         objects = {sizeof(objects), ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION,
             this, Generation, Count, SnapshotAt, SnapshotByHandle, FindExact};
         names = {sizeof(names), ANOMALY_UE5_NAMES_SERVICE_V1_VERSION,
             this, ResolveName};
 
-        vtable.fill(0);
+        profile_usable = layout.object_chunk_size != 0 &&
+            layout.object_item_stride >= sizeof(std::uintptr_t) &&
+            layout.object_item_serial_offset + sizeof(std::uint32_t) <=
+                layout.object_item_stride &&
+            layout.object_name_offset + sizeof(std::uint32_t) <=
+                Object{}.bytes.size() &&
+            layout.text_field_offset + sizeof(UnrealText) <=
+                Object{}.bytes.size() &&
+            layout.set_text_vtable_offset / sizeof(std::uintptr_t) < vtable.size();
+        if (!profile_usable) return;
+
         set_text = 0x123456789ABCULL;
-        vtable[856 / sizeof(std::uintptr_t)] = set_text;
+        vtable[layout.set_text_vtable_offset / sizeof(std::uintptr_t)] = set_text;
+        bindings.set_text = set_text;
+        bindings.free_string = reinterpret_cast<std::uintptr_t>(&FreeString);
+        bindings.text_to_string = reinterpret_cast<std::uintptr_t>(&TextToString);
+        bindings.gobjects_accessor = reinterpret_cast<std::uintptr_t>(gobjects.data());
+
         chunks[0] = reinterpret_cast<std::uintptr_t>(items.data());
-        *reinterpret_cast<std::uintptr_t**>(registry.data() + 16) = chunks.data();
+        *reinterpret_cast<std::uintptr_t*>(
+            registry.data() + layout.object_registry_items_offset) =
+            reinterpret_cast<std::uintptr_t>(chunks.data());
 
         const auto accessor = reinterpret_cast<std::uintptr_t>(gobjects.data());
         const auto registry_address = reinterpret_cast<std::uintptr_t>(registry.data());
         const auto displacement = static_cast<std::int32_t>(
-            registry_address - (accessor + 7) + 16);
-        std::memcpy(gobjects.data() + 3, &displacement, sizeof(displacement));
+            registry_address - (accessor + nte::native::kRipInstructionSize) -
+            layout.gobjects_addend);
+        std::memcpy(gobjects.data() + nte::native::kRipDisplacementOffset,
+            &displacement, sizeof(displacement));
         AddObject(L"template", 0, true);
     }
 
@@ -1963,19 +2160,26 @@ struct FakeRuntime {
         const std::uint32_t serial = index + 10;
         auto object = std::make_unique<Object>();
         object->text = {std::move(text), failures};
-        *reinterpret_cast<std::uintptr_t*>(object->bytes.data()) =
-            reinterpret_cast<std::uintptr_t>(vtable.data());
-        *reinterpret_cast<std::uint32_t*>(object->bytes.data() + 24) = name_id;
-        auto* unreal_text = reinterpret_cast<UnrealText*>(object->bytes.data() + 392);
-        unreal_text->data = &object->text;
+        if (profile_usable &&
+            (static_cast<std::size_t>(index) + 1U) * layout.object_item_stride <=
+                items.size()) {
+            *reinterpret_cast<std::uintptr_t*>(object->bytes.data()) =
+                reinterpret_cast<std::uintptr_t>(vtable.data());
+            *reinterpret_cast<std::uint32_t*>(
+                object->bytes.data() + layout.object_name_offset) = name_id;
+            auto* unreal_text = reinterpret_cast<UnrealText*>(
+                object->bytes.data() + layout.text_field_offset);
+            unreal_text->data = &object->text;
+            auto* item = items.data() +
+                static_cast<std::size_t>(index) * layout.object_item_stride;
+            *reinterpret_cast<std::uintptr_t*>(item) =
+                reinterpret_cast<std::uintptr_t>(object->bytes.data());
+            *reinterpret_cast<std::uint32_t*>(
+                item + layout.object_item_serial_offset) = serial;
+        }
         object->snapshot.handle = {
             (static_cast<std::uint64_t>(serial) << 32U) | (index + 1U), generation};
         object->snapshot.name_id = name_id;
-
-        auto* item = items.data() + static_cast<std::size_t>(index) * 24;
-        *reinterpret_cast<std::uintptr_t*>(item) =
-            reinterpret_cast<std::uintptr_t>(object->bytes.data());
-        *reinterpret_cast<std::uint32_t*>(item + 16) = serial;
         entries.push_back(std::move(object));
         if (is_template) template_handle = entries.back()->snapshot.handle;
         return *entries.back();
@@ -1985,7 +2189,9 @@ struct FakeRuntime {
         auto& object = *entries.at(index);
         object.text.value = std::move(text);
         object.snapshot.name_id = kRoleIdName;
-        *reinterpret_cast<std::uint32_t*>(object.bytes.data() + 24) = kRoleIdName;
+        if (!profile_usable) return;
+        *reinterpret_cast<std::uint32_t*>(
+            object.bytes.data() + layout.object_name_offset) = kRoleIdName;
     }
 
     void ShrinkTo(const std::size_t count) {
@@ -1999,8 +2205,10 @@ struct FakeRuntime {
         object.snapshot.handle.id = (static_cast<std::uint64_t>(serial) << 32U) |
             static_cast<std::uint64_t>(index + 1U);
         object.snapshot.name_id = kRoleIdName;
-        auto* item = items.data() + index * 24;
-        *reinterpret_cast<std::uint32_t*>(item + 16) = serial;
+        if (!profile_usable) return;
+        auto* item = items.data() + index * layout.object_item_stride;
+        *reinterpret_cast<std::uint32_t*>(
+            item + layout.object_item_serial_offset) = serial;
     }
 
     void ChangeGeneration(const std::wstring& uid) {
@@ -2011,31 +2219,24 @@ struct FakeRuntime {
         AddObject(uid);
     }
 
+    [[nodiscard]] nte::native::Snapshot snapshot() const {
+        nte::native::Snapshot value;
+        value.layout = layout;
+        value.bindings = bindings;
+        value.complete = profile_usable;
+        if (!profile_usable) {
+            value.error = "the shipped compatibility profile is not usable";
+        }
+        return value;
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL QueryService(
         void* user, const AnomalyStringViewV1 id, std::uint32_t, const void** service) {
         auto& self = *static_cast<FakeRuntime*>(user);
         if (!self.services_available) return Missing();
-        if (View(id) == ANOMALY_SIGNATURE_SERVICE_V1_ID) *service = &self.signature;
-        else if (View(id) == ANOMALY_UE5_OBJECTS_SERVICE_V1_ID) *service = &self.objects;
+        if (View(id) == ANOMALY_UE5_OBJECTS_SERVICE_V1_ID) *service = &self.objects;
         else if (View(id) == ANOMALY_UE5_NAMES_SERVICE_V1_ID) *service = &self.names;
         else return Missing();
-        return Ok();
-    }
-
-    static AnomalyStatusV1 ANOMALY_CALL ResolveSignature(
-        void* user, AnomalyStringViewV1, AnomalyStringViewV1,
-        const AnomalyStringViewV1 pattern, std::uintptr_t* target) {
-        auto& self = *static_cast<FakeRuntime*>(user);
-        if (!self.bindings_available) return Missing();
-        const auto value = View(pattern);
-        if (value.starts_with("48 89 5C 24 10")) *target = self.set_text;
-        else if (value.starts_with("48 85 C9 74 2E")) {
-            *target = reinterpret_cast<std::uintptr_t>(&FreeString);
-        } else if (value.starts_with("40 53 48 83 EC 20")) {
-            *target = reinterpret_cast<std::uintptr_t>(&TextToString);
-        } else if (value.starts_with("48 8B 05")) {
-            *target = reinterpret_cast<std::uintptr_t>(self.gobjects.data());
-        } else return Missing();
         return Ok();
     }
 
@@ -2087,22 +2288,44 @@ struct FakeRuntime {
         return Ok();
     }
 
+    const nte::native::Layout& layout;
+    nte::native::Bindings bindings{};
+    bool profile_usable{};
     AnomalyHostApiV1 host{};
-    AnomalySignatureServiceV1 signature{};
     AnomalyUe5ObjectsServiceV1 objects{};
     AnomalyUe5NamesServiceV1 names{};
     bool services_available{};
-    bool bindings_available{};
     std::uint64_t generation{1};
     std::uintptr_t set_text{};
-    std::array<std::uintptr_t, 110> vtable{};
+    std::array<std::uintptr_t, 160> vtable{};
     std::array<std::byte, 16> gobjects{};
     std::array<std::byte, 32> registry{};
     std::array<std::uintptr_t, 1> chunks{};
-    std::array<std::byte, 24 * 256> items{};
+    // Holds 256 registry items at the profile's declared item stride.
+    std::array<std::byte, 65536> items{};
     std::vector<std::unique_ptr<Object>> entries;
     AnomalyGenerationHandleV1 template_handle{};
 };
+
+void MissingProfileDisablesNativeFeatures() {
+    const auto missing_host = nte::native::Load(nullptr);
+    NTE_CHECK(!missing_host.complete && !missing_host.error.empty(),
+        "a missing host API must not produce a native snapshot");
+    FakeRuntime runtime;
+    const auto unavailable = nte::native::Load(&runtime.host);
+    NTE_CHECK(!unavailable.complete && !unavailable.error.empty(),
+        "a host without profile services must not produce a native snapshot");
+    nte::account::UidDetector detector(&runtime.host, unavailable);
+    NTE_CHECK(!detector.available(), "an unavailable profile must disable UID detection");
+    static_cast<void>(detector.Update());
+    const auto diagnostics = detector.diagnostics();
+    NTE_CHECK(diagnostics.phase == nte::account::UidDetectorPhase::WaitingForBindings,
+        "an unavailable profile must report the waiting-for-bindings phase");
+    NTE_CHECK(!diagnostics.missing_bindings.empty(),
+        "an unavailable profile must surface its concrete reason");
+    NTE_CHECK(!detector.Update().has_value(),
+        "an unavailable profile must not publish an account identity");
+}
 
 std::optional<nte::account::AccountIdentity> RunUntilDetected(
     nte::account::UidDetector& detector, const std::uint32_t updates = 700) {
@@ -2113,33 +2336,31 @@ std::optional<nte::account::AccountIdentity> RunUntilDetected(
     return detected;
 }
 
-void DetectorRecoversFromLateServicesAndBindings() {
+void DetectorRecoversFromLateServices() {
     FakeRuntime runtime;
     runtime.AddObject(L"UID: 216065736008");
-    nte::account::UidDetector detector(&runtime.host);
+    nte::account::UidDetector detector(&runtime.host, runtime.snapshot());
     static_cast<void>(detector.Update());
     NTE_CHECK(detector.diagnostics().phase ==
             nte::account::UidDetectorPhase::WaitingForServices,
         "missing optional services should be observable, not terminal");
 
     runtime.services_available = true;
-    runtime.bindings_available = true;
     const auto detected = RunUntilDetected(detector);
     NTE_CHECK(detected && detected->uid == "216065736008" &&
             detector.diagnostics().phase ==
                 nte::account::UidDetectorPhase::Detected,
-        "the detector should recover when services and signatures appear later");
+        "the detector should recover when services appear later");
 }
 
 void DetectorRetainsTemporarilyUnreadableAndNewestWidgets() {
     FakeRuntime runtime;
     runtime.services_available = true;
-    runtime.bindings_available = true;
     runtime.AddObject(L"UID: 111", 1);
     for (std::uint32_t index{}; index < 65; ++index) {
         runtime.AddObject(L"UID: " + std::to_wstring(1000 + index));
     }
-    nte::account::UidDetector detector(&runtime.host);
+    nte::account::UidDetector detector(&runtime.host, runtime.snapshot());
     const auto detected = RunUntilDetected(detector, 200);
     if (!detected || detected->uid != "1064" ||
         detector.diagnostics().tracked_widgets != 64) {
@@ -2160,9 +2381,8 @@ void DetectorRetainsTemporarilyUnreadableAndNewestWidgets() {
 void DetectorRetriesTemporarilyUnreadableText() {
     FakeRuntime runtime;
     runtime.services_available = true;
-    runtime.bindings_available = true;
     runtime.AddObject(L"UID: 777", 1);
-    nte::account::UidDetector detector(&runtime.host);
+    nte::account::UidDetector detector(&runtime.host, runtime.snapshot());
     const auto first = RunUntilDetected(detector, 25);
     NTE_CHECK(!first && detector.diagnostics().tracked_widgets == 1 &&
             detector.diagnostics().failed_reads == 1,
@@ -2175,9 +2395,8 @@ void DetectorRetriesTemporarilyUnreadableText() {
 void DetectorRevisitsLateInitializedSlotsAndGrowth() {
     FakeRuntime runtime;
     runtime.services_available = true;
-    runtime.bindings_available = true;
     runtime.AddObject(L"not ready", 0, false, kOtherName);
-    nte::account::UidDetector detector(&runtime.host);
+    nte::account::UidDetector detector(&runtime.host, runtime.snapshot());
     NTE_CHECK(!RunUntilDetected(detector, 40),
         "an unrelated stable slot should not be reported as a UID widget");
 
@@ -2195,9 +2414,8 @@ void DetectorRevisitsLateInitializedSlotsAndGrowth() {
 void DetectorRecoversWhenTheTableShrinksDuringAnIncrementalScan() {
     FakeRuntime runtime;
     runtime.services_available = true;
-    runtime.bindings_available = true;
     runtime.AddObject(L"UID: 111");
-    nte::account::UidDetector detector(&runtime.host);
+    nte::account::UidDetector detector(&runtime.host, runtime.snapshot());
     const auto initial = RunUntilDetected(detector, 30);
     NTE_CHECK(initial && initial->uid == "111",
         "the initial widget should be detected before the shrink scenario");
@@ -2216,9 +2434,8 @@ void DetectorRecoversWhenTheTableShrinksDuringAnIncrementalScan() {
 void InvalidTextDoesNotReplaceAKnownUid() {
     FakeRuntime runtime;
     runtime.services_available = true;
-    runtime.bindings_available = true;
     auto& widget = runtime.AddObject(L"UID: 7001");
-    nte::account::UidDetector detector(&runtime.host);
+    nte::account::UidDetector detector(&runtime.host, runtime.snapshot());
     const auto known = RunUntilDetected(detector, 40);
     NTE_CHECK(known && known->uid == "7001" &&
             detector.diagnostics().current_observation_valid,
@@ -2245,9 +2462,8 @@ void InvalidTextDoesNotReplaceAKnownUid() {
 void DetectorRecoversFromAStaleReusedHandle() {
     FakeRuntime runtime;
     runtime.services_available = true;
-    runtime.bindings_available = true;
     runtime.AddObject(L"UID: 8101");
-    nte::account::UidDetector detector(&runtime.host);
+    nte::account::UidDetector detector(&runtime.host, runtime.snapshot());
     const auto initial = RunUntilDetected(detector, 40);
     NTE_CHECK(initial && initial->uid == "8101",
         "the original widget should be detected before handle reuse");
@@ -2334,8 +2550,15 @@ void RunDisplayNameAbi() {
     MissingInterfaceDegradesWithoutCrashing();
 }
 
+void RunProfile() {
+    ShippedProfileIsAcceptedByTheHostReader();
+    ShippedProfileLayoutMatchesTheCheckedInJson();
+    ShippedProfileSymbolsResolveAndValidateEntries();
+    MissingProfileDisablesNativeFeatures();
+}
+
 void RunUidDetector() {
-    DetectorRecoversFromLateServicesAndBindings();
+    DetectorRecoversFromLateServices();
     DetectorRetainsTemporarilyUnreadableAndNewestWidgets();
     DetectorRetriesTemporarilyUnreadableText();
     DetectorRevisitsLateInitializedSlotsAndGrowth();
@@ -2353,4 +2576,5 @@ NTE_TEST_GROUP("nte-surface",
     RunOverlayProtocol,
     RunSdkCompat,
     RunDisplayNameAbi,
+    RunProfile,
     RunUidDetector)

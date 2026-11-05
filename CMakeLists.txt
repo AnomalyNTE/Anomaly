@@ -1694,7 +1694,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             "anomaly_nte_combat_engine;Anomaly::sdk;nlohmann_json::nlohmann_json")
         anomaly_nte_combat_test_fixture(anomaly_nte_combat_surface_fixture
             nte_surface nte_surface_tests.cpp
-            "anomaly_nte_combat_model;anomaly_nte_combat_uid;Anomaly::sdk;nlohmann_json::nlohmann_json")
+            "anomaly_nte_combat_model;anomaly_nte_combat_uid;Anomaly::sdk;nlohmann_json::nlohmann_json;anomaly_plugin_profile;ue5mem_memory")
     endif()
 
     anomaly_add_plugin(anomaly_builtin_nte_free_fly
