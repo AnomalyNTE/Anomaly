@@ -18,7 +18,7 @@ constexpr std::uint32_t kMaximumOffset = 65536;
 // The plugin's supported NTE build keeps every layout value inside this bound;
 // the host schema only guarantees uint32, so the semantic range stays here.
 [[nodiscard]] bool ReadLayoutFields(
-    const anomaly::plugins::CompatibilityProfile& profile, Layout& out,
+    const anomaly::sdk::Profile& profile, Layout& out,
     std::string& error) noexcept {
     try {
         out.object_name_offset = profile.Value("kObjectNameOffset", kMaximumOffset, 4);
@@ -110,7 +110,7 @@ constexpr std::uint32_t kMaximumOffset = 65536;
 
 }  // namespace
 
-Layout ParseLayout(const anomaly::plugins::CompatibilityProfile& profile,
+Layout ParseLayout(const anomaly::sdk::Profile& profile,
     std::string& error) {
     error.clear();
     Layout layout;
@@ -126,12 +126,13 @@ Snapshot Load(const AnomalyHostApiV1* host) noexcept {
             snapshot.error = "the host API is unavailable";
             return snapshot;
         }
-        anomaly::plugins::CompatibilityProfile profile;
-        if (!profile.Load(host, kProfileFilename, kContract)) {
+        anomaly::sdk::ProfileSnapshot profile;
+        if (!profile.Load(host, kProfileFilename,
+                {"nte", "HTGame.exe", ".text", kContract})) {
             snapshot.error = "compatibility.profile.json was rejected";
             return snapshot;
         }
-        snapshot.layout = ParseLayout(profile, snapshot.error);
+        snapshot.layout = ParseLayout(profile.Document(), snapshot.error);
         if (!snapshot.error.empty()) return snapshot;
         snapshot.bindings.set_text = profile.Address("kSetTextPattern");
         snapshot.bindings.free_string = profile.Address("kFreeStringPattern");

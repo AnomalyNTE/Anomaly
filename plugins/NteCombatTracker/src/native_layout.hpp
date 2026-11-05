@@ -6,9 +6,8 @@
 // layout the rest of the plugin reads. Loading happens once on the Lifecycle
 // thread, and Game/Render callbacks only ever see this immutable snapshot.
 
-#include "../../common/compatibility_profile.hpp"
-
 #include <anomaly/sdk/anomaly_sdk.h>
+#include <anomaly/sdk/profile.hpp>
 
 #include <cstdint>
 #include <string>
@@ -79,6 +78,6 @@ struct Snapshot {
 // Parses and range/alignment/overlap-validates the profile's `layout` values.
 // Exposed so the offline fixture can exercise the exact production parser.
 [[nodiscard]] Layout ParseLayout(
-    const anomaly::plugins::CompatibilityProfile& profile, std::string& error);
+    const anomaly::sdk::Profile& profile, std::string& error);
 
 }  // namespace nte::native

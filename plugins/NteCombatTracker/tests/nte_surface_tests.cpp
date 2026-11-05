@@ -18,7 +18,6 @@
 #include "sdk_compat.hpp"
 #include "uid_detector.hpp"
 
-#include "../../common/compatibility_profile.hpp"
 #include "../../../apps/test_host/plugin_profile_fixture_host.hpp"
 
 #include <anomaly/sdk/anomaly_sdk.h>
@@ -1893,13 +1892,13 @@ void MissingInterfaceDegradesWithoutCrashing() {
 [[nodiscard]] nte::native::Layout ParseShippedLayout(std::string& error) {
     error.clear();
     anomaly::testing::ProfileHost host("NteCombatTracker");
-    anomaly::plugins::CompatibilityProfile profile;
+    anomaly::sdk::ProfileSnapshot profile;
     if (!profile.Load(&host.api, "compatibility.profile.json",
-            "nte-combat-tracker-v1")) {
+            {"nte", "HTGame.exe", ".text", "nte-combat-tracker-v1"})) {
         error = "the shipped profile contract was rejected";
         return {};
     }
-    return nte::native::ParseLayout(profile, error);
+    return nte::native::ParseLayout(profile.Document(), error);
 }
 
 [[nodiscard]] const nte::native::Layout& ShippedLayout() {
@@ -1942,12 +1941,12 @@ void ShippedProfileIsAcceptedByTheHostReader() {
     }
     NTE_CHECK(loaded.value().contract == "nte-combat-tracker-v1",
         "the shipped profile must declare the contract the plugin implements");
-    anomaly::plugins::CompatibilityProfile profile;
+    anomaly::sdk::ProfileSnapshot profile;
     NTE_CHECK(profile.Load(&host.api, "compatibility.profile.json",
-                  "nte-combat-tracker-v1"),
+                  {"nte", "HTGame.exe", ".text", "nte-combat-tracker-v1"}),
         "the production compatibility loader must accept the shipped profile");
     std::string error;
-    const auto layout = nte::native::ParseLayout(profile, error);
+    const auto layout = nte::native::ParseLayout(profile.Document(), error);
     NTE_CHECK(error.empty(), error.c_str());
     NTE_CHECK(layout.object_chunk_size != 0 && layout.object_item_stride != 0,
         "the parsed layout must expose a usable object registry shape");
@@ -2025,9 +2024,9 @@ void ShippedProfileSymbolsResolveAndValidateEntries() {
         cursor += bytes.size() + 0x20U;
     }
 
-    anomaly::plugins::CompatibilityProfile compatibility;
+    anomaly::sdk::ProfileSnapshot compatibility;
     NTE_CHECK(compatibility.Load(&host.api, "compatibility.profile.json",
-                  "nte-combat-tracker-v1"),
+                  {"nte", "HTGame.exe", ".text", "nte-combat-tracker-v1"}),
         "the production loader must accept and resolve the shipped profile");
     for (const auto& [name, address] : expected) {
         NTE_CHECK(compatibility.Address(name) == address,
