@@ -574,6 +574,17 @@
     "launcher.browse.all_categories": "All categories",
     "launcher.browse.loaded_only": "Loaded:",
     "launcher.browse.game_running": "Game is running: install disabled",
-    "launcher.mods.install": "Install"
+    "launcher.mods.install": "Install",
+    "launcher.mods.confirm_uninstall": "Uninstall \"%s\"? This deletes the files on disk.",
+    "launcher.mods.confirm_uninstall_many": "Uninstall the %s selected mods? This deletes the files on disk.",
+    "launcher.mods.confirm_uninstall_all": "Uninstall all selected",
+    "launcher.mods.display_name": "Display name (empty = default)",
+    "launcher.mods.group": "Group (empty = mod.json or \"ungrouped\")",
+    "launcher.mods.notes_label": "Notes",
+    "launcher.mods.link_hint": "Link GameBanana (mod URL or numeric id; enables update checks)",
+    "launcher.mods.refresh_list": "Refresh list",
+    "launcher.browse.load_more": "Load more (+15)",
+    "launcher.browse.all_loaded": "All loaded",
+    "launcher.browse.search_hint": "Search (empty = browse newest)"
   }
 }

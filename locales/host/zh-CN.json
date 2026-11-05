@@ -574,6 +574,17 @@
     "launcher.browse.all_categories": "全部分类",
     "launcher.browse.loaded_only": "已加载内：",
     "launcher.browse.game_running": "游戏运行中，无法安装",
-    "launcher.mods.install": "安装"
+    "launcher.mods.install": "安装",
+    "launcher.mods.confirm_uninstall": "确定卸载「%s」？该操作会删除磁盘上的文件。",
+    "launcher.mods.confirm_uninstall_many": "确定卸载选中的 %s 个模组？该操作会删除磁盘上的文件。",
+    "launcher.mods.confirm_uninstall_all": "确定卸载全部",
+    "launcher.mods.display_name": "显示名（留空则用默认）",
+    "launcher.mods.group": "分组（留空则用 mod.json 或「未分组」）",
+    "launcher.mods.notes_label": "备注",
+    "launcher.mods.link_hint": "关联 GameBanana（填 mod 链接或数字 id，可启用更新检查）",
+    "launcher.mods.refresh_list": "刷新列表",
+    "launcher.browse.load_more": "加载更多（+15）",
+    "launcher.browse.all_loaded": "已全部加载",
+    "launcher.browse.search_hint": "搜索关键词（留空则浏览最新）"
   }
 }

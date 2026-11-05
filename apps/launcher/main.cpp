@@ -3946,7 +3946,7 @@ void DrawBrowseMode(
     }
     ImGui::BeginChild("BrowsePage", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
         ImGuiWindowFlags_AlwaysVerticalScrollbar);
-    if (ImGui::Button("刷新列表")) {
+    if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsRefreshList))) {
         items.clear();
         loaded_pages = 0;
         exhausted = false;
@@ -3955,7 +3955,8 @@ void DrawBrowseMode(
     ImGui::SameLine();
     if (browse_loading) {
         ImGui::TextDisabled("加载中…");
-    } else if (ImGui::Button(exhausted ? "已全部加载" : "加载更多（+15）") && !exhausted) {
+    } else if (ImGui::Button(exhausted ? Text(translator, anomaly::MessageId::LauncherBrowseAllLoaded)
+                : Text(translator, anomaly::MessageId::LauncherBrowseLoadMore)) && !exhausted) {
         browse_loading = true;
         const int next_page = loaded_pages + 1;
         const std::string query_copy = active_query;
@@ -3970,7 +3971,8 @@ void DrawBrowseMode(
         }).detach();
     }
     ImGui::SetNextItemWidth(Scale(280.0f));
-    ImGui::InputTextWithHint("##gb-filter", "搜索关键词（留空则浏览最新）", search, sizeof(search));
+    ImGui::InputTextWithHint("##gb-filter",
+        Text(translator, anomaly::MessageId::LauncherBrowseSearchHint), search, sizeof(search));
     ImGui::SameLine();
     if (ImGui::Button("搜索")) {
         items.clear();
@@ -4762,7 +4764,8 @@ void DrawModsMode(
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal("confirm-uninstall", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("确定卸载「%s」？该操作会删除磁盘上的文件。", pending_uninstall.c_str());
+        ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstall,
+            {pending_uninstall}).c_str());
         if (ImGui::Button("确定卸载")) {
             for (const auto& entry : mods) {
                 if (entry.name != pending_uninstall) continue;
@@ -4783,8 +4786,9 @@ void DrawModsMode(
         for (const auto& entry : mods) {
             if (entry.selected) ++selected;
         }
-        ImGui::Text("确定卸载选中的 %zu 个模组？该操作会删除磁盘上的文件。", selected);
-        if (ImGui::Button("确定卸载全部")) {
+        ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstallMany,
+            {std::to_string(selected)}).c_str());
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsConfirmUninstallAll))) {
             for (const auto& entry : mods) {
                 if (entry.selected) LauncherRemoveMod(snapshot, entry);
             }
@@ -4800,14 +4804,14 @@ void DrawModsMode(
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal("mod-notes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("显示名（留空则用默认）");
+        ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsDisplayName));
         ImGui::InputText("##notes-name", notes_name_buffer, sizeof(notes_name_buffer));
-        ImGui::TextUnformatted("分组（留空则用 mod.json 或“未分组”）");
+        ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsGroup));
         ImGui::InputText("##notes-group", notes_group_buffer, sizeof(notes_group_buffer));
-        ImGui::TextUnformatted("备注");
+        ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsNotesLabel));
         ImGui::InputTextMultiline("##notes-text", notes_buffer, sizeof(notes_buffer),
             ImVec2(Scale(360.0f), Scale(90.0f)));
-        ImGui::TextUnformatted("关联 GameBanana（填 mod 链接或数字 id，可启用更新检查）");
+        ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsLinkHint));
         ImGui::SetNextItemWidth(Scale(240.0f));
         ImGui::InputText("##notes-id", notes_id_buffer, sizeof(notes_id_buffer));
         ImGui::SameLine();
