@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "autoclaw-v1",
+  "layout": {
+    "ObjectFlags": 8,
+    "ObjectIndex": 12,
+    "ObjectClass": 16,
+    "ObjectName": 24,
+    "ObjectOuter": 32,
+    "Super": 64,
+    "PropertyLink": 112,
+    "FieldName": 32,
+    "PropertySize": 52,
+    "PropertyOffset": 68,
+    "PropertyNext": 72,
+    "FunctionFlags": 176,
+    "FunctionCount": 180,
+    "FunctionSize": 182,
+    "RegistryCount": 36,
+    "RegistryItems": 16,
+    "ItemStride": 24,
+    "Serial": 16,
+    "ChunkSize": 65536,
+    "RegistryLoad": 25,
+    "RegistrySubtract": 16,
+    "MapSize": 80,
+    "MapEntryStride": 24,
+    "MapValue": 8,
+    "MapInlineBits": 16,
+    "MapBitsData": 32,
+    "MapBitCount": 40,
+    "MapBitCapacity": 44,
+    "FieldClass": 8,
+    "FieldClassName": 0,
+    "DataTableRows": 48,
+    "MapSlots": 0,
+    "LevelActors": 160
+  },
+  "symbols": [
+    {
+      "name": "Objects",
+      "candidates": [
+        {
+          "pattern": "48 8B 41 08 8B 08 3B 0D ?? ?? ?? ?? 7D ?? 0F B7 C1 48 C1 E9 10 48 8D 14 40 48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3",
+          "entry": "48 8B 41 08 8B 08 3B 0D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "World",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

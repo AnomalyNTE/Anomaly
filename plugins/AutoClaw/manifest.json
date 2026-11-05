@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 2,
+  "id": "b1ank.autoclaw",
+  "name": "AutoClaw",
+  "description": "Select a doll from the active claw machine, automatically submit one capture request after each manually paid round is confirmed, and display the server response.",
+  "author": "b1ank",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.6",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.window",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.world",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.build",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.process-event",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "ui-window",
+    "scheduler",
+    "nte-session-snapshot",
+    "nte-player-snapshot",
+    "memory-read",
+    "ue5-names",
+    "ue5-objects",
+    "ue5-world",
+    "ue5-build",
+    "game-events",
+    "interop-signature",
+    "json"
+  ]
+}
