@@ -1,15 +1,10 @@
 #pragma once
-#include "ue.hpp"
+#include "catalog.hpp"
 
 namespace character_studio {
 inline constexpr float LeaseSeconds = 5.0f;
 inline constexpr double RenewSeconds = 1.0;
 
-struct Character {
-    Name id{};
-    std::string code, chinese;
-    bool named{};
-};
 struct Model {
     std::uint64_t id{};
     Handle actor{}, world{};
@@ -67,30 +62,58 @@ public:
             throw std::runtime_error(localizer.Text("error.character_table_not_loaded",
                 "The character data table is not loaded; refresh the complete catalog"));
         const auto text = ue_.Expect(rows.type, "ItemName", "TextProperty", ue_.data_layout().text_size);
-        // A whole catalog is published atomically. No inventory, ownership, unlock,
-        // IsCharacterShow, time-gate, or loaded-Blueprint filter is applied.
-        std::vector<Character> next;
+        const auto asset = ue_.ObjectField(data, "CharacterDataAsset");
+        if (!ue_.IsA(asset, "CharacterDataAsset"))
+            throw std::runtime_error(localizer.Text("error.appearance_not_ready",
+                "The appearance catalog is not ready; refresh once the character data has loaded"));
+        const auto defaults = ue_.ObjectField(asset, "DefaultAppearanceDataTable");
+        const auto fashions = ue_.ObjectField(asset, "AppearanceDataTable");
+        if (!defaults && !fashions)
+            throw std::runtime_error(localizer.Text("error.appearance_not_ready",
+                "The appearance catalog is not ready; refresh once the character data has loaded"));
+        std::set<std::uint64_t> default_ids;
+        if (defaults) {
+            for (const auto& [key, row] : ue_.Rows(defaults, "StaticDefaultAppearanceData").rows)
+                default_ids.insert(key);
+        }
+        std::map<std::uint64_t, Name> fashion_owners;
+        if (fashions) {
+            const auto appearances = ue_.Rows(fashions, "StaticAppearanceData");
+            for (const auto& [key, row] : appearances.rows)
+                fashion_owners.emplace(key, ue_.Value<Name>(row, appearances.type,
+                    "CharacterID", "NameProperty"));
+        }
+        // Publish atomically after joining the same two appearance routes used
+        // by Spawn. This reads metadata without loading any model assets.
+        std::vector<CatalogRow> next;
         next.reserve(rows.rows.size());
         for (const auto& [key, row] : rows.rows) {
-            Character item;
+            CatalogRow candidate;
+            auto& item = candidate.character;
             item.id = {static_cast<std::uint32_t>(key),
                        static_cast<std::uint32_t>(key >> 32)};
             item.code = ue_.Spelling(item.id);
             item.chinese = ue_.Text(row + text.offset);
-            item.named = !item.chinese.empty();
-            if (!item.named) item.chinese = localizer.Text("label.name_pending", "Name not loaded");
-            next.push_back(std::move(item));
+            if (!default_ids.contains(key)) {
+                const auto character = ue_.Instanced(row, rows.type,
+                    "ElementData", "CharacterItemData");
+                candidate.default_fashion = ue_.Value<Name>(character.data, character.type,
+                    "DefaultFashionID", "NameProperty");
+            }
+            next.push_back(std::move(candidate));
         }
-        std::sort(next.begin(), next.end(), [](const Character& a, const Character& b) {
-            return a.code < b.code;
-        });
+        auto catalog = BuildCatalog(std::move(next), default_ids, fashion_owners);
         const auto character_handle = ue_.Pin(table);
-        if (!character_handle.id)
+        const auto default_handle = ue_.Pin(defaults);
+        const auto appearance_handle = ue_.Pin(fashions);
+        if (!character_handle.id || (defaults && !default_handle.id) ||
+            (fashions && !appearance_handle.id))
             throw std::runtime_error(localizer.Text("error.catalog_handle_invalid",
                 "The character catalog object failed identity validation"));
         character_table_ = character_handle;
-        default_table_ = appearance_table_ = {};
-        characters_ = std::move(next);
+        default_table_ = default_handle;
+        appearance_table_ = appearance_handle;
+        characters_ = std::move(catalog);
     }
     std::uint64_t Spawn(Name character, Vector position, double yaw) {
         if (!position.finite() || !std::isfinite(yaw))
@@ -331,8 +354,7 @@ private:
         return asset;
     }
     Appearance ReadAppearance(Name id) {
-        // Listing names must not depend on appearance assets being resident.
-        // Resolve these only when the user actually requests a model.
+        // Reacquire expired metadata handles; model assets still load only here.
         if (!ue_.Resolve(default_table_) && !ue_.Resolve(appearance_table_)) {
             const auto library = ue_.Find("/Script/HTGame.Default__HTGameData");
             const auto data = ue_.Call("/Script/HTGame.HTGameData.GetGameData", library)
@@ -340,7 +362,7 @@ private:
             const auto asset = ue_.ObjectField(data, "CharacterDataAsset");
             if (!ue_.IsA(asset, "CharacterDataAsset"))
                 throw std::runtime_error(localizer.Text("error.appearance_not_ready",
-                    "Appearance assets are not ready; the catalog can still be browsed"));
+                    "The appearance catalog is not ready; refresh once the character data has loaded"));
             default_table_ = ue_.Pin(ue_.ObjectField(asset, "DefaultAppearanceDataTable"));
             appearance_table_ = ue_.Pin(ue_.ObjectField(asset, "AppearanceDataTable"));
         }
