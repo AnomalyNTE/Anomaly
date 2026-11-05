@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "自动出租车",
+    "plugin.description": "独立出租车插件：自动请求接客、送达及结算后继续接单，显示游戏确认的订单完成数。",
+    "status.startup": "驾驶出租车并在游戏内开始接单后，开启自动完成。",
+    "status.game_services": "等待游戏出租车接口就绪。",
+    "status.signatures": "出租车签名未能解析；请在框架就绪后重新加载插件。",
+    "status.driver": "请驾驶出租车并开始接单，等待任务数据就绪。",
+    "status.order_data": "正在等待完整的出租车订单信息。",
+    "status.unconfirmed": "本单操作未获确认，已停止重试；可关闭后重新开启。",
+    "status.waiting": "等待出租车任务。",
+    "status.start_orders": "请在游戏内点击「开始接单」。",
+    "status.next_order": "正在等待游戏分配下一单。",
+    "status.pickup_pending": "已请求接客，等待游戏确认。",
+    "status.delivery_pending": "已请求送达，等待游戏确认。",
+    "status.special_event": "等待乘客特殊事件或对话完成。",
+    "status.settlement_pending": "已请求结算并继续接单，等待游戏确认。",
+    "status.settlement_ui": "等待出租车结算界面及「继续接单」按钮可用。",
+    "status.interface_rejected": "出租车原生接口未通过核对，本单已停止。",
+    "status.data_changed": "出租车数据变化，已停止自动操作，请重新开启。",
+    "instructions.start": "驾驶出租车并在游戏内开始接单；自动接客、送达、结算并继续下一单。",
+    "instructions.settlement": "按游戏原规则结算；特殊事件或对话需等待游戏完成。",
+    "status.disabled": "出租车自动完成已关闭。",
+    "status.interface_missing": "等待出租车接口：{0}",
+    "option.enabled": "启用出租车自动完成",
+    "label.order": "当前订单：{0}",
+    "label.completed": "游戏确认新增订单：{0}",
+    "error.profile": "出租车兼容配置不可用或不匹配，未启动出租车操作。"
+  }
+}
