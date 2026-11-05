@@ -693,7 +693,7 @@ void RenderOverlay() {
             to_d2d_rect(footer_layout.summary));
 
         if (g_app.page == ViewPage::HistoryList) {
-            draw_cells({localizer.Text("overlay.col.account_time", "Account / Time"), localizer.Text("overlay.col.duration", "Duration"), localizer.Text("overlay.col.outgoing", "Damage"), localizer.Text("overlay.col.taken", "Taken"), L"DPS", localizer.Text("overlay.col.end_reason", "End reason"), localizer.Text("overlay.col.quality", "Quality")},
+            draw_cells({localizer.Text("overlay.col.account_time", "Account / Time"), localizer.Text("overlay.col.duration", "Duration"), localizer.Text("overlay.col.outgoing", "Damage"), localizer.Text("overlay.col.taken", "Taken"), localizer.Text("overlay.col.dps", "DPS"), localizer.Text("overlay.col.end_reason", "End reason"), localizer.Text("overlay.col.quality", "Quality")},
                 {1.8F, 0.7F, 0.9F, 0.9F, 0.9F, 1.2F, 0.7F},
                 D2D1::RectF(0, top, layout.width, top + header_height),
                 scaled_small.Get(), muted.Get(), true);

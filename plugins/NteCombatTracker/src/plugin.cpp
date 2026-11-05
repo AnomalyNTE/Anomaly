@@ -204,6 +204,18 @@ struct Context {
     std::uint64_t last_skill_frame_sequence{};
 } g_context;
 
+// Localized status text resolved where it is produced: the language is fixed
+// for the process, so the strings stored in the render state are already final.
+template <typename... Args>
+[[nodiscard]] std::string LocalizedStatus(const std::string_view key,
+                                          const std::string_view fallback,
+                                          Args... args) {
+    const std::array<std::string_view, sizeof...(Args)> arguments{
+        std::string_view(args)...};
+    return g_context.localizer.Format(
+        key, fallback, std::span<const std::string_view>(arguments));
+}
+
 NteOverlaySnapshot MakeOverlaySnapshot(
     Snapshot stats,
     std::uint32_t service_status,
@@ -1572,8 +1584,11 @@ void Update(void* context, double) {
             g_context.developer_access.SetSavedPreference(
                 merged.developer_mode);
             ApplyDeveloperModeAccess();
-            g_context.settings_status = merged.developer_mode ?
-                "Developer mode enabled" : "Developer mode disabled";
+            g_context.settings_status = LocalizedStatus(
+                merged.developer_mode ? "settings.status.developer_enabled"
+                                      : "settings.status.developer_disabled",
+                merged.developer_mode ? "Developer mode enabled"
+                                      : "Developer mode disabled");
             g_context.settings_error.clear();
         } else {
             g_context.settings_error = "Failed to save developer mode: " + error;
@@ -1587,7 +1602,8 @@ void Update(void* context, double) {
                 nte::settings::OverlaySettingsPath(),
                 *requested_overlay_settings, merged, error)) {
             g_context.overlay_settings = merged;
-            g_context.settings_status = "Overlay settings applied";
+            g_context.settings_status = LocalizedStatus(
+                "settings.status.overlay_applied", "Overlay settings applied");
             g_context.settings_error.clear();
             NotifyOverlaySettingsChanged();
         } else {
@@ -1602,18 +1618,22 @@ void Update(void* context, double) {
         if (action == nte::combat_stats::OverlayToggleAction::Retry) {
             g_context.overlay_launch_attempted = false;
             g_context.overlay_error.clear();
-            g_context.settings_status = "Retrying overlay launch";
+            g_context.settings_status = LocalizedStatus(
+                "settings.status.overlay_retry", "Retrying overlay launch");
         } else if (action == nte::combat_stats::OverlayToggleAction::Disable) {
             g_context.overlay_policy.SetEnabled(false);
             g_context.overlay_launch_attempted = false;
             CloseOverlayWindow();
-            g_context.settings_status = "Overlay closed (it still starts automatically next session)";
+            g_context.settings_status = LocalizedStatus(
+                "settings.status.overlay_closed",
+                "Overlay closed (it still starts automatically next session)");
         } else {
             g_context.overlay_policy.SetEnabled(true);
             g_context.overlay_launch_attempted = false;
             g_context.overlay_restart_pending = false;
             g_context.overlay_error.clear();
-            g_context.settings_status = "Starting overlay";
+            g_context.settings_status = LocalizedStatus(
+                "settings.status.overlay_starting", "Starting overlay");
         }
         g_context.settings_error.clear();
     }
@@ -1624,7 +1644,9 @@ void Update(void* context, double) {
         if (!path) {
             g_context.settings_error = "Storage path is not valid UTF-8";
         } else if (SwitchLogRoot(*path, now, utc_ms, error)) {
-            g_context.settings_status = "Statistics storage path applied";
+            g_context.settings_status = LocalizedStatus(
+                "settings.status.storage_applied",
+                "Statistics storage path applied");
             g_context.settings_error = std::move(error);
         } else {
             g_context.settings_error = std::move(error);
@@ -1661,8 +1683,11 @@ void Update(void* context, double) {
                     export_root, merged, error)) {
                 g_context.export_root = merged.export_root;
                 CopyExportRootToInput(g_context.export_root);
-                g_context.settings_status = export_root ?
-                    "Export directory applied" : "Export directory cleared";
+                g_context.settings_status = export_root
+                    ? LocalizedStatus("settings.status.export_applied",
+                          "Export directory applied")
+                    : LocalizedStatus("settings.status.export_cleared",
+                          "Export directory cleared");
                 g_context.settings_error.clear();
             } else {
                 g_context.settings_error = "Failed to save the export directory: " + error;
@@ -1674,14 +1699,15 @@ void Update(void* context, double) {
         std::filesystem::path exported_path;
         std::string error;
         if (ExportIdNameMapping(exported_path, error)) {
-            g_context.id_name_export_status =
-                "ID to name mapping exported to: " +
-                nte::settings::PathToUtf8(exported_path);
+            g_context.id_name_export_status = LocalizedStatus(
+                "developer.status.export_ok", "ID to name mapping exported to: {0}",
+                nte::settings::PathToUtf8(exported_path));
             g_context.id_name_export_error.clear();
         } else {
             g_context.id_name_export_status.clear();
-            g_context.id_name_export_error =
-                "Failed to export the ID to name mapping: " + error;
+            g_context.id_name_export_error = LocalizedStatus(
+                "developer.error.export", "Failed to export the ID to name mapping: {0}",
+                error);
         }
     }
 
@@ -2465,7 +2491,9 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         export_path_input = g_context.export_root_input;
     }
     int open = 1;
-    anomaly::sdk::UiWindow window(ui, "NTE Combat Tracker", &open);
+    const std::string window_title =
+        g_context.localizer.Text("window.title", "NTE Combat Tracker");
+    anomaly::sdk::UiWindow window(ui, window_title, &open);
     if (!window) return;
 
     const auto DrawSettings = [&]() {
@@ -2619,7 +2647,7 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         ui->end_tab_item(ui->user);
     }
     if (render.developer_available && render.developer.enabled && ui->begin_tab_item(
-            ui->user, anomaly::sdk::StringView("Developer"), nullptr,
+            ui->user, ScopedLabel("settings.tab.developer", "Developer").View(), nullptr,
             ANOMALY_UI_TAB_ITEM_V1_NONE, 1)) {
         DrawDeveloperPage(ui, render);
         ui->end_tab_item(ui->user);
