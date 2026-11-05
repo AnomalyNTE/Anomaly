@@ -4,7 +4,6 @@
   "messages": {
     "plugin.description": "列出游戏场景，用游戏自己配置的入口切换；可在场景内换入口、强制返回大世界，并开关当前场景的数据层。",
     "window.title": "场景加载器",
-
     "ui.current": "当前场景：{0}",
     "ui.waiting_game": "等待游戏",
     "ui.force_return": "强制返回大世界",
@@ -22,11 +21,9 @@
     "ui.no_entrance": "暂无可用的游戏入口。",
     "ui.switch": "切换到所选场景",
     "ui.switch_in_scene": "场景内切换入口",
-
     "scene.verified": "已验证",
     "scene.unusable": "不可用",
     "scene.unverified": "未验证",
-
     "type.open_world": "开放世界",
     "type.character_creation": "角色创建",
     "type.single_level": "单人场景",
@@ -37,16 +34,12 @@
     "type.tower": "高塔",
     "type.multiplayer": "多人玩法",
     "type.other": "其他",
-
     "reason.instance": "连接失败（副本实例，服务端不接受直接传送）",
     "reason.weekly": "连接失败（周本实例，服务端不接受直接传送）",
     "reason.not_open": "连接失败（服务端未开放）",
     "reason.test_map": "连接失败（测试图）",
-    "reason.travel_error": "客户端切图失败（HandleTravelError），会卡在加载画面",
-
     "route.default": "默认入口",
     "route.difficulty": "{0} / 难度 {1}",
-
     "status.reading": "正在读取游戏场景。",
     "status.ready": "选择场景与入口后点击切换。",
     "status.waiting_game": "正在等待游戏接口。",
@@ -69,7 +62,6 @@
     "status.scene_unavailable": "该场景切换接口暂不可用。",
     "status.exit_held": "已拦住场景的自动送回（第 {0} 次）。离开请用「强制返回大世界」。",
     "status.refreshing": "场景数据刷新中，请稍后重试。",
-
     "layers.title": "场景数据层（实验）",
     "layers.read": "读取当前场景的数据层",
     "layers.no_manager": "当前场景没有可用的数据层管理器。",
@@ -84,7 +76,6 @@
     "layers.close_all": "全部关闭（{0}）",
     "layers.big_world": "大世界：可以单个勾选开关，批量按钮不开放；离开区域或传送后服务端会重新下发。",
     "layers.local_only": "只改本地：服务端不知道这些层的开关，部分交互可能无效；离开场景后需重新打开。",
-
     "layer.unloaded": "未加载",
     "layer.loaded": "已加载",
     "layer.activated": "已激活",

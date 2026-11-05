@@ -33,7 +33,7 @@ int main() {
         Check(t.Check("city",43000,true)==scene::Transition::Result::Arrived,"the game's transfer acknowledgement confirms same-world recovery");
         Check(scene::Nearest({{0,0,0},{100,50,20}},{{95,50,20}})==1,"return prefers the configured entrance nearest the last world position");
         Check(!scene::Verified("MassAI_wtao") && scene::Verified("DLC_Hotel"),"untested configured maps are distinguished from verified transfers");
-        Check(scene::Unusable("DLC_Bank_Safety") && scene::Unusable("DLC_Castle_Demo") && scene::Unusable("DLC_DeadNumber") &&
+        Check(scene::Unusable("DLC_Bank_Safety") && scene::Unusable("DLC_Castle_Demo") && scene::Verified("DLC_DeadNumber") &&
             !scene::Verified("DLC_Bank_Safety"),"scenes that failed in live tests are unusable, not verified");
         Check(scene::Verified("DLC_SpiralDreams") && scene::Verified("DLC_MoonDog") && !scene::Unusable("DLC_SpiralDreams"),"scenes that worked in live tests are verified");
         Check(!scene::Verified("DLC_NeverTried") && !scene::Unusable("DLC_NeverTried") &&
