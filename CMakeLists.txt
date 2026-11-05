@@ -607,7 +607,8 @@ target_compile_options(anomaly_websocket_server PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_websocket_server PUBLIC Ws2_32 bcrypt)
 
 add_library(anomaly_nte_profile_runtime STATIC
-    src/game/nte/nte_profile_runtime.cpp)
+    src/game/nte/nte_profile_runtime.cpp
+    src/game/nte/nte_pak_signature_bypass.cpp)
 target_include_directories(anomaly_nte_profile_runtime PUBLIC include)
 target_compile_definitions(
     anomaly_nte_profile_runtime PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1210,6 +1211,11 @@ add_executable(anomaly_launcher WIN32
     apps/launcher/AnomalyLauncher.manifest
     "${LAUNCHER_RESOURCES_RC}")
 set_target_properties(anomaly_launcher PROPERTIES OUTPUT_NAME "AnomalyLauncher")
+target_link_libraries(anomaly_launcher PRIVATE winhttp)
+target_link_libraries(anomaly_launcher PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(anomaly_launcher PRIVATE advapi32)
+# The launcher carries a few user-facing strings inline; /utf-8 keeps them valid.
+target_compile_options(anomaly_launcher PRIVATE /utf-8)
 target_include_directories(anomaly_launcher PRIVATE include)
 target_compile_definitions(
     anomaly_launcher PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
