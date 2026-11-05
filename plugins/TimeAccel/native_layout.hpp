@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace timeaccel_profile {
 struct Layout {
     std::uintptr_t kClassPrivateOffset{};
@@ -12,10 +12,10 @@ struct Layout {
     std::uintptr_t kMaxDilationOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","time-accel-v1")) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "time-accel-v1"}, {}, false, "layout")) return false;
         Layout parsed;
         parsed.kClassPrivateOffset=compatibility.Value("kClassPrivateOffset",16384);
         parsed.kNamePrivateOffset=compatibility.Value("kNamePrivateOffset",16384);

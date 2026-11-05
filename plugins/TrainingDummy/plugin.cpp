@@ -805,8 +805,9 @@ void ResetState() {
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
     if (context == nullptr) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
-    auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(host), "compatibility.profile.json");
-    if (!loaded || loaded.value().contract != "training-dummy-v1" || loaded.value().game != "nte")
+    auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(host), "compatibility.profile.json",
+        {"nte", "HTGame.exe", ".text", "training-dummy-v1"});
+    if (!loaded)
         return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
     const auto field = loaded.value().layout.find("ObjectIndex");
     if (field == loaded.value().layout.end() || field->second > 4096 || field->second % alignof(std::uint32_t))

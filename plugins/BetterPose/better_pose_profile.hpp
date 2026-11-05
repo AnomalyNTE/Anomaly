@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 
 #include <cstdint>
 #include <string_view>
@@ -104,10 +104,10 @@ struct Layout {
     std::uint32_t kArrayCapacityOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host, "compatibility.profile.json", "better-pose-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "better-pose-v1"}, {"ProcessEvent.entry"})) return false;
         Layout parsed;
         parsed.kTransformSize=compatibility.Value("kTransformSize",16384,alignof(double));
         parsed.kMeshSkeletalMeshOffset=compatibility.Value("kMeshSkeletalMeshOffset",16384);

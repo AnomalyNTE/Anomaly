@@ -557,7 +557,8 @@ void NoteSelection() noexcept {
 
 bool LoadLayoutResource(jelly::Layout& layout, std::string& error) {
     try {
-        auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(g_context.host), "compatibility.profile.json");
+        auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(g_context.host), "compatibility.profile.json",
+            {"nte", "HTGame.exe", ".text", "jelly-reflection-v1"});
         if (!loaded) { error = loaded.error(); return false; }
         const auto& profile = loaded.value();
         layout = jelly::FromProfile(profile);

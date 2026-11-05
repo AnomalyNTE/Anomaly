@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 #include <array>
 namespace deserted_profile {
 struct Layout {
@@ -17,10 +17,10 @@ struct Layout {
     std::array<std::uint32_t,5> kScaleOffsets{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","deserted-density-v1")) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "deserted-density-v1"}, {}, false, "layout")) return false;
         Layout parsed;
         parsed.kClassPrivateOffset=compatibility.Value("kClassPrivateOffset",65536,4);
         parsed.kNamePrivateOffset=compatibility.Value("kNamePrivateOffset",65536,4);

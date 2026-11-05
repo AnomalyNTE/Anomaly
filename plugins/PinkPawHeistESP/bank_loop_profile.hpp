@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace pink_paw_heist_esp::bank_profile {
 struct Layout {
     std::uint32_t kWorldGameInstanceOffset{};
@@ -57,10 +57,10 @@ struct Layout {
     std::uint32_t kStaticItemElementDataOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","pink-paw-v1", {"kPickupPrologue","kPickupSuccessReturn","kPickupFailureReturn","ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "pink-paw-v1"}, {"kPickupPrologue","kPickupSuccessReturn","kPickupFailureReturn","ProcessEvent.entry"}, false, "layout")) return false;
         Layout parsed;
         parsed.kWorldGameInstanceOffset=compatibility.Value("kWorldGameInstanceOffset",65536);
         parsed.kGameInstanceLocalPlayersOffset=compatibility.Value("kGameInstanceLocalPlayersOffset",65536);

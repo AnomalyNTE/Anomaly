@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace accessory::profile {
 struct Layout {
     std::uint32_t DrivingStateSize{};
@@ -80,7 +80,7 @@ struct Layout {
     std::uint32_t AwakenList{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline constexpr auto GetAppearance = "layout";
 inline constexpr auto Refresh = "Refresh";
 inline constexpr auto World = "World";
@@ -92,8 +92,8 @@ inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     native_layout={};
     compatibility={};
     try {
-        anomaly::plugins::CompatibilityProfile parsed_profile;
-        if (!parsed_profile.Load(host,"compatibility.profile.json","skin-changer-v1", {"Paint.entry","ProcessEvent.entry"}) || !parsed_profile.Address(GetAppearance)) return false;
+        anomaly::sdk::ProfileSnapshot parsed_profile;
+        if (!parsed_profile.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "skin-changer-v1"}, {"Paint.entry","ProcessEvent.entry"}, false, "layout") || !parsed_profile.Address(GetAppearance)) return false;
         Layout parsed;
         parsed.DrivingStateSize=parsed_profile.Value("DrivingStateSize",65536);
         parsed.WaterDrivingStateSize=parsed_profile.Value("WaterDrivingStateSize",65536);

@@ -63,10 +63,10 @@ anomaly_add_plugin(my_plugin
 ```cpp
 #include <anomaly/sdk/profile.hpp>
 
-const auto loaded = anomaly::sdk::LoadProfile(host, "my-plugin.profile.json");
+const auto loaded = anomaly::sdk::LoadProfile(host, "my-plugin.profile.json",
+    {"my-game", "Game.exe", ".text", "my-plugin-v1"});
 if (!loaded) { /* 记录 loaded.error()，停用依赖功能 */ return; }
 const auto& profile = loaded.value();
-if (profile.contract != "my-plugin-v1") return;
 // 检查所需 layout/values 与自身实现匹配，再解析地址和安装 Hook。
 const auto symbol = anomaly::sdk::ResolveProfileSymbol(signature, core, profile, "query");
 if (!symbol) { /* 记录 symbol.error，停用依赖功能 */ return; }
@@ -74,6 +74,32 @@ if (!symbol) { /* 记录 symbol.error，停用依赖功能 */ return; }
 
 公共 resolver 验证唯一候选、可选 E8 相对调用和精确入口字节；多匹配或入口改变会拒绝结果。
 `contract` 是语义合同，不是 Build identity。
+
+需要缓存解析结果时，使用同一公开头文件中的 `ProfileSnapshot`，无需下载 Anomaly 源码或引用
+`plugins/` 下的文件。它是插件 DLL 内的 C++ 辅助类，仍只通过纯 C 服务 ABI 访问宿主：
+
+```cpp
+anomaly::sdk::ProfileSnapshot compatibility; // 插件 Context 的成员
+if (!compatibility.Load(api, "my-plugin.profile.json",
+        {"my-game", "Game.exe", ".text", "my-plugin-v1"},
+        {"owned-entry"}, true, "layout-selector")) return;
+const auto offset = compatibility.Value("actor.component", 65536, alignof(void*));
+const auto address = compatibility.Address("query");
+if (!address) return; // 普通符号可以独立失败，调用方决定依赖功能的降级。
+```
+
+`known_entries` 指定从受控对象或虚表取得地址的符号，只跳过全局扫描；使用前仍需调用
+`MatchesEntry(core, name, address)`。`batch_signatures=true` 优先使用 V3 批量扫描，服务不可用或
+批量请求失败时回退 V1；单个签名冲突仍被拒绝。最后的 `layout_symbol` 可省略，指定时必须声明且
+唯一解析成功，它的候选 `values` 覆盖公共 `layout`。SDK 不预设游戏名、模块或布局符号名称。
+
+`Load` 成功后才替换快照；失败保留旧快照，但调用方必须处理失败，不能当作新配置成功加载。
+`Selected`、`Pattern`、`Document` 返回借用数据，其有效期到快照下一次成功加载、赋值或销毁为止。
+`Pattern` 在单候选未解析时仍可返回学习种子，这不表示地址或布局可用。初始化完成后回调只读快照，
+不能与 `Load` 并发。需要分阶段校验的插件可使用 `ProfileScanCache` 扫描指定符号，之后逐个
+`Resolve`；合同校验、字段范围检查和入口校验分别共用 `LoadProfile(..., ProfileContract)`、
+`Profile::Value` 和 `MatchesProfileEntry`。
+
 新增目录后重新 configure 并构建；配置更新随新的包 generation 生效，不写回 profile。
 完整字段与 C ABI 见 [profile 服务](../api-reference/platform-services.md#anomalyprofile)，
 单文件示例见 [`SummonLab/profile/compatibility.profile.json`](../../plugins/SummonLab/profile/compatibility.profile.json)。

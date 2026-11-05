@@ -145,6 +145,9 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 - 通过宿主 `anomaly.profile` 读取和校验文件；manifest 声明 `anomaly.profile`、`anomaly.json` v1
   和 `json` capability。C++ 使用 `anomaly::sdk::LoadProfile`（`include/anomaly/sdk/profile.hpp`），
   禁止插件自己打开 profile 文件、引入 JSON parser 或复制解析逻辑。
+- 公共加载、扫描和快照管理统一使用公开 SDK `anomaly/sdk/profile.hpp`：`ProfileSnapshot`、
+  `ProfileScanCache`、`Profile::Value` 与 `MatchesProfileEntry`。不得另建插件私有的通用封装；
+  游戏/模块/语义合同由调用方传入，插件只保留自身布局、反射与 ABI 校验，第三方插件不依赖源码树。
 - 仅在 Lifecycle/Worker 加载；宿主从当前 DLL generation 的包快照读取 `profile/`，拒绝越界路径、
   reparse、超限文档和不合规 schema。启动时加载一次，Game/Render 回调只读解析后的快照。
 - **signature / offset 只能放在 Profile**：扫描签名、入口字节、相对调用位置、游戏对象字段偏移、

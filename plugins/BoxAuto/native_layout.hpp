@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace box_auto_compat {
 struct Layout {
     std::uint32_t kInteractEntryStride{};
@@ -121,10 +121,10 @@ struct Layout {
     std::ptrdiff_t kFPropertyLinkNextOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","box-auto-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "box-auto-v1"}, {"ProcessEvent.entry"})) return false;
         Layout parsed;
         parsed.kGObjectsAddend = -static_cast<std::ptrdiff_t>(compatibility.Value("kGObjectsAddendMagnitude",65536));
         parsed.kObjectItemsOffset = compatibility.Value("kObjectItemsOffset",65536);

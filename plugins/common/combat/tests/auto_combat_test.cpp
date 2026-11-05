@@ -531,8 +531,8 @@ void ScenarioAttackFailedFlag() {
 
 int main() {
     anomaly::testing::ProfileHost profile_host("CombatBox");
-    anomaly::plugins::CompatibilityProfile profile;
-    Check(profile.Load(&profile_host.api, "compatibility.profile.json", "combat-box-v1", {"ProcessEvent.entry"}), "production profile must load");
+    anomaly::sdk::ProfileSnapshot profile;
+    Check(profile.Load(&profile_host.api, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "combat-box-v1"}, {"ProcessEvent.entry"}), "production profile must load");
     Check(anomaly::plugins::combat::profile::Configure(&profile_host.api, profile), "combat layout must validate");
     // 断言 1：服务缺失 → unavailable。
     {

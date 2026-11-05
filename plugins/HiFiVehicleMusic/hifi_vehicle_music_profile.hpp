@@ -1,11 +1,11 @@
 #pragma once
 
 #include "anomaly/sdk/signature.hpp"
-#include "plugins/common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 #include <array>
 
 namespace hifi_vehicle_music_profile {
-inline anomaly::plugins::CompatibilityProfile Compatibility;
+inline anomaly::sdk::ProfileSnapshot Compatibility;
 inline constexpr std::string_view kModule = "HTGame.exe";
 inline constexpr std::string_view kSection = ".text";
 inline constexpr std::uint8_t kPlayerTypeVehicle = 1;
@@ -191,8 +191,8 @@ struct AlbumSchema final {
 };
 inline bool Load(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!Compatibility.Load(host, "compatibility.profile.json", "hifi-vehicle-music-v1",
-                                {"ProcessEvent.entry"}, true)) return false;
+        if (!Compatibility.Load(host, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "hifi-vehicle-music-v1"},
+                                {"ProcessEvent.entry"}, true, "layout")) return false;
         NativeLayout next;
         next.kPawnControllerOffset = Compatibility.Value("kPawnControllerOffset", 65536, 1);
         next.kPlayerControllerPlayerOffset = Compatibility.Value("kPlayerControllerPlayerOffset", 65536, 1);

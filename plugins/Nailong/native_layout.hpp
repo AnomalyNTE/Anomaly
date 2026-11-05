@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace nailong_profile {
 struct Layout {
     std::uint32_t NL_OBJ_ITEMS_OFFSET{};
@@ -27,10 +27,10 @@ struct Layout {
     std::uint32_t PropertyNext{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","nailong-native-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "nailong-native-v1"}, {"ProcessEvent.entry"})) return false;
         Layout parsed;
         parsed.NL_OBJ_ITEMS_OFFSET=compatibility.Value("NL_OBJ_ITEMS_OFFSET",65536);
         parsed.NL_OBJ_MAX_COUNT_OFFSET=compatibility.Value("NL_OBJ_MAX_COUNT_OFFSET",65536);

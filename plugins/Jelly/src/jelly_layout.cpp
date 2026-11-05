@@ -5,14 +5,10 @@
 
 namespace jelly {
 Layout FromProfile(const anomaly::sdk::Profile& profile) {
-    if (profile.contract != "jelly-reflection-v1" || profile.game != "nte" ||
-        profile.module != "HTGame.exe" || profile.section != ".text")
+    if (!profile.Matches({"nte", "HTGame.exe", ".text", "jelly-reflection-v1"}))
         throw std::runtime_error("unsupported Jelly profile contract");
     const auto value = [&](std::string_view key) {
-        const auto found = profile.layout.find(key);
-        if (found == profile.layout.end() || found->second > 65536)
-            throw std::runtime_error("missing or unsupported Jelly layout field");
-        return found->second;
+        return profile.Value(key, 65536);
     };
     Layout out;
     out.version = 1;

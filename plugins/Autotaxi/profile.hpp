@@ -64,16 +64,14 @@ inline bool Load(const AnomalyHostApiV1* api) noexcept {
     snapshot={};
     try {
         const anomaly::sdk::Host host(api);
-        auto loaded=anomaly::sdk::LoadProfile(host,"compatibility.profile.json");
+        auto loaded=anomaly::sdk::LoadProfile(host,"compatibility.profile.json",
+            {"nte", "HTGame.exe", ".text", "autotaxi-v1"});
         if (!loaded) return false;
         Snapshot parsed;
         parsed.document=std::move(loaded).value();
         const auto& doc=parsed.document;
-        if (doc.game!="nte" || doc.module!="HTGame.exe" || doc.section!=".text" || doc.contract!="autotaxi-v1") return false;
         const auto value=[&](std::string_view key) {
-            const auto found=doc.layout.find(key);
-            if (found==doc.layout.end() || found->second>65536) throw std::runtime_error("unsupported taxi layout field");
-            return found->second;
+            return doc.Value(key, 65536);
         };
         parsed.layout.ObjectFlags=value("ObjectFlags");
         parsed.layout.ObjectIndex=value("ObjectIndex");
@@ -130,15 +128,6 @@ inline bool Load(const AnomalyHostApiV1* api) noexcept {
     } catch (...) { return false; }
 }
 inline bool ProcessEventEntry(const AnomalyCoreServiceV1* core,std::uintptr_t address) noexcept {
-    try {
-        for (const auto& candidate:snapshot.document.symbol("ProcessEvent.entry").candidates) {
-            std::vector<std::uint8_t> bytes(candidate.entry.size());
-            if (bytes.empty() || !anomaly::sdk::Succeeded(core->read_memory(core->user,address,{bytes.data(),bytes.size()}))) continue;
-            if (bytes==candidate.entry) return true;
-            // The host observer may replace five entry bytes with an E9 jump.
-            if (bytes.size()>5 && bytes[0]==0xE9 && std::equal(bytes.begin()+5,bytes.end(),candidate.entry.begin()+5)) return true;
-        }
-    } catch (...) {}
-    return false;
+    return anomaly::sdk::MatchesProfileEntry(core, snapshot.document, "ProcessEvent.entry", address, true);
 }
 }

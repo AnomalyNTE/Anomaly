@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -28,10 +28,10 @@ struct Layout {
     std::uint32_t kObjectItemSerialOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host, "compatibility.profile.json", "camera-blur-fix-v1")) return false;
+        if (!compatibility.Load(host, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "camera-blur-fix-v1"})) return false;
         Layout parsed;
         parsed.kObjectInternalIndexOffset = compatibility.Value("kObjectInternalIndexOffset", 16384);
         parsed.kObjectClassOffset = compatibility.Value("kObjectClassOffset", 16384);

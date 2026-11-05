@@ -72,7 +72,7 @@ public:
         : process_(process), resource_(std::move(resource)), registry_(registry),
           localizer(l10n) {
         contracts_ = LoadFunctionContracts(resource_.layout);
-        if (resource_.contract != "character-studio-v1" || resource_.game != "nte")
+        if (!resource_.Matches({"nte", "HTGame.exe", ".text", "character-studio-v1"}))
             throw std::runtime_error(
                 localizer.Text("error.layout_unsupported", "Unsupported model layout data"));
         data_layout_ = {Offset("text.size"), Offset("softObject.size"),
@@ -103,9 +103,7 @@ public:
     const FunctionContracts& contracts() const { return contracts_; }
     const ResourceLayout& data_layout() const { return data_layout_; }
     std::size_t Offset(std::string_view key) const {
-        const auto value = resource_.layout.at(std::string(key));
-        if (value > 65536) throw std::runtime_error("unsupported reflection layout offset");
-        return value;
+        return resource_.Value(key, 65536);
     }
     template<class T> T Read(Address address) {
         T value{};

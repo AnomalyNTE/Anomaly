@@ -23,10 +23,10 @@ struct Layout {
 
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","night-combat-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "night-combat-v1"}, {"ProcessEvent.entry"})) return false;
         Layout parsed;
         parsed.kUeObjectClassOffset = compatibility.Value("kUeObjectClassOffset", 65536);
         parsed.kUeObjectNameOffset = compatibility.Value("kUeObjectNameOffset", 65536);

@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace fishing::profile {
 struct Layout {
     std::uint32_t ObjectClass{};
@@ -46,10 +46,10 @@ struct Layout {
     std::uint32_t RowStride{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","auto-fish-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "auto-fish-v1"}, {"ProcessEvent.entry"})) return false;
         Layout parsed;
         parsed.ObjectClass=compatibility.Value("ObjectClass",65536,4);
         parsed.ObjectName=compatibility.Value("ObjectName",65536,4);

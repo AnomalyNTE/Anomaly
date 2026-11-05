@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -29,10 +29,10 @@ struct Layout {
     std::int32_t kGObjectsAddend{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","fake-uid-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "fake-uid-v1"}, {"ProcessEvent.entry"})) return false;
         Layout parsed;
         parsed.kObjectClassOffset = compatibility.Value("kObjectClassOffset",65536,8);
         parsed.kObjectOuterOffset = compatibility.Value("kObjectOuterOffset",65536,8);

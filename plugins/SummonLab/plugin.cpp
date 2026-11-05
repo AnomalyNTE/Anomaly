@@ -17,7 +17,6 @@
 #include "presets.hpp"
 #include "blueprint_editor_state.hpp"
 #include "preset_file_picker.hpp"
-#include "profile_symbols.hpp"
 
 #include <algorithm>
 #include <array>
@@ -67,7 +66,7 @@ using summon_lab::SavedConfiguration;
 // Parsed once per DLL generation; callbacks only read this snapshot.
 summon_lab::NativeLayout g_layout;
 bool g_layout_ready{};
-summon_lab::ProfileScans g_profile_scans;
+anomaly::sdk::ProfileScanCache g_profile_scans;
 using summon_lab::NativeIdentity;
 using summon_lab::MirrorEntry;
 using summon_lab::ConfigureSummon;
@@ -2014,8 +2013,7 @@ void ANOMALY_CALL AttributeBaseInputDetour(void* self, const void* attribute,
 }
 
 bool ValidateSummonProfile(const anomaly::sdk::Profile& profile, summon_lab::NativeLayout* output) {
-    if (profile.game != "nte" || profile.module != "HTGame.exe" ||
-        profile.section != ".text" || profile.contract != "summon-lab-v2") return false;
+    if (!profile.Matches({"nte", "HTGame.exe", ".text", "summon-lab-v2"})) return false;
     try {
         summon_lab::NativeLayout layout;
         if (!summon_lab::LoadNativeLayout(profile, &layout)) return false;
@@ -4843,7 +4841,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     g_context.events = events.get();
     g_context.has_invoke = HasInvoke(g_context.events);
 
-    const auto loaded = anomaly::sdk::LoadProfile(query, "compatibility.profile.json");
+    const auto loaded = anomaly::sdk::LoadProfile(query, "compatibility.profile.json",
+        {"nte", "HTGame.exe", ".text", "summon-lab-v2"});
     if (loaded && ValidateSummonProfile(loaded.value(), &g_layout)) {
         const auto& profile = loaded.value();
         constexpr std::array<std::string_view, 15> symbols{

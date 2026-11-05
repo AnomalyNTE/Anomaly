@@ -205,11 +205,10 @@ Address ProcessEvent(Context& c, const AnomalySignatureServiceV1* signatures,
     const auto skip = result.candidate->values.at("entryOffset");
     if (skip != 5 || result.address <= skip) return 0; // Host E9 rel32 detour ABI.
     const auto entry = result.address - skip;
-    const auto& expected = profile.symbol("ue5.ProcessEvent.prologue").candidates.at(0).entry;
-    std::vector<std::uint8_t> actual(expected.size());
-    if (expected.size() <= skip || !Executable(entry) || !c.process.Read(entry,actual.data(),actual.size())) return 0;
-    const auto start = actual[0] == 0xE9 ? skip : 0;
-    return std::equal(actual.begin()+start,actual.end(),expected.begin()+start) ? entry : 0;
+    for (const auto& candidate : profile.symbol("ue5.ProcessEvent.prologue").candidates)
+        if (candidate.entry.size() <= skip) return 0; // Require bytes beyond the observer jump.
+    return Executable(entry) && anomaly::sdk::MatchesProfileEntry(
+        c.process.core, profile, "ue5.ProcessEvent.prologue", entry, true) ? entry : 0;
 }
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) noexcept {
     if (!output) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
@@ -231,12 +230,10 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
         const auto* signatures = Query<AnomalySignatureServiceV1>(host,
             ANOMALY_SIGNATURE_SERVICE_V1_ID);
         auto* core = c->process.core;
-        auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(host), "compatibility.profile.json");
+        auto loaded = anomaly::sdk::LoadProfile(anomaly::sdk::Host(host), "compatibility.profile.json",
+            {"nte", "HTGame.exe", ".text", "character-studio-v1"});
         if (!loaded) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
         auto resource = std::move(loaded).value();
-        if (resource.contract != "character-studio-v1" || resource.game != "nte" ||
-            resource.module != "HTGame.exe" || resource.section != ".text")
-            return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
         const auto registry = ResolveSymbol(*c,signatures,resource,"ue5.GObjects");
         c->world_slot = ResolveSymbol(*c,signatures,resource,"ue5.GWorld");
         c->process.entry = ProcessEvent(*c,signatures,resource);

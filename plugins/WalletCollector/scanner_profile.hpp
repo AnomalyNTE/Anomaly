@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -37,10 +37,10 @@ struct Layout {
     std::uint32_t kRecordGetStringVtableOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host, "compatibility.profile.json", "wallet-collector-v1")) return false;
+        if (!compatibility.Load(host, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "wallet-collector-v1"})) return false;
         Layout parsed;
         parsed.kGObjectsAddend = -static_cast<std::ptrdiff_t>(compatibility.Value("kGObjectsAddendMagnitude", 16384));
         parsed.kObjectItemsOffset = compatibility.Value("kObjectItemsOffset", 16384);

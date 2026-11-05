@@ -60,10 +60,10 @@ struct Layout {
     std::uint32_t kArrayMaxOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","clone-enter-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "clone-enter-v1"}, {"ProcessEvent.entry"}, false, "layout")) return false;
         Layout parsed;
         parsed.kModifiersArrayOffset=compatibility.Value("kModifiersArrayOffset",65536);
         parsed.kModifierInfoSize=compatibility.Value("kModifierInfoSize",65536);

@@ -1,7 +1,7 @@
 #pragma once
-#include "plugins/common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace npc_profile {
-inline anomaly::plugins::CompatibilityProfile Compatibility;
+inline anomaly::sdk::ProfileSnapshot Compatibility;
 struct NativeLayout final {
     std::uint32_t L_propertyFlags{};
     std::uint32_t L_structPropertyStruct{};
@@ -42,7 +42,7 @@ struct NativeLayout final {
 inline NativeLayout Layout;
 inline bool Load(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!Compatibility.Load(host, "compatibility.profile.json", "npc-summon-v1", {"ProcessEvent.entry"})) return false;
+        if (!Compatibility.Load(host, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "npc-summon-v1"}, {"ProcessEvent.entry"})) return false;
         NativeLayout next;
         next.L_propertyFlags=Compatibility.Value("L_propertyFlags",65536);
         next.L_structPropertyStruct=Compatibility.Value("L_structPropertyStruct",65536);

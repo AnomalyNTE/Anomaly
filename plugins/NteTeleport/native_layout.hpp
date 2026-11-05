@@ -1,5 +1,5 @@
 #pragma once
-#include "../common/compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace nteteleport_profile {
 struct Layout {
     std::uint32_t kWorldGameInstanceOffset{};
@@ -11,10 +11,10 @@ struct Layout {
     std::uint32_t kNavPathRequestGoalLocationOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","nte-teleport-v1")) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "nte-teleport-v1"}, {}, false, "layout")) return false;
         Layout parsed;
         parsed.kWorldGameInstanceOffset=compatibility.Value("kWorldGameInstanceOffset",16384);
         parsed.kGameInstanceLocalPlayersOffset=compatibility.Value("kGameInstanceLocalPlayersOffset",16384);

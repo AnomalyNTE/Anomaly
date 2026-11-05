@@ -18,10 +18,10 @@ struct Layout {
     std::uint32_t kArrayMaxOffset{};
 };
 inline Layout native_layout;
-inline anomaly::plugins::CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
     try {
-        if (!compatibility.Load(host,"compatibility.profile.json","combat-box-v1", {"ProcessEvent.entry"})) return false;
+        if (!compatibility.Load(host,"compatibility.profile.json",{"nte", "HTGame.exe", ".text", "combat-box-v1"}, {"ProcessEvent.entry"})) return false;
         Layout parsed;
         parsed.kDataTableRowMapOffset=compatibility.Value("kDataTableRowMapOffset",65536);
         parsed.kDataTableRowStride=compatibility.Value("kDataTableRowStride",65536);

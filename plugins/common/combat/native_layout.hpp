@@ -1,5 +1,5 @@
 #pragma once
-#include "../compatibility_profile.hpp"
+#include <anomaly/sdk/profile.hpp>
 namespace anomaly::plugins::combat::profile {
 struct Layout {
     std::uint32_t kObjectClassOffset{};
@@ -27,9 +27,9 @@ struct Layout {
     std::uint32_t kRowPointerOffset{};
 };
 inline Layout native_layout;
-inline CompatibilityProfile compatibility;
+inline anomaly::sdk::ProfileSnapshot compatibility;
 inline const AnomalyCoreServiceV1* core{};
-inline bool Configure(const AnomalyHostApiV1* host, const CompatibilityProfile& source) noexcept {
+inline bool Configure(const AnomalyHostApiV1* host, const anomaly::sdk::ProfileSnapshot& source) noexcept {
     try {
         Layout parsed;
         parsed.kObjectClassOffset=source.Value("combat.kObjectClassOffset",65536);
