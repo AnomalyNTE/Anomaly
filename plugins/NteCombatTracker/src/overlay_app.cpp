@@ -58,7 +58,7 @@ using nte::combat_stats::overlay::kWindowClassName;
 using nte::combat_stats::overlay::kWindowTitle;
 using namespace std::chrono_literals;
 
-constexpr wchar_t kMutexName[] = L"Local\\NteCombatOverlay.local.nte.nte-combat-tracker";
+constexpr wchar_t kMutexName[] = L"Local\\NteCombatOverlay.shikari.nte-combat-tracker";
 constexpr UINT kSnapshotMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowMessage = WM_APP + 3;

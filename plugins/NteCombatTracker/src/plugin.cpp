@@ -2891,7 +2891,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("local.nte.nte-combat-tracker"),
+        anomaly::sdk::StringView("shikari.nte-combat-tracker"),
         anomaly::sdk::StringView("NTE Combat Tracker"),
         anomaly::sdk::StringView("Shikari"),
         anomaly::sdk::StringView(nte::build::kPluginVersion),

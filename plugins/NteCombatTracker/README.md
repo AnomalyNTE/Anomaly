@@ -3,7 +3,9 @@
 Anomaly 的内建战斗统计插件：只读实时伤害/治疗统计、独立 Overlay 进程，以及落在本地的
 高保真 JSONL 战斗日志与单场 JSON 导出。
 
-插件 ID `local.nte.nte-combat-tracker` 保持不变，已安装的用户升级时仍按同一身份更新。
+插件 ID 为 `shikari.nte-combat-tracker`，遵循上游的 `<作者>.<插件名>` 规则。从独立仓库
+迁移的用户，其旧 id `local.nte.nte-combat-tracker` 下的配置与状态由
+`tools/migrate_plugin_ids` 迁移。
 
 > [!NOTE]
 > 这是内建插件，源码就在本仓库。它的构建信息登记在仓库根 `CMakeLists.txt` 的

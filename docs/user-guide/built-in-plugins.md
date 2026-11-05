@@ -172,7 +172,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `local.nte.nte-combat-tracker` |
+| **ID** | `shikari.nte-combat-tracker` |
 | **作用** | 只读实时战斗统计：三种 DPS、承伤与治疗、按账号隔离的 JSONL 战斗日志，以及单场战斗 JSON 导出。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.json`、`anomaly.nte.combat`；`anomaly.core`、`anomaly.runtime-info`、`anomaly.nte.build`、`anomaly.nte.skills`、`anomaly.websocket`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.ue5.world`（均为 V1，可选） |
 | **需要 Profile** | 是（战斗事件流来自已验证的 NTE Combat 服务） |

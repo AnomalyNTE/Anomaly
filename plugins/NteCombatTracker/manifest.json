@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local.nte.nte-combat-tracker",
+  "id": "shikari.nte-combat-tracker",
   "name": "NTE Combat Tracker",
   "description": "FFXIV-style DPS meter panel.",
   "author": "Shikari",

@@ -1586,7 +1586,7 @@ void ParserRejectsWrongProtocolAndAcceptsUnknownFields() {
           "unknown fields should be ignored");
 
     json = nte::combat_stats::SerializeOverlaySnapshot(ExampleSnapshot());
-    const std::string channel = "local.nte.nte-combat-tracker.overlay";
+    const std::string channel = "shikari.nte-combat-tracker.overlay";
     json.replace(json.find(channel), channel.size(), "foreign.channel");
     NTE_CHECK(!nte::combat_stats::ParseOverlaySnapshot(json, error).has_value(),
           "foreign channels must be rejected");
