@@ -441,7 +441,11 @@ if (Test-Path -LiteralPath $enablementPath) {
 
 # 1b) state/ui-window-state.json：favorites、pluginWindows[].pluginId、windows[].stableId
 $uiStatePath = Join-Path (Join-Path $anomalyRoot 'state') 'ui-window-state.json'
-if (Test-Path -LiteralPath $uiStatePath) {
+if (-not (Test-Path -LiteralPath $uiStatePath)) {
+    Write-Host '=== state/ui-window-state.json ==='
+    Write-Host '    未找到：这份数据没保存过插件收藏或窗口状态，跳过' -ForegroundColor DarkGray
+    Write-Host ''
+} else {
     Write-Host '=== state/ui-window-state.json ==='
     $document = Get-Content -LiteralPath $uiStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
     $changed = $false
