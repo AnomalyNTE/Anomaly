@@ -3,6 +3,7 @@
 #include "anomaly/artifact_crypto.hpp"
 
 #include <Windows.h>
+#include <TlHelp32.h>
 
 #include <algorithm>
 #include <array>
@@ -48,6 +49,99 @@ bool IsTransientMoveFailure(DWORD error) noexcept {
 }
 
 // Filesystem filters can briefly deny delete sharing after Runtime inventory reads.
+
+// A running game keeps Anomaly.Core.dll mapped, which makes the runtime directory impossible to
+// rename (MoveFileEx then fails with ERROR_ACCESS_DENIED instead of a sharing violation).
+
+
+// A directory cannot be renamed while any process keeps it as its working directory, or while a
+// filter holds a handle to it. Files stay writable in that state, so publish by copying over the
+// installed tree instead of moving it.
+bool PreservesInstalledFile(const std::filesystem::path& relative) noexcept;
+
+bool PublishRuntimeInPlace(
+    const std::filesystem::path& staging, const std::filesystem::path& installed,
+    std::string& failure) {
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator iterator(staging, error), end;
+         iterator != end && !error; iterator.increment(error)) {
+        const auto relative = std::filesystem::relative(iterator->path(), staging, error);
+        if (error || relative.empty()) {
+            failure = "staged path is not confined";
+            return false;
+        }
+        const auto target = installed / relative;
+        if (iterator->is_directory(error)) {
+            std::filesystem::create_directories(target, error);
+        } else if (iterator->is_regular_file(error)) {
+            std::filesystem::create_directories(target.parent_path(), error);
+            if (!error) {
+                std::filesystem::copy_file(iterator->path(), target,
+                    std::filesystem::copy_options::overwrite_existing, error);
+            }
+        }
+        if (error) {
+            failure = "could not write " + target.string();
+            return false;
+        }
+    }
+
+    std::vector<std::filesystem::path> stale;
+    for (std::filesystem::recursive_directory_iterator iterator(installed, error), end;
+         iterator != end && !error; iterator.increment(error)) {
+        if (!iterator->is_regular_file(error)) continue;
+        const auto relative = std::filesystem::relative(iterator->path(), installed, error);
+        if (error || relative.empty()) continue;
+        if (!std::filesystem::exists(staging / relative, error) &&
+            !PreservesInstalledFile(relative)) {
+            stale.push_back(iterator->path());
+        }
+    }
+    for (const auto& path : stale) std::filesystem::remove(path, error);
+    return true;
+}
+
+// Renaming a directory fails as a whole, which hides which file is actually held open. Probe each
+// file with an exclusive open (no mutation) so the failure can name the offender.
+std::filesystem::path FirstLockedFile(const std::filesystem::path& root) noexcept {
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(root, error);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; !error && iterator != end; iterator.increment(error)) {
+        if (!iterator->is_regular_file(error)) continue;
+        const std::filesystem::path file = iterator->path();
+        const HANDLE handle = CreateFileW(file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) {
+            const DWORD probe_error = GetLastError();
+            if (probe_error == ERROR_ACCESS_DENIED || probe_error == ERROR_SHARING_VIOLATION) {
+                return file;
+            }
+            continue;
+        }
+        CloseHandle(handle);
+    }
+    return {};
+}
+
+bool GameExecutableRunning() noexcept {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    bool running = false;
+    if (Process32FirstW(snapshot, &entry) != FALSE) {
+        do {
+            if (::_wcsicmp(entry.szExeFile, L"HTGame.exe") == 0) {
+                running = true;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry) != FALSE);
+    }
+    CloseHandle(snapshot);
+    return running;
+}
+
 DWORD MovePath(
     const std::filesystem::path& source,
     const std::filesystem::path& destination) noexcept {
@@ -455,20 +549,50 @@ ProxyInstallationStatus InstallProxyRuntime(
             static_cast<void>(MovePath(runtime_backup, runtime_target));
         }
     };
+    bool runtime_published_in_place{};
     if (replace_runtime && has_runtime) {
+        if (GameExecutableRunning()) {
+            std::filesystem::remove_all(runtime_staging, error);
+            std::filesystem::remove(proxy_staging, error);
+            return Failure(
+                game_directory, ProxyInstallationState::Unavailable,
+                ProxyInstallationError::IoFailure,
+                "the game is still running; close HTGame.exe before updating the runtime");
+        }
         const DWORD move_error = MovePath(runtime_target, runtime_backup);
-        if (move_error != ERROR_SUCCESS) {
+        if (move_error == ERROR_ACCESS_DENIED) {
+            std::string in_place_failure;
+            if (PublishRuntimeInPlace(runtime_staging, runtime_target, in_place_failure)) {
+                // Nothing was moved, so there is no backup to roll back to; the runtime is already
+                // replaced and the staging copy is no longer needed.
+                std::filesystem::remove_all(runtime_staging, error);
+                runtime_published_in_place = true;
+            } else {
+                std::filesystem::remove_all(runtime_staging, error);
+                std::filesystem::remove(proxy_staging, error);
+                return Failure(
+                    game_directory, ProxyInstallationState::Unavailable,
+                    ProxyInstallationError::IoFailure,
+                    "installed runtime could not be prepared for update; " + in_place_failure);
+            }
+        }
+        if (move_error != ERROR_SUCCESS && !runtime_published_in_place) {
             std::filesystem::remove_all(runtime_staging, error);
             std::filesystem::remove(proxy_staging, error);
             return Failure(
                 game_directory, ProxyInstallationState::Unavailable,
                 ProxyInstallationError::IoFailure,
                 Win32Failure(
-                    "installed runtime could not be prepared for update", move_error));
+                    FirstLockedFile(runtime_target).empty()
+                        ? std::string("installed runtime could not be prepared for update")
+                        : "installed runtime could not be prepared for update; locked: " +
+                            FirstLockedFile(runtime_target).string(),
+                    move_error));
         }
         runtime_backed_up = true;
     }
-    const DWORD publish_runtime_error = replace_runtime
+    const bool publish_by_move = replace_runtime && !runtime_published_in_place;
+    const DWORD publish_runtime_error = publish_by_move
         ? MovePath(runtime_staging, runtime_target) : ERROR_SUCCESS;
     if (publish_runtime_error != ERROR_SUCCESS) {
         rollback_runtime();
@@ -480,7 +604,7 @@ ProxyInstallationStatus InstallProxyRuntime(
             Win32Failure(
                 "runtime directory could not be published", publish_runtime_error));
     }
-    runtime_published = replace_runtime;
+    runtime_published = publish_by_move;
 
     const auto proxy_destination = has_disabled ? disabled_target : proxy_target;
     const auto proxy_backup = UniqueSibling(game_directory, L".dwmapi.dll.backup");

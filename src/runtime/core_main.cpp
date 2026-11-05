@@ -6,6 +6,7 @@
 #include "anomaly/diagnostic_pipe_service.hpp"
 #include "anomaly/i18n.hpp"
 #include "anomaly/nte_profile_runtime.hpp"
+#include "anomaly/nte_pak_signature_bypass.hpp"
 #include "anomaly/platform_settings.hpp"
 #include "anomaly/repository_coordinator.hpp"
 #include "anomaly/runtime_session.hpp"
@@ -1189,11 +1190,21 @@ void ArchiveStoppedSessionLocked(RuntimeControl& control) {
 
 }  // namespace
 
+// Lives for the whole process: the hook it installs must stay in place while the game runs.
+std::unique_ptr<anomaly::NtePakSignatureBypass> pak_signature_bypass;
+
 extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
     const AnomalyStartInfo* start_info) {
     const DWORD validation = ValidateStartInfo(start_info);
     if (validation != ERROR_SUCCESS) return validation;
     if (g_runtime_control == nullptr) return ERROR_INVALID_STATE;
+    // during start-up, so anything that runs after service/plugin initialisation is too late.
+    try {
+        pak_signature_bypass = std::make_unique<anomaly::NtePakSignatureBypass>();
+        pak_signature_bypass->Start(
+            start_info->runtime_root, start_info->game_module, start_info->log_directory);
+    } catch (...) {
+    }
 
     try {
         const auto start_context = BuildStartContext(*start_info);
