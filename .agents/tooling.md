@@ -60,6 +60,7 @@ cmake --install .build\windows-vs2022 --config RelWithDebInfo `
 | `collect_diagnostics.ps1` | 生成脱敏诊断包 | 用 `pwsh -NoProfile -File` 启动；检查输入 Runtime 和输出路径，dump 必须人工审查 |
 | `package_release.ps1` | staging Runtime、Tools、SDK 三个组件，并覆盖发布输出 | 用 `pwsh -NoProfile -File` 启动；仅在干净标准构建后，且指定明确版本/输出目录时运行 |
 | `check_plugin_i18n.ps1` | 校验插件本地化：key 覆盖、`{N}` 占位符掩码与英文回退一致、残留中文字面量、manifest 回退语言与 `anomaly.localization` 声明 | 只读；`-Plugin A,B` 指定插件，省略则检查 `plugins/` 下全部插件 |
+| `migrate_plugin_ids/`（双击 `Migrate-Plugin-Ids.cmd`） | 把运行时数据里的旧插件 id 迁到 `<作者>.<插件名>`：`config/plugin-enablement.json` 键、`config/plugins/<id>`、`state/plugins/<id>`、`config-<配置键>.json`（[使用说明](../tools/migrate_plugin_ids/README.md)） | 改用户数据；双击走"预览→确认"；命令行先加 `-WhatIf`；`-Root` 缺省用脚本目录（与 AnomalyLauncher.exe 同级），已移除插件与第三方 id 只报告不动 |
 | `run_stability_suite.ps1` | 显式 opt-in 的 soak 证据；需要先 `build.cmd fixtures` | 用 `pwsh -NoProfile -File` 启动；`-Quick` 只用于脚本冒烟，不是发布证据 |
 
 所有工具脚本默认使用 `.build/windows-vs2022` 和其中的 `RelWithDebInfo` 二进制。只在有意使用
